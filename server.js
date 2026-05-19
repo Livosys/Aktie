@@ -6,6 +6,7 @@ const cors = require('cors');
 const path = require('path');
 const { startScheduler } = require('./src/scanner/scheduler');
 const { startCryptoScheduler } = require('./src/scanner/cryptoScheduler');
+const { startAutoMachineScheduler } = require('./src/jobs/autoMachineScheduler');
 const apiRouter = require('./src/routes/api');
 
 const app = express();
@@ -91,4 +92,5 @@ app.listen(PORT, () => {
   console.log(`[Server] nasdaq-2m-scanner running on port ${PORT}`);
   startScheduler();
   startCryptoScheduler();
+  startAutoMachineScheduler();
 });

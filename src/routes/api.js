@@ -14,6 +14,8 @@ const { saveLearning, loadLearning }            = require('../scanner/signalLear
 const { getEdge, getEdgeForSymbol, getEdgeSummary, invalidateCache } = require('../scanner/historicalEdge');
 const { runReplay, listRuns, loadRunSummary, loadRunEvents, loadRunInsights } = require('../scanner/replayEngine');
 const { runLearningEngine, loadLearningSummary } = require('../scanner/learningEngine');
+const { runAutoMachine, isRunning: autoMachineRunning, getStatus: getAutoMachineStatus } = require('../jobs/autoMachine');
+const { getSchedulerStatus } = require('../jobs/autoMachineScheduler');
 
 function buildScanResponse(results, status, group) {
   return {
@@ -468,5 +470,62 @@ function round2(a, b) {
   if (a == null || b == null) return null;
   return { a, b, delta: Math.round((b - a) * 10) / 10 };
 }
+
+// ── GET /api/system/auto-machine-status ───────────────────────────────────────
+router.get('/system/auto-machine-status', (req, res) => {
+  try {
+    const status = getAutoMachineStatus();
+    res.json({
+      ok:      true,
+      running: autoMachineRunning(),
+      enabled: (process.env.AUTO_MACHINE_ENABLED || 'false').toLowerCase() === 'true',
+      config: {
+        intervalMinutes: parseInt(process.env.AUTO_MACHINE_INTERVAL_MINUTES || '60', 10),
+        lookbackDays:    parseInt(process.env.AUTO_MACHINE_LOOKBACK_DAYS    || '7',  10),
+        groups:          (process.env.AUTO_MACHINE_GROUPS || 'stocks,crypto').split(',').map((g) => g.trim()),
+      },
+      status: status || null,
+    });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+// ── GET /api/system/scheduler-status ─────────────────────────────────────────
+router.get('/system/scheduler-status', (req, res) => {
+  try {
+    res.json({ ok: true, ...getSchedulerStatus() });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+// ── POST /api/system/run-auto-machine ─────────────────────────────────────────
+router.post('/system/run-auto-machine', async (req, res) => {
+  if (autoMachineRunning()) {
+    return res.status(409).json({ ok: false, error: 'Auto-machine already running' });
+  }
+
+  const lookbackDays = parseInt(
+    req.body?.lookbackDays ?? process.env.AUTO_MACHINE_LOOKBACK_DAYS ?? '7',
+    10
+  );
+  const groupsRaw = req.body?.groups ?? process.env.AUTO_MACHINE_GROUPS ?? 'stocks,crypto';
+  const groups    = (Array.isArray(groupsRaw) ? groupsRaw : String(groupsRaw).split(',')).map((g) => g.trim()).filter(Boolean);
+
+  if (isNaN(lookbackDays) || lookbackDays < 1 || lookbackDays > 90) {
+    return res.status(400).json({ ok: false, error: 'lookbackDays must be 1–90' });
+  }
+  if (groups.length === 0) {
+    return res.status(400).json({ ok: false, error: 'groups must be a non-empty list (stocks, crypto)' });
+  }
+
+  // Fire and return immediately so the client is not blocked
+  res.json({ ok: true, message: 'Auto-machine pipeline started', lookbackDays, groups });
+
+  runAutoMachine({ lookbackDays, groups }).catch((err) => {
+    console.error('[API] run-auto-machine unhandled error:', err.message);
+  });
+});
 
 module.exports = router;

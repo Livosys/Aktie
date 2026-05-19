@@ -6,6 +6,7 @@ import NasdaqPage from './pages/NasdaqPage.jsx';
 import CryptoPage from './pages/CryptoPage.jsx';
 import HistoryPage from './pages/HistoryPage.jsx';
 import ReplayPage from './pages/ReplayPage.jsx';
+import MachinePage from './pages/MachinePage.jsx';
 import { AlertProvider, HeroToastContainer } from './alertContext.jsx';
 
 export default function App() {
@@ -21,6 +22,7 @@ export default function App() {
           <Route path="/krypto" element={<CryptoPage />} />
           <Route path="/historik" element={<HistoryPage />} />
           <Route path="/replay" element={<ReplayPage />} />
+          <Route path="/machine" element={<MachinePage />} />
         </Routes>
       </div>
       <div className="footer">
