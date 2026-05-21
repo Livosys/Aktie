@@ -8,7 +8,8 @@ const NAV_ITEMS = [
   { path: '/krypto',   label: 'Krypto',   icon: '₿', cls: 'nav-crypto' },
   { path: '/historik', label: 'Historik', icon: '📚', cls: 'nav-history' },
   { path: '/replay',   label: 'Replay',   icon: '▶️', cls: 'nav-replay' },
-  { path: '/machine',  label: 'Machine',  icon: '🤖', cls: 'nav-machine' },
+  { path: '/machine',         label: 'Machine',       icon: '🤖', cls: 'nav-machine' },
+  { path: '/missed-breakouts', label: 'Missed Moves', icon: '🧠', cls: 'nav-missed' },
 ];
 
 function AlertButton() {

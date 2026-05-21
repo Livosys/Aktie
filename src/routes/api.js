@@ -355,6 +355,28 @@ router.get('/history/learning-summary', (req, res) => {
   }
 });
 
+// ── GET /api/history/missed-breakouts ────────────────────────────────────────
+const { findMissedBreakouts } = require('../history/missedBreakoutFinder');
+
+router.get('/history/missed-breakouts', (req, res) => {
+  const { limit, days, symbol, onlyBlocked } = req.query;
+  try {
+    const start = days
+      ? new Date(Date.now() - parseInt(days, 10) * 86400000).toISOString().slice(0, 10)
+      : req.query.start || undefined;
+    const end   = days ? new Date().toISOString().slice(0, 10) : req.query.end || undefined;
+    const items = findMissedBreakouts({
+      start, end,
+      limit,
+      symbol:      symbol      || null,
+      onlyBlocked: onlyBlocked === 'true',
+    });
+    res.json({ ok: true, count: items.length, items });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
 // ── POST /api/history/update-learning ────────────────────────────────────────
 router.post('/history/update-learning', async (req, res) => {
   try {

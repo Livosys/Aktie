@@ -43,10 +43,10 @@ const TV_EXCHANGE_MAP = {
   QQQ:     'NASDAQ',
 };
 
-function buildTradingViewUrl(symbol, _timestamp) {
+function buildTradingViewUrl(symbol) {
   const exchange = TV_EXCHANGE_MAP[symbol] || 'NASDAQ';
   const tvSymbol = `${exchange}:${symbol}`;
-  return `https://www.tradingview.com/chart/di3qlKNB/?symbol=${encodeURIComponent(tvSymbol)}`;
+  return `https://www.tradingview.com/chart/di3qlKNB/?symbol=${encodeURIComponent(tvSymbol)}&interval=2`;
 }
 
 function copyToClipboard(text) {
@@ -279,7 +279,7 @@ function OutcomeRow({ label, data, isLong }) {
 
 // ── Signal card ───────────────────────────────────────────────────────────────
 
-function CopyButton({ text, label }) {
+function CopyButton({ text, label, title: titleProp }) {
   const [copied, setCopied] = useState(false);
   function handleCopy() {
     copyToClipboard(text);
@@ -287,10 +287,26 @@ function CopyButton({ text, label }) {
     setTimeout(() => setCopied(false), 1800);
   }
   return (
-    <button className="hist-action-btn hist-copy-btn" onClick={handleCopy} title="Kopiera tid till urklipp">
+    <button className="hist-action-btn hist-copy-btn" onClick={handleCopy} title={titleProp ?? 'Kopiera till urklipp'}>
       {copied ? '✓ Kopierat' : label}
     </button>
   );
+}
+
+function buildReviewText(signal, utcLabel, sweLabel) {
+  const utcShort  = utcLabel.replace(' UTC', '');
+  const price     = signal.price ? `$${Number(signal.price).toFixed(2)}` : '–';
+  const signalSv  = signalToSv(signal.signal);
+  return [
+    `Symbol: ${signal.symbol}`,
+    `Signal-tid UTC: ${utcShort}`,
+    `TradingView (Sverige): ${sweLabel}`,
+    `Timeframe: 2m`,
+    `Pris vid signal: ${price}`,
+    `Signal: ${signalSv}`,
+    `Tradebetyg: ${signal.tradeScore ?? '–'}`,
+    `Narrowbetyg: ${signal.narrowScore ?? '–'}`,
+  ].join('\n');
 }
 
 function SignalCard({ signal, outcome }) {
@@ -300,6 +316,8 @@ function SignalCard({ signal, outcome }) {
   const won = hasOutcome && outcome.success === true;
   const lost = hasOutcome && outcome.success === false;
 
+  const [chartToast, setChartToast] = useState(false);
+
   let resultBadge = null;
   if (won)  resultBadge = <span className="badge badge-green">Lyckad</span>;
   if (lost) resultBadge = <span className="badge badge-red">Misslyckad</span>;
@@ -308,10 +326,22 @@ function SignalCard({ signal, outcome }) {
   const borderColor = won ? 'var(--green-border)' : lost ? 'var(--red-border)' : 'var(--border)';
   const accentColor = won ? 'var(--green)' : lost ? 'var(--red)' : isLong ? 'var(--green)' : isShort ? 'var(--red)' : 'var(--muted)';
 
-  const tvUrl     = buildTradingViewUrl(signal.symbol, signal.timestamp);
-  const utcLabel  = fmtUTC(signal.timestamp);
-  const sweLabel  = fmtSwedish(signal.timestamp);
-  const copyText  = utcLabel + (sweLabel !== utcLabel ? `  (Sverige: ${sweLabel})` : '');
+  const tvUrl        = buildTradingViewUrl(signal.symbol);
+  const utcLabel     = fmtUTC(signal.timestamp);
+  const sweLabel     = fmtSwedish(signal.timestamp);
+  const sweDate      = sweLabel.split(' ')[0];   // "2026-05-21"  → Go to date
+  const sweTime      = sweLabel.split(' ')[1];   // "03:48"       → scrolla till
+  const copyText     = utcLabel + (sweLabel !== utcLabel ? `  (Sverige: ${sweLabel})` : '');
+  const tvSearchText = `${signal.symbol} ${utcLabel} 2m`;
+  const tvTitle      = `Öppna ${signal.symbol} – klistra in ${sweDate} i Go to date, scrolla till kl. ${sweTime}`;
+  const reviewText   = buildReviewText(signal, utcLabel, sweLabel);
+
+  function handleOpenChart() {
+    window.open(tvUrl, '_blank', 'noopener,noreferrer');
+    copyToClipboard(sweDate);
+    setChartToast(true);
+    setTimeout(() => setChartToast(false), 3500);
+  }
 
   return (
     <div className="hist-signal-card" style={{ borderColor }}>
@@ -322,12 +352,15 @@ function SignalCard({ signal, outcome }) {
 
       {/* Tydlig signal-tid */}
       <div className="hist-signal-time-block">
-        <span className="hist-signal-time-label">Signal-tid:</span>
+        <span className="hist-signal-time-label">Signal-tid UTC:</span>
         <span className="hist-signal-time-val">{utcLabel}</span>
-        {sweLabel && sweLabel !== utcLabel && (
-          <span className="hist-signal-time-swe">Sverige: {sweLabel}</span>
-        )}
         <span className="hist-signal-time-tf">2m candle</span>
+      </div>
+      <div className="hist-tv-goto">
+        <span className="hist-tv-goto-label">Go to date:</span>
+        <strong className="hist-tv-goto-date">{sweDate}</strong>
+        <span className="hist-tv-goto-sep">→ scrolla till kl.</span>
+        <strong className="hist-tv-goto-time">{sweTime}</strong>
       </div>
 
       <div className="hist-card-badges">
@@ -354,17 +387,30 @@ function SignalCard({ signal, outcome }) {
         <div className="hist-card-forklaring">"{signal.actionSv}"</div>
       )}
 
-      {/* TradingView + kopieringsknapp */}
+      {/* Chart-knapp + kopieringsknappar */}
       <div className="hist-card-actions">
+        <button
+          className="hist-action-btn hist-tv-btn"
+          onClick={handleOpenChart}
+          title={tvTitle}
+        >
+          {chartToast ? `✓ Datum kopierat: ${sweDate} — scrolla till kl. ${sweTime}` : '📈 Öppna chart + kopiera datum'}
+        </button>
+        <CopyButton text={sweDate} label={`📅 ${sweDate}`} title="Kopiera datum för Go to date i TradingView" />
+        <CopyButton text={sweTime} label={`🕐 kl. ${sweTime}`} title="Kopiera klocktiden att scrolla till" />
+        <CopyButton text={reviewText} label="📋 Review-text" title="Kopiera fullständig signal-sammanfattning" />
         <a
           href={tvUrl}
           target="_blank"
           rel="noopener noreferrer"
-          className="hist-action-btn hist-tv-btn"
+          className="hist-action-btn hist-copy-btn"
+          title={tvTitle}
         >
-          📈 TradingView
+          ↗ Öppna i ny flik
         </a>
-        <CopyButton text={copyText} label="⏱ Kopiera tid" />
+      </div>
+      <div className="hist-tv-help">
+        1. Öppna chart → 2. Klicka <strong>Go to date</strong> (klockan i nedre toolbar) → 3. Klistra in datumet → 4. Scrolla till kl. {sweTime}
       </div>
 
       {hasOutcome && (

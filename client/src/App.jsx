@@ -7,6 +7,7 @@ import CryptoPage from './pages/CryptoPage.jsx';
 import HistoryPage from './pages/HistoryPage.jsx';
 import ReplayPage from './pages/ReplayPage.jsx';
 import MachinePage from './pages/MachinePage.jsx';
+import MissedBreakoutsPage from './pages/MissedBreakoutsPage.jsx';
 import { AlertProvider, HeroToastContainer } from './alertContext.jsx';
 
 export default function App() {
@@ -23,6 +24,7 @@ export default function App() {
           <Route path="/historik" element={<HistoryPage />} />
           <Route path="/replay" element={<ReplayPage />} />
           <Route path="/machine" element={<MachinePage />} />
+          <Route path="/missed-breakouts" element={<MissedBreakoutsPage />} />
         </Routes>
       </div>
       <div className="footer">

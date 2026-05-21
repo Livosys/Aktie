@@ -950,6 +950,43 @@ tbody td {
   background: var(--border2);
   color: var(--text);
 }
+.hist-tv-goto {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  font-size: 12px;
+  margin-bottom: 8px;
+  padding: 6px 10px;
+  background: color-mix(in srgb, #2962FF 8%, transparent);
+  border: 1px solid color-mix(in srgb, #2962FF 20%, transparent);
+  border-radius: var(--r-sm);
+}
+.hist-tv-goto-label {
+  color: var(--muted);
+  font-size: 11px;
+}
+.hist-tv-goto-date {
+  color: var(--text);
+  font-family: var(--mono);
+  font-size: 13px;
+}
+.hist-tv-goto-sep {
+  color: var(--muted);
+  font-size: 11px;
+}
+.hist-tv-goto-time {
+  color: #5c8fff;
+  font-family: var(--mono);
+  font-size: 15px;
+  letter-spacing: 0.04em;
+}
+.hist-tv-help {
+  font-size: 11px;
+  color: var(--muted);
+  margin-top: 6px;
+  line-height: 1.4;
+}
 
 /* ── TradingView hint banner ─────────────────────────────────────────────────── */
 .hist-tv-hint {
@@ -2621,4 +2658,259 @@ tbody td {
   .mc-step        { flex-direction: column; align-items: flex-start; gap: 8px; }
   .mc-step-right  { align-self: flex-end; }
   .mc-sched-item  { border-right: none; border-bottom: 1px solid var(--border); }
+}
+
+/* ── Missed Breakouts nav ────────────────────────────────────────────────────── */
+.nav-missed       { color: var(--muted); }
+.nav-missed:hover { color: #a78bfa; }
+.nav-missed.active { color: #a78bfa; border-bottom-color: #a78bfa; }
+
+/* ── Missed Breakouts page ───────────────────────────────────────────────────── */
+.mb-stats-panel {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-bottom: 20px;
+  padding: 14px 16px;
+  background: var(--surface2);
+  border: 1px solid var(--border2);
+  border-radius: var(--r);
+}
+.mb-stat {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 80px;
+}
+.mb-stat-wide { flex: 1 1 200px; }
+.mb-stat-val {
+  font-size: 20px;
+  font-weight: 700;
+  color: var(--text);
+  line-height: 1.1;
+}
+.mb-stat-label {
+  font-size: 10px;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.mb-stat-reason {
+  font-size: 11px;
+  color: var(--muted);
+  font-style: italic;
+  margin-top: 2px;
+}
+
+/* Filter bar */
+.mb-filter-bar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16px;
+  align-items: flex-end;
+  margin-bottom: 18px;
+  padding: 12px 14px;
+  background: var(--surface2);
+  border: 1px solid var(--border);
+  border-radius: var(--r);
+}
+.mb-filter-group {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+.mb-filter-label {
+  font-size: 10px;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.mb-filter-pills { display: flex; gap: 4px; }
+.mb-pill {
+  padding: 3px 10px;
+  font-size: 11px;
+  font-weight: 600;
+  border-radius: var(--r-sm);
+  border: 1px solid var(--border2);
+  background: var(--surface3);
+  color: var(--muted);
+  cursor: pointer;
+  transition: background 0.12s, color 0.12s;
+}
+.mb-pill:hover { color: var(--text); border-color: var(--muted2); }
+.mb-pill-active { background: var(--surface); color: #a78bfa; border-color: #a78bfa; }
+.mb-select {
+  padding: 4px 8px;
+  font-size: 12px;
+  background: var(--surface3);
+  color: var(--text);
+  border: 1px solid var(--border2);
+  border-radius: var(--r-sm);
+  cursor: pointer;
+}
+.mb-checkbox-label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--muted);
+  cursor: pointer;
+}
+
+/* Grid */
+.mb-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(340px, 1fr));
+  gap: 14px;
+}
+
+/* Card */
+.mb-card {
+  position: relative;
+  background: var(--surface2);
+  border: 1px solid var(--border);
+  border-radius: var(--r);
+  padding: 14px 14px 12px 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  overflow: hidden;
+}
+.mb-card-accent {
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 3px;
+  border-radius: var(--r) 0 0 var(--r);
+}
+.mb-card-header {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.mb-card-sym {
+  font-size: 16px;
+  font-weight: 700;
+  color: var(--text);
+  font-family: var(--mono);
+  margin-right: 4px;
+}
+
+/* Time */
+.mb-time-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+}
+.mb-time-label { color: var(--muted); }
+.mb-time-val   { font-family: var(--mono); color: var(--text); }
+
+/* Go to date row (reuses hist-tv-goto styles) */
+.mb-tv-goto {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  font-size: 12px;
+  padding: 5px 8px;
+  background: color-mix(in srgb, #2962FF 8%, transparent);
+  border: 1px solid color-mix(in srgb, #2962FF 18%, transparent);
+  border-radius: var(--r-sm);
+}
+
+/* System said */
+.mb-system-said {
+  background: var(--surface3);
+  border-radius: var(--r-sm);
+  padding: 8px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.mb-section-label {
+  font-size: 10px;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  margin-bottom: 2px;
+}
+.mb-action { font-size: 13px; font-weight: 600; color: var(--text); }
+.mb-reason { font-size: 11px; color: var(--muted); line-height: 1.4; }
+
+/* What happened */
+.mb-happened {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.mb-happened-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+}
+.mb-happened-label { color: var(--muted); min-width: 140px; }
+.mb-happened-max   { color: var(--muted); font-size: 11px; }
+
+/* Continuation bar */
+.mb-continuation-bar-wrap {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 2px;
+}
+.mb-cont-label { font-size: 10px; color: var(--muted); min-width: 120px; }
+.mb-cont-bar-bg {
+  flex: 1;
+  height: 5px;
+  background: var(--border2);
+  border-radius: 2px;
+  overflow: hidden;
+}
+.mb-cont-bar-fill {
+  height: 100%;
+  border-radius: 2px;
+  transition: width 0.3s;
+}
+.mb-cont-val {
+  font-size: 11px;
+  font-family: var(--mono);
+  color: var(--muted);
+  min-width: 24px;
+  text-align: right;
+}
+
+/* Scores */
+.mb-scores {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+.mb-score-item {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 60px;
+}
+.mb-score-label { font-size: 10px; color: var(--muted); }
+.mb-score-val   { font-size: 14px; font-weight: 700; color: var(--text); }
+
+/* Review summary */
+.mb-review-summary {
+  font-size: 12px;
+  color: var(--muted);
+  font-style: italic;
+  line-height: 1.4;
+  padding: 6px 8px;
+  background: var(--surface3);
+  border-radius: var(--r-sm);
+  border-left: 2px solid var(--border2);
+}
+
+@media (max-width: 600px) {
+  .mb-grid { grid-template-columns: 1fr; }
+  .mb-filter-bar { gap: 10px; }
 }
