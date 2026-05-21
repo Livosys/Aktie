@@ -11,6 +11,57 @@ function fmtDateTime(iso) {
   });
 }
 
+// Format timestamp as "YYYY-MM-DD HH:mm UTC"
+function fmtUTC(iso) {
+  if (!iso) return '–';
+  const d = new Date(iso);
+  const pad = n => String(n).padStart(2, '0');
+  return `${d.getUTCFullYear()}-${pad(d.getUTCMonth()+1)}-${pad(d.getUTCDate())} ${pad(d.getUTCHours())}:${pad(d.getUTCMinutes())} UTC`;
+}
+
+// Format timestamp as Swedish local time "YYYY-MM-DD HH:mm"
+function fmtSwedish(iso) {
+  if (!iso) return '–';
+  return new Date(iso).toLocaleString('sv-SE', {
+    year: 'numeric', month: '2-digit', day: '2-digit',
+    hour: '2-digit', minute: '2-digit',
+    timeZone: 'Europe/Stockholm',
+  });
+}
+
+const TV_EXCHANGE_MAP = {
+  BTCUSDT: 'BINANCE',
+  ETHUSDT: 'BINANCE',
+  SOLUSDT: 'BINANCE',
+  AAPL:    'NASDAQ',
+  NVDA:    'NASDAQ',
+  TSLA:    'NASDAQ',
+  AMD:     'NASDAQ',
+  MSFT:    'NASDAQ',
+  META:    'NASDAQ',
+  AMZN:    'NASDAQ',
+  QQQ:     'NASDAQ',
+};
+
+function buildTradingViewUrl(symbol, _timestamp) {
+  const exchange = TV_EXCHANGE_MAP[symbol] || 'NASDAQ';
+  const tvSymbol = `${exchange}:${symbol}`;
+  return `https://www.tradingview.com/chart/di3qlKNB/?symbol=${encodeURIComponent(tvSymbol)}`;
+}
+
+function copyToClipboard(text) {
+  if (navigator.clipboard) {
+    navigator.clipboard.writeText(text).catch(() => {});
+  } else {
+    const el = document.createElement('textarea');
+    el.value = text;
+    document.body.appendChild(el);
+    el.select();
+    document.execCommand('copy');
+    document.body.removeChild(el);
+  }
+}
+
 function fmtPct(v) {
   if (v === null || v === undefined) return '–';
   const n = Number(v);
@@ -228,6 +279,20 @@ function OutcomeRow({ label, data, isLong }) {
 
 // ── Signal card ───────────────────────────────────────────────────────────────
 
+function CopyButton({ text, label }) {
+  const [copied, setCopied] = useState(false);
+  function handleCopy() {
+    copyToClipboard(text);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 1800);
+  }
+  return (
+    <button className="hist-action-btn hist-copy-btn" onClick={handleCopy} title="Kopiera tid till urklipp">
+      {copied ? '✓ Kopierat' : label}
+    </button>
+  );
+}
+
 function SignalCard({ signal, outcome }) {
   const isLong  = signal.signal?.startsWith('LONG');
   const isShort = signal.signal?.startsWith('SHORT');
@@ -243,13 +308,28 @@ function SignalCard({ signal, outcome }) {
   const borderColor = won ? 'var(--green-border)' : lost ? 'var(--red-border)' : 'var(--border)';
   const accentColor = won ? 'var(--green)' : lost ? 'var(--red)' : isLong ? 'var(--green)' : isShort ? 'var(--red)' : 'var(--muted)';
 
+  const tvUrl     = buildTradingViewUrl(signal.symbol, signal.timestamp);
+  const utcLabel  = fmtUTC(signal.timestamp);
+  const sweLabel  = fmtSwedish(signal.timestamp);
+  const copyText  = utcLabel + (sweLabel !== utcLabel ? `  (Sverige: ${sweLabel})` : '');
+
   return (
     <div className="hist-signal-card" style={{ borderColor }}>
       <div className="hist-card-accent" style={{ background: accentColor }} />
       <div className="hist-card-header">
         <div className="hist-card-sym">{signal.symbol}</div>
-        <div className="hist-card-time">{fmtDateTime(signal.timestamp)}</div>
       </div>
+
+      {/* Tydlig signal-tid */}
+      <div className="hist-signal-time-block">
+        <span className="hist-signal-time-label">Signal-tid:</span>
+        <span className="hist-signal-time-val">{utcLabel}</span>
+        {sweLabel && sweLabel !== utcLabel && (
+          <span className="hist-signal-time-swe">Sverige: {sweLabel}</span>
+        )}
+        <span className="hist-signal-time-tf">2m candle</span>
+      </div>
+
       <div className="hist-card-badges">
         <span className={`badge ${signalBadgeCls(signal.signal)}`}>{signalToSv(signal.signal)}</span>
         {resultBadge}
@@ -273,13 +353,27 @@ function SignalCard({ signal, outcome }) {
       {signal.actionSv && (
         <div className="hist-card-forklaring">"{signal.actionSv}"</div>
       )}
+
+      {/* TradingView + kopieringsknapp */}
+      <div className="hist-card-actions">
+        <a
+          href={tvUrl}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="hist-action-btn hist-tv-btn"
+        >
+          📈 TradingView
+        </a>
+        <CopyButton text={copyText} label="⏱ Kopiera tid" />
+      </div>
+
       {hasOutcome && (
         <div className="hist-outcomes">
           <div className="hist-outcome-title">Vad hände efteråt?</div>
-          <OutcomeRow label="Efter 3 candles"  data={outcome.outcome3}  isLong={isLong} />
-          <OutcomeRow label="Efter 5 candles"  data={outcome.outcome5}  isLong={isLong} />
-          <OutcomeRow label="Efter 10 candles" data={outcome.outcome10} isLong={isLong} />
-          <OutcomeRow label="Efter 20 candles" data={outcome.outcome20} isLong={isLong} />
+          <OutcomeRow label="Efter 3 candles (6 min)"  data={outcome.outcome3}  isLong={isLong} />
+          <OutcomeRow label="Efter 5 candles (10 min)" data={outcome.outcome5}  isLong={isLong} />
+          <OutcomeRow label="Efter 10 candles (20 min)" data={outcome.outcome10} isLong={isLong} />
+          <OutcomeRow label="Efter 20 candles (40 min)" data={outcome.outcome20} isLong={isLong} />
           {outcome.failureReason && (
             <div className="hist-failure-reason">
               Varför det gick fel: <strong>{outcome.failureReason === 'stopped_out' ? 'Stoppades ut' : outcome.failureReason}</strong>
@@ -305,12 +399,12 @@ function ProgressBar({ value, max, color }) {
   );
 }
 
-function WinRateBar({ winRate }) {
+function WinRateBar({ winRate, label }) {
   const pct = Math.round((winRate ?? 0) * 100);
-  const color = pct >= 60 ? 'var(--green)' : pct >= 40 ? 'var(--yellow)' : 'var(--red)';
+  const color = pct >= 60 ? 'var(--green)' : pct >= 45 ? 'var(--yellow)' : 'var(--red)';
   return (
     <div className="hist-winrate-bar">
-      <div className="hist-winrate-label">Träffsäkerhet (totalt)</div>
+      <div className="hist-winrate-label">{label || 'Träffsäkerhet (totalt)'}</div>
       <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
         <div style={{ flex: 1, background: 'var(--border2)', borderRadius: 4, height: 14, overflow: 'hidden' }}>
           <div style={{ width: `${pct}%`, background: color, height: '100%', borderRadius: 4, transition: 'width 0.5s' }} />
@@ -321,21 +415,136 @@ function WinRateBar({ winRate }) {
   );
 }
 
+function SymbolStatTable({ title, symbols, accent }) {
+  if (!Array.isArray(symbols) || symbols.length === 0) return null;
+  return (
+    <div className="hist-symbol-ranking">
+      <div className="hist-sub-title" style={accent ? { color: accent } : undefined}>{title}</div>
+      <div style={{ overflowX: 'auto' }}>
+        <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
+          <thead>
+            <tr style={{ color: 'var(--muted)', textAlign: 'left', borderBottom: '1px solid var(--border)' }}>
+              <th style={{ padding: '4px 8px' }}>#</th>
+              <th style={{ padding: '4px 8px' }}>Symbol</th>
+              <th style={{ padding: '4px 8px', textAlign: 'right' }}>Signaler</th>
+              <th style={{ padding: '4px 8px', textAlign: 'right' }}>Förluster</th>
+              <th style={{ padding: '4px 8px', textAlign: 'right' }}>Win rate</th>
+              <th style={{ padding: '4px 8px', textAlign: 'right' }}>Snitt 10c</th>
+            </tr>
+          </thead>
+          <tbody>
+            {symbols.map((s, i) => {
+              const wr = Math.round((s.winRate ?? 0) * 100);
+              const wrColor = wr >= 55 ? 'var(--green)' : wr >= 45 ? 'var(--yellow)' : 'var(--red)';
+              const move = s.avgMove10 !== undefined ? (s.avgMove10 * 100).toFixed(2) : null;
+              const moveColor = move !== null ? (Number(move) >= 0 ? 'var(--green)' : 'var(--red)') : 'var(--muted)';
+              return (
+                <tr key={s.key || i} style={{ borderBottom: '1px solid var(--border2)' }}>
+                  <td style={{ padding: '5px 8px', color: i === 0 ? 'var(--yellow)' : 'var(--muted)', fontFamily: 'var(--mono)' }}>
+                    #{i + 1}
+                  </td>
+                  <td style={{ padding: '5px 8px', fontWeight: 700 }}>{s.key}</td>
+                  <td style={{ padding: '5px 8px', textAlign: 'right', fontFamily: 'var(--mono)', color: 'var(--muted)' }}>
+                    {s.samples ?? '–'}
+                  </td>
+                  <td style={{ padding: '5px 8px', textAlign: 'right', fontFamily: 'var(--mono)', color: 'var(--red)' }}>
+                    {s.losses ?? '–'}
+                  </td>
+                  <td style={{ padding: '5px 8px', textAlign: 'right', fontFamily: 'var(--mono)', fontWeight: 700, color: wrColor }}>
+                    {wr}%
+                  </td>
+                  <td style={{ padding: '5px 8px', textAlign: 'right', fontFamily: 'var(--mono)', color: moveColor }}>
+                    {move !== null ? `${Number(move) >= 0 ? '+' : ''}${move}%` : '–'}
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+function SimpleStatTable({ title, items, labelPrefix, accent }) {
+  if (!Array.isArray(items) || items.length === 0) return null;
+  return (
+    <div className="hist-symbol-ranking">
+      <div className="hist-sub-title" style={accent ? { color: accent } : undefined}>{title}</div>
+      <div style={{ overflowX: 'auto' }}>
+        <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
+          <thead>
+            <tr style={{ color: 'var(--muted)', textAlign: 'left', borderBottom: '1px solid var(--border)' }}>
+              <th style={{ padding: '4px 8px' }}>Namn</th>
+              <th style={{ padding: '4px 8px', textAlign: 'right' }}>Signaler</th>
+              <th style={{ padding: '4px 8px', textAlign: 'right' }}>Win rate</th>
+              <th style={{ padding: '4px 8px', textAlign: 'right' }}>Snitt 10c</th>
+            </tr>
+          </thead>
+          <tbody>
+            {items.map((item, i) => {
+              const wr = Math.round((item.winRate ?? 0) * 100);
+              const wrColor = wr >= 55 ? 'var(--green)' : wr >= 45 ? 'var(--yellow)' : 'var(--red)';
+              const move = item.avgMove10 !== undefined ? (item.avgMove10 * 100).toFixed(2) : null;
+              const moveColor = move !== null ? (Number(move) >= 0 ? 'var(--green)' : 'var(--red)') : 'var(--muted)';
+              const label = (labelPrefix || '') + (item.key ?? item.name ?? '–');
+              return (
+                <tr key={item.key ?? i} style={{ borderBottom: '1px solid var(--border2)' }}>
+                  <td style={{ padding: '5px 8px', fontWeight: i === 0 ? 700 : 400 }}>{label}</td>
+                  <td style={{ padding: '5px 8px', textAlign: 'right', fontFamily: 'var(--mono)', color: 'var(--muted)' }}>
+                    {item.samples ?? '–'}
+                  </td>
+                  <td style={{ padding: '5px 8px', textAlign: 'right', fontFamily: 'var(--mono)', fontWeight: 700, color: wrColor }}>
+                    {wr}%
+                  </td>
+                  <td style={{ padding: '5px 8px', textAlign: 'right', fontFamily: 'var(--mono)', color: moveColor }}>
+                    {move !== null ? `${Number(move) >= 0 ? '+' : ''}${move}%` : '–'}
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
 function ScoreRangeTable({ scoreRanges }) {
-  if (!scoreRanges || scoreRanges.length === 0) return null;
-  const max = Math.max(...scoreRanges.map(r => r.samples));
-  const colors = { '0-30': 'var(--red)', '31-50': 'var(--orange)', '51-70': 'var(--yellow)', '60-75': 'var(--yellow)', '71-100': 'var(--green)', '76-100': 'var(--green)' };
+  if (!Array.isArray(scoreRanges) || scoreRanges.length === 0) return null;
+  const max = Math.max(...scoreRanges.map(r => r.samples ?? 0));
+  const colors = { '0-30': 'var(--red)', '31-50': 'var(--orange)', '51-70': 'var(--yellow)', '71-100': 'var(--green)', '76-100': 'var(--green)' };
   return (
     <div className="hist-score-ranges">
       <div className="hist-sub-title">Träffsäkerhet per betygsgrupp</div>
-      {scoreRanges.map(r => (
-        <div key={r.range} className="hist-score-range-row">
-          <span className="hist-range-label">{r.range}</span>
-          <div style={{ flex: 1 }}>
-            <ProgressBar value={r.samples} max={max} color={colors[r.range] || 'var(--blue)'} />
+      {scoreRanges.map(r => {
+        const rangeKey = r.key || r.range || '–';
+        return (
+          <div key={rangeKey} className="hist-score-range-row">
+            <span className="hist-range-label">{rangeKey}</span>
+            <div style={{ flex: 1 }}>
+              <ProgressBar value={r.samples ?? 0} max={max} color={colors[rangeKey] || 'var(--blue)'} />
+            </div>
+            <span style={{ fontFamily: 'var(--mono)', fontSize: 11, color: 'var(--muted)', minWidth: 100, textAlign: 'right' }}>
+              {r.samples} sig · {Math.round((r.winRate ?? 0) * 100)}% träff
+            </span>
           </div>
-          <span style={{ fontFamily: 'var(--mono)', fontSize: 11, color: 'var(--muted)', minWidth: 80, textAlign: 'right' }}>
-            {r.samples} signaler · {Math.round((r.winRate ?? 0) * 100)}% träff
+        );
+      })}
+    </div>
+  );
+}
+
+function FailureReasonList({ reasons }) {
+  if (!Array.isArray(reasons) || reasons.length === 0) return null;
+  return (
+    <div className="hist-symbol-ranking">
+      <div className="hist-sub-title" style={{ color: 'var(--red)' }}>Vanligaste felorsaker</div>
+      {reasons.map((r, i) => (
+        <div key={r.reason ?? i} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '5px 0', borderBottom: '1px solid var(--border2)', fontSize: 12 }}>
+          <span>{r.labelSv || r.reason}</span>
+          <span style={{ fontFamily: 'var(--mono)', color: 'var(--red)', fontWeight: 700, flexShrink: 0, marginLeft: 12 }}>
+            {r.count} · {r.pct}%
           </span>
         </div>
       ))}
@@ -345,75 +554,57 @@ function ScoreRangeTable({ scoreRanges }) {
 
 function LearningSummary({ learning }) {
   if (!learning) return null;
-  const g = learning._global || {};
-  const symbols = Object.entries(learning)
-    .filter(([k]) => !k.startsWith('_'))
-    .map(([sym, d]) => ({ sym, ...d }))
-    .sort((a, b) => (b.winRate ?? 0) - (a.winRate ?? 0));
 
-  const best    = symbols[0] ?? null;
-  const worst   = symbols[symbols.length - 1] ?? null;
+  const {
+    updatedAt,
+    totalSignals,
+    overallWinRate,
+    bestSymbols = [],
+    worstSymbols = [],
+    bestNarrowTypes = [],
+    bestHours = [],
+    bestMarketRegimes = [],
+    commonFailureReasons = [],
+    insightsSv = [],
+    bestScoreRanges = [],
+    byScoreRange,
+  } = learning;
 
-  const bestSignalType = (g.byEventType || []).sort((a, b) => (b.winRate ?? 0) - (a.winRate ?? 0))[0];
-  const commonFail     = (g.commonFailures || [])[0];
-  const bestScoreRange = (g.scoreRanges || []).sort((a, b) => (b.winRate ?? 0) - (a.winRate ?? 0))[0];
+  const scoreRanges = bestScoreRanges.length > 0
+    ? bestScoreRanges
+    : byScoreRange
+      ? Object.entries(byScoreRange).map(([key, v]) => ({ key, ...v })).sort((a, b) => (b.winRate ?? 0) - (a.winRate ?? 0))
+      : [];
 
   return (
     <div className="hist-learning">
-      <div className="hist-learning-bullets">
-        {best && (
-          <div className="hist-bullet">
-            <span className="hist-bullet-icon" style={{ color: 'var(--green)' }}>✓</span>
-            <span><strong>{best.sym}</strong> har haft bäst träffsäkerhet ({Math.round((best.winRate ?? 0) * 100)}%) under perioden.</span>
-          </div>
-        )}
-        {worst && worst.sym !== best?.sym && (
-          <div className="hist-bullet">
-            <span className="hist-bullet-icon" style={{ color: 'var(--red)' }}>✗</span>
-            <span><strong>{worst.sym}</strong> hade lägst träffsäkerhet ({Math.round((worst.winRate ?? 0) * 100)}%) under perioden.</span>
-          </div>
-        )}
-        {bestScoreRange && (
-          <div className="hist-bullet">
-            <span className="hist-bullet-icon" style={{ color: 'var(--yellow)' }}>◎</span>
-            <span>Signaler med betygsgrupp <strong>{bestScoreRange.range}</strong> fungerade bäst ({Math.round((bestScoreRange.winRate ?? 0) * 100)}% träff).</span>
-          </div>
-        )}
-        {bestSignalType && (
-          <div className="hist-bullet">
-            <span className="hist-bullet-icon" style={{ color: 'var(--blue)' }}>→</span>
-            <span>Bästa signaltyp: <strong>{bestSignalType.eventType || bestSignalType.type || '–'}</strong> ({Math.round((bestSignalType.winRate ?? 0) * 100)}% träff).</span>
-          </div>
-        )}
-        {commonFail && (
-          <div className="hist-bullet">
-            <span className="hist-bullet-icon" style={{ color: 'var(--muted)' }}>!</span>
-            <span>Vanligaste felorsak: <strong>{commonFail.reason === 'stopped_out' ? 'Stoppades ut' : commonFail.reason}</strong> ({commonFail.count} gånger).</span>
-          </div>
-        )}
+      <div style={{ display: 'flex', gap: 16, flexWrap: 'wrap', marginBottom: 12, fontSize: 12, color: 'var(--muted)' }}>
+        {totalSignals !== undefined && <span>{totalSignals.toLocaleString('sv-SE')} totala signaler</span>}
+        {updatedAt && <span>Uppdaterad: {fmtDateTime(updatedAt)}</span>}
       </div>
 
-      {g.overallWinRate !== undefined && (
-        <WinRateBar winRate={g.overallWinRate} />
+      {overallWinRate !== undefined && (
+        <WinRateBar winRate={overallWinRate} />
       )}
 
-      <ScoreRangeTable scoreRanges={g.scoreRanges} />
-
-      {symbols.length > 0 && (
-        <div className="hist-symbol-ranking">
-          <div className="hist-sub-title">Symboler sorterade efter träffsäkerhet</div>
-          {symbols.map((s, i) => (
-            <div key={s.sym} className="hist-sym-rank-row">
-              <span className="hist-sym-rank-pos" style={{ color: i === 0 ? 'var(--yellow)' : 'var(--muted)' }}>#{i + 1}</span>
-              <span className="hist-sym-rank-name">{s.sym}</span>
-              <ProgressBar value={Math.round((s.winRate ?? 0) * 100)} max={100} color={s.winRate >= 0.6 ? 'var(--green)' : s.winRate >= 0.4 ? 'var(--yellow)' : 'var(--red)'} />
-              <span style={{ fontFamily: 'var(--mono)', fontSize: 11, color: 'var(--muted)', minWidth: 80, textAlign: 'right' }}>
-                {s.samples} st · {Math.round((s.winRate ?? 0) * 100)}%
-              </span>
+      {insightsSv.length > 0 && (
+        <div className="hist-learning-bullets" style={{ marginTop: 14 }}>
+          {insightsSv.map((txt, i) => (
+            <div key={i} className="hist-bullet">
+              <span className="hist-bullet-icon" style={{ color: 'var(--blue)' }}>→</span>
+              <span>{txt}</span>
             </div>
           ))}
         </div>
       )}
+
+      <SymbolStatTable title="Bästa symboler" symbols={bestSymbols} accent="var(--green)" />
+      <SymbolStatTable title="Sämsta symboler" symbols={worstSymbols} accent="var(--red)" />
+      <ScoreRangeTable scoreRanges={scoreRanges} />
+      <SimpleStatTable title="Bästa narrow states" items={bestNarrowTypes} />
+      <SimpleStatTable title="Bästa tider (UTC-timme)" items={bestHours} labelPrefix="Timme " />
+      <SimpleStatTable title="Bästa market regimes" items={bestMarketRegimes} />
+      <FailureReasonList reasons={commonFailureReasons} />
     </div>
   );
 }
@@ -511,6 +702,9 @@ export default function HistoryPage() {
               count={filtered.length}
               desc={`Visar ${filtered.length} signaler — ${dateLabel(filters.days).toLowerCase()}.`}
             />
+            <div className="hist-tv-hint">
+              📈 Öppna TradingView och använd signal-tiden för att hitta samma candle. Välj 2m-diagram och navigera till rätt datum/tid.
+            </div>
             {filtered.length === 0 ? (
               <div className="hist-empty-filter">
                 Inga signaler matchar de valda filtren.

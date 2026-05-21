@@ -874,6 +874,95 @@ tbody td {
   line-height: 1.5;
 }
 
+/* ── Signal time block ────────────────────────────────────────────────────────── */
+.hist-signal-time-block {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  background: var(--surface2);
+  border-radius: var(--r-sm);
+  padding: 6px 10px;
+}
+.hist-signal-time-label {
+  color: var(--muted);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  flex-shrink: 0;
+}
+.hist-signal-time-val {
+  font-family: var(--mono);
+  font-weight: 700;
+  color: var(--text);
+}
+.hist-signal-time-swe {
+  font-family: var(--mono);
+  color: var(--muted);
+  font-size: 11px;
+}
+.hist-signal-time-tf {
+  font-size: 10px;
+  color: var(--blue);
+  background: color-mix(in srgb, var(--blue) 15%, transparent);
+  border-radius: 3px;
+  padding: 1px 6px;
+  font-weight: 600;
+  margin-left: auto;
+}
+
+/* ── Card action buttons ─────────────────────────────────────────────────────── */
+.hist-card-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.hist-action-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+  font-weight: 600;
+  padding: 5px 10px;
+  border-radius: var(--r-sm);
+  border: 1px solid var(--border);
+  cursor: pointer;
+  text-decoration: none;
+  transition: background 0.15s, border-color 0.15s;
+  font-family: inherit;
+}
+.hist-tv-btn {
+  background: color-mix(in srgb, #2962FF 12%, transparent);
+  color: #5c8fff;
+  border-color: color-mix(in srgb, #2962FF 30%, transparent);
+}
+.hist-tv-btn:hover {
+  background: color-mix(in srgb, #2962FF 22%, transparent);
+  border-color: #2962FF;
+}
+.hist-copy-btn {
+  background: var(--surface2);
+  color: var(--muted);
+  border-color: var(--border);
+}
+.hist-copy-btn:hover {
+  background: var(--border2);
+  color: var(--text);
+}
+
+/* ── TradingView hint banner ─────────────────────────────────────────────────── */
+.hist-tv-hint {
+  font-size: 12px;
+  color: var(--muted);
+  background: color-mix(in srgb, #2962FF 8%, transparent);
+  border: 1px solid color-mix(in srgb, #2962FF 20%, transparent);
+  border-radius: var(--r-sm);
+  padding: 8px 12px;
+  margin-bottom: 12px;
+  line-height: 1.5;
+}
+
 /* ── Outcomes ────────────────────────────────────────────────────────────────── */
 .hist-outcomes {
   background: var(--surface2);
@@ -893,7 +982,7 @@ tbody td {
   margin-bottom: 4px;
 }
 .hist-outcome-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
-.hist-outcome-label { color: var(--muted); min-width: 110px; }
+.hist-outcome-label { color: var(--muted); min-width: 160px; }
 .hist-outcome-sub { font-size: 11px; color: var(--muted); margin-left: auto; }
 .hist-failure-reason { font-size: 11px; color: var(--muted); margin-top: 4px; }
 

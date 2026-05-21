@@ -65,14 +65,14 @@ function useMachineStatus(pollingActive) {
   // Initial fetch
   useEffect(() => { fetch_(); }, [fetch_]);
 
-  // Polling when running
+  // Poll while pollingActive OR while the API says running=true
   useEffect(() => {
     if (timerRef.current) clearInterval(timerRef.current);
-    if (pollingActive) {
+    if (pollingActive || !!data?.running) {
       timerRef.current = setInterval(fetch_, 5000);
     }
     return () => { if (timerRef.current) clearInterval(timerRef.current); };
-  }, [pollingActive, fetch_]);
+  }, [pollingActive, data, fetch_]);
 
   return { data, loading, error, refresh: fetch_ };
 }
@@ -422,9 +422,7 @@ function SchedulerPanel({ sched }) {
 export default function MachinePage() {
   const [triggered, setTriggered] = useState(false);
 
-  const { data, loading, error: fetchError, refresh } = useMachineStatus(
-    triggered || (!!data?.running)
-  );
+  const { data, loading, error: fetchError, refresh } = useMachineStatus(triggered);
   const { sched, refresh: refreshSched } = useSchedulerStatus();
 
   useEffect(() => {
