@@ -146,6 +146,33 @@ export function getDisplayNote(result) {
   return null;
 }
 
+// ── Action label ──────────────────────────────────────────────────────────────
+export function getAction(r) {
+  const blocked = r.autoFilter?.blocked;
+  const tfs = r.threeFingerSpread?.active;
+  const avoidState = ['WIDE_AVOID', 'THREE_FINGER_SPREAD_AVOID'].includes(r.state);
+  if (blocked || tfs || avoidState) return { key: 'AVOID',     label: 'UNDVIK',       color: '#7c3aed' };
+  const sig   = r.signal;
+  const score = r.tradeScore ?? 0;
+  if ((sig === 'LONG_TRIGGERED'  || sig === 'LONG_WATCH')  && score >= 30) return { key: 'BUY_WATCH',  label: 'KÖP BEVAKA',  color: '#22c55e' };
+  if ((sig === 'SHORT_TRIGGERED' || sig === 'SHORT_WATCH') && score >= 30) return { key: 'SELL_WATCH', label: 'SÄLJ BEVAKA', color: '#ef4444' };
+  if (sig === 'WIDE_REVERSAL_WATCH') return { key: 'REVERSAL', label: 'REVERSAL', color: '#f97316' };
+  return { key: 'WAIT', label: 'VÄNTA', color: '#eab308' };
+}
+
+// ── Risk level ────────────────────────────────────────────────────────────────
+export function getRiskLevel(r) {
+  const blocked  = r.autoFilter?.blocked;
+  const tfs      = r.threeFingerSpread?.active;
+  const score    = r.tradeScore ?? 0;
+  const ptz      = r.priceToZoneAtr;
+  if (blocked || tfs || ['WIDE_AVOID', 'THREE_FINGER_SPREAD_AVOID'].includes(r.state))
+    return { label: 'Hög', color: '#ef4444' };
+  if (score < 35 || (ptz != null && ptz > 2.0))
+    return { label: 'Medium', color: '#eab308' };
+  return { label: 'Låg', color: '#22c55e' };
+}
+
 const DISPLAY_SIGNAL_MAP = {
   LONG_TRIG:      { cls: 'badge-green',  label: '🟢 Möjlig uppgång' },
   SHORT_TRIG:     { cls: 'badge-red',    label: '🔴 Möjlig nedgång' },
@@ -239,6 +266,24 @@ export function StateBadge({ state }) {
 export function SignalBadge({ signal }) {
   const m = SIGNAL_META[signal] || { cls: 'badge-gray', label: signal };
   return <span className={`badge ${m.cls}`}>{m.label}</span>;
+}
+
+export function ActionBadge({ r }) {
+  const { label, color } = getAction(r);
+  return (
+    <span style={{ background: `${color}22`, border: `1px solid ${color}66`, color, borderRadius: 5, fontSize: 10, fontWeight: 800, padding: '2px 8px', letterSpacing: '0.05em' }}>
+      {label}
+    </span>
+  );
+}
+
+export function RiskBadge({ r }) {
+  const { label, color } = getRiskLevel(r);
+  return (
+    <span style={{ background: `${color}18`, border: `1px solid ${color}44`, color, borderRadius: 5, fontSize: 10, fontWeight: 700, padding: '2px 7px' }}>
+      RISK: {label}
+    </span>
+  );
 }
 
 // ── Confidence bar ────────────────────────────────────────────────────────────
@@ -896,6 +941,169 @@ export function SummaryStrip({ results }) {
   );
 }
 
+// ── TopSignalsPanel ───────────────────────────────────────────────────────────
+
+function TopSignalMini({ r, roleLabel, accentColor, tvLinkFn }) {
+  const action = getAction(r);
+  const color  = accentColor || action.color;
+  const link   = tvLinkFn ? tvLinkFn(r.symbol) : tvLink(r.symbol);
+  const desc   = r.actionSv || svForklaring(r) || '';
+  const score  = r._decision?.signalScore ?? r.tradeScore ?? 0;
+  const isLong  = r.signal?.startsWith('LONG');
+  const isShort = r.signal?.startsWith('SHORT');
+  const trigger = isLong && r.longTrigger != null ? r.longTrigger
+                : isShort && r.shortTrigger != null ? r.shortTrigger : null;
+  const triggerLabel = isLong ? 'Over' : isShort ? 'Under' : null;
+  const triggerColor = isLong ? '#22c55e' : '#ef4444';
+
+  return (
+    <a href={link} target="_blank" rel="noopener noreferrer" style={{ textDecoration: 'none' }}>
+      <div className="top-signal-mini" style={{ borderColor: `${color}50` }}>
+        <div className="tsm-role" style={{ color }}>{roleLabel}</div>
+        <div className="tsm-head">
+          <div className="tsm-symbol">{r.symbol}</div>
+          <div className="tsm-score" style={{ color: score >= 60 ? '#22c55e' : score >= 35 ? '#eab308' : '#94a3b8' }}>
+            {score}
+          </div>
+        </div>
+        <div className="tsm-price">{r.price != null ? `$${Number(r.price).toFixed(2)}` : '–'}</div>
+        <div className="tsm-badges">
+          <ActionBadge r={r} />
+          <RiskBadge r={r} />
+        </div>
+        {trigger != null && (
+          <div className="tsm-trigger" style={{ color: triggerColor, borderColor: `${triggerColor}30`, background: `${triggerColor}10` }}>
+            {triggerLabel} <strong>${trigger}</strong>
+          </div>
+        )}
+        {desc && (
+          <div className="tsm-desc">{desc.slice(0, 72)}{desc.length > 72 ? '…' : ''}</div>
+        )}
+      </div>
+    </a>
+  );
+}
+
+function TopSignalMiniRepeat({ symbol, count, group, tvLinkFn }) {
+  const link     = tvLinkFn ? tvLinkFn(symbol) : tvLink(symbol);
+  const bullish  = group.filter(r => r.signal?.startsWith('LONG')).length;
+  const bearish  = group.filter(r => r.signal?.startsWith('SHORT')).length;
+  const choppy   = group.filter(r => ['CHOPPY', 'HIGH_VOLATILITY'].includes(r.marketRegime)).length;
+  const bestScore = Math.max(0, ...group.map(r => r._decision?.signalScore ?? r.tradeScore ?? 0));
+  return (
+    <a href={link} target="_blank" rel="noopener noreferrer" style={{ textDecoration: 'none' }}>
+      <div className="top-signal-mini" style={{ borderColor: '#f9731650' }}>
+        <div className="tsm-role" style={{ color: '#f97316' }}>⭕ MEST UPPREPAD</div>
+        <div className="tsm-head">
+          <div className="tsm-symbol">{symbol}</div>
+          <div className="tsm-score" style={{ color: bestScore >= 60 ? '#22c55e' : '#eab308' }}>{bestScore}</div>
+        </div>
+        <div className="tsm-price">{count}× totalt</div>
+        <div className="tsm-repeat-bias">
+          {bullish > 0 && <span style={{ color: '#22c55e' }}>🟢 {bullish} köp</span>}
+          {bearish > 0 && <span style={{ color: '#ef4444' }}>🔴 {bearish} sälj</span>}
+          {choppy > 0  && <span style={{ color: '#eab308' }}>⚠ {choppy} stökiga</span>}
+        </div>
+        <div className="tsm-desc">Symbolen dyker upp {count} gånger i scannet</div>
+      </div>
+    </a>
+  );
+}
+
+export function TopSignalsPanel({ results, tvLinkFn }) {
+  const active = results.filter(r =>
+    !['WIDE_AVOID', 'THREE_FINGER_SPREAD_AVOID', 'NO_TRADE', 'BREAKOUT_ALREADY_OCCURRED'].includes(r.state)
+    && !r.threeFingerSpread?.active && !r.breakoutAlreadyOccurred && !r.autoFilter?.blocked
+  );
+  const byDecScore = (a, b) =>
+    (b._decision?.signalScore ?? b.tradeScore ?? 0) - (a._decision?.signalScore ?? a.tradeScore ?? 0);
+
+  const bestLong  = [...active].filter(r => r.signal?.startsWith('LONG')).sort(byDecScore)[0];
+  const bestShort = [...active].filter(r => r.signal?.startsWith('SHORT')).sort(byDecScore)[0];
+  const riskWarn  = results.filter(r => r.autoFilter?.blocked || r.threeFingerSpread?.active)
+    .sort((a, b) => (b.tradeScore ?? 0) - (a.tradeScore ?? 0))[0];
+  const bestCont  = [...active]
+    .filter(r => r.signal === 'LONG_TRIGGERED' || r.signal === 'SHORT_TRIGGERED')
+    .sort(byDecScore)[0];
+  const showCont  = bestCont && bestCont !== bestLong && bestCont !== bestShort;
+
+  // Most repeated symbol
+  const symCounts = {};
+  results.forEach(r => { symCounts[r.symbol] = (symCounts[r.symbol] || 0) + 1; });
+  const [mostRepSym, mostRepCount] = Object.entries(symCounts).sort((a, b) => b[1] - a[1])[0] || [];
+  const mostRepGroup = mostRepSym && mostRepCount > 1 ? results.filter(r => r.symbol === mostRepSym) : null;
+
+  const signalCards = [
+    bestLong  && { key: 'long',  r: bestLong,  label: '⬆ BÄSTA LONG',          accent: '#22c55e' },
+    bestShort && { key: 'short', r: bestShort, label: '⬇ BÄSTA SHORT',         accent: '#ef4444' },
+    showCont  && { key: 'cont',  r: bestCont,  label: '🌊 STARKAST FORTSÄTTNING', accent: '#3b82f6' },
+    riskWarn  && { key: 'risk',  r: riskWarn,  label: '⚠ UNDVIK NU',           accent: '#f97316' },
+  ].filter(Boolean);
+
+  if (signalCards.length === 0 && !mostRepGroup) return null;
+
+  const totalCards = signalCards.length + (mostRepGroup ? 1 : 0);
+  const cols = Math.min(totalCards, 5);
+
+  return (
+    <div className="top-signals-panel">
+      <div className="top-signals-label">TOPPLÄGEN JUST NU</div>
+      <div className="top-signals-grid" style={{ gridTemplateColumns: `repeat(${cols}, 1fr)` }}>
+        {signalCards.map(({ key, r, label, accent }) => (
+          <TopSignalMini key={key} r={r} roleLabel={label} accentColor={accent} tvLinkFn={tvLinkFn} />
+        ))}
+        {mostRepGroup && (
+          <TopSignalMiniRepeat
+            symbol={mostRepSym}
+            count={mostRepCount}
+            group={mostRepGroup}
+            tvLinkFn={tvLinkFn}
+          />
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ── LiveFilterBar ─────────────────────────────────────────────────────────────
+
+export function LiveFilterBar({ filters, onChange }) {
+  function toggle(key, val) {
+    onChange({ ...filters, [key]: filters[key] === val ? null : val });
+  }
+  function set(key, val) { onChange({ ...filters, [key]: val }); }
+
+  const btnStyle = (active) => ({
+    padding: '5px 12px', borderRadius: 6, fontSize: 11, fontWeight: 600,
+    cursor: 'pointer', border: '1px solid',
+    borderColor: active ? '#334155' : '#1e293b',
+    background: active ? '#1e293b' : 'transparent',
+    color: active ? '#e2e8f0' : '#64748b',
+    transition: 'all 0.12s',
+  });
+
+  return (
+    <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, margin: '12px 0', alignItems: 'center' }}>
+      <span style={{ fontSize: 11, color: '#475569', marginRight: 4 }}>Filter:</span>
+      <button style={btnStyle(filters.direction === 'long')}  onClick={() => toggle('direction', 'long')}>⬆ Bara Long</button>
+      <button style={btnStyle(filters.direction === 'short')} onClick={() => toggle('direction', 'short')}>⬇ Bara Short</button>
+      <button style={btnStyle(filters.minScore === 60)}       onClick={() => toggle('minScore', 60)}>60+ betyg</button>
+      <button style={btnStyle(filters.minScore === 40)}       onClick={() => toggle('minScore', 40)}>40+ betyg</button>
+      <button style={btnStyle(filters.hideAvoid)}             onClick={() => set('hideAvoid', !filters.hideAvoid)}>
+        {filters.hideAvoid ? '✓ Döljer undvik' : 'Dölj undvik'}
+      </button>
+      {(filters.direction || filters.minScore || filters.hideAvoid) && (
+        <button
+          style={{ ...btnStyle(false), color: '#f97316', borderColor: '#f9731640' }}
+          onClick={() => onChange({ direction: null, minScore: 0, hideAvoid: false })}
+        >
+          ✕ Rensa filter
+        </button>
+      )}
+    </div>
+  );
+}
+
 // ── SymbolCard ────────────────────────────────────────────────────────────────
 
 export function SymbolCard({ r, tvLinkFn }) {
@@ -905,38 +1113,78 @@ export function SymbolCard({ r, tvLinkFn }) {
   const isBlocked = r.autoFilter?.blocked;
   const confLabel = r.confidence?.label;
   const before = r.tradeScoreBeforeConfidence;
-  const after  = r.tradeScore;
+  const after  = r.tradeScore ?? 0;
+  const score  = r._decision?.signalScore ?? after;
+
+  const isLong  = r.signal?.startsWith('LONG');
+  const isShort = r.signal?.startsWith('SHORT');
 
   return (
     <div className={`symbol-card${isBlocked ? ' symbol-card-blocked' : ''}`}>
       {isBlocked && <AutoFilterBanner autoFilter={r.autoFilter} />}
       <div className="symbol-card-top">
         <div className="symbol-card-left">
-          <div className="symbol-card-badges">
-            <span className="sym-name">{r.symbol}</span>
-            {confLabel && <ConfidenceLabelBadge label={confLabel} />}
+          <div className="symbol-card-title-row">
+            <span className="sym-name-xl">{r.symbol}</span>
+            <span className="sym-score-badge" style={{
+              color: score >= 60 ? 'var(--green)' : score >= 35 ? 'var(--yellow)' : 'var(--muted)',
+              borderColor: score >= 60 ? 'var(--green-border)' : score >= 35 ? 'var(--yellow-border)' : 'var(--border2)',
+              background: score >= 60 ? 'var(--green-dim)' : score >= 35 ? 'var(--yellow-dim)' : 'transparent',
+            }}>{score}</span>
             <NewSignalBadge symbol={r.symbol} />
+            {confLabel && <ConfidenceLabelBadge label={confLabel} />}
           </div>
-          <DisplaySignalBadge result={r} />
+          <div className="symbol-card-signal-row">
+            <ActionBadge r={r} />
+            <DisplaySignalBadge result={r} />
+            <RiskBadge r={r} />
+          </div>
         </div>
         <div className="symbol-card-right">
           <div className="symbol-card-price">{r.price != null ? `$${Number(r.price).toFixed(2)}` : '–'}</div>
           <MarketRegimeBadge regime={r.marketRegime} score={r.marketScore} />
         </div>
       </div>
+
+      {desc && <div className="symbol-card-desc">{desc}</div>}
+
+      {/* Trigger levels visible without expanding */}
+      {(isLong || isShort) && (r.longTrigger != null || r.shortTrigger != null) && (
+        <div className="symbol-card-triggers">
+          {isLong && r.longTrigger != null && (
+            <div className="sct-long">
+              <span className="sct-label">Bryt över</span>
+              <span className="sct-val">${r.longTrigger}</span>
+              {r.target1Long != null && r.invalidationLong != null && (
+                <span className="sct-rr">RR {((r.target1Long - r.longTrigger) / (r.longTrigger - r.invalidationLong)).toFixed(1)}:1</span>
+              )}
+            </div>
+          )}
+          {isShort && r.shortTrigger != null && (
+            <div className="sct-short">
+              <span className="sct-label">Bryt under</span>
+              <span className="sct-val">${r.shortTrigger}</span>
+              {r.target1Short != null && r.invalidationShort != null && (
+                <span className="sct-rr">RR {((r.shortTrigger - r.target1Short) / (r.invalidationShort - r.shortTrigger)).toFixed(1)}:1</span>
+              )}
+            </div>
+          )}
+        </div>
+      )}
+
       <ScoreMeter score={after} />
       {before != null && before !== after && (
         <div className="conf-score-delta">
-          Före historik: <strong>{before}</strong> → Efter filter: <strong>{after}</strong>
+          Före historik: <strong>{before}</strong> → Nu: <strong>{after}</strong>
         </div>
       )}
-      {desc && <div className="symbol-card-desc">{desc}</div>}
+
       <div className="symbol-card-footer">
         <HealthChips r={r} />
         <div className="symbol-card-actions">
-          <a className="btn btn-tv" href={link} target="_blank" rel="noopener noreferrer">📈 TradingView</a>
+          <a className="btn btn-tv" href={link} target="_blank" rel="noopener noreferrer">📈 TV</a>
           <button className="btn" onClick={() => setOpen(o => !o)} style={{ fontSize: 11 }}>
-            {open ? 'Mindre ▲' : 'Mer ▼'}
+            {open ? '▲' : '▼ Mer'}
           </button>
         </div>
       </div>
@@ -945,6 +1193,9 @@ export function SymbolCard({ r, tvLinkFn }) {
           <WhyBox r={r} />
           <ConfidencePanel r={r} />
           <AdaptiveEdgePanel r={r} />
+          <RuleMemoryPanel r={r} />
+          <SymbolPersonalityPanel r={r} />
+          <RegimeProfilePanel r={r} />
           <SetupDNAPanel r={r} />
           <div className="symbol-card-stats">
             {r.sma20    != null && <div className="stat-row">SMA20  <span>{Number(r.sma20).toFixed(2)}</span></div>}
@@ -953,6 +1204,8 @@ export function SymbolCard({ r, tvLinkFn }) {
             {r.atr14    != null && <div className="stat-row">ATR    <span>{Number(r.atr14).toFixed(3)}</span></div>}
             {r.longTrigger  != null && <div className="stat-row">Om priset går över <span className="s-green">{r.longTrigger}</span></div>}
             {r.shortTrigger != null && <div className="stat-row">Om priset går under <span className="s-red">{r.shortTrigger}</span></div>}
+            {r.target1Long  != null && <div className="stat-row">Mål Long <span className="s-green">{r.target1Long}</span></div>}
+            {r.target1Short != null && <div className="stat-row">Mål Short <span className="s-red">{r.target1Short}</span></div>}
             {r.narrowScore  != null && <div className="stat-row">Basbetyg <span>{r.narrowScore}</span></div>}
             {r.narrowType && r.narrowType !== 'none' && <div className="stat-row">Typ <span>{r.narrowType === 'coil_flat' ? 'Coil/Flat' : 'Attack 200'}</span></div>}
           </div>
@@ -1423,6 +1676,129 @@ export function AdaptiveEdgePanel({ r }) {
   );
 }
 
+// ── RuleMemoryPanel ───────────────────────────────────────────────────────────
+
+export function RuleMemoryPanel({ r }) {
+  const rm = r?.ruleMemoryMatch;
+  if (!rm?.matched) return null;
+
+  const confColor = rm.confidence === 'high' ? 'var(--green)'
+                  : rm.confidence === 'medium' ? 'var(--orange)'
+                  : 'var(--muted)';
+  const confLabel = rm.confidence === 'high' ? 'Hög historik'
+                  : rm.confidence === 'medium' ? 'Medel historik'
+                  : 'Låg historik';
+
+  return (
+    <div className="rm-panel">
+      <div className="rm-panel-header">
+        <span className="rm-panel-icon">🎓</span>
+        <span className="rm-panel-title">Systemet lärde sig</span>
+        <span className="rm-conf-badge" style={{ color: confColor, borderColor: `${confColor}50` }}>
+          {confLabel}
+        </span>
+      </div>
+      <div className="rm-panel-msg">
+        Denna typ blockerades tidigare men fortsatte ofta starkt.{' '}
+        <strong>Bevaka, inte köp direkt.</strong>
+      </div>
+      <div className="rm-panel-detail">
+        <span className="rm-reason">"{rm.primaryReason}"</span>
+        <span className="rm-stats">
+          {rm.missedMoveCount}/{rm.totalCount} fall med fortsättning · snitt styrka {rm.avgContinuation}
+          {r.learnedRuleAdjustment > 0 && (
+            <span className="rm-boost"> · +{r.learnedRuleAdjustment} pts</span>
+          )}
+        </span>
+      </div>
+    </div>
+  );
+}
+
+// ── SymbolPersonalityPanel ────────────────────────────────────────────────────
+
+export function SymbolPersonalityPanel({ r }) {
+  const sp = r?.symbolPersonality;
+  if (!sp) return null;
+
+  const adjColor = sp.scoreAdjustment > 0 ? 'var(--green)'
+                 : sp.scoreAdjustment < 0 ? 'var(--red)'
+                 : 'var(--muted)';
+  const adjLabel = sp.scoreAdjustment > 0 ? `+${sp.scoreAdjustment}p`
+                 : sp.scoreAdjustment < 0 ? `${sp.scoreAdjustment}p`
+                 : null;
+  const confLabel = sp.confidence === 'high' ? 'Hög historik'
+                  : sp.confidence === 'medium' ? 'Medel historik'
+                  : 'Låg historik';
+
+  return (
+    <div className="sp-panel">
+      <div className="sp-panel-header">
+        <span className="sp-panel-icon">🧬</span>
+        <span className="sp-panel-title">Symbol Memory</span>
+        <span className="sp-conf-badge" style={{ color: 'var(--muted)', borderColor: 'rgba(255,255,255,.15)' }}>{confLabel}</span>
+        {adjLabel && (
+          <span className="sp-adj-badge" style={{ color: adjColor }}>{adjLabel}</span>
+        )}
+      </div>
+      <div className="sp-panel-msg">{sp.personalitySv}</div>
+      <div className="sp-panel-stats">
+        <span>Win rate: <strong>{sp.winRate != null ? `${(sp.winRate * 100).toFixed(1)}%` : '–'}</strong></span>
+        {sp.fakeoutRate != null && (
+          <>
+            <span className="sp-sep">·</span>
+            <span>Fakeout: <strong>{(sp.fakeoutRate * 100).toFixed(0)}%</strong> av misslyckade</span>
+          </>
+        )}
+        {sp.bestRegimes && sp.bestRegimes.length > 0 && (
+          <>
+            <span className="sp-sep">·</span>
+            <span style={{ color: 'var(--green)', fontSize: 10 }}>Bäst: {sp.bestRegimes[0]}</span>
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ── RegimeProfilePanel ────────────────────────────────────────────────────────
+
+export function RegimeProfilePanel({ r }) {
+  const rp = r?.regimeProfile;
+  if (!rp) return null;
+
+  const adjColor = rp.scoreAdjustment > 0 ? 'var(--green)'
+                 : rp.scoreAdjustment < 0 ? 'var(--red)'
+                 : 'var(--muted)';
+  const adjLabel = rp.scoreAdjustment > 0 ? `+${rp.scoreAdjustment}p`
+                 : rp.scoreAdjustment < 0 ? `${rp.scoreAdjustment}p`
+                 : '±0p';
+  const confLabel = rp.confidence === 'high' ? 'Hög historik'
+                  : rp.confidence === 'medium' ? 'Medel historik'
+                  : 'Låg historik';
+
+  return (
+    <div className="rp-panel">
+      <div className="rp-panel-header">
+        <span className="rp-panel-icon">📊</span>
+        <span className="rp-panel-title">Marknadsregim</span>
+        <span className="rp-regime-badge">{rp.descSv}</span>
+        {rp.scoreAdjustment !== 0 && (
+          <span className="rp-adj-badge" style={{ color: adjColor }}>{adjLabel}</span>
+        )}
+      </div>
+      <div className="rp-panel-insight">{rp.insightSv}</div>
+      <div className="rp-panel-stats">
+        <span>Win rate: <strong>{rp.winRate != null ? `${(rp.winRate * 100).toFixed(1)}%` : '–'}</strong></span>
+        <span className="rp-sep">·</span>
+        <span>{rp.samples?.toLocaleString('sv-SE')} signaler</span>
+        <span className="rp-sep">·</span>
+        <span style={{ color: 'var(--muted)', fontSize: 11 }}>{confLabel}</span>
+      </div>
+    </div>
+  );
+}
+
 // ── ConfidencePanel ───────────────────────────────────────────────────────────
 
 export function ConfidencePanel({ r }) {
@@ -1552,6 +1928,9 @@ export function BestCardV2({ r, rank, tvLinkFn }) {
       <WhyBox r={r} />
       <ConfidencePanel r={r} />
       <AdaptiveEdgePanel r={r} />
+      <RuleMemoryPanel r={r} />
+      <SymbolPersonalityPanel r={r} />
+      <RegimeProfilePanel r={r} />
       <SetupDNAPanel r={r} />
 
       <div className="bc-actions">
@@ -1627,6 +2006,634 @@ export function QQQPremiumCard({ data }) {
           <ul className="qqq-prem-market-reasons">
             {data.marketReasonSv.slice(0, 4).map((r, i) => <li key={i}>{r}</li>)}
           </ul>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// DECISION ENGINE COMPONENTS
+// ═══════════════════════════════════════════════════════════════════════════════
+
+// ── DecisionActionBadge ───────────────────────────────────────────────────────
+
+const ACTION_META = {
+  BUY_WATCH:  { cls: 'dab-buy',       label: 'BUY WATCH',  icon: '🟢' },
+  SELL_WATCH: { cls: 'dab-sell',      label: 'SELL WATCH', icon: '🔴' },
+  CONFIRMED:  { cls: 'dab-confirmed', label: 'BEKRÄFTAD',  icon: '⚡' },
+  HIGH_RISK:  { cls: 'dab-risk',      label: 'HÖG RISK',   icon: '⚠️' },
+  AVOID:      { cls: 'dab-avoid',     label: 'UNDVIK',     icon: '⛔' },
+  WAIT:       { cls: 'dab-wait',      label: 'VÄNTA',      icon: '⏳' },
+};
+
+export function DecisionActionBadge({ action }) {
+  if (!action) return null;
+  const m = ACTION_META[action] || { cls: 'dab-wait', label: action, icon: '?' };
+  return <span className={`dec-action-badge ${m.cls}`}>{m.icon} {m.label}</span>;
+}
+
+// ── DecisionRiskBadge ─────────────────────────────────────────────────────────
+
+export function DecisionRiskBadge({ risk }) {
+  if (!risk) return null;
+  const m = risk === 'LOW'    ? { cls: 'drb-low',  label: 'Låg risk',  icon: '✅' }
+          : risk === 'HIGH'   ? { cls: 'drb-high', label: 'Hög risk',  icon: '⚠️' }
+          :                     { cls: 'drb-med',  label: 'Medel risk', icon: '◑' };
+  return <span className={`dec-risk-badge ${m.cls}`}>{m.icon} {m.label}</span>;
+}
+
+// ── DecisionConfBadge ─────────────────────────────────────────────────────────
+
+export function DecisionConfBadge({ conf }) {
+  if (!conf) return null;
+  const m = conf === 'HIGH' ? { cls: 'dcb-high', label: 'Hög säkerhet'    }
+          : conf === 'LOW'  ? { cls: 'dcb-low',  label: 'Låg säkerhet'    }
+          :                   { cls: 'dcb-med',  label: 'Medel säkerhet'  };
+  return <span className={`dec-conf-badge ${m.cls}`}>{m.label}</span>;
+}
+
+// ── WhyDecisionBlock ──────────────────────────────────────────────────────────
+
+export function WhyDecisionBlock({ decision }) {
+  if (!decision) return null;
+  const factors = decision.factors || [];
+  if (factors.length === 0) return null;
+  const good = factors.filter(f => f.good);
+  const bad  = factors.filter(f => !f.good);
+  return (
+    <div className="why-dec-block">
+      <div className="why-dec-title">Varför signalen är intressant:</div>
+      {good.map((f, i) => (
+        <div key={i} className="why-dec-row why-dec-good">
+          <span className="why-dec-icon">✓</span>
+          <span>{f.text}</span>
+        </div>
+      ))}
+      {bad.map((f, i) => (
+        <div key={i} className="why-dec-row why-dec-bad">
+          <span className="why-dec-icon">✗</span>
+          <span>{f.text}</span>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+// ── HistorySaysBlock ──────────────────────────────────────────────────────────
+
+export function HistorySaysBlock({ decision }) {
+  if (!decision) return null;
+  const { historicalSummary, historicalWinRate, historicalAverageMove, similarSignalCount, marketRegimeComment } = decision;
+  if (!historicalSummary) return null;
+  const wrColor = historicalWinRate == null ? 'var(--muted)'
+    : historicalWinRate >= 55 ? 'var(--green)'
+    : historicalWinRate >= 45 ? 'var(--yellow)'
+    : 'var(--red)';
+  return (
+    <div className="hist-says-block">
+      <div className="hist-says-title">Historiken säger:</div>
+      <div className="hist-says-summary">{historicalSummary}</div>
+      <div className="hist-says-stats">
+        {similarSignalCount > 0 && (
+          <div className="hist-says-stat">
+            <span className="hss-label">Liknande signaler</span>
+            <span className="hss-val">{similarSignalCount}</span>
+          </div>
+        )}
+        {historicalWinRate !== null && (
+          <div className="hist-says-stat">
+            <span className="hss-label">Träffsäkerhet</span>
+            <span className="hss-val" style={{ color: wrColor }}>{historicalWinRate}%</span>
+          </div>
+        )}
+        {historicalAverageMove !== null && historicalAverageMove !== undefined && (
+          <div className="hist-says-stat">
+            <span className="hss-label">Snittrörelse</span>
+            <span className="hss-val" style={{ color: historicalAverageMove >= 0 ? 'var(--green)' : 'var(--red)' }}>
+              {historicalAverageMove >= 0 ? '+' : ''}{historicalAverageMove}%
+            </span>
+          </div>
+        )}
+        <div className="hist-says-stat">
+          <span className="hss-label">Timeframe</span>
+          <span className="hss-val">{decision.bestTimeframe || '2m'}</span>
+        </div>
+      </div>
+      {marketRegimeComment && (
+        <div className="hist-says-regime">{marketRegimeComment}</div>
+      )}
+    </div>
+  );
+}
+
+// ── DecisionHeroCard ──────────────────────────────────────────────────────────
+
+export function DecisionHeroCard({ r, tvLinkFn }) {
+  const [open, setOpen] = useState(false);
+  if (!r) return null;
+
+  const decision = r._decision;
+  const link     = tvLinkFn ? tvLinkFn(r.symbol) : tvLink(r.symbol);
+  const ds       = getDisplaySignal(r);
+  const isLong   = ds === 'LONG_TRIG'  || ds === 'LONG_VAKA'  || ds === 'SVAG_LONG';
+  const isShort  = ds === 'SHORT_TRIG' || ds === 'SHORT_VAKA' || ds === 'SVAG_SHORT';
+  const variant  = isLong ? 'hs-long' : isShort ? 'hs-short' : 'hs-neutral';
+  const score    = decision?.signalScore ?? r.tradeScore ?? 0;
+  const action   = decision?.action ?? 'WAIT';
+  const before   = r.tradeScoreBeforeConfidence;
+  const after    = r.tradeScore;
+  const desc     = r.actionSv || svForklaring(r) || '';
+
+  return (
+    <div className={`hero-sig-wrap ${variant}`}>
+      <div className="hero-sig-glow" />
+      <div className="hero-sig">
+
+        {/* Header */}
+        <div className="hero-sig-head">
+          <div>
+            <div className="hero-sig-tag">🏆 Bästa signal just nu</div>
+            <div className="hero-sig-symbol">
+              {r.symbol}
+              <NewSignalBadge symbol={r.symbol} />
+            </div>
+            <div style={{ display:'flex', gap:6, flexWrap:'wrap', marginTop:10 }}>
+              <DecisionActionBadge action={action} />
+              {decision && <DecisionRiskBadge risk={decision.riskLevel} />}
+              {decision && <DecisionConfBadge conf={decision.confidenceLevel} />}
+              <MarketRegimeBadge regime={r.marketRegimeV2 || r.marketRegime} />
+            </div>
+          </div>
+          <div className="hero-sig-price">
+            {r.price != null ? `$${Number(r.price).toFixed(2)}` : '–'}
+          </div>
+        </div>
+
+        {/* Score + setup type */}
+        <div className="hero-sig-body">
+          <div className="hero-sig-ring-wrap">
+            <div className="hero-sig-ring">
+              <div className="hero-sig-score">{score}</div>
+              <div className="hero-sig-score-sub">poäng</div>
+            </div>
+          </div>
+          <div className="hero-sig-meta">
+            {decision?.setupType && (
+              <div className="dec-setup-type">Setup: {decision.setupType}</div>
+            )}
+            {before != null && before !== after && (
+              <div className="conf-score-delta">
+                Före historik: <strong>{before}</strong> → Nu: <strong>{after}</strong>
+              </div>
+            )}
+            {desc && <div className="hero-sig-desc">{desc}</div>}
+            {decision?.marketRegimeComment && (
+              <div className="hero-sig-regime-comment">{decision.marketRegimeComment}</div>
+            )}
+          </div>
+        </div>
+
+        {/* Triggers */}
+        {(r.longTrigger != null || r.shortTrigger != null) && (
+          <div className="hero-sig-triggers">
+            {r.longTrigger != null && (
+              <div className="hero-sig-trigger hero-sig-t-long">
+                <span className="hero-sig-trigger-label">Om priset går över</span>
+                <span className="hero-sig-trigger-val">${r.longTrigger}</span>
+              </div>
+            )}
+            {r.shortTrigger != null && (
+              <div className="hero-sig-trigger hero-sig-t-short">
+                <span className="hero-sig-trigger-label">Om priset går under</span>
+                <span className="hero-sig-trigger-val">${r.shortTrigger}</span>
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* History says */}
+        <HistorySaysBlock decision={decision} />
+
+        {/* Recommendation */}
+        {decision?.recommendation && (
+          <div className="dec-recommendation">
+            <span className="dec-rec-label">Rekommendation:</span>
+            <span>{decision.recommendation}</span>
+          </div>
+        )}
+
+        {/* Expand toggle */}
+        <div className="hero-sig-footer">
+          <a className="btn btn-tv" href={link} target="_blank" rel="noopener noreferrer">📈 TradingView</a>
+          <button className="btn" onClick={() => setOpen(o => !o)} style={{ fontSize: 11 }}>
+            {open ? 'Dölj detaljer ▲' : 'Visa detaljer ▼'}
+          </button>
+        </div>
+
+        {open && (
+          <div style={{ marginTop: 12 }}>
+            <WhyDecisionBlock decision={decision} />
+            <ConfidencePanel r={r} />
+            <AdaptiveEdgePanel r={r} />
+            <SetupDNAPanel r={r} />
+            <div className="symbol-card-stats">
+              {r.sma20    != null && <div className="stat-row">SMA20  <span>{Number(r.sma20).toFixed(2)}</span></div>}
+              {r.sma200   != null && <div className="stat-row">SMA200 <span>{Number(r.sma200).toFixed(2)}</span></div>}
+              {r.rsi14    != null && <div className="stat-row">RSI    <span>{Number(r.rsi14).toFixed(1)}</span></div>}
+              {r.atr14    != null && <div className="stat-row">ATR    <span>{Number(r.atr14).toFixed(3)}</span></div>}
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ── Top5Row ───────────────────────────────────────────────────────────────────
+
+function Top5Row({ r, rank, tvLinkFn }) {
+  const decision = r._decision;
+  const link     = tvLinkFn ? tvLinkFn(r.symbol) : tvLink(r.symbol);
+  const score    = decision?.signalScore ?? r.tradeScore ?? 0;
+  const scoreColor = score >= 60 ? 'var(--green)' : score >= 35 ? 'var(--yellow)' : 'var(--muted)';
+  const wrColor = decision?.historicalWinRate == null ? 'var(--muted)'
+    : decision.historicalWinRate >= 55 ? 'var(--green)'
+    : decision.historicalWinRate >= 45 ? 'var(--yellow)' : 'var(--red)';
+  const reason = decision?.explanation || svForklaring(r) || '–';
+
+  return (
+    <div className="top5-row">
+      <div className="top5-rank" style={{ color: rank === 1 ? 'var(--yellow)' : 'var(--muted)' }}>
+        #{rank}
+      </div>
+      <div className="top5-sym">{r.symbol}</div>
+      <div className="top5-badges">
+        <DecisionActionBadge action={decision?.action} />
+      </div>
+      <div className="top5-score" style={{ color: scoreColor }}>{score}</div>
+      <div className="top5-conf">
+        <DecisionConfBadge conf={decision?.confidenceLevel} />
+      </div>
+      <div className="top5-wr" style={{ color: wrColor }}>
+        {decision?.historicalWinRate != null ? `${decision.historicalWinRate}%` : '–'}
+      </div>
+      <div className="top5-tf">{decision?.bestTimeframe || '2m'}</div>
+      <div className="top5-reason">{reason}</div>
+      <div className="top5-link">
+        <a className="btn btn-tv" href={link} target="_blank" rel="noopener noreferrer" style={{ fontSize: 10, padding: '2px 7px' }}>TV</a>
+      </div>
+    </div>
+  );
+}
+
+export function Top5SignalsSection({ signals, tvLinkFn }) {
+  if (!signals || signals.length === 0) return null;
+  return (
+    <div className="top5-section">
+      <div className="top5-header">
+        <div className="top5-col-rank">#</div>
+        <div className="top5-col-sym">Symbol</div>
+        <div className="top5-col-action">Åtgärd</div>
+        <div className="top5-col-score">Poäng</div>
+        <div className="top5-col-conf">Säkerhet</div>
+        <div className="top5-col-wr">Träffsäk.</div>
+        <div className="top5-col-tf">TF</div>
+        <div className="top5-col-reason">Anledning</div>
+        <div className="top5-col-link" />
+      </div>
+      {signals.map((r, i) => (
+        <Top5Row key={r.symbol} r={r} rank={i + 1} tvLinkFn={tvLinkFn} />
+      ))}
+    </div>
+  );
+}
+
+// ── DecisionFilterBar ─────────────────────────────────────────────────────────
+
+export function DecisionFilterBar({ filters, onChange }) {
+  function set(key, val) { onChange({ ...filters, [key]: val }); }
+
+  const signalModes = [
+    { key: 'all',       label: 'Alla',              icon: '◎' },
+    { key: 'best',      label: 'Högt betyg (60+)',  icon: '⚡' },
+    { key: 'long',      label: 'Long',               icon: '⬆' },
+    { key: 'short',     label: 'Short',              icon: '⬇' },
+    { key: 'highConf',  label: 'Hög säkerhet',       icon: '🎯' },
+    { key: 'validated', label: 'Validerade',          icon: '✓' },
+  ];
+
+  const marketModes = [
+    { key: 'bullish', label: 'Bullish marknad', icon: '📈', color: 'var(--green)' },
+    { key: 'bearish', label: 'Bearish marknad', icon: '📉', color: 'var(--red)' },
+    { key: 'choppy',  label: 'Stökig marknad',  icon: '↔️', color: 'var(--yellow)' },
+  ];
+
+  return (
+    <div className="dec-filter-bar">
+      <div className="dec-filter-row">
+        <span className="dec-filter-group-label">Signal</span>
+        <div className="dec-filter-modes">
+          {signalModes.map(m => (
+            <button
+              key={m.key}
+              className={`dec-filter-btn${filters.mode === m.key ? ' active' : ''}`}
+              onClick={() => set('mode', m.key)}
+            >
+              {m.icon} {m.label}
+            </button>
+          ))}
+        </div>
+      </div>
+      <div className="dec-filter-row">
+        <span className="dec-filter-group-label">Marknad</span>
+        <div className="dec-filter-modes">
+          {marketModes.map(m => (
+            <button
+              key={m.key}
+              className={`dec-filter-btn dec-filter-btn-market${filters.mode === m.key ? ' active' : ''}`}
+              style={filters.mode === m.key ? { color: m.color, borderColor: `${m.color}60`, background: `${m.color}15` } : {}}
+              onClick={() => set('mode', filters.mode === m.key ? 'all' : m.key)}
+            >
+              {m.icon} {m.label}
+            </button>
+          ))}
+        </div>
+      </div>
+      <div className="dec-filter-toggles">
+        <label className="dec-filter-toggle">
+          <input type="checkbox" checked={filters.hideChoppy || false} onChange={e => set('hideChoppy', e.target.checked)} />
+          Dölj stökiga
+        </label>
+        <label className="dec-filter-toggle">
+          <input type="checkbox" checked={filters.hideDuplicates || false} onChange={e => set('hideDuplicates', e.target.checked)} />
+          Dölj dubbletter
+        </label>
+        <label className="dec-filter-toggle">
+          <input type="checkbox" checked={filters.grouped || false} onChange={e => set('grouped', e.target.checked)} />
+          Gruppera per symbol
+        </label>
+      </div>
+    </div>
+  );
+}
+
+// ── SymbolGroupCard ───────────────────────────────────────────────────────────
+
+export function SymbolGroupCard({ symbol, group, learning, tvLinkFn }) {
+  const [open, setOpen] = useState(false);
+  const link = tvLinkFn ? tvLinkFn(symbol) : tvLink(symbol);
+
+  const symStats = learning?.bySymbol?.[symbol];
+  const winRate  = symStats?.winRate != null ? Math.round(symStats.winRate * 100) : null;
+  const wrColor  = winRate == null ? 'var(--muted)'
+    : winRate >= 55 ? 'var(--green)'
+    : winRate >= 45 ? 'var(--yellow)' : 'var(--red)';
+
+  const bullish = group.filter(r => r.signal?.startsWith('LONG'));
+  const bearish = group.filter(r => r.signal?.startsWith('SHORT'));
+  const other   = group.filter(r => !r.signal?.startsWith('LONG') && !r.signal?.startsWith('SHORT'));
+
+  const bestInGroup = [...group].sort(
+    (a, b) => (b._decision?.signalScore ?? b.tradeScore ?? 0)
+            - (a._decision?.signalScore ?? a.tradeScore ?? 0)
+  )[0];
+  const topScore = bestInGroup?._decision?.signalScore ?? bestInGroup?.tradeScore ?? 0;
+  const topAction = bestInGroup?._decision?.action;
+
+  const bullBias = bullish.length > bearish.length;
+  const bearBias = bearish.length > bullish.length;
+  const overallBias = bullBias ? 'Bullish bias' : bearBias ? 'Bearish bias' : 'Blandad';
+  const biasColor   = bullBias ? 'var(--green)' : bearBias ? 'var(--red)' : 'var(--muted)';
+
+  return (
+    <div className="sym-group-card">
+      {/* Prominent summary headline */}
+      <div className="sym-group-headline">
+        <div className="sym-group-headline-left">
+          <span className="sym-group-sym">{symbol}</span>
+          <span className="sym-group-appeared">
+            {group.length}× i scannet
+          </span>
+        </div>
+        <span className="sym-group-top-score" style={{ color: topScore >= 60 ? 'var(--green)' : topScore >= 35 ? 'var(--yellow)' : 'var(--muted)' }}>
+          {topScore} pt
+        </span>
+      </div>
+
+      {/* Signal breakdown */}
+      <div className="sym-group-breakdown">
+        {bullish.length > 0 && (
+          <span className="sgb-bull">🟢 {bullish.length} köp</span>
+        )}
+        {bearish.length > 0 && (
+          <span className="sgb-bear">🔴 {bearish.length} sälj</span>
+        )}
+        {other.length > 0 && (
+          <span className="sgb-other">⏳ {other.length} övriga</span>
+        )}
+        <span className="sym-group-bias" style={{ color: biasColor }}>{overallBias}</span>
+        {topAction && <DecisionActionBadge action={topAction} />}
+      </div>
+
+      {/* Stats row */}
+      <div className="sym-group-stats">
+        <span className="sym-group-stat">
+          <span className="sgs-label">Hist. träff</span>
+          <span className="sgs-val" style={{ color: wrColor }}>{winRate != null ? `${winRate}%` : '–'}</span>
+        </span>
+        {symStats?.avgMove10 != null && (
+          <span className="sym-group-stat">
+            <span className="sgs-label">Snittrörelse</span>
+            <span className="sgs-val" style={{ color: symStats.avgMove10 >= 0 ? 'var(--green)' : 'var(--red)' }}>
+              {symStats.avgMove10 >= 0 ? '+' : ''}{(symStats.avgMove10 * 100).toFixed(2)}%
+            </span>
+          </span>
+        )}
+      </div>
+
+      <div className="sym-group-actions">
+        <a className="btn btn-tv" href={link} target="_blank" rel="noopener noreferrer">📈 TV</a>
+        <button className="btn" onClick={() => setOpen(o => !o)} style={{ fontSize: 11 }}>
+          {open ? 'Dölj ▲' : `Visa ${group.length} signaler ▼`}
+        </button>
+      </div>
+
+      {winRate != null && symStats?.samples >= 5 && (
+        <div className="sym-group-hist">
+          Historik: {winRate}% träffsäkerhet på {symStats.samples} signaler
+          {bullBias && winRate >= 55 ? ' · Bevaka högt-score long-setups.' : ''}
+          {bearBias && winRate >= 55 ? ' · Bevaka högt-score short-setups.' : ''}
+        </div>
+      )}
+
+      {open && (
+        <div className="sym-group-signals">
+          {group.map((r, i) => <SymbolCard key={i} r={r} tvLinkFn={tvLinkFn} />)}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── SystemConclusionBox ───────────────────────────────────────────────────────
+
+export function SystemConclusionBox({ learning }) {
+  if (!learning) return null;
+
+  const { overallWinRate, bestSymbols = [], worstSymbols = [], bestMarketRegimes = [], commonFailureReasons = [], insightsSv = [] } = learning;
+  if (!overallWinRate && bestSymbols.length === 0 && insightsSv.length === 0) return null;
+
+  const wrPct      = overallWinRate != null ? Math.round(overallWinRate * 100) : null;
+  const wrColor    = wrPct == null ? 'var(--muted)' : wrPct >= 55 ? 'var(--green)' : wrPct >= 45 ? 'var(--yellow)' : 'var(--red)';
+  const bestSym    = bestSymbols[0];
+  const worstSym   = worstSymbols[0];
+  const bestRegime = bestMarketRegimes[0];
+  const topFailure = commonFailureReasons[0];
+
+  const REGIME_SV_LOCAL = {
+    BULLISH_TREND:   'Stark upptrend', BEARISH_TREND: 'Stark nedtrend', CHOPPY: 'Stökig marknad',
+    RANGE_DAY: 'Sidledsdag', TREND_DAY_UP: 'Trenddag uppåt', TREND_DAY_DOWN: 'Trenddag nedåt',
+    HIGH_VOLATILITY: 'Hög volatilitet', PANIC: 'Panik', UNKNOWN: 'Okänt',
+  };
+
+  return (
+    <div className="sys-conclusion-box">
+      <div className="sys-conc-title">🧠 Systemets slutsats</div>
+      <div className="sys-conc-grid">
+        {wrPct !== null && (
+          <div className="sys-conc-item">
+            <div className="sci-label">Total träffsäkerhet</div>
+            <div className="sci-val" style={{ color: wrColor }}>{wrPct}%</div>
+          </div>
+        )}
+        {bestSym && (
+          <div className="sys-conc-item">
+            <div className="sci-label">Bästa symbol</div>
+            <div className="sci-val" style={{ color: 'var(--green)' }}>
+              {bestSym.key} <span className="sci-sub">({Math.round((bestSym.winRate ?? 0) * 100)}%)</span>
+            </div>
+          </div>
+        )}
+        {worstSym && (
+          <div className="sys-conc-item">
+            <div className="sci-label">Undvik</div>
+            <div className="sci-val" style={{ color: 'var(--red)' }}>
+              {worstSym.key} <span className="sci-sub">({Math.round((worstSym.winRate ?? 0) * 100)}%)</span>
+            </div>
+          </div>
+        )}
+        {bestRegime && (
+          <div className="sys-conc-item">
+            <div className="sci-label">Bästa marknadsläge</div>
+            <div className="sci-val" style={{ color: 'var(--blue)' }}>
+              {REGIME_SV_LOCAL[bestRegime.key] || bestRegime.key}
+            </div>
+          </div>
+        )}
+        {topFailure && (
+          <div className="sys-conc-item">
+            <div className="sci-label">Vanligaste miss</div>
+            <div className="sci-val" style={{ color: 'var(--orange)' }}>{topFailure.labelSv}</div>
+          </div>
+        )}
+      </div>
+      {insightsSv.length > 0 && (
+        <div className="sys-conc-insights">
+          {insightsSv.slice(0, 4).map((txt, i) => (
+            <div key={i} className="sys-conc-insight">
+              <span className="sci-dot">→</span>
+              <span>{txt}</span>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── ReplayRunRating ───────────────────────────────────────────────────────────
+
+export function ReplayRunRating({ summary }) {
+  if (!summary) return null;
+  const events = summary.totalEvents ?? 0;
+  const score  = summary.avgTradeScore ?? 0;
+
+  let rating, cls, desc;
+  if (events < 5) {
+    rating = 'FÅ TRADES'; cls = 'rpl-rating-few';
+    desc = 'För få händelser för säkra slutsatser.';
+  } else if (score >= 50 && events >= 30) {
+    rating = 'BRA'; cls = 'rpl-rating-good';
+    desc = 'Stark körning — högt snittbetyg och många händelser.';
+  } else if (score >= 35 || (score >= 25 && events >= 20)) {
+    rating = 'OKEJ'; cls = 'rpl-rating-ok';
+    desc = 'Godkänd körning — rimligt antal händelser.';
+  } else {
+    rating = 'SVAG'; cls = 'rpl-rating-bad';
+    desc = 'Svag körning — lågt snittbetyg eller få händelser.';
+  }
+
+  return (
+    <div className={`rpl-run-rating ${cls}`}>
+      <span className="rpl-rating-label">{rating}</span>
+      <span className="rpl-rating-desc">{desc}</span>
+    </div>
+  );
+}
+
+// ── ReplayConclusionBox ───────────────────────────────────────────────────────
+
+export function ReplayConclusionBox({ summary, insights }) {
+  if (!summary || !insights) return null;
+  const { textInsights = [], regimeStats = {}, symbolStats = [] } = insights;
+  if (textInsights.length === 0 && symbolStats.length === 0) return null;
+
+  const best  = [...symbolStats].sort((a, b) => (b.avgScore ?? 0) - (a.avgScore ?? 0))[0];
+  const worst = [...symbolStats].sort((a, b) => (a.avgScore ?? 0) - (b.avgScore ?? 0))[0];
+
+  const REGIME_SV_LOCAL = {
+    BULLISH_TREND:'Stark upptrend', BEARISH_TREND:'Stark nedtrend', CHOPPY:'Stökig marknad',
+    RANGE_DAY:'Sidledsdag', TREND_DAY_UP:'Trenddag uppåt', TREND_DAY_DOWN:'Trenddag nedåt',
+    HIGH_VOLATILITY:'Hög volatilitet', PANIC:'Panik',
+  };
+  const bestRegime = Object.entries(regimeStats).sort((a, b) => b[1] - a[1])[0]?.[0];
+
+  return (
+    <div className="rpl-conclusion-box">
+      <div className="rpl-conc-title">📋 Slutsats</div>
+      {(best || worst || bestRegime) && (
+        <div className="rpl-conc-grid">
+          {best && (
+            <div className="rpl-conc-item">
+              <span className="rpl-ci-label">Bästa symbol</span>
+              <span className="rpl-ci-val" style={{ color: 'var(--green)' }}>{best.symbol}</span>
+            </div>
+          )}
+          {worst && worst.symbol !== best?.symbol && (
+            <div className="rpl-conc-item">
+              <span className="rpl-ci-label">Svagaste symbol</span>
+              <span className="rpl-ci-val" style={{ color: 'var(--muted)' }}>{worst.symbol}</span>
+            </div>
+          )}
+          {bestRegime && (
+            <div className="rpl-conc-item">
+              <span className="rpl-ci-label">Vanligaste marknadsläge</span>
+              <span className="rpl-ci-val" style={{ color: 'var(--blue)' }}>
+                {REGIME_SV_LOCAL[bestRegime] || bestRegime}
+              </span>
+            </div>
+          )}
+        </div>
+      )}
+      {textInsights.length > 0 && (
+        <div className="rpl-conc-insights">
+          {textInsights.slice(0, 3).map((t, i) => (
+            <div key={i} className="rpl-conc-insight">
+              <span className="rpl-ci-dot">→</span>
+              <span>{t}</span>
+            </div>
+          ))}
         </div>
       )}
     </div>

@@ -27,6 +27,9 @@ const { runReplay }           = require('../scanner/replayEngine');
 const { analyzeOutcomes }     = require('../scanner/signalOutcomeAnalyzer');
 const { saveLearning }        = require('../scanner/signalLearning');
 const { runLearningEngine }   = require('../scanner/learningEngine');
+const { buildRuleMemory }     = require('../scanner/ruleMemoryEngine');
+const { buildSymbolProfiles } = require('../scanner/symbolPersonalityEngine');
+const { buildRegimeProfiles } = require('../scanner/regimeProfileEngine');
 const { invalidateCache }     = require('../scanner/historicalEdge');
 
 const STATUS_PATH = path.resolve(__dirname, '../../data/system/auto-machine-status.json');
@@ -244,6 +247,48 @@ async function runAutoMachine({ lookbackDays, groups }) {
     } catch (err) {
       console.warn('[AutoMachine] Update learning failed:', err.message);
       result.steps.updateLearning = { ok: false, error: err.message };
+    }
+
+    // ── Step 5b: Build rule memory ────────────────────────────────────────────
+    console.log('[AutoMachine] Step 5b: Build rule memory');
+    try {
+      const rm = buildRuleMemory();
+      result.steps.buildRuleMemory = { ok: true, totalRules: rm.totalRules, watchModeRules: rm.watchModeRules };
+    } catch (err) {
+      console.warn('[AutoMachine] buildRuleMemory failed (non-fatal):', err.message);
+      result.steps.buildRuleMemory = { ok: false, error: err.message };
+    }
+
+    // ── Step 5c: Build symbol profiles ───────────────────────────────────────
+    console.log('[AutoMachine] Step 5c: Build symbol profiles');
+    try {
+      const sp = buildSymbolProfiles();
+      result.steps.buildSymbolProfiles = {
+        ok:               true,
+        totalSymbols:     sp.totalSymbols,
+        highConfSymbols:  sp.highConfSymbols,
+        watchSymbols:     sp.watchSymbols,
+        strongSymbols:    sp.strongSymbols,
+      };
+    } catch (err) {
+      console.warn('[AutoMachine] buildSymbolProfiles failed (non-fatal):', err.message);
+      result.steps.buildSymbolProfiles = { ok: false, error: err.message };
+    }
+
+    // ── Step 5d: Build regime profiles ───────────────────────────────────────
+    console.log('[AutoMachine] Step 5d: Build regime profiles');
+    try {
+      const rp = buildRegimeProfiles();
+      result.steps.buildRegimeProfiles = {
+        ok:              true,
+        totalRegimes:    rp.totalRegimes,
+        highConfRegimes: rp.highConfRegimes,
+        bestRegime:      rp.bestRegime,
+        worstRegime:     rp.worstRegime,
+      };
+    } catch (err) {
+      console.warn('[AutoMachine] buildRegimeProfiles failed (non-fatal):', err.message);
+      result.steps.buildRegimeProfiles = { ok: false, error: err.message };
     }
 
     // ── Step 6: Invalidate caches ─────────────────────────────────────────────

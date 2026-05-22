@@ -8,6 +8,8 @@ import HistoryPage from './pages/HistoryPage.jsx';
 import ReplayPage from './pages/ReplayPage.jsx';
 import MachinePage from './pages/MachinePage.jsx';
 import MissedBreakoutsPage from './pages/MissedBreakoutsPage.jsx';
+import WavePage from './pages/WavePage.jsx';
+import ReviewChartPage from './pages/ReviewChartPage.jsx';
 import { AlertProvider, HeroToastContainer } from './alertContext.jsx';
 
 export default function App() {
@@ -25,6 +27,8 @@ export default function App() {
           <Route path="/replay" element={<ReplayPage />} />
           <Route path="/machine" element={<MachinePage />} />
           <Route path="/missed-breakouts" element={<MissedBreakoutsPage />} />
+          <Route path="/wave" element={<WavePage />} />
+          <Route path="/review-chart" element={<ReviewChartPage />} />
         </Routes>
       </div>
       <div className="footer">

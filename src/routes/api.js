@@ -6,7 +6,7 @@ const { getCryptoResults, getCryptoStatus } = require('../scanner/cryptoSchedule
 const { readLatest }          = require('../scanner/featureLogger');
 const { fetchAlpacaBars, isEnabled: alpacaEnabled, hasCredentials } = require('../data/alpacaDataService');
 const { fetchBinanceKlines } = require('../data/binanceDataService');
-const { saveRawBars, saveCandles2m, listSymbols, listAvailableDates, countCandles, getDatesInRange } = require('../data/marketDataStore');
+const { saveRawBars, saveCandles2m, loadCandles, listSymbols, listAvailableDates, countCandles, getDatesInRange } = require('../data/marketDataStore');
 const { aggregate1mTo2m, filterComplete } = require('../data/candleAggregator');
 const { runHistoricalScan, loadSignals }  = require('../scanner/historicalScanner');
 const { analyzeOutcomes, loadOutcomes }         = require('../scanner/signalOutcomeAnalyzer');
@@ -14,6 +14,9 @@ const { saveLearning, loadLearning }            = require('../scanner/signalLear
 const { getEdge, getEdgeForSymbol, getEdgeSummary, invalidateCache } = require('../scanner/historicalEdge');
 const { runReplay, listRuns, loadRunSummary, loadRunEvents, loadRunInsights } = require('../scanner/replayEngine');
 const { runLearningEngine, loadLearningSummary } = require('../scanner/learningEngine');
+const { buildRuleMemory, loadRuleMemory }               = require('../scanner/ruleMemoryEngine');
+const { buildSymbolProfiles, loadSymbolProfiles }       = require('../scanner/symbolPersonalityEngine');
+const { buildRegimeProfiles, loadRegimeProfiles }       = require('../scanner/regimeProfileEngine');
 const { runAutoMachine, isRunning: autoMachineRunning, getStatus: getAutoMachineStatus } = require('../jobs/autoMachine');
 const { getSchedulerStatus } = require('../jobs/autoMachineScheduler');
 
@@ -58,6 +61,38 @@ router.get('/scan/crypto', (req, res) => {
     count: results.length,
     results,
   });
+});
+
+// ── Wave Phase routes ──────────────────────────────────────────────────────────
+
+function buildWaveResponse(results, label) {
+  const withWave = results.filter((r) => r.waveContext);
+  return {
+    ok: true,
+    group: label,
+    count: withWave.length,
+    results: withWave.map((r) => ({
+      symbol: r.symbol,
+      price: r.price,
+      lastUpdate: r.lastUpdate,
+      waveContext: r.waveContext,
+    })),
+  };
+}
+
+router.get('/wave', (req, res) => {
+  const stocks = getLatestResults();
+  const crypto = getCryptoResults();
+  const all = [...stocks, ...crypto];
+  res.json(buildWaveResponse(all, 'all'));
+});
+
+router.get('/wave/stocks', (req, res) => {
+  res.json(buildWaveResponse(getLatestResults(), 'stocks'));
+});
+
+router.get('/wave/crypto', (req, res) => {
+  res.json(buildWaveResponse(getCryptoResults(), 'crypto'));
 });
 
 router.get('/replay/latest', (req, res) => {
@@ -355,6 +390,57 @@ router.get('/history/learning-summary', (req, res) => {
   }
 });
 
+// ── GET /api/history/rule-memory ─────────────────────────────────────────────
+router.get('/history/rule-memory', (req, res) => {
+  try {
+    const memory = loadRuleMemory();
+    if (!memory) {
+      return res.json({ ok: true, memory: null, message: 'Ingen rule-memory ännu — kör POST /api/history/update-learning' });
+    }
+    res.json({ ok: true, memory });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+// ── GET /api/history/symbol-profiles ─────────────────────────────────────────
+router.get('/history/symbol-profiles', (req, res) => {
+  try {
+    const profiles = loadSymbolProfiles();
+    if (!profiles) {
+      return res.json({ ok: true, profiles: null, message: 'Inga symbol-profiler ännu — kör POST /api/history/update-learning' });
+    }
+    const symbol = req.query.symbol || null;
+    if (symbol) {
+      const p = profiles.symbols?.[symbol.toUpperCase()];
+      if (!p) return res.status(404).json({ ok: false, error: `Ingen profil för ${symbol}` });
+      return res.json({ ok: true, symbol: symbol.toUpperCase(), profile: p, globalWinRate: profiles.globalWinRate });
+    }
+    res.json({ ok: true, profiles });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+// ── GET /api/history/regime-profiles ─────────────────────────────────────────
+router.get('/history/regime-profiles', (req, res) => {
+  try {
+    const profiles = loadRegimeProfiles();
+    if (!profiles) {
+      return res.json({ ok: true, profiles: null, message: 'Inga regime-profiler ännu — kör POST /api/history/update-learning' });
+    }
+    const regime = req.query.regime || null;
+    if (regime) {
+      const p = profiles.regimes?.[regime.toUpperCase()];
+      if (!p) return res.status(404).json({ ok: false, error: `Ingen profil för regime ${regime}` });
+      return res.json({ ok: true, regime: regime.toUpperCase(), profile: p, globalWinRate: profiles.globalWinRate });
+    }
+    res.json({ ok: true, profiles });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
 // ── GET /api/history/missed-breakouts ────────────────────────────────────────
 const { findMissedBreakouts } = require('../history/missedBreakoutFinder');
 
@@ -381,17 +467,57 @@ router.get('/history/missed-breakouts', (req, res) => {
 router.post('/history/update-learning', async (req, res) => {
   try {
     const summary = runLearningEngine();
+
+    // Build rule memory, symbol profiles and regime profiles after learning summary is fresh
+    let ruleMemorySummary     = null;
+    let symbolProfilesSummary = null;
+    let regimeProfilesSummary = null;
+
+    try {
+      const rm = buildRuleMemory();
+      ruleMemorySummary = { totalRules: rm.totalRules, watchModeRules: rm.watchModeRules };
+    } catch (rmErr) {
+      console.warn('[API] buildRuleMemory failed (non-fatal):', rmErr.message);
+    }
+
+    try {
+      const sp = buildSymbolProfiles();
+      symbolProfilesSummary = {
+        totalSymbols:    sp.totalSymbols,
+        highConfSymbols: sp.highConfSymbols,
+        watchSymbols:    sp.watchSymbols,
+        strongSymbols:   sp.strongSymbols,
+      };
+    } catch (spErr) {
+      console.warn('[API] buildSymbolProfiles failed (non-fatal):', spErr.message);
+    }
+
+    try {
+      const rp = buildRegimeProfiles();
+      regimeProfilesSummary = {
+        totalRegimes:    rp.totalRegimes,
+        highConfRegimes: rp.highConfRegimes,
+        bestRegime:      rp.bestRegime,
+        worstRegime:     rp.worstRegime,
+      };
+    } catch (rpErr) {
+      console.warn('[API] buildRegimeProfiles failed (non-fatal):', rpErr.message);
+    }
+
     res.json({
-      ok:             true,
-      updatedAt:      summary.updatedAt,
-      totalSignals:   summary.totalSignals,
-      totalOutcomes:  summary.totalOutcomes,
-      overallWinRate: summary.overallWinRate,
-      bestSymbols:    summary.bestSymbols,
-      bestEventTypes: summary.bestEventTypes,
-      bestHours:      summary.bestHours,
-      bestScoreRanges:summary.bestScoreRanges,
-      insightsSv:     summary.insightsSv,
+      ok:              true,
+      updatedAt:       summary.updatedAt,
+      totalSignals:    summary.totalSignals,
+      totalOutcomes:   summary.totalOutcomes,
+      overallWinRate:  summary.overallWinRate,
+      bestSymbols:     summary.bestSymbols,
+      bestEventTypes:  summary.bestEventTypes,
+      bestHours:       summary.bestHours,
+      bestScoreRanges: summary.bestScoreRanges,
+      insightsSv:      summary.insightsSv,
+      ruleMemory:      ruleMemorySummary,
+      symbolProfiles:  symbolProfilesSummary,
+      regimeProfiles:  regimeProfilesSummary,
     });
   } catch (err) {
     console.error('[API] update-learning error:', err);
@@ -548,6 +674,99 @@ router.post('/system/run-auto-machine', async (req, res) => {
   runAutoMachine({ lookbackDays, groups }).catch((err) => {
     console.error('[API] run-auto-machine unhandled error:', err.message);
   });
+});
+
+// ── GET /api/review/chart-data ────────────────────────────────────────────────
+function calcSMA(closes, period) {
+  const result = new Array(closes.length).fill(null);
+  if (closes.length < period) return result;
+  let sum = 0;
+  for (let i = 0; i < period; i++) sum += closes[i];
+  result[period - 1] = sum / period;
+  for (let i = period; i < closes.length; i++) {
+    sum += closes[i] - closes[i - period];
+    result[i] = sum / period;
+  }
+  return result;
+}
+
+router.get('/review/chart-data', (req, res) => {
+  try {
+    const symbol        = (req.query.symbol || '').toUpperCase();
+    const timestamp     = req.query.timestamp || '';
+    const windowBefore  = Math.min(parseInt(req.query.windowBefore, 10) || 80, 300);
+    const windowAfter   = Math.min(parseInt(req.query.windowAfter,  10) || 40, 300);
+
+    if (!symbol || !timestamp) {
+      return res.status(400).json({ ok: false, error: 'symbol and timestamp are required' });
+    }
+
+    const ts = new Date(timestamp);
+    if (isNaN(ts.getTime())) {
+      return res.status(400).json({ ok: false, error: 'invalid timestamp' });
+    }
+
+    const msPerCandle = 2 * 60 * 1000;
+
+    // Stocks trade ~195 2m candles/day; SMA200 needs ≥200 candles before the window.
+    // Always load 5 calendar days back so weekends/holidays don't starve the warmup.
+    const SMA200_CALENDAR_DAYS = 5;
+    const warmupDate = new Date(ts.getTime() - SMA200_CALENDAR_DAYS * 24 * 60 * 60 * 1000)
+      .toISOString().slice(0, 10);
+    const endMs  = ts.getTime() + (windowAfter + 10) * msPerCandle;
+    const endDate = new Date(endMs).toISOString().slice(0, 10);
+
+    const warmupCandles = loadCandles(symbol, warmupDate, endDate);
+
+    if (warmupCandles.length === 0) {
+      return res.status(404).json({ ok: false, error: `Ingen data hittades för ${symbol}` });
+    }
+
+    // Calculate SMA over all warmup candles
+    const closes   = warmupCandles.map(c => c.close ?? c.c ?? 0);
+    const sma20arr  = calcSMA(closes, 20);
+    const sma200arr = calcSMA(closes, 200);
+
+    // Find candle closest to signal timestamp in warmup array
+    const tsMs = ts.getTime();
+    let fullSignalIdx = -1;
+    let minDiff = Infinity;
+    for (let i = 0; i < warmupCandles.length; i++) {
+      const cMs = new Date(warmupCandles[i].ts || warmupCandles[i].t).getTime();
+      const diff = Math.abs(cMs - tsMs);
+      if (diff < minDiff) { minDiff = diff; fullSignalIdx = i; }
+    }
+    if (minDiff > msPerCandle + 30000) fullSignalIdx = -1;
+
+    // Slice to display window only
+    const startIdx = fullSignalIdx >= 0 ? Math.max(0, fullSignalIdx - windowBefore) : 0;
+    const endIdx   = fullSignalIdx >= 0 ? Math.min(warmupCandles.length - 1, fullSignalIdx + windowAfter) : warmupCandles.length - 1;
+    const slice    = warmupCandles.slice(startIdx, endIdx + 1);
+    const newSignalIdx = fullSignalIdx >= 0 ? fullSignalIdx - startIdx : -1;
+
+    const round4 = v => v != null ? Math.round(v * 10000) / 10000 : null;
+
+    const candles = slice.map((c, i) => {
+      const absIdx = startIdx + i;
+      return {
+        time:   Math.floor(new Date(c.ts || c.t).getTime() / 1000),
+        open:   c.open   ?? c.o,
+        high:   c.high   ?? c.h,
+        low:    c.low    ?? c.l,
+        close:  c.close  ?? c.c,
+        volume: c.volume ?? c.v,
+        sma20:  round4(sma20arr[absIdx]),
+        sma200: round4(sma200arr[absIdx]),
+      };
+    });
+
+    const hasSMA200 = candles.some(c => c.sma200 != null);
+
+    return res.json({ ok: true, symbol, timestamp, signalCandleIdx: newSignalIdx, hasSMA200, candles });
+  } catch (err) {
+    console.error('[review/chart-data]', err);
+    return res.status(500).json({ ok: false, error: err.message });
+  }
 });
 
 module.exports = router;

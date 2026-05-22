@@ -10,6 +10,7 @@ const NAV_ITEMS = [
   { path: '/replay',   label: 'Replay',   icon: '▶️', cls: 'nav-replay' },
   { path: '/machine',         label: 'Machine',       icon: '🤖', cls: 'nav-machine' },
   { path: '/missed-breakouts', label: 'Missed Moves', icon: '🧠', cls: 'nav-missed' },
+  { path: '/wave',             label: 'Wave',         icon: '🌊', cls: 'nav-wave' },
 ];
 
 function AlertButton() {

@@ -1,13 +1,7 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import {
-  SummaryStrip,
-  SectionHeader,
-  SymbolCardList,
-  BestCardV2,
-  HeroSignalCard,
-  GuideBoxV2,
-  cryptoTvLink,
-  fmtTime,
+  SummaryStrip, SectionHeader, SymbolCardList, BestCardV2, HeroSignalCard,
+  GuideBoxV2, cryptoTvLink, fmtTime, TopSignalsPanel, LiveFilterBar,
 } from '../shared.jsx';
 import { useAlerts } from '../alertContext.jsx';
 
@@ -46,6 +40,7 @@ function useCryptoScan() {
 export default function CryptoPage() {
   const { data, loading, error, lastFetch, refresh } = useCryptoScan();
   const { processResults } = useAlerts();
+  const [filters, setFilters] = useState({ direction: null, minScore: 0, hideAvoid: false });
 
   useEffect(() => {
     if (data?.results) processResults(data.results, 'crypto');
@@ -59,10 +54,20 @@ export default function CryptoPage() {
   const isActive = (r) => !isAvoid(r);
   const byScore  = (a, b) => (b.tradeScore ?? 0) - (a.tradeScore ?? 0);
 
-  const best  = [...results].filter(r => isActive(r) && (r.tradeScore ?? 0) >= 60).sort(byScore).slice(0, 3);
-  const near  = [...results].filter(r => isActive(r) && (r.tradeScore ?? 0) >= 30 && (r.tradeScore ?? 0) < 60).sort(byScore);
-  const wait  = [...results].filter(r => isActive(r) && (r.tradeScore ?? 0) < 30).sort(byScore);
-  const avoid = results.filter(isAvoid);
+  function applyFilters(rows) {
+    return rows.filter(r => {
+      if (filters.direction === 'long'  && !r.signal?.startsWith('LONG'))  return false;
+      if (filters.direction === 'short' && !r.signal?.startsWith('SHORT')) return false;
+      if (filters.minScore > 0 && (r.tradeScore ?? 0) < filters.minScore)   return false;
+      if (filters.hideAvoid && isAvoid(r)) return false;
+      return true;
+    });
+  }
+
+  const best  = applyFilters([...results].filter(r => isActive(r) && (r.tradeScore ?? 0) >= 60).sort(byScore).slice(0, 3));
+  const near  = applyFilters([...results].filter(r => isActive(r) && (r.tradeScore ?? 0) >= 30 && (r.tradeScore ?? 0) < 60).sort(byScore));
+  const wait  = applyFilters([...results].filter(r => isActive(r) && (r.tradeScore ?? 0) < 30).sort(byScore));
+  const avoid = filters.hideAvoid ? [] : applyFilters(results.filter(isAvoid));
 
   return (
     <div>
@@ -90,16 +95,15 @@ export default function CryptoPage() {
         </div>
       )}
 
-      {/* no-data banner removed — handled by hero-empty inside section */}
-
       {loading && <div className="empty"><span className="spinner" /> Hämtar krypto från Binance…</div>}
 
       {!loading && (
         <>
           <SummaryStrip results={results} />
+          <TopSignalsPanel results={results} tvLinkFn={cryptoTvLink} />
+          <LiveFilterBar filters={filters} onChange={setFilters} />
           <GuideBoxV2 />
 
-          {/* Starkaste signalen */}
           <div className="sec">
             <SectionHeader
               icon="⚡"
@@ -132,36 +136,24 @@ export default function CryptoPage() {
 
           {near.length > 0 && (
             <div className="sec">
-              <SectionHeader
-                icon="🎯"
-                title="Nära setup – vänta på bättre entry"
-                count={near.length}
-                desc="Intressant, men vänta på ett bättre tillfälle att gå in."
-              />
+              <SectionHeader icon="🎯" title="Nära setup – vänta på bättre entry" count={near.length}
+                desc="Intressant, men vänta på ett bättre tillfälle att gå in." />
               <SymbolCardList rows={near} tvLinkFn={cryptoTvLink} />
             </div>
           )}
 
           {wait.length > 0 && (
             <div className="sec">
-              <SectionHeader
-                icon="⏳"
-                title="Trend – men vänta"
-                count={wait.length}
-                desc="Priset rör sig, men inte på rätt ställe ännu. Kom tillbaka senare."
-              />
+              <SectionHeader icon="⏳" title="Trend – men vänta" count={wait.length}
+                desc="Priset rör sig, men inte på rätt ställe ännu. Kom tillbaka senare." />
               <SymbolCardList rows={wait} tvLinkFn={cryptoTvLink} />
             </div>
           )}
 
           {avoid.length > 0 && (
             <div className="sec">
-              <SectionHeader
-                icon="⛔"
-                title="Undvik / jaga inte"
-                count={avoid.length}
-                desc="Motorn eller reglerna blockerar dessa lägen. Priset är för långt ifrån, rörelsen har redan börjat, eller risken är för hög."
-              />
+              <SectionHeader icon="⛔" title="Undvik / jaga inte" count={avoid.length}
+                desc="Motorn eller reglerna blockerar dessa lägen." />
               <SymbolCardList rows={avoid} tvLinkFn={cryptoTvLink} />
             </div>
           )}

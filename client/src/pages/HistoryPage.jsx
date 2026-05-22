@@ -389,6 +389,13 @@ function SignalCard({ signal, outcome }) {
 
       {/* Chart-knapp + kopieringsknappar */}
       <div className="hist-card-actions">
+        <a
+          href={`/review-chart?symbol=${encodeURIComponent(signal.symbol)}&timestamp=${encodeURIComponent(signal.timestamp)}${signal.signal ? `&signal=${encodeURIComponent(signal.signal)}` : ''}${signal.tradeScore != null ? `&tradeScore=${signal.tradeScore}` : ''}${signal.narrowScore != null ? `&narrowScore=${signal.narrowScore}` : ''}${signal.price != null ? `&price=${signal.price}` : ''}`}
+          className="hist-action-btn hist-tv-btn"
+          style={{ textAlign: 'center', display: 'block' }}
+        >
+          🔍 Granska i chart
+        </a>
         <button
           className="hist-action-btn hist-tv-btn"
           onClick={handleOpenChart}
@@ -655,6 +662,81 @@ function LearningSummary({ learning }) {
   );
 }
 
+// ── System Conclusion ─────────────────────────────────────────────────────────
+
+function SystemConclusion({ learning }) {
+  if (!learning) return null;
+  const {
+    bestSymbols = [], worstSymbols = [], overallWinRate,
+    bestMarketRegimes = [], insightsSv = [], totalSignals,
+  } = learning;
+
+  const winRatePct = overallWinRate != null ? Math.round(overallWinRate * 100) : null;
+  const winColor = winRatePct != null ? (winRatePct >= 55 ? '#22c55e' : winRatePct >= 45 ? '#eab308' : '#ef4444') : '#94a3b8';
+
+  const topBest  = bestSymbols.slice(0, 3).map(s => s.key).join(', ');
+  const topWorst = worstSymbols.slice(0, 2).map(s => s.key).join(', ');
+  const topRegime = bestMarketRegimes[0];
+  const regimeSvMap = { BULLISH_TREND: 'stark upptrend', BEARISH_TREND: 'nedtrend', CHOPPY: 'stökig marknad', TREND_DAY_UP: 'trenddag uppåt', TREND_DAY_DOWN: 'trenddag nedåt', RANGE_DAY: 'sidledsdag', HIGH_VOLATILITY: 'hög volatilitet' };
+
+  return (
+    <div style={{ background: '#0d1829', border: '1px solid #1e3a5f', borderRadius: 12, padding: '20px 24px', marginBottom: 20 }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', flexWrap: 'wrap', gap: 12, marginBottom: 16 }}>
+        <div style={{ fontSize: 13, fontWeight: 700, color: '#3b82f6', letterSpacing: '0.06em' }}>📊 SYSTEMETS SLUTSATS</div>
+        {winRatePct != null && (
+          <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end' }}>
+            <span style={{ fontFamily: 'monospace', fontSize: 28, fontWeight: 800, color: winColor, lineHeight: 1 }}>
+              {winRatePct}%
+            </span>
+            <span style={{ fontSize: 10, color: '#475569', marginTop: 2 }}>träffsäkerhet totalt</span>
+          </div>
+        )}
+      </div>
+
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: 12, marginBottom: 16 }}>
+        {topBest && (
+          <div style={{ background: 'rgba(34,197,94,0.07)', border: '1px solid rgba(34,197,94,0.2)', borderRadius: 8, padding: '10px 14px' }}>
+            <div style={{ fontSize: 10, color: '#22c55e', fontWeight: 700, marginBottom: 4 }}>BÄSTA SYMBOLER</div>
+            <div style={{ fontSize: 14, fontWeight: 700, color: '#f1f5f9' }}>{topBest}</div>
+          </div>
+        )}
+        {topWorst && (
+          <div style={{ background: 'rgba(239,68,68,0.07)', border: '1px solid rgba(239,68,68,0.2)', borderRadius: 8, padding: '10px 14px' }}>
+            <div style={{ fontSize: 10, color: '#ef4444', fontWeight: 700, marginBottom: 4 }}>SÄMSTA SYMBOLER</div>
+            <div style={{ fontSize: 14, fontWeight: 700, color: '#f1f5f9' }}>{topWorst}</div>
+          </div>
+        )}
+        {topRegime && (
+          <div style={{ background: 'rgba(59,130,246,0.07)', border: '1px solid rgba(59,130,246,0.2)', borderRadius: 8, padding: '10px 14px' }}>
+            <div style={{ fontSize: 10, color: '#3b82f6', fontWeight: 700, marginBottom: 4 }}>BÄSTA MARKNADSLÄGE</div>
+            <div style={{ fontSize: 14, fontWeight: 700, color: '#f1f5f9' }}>
+              {regimeSvMap[topRegime.key] || topRegime.key || '–'}
+            </div>
+          </div>
+        )}
+        {totalSignals != null && (
+          <div style={{ background: 'rgba(100,116,139,0.07)', border: '1px solid rgba(100,116,139,0.2)', borderRadius: 8, padding: '10px 14px' }}>
+            <div style={{ fontSize: 10, color: '#64748b', fontWeight: 700, marginBottom: 4 }}>TOTALT ANALYSERADE</div>
+            <div style={{ fontSize: 14, fontWeight: 700, color: '#f1f5f9' }}>{totalSignals.toLocaleString('sv-SE')} signaler</div>
+          </div>
+        )}
+      </div>
+
+      {insightsSv.length > 0 && (
+        <div style={{ borderTop: '1px solid #1e293b', paddingTop: 12 }}>
+          <div style={{ fontSize: 10, color: '#475569', marginBottom: 8, fontWeight: 700 }}>INSIKTER FRÅN SYSTEMET</div>
+          {insightsSv.slice(0, 4).map((txt, i) => (
+            <div key={i} style={{ display: 'flex', gap: 8, marginBottom: 5, fontSize: 12, color: '#94a3b8', lineHeight: 1.4 }}>
+              <span style={{ color: '#3b82f6', flexShrink: 0 }}>→</span>
+              <span>{txt}</span>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ── Empty state ───────────────────────────────────────────────────────────────
 
 function EmptyState() {
@@ -737,6 +819,7 @@ export default function HistoryPage() {
                 title="Vad har systemet lärt sig?"
                 desc="Sammanfattning baserad på analyserade signaler och deras resultat."
               />
+              <SystemConclusion learning={learning} />
               <LearningSummary learning={learning} />
             </div>
           )}

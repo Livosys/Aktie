@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback } from 'react';
-import { SectionHeader } from '../shared.jsx';
+import { SectionHeader, ReplayRunRating } from '../shared.jsx';
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -192,6 +192,7 @@ function RunCard({ run, selected, onSelect }) {
           <span className="rpl-run-stat-label">snitt betyg</span>
         </span>
       </div>
+      <ReplayRunRating summary={{ totalEvents: run.totalEvents, avgTradeScore: run.avgTradeScore }} />
       <div className="rpl-run-created">{fmtDateTime(run.createdAt)}</div>
     </div>
   );
@@ -293,6 +294,51 @@ function InsightsBullets({ insights }) {
           <li key={i}>{txt}</li>
         ))}
       </ul>
+    </div>
+  );
+}
+
+// ── Run Conclusion ────────────────────────────────────────────────────────────
+
+function RunConclusion({ summary, insights }) {
+  if (!summary) return null;
+
+  const lines = [];
+  const avg = summary.avgTradeScore ?? 0;
+  const total = summary.totalEvents ?? 0;
+
+  // Quality verdict
+  if (total < 5) {
+    lines.push('För få händelser för att dra säkra slutsatser från denna körning.');
+  } else if (avg >= 55) {
+    lines.push(`Körningen visar generellt starka signaler (snitt betyg: ${avg}). Upplägget fungerade väl under denna period.`);
+  } else if (avg >= 35) {
+    lines.push(`Körningen visar blandade signaler (snitt betyg: ${avg}). Några lägen var starka, andra svagare.`);
+  } else {
+    lines.push(`Körningen visar generellt svaga signaler (snitt betyg: ${avg}). Marknadsläget var troligen inte optimalt.`);
+  }
+
+  // Best symbol
+  const bestSym  = summary.bestSymbols?.[0];
+  const worstSym = summary.worstSymbols?.[0];
+  if (bestSym)  lines.push(`${bestSym.symbol} presterade bäst med snittbetyg ${bestSym.avgScore} på ${bestSym.events} händelser.`);
+  if (worstSym && worstSym.symbol !== bestSym?.symbol) lines.push(`${worstSym.symbol} hade lägst betyg (${worstSym.avgScore}).`);
+
+  // Regime
+  const regimeStats = insights?.regimeStats || {};
+  const topRegimes = Object.entries(regimeStats).sort((a, b) => b[1] - a[1]).slice(0, 2);
+  if (topRegimes.length > 0) {
+    const rmap = { BULLISH_TREND: 'stark upptrend', BEARISH_TREND: 'stark nedtrend', CHOPPY: 'stökig marknad', RANGE_DAY: 'sidledsdag', TREND_DAY_UP: 'trenddag uppåt', TREND_DAY_DOWN: 'trenddag nedåt', HIGH_VOLATILITY: 'hög volatilitet', PANIC: 'panik', BULLISH: 'upptrend', BEARISH: 'nedtrend', UNKNOWN: 'okänt läge' };
+    const regStr = topRegimes.map(([k, v]) => `${rmap[k] || k} (${v} händelser)`).join(' och ');
+    lines.push(`Vanligaste marknadsläget under körningen var ${regStr}.`);
+  }
+
+  return (
+    <div style={{ background: '#0d1829', border: '1px solid #1e3a5f', borderRadius: 10, padding: '16px 20px', margin: '16px 0' }}>
+      <div style={{ fontSize: 12, fontWeight: 700, color: '#3b82f6', marginBottom: 10, letterSpacing: '0.06em' }}>📝 AUTOMATISK SLUTSATS</div>
+      {lines.map((l, i) => (
+        <p key={i} style={{ fontSize: 13, color: '#94a3b8', margin: i > 0 ? '6px 0 0' : 0, lineHeight: 1.5 }}>{l}</p>
+      ))}
     </div>
   );
 }
@@ -1021,6 +1067,7 @@ export default function ReplayPage() {
                 )}
 
                 {insights && <InsightsBullets insights={insights} />}
+                <RunConclusion summary={detail?.summary} insights={detail?.insights} />
               </div>
 
               {/* Event timeline — only when there are candles */}

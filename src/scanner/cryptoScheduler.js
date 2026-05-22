@@ -8,6 +8,10 @@ const { applyHistoricalEdge }                     = require('./historicalEdge');
 const { applyConfidenceEngine }                   = require('./confidenceEngine');
 const { applyAdaptiveEdge }                       = require('./adaptiveEdgeEngine');
 const { applySetupDNA }                           = require('./setupDnaEngine');
+const { applyWavePhase }                          = require('./wavePhaseEngine');
+const { applyRuleMemory }                         = require('./ruleMemoryEngine');
+const { applySymbolPersonality }                  = require('./symbolPersonalityEngine');
+const { applyRegimeProfile }                      = require('./regimeProfileEngine');
 const { logResults }                              = require('./featureLogger');
 
 const CRYPTO_SYMBOLS = ['BTCUSDT', 'ETHUSDT', 'SOLUSDT'];
@@ -156,7 +160,11 @@ async function runCryptoScan() {
     .map((r) => applyHistoricalEdge(r))
     .map((r) => applyConfidenceEngine(r))
     .map((r) => applyAdaptiveEdge(r))
-    .map((r) => applySetupDNA(r));
+    .map((r) => applyRuleMemory(r))
+    .map((r) => applySymbolPersonality(r))
+    .map((r) => applyRegimeProfile(r))
+    .map((r) => applySetupDNA(r))
+    .map((r) => applyWavePhase(r));
 
   // Feature logging (respects FEATURE_LOGGING_ENABLED env flag)
   logResults(cryptoResults, 'crypto');

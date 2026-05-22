@@ -80,12 +80,15 @@ function useMachineStatus(pollingActive) {
 // ── Pipeline step definitions ─────────────────────────────────────────────────
 
 const PIPELINE_STEPS = [
-  { key: 'backfill',        icon: '📥', label: 'Backfill',          desc: 'Hämtar historiska candles via Alpaca & Binance' },
-  { key: 'replay',          icon: '▶️', label: 'Replay',            desc: 'Spelar upp candles genom hela signalpipelinen' },
-  { key: 'huntSignals',     icon: '🎯', label: 'Hunt signals',      desc: 'Hittar och sparar intressanta signaler' },
-  { key: 'analyzeOutcomes', icon: '📊', label: 'Analyze outcomes',  desc: 'Analyserar vad som hände efter varje signal' },
-  { key: 'updateLearning',  icon: '🧠', label: 'Update learning',   desc: 'Uppdaterar learning-summary med ny statistik' },
-  { key: 'invalidateCaches',icon: '⚡', label: 'Refresh cache',     desc: 'Rensar historicalEdge- och adaptive-cachen' },
+  { key: 'backfill',           icon: '📥', label: 'Backfill',          desc: 'Hämtar historiska candles via Alpaca & Binance' },
+  { key: 'replay',             icon: '▶️', label: 'Replay',            desc: 'Spelar upp candles genom hela signalpipelinen' },
+  { key: 'huntSignals',        icon: '🎯', label: 'Hunt signals',      desc: 'Hittar och sparar intressanta signaler' },
+  { key: 'analyzeOutcomes',    icon: '📊', label: 'Analyze outcomes',  desc: 'Analyserar vad som hände efter varje signal' },
+  { key: 'updateLearning',     icon: '🧠', label: 'Update learning',   desc: 'Uppdaterar learning-summary med ny statistik' },
+  { key: 'buildRuleMemory',    icon: '🎓', label: 'Rule Memory',       desc: 'Bygger regelminne — vilka blockerade signaler som fortsatte starkt' },
+  { key: 'buildSymbolProfiles',icon: '🧬', label: 'Symbol Profiles',   desc: 'Bygger per-symbol beteendeprofiler (win rate, justeringar)' },
+  { key: 'buildRegimeProfiles',icon: '📊', label: 'Regime Profiles',   desc: 'Bygger per-marknadsregim profiler (historisk träffsäkerhet)' },
+  { key: 'invalidateCaches',   icon: '⚡', label: 'Refresh cache',     desc: 'Rensar historicalEdge- och adaptive-cachen' },
 ];
 
 // ── Step status indicator ─────────────────────────────────────────────────────
@@ -135,6 +138,9 @@ function StepDetail({ stepKey, steps }) {
   if (stepKey === 'replay')      return <span className="mc-step-detail">{(s.totalEvents ?? 0).toLocaleString('sv')} events</span>;
   if (stepKey === 'huntSignals') return <span className="mc-step-detail">{(s.totalSignals ?? 0).toLocaleString('sv')} signaler</span>;
   if (stepKey === 'analyzeOutcomes') return <span className="mc-step-detail">{(s.processed ?? 0).toLocaleString('sv')} utfall</span>;
+  if (stepKey === 'buildRuleMemory')     return <span className="mc-step-detail">{(s.totalRules ?? 0).toLocaleString('sv')} regler · {s.watchModeRules ?? 0} watch</span>;
+  if (stepKey === 'buildSymbolProfiles') return <span className="mc-step-detail">{s.totalSymbols ?? 0} symboler · {s.highConfSymbols ?? 0} hög konfidenz</span>;
+  if (stepKey === 'buildRegimeProfiles') return <span className="mc-step-detail">{s.totalRegimes ?? 0} regimer · bäst: {s.bestRegime ?? '–'}</span>;
   if (s.error) return <span className="mc-step-detail mc-step-detail-err">{s.error}</span>;
   return null;
 }
