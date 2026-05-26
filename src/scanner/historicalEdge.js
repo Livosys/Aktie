@@ -20,12 +20,13 @@
 const { loadOutcomes } = require('./signalOutcomeAnalyzer');
 const { loadSignals }  = require('./historicalScanner');
 
-const CACHE_TTL_MS   = 5 * 60 * 1000; // refresh every 5 min
+const CACHE_TTL_MS   = 15 * 60 * 1000; // refresh every 15 min
 const LOOKBACK_DAYS  = 90;             // scan 90 days back for edge data
 const MIN_MATCH      = 5;              // minimum outcomes to consider a key valid
 
 let _cache      = null;
 let _cacheBuiltAt = 0;
+let _rebuildInProgress = false;
 
 // ── Utility ───────────────────────────────────────────────────────────────────
 
@@ -63,8 +64,77 @@ function makeKeys(sym, et, st, nt, sr, dir) {
 
 // ── Index builder ─────────────────────────────────────────────────────────────
 
+function createAccumulator() {
+  return {
+    samples: 0,
+    withResult: 0,
+    wins: 0,
+    sums: {
+      avgMove5: { sum: 0, count: 0 },
+      avgMove10: { sum: 0, count: 0 },
+      avgMove20: { sum: 0, count: 0 },
+      avgMoveUp5: { sum: 0, count: 0 },
+      avgMoveDown5: { sum: 0, count: 0 },
+    },
+    horizons: new Set(),
+  };
+}
+
+function addOutcome(acc, o) {
+  acc.samples++;
+
+  if (o.success !== null) {
+    acc.withResult++;
+    if (o.success === true) acc.wins++;
+  }
+
+  function addField(key, outcomeKey, field) {
+    const v = o[outcomeKey]?.[field];
+    if (v != null && !isNaN(v)) {
+      acc.sums[key].sum += v;
+      acc.sums[key].count++;
+    }
+  }
+
+  addField('avgMove5', 'outcome5', 'priceChangePct');
+  addField('avgMove10', 'outcome10', 'priceChangePct');
+  addField('avgMove20', 'outcome20', 'priceChangePct');
+  addField('avgMoveUp5', 'outcome5', 'maxMoveUp');
+  addField('avgMoveDown5', 'outcome5', 'maxMoveDown');
+
+  for (const n of [3, 5, 10, 20, 30]) {
+    if (o[`outcome${n}`] != null) acc.horizons.add(n);
+  }
+}
+
+function finalizeAccumulator(acc) {
+  if (!acc || acc.samples === 0) return null;
+
+  function avg(key) {
+    const s = acc.sums[key];
+    if (!s || s.count === 0) return null;
+    return round(s.sum / s.count, 4);
+  }
+
+  const horizons = [...acc.horizons].sort((a, b) => a - b);
+
+  return {
+    samples:      acc.samples,
+    withResult:   acc.withResult,
+    winRate:      acc.withResult > 0 ? round(acc.wins / acc.withResult, 4) : null,
+    avgMove5:     avg('avgMove5'),
+    avgMove10:    avg('avgMove10'),
+    avgMove20:    avg('avgMove20'),
+    avgMoveUp5:   avg('avgMoveUp5'),
+    avgMoveDown5: avg('avgMoveDown5'),
+    bestHorizon:  horizons.length > 0 ? `${horizons[horizons.length - 1]}` : null,
+  };
+}
+
 function buildIndex(outcomes, signalMap) {
-  const index = {};
+  const indexAcc = {};
+  const symbolAcc = new Map();
+  const symbols = new Set();
 
   for (const o of outcomes) {
     const sig = signalMap.get(o.signalId) || {};
@@ -75,13 +145,29 @@ function buildIndex(outcomes, signalMap) {
     const nt  = o.narrowType || sig.narrowType || 'none';
     const sym = o.symbol;
 
+    if (sym) {
+      symbols.add(sym);
+      if (!symbolAcc.has(sym)) symbolAcc.set(sym, createAccumulator());
+      addOutcome(symbolAcc.get(sym), o);
+    }
+
     for (const key of makeKeys(sym, et, st, nt, sr, dir)) {
-      if (!index[key]) index[key] = [];
-      index[key].push(o);
+      if (!indexAcc[key]) indexAcc[key] = createAccumulator();
+      addOutcome(indexAcc[key], o);
     }
   }
 
-  return index;
+  const index = {};
+  for (const [key, acc] of Object.entries(indexAcc)) {
+    index[key] = finalizeAccumulator(acc);
+  }
+
+  const symbolStats = new Map();
+  for (const [symbol, acc] of symbolAcc.entries()) {
+    symbolStats.set(symbol, finalizeAccumulator(acc));
+  }
+
+  return { index, symbolStats, symbols: [...symbols] };
 }
 
 // ── Stats ─────────────────────────────────────────────────────────────────────
@@ -180,30 +266,64 @@ function isStale() {
   return !_cache || (Date.now() - _cacheBuiltAt) > CACHE_TTL_MS;
 }
 
+function formatMemoryUsage() {
+  const m = process.memoryUsage();
+  return `heap=${Math.round(m.heapUsed / 1024 / 1024)}MB rss=${Math.round(m.rss / 1024 / 1024)}MB ext=${Math.round(m.external / 1024 / 1024)}MB`;
+}
+
 function buildCache() {
+  if (_rebuildInProgress) {
+    console.log('[HistoricalEdge] Cache rebuild already running — keeping current cache');
+    return;
+  }
+
+  _rebuildInProgress = true;
   const end   = new Date().toISOString().slice(0, 10);
   const d     = new Date(Date.now() - LOOKBACK_DAYS * 86400000);
   const start = d.toISOString().slice(0, 10);
 
   try {
+    console.log(`[HistoricalEdge] Cache rebuild starting (${start} → ${end}) — ${formatMemoryUsage()}`);
     const outcomes  = loadOutcomes(start, end, null);
     const signals   = loadSignals(start, end, null);
     const signalMap = new Map(signals.map((s) => [s.signalId, s]));
-    const index     = buildIndex(outcomes, signalMap);
-    const symbols   = [...new Set(outcomes.map((o) => o.symbol))];
+    const built     = buildIndex(outcomes, signalMap);
 
-    _cache = { index, signalMap, outcomes, symbols, start, end };
+    _cache = {
+      index: built.index,
+      symbolStats: built.symbolStats,
+      symbols: built.symbols,
+      totalOutcomes: outcomes.length,
+      signalCount: signals.length,
+      start,
+      end,
+    };
     _cacheBuiltAt = Date.now();
 
     if (outcomes.length > 0) {
       console.log(
-        `[HistoricalEdge] Cache built — ${outcomes.length} outcomes, ${signals.length} signals (${start} → ${end})`
+        `[HistoricalEdge] Cache built — ${outcomes.length} outcomes, ${signals.length} signals (${start} → ${end}) — ${formatMemoryUsage()}`
       );
     }
   } catch (err) {
-    console.warn('[HistoricalEdge] Cache build failed:', err.message);
-    _cache = { index: {}, signalMap: new Map(), outcomes: [], symbols: [], start, end };
-    _cacheBuiltAt = Date.now();
+    if (_cache) {
+      console.warn('[HistoricalEdge] Cache build failed — keeping previous cache:', err.message);
+      _cacheBuiltAt = Date.now();
+    } else {
+      console.warn('[HistoricalEdge] Cache build failed — no previous cache available:', err.message);
+      _cache = {
+        index: {},
+        symbolStats: new Map(),
+        symbols: [],
+        totalOutcomes: 0,
+        signalCount: 0,
+        start,
+        end,
+      };
+      _cacheBuiltAt = Date.now();
+    }
+  } finally {
+    _rebuildInProgress = false;
   }
 }
 
@@ -255,9 +375,9 @@ function getEdge(liveResult) {
   let matchLevel      = null;
 
   for (let i = 0; i < keys.length; i++) {
-    const bucket = _cache.index[keys[i]];
-    if (bucket && bucket.length >= MIN_MATCH) {
-      matchedOutcomes = bucket;
+    const bucketStats = _cache.index[keys[i]];
+    if (bucketStats && bucketStats.samples >= MIN_MATCH) {
+      matchedOutcomes = bucketStats;
       matchLevel      = levelLabels[i];
       break;
     }
@@ -265,7 +385,7 @@ function getEdge(liveResult) {
 
   if (!matchedOutcomes) return fallbackEdge('no_match');
 
-  const stats = calcEdgeStats(matchedOutcomes);
+  const stats = matchedOutcomes;
   if (!stats) return fallbackEdge('no_stats');
 
   const conf = calcConfidenceAndAdjustment(stats);
@@ -327,13 +447,12 @@ function getEdgeForSymbol(symbol) {
   ensureCache();
   if (!_cache) return { symbol, outcomeCount: 0, stats: null };
 
-  const outcomes = _cache.outcomes.filter((o) => o.symbol === symbol);
-  const stats    = calcEdgeStats(outcomes);
+  const stats    = _cache.symbolStats.get(symbol) || null;
   const conf     = stats ? calcConfidenceAndAdjustment(stats) : null;
 
   return {
     symbol,
-    outcomeCount: outcomes.length,
+    outcomeCount: stats?.samples ?? 0,
     stats,
     confidence: conf?.confidence ?? 'low',
     adjustment: conf?.adjustment ?? 0,
@@ -353,8 +472,8 @@ function getEdgeSummary() {
     ok:       true,
     builtAt:  new Date(_cacheBuiltAt).toISOString(),
     lookback: { start: _cache.start, end: _cache.end },
-    total:    _cache.outcomes.length,
-    signals:  _cache.signalMap.size,
+    total:    _cache.totalOutcomes,
+    signals:  _cache.signalCount,
     symbols:  perSymbol,
   };
 }
@@ -364,8 +483,7 @@ function getEdgeSummary() {
  */
 function invalidateCache() {
   _cacheBuiltAt = 0;
-  _cache        = null;
-  console.log('[HistoricalEdge] Cache invalidated');
+  console.log('[HistoricalEdge] Cache marked stale');
 }
 
 module.exports = {

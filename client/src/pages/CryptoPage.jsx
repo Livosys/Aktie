@@ -37,6 +37,31 @@ function useCryptoScan() {
   return { data, loading, error, lastFetch, refresh: fetchData };
 }
 
+function DataStatusPanel({ data, lastFetch }) {
+  const updatedAt = data?.lastScan ? new Date(data.lastScan) : lastFetch;
+  const ageMs = updatedAt ? Date.now() - updatedAt.getTime() : null;
+  const ageMin = ageMs != null ? Math.round(ageMs / 60000) : null;
+  const isStale = ageMin != null && ageMin > 15;
+  const isOld = ageMin != null && ageMin > 5;
+  const statusLabel = isStale ? 'Gammal' : isOld ? 'Osäker' : 'Live';
+  const statusColor = isStale ? '#ef4444' : isOld ? '#eab308' : '#22c55e';
+  const timeStr = updatedAt ? updatedAt.toLocaleTimeString('sv-SE', { hour12: false }) : '–';
+
+  return (
+    <div style={{ background: '#0f172a', border: '1px solid #1e293b', borderRadius: 8, padding: '10px 14px', display: 'flex', flexWrap: 'wrap', gap: 14, alignItems: 'center', fontSize: 12, marginBottom: 2 }}>
+      <span style={{ color: '#64748b' }}>Datakälla: <strong style={{ color: '#e2e8f0' }}>Binance</strong></span>
+      <span style={{ color: '#64748b' }}>Senast uppdaterad: <strong style={{ color: '#e2e8f0', fontFamily: 'monospace' }}>{timeStr}</strong></span>
+      {ageMin != null && <span style={{ color: '#64748b' }}>Dataålder: <strong style={{ color: '#e2e8f0' }}>{ageMin < 1 ? '< 1 min' : `${ageMin} min`}</strong></span>}
+      <span style={{ color: '#64748b' }}>Status: <strong style={{ color: statusColor }}>{statusLabel}</strong></span>
+      {isStale && (
+        <span style={{ color: '#ef4444', fontSize: 11, background: 'rgba(239,68,68,0.08)', borderRadius: 5, padding: '2px 8px', border: '1px solid rgba(239,68,68,0.25)' }}>
+          Kryptodata är gammal. Dessa signaler används inte som live-beslut.
+        </span>
+      )}
+    </div>
+  );
+}
+
 export default function CryptoPage() {
   const { data, loading, error, lastFetch, refresh } = useCryptoScan();
   const { processResults } = useAlerts();
@@ -73,7 +98,7 @@ export default function CryptoPage() {
     <div>
       <div className="page-hero">
         <div className="hero-left">
-          <div className="hero-title hero-accent-orange">Krypto Scanner</div>
+          <div className="hero-title hero-accent-orange">Kryptobevakning</div>
           <div className="hero-sub">
             Kör 24/7 via Binance.{' '}
             <strong>BTC · ETH · SOL</strong> — vi kollar om priset är redo att röra sig.
@@ -99,6 +124,7 @@ export default function CryptoPage() {
 
       {!loading && (
         <>
+          <DataStatusPanel data={data} lastFetch={lastFetch} />
           <SummaryStrip results={results} />
           <TopSignalsPanel results={results} tvLinkFn={cryptoTvLink} />
           <LiveFilterBar filters={filters} onChange={setFilters} />

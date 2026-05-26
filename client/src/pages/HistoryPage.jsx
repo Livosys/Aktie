@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { SectionHeader } from '../shared.jsx';
+import { getTradingViewUrl, normalizeTradingViewSymbol, openTradingView } from '../utils/tradingView.js';
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -29,24 +30,8 @@ function fmtSwedish(iso) {
   });
 }
 
-const TV_EXCHANGE_MAP = {
-  BTCUSDT: 'BINANCE',
-  ETHUSDT: 'BINANCE',
-  SOLUSDT: 'BINANCE',
-  AAPL:    'NASDAQ',
-  NVDA:    'NASDAQ',
-  TSLA:    'NASDAQ',
-  AMD:     'NASDAQ',
-  MSFT:    'NASDAQ',
-  META:    'NASDAQ',
-  AMZN:    'NASDAQ',
-  QQQ:     'NASDAQ',
-};
-
 function buildTradingViewUrl(symbol) {
-  const exchange = TV_EXCHANGE_MAP[symbol] || 'NASDAQ';
-  const tvSymbol = `${exchange}:${symbol}`;
-  return `https://www.tradingview.com/chart/di3qlKNB/?symbol=${encodeURIComponent(tvSymbol)}&interval=2`;
+  return getTradingViewUrl(symbol);
 }
 
 function copyToClipboard(text) {
@@ -76,8 +61,8 @@ function signalToSv(signal) {
     SHORT_WATCH:     'Möjlig nedgång – bevaka',
     SHORT_TRIGGERED: 'Möjlig nedgång – triggrad',
     WAIT:            'Vänta',
-    WAIT_PULLBACK:   'Vänta på pullback',
-    WIDE_REVERSAL_WATCH: 'Möjlig reversal',
+    WAIT_PULLBACK:   'Vänta på tillbakagång',
+    WIDE_REVERSAL_WATCH: 'Möjlig vändning',
   };
   return map[signal] ?? signal ?? '–';
 }
@@ -300,8 +285,8 @@ function buildReviewText(signal, utcLabel, sweLabel) {
   return [
     `Symbol: ${signal.symbol}`,
     `Signal-tid UTC: ${utcShort}`,
-    `TradingView (Sverige): ${sweLabel}`,
-    `Timeframe: 2m`,
+    `TradingView-tid (Sverige): ${sweLabel}`,
+    `Tidsram: 2m`,
     `Pris vid signal: ${price}`,
     `Signal: ${signalSv}`,
     `Tradebetyg: ${signal.tradeScore ?? '–'}`,
@@ -337,7 +322,7 @@ function SignalCard({ signal, outcome }) {
   const reviewText   = buildReviewText(signal, utcLabel, sweLabel);
 
   function handleOpenChart() {
-    window.open(tvUrl, '_blank', 'noopener,noreferrer');
+    openTradingView(normalizeTradingViewSymbol(signal.symbol));
     copyToClipboard(sweDate);
     setChartToast(true);
     setTimeout(() => setChartToast(false), 3500);

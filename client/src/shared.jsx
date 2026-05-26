@@ -1,14 +1,23 @@
 import React, { useState } from 'react';
 import { useAlerts } from './alertContext.jsx';
+import { getTradingViewUrl } from './utils/tradingView.js';
+import {
+  PreMovePanel,
+  FatiguePanel,
+  FakeoutDnaPanel,
+  StateGraphPanel,
+  OrchestratorPanel,
+  DecayPanel,
+} from './engine-panels.jsx';
 
 // ── Utilities ─────────────────────────────────────────────────────────────────
 
 export function tvLink(symbol) {
-  return `https://www.tradingview.com/chart/?symbol=NASDAQ:${symbol}`;
+  return getTradingViewUrl(symbol, 'stocks');
 }
 
 export function cryptoTvLink(symbol) {
-  return `https://www.tradingview.com/chart/?symbol=BINANCE:${symbol}`;
+  return getTradingViewUrl(symbol, 'crypto');
 }
 
 export function fmtTime(iso) {
@@ -152,6 +161,7 @@ export function getAction(r) {
   const tfs = r.threeFingerSpread?.active;
   const avoidState = ['WIDE_AVOID', 'THREE_FINGER_SPREAD_AVOID'].includes(r.state);
   if (blocked || tfs || avoidState) return { key: 'AVOID',     label: 'UNDVIK',       color: '#7c3aed' };
+  if (r.watchMode || r.momentumWatchMode || r.liquiditySweepWatchMode) return { key: 'WATCH_MODE', label: 'BEVAKA', color: '#eab308' };
   const sig   = r.signal;
   const score = r.tradeScore ?? 0;
   if ((sig === 'LONG_TRIGGERED'  || sig === 'LONG_WATCH')  && score >= 30) return { key: 'BUY_WATCH',  label: 'KÖP BEVAKA',  color: '#22c55e' };
@@ -183,7 +193,7 @@ const DISPLAY_SIGNAL_MAP = {
   LAG_KVALITET:   { cls: 'badge-yellow', label: '🟡 Låg kvalitet – vänta' },
   JAGA_INTE:      { cls: 'badge-purple', label: '⚠️ Jaga inte' },
   VANTA_PULLBACK: { cls: 'badge-yellow', label: '🟡 Rörelsen har redan börjat' },
-  REVERSAL:       { cls: 'badge-orange', label: 'Reversal?' },
+  REVERSAL:       { cls: 'badge-orange', label: 'Vändning?' },
   VANTA:          { cls: 'badge-yellow', label: '🟡 Vänta' },
 };
 
@@ -254,7 +264,7 @@ const SIGNAL_META = {
   SHORT_TRIGGERED:     { cls: 'badge-red',    label: '🔴 SHORT TRIG' },
   WIDE_REVERSAL_WATCH: { cls: 'badge-orange', label: 'REVERSAL' },
   WAIT:                { cls: 'badge-yellow', label: '🟡 VÄNTA' },
-  WAIT_PULLBACK:       { cls: 'badge-yellow', label: '🟡 VÄNTA PB' },
+  WAIT_PULLBACK:       { cls: 'badge-yellow', label: '🟡 Vänta på bättre läge' },
   NO_TRADE:            { cls: 'badge-gray',   label: '○ INGEN TRADE' },
 };
 
@@ -281,7 +291,7 @@ export function RiskBadge({ r }) {
   const { label, color } = getRiskLevel(r);
   return (
     <span style={{ background: `${color}18`, border: `1px solid ${color}44`, color, borderRadius: 5, fontSize: 10, fontWeight: 700, padding: '2px 7px' }}>
-      RISK: {label}
+      Risk: {label}
     </span>
   );
 }
@@ -376,10 +386,10 @@ export function BestCard({ r, rank }) {
           📈 TradingView
         </a>
         <button className="btn btn-copy" onClick={() => handleCopy('alert')}>
-          {copied === 'alert' ? '✓ Kopierat' : '📋 Alert'}
+          {copied === 'alert' ? '✓ Kopierat' : '📋 Larmtext'}
         </button>
-        <button className="btn btn-copy" onClick={() => handleCopy('claude')}>
-          {copied === 'claude' ? '✓ Kopierat' : '🤖 Claude'}
+        <button className="btn btn-ai" onClick={() => handleCopy('claude')}>
+          {copied === 'claude' ? '✓ Kopierat' : '✨ Fråga AI'}
         </button>
       </div>
     </div>
@@ -430,8 +440,8 @@ export function TradeScoreBadge({ score }) {
 
 export function NarrowTypeBadge({ narrowType }) {
   if (!narrowType || narrowType === 'none') return <span className="val-null">–</span>;
-  if (narrowType === 'coil_flat')  return <span className="badge badge-yellow" title="Coil/Flat — båda SMAs är flacka, klassisk fjäder-setup">Coil</span>;
-  if (narrowType === 'attack_200') return <span className="badge badge-blue"   title="Attack 200 — SMA20 rör sig mot SMA200, möjlig kollision">A200</span>;
+  if (narrowType === 'coil_flat')  return <span className="badge badge-yellow" title="Sammandragning — båda snitten är flacka">Ihoptryckt</span>;
+  if (narrowType === 'attack_200') return <span className="badge badge-blue"   title="SMA20 rör sig mot SMA200">Mot 200</span>;
   return <span className="val-null">–</span>;
 }
 
@@ -456,7 +466,7 @@ export function EventBadge({ eventType }) {
     BEARISH_COLOR_CHANGE:       '🔴 Färgbyte ned',
     REGULAR_PULLBACK:           '→ Trend',
     THREE_FINGER_SPREAD_AVOID:  '⚠️ Jaga ej',
-    WIDE_REVERSAL_WATCH:        'Reversal',
+    WIDE_REVERSAL_WATCH:        'Vändning',
     BREAKOUT_ALREADY_OCCURRED:  '🚀 Redan brutet',
   };
   return (
@@ -530,8 +540,8 @@ function SymbolRow({ r }) {
           <button className="btn btn-copy" onClick={() => handleCopy('alert')} title="Kopiera alert">
             {copied === 'alert' ? '✓' : '📋'}
           </button>
-          <button className="btn btn-copy" onClick={() => handleCopy('claude')} title="Kopiera Claude-prompt">
-            {copied === 'claude' ? '✓' : '🤖'}
+          <button className="btn btn-ai" onClick={() => handleCopy('claude')} title="Fråga AI">
+            {copied === 'claude' ? '✓' : '✨'}
           </button>
         </div>
       </td>
@@ -556,7 +566,7 @@ export function SymbolTable({ rows }) {
             <th>Händelse</th>
             <th title="För långt ifrån — jaga inte entry">För långt</th>
             <th title="Ovanligt stor candle jämfört med senaste 20">Stor candle</th>
-            <th title="Narrow-typ: Coil/Flat eller Attack 200">Typ</th>
+            <th title="Typ av ihoptryckt läge">Typ</th>
             <th title="Basbetyg — hur bra narrow state-zonen är (0–100)">Basbetyg</th>
             <th title="Tradebetyg — om det finns bra entry just nu (0–100)">Tradebetyg</th>
             <th>SMA20</th><th>SMA200</th><th>SMA Gap%</th><th>RSI</th>
@@ -595,8 +605,8 @@ function ActiveSignalRow({ r }) {
       <td>
         <div className="actions-cell">
           <a className="btn btn-tv" href={tvLink(r.symbol)} target="_blank" rel="noopener noreferrer">TV</a>
-          <button className="btn btn-copy" onClick={() => { copyText(claudePrompt(r)); setCopied('y'); setTimeout(() => setCopied(''), 1500); }} title="Kopiera Claude-prompt">
-            {copied ? '✓' : '🤖'}
+          <button className="btn btn-ai" onClick={() => { copyText(claudePrompt(r)); setCopied('y'); setTimeout(() => setCopied(''), 1500); }} title="Fråga AI">
+            {copied ? '✓' : '✨'}
           </button>
         </div>
       </td>
@@ -796,7 +806,7 @@ export function GuideBox() {
           <li><strong>🐘 Stor kraftig candle</strong> = ovanligt stor candle som kan visa starkt momentum.</li>
           <li><strong>📊 Basbetyg</strong> = hur bra narrow state-zonen är (0–100).</li>
           <li><strong>📊 Tradebetyg</strong> = om det finns ett bra entryläge just nu (0–100).</li>
-          <li><strong>Coil</strong> = båda SMAs är flacka — klassisk fjäder-setup. <strong>A200</strong> = SMA20 rör sig mot SMA200.</li>
+          <li><strong>Ihoptryckt</strong> = båda snitten är flacka. <strong>Mot 200</strong> = SMA20 rör sig mot SMA200.</li>
           <li><strong>🚀 Redan brutet</strong> = utbrottet har redan hänt. Jaga inte priset.</li>
           <li><strong>🟢 Long</strong> = möjlig köpsignal. <strong>🔴 Short</strong> = möjlig säljsignal.</li>
         </ul>
@@ -857,14 +867,15 @@ export function HealthChips({ r }) {
   const sig = r.signal;
   const timingGood = sig === 'LONG_TRIGGERED' || sig === 'SHORT_TRIGGERED';
   const timingWarn = sig === 'LONG_WATCH' || sig === 'SHORT_WATCH';
-  const timingVal  = timingGood ? 'Nu' : timingWarn ? 'Snart' : 'Vänta';
+  const timingWatch = r.watchMode || r.momentumWatchMode || r.liquiditySweepWatchMode;
+  const timingVal  = timingGood ? 'Nu' : timingWarn || timingWatch ? 'Bevaka' : 'Vänta';
 
   return (
     <div className="health-chips">
       <Chip label="Trend"    value={trendVal}  mode={trendMode} />
       <Chip label="Position" value={posVal}    mode={posMode} />
       <Chip label="Risk"     value={riskVal}   mode={riskBad ? 'bad' : 'good'} />
-      <Chip label="Timing"   value={timingVal} mode={timingGood ? 'good' : timingWarn ? 'warn' : ''} />
+      <Chip label="Timing"   value={timingVal} mode={timingGood ? 'good' : (timingWarn || timingWatch) ? 'warn' : ''} />
     </div>
   );
 }
@@ -1191,6 +1202,14 @@ export function SymbolCard({ r, tvLinkFn }) {
       {open && (
         <div className="symbol-card-detail">
           <WhyBox r={r} />
+          <MtfPanel r={r} />
+          <MomentumIntelligencePanel r={r} />
+          <PreMovePanel r={r} />
+          <FatiguePanel r={r} />
+          <DecayPanel r={r} />
+          <StateGraphPanel r={r} />
+          <FakeoutDnaPanel r={r} />
+          <ScoreCalibrationPanel r={r} />
           <ConfidencePanel r={r} />
           <AdaptiveEdgePanel r={r} />
           <RuleMemoryPanel r={r} />
@@ -1207,7 +1226,7 @@ export function SymbolCard({ r, tvLinkFn }) {
             {r.target1Long  != null && <div className="stat-row">Mål Long <span className="s-green">{r.target1Long}</span></div>}
             {r.target1Short != null && <div className="stat-row">Mål Short <span className="s-red">{r.target1Short}</span></div>}
             {r.narrowScore  != null && <div className="stat-row">Basbetyg <span>{r.narrowScore}</span></div>}
-            {r.narrowType && r.narrowType !== 'none' && <div className="stat-row">Typ <span>{r.narrowType === 'coil_flat' ? 'Coil/Flat' : 'Attack 200'}</span></div>}
+            {r.narrowType && r.narrowType !== 'none' && <div className="stat-row">Typ <span>{r.narrowType === 'coil_flat' ? 'Ihoptryckt' : 'Mot 200'}</span></div>}
           </div>
         </div>
       )}
@@ -1425,7 +1444,7 @@ export function AutoFilterBanner({ autoFilter }) {
     <div className="af-banner">
       <span className="af-banner-icon">⚠</span>
       <div>
-        <div className="af-banner-title">Motorn blockerar detta läge</div>
+        <div className="af-banner-title">Systemet stoppar signalen för säkerhet</div>
         {autoFilter.reasonSv && <div className="af-banner-reason">{autoFilter.reasonSv}</div>}
       </div>
     </div>
@@ -1438,7 +1457,7 @@ const REGIME_SHORT = {
   BULLISH_TREND:  'Upptrend',   BEARISH_TREND:   'Nedtrend',
   TREND_DAY_UP:   'Trenddag ↑', TREND_DAY_DOWN:  'Trenddag ↓',
   CHOPPY:         'Stökig',     RANGE_DAY:       'Sidleds',
-  HIGH_VOLATILITY:'Hög vol.',   PANIC:           'Panik',
+  HIGH_VOLATILITY:'Svänger mycket', PANIC:        'Stressig marknad',
   UNKNOWN:        'Okänd',
 };
 
@@ -1478,7 +1497,7 @@ export function SetupDNAPanel({ r }) {
 
   const biasIcon  = historicalBias === 'bullish' ? '↑' : historicalBias === 'bearish' ? '↓' : '→';
   const biasCls   = historicalBias === 'bullish' ? 'dna-bias-bull' : historicalBias === 'bearish' ? 'dna-bias-bear' : 'dna-bias-neutral';
-  const biasLabel = historicalBias === 'bullish' ? 'Bullish historik' : historicalBias === 'bearish' ? 'Bearish historik' : 'Neutral historik';
+  const biasLabel = historicalBias === 'bullish' ? 'Historik: uppgång' : historicalBias === 'bearish' ? 'Historik: nedgång' : 'Historik: neutral';
 
   const winRatePct = winRate != null ? Math.round(winRate * 100) : null;
   const winRateColor = winRatePct == null ? '' : winRatePct >= 60 ? 'dna-stat-green' : winRatePct >= 50 ? 'dna-stat-yellow' : 'dna-stat-red';
@@ -1489,10 +1508,10 @@ export function SetupDNAPanel({ r }) {
       <div className="dna-panel-header">
         <span className="dna-panel-title">🧬 Setup DNA</span>
         <div className="dna-panel-meta">
-          <span className="dna-badge-sim" title="Genomsnittlig likhet hos matchande setups">
-            Sim {similarityScore}
+          <span className="dna-badge-sim" title="Genomsnittlig likhet hos matchande historiska lägen">
+            Likhet {similarityScore}
           </span>
-          <span className="dna-badge-count">{matchedSetups} setups</span>
+          <span className="dna-badge-count">{matchedSetups} liknande lägen</span>
         </div>
       </div>
 
@@ -1503,15 +1522,15 @@ export function SetupDNAPanel({ r }) {
           <span className={`dna-stat-val ${winRateColor}`}>{fmtWinRate(winRate)}</span>
         </div>
         <div className="dna-stat">
-          <span className="dna-stat-label">Avg vinst</span>
+          <span className="dna-stat-label">Snitt uppgång</span>
           <span className="dna-stat-val dna-stat-green">{fmtMovePct(avgMove)}</span>
         </div>
         <div className="dna-stat">
-          <span className="dna-stat-label">Avg förlust</span>
+          <span className="dna-stat-label">Snitt nedgång</span>
           <span className="dna-stat-val dna-stat-red">{fmtMovePct(avgFailMove)}</span>
         </div>
         <div className={`dna-stat dna-bias ${biasCls}`}>
-          <span className="dna-stat-label">Historik</span>
+          <span className="dna-stat-label">Historisk riktning</span>
           <span className="dna-stat-val">{biasIcon} {biasLabel}</span>
         </div>
       </div>
@@ -1552,7 +1571,7 @@ export function SetupDNAPanel({ r }) {
             className="dna-matches-toggle"
             onClick={() => setShowMatches(s => !s)}
           >
-            <span>📋 Liknande historiska setups ({topMatches.length})</span>
+            <span>📋 Liknande historiska lägen ({topMatches.length})</span>
             <span className="dna-matches-chevron">{showMatches ? '▲' : '▼'}</span>
           </button>
           {showMatches && (
@@ -1590,7 +1609,7 @@ const FACTOR_LABEL_SV = {
   hour:                    'Tiden på dagen påverkar',
   relVolBucket:            'Volymen påverkar',
   priceToZoneBucket:       'Avståndet till zonen påverkar',
-  threeFingerSpread:       'Three Finger Spread aktiv',
+  threeFingerSpread:       'Priset är för långt ifrån',
   breakoutAlreadyOccurred: 'Rörelsen har redan börjat',
 };
 
@@ -1626,12 +1645,12 @@ export function AdaptiveEdgePanel({ r }) {
   return (
     <div className="ae-panel">
       <div className="ae-panel-header">
-        <span className="ae-panel-title">🧠 Adaptiv historik</span>
+        <span className="ae-panel-title">🧠 Vad historiken säger</span>
         <div className="ae-panel-meta">
           <span className={`ae-conf-badge ae-conf-${confidence}`}>{aeConfidenceSv(confidence)}</span>
           {edgeScore != null && (
-            <span className="ae-edge-score" title={`Edge-styrka: ${edgeScore} av 100`}>
-              Edge {edgeScore}
+            <span className="ae-edge-score" title={`Kantstyrka: ${edgeScore} av 100`}>
+              Styrka {edgeScore}
             </span>
           )}
           {sampleSize != null && (
@@ -1735,7 +1754,7 @@ export function SymbolPersonalityPanel({ r }) {
     <div className="sp-panel">
       <div className="sp-panel-header">
         <span className="sp-panel-icon">🧬</span>
-        <span className="sp-panel-title">Symbol Memory</span>
+        <span className="sp-panel-title">Symbolhistorik</span>
         <span className="sp-conf-badge" style={{ color: 'var(--muted)', borderColor: 'rgba(255,255,255,.15)' }}>{confLabel}</span>
         {adjLabel && (
           <span className="sp-adj-badge" style={{ color: adjColor }}>{adjLabel}</span>
@@ -1743,11 +1762,11 @@ export function SymbolPersonalityPanel({ r }) {
       </div>
       <div className="sp-panel-msg">{sp.personalitySv}</div>
       <div className="sp-panel-stats">
-        <span>Win rate: <strong>{sp.winRate != null ? `${(sp.winRate * 100).toFixed(1)}%` : '–'}</strong></span>
+        <span>Träffsäkerhet: <strong>{sp.winRate != null ? `${(sp.winRate * 100).toFixed(1)}%` : '–'}</strong></span>
         {sp.fakeoutRate != null && (
           <>
             <span className="sp-sep">·</span>
-            <span>Fakeout: <strong>{(sp.fakeoutRate * 100).toFixed(0)}%</strong> av misslyckade</span>
+            <span>Falsk rörelse: <strong>{(sp.fakeoutRate * 100).toFixed(0)}%</strong> av misslyckade</span>
           </>
         )}
         {sp.bestRegimes && sp.bestRegimes.length > 0 && (
@@ -1781,7 +1800,7 @@ export function RegimeProfilePanel({ r }) {
     <div className="rp-panel">
       <div className="rp-panel-header">
         <span className="rp-panel-icon">📊</span>
-        <span className="rp-panel-title">Marknadsregim</span>
+        <span className="rp-panel-title">Marknadsläge</span>
         <span className="rp-regime-badge">{rp.descSv}</span>
         {rp.scoreAdjustment !== 0 && (
           <span className="rp-adj-badge" style={{ color: adjColor }}>{adjLabel}</span>
@@ -1789,12 +1808,196 @@ export function RegimeProfilePanel({ r }) {
       </div>
       <div className="rp-panel-insight">{rp.insightSv}</div>
       <div className="rp-panel-stats">
-        <span>Win rate: <strong>{rp.winRate != null ? `${(rp.winRate * 100).toFixed(1)}%` : '–'}</strong></span>
+        <span>Träffsäkerhet: <strong>{rp.winRate != null ? `${(rp.winRate * 100).toFixed(1)}%` : '–'}</strong></span>
         <span className="rp-sep">·</span>
         <span>{rp.samples?.toLocaleString('sv-SE')} signaler</span>
         <span className="rp-sep">·</span>
         <span style={{ color: 'var(--muted)', fontSize: 11 }}>{confLabel}</span>
       </div>
+    </div>
+  );
+}
+
+// ── ScoreCalibrationPanel ─────────────────────────────────────────────────────
+
+export function ScoreCalibrationPanel({ r }) {
+  const cal = r?.scoreCalibration;
+  if (!cal || !cal.enabled) return null;
+
+  const { originalScore, adjustment, calibratedScore, bucketWinRate, bucketSamples,
+          scoreRange, matchLevel, confidence, fakeoutRate, explanationSv } = cal;
+
+  if (adjustment === 0 && !explanationSv) return null;
+
+  const adjAbs  = Math.abs(adjustment ?? 0);
+  const adjSign = (adjustment ?? 0) > 0 ? '+' : (adjustment ?? 0) < 0 ? '–' : '±';
+  const adjCls  = (adjustment ?? 0) > 0 ? 'scal-adj-pos' : (adjustment ?? 0) < 0 ? 'scal-adj-neg' : 'scal-adj-zero';
+
+  const matchLabelMap = { full: 'Exakt match', mid: 'Delvis match', broad: 'Bred match', global: 'Global' };
+  const confColorMap  = { high: 'var(--green)', medium: '#facc15', low: 'var(--muted)', insufficient: 'var(--muted)' };
+
+  return (
+    <div className="scal-panel">
+      <div className="scal-panel-header">
+        <span className="scal-panel-icon">🎯</span>
+        <span className="scal-panel-title">Poängjustering</span>
+        <span className="scal-range-badge">{scoreRange}</span>
+        {adjAbs > 0
+          ? <span className={`scal-adj-badge ${adjCls}`}>{adjSign}{adjAbs}p</span>
+          : <span className="scal-adj-badge scal-adj-zero">±0p</span>
+        }
+      </div>
+
+      <div className="scal-score-row">
+        <span className="scal-score-orig">Original: <strong>{originalScore}</strong></span>
+        {adjustment !== 0 && <>
+          <span className="scal-arrow">→</span>
+          <span className="scal-score-cal">Kalibrerat: <strong>{calibratedScore}</strong></span>
+        </>}
+      </div>
+
+      <div className="scal-stats-row">
+        <span>Träffsäkerhet i grupp: <strong>{bucketWinRate != null ? `${(bucketWinRate * 100).toFixed(1)}%` : '–'}</strong></span>
+        <span className="scal-sep">·</span>
+        <span>{bucketSamples?.toLocaleString('sv-SE')} signaler</span>
+        {fakeoutRate != null && <>
+          <span className="scal-sep">·</span>
+          <span>Falsk rörelse: {(fakeoutRate * 100).toFixed(0)}%</span>
+        </>}
+        <span className="scal-sep">·</span>
+        <span style={{ color: confColorMap[confidence] || 'var(--muted)', fontSize: 10.5 }}>
+          {matchLabelMap[matchLevel] || matchLevel}
+        </span>
+      </div>
+
+      {explanationSv && <div className="scal-explanation">{explanationSv}</div>}
+    </div>
+  );
+}
+
+// ── MtfPanel ──────────────────────────────────────────────────────────────────
+
+function mtfDirLabel(d) {
+  if (d === 'bullish') return { text: '▲ Uppåt', cls: 'mtf-dir-bull' };
+  if (d === 'bearish') return { text: '▼ Nedåt', cls: 'mtf-dir-bear' };
+  if (d === 'neutral') return { text: '— Neutral', cls: 'mtf-dir-neutral' };
+  return { text: '? Okänd', cls: 'mtf-dir-neutral' };
+}
+
+function mtfAlignLabel(a) {
+  const m = {
+    confirmed:  { text: '✅ Bekräftat',              cls: 'mtf-align-confirm' },
+    aligned:    { text: '↗ Delvis',                  cls: 'mtf-align-partial' },
+    mixed:      { text: '↔ Blandat',                 cls: 'mtf-align-mixed'   },
+    conflicting:{ text: '⚠️ Tidsramarna säger olika', cls: 'mtf-align-conflict'},
+    neutral:    { text: '— Neutral',                 cls: 'mtf-align-neutral' },
+    limited:    { text: '… Begränsad data',          cls: 'mtf-align-neutral' },
+  };
+  return m[a] || { text: a || '–', cls: 'mtf-align-neutral' };
+}
+
+export function MtfPanel({ r }) {
+  if (!r?.mtfStatus || r.mtfStatus === 'limited') return null;
+
+  const { mtfAlignment, mtfAdjustment, mtfExplanationSv, tf2mDirection, tf5mDirection, tf15mDirection, mtf5m, mtf15m } = r;
+
+  const align   = mtfAlignLabel(mtfAlignment);
+  const adjAbs  = Math.abs(mtfAdjustment ?? 0);
+  const adjSign = (mtfAdjustment ?? 0) > 0 ? '+' : (mtfAdjustment ?? 0) < 0 ? '–' : '±';
+  const adjCls  = (mtfAdjustment ?? 0) > 0 ? 'mtf-adj-pos' : (mtfAdjustment ?? 0) < 0 ? 'mtf-adj-neg' : 'mtf-adj-zero';
+
+  return (
+    <div className="mtf-panel">
+      <div className="mtf-panel-header">
+        <span className="mtf-panel-icon">📡</span>
+        <span className="mtf-panel-title">Flera tidsramar</span>
+        <span className={`mtf-align-badge ${align.cls}`}>{align.text}</span>
+        {adjAbs > 0
+          ? <span className={`mtf-adj-badge ${adjCls}`}>{adjSign}{adjAbs}p</span>
+          : <span className="mtf-adj-badge mtf-adj-zero">±0p</span>
+        }
+      </div>
+
+      <div className="mtf-tf-row">
+        {(() => { const d = mtfDirLabel(tf2mDirection);  return <span className={`mtf-tf-chip ${d.cls}`}>2m: {d.text}</span>; })()}
+        {(() => { const d = mtfDirLabel(tf5mDirection);  return <span className={`mtf-tf-chip ${d.cls}`}>5m: {d.text}</span>; })()}
+        {(() => { const d = mtfDirLabel(tf15mDirection); return <span className={`mtf-tf-chip ${d.cls}`}>15m: {d.text}</span>; })()}
+      </div>
+
+      {(mtf5m || mtf15m) && (
+        <div className="mtf-detail-row">
+          {mtf5m  && <span className="mtf-detail-chip">5m SMA20 {mtf5m.sma20}  RSI {mtf5m.rsi14 ?? '–'}  ({mtf5m.barCount} bars)</span>}
+          {mtf15m && <span className="mtf-detail-chip">15m SMA20 {mtf15m.sma20}  RSI {mtf15m.rsi14 ?? '–'}  ({mtf15m.barCount} bars)</span>}
+        </div>
+      )}
+
+      {mtfExplanationSv && (
+        <div className="mtf-explanation">{mtfExplanationSv}</div>
+      )}
+    </div>
+  );
+}
+
+// ── MomentumIntelligencePanel ─────────────────────────────────────────────────
+
+const MI_QUALITY_SV = { strong: 'Stark', ok: 'Okej', weak: 'Svag', poor: 'Låg', unknown: 'Okänd' };
+const MI_RISK_SV    = { high: 'Hög', elevated: 'Förhöjd', normal: 'Normal', low: 'Låg' };
+const MI_SWEEP_SV   = { strong: 'Stark', ok: 'Okej', weak: 'Svag', none: 'Ingen' };
+
+export function MomentumIntelligencePanel({ r }) {
+  if (!r) return null;
+  const hasMomentum = r.momentumContinuationScore != null || r.continuationQuality || r.fakeoutProbability != null || r.liquiditySweepDetected != null;
+  if (!hasMomentum) return null;
+
+  const continuation = r.continuationQuality || 'unknown';
+  const fakeoutRisk  = r.fakeoutRiskLevel || 'normal';
+  const sweepQuality = r.liquiditySweepDetected ? (r.sweepQuality || 'weak') : 'none';
+  const fakeoutColor = fakeoutRisk === 'high' ? 'var(--red)' : fakeoutRisk === 'elevated' ? '#f97316' : fakeoutRisk === 'low' ? 'var(--green)' : 'var(--muted)';
+  const contColor = continuation === 'strong' ? 'var(--green)' : continuation === 'ok' ? 'var(--yellow)' : continuation === 'weak' ? '#f97316' : 'var(--muted)';
+  const sweepColor = r.liquiditySweepDetected ? 'var(--blue)' : 'var(--muted)';
+  const backtestSupported = r.momentumBacktestApplied && (r.momentumBacktestAdjustment ?? 0) > 0;
+  const backtestColor = backtestSupported ? 'var(--green)' : (r.momentumBacktestAdjustment ?? 0) < 0 ? 'var(--red)' : 'var(--muted)';
+  const explanations = [
+    r.momentumBacktestReasonSv,
+    r.momentumExplanationSv,
+    r.fakeoutExplanationSv,
+    r.sweepExplanationSv,
+    r.watchModeReasonSv,
+  ].filter(Boolean);
+
+  return (
+    <div className="panel momentum-intel-panel">
+      <div className="panel-title">Rörelseanalys</div>
+      <div className="mi-grid">
+        <div className="mi-item">
+          <span className="mi-label">Rörelsen fortsätter</span>
+          <strong style={{ color: contColor }}>{MI_QUALITY_SV[continuation] || continuation}</strong>
+          {r.momentumContinuationScore != null && <span className="mi-score">{r.momentumContinuationScore}/100</span>}
+        </div>
+        <div className="mi-item">
+          <span className="mi-label">Risk för falsk rörelse</span>
+          <strong style={{ color: fakeoutColor }}>{MI_RISK_SV[fakeoutRisk] || fakeoutRisk}</strong>
+          {r.fakeoutProbability != null && <span className="mi-score">{r.fakeoutProbability}/100</span>}
+        </div>
+        <div className="mi-item">
+          <span className="mi-label">Snabb stopprensning</span>
+          <strong style={{ color: sweepColor }}>{MI_SWEEP_SV[sweepQuality] || sweepQuality}</strong>
+          {r.sweepDirection && r.sweepDirection !== 'none' && <span className="mi-score">{r.sweepDirection}</span>}
+        </div>
+        <div className="mi-item">
+          <span className="mi-label">Historik stödjer</span>
+          <strong style={{ color: backtestColor }}>{backtestSupported ? 'Ja' : 'Nej'}</strong>
+          <span className="mi-score">hög fart + flera tidsramar stödjer rörelsen</span>
+        </div>
+      </div>
+      {(r.watchMode || r.momentumWatchMode || r.liquiditySweepWatchMode) && (
+        <div className="mi-watch">BEVAKA</div>
+      )}
+      {explanations.length > 0 && (
+        <div className="mi-explanations">
+          {explanations.slice(0, 3).map((txt, i) => <div key={i}>{txt}</div>)}
+        </div>
+      )}
     </div>
   );
 }
@@ -1926,8 +2129,12 @@ export function BestCardV2({ r, rank, tvLinkFn }) {
       )}
 
       <WhyBox r={r} />
+      <MomentumIntelligencePanel r={r} />
       <ConfidencePanel r={r} />
       <AdaptiveEdgePanel r={r} />
+      <OrchestratorPanel r={r} />
+      <DecayPanel r={r} />
+      <StateGraphPanel r={r} />
       <RuleMemoryPanel r={r} />
       <SymbolPersonalityPanel r={r} />
       <RegimeProfilePanel r={r} />
@@ -1935,8 +2142,8 @@ export function BestCardV2({ r, rank, tvLinkFn }) {
 
       <div className="bc-actions">
         <a className="btn btn-tv" href={link} target="_blank" rel="noopener noreferrer">📈 TradingView</a>
-        <button className="btn btn-copy" onClick={() => handleCopy('alert')}>{copied === 'alert' ? '✓ Kopierat' : '📋 Alert'}</button>
-        <button className="btn btn-copy" onClick={() => handleCopy('claude')}>{copied === 'claude' ? '✓ Kopierat' : '🤖 Claude'}</button>
+        <button className="btn btn-copy" onClick={() => handleCopy('alert')}>{copied === 'alert' ? '✓ Kopierat' : '📋 Larmtext'}</button>
+        <button className="btn btn-ai" onClick={() => handleCopy('claude')}>{copied === 'claude' ? '✓ Kopierat' : '✨ Fråga AI'}</button>
       </div>
     </div>
   );
@@ -2019,8 +2226,8 @@ export function QQQPremiumCard({ data }) {
 // ── DecisionActionBadge ───────────────────────────────────────────────────────
 
 const ACTION_META = {
-  BUY_WATCH:  { cls: 'dab-buy',       label: 'BUY WATCH',  icon: '🟢' },
-  SELL_WATCH: { cls: 'dab-sell',      label: 'SELL WATCH', icon: '🔴' },
+  BUY_WATCH:  { cls: 'dab-buy',       label: 'BEVAKA UPP',  icon: '🟢' },
+  SELL_WATCH: { cls: 'dab-sell',      label: 'BEVAKA NED', icon: '🔴' },
   CONFIRMED:  { cls: 'dab-confirmed', label: 'BEKRÄFTAD',  icon: '⚡' },
   HIGH_RISK:  { cls: 'dab-risk',      label: 'HÖG RISK',   icon: '⚠️' },
   AVOID:      { cls: 'dab-avoid',     label: 'UNDVIK',     icon: '⛔' },
@@ -2116,7 +2323,7 @@ export function HistorySaysBlock({ decision }) {
           </div>
         )}
         <div className="hist-says-stat">
-          <span className="hss-label">Timeframe</span>
+          <span className="hss-label">Tidsram</span>
           <span className="hss-val">{decision.bestTimeframe || '2m'}</span>
         </div>
       </div>
@@ -2234,6 +2441,7 @@ export function DecisionHeroCard({ r, tvLinkFn }) {
         {open && (
           <div style={{ marginTop: 12 }}>
             <WhyDecisionBlock decision={decision} />
+            <MomentumIntelligencePanel r={r} />
             <ConfidencePanel r={r} />
             <AdaptiveEdgePanel r={r} />
             <SetupDNAPanel r={r} />
@@ -2639,3 +2847,13 @@ export function ReplayConclusionBox({ summary, insights }) {
     </div>
   );
 }
+
+// ── Engine panels — re-exported from engine-panels.jsx ────────────────────────
+export {
+  PreMovePanel,
+  FatiguePanel,
+  FakeoutDnaPanel,
+  StateGraphPanel,
+  OrchestratorPanel,
+  DecayPanel,
+} from './engine-panels.jsx';

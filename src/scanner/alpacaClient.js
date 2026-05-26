@@ -1,5 +1,6 @@
 'use strict';
 const axios = require('axios');
+const { withProviderRetry } = require('../providerStatus');
 
 const DATA_BASE = 'https://data.alpaca.markets/v2';
 
@@ -37,16 +38,20 @@ async function fetch1mBars(symbol, maxBars = 1000) {
   const allBars = [];
   let nextToken = undefined;
 
-  for (let page = 0; page < 3; page++) {
+  for (let page = 0; page < 10; page++) {
     const reqParams = { ...params };
     if (nextToken) reqParams.page_token = nextToken;
 
-    const res = await axios.get(url, { headers: headers(), params: reqParams, timeout: 12000 });
+    const res = await withProviderRetry('alpaca', () => axios.get(url, {
+      headers: headers(),
+      params: reqParams,
+      timeout: 12000,
+    }), { context: { symbol, endpoint: 'bars' } });
     const bars = res.data.bars || [];
     allBars.push(...bars);
 
     nextToken = res.data.next_page_token;
-    if (!nextToken || allBars.length >= maxBars) break;
+    if (!nextToken) break;
   }
 
   // Keep only the most recent maxBars bars
@@ -68,7 +73,11 @@ async function fetch1mBars(symbol, maxBars = 1000) {
 async function fetchLatestTrade(symbol) {
   const feed = process.env.ALPACA_DATA_FEED || 'iex';
   const url = `${DATA_BASE}/stocks/${symbol}/trades/latest`;
-  const res = await axios.get(url, { headers: headers(), params: { feed }, timeout: 8000 });
+  const res = await withProviderRetry('alpaca', () => axios.get(url, {
+    headers: headers(),
+    params: { feed },
+    timeout: 8000,
+  }), { context: { symbol, endpoint: 'latest_trade' } });
   const trade = res.data.trade;
   return { price: trade.p, timestamp: trade.t };
 }

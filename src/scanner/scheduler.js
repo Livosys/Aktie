@@ -1,30 +1,59 @@
 'use strict';
 const { fetch1mBars, fetchLatestTrade, aggregate1mTo2m } = require('./alpacaClient');
+const { aggregate1mTo5m, aggregate1mTo15m }              = require('../data/candleAggregator');
 const { calcIndicators } = require('./indicators');
 const { classifyNarrowState } = require('./narrowState');
 const { applyEngineV3 }                          = require('./engineV3');
 const { calcMarketRegimeV2, applyMarketRegimeV2 } = require('./marketRegimeEngine');
 const { applyHistoricalEdge }                     = require('./historicalEdge');
 const { applyConfidenceEngine }                   = require('./confidenceEngine');
+const { applyMtf }                                = require('./mtf');
+const { applyMomentumContinuation }               = require('./momentumContinuationEngine');
+const { applyFakeoutProbability }                 = require('./fakeoutProbabilityEngine');
+const { applyLiquiditySweep }                     = require('./liquiditySweepEngine');
 const { applyAdaptiveEdge }                       = require('./adaptiveEdgeEngine');
 const { applySetupDNA }                           = require('./setupDnaEngine');
 const { applyWavePhase }                          = require('./wavePhaseEngine');
 const { applyRuleMemory }                         = require('./ruleMemoryEngine');
 const { applySymbolPersonality }                  = require('./symbolPersonalityEngine');
 const { applyRegimeProfile }                      = require('./regimeProfileEngine');
+const { applyScoreCalibration }                   = require('./scoreCalibrationEngine');
+const { applyFakeoutDna }                         = require('./fakeoutDnaEngine');
+const { applyPreMove }                            = require('./preMoveEngine');
+const { applyMarketFatigue }                      = require('./marketFatigueEngine');
+const { computeAndSavePersonality }               = require('./marketPersonalityEngine');
+const { applyStateGraph }                         = require('./marketStateGraphEngine');
+const { orchestrateScores }                       = require('./learningOrchestrator');
+const { applyConfidenceDecay }                    = require('./confidenceDecayEngine');
+const { applyMicroMove }                          = require('./microMoveEngine');
+const { enrichIndicatorsFromCandles }             = require('./indicatorEnrichment');
 const { logResults }                              = require('./featureLogger');
+const { buildFeedStatus, classifyProviderError }  = require('../providerStatus');
+const { processScanResults }                      = require('../alerts/notificationService');
+const notificationEngineV2                         = require('../alerts/notificationEngineV2');
+const { getMarketGroup }                          = require('../markets/marketProfiles');
+const { computeAndSaveCompass }                   = require('../markets/marketCompass');
+const redisService                                = require('../services/redisService');
 
 const GROUPS = {
-  stocks: ['NVDA', 'AMD', 'TSLA', 'AAPL', 'MSFT', 'AMZN', 'META'],
+  stocks:        ['NVDA', 'AMD', 'TSLA', 'AAPL', 'MSFT', 'AMZN', 'META', 'NFLX', 'GOOGL'],
   // TODO: Replace QQQ with real NASDAQ-100 index (NDX/NAS100) when a provider
   // supporting index bar data is added. Alpaca IEX returns 0 bars for NDX.
-  nasdaq: ['QQQ'],
-  crypto: ['BTC/USD', 'ETH/USD', 'SOL/USD'],
+  nasdaq:        ['QQQ'],
+  indexEtfs:     ['SPY', 'IWM', 'DIA'],
+  leveragedEtfs: ['TQQQ', 'SQQQ', 'SOXL', 'SOXS', 'TNA', 'TZA'],
+  crypto:        ['BTCUSDT', 'ETHUSDT', 'SOLUSDT'],
 };
-const WATCHLIST = [...GROUPS.stocks, ...GROUPS.nasdaq];
+const WATCHLIST = [
+  ...GROUPS.stocks,
+  ...GROUPS.nasdaq,
+  ...GROUPS.indexEtfs,
+  ...GROUPS.leveragedEtfs,
+];
 const SCAN_INTERVAL_MS = 30_000;
 
 let latestResults = [];
+const liveCandleCache = new Map();
 let scanStatus = {
   lastScan: null,
   scanning: false,
@@ -38,6 +67,7 @@ async function scanSymbol(symbol) {
   try {
     const bars1m = await fetch1mBars(symbol, 410);
     if (!bars1m || bars1m.length < 40) {
+      updateLiveCandleCache(symbol, '1m', bars1m || [], 'alpaca_live_1m');
       return {
         symbol,
         price: null,
@@ -69,7 +99,11 @@ async function scanSymbol(symbol) {
       };
     }
 
-    const candles2m = aggregate1mTo2m(bars1m);
+    const candles2m  = aggregate1mTo2m(bars1m);
+    const candles5m  = aggregate1mTo5m(bars1m);
+    const candles15m = aggregate1mTo15m(bars1m);
+    updateLiveCandleCache(symbol, '1m', bars1m, 'alpaca_live_1m');
+    updateLiveCandleCache(symbol, '2m', candles2m, 'alpaca_live_2m');
     const indicators = calcIndicators(candles2m);
 
     if (!indicators) {
@@ -112,8 +146,14 @@ async function scanSymbol(symbol) {
       // fallback to last close
     }
 
-    return classifyNarrowState({ symbol, price, candles2m, indicators, lastUpdate: now });
+    const result = classifyNarrowState({ symbol, price, candles2m, indicators, lastUpdate: now });
+    result._candles2m  = candles2m;
+    // Attach MTF candles as private fields; applyEngineV3 will read and strip them
+    result._candles5m  = candles5m;
+    result._candles15m = candles15m;
+    return result;
   } catch (err) {
+    const providerError = classifyProviderError(err, 'alpaca');
     const isMarketClosed =
       err?.response?.status === 422 ||
       (err?.message && err.message.toLowerCase().includes('market'));
@@ -144,9 +184,11 @@ async function scanSymbol(symbol) {
       target2Short: null,
       candleCount: 0,
       lastUpdate: now,
+      provider: 'alpaca',
+      providerErrorType: providerError.type,
       note: isMarketClosed
         ? 'Market may be closed – no recent data'
-        : `Error: ${err.message || 'Unknown error'}`,
+        : `Error: ${providerError.type}`,
     };
   }
 }
@@ -181,12 +223,34 @@ async function runScan() {
     .map((r) => applyMarketRegimeV2(r, mktCtxV2))
     .map((r) => applyHistoricalEdge(r))
     .map((r) => applyConfidenceEngine(r))
+    .map((r) => applyMtf(r))
+    .map((r) => applyMomentumContinuation(r))
+    .map((r) => applyFakeoutProbability(r))
+    .map((r) => applyLiquiditySweep(r))
     .map((r) => applyAdaptiveEdge(r))
     .map((r) => applyRuleMemory(r))
     .map((r) => applySymbolPersonality(r))
     .map((r) => applyRegimeProfile(r))
+    .map((r) => applyScoreCalibration(r))
+    .map((r) => applyFakeoutDna(r))
+    .map((r) => applyPreMove(r))
+    .map((r) => applyMarketFatigue(r))
+    .map((r) => applyStateGraph(r))
     .map((r) => applySetupDNA(r))
-    .map((r) => applyWavePhase(r));
+    .map((r) => orchestrateScores(r))
+    .map((r) => applyConfidenceDecay(r))
+    .map((r) => applyWavePhase(r))
+    .map((r) => applyMicroMove(r))
+    .map((r) => enrichLiveIndicators(r))
+    .map((r) => stripPrivateFields(r))
+    .map((r) => ({ ...r, marketGroup: getMarketGroup(r.symbol) || 'UNKNOWN' }));
+
+  // Market personality (computed from aggregate of all results)
+  try { computeAndSavePersonality(latestResults, 'stocks'); } catch (_) {}
+  cacheScanState('stocks', latestResults, scanStatus);
+
+  // Market compass: derive risk-on/off from QQQ + SPY
+  try { computeAndSaveCompass(latestResults); } catch (_) {}
 
   // Feature logging (respects FEATURE_LOGGING_ENABLED env flag)
   logResults(latestResults.filter((r) => GROUPS.stocks.includes(r.symbol)), 'stocks');
@@ -195,6 +259,16 @@ async function runScan() {
   scanStatus.lastScan = new Date().toISOString();
   scanStatus.scanning = false;
   scanStatus.marketWarning = anyMarketWarning;
+
+  processScanResults(latestResults.filter((r) => GROUPS.stocks.includes(r.symbol)), {
+    group: 'stocks',
+    feedStatus: getStockFeedStatus(),
+  }).catch((err) => console.warn('[Notifier] scan processing failed:', err.message));
+  notificationEngineV2.processStrongSignals(latestResults.filter((r) => GROUPS.stocks.includes(r.symbol)), {
+    group: 'stocks',
+    feedStatus: getStockFeedStatus(),
+  }).catch((err) => console.warn('[notification-v2] scan processing failed:', err.message));
+
   console.log(`[Scanner] Scan complete at ${scanStatus.lastScan} – ${results.length} symbols (Engine v3)`);
 }
 
@@ -212,8 +286,24 @@ function getLatestResults() {
   return latestResults;
 }
 
+function getStockFeedStatus() {
+  return buildFeedStatus({
+    group: 'stocks',
+    provider: 'alpaca',
+    scannerStatus: scanStatus,
+    results: latestResults.filter((r) =>
+      GROUPS.stocks.includes(r.symbol) ||
+      GROUPS.nasdaq.includes(r.symbol) ||
+      GROUPS.indexEtfs.includes(r.symbol) ||
+      GROUPS.leveragedEtfs.includes(r.symbol),
+    ),
+    staleMinutes: 15,
+    marketAware: true,
+  });
+}
+
 function getScanStatus() {
-  return scanStatus;
+  return { ...scanStatus, feedStatus: getStockFeedStatus() };
 }
 
 function getWatchlist() {
@@ -224,8 +314,111 @@ function getGroups() {
   return GROUPS;
 }
 
+function normalizeDebugCandle(c) {
+  const timestamp = c?.timestamp || c?.ts || c?.t || null;
+  return {
+    timestamp,
+    open: c?.open ?? c?.o ?? null,
+    high: c?.high ?? c?.h ?? null,
+    low: c?.low ?? c?.l ?? null,
+    close: c?.close ?? c?.c ?? null,
+    volume: c?.volume ?? c?.v ?? null,
+  };
+}
+
+function updateLiveCandleCache(symbol, timeframe, candles, sourceName) {
+  const normalized = (candles || [])
+    .map(normalizeDebugCandle)
+    .filter((c) => c.timestamp)
+    .sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime());
+  const snapshot = {
+    symbol: String(symbol || '').toUpperCase(),
+    marketType: 'stock',
+    timeframe,
+    sourceName,
+    updatedAt: new Date().toISOString(),
+    candles: normalized,
+  };
+  liveCandleCache.set(`${String(symbol || '').toUpperCase()}:${timeframe}`, snapshot);
+  void redisService.setJson(`candles:stock:${snapshot.symbol}:${timeframe}`, snapshot, 180);
+}
+
+function getLiveCandlesDebug(symbol, timeframe = '2m') {
+  return liveCandleCache.get(`${String(symbol || '').toUpperCase()}:${timeframe}`) || null;
+}
+
 function delay(ms) {
   return new Promise((r) => setTimeout(r, ms));
 }
 
-module.exports = { startScheduler, stopScheduler, getLatestResults, getScanStatus, getWatchlist, getGroups };
+function stripPrivateFields(result) {
+  const { _candles2m, _candles5m, _candles15m, ...rest } = result || {};
+  const last2m = Array.isArray(_candles2m) && _candles2m.length
+    ? _candles2m[_candles2m.length - 1]
+    : null;
+  return {
+    ...rest,
+    latest2mTimestamp: last2m?.t || last2m?.ts || rest.latest2mTimestamp || null,
+  };
+}
+
+function enrichLiveIndicators(result) {
+  const candles = result?._candles2m || [];
+  if (!candles.length) {
+    return {
+      ...result,
+      ema9: result?.ema9 ?? null,
+      ema21: result?.ema21 ?? null,
+      ema50: result?.ema50 ?? null,
+      sma50: result?.sma50 ?? null,
+      vwap: result?.vwap ?? null,
+      vwapDistancePct: result?.vwapDistancePct ?? null,
+      rvol: result?.rvol ?? result?.relVol20 ?? null,
+      volumeState: result?.volumeState || 'unknown',
+      candleScore2m: result?.candleScore2m ?? null,
+    };
+  }
+  const enriched = enrichIndicatorsFromCandles(result, candles);
+  return {
+    ...result,
+    ...enriched,
+    rvol: enriched.rvol,
+  };
+}
+
+function cacheScanState(group, results, status) {
+  const updatedAt = new Date().toISOString();
+  const prices = {};
+  for (const r of results || []) {
+    if (r.symbol && r.price != null) prices[r.symbol] = Number(r.price);
+  }
+  void redisService.setJson(`scan:${group}:latest`, {
+    ok: true,
+    group,
+    updatedAt,
+    status: { ...status, lastScan: updatedAt },
+    count: (results || []).length,
+    results,
+  }, 180);
+  void redisService.setJson(`prices:${group}:latest`, {
+    ok: true,
+    group,
+    updatedAt,
+    prices,
+  }, 60);
+  void redisService.setJson(`market:personality:${group}:snapshot`, {
+    ok: true,
+    group,
+    updatedAt,
+    symbols: (results || []).map((r) => ({
+      symbol: r.symbol,
+      marketGroup: r.marketGroup || null,
+      state: r.state || null,
+      signal: r.signal || null,
+      confidence: r.confidence ?? r.confidenceScore ?? null,
+      price: r.price ?? null,
+    })),
+  }, 300);
+}
+
+module.exports = { startScheduler, stopScheduler, getLatestResults, getScanStatus, getWatchlist, getGroups, getStockFeedStatus, getLiveCandlesDebug };

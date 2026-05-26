@@ -6,6 +6,13 @@ const { toScannerFormat }     = require('../data/candleAggregator');
 const { calcIndicators }      = require('./indicators');
 const { classifyNarrowState } = require('./narrowState');
 const { calcMarketRegimeV2 }  = require('./marketRegimeEngine');
+const { enrichIndicatorsFromCandles } = require('./indicatorEnrichment');
+const { buildSignalFamilyDebug, classifySignalFamily } = require('./signalFamilyClassifier');
+const {
+  signalFamilyDebugSummarySv,
+  signalFamilyLabel,
+  signalSubtypeLabel,
+} = require('./signalFamilyLabels');
 
 const SIGNALS_DIR = path.resolve(__dirname, '../../data/signals/history');
 const MIN_CANDLES = 20;   // Minimum window to run scanner
@@ -74,6 +81,10 @@ function isInteresting(result, prev) {
 function toSignalRecord(result, candleTs) {
   const ts  = result.lastUpdate || candleTs;
   const ctx = result._marketContext;
+  const family = result._signalFamilyClassification || {};
+  const signalFamily = family.signalFamily ?? result.signalFamily ?? 'UNKNOWN';
+  const signalSubtype = family.signalSubtype ?? result.signalSubtype ?? result.eventType ?? 'UNKNOWN';
+  const familyDebug = result._signalFamilyDebug || null;
   return {
     signalId:               makeSignalId(result.symbol, ts),
     timestamp:              ts,
@@ -84,6 +95,10 @@ function toSignalRecord(result, candleTs) {
     state:                  result.state,
     signal:                 result.signal,
     eventType:              result.eventType,
+    status:                 result.status            ?? result.priority ?? null,
+    priority:               result.priority          ?? result.status ?? null,
+    nextMoveBias:           result.nextMoveBias      ?? null,
+    primaryReason:          result.primaryReason     ?? (Array.isArray(result.reasonSv) ? result.reasonSv[0] : result.reasonSv) ?? null,
     narrowType:             result.narrowType,
     narrowScore:            result.narrowScore,
     tradeScore:             result.tradeScore,
@@ -94,11 +109,40 @@ function toSignalRecord(result, candleTs) {
     marketRegime:           ctx?.regime              ?? null,
     marketDirection:        ctx?.direction           ?? null,
     marketScore:            ctx?.score               ?? null,
+    ema9:                   result.ema9              ?? null,
+    ema21:                  result.ema21             ?? null,
+    ema50:                  result.ema50             ?? null,
     smaGapAtr:              result.smaGapAtr         ?? null,
     priceToZoneAtr:         result.priceToZoneAtr    ?? null,
+    slope20Atr:             result.slope20Atr        ?? null,
     rangeCompression:       result.rangeCompression  ?? null,
     relVol20:               result.relVol20          ?? null,
+    rvol:                   result.rvol ?? result.relVol20 ?? null,
+    volumeState:            result.volumeState       ?? 'unknown',
+    rsi14:                  result.rsi14             ?? null,
+    sma20:                  result.sma20             ?? null,
+    sma50:                  result.sma50             ?? null,
+    sma200:                 result.sma200            ?? null,
+    vwap:                   result.vwap              ?? null,
+    vwapDistancePct:        result.vwapDistancePct   ?? null,
+    candleScore2m:          result.candleScore2m     ?? null,
+    twoMinuteConflict:      result.twoMinuteConflict ?? null,
+    tf2m:                   result.tf2m              ?? result.timeframeAgreement?.tf2m ?? 'unknown',
+    tf5m:                   result.tf5m              ?? result.timeframeAgreement?.tf5m ?? 'unknown',
+    tf10m:                  result.tf10m             ?? result.timeframeAgreement?.tf10m ?? 'unknown',
+    tf15m:                  result.tf15m             ?? result.timeframeAgreement?.tf15m ?? 'unknown',
+    tf30m:                  result.tf30m             ?? result.timeframeAgreement?.tf30m ?? 'unknown',
+    tf1h:                   result.tf1h              ?? result.timeframeAgreement?.tf1h ?? 'unknown',
+    timeframeAgreement:     result.timeframeAgreement ?? null,
+    agreementCount:         result.agreementCount    ?? null,
+    signalFamily,
+    signalSubtype,
+    familyLabelSv:          signalFamilyLabel(signalFamily),
+    subtypeLabelSv:         signalSubtypeLabel(signalSubtype),
+    signalFamilyReasonSv:   family.reasonSv          ?? result.signalFamilyReasonSv ?? null,
+    familyDebugSummarySv:   signalFamilyDebugSummarySv(familyDebug, signalFamily),
     threeFingerSpreadActive: result.threeFingerSpread?.active ?? false,
+    threeFingerSpreadStrength: result.threeFingerSpread?.strength ?? null,
     breakoutAlreadyOccurred: result.breakoutAlreadyOccurred,
     source:                 'historical',
   };
@@ -141,11 +185,19 @@ function scanSymbolHistory(symbol, candles) {
       indicators,
       lastUpdate: candleTs,
     });
+    Object.assign(result, enrichIndicatorsFromCandles(result, window));
 
     // Compute market regime from this symbol's own indicators.
     // For stocks, QQQ would be the ideal reference; using self-reference
     // is a reasonable proxy when the reference isn't in the dataset.
     result._marketContext = calcMarketRegimeV2(result);
+    const familyInput = {
+      ...result,
+      priceAtSignal: result.price,
+      dataFreshness: 'LIVE',
+    };
+    result._signalFamilyClassification = classifySignalFamily(familyInput);
+    result._signalFamilyDebug = buildSignalFamilyDebug(familyInput);
 
     if (isInteresting(result, prev)) {
       const record = toSignalRecord(result, candleTs);

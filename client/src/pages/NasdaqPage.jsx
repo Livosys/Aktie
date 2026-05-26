@@ -44,7 +44,8 @@ export default function NasdaqPage() {
       )}
       {error && (
         <div className="market-banner" style={{ borderColor: 'var(--red)', color: 'var(--red)', background: 'var(--red-dim)' }}>
-          ✗ Fel: {error}
+          Kunde inte hämta Nasdaq-data. {error.message || error}
+          {error.detail && <details className="ux-technical"><summary>Visa teknisk detalj</summary>{error.detail}</details>}
         </div>
       )}
 
@@ -86,6 +87,16 @@ export default function NasdaqPage() {
               />
               <div className="best-grid">
                 <BestCardV2 r={qqqData} rank={null} />
+              </div>
+            </div>
+          )}
+
+          {!qqqData && (
+            <div className="hero-empty">
+              <div className="hero-empty-icon">📊</div>
+              <div className="hero-empty-text">
+                <strong>Ingen Nasdaq-data att visa just nu</strong>
+                Datakällan har inte skickat QQQ-data ännu. Systemet försöker igen automatiskt.
               </div>
             </div>
           )}

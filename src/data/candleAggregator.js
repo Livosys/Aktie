@@ -103,4 +103,55 @@ function toScannerFormat(candles) {
   }));
 }
 
-module.exports = { aggregate1mTo2m, filterComplete, toScannerFormat };
+/**
+ * Generic aggregation: group 1m bars into N-minute candles using UTC-bucket alignment.
+ * A bucket is marked incomplete if it has fewer bars than the period (e.g. last partial bar).
+ */
+function aggregateBars(bars1m, periodMinutes) {
+  if (!bars1m || bars1m.length < 1) return [];
+
+  const sorted = bars1m
+    .map(normalize)
+    .filter((b) => b.ts)
+    .sort((a, b) => (a.ts < b.ts ? -1 : a.ts > b.ts ? 1 : 0));
+
+  const buckets = new Map();
+
+  for (const bar of sorted) {
+    const d = new Date(bar.ts);
+    const min = d.getUTCMinutes();
+    const bucketMin = min - (min % periodMinutes);
+    d.setUTCMinutes(bucketMin, 0, 0);
+    const key = d.toISOString();
+
+    if (!buckets.has(key)) buckets.set(key, []);
+    buckets.get(key).push(bar);
+  }
+
+  const candles = [];
+  const entries = [...buckets.entries()].sort(([a], [b]) => (a < b ? -1 : 1));
+
+  for (const [key, bars] of entries) {
+    const first    = bars[0];
+    const last     = bars[bars.length - 1];
+    const high     = Math.max(...bars.map((b) => b.h));
+    const low      = Math.min(...bars.map((b) => b.l));
+    const vol      = bars.reduce((s, b) => s + b.v, 0);
+    const complete = bars.length >= periodMinutes;
+
+    candles.push({
+      ts: key, t: key,
+      o: first.o, h: high, l: low, c: last.c, v: vol,
+      open: first.o, high, low, close: last.c, volume: vol,
+      incomplete: !complete,
+      source: `aggregated_1m_to_${periodMinutes}m`,
+    });
+  }
+
+  return candles;
+}
+
+function aggregate1mTo5m(bars1m)  { return aggregateBars(bars1m,  5).filter((c) => !c.incomplete); }
+function aggregate1mTo15m(bars1m) { return aggregateBars(bars1m, 15).filter((c) => !c.incomplete); }
+
+module.exports = { aggregate1mTo2m, filterComplete, toScannerFormat, aggregateBars, aggregate1mTo5m, aggregate1mTo15m };

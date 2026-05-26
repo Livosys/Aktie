@@ -29,8 +29,13 @@ const { saveLearning }        = require('../scanner/signalLearning');
 const { runLearningEngine }   = require('../scanner/learningEngine');
 const { buildRuleMemory }     = require('../scanner/ruleMemoryEngine');
 const { buildSymbolProfiles } = require('../scanner/symbolPersonalityEngine');
-const { buildRegimeProfiles } = require('../scanner/regimeProfileEngine');
-const { invalidateCache }     = require('../scanner/historicalEdge');
+const { buildRegimeProfiles }       = require('../scanner/regimeProfileEngine');
+const { buildScoreCalibration }     = require('../scanner/scoreCalibrationEngine');
+const { buildFakeoutDna }           = require('../scanner/fakeoutDnaEngine');
+const { buildRuleHealth }           = require('../scanner/selfHealingRuleEngine');
+const { buildMomentumBacktest }     = require('../history/momentumBacktestAnalyzer');
+const { buildMicroMoveAnalysis }    = require('../history/microMoveAnalyzer');
+const { invalidateCache }           = require('../scanner/historicalEdge');
 
 const STATUS_PATH = path.resolve(__dirname, '../../data/system/auto-machine-status.json');
 
@@ -249,6 +254,21 @@ async function runAutoMachine({ lookbackDays, groups }) {
       result.steps.updateLearning = { ok: false, error: err.message };
     }
 
+    // ── Step 5a: Analyze Momentum Intelligence ───────────────────────────────
+    console.log('[AutoMachine] Step 5a: Analyze Momentum Intelligence');
+    try {
+      const mb = buildMomentumBacktest();
+      result.steps.analyzeMomentumIntelligence = {
+        ok: true,
+        analyzed: mb.source?.analyzed ?? 0,
+        globalWinRate: mb.global?.winRate ?? null,
+        verdict: mb.conclusion?.verdict ?? null,
+      };
+    } catch (err) {
+      console.warn('[AutoMachine] analyzeMomentumIntelligence failed (non-fatal):', err.message);
+      result.steps.analyzeMomentumIntelligence = { ok: false, error: err.message };
+    }
+
     // ── Step 5b: Build rule memory ────────────────────────────────────────────
     console.log('[AutoMachine] Step 5b: Build rule memory');
     try {
@@ -289,6 +309,55 @@ async function runAutoMachine({ lookbackDays, groups }) {
     } catch (err) {
       console.warn('[AutoMachine] buildRegimeProfiles failed (non-fatal):', err.message);
       result.steps.buildRegimeProfiles = { ok: false, error: err.message };
+    }
+
+    // ── Step 5e: Build score calibration ─────────────────────────────────────
+    console.log('[AutoMachine] Step 5e: Build score calibration');
+    try {
+      const cal = buildScoreCalibration();
+      const srSummary = Object.entries(cal.byScoreRange || {})
+        .map(([k, v]) => `${k}:${v.recommendedAdjustment >= 0 ? '+' : ''}${v.recommendedAdjustment}`)
+        .join(', ');
+      result.steps.buildScoreCalibration = { ok: true, totalDirected: cal.totalDirectedSignals, buckets: srSummary };
+    } catch (err) {
+      console.warn('[AutoMachine] buildScoreCalibration failed (non-fatal):', err.message);
+      result.steps.buildScoreCalibration = { ok: false, error: err.message };
+    }
+
+    // ── Step 5f: Build fakeout DNA ────────────────────────────────────────────
+    console.log('[AutoMachine] Step 5f: Build fakeout DNA');
+    try {
+      const fd = buildFakeoutDna();
+      result.steps.buildFakeoutDna = { ok: true, features: fd.features, globalFakeoutRate: fd.globalFakeoutRate, totalDirected: fd.totalDirected };
+    } catch (err) {
+      console.warn('[AutoMachine] buildFakeoutDna failed (non-fatal):', err.message);
+      result.steps.buildFakeoutDna = { ok: false, error: err.message };
+    }
+
+    // ── Step 5g: Build rule health ────────────────────────────────────────────
+    console.log('[AutoMachine] Step 5g: Build rule health');
+    try {
+      const rh = buildRuleHealth();
+      result.steps.buildRuleHealth = { ok: true, totalRules: rh.totalRules, degradingCount: rh.degradingCount };
+    } catch (err) {
+      console.warn('[AutoMachine] buildRuleHealth failed (non-fatal):', err.message);
+      result.steps.buildRuleHealth = { ok: false, error: err.message };
+    }
+
+    // ── Step 5h: Build Micro Move Analysis ───────────────────────────────────
+    console.log('[AutoMachine] Step 5h: Build Micro Move Analysis');
+    try {
+      const mm = buildMicroMoveAnalysis();
+      result.steps.buildMicroMoveAnalysis = {
+        ok:              true,
+        joined:          mm.source?.joined ?? 0,
+        readyEventTypes: mm.readyEventTypes?.length ?? 0,
+        blocked025Rate:  mm.blockedProfitable?.hit025Rate ?? null,
+        fastScalp:       mm.fastScalpOpportunities?.length ?? 0,
+      };
+    } catch (err) {
+      console.warn('[AutoMachine] buildMicroMoveAnalysis failed (non-fatal):', err.message);
+      result.steps.buildMicroMoveAnalysis = { ok: false, error: err.message };
     }
 
     // ── Step 6: Invalidate caches ─────────────────────────────────────────────

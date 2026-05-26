@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
+import { openTradingView } from '../utils/tradingView.js';
 
 // ── Utility ───────────────────────────────────────────────────────────────────
 
@@ -39,10 +40,10 @@ function pctFmt(v) {
 
 const MISSED_TYPE_LABEL = {
   BULLISH_EXTENDED:     'Kraftig bullish',
-  LATE_CONTINUATION:    'Sen continuation',
-  TREND_PERSISTENCE:    'Trend persistence',
-  BULLISH_CONTINUATION: 'Bullish continuation',
-  BEARISH_CONTINUATION: 'Bearish continuation',
+  LATE_CONTINUATION:    'Sen fortsättning',
+  TREND_PERSISTENCE:    'Trend fortsatte',
+  BULLISH_CONTINUATION: 'Fortsättning uppåt',
+  BEARISH_CONTINUATION: 'Fortsättning nedåt',
 };
 
 const MISSED_TYPE_CLS = {
@@ -100,7 +101,7 @@ function getRecommendation(item) {
   // Extreme momentum + volume despite block
   if (blocked && moved >= 1.5 && relVol >= 1.5 && cont >= 60)
     return {
-      key: 'MOMENTUM_EXCEPTION', label: 'MOMENTUM_EXCEPTION', short: 'Momentum-undantag', color: '#a78bfa',
+      key: 'MOMENTUM_EXCEPTION', label: 'FART_UNDANTAG', short: 'Fart-undantag', color: '#a78bfa',
       desc: 'Stark volym och momentum trots blockering. Systemet bör ha ett undantagsläge för extrema momentumsituationer.',
     };
 
@@ -108,21 +109,21 @@ function getRecommendation(item) {
   if (blocked && cont >= 60 && moved >= 1.0 &&
       (reasonStr.includes('sma') || reasonStr.includes('spread') || reasonStr.includes('gap') || reasonStr.includes('avstånd')))
     return {
-      key: 'WATCH_MODE_NEEDED', label: 'WATCH_MODE_NEEDED', short: 'Bevakningsläge saknas', color: 'var(--orange)',
+      key: 'WATCH_MODE_NEEDED', label: 'BEVAKA_BEHÖVS', short: 'Bevakningsläge saknas', color: 'var(--orange)',
       desc: 'Teknisk regel blockerade, men rörelsen var stark. Överväg bevakningsläge vid starka momentum-signaler.',
     };
 
   // Strong block — filter too strict
   if (blocked && cont >= 65 && moved >= 1.0)
     return {
-      key: 'FILTER_TOO_STRICT', label: 'FILTER_TOO_STRICT', short: 'Filter för strängt', color: 'var(--red)',
+      key: 'FILTER_TOO_STRICT', label: 'FILTER_FÖR_STRÄNGT', short: 'Filter för strängt', color: 'var(--red)',
       desc: 'Systemet blockerade en rörelse som fungerade starkt. Filtren kan vara för konservativa för detta marknadsläge.',
     };
 
   // Moderate block — rule may need tuning
   if (blocked && cont >= 40 && moved >= 0.5)
     return {
-      key: 'REVIEW_RULE', label: 'REVIEW_RULE', short: 'Granska regeln', color: 'var(--yellow)',
+      key: 'REVIEW_RULE', label: 'GRANSKA_REGEL', short: 'Granska regeln', color: 'var(--yellow)',
       desc: 'Regelblockering med måttlig fortsättning. Granskning rekommenderas för att avgöra om regeln är kalibrerad rätt.',
     };
 
@@ -136,12 +137,12 @@ function getRecommendation(item) {
   // Block was correct
   if (blocked && cont < 35)
     return {
-      key: 'VALID_BLOCK', label: 'VALID_BLOCK', short: 'Giltig blockering', color: 'var(--green)',
+      key: 'VALID_BLOCK', label: 'RÄTT_BLOCKERING', short: 'Giltig blockering', color: 'var(--green)',
       desc: 'Systemet blockerade korrekt — fortsättningen var svag och blockeringen var rätt beslut.',
     };
 
   return {
-    key: 'REVIEW_REQUIRED', label: 'REVIEW_REQUIRED', short: 'Granskning krävs', color: 'var(--muted)',
+    key: 'REVIEW_REQUIRED', label: 'GRANSKNING_BEHÖVS', short: 'Granskning krävs', color: 'var(--muted)',
     desc: 'Blandad signal. Se närmre på detaljer för att förstå mönstret.',
   };
 }
@@ -436,7 +437,7 @@ function MissedCard({ item }) {
   const dupeCount   = item._duplicateCount || 1;
 
   function handleOpenChart() {
-    window.open(item.tradingView, '_blank', 'noopener,noreferrer');
+    openTradingView(item.symbol);
     copyToClipboard(sweDate);
     setChartToast(true);
     setTimeout(() => setChartToast(false), 3500);
@@ -603,10 +604,10 @@ const DAY_OPTIONS = [1, 3, 7, 14, 30];
 
 const REC_FILTER_OPTIONS = [
   { key: 'all',                label: 'Alla' },
-  { key: 'WATCH_MODE_NEEDED',  label: '👁 WATCH_MODE' },
-  { key: 'FILTER_TOO_STRICT',  label: '🚫 TOO_STRICT' },
-  { key: 'REVIEW_RULE',        label: '⚠ REVIEW_RULE' },
-  { key: 'MOMENTUM_EXCEPTION', label: '⚡ Momentum' },
+  { key: 'WATCH_MODE_NEEDED',  label: '👁 Bevaka behövs' },
+  { key: 'FILTER_TOO_STRICT',  label: '🚫 För strängt filter' },
+  { key: 'REVIEW_RULE',        label: '⚠ Granska regel' },
+  { key: 'MOMENTUM_EXCEPTION', label: '⚡ Stark fart' },
   { key: 'strong',             label: '📈 Stark >2%' },
 ];
 
@@ -712,9 +713,9 @@ export default function MissedBreakoutsPage() {
     <div className="page-wrap">
       <div className="page-hero">
         <div className="hero-left">
-          <div className="hero-title">🧠 Missed Moves</div>
+          <div className="hero-title">🧠 Missade rörelser</div>
           <div className="hero-sub">
-            Setups systemet blockerade — men priset fortsatte starkt. Lär av misstagen.
+            Här visas lägen som systemet stoppade, men där priset ändå fortsatte starkt. Använd sidan för att förstå vad motorn kan missa.
           </div>
         </div>
       </div>
@@ -726,8 +727,13 @@ export default function MissedBreakoutsPage() {
         recFilter={recFilter} onRecFilter={setRecFilter}
       />
 
-      {loading && <div className="empty">Laddar missed moves…</div>}
-      {error   && <div className="empty" style={{ color: 'var(--red)' }}>Fel: {error}</div>}
+      {loading && <div className="empty"><span className="spinner" /> Hämtar missade rörelser…</div>}
+      {error   && (
+        <div className="empty" style={{ color: 'var(--red)' }}>
+          Kunde inte hämta missade rörelser.
+          <details className="ux-technical"><summary>Visa teknisk detalj</summary>{error}</details>
+        </div>
+      )}
 
       {!loading && !error && (
         <>
@@ -736,7 +742,7 @@ export default function MissedBreakoutsPage() {
           <RuleImpactSection items={uniqueItems} />
 
           {displayItems.length === 0
-            ? <div className="empty">Inga missed moves hittades för valda filter.</div>
+            ? <div className="empty">Inga missade rörelser hittades för valda filter.</div>
             : (
               <div className="mb-grid">
                 {displayItems.map((item, i) => (

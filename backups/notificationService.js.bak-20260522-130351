@@ -1,0 +1,251 @@
+'use strict';
+
+const { buildDaytradeSignal } = require('../scanner/daytradeSignalEngine');
+const signalDeduper = require('./signalDeduper');
+const telegramNotifier = require('./telegramNotifier');
+const webhookNotifier = require('./webhookNotifier');
+const whatsappNotifier = require('./whatsappNotifier');
+
+let lastSystemStatus = 'OK';
+
+function enabled() {
+  return String(process.env.NOTIFICATIONS_ENABLED || 'false').toLowerCase() === 'true';
+}
+
+function providerName() {
+  return String(process.env.NOTIFICATION_PROVIDER || 'telegram').toLowerCase();
+}
+
+function minScore() {
+  const n = parseInt(process.env.SIGNAL_NOTIFY_MIN_SCORE || '70', 10);
+  return Number.isFinite(n) ? n : 70;
+}
+
+function cooldownMinutes() {
+  const n = parseInt(process.env.SIGNAL_NOTIFY_COOLDOWN_MINUTES || '15', 10);
+  return Number.isFinite(n) && n > 0 ? n : 15;
+}
+
+function notifier() {
+  const provider = providerName();
+  if (provider === 'webhook') return webhookNotifier;
+  if (provider === 'whatsapp') return whatsappNotifier;
+  return telegramNotifier;
+}
+
+function isConfigured() {
+  return enabled() && notifier().isConfigured();
+}
+
+function safeDisabledLog() {
+  console.log('[Notifier] disabled or not configured');
+}
+
+function finite(v) {
+  return Number.isFinite(Number(v)) ? Number(v) : null;
+}
+
+function ageMinutes(iso) {
+  if (!iso) return null;
+  const ms = new Date(iso).getTime();
+  if (!Number.isFinite(ms)) return null;
+  return Math.max(0, (Date.now() - ms) / 60000);
+}
+
+function isStale(result, feedStatus) {
+  if (feedStatus?.stale) return true;
+  if (result?.decayContext?.stale === true) return true;
+  const age = ageMinutes(result?.lastUpdate);
+  return age !== null && age > 10;
+}
+
+function isHighFakeout(result) {
+  const fakeout = finite(result?.fakeoutProbability);
+  return result?.fakeoutRiskLevel === 'high' || (fakeout !== null && fakeout >= 70);
+}
+
+function shouldNotifySignal(signal, result, feedStatus) {
+  if (isStale(result, feedStatus)) return false;
+  if (isHighFakeout(result) && signal.status !== 'Bekräftad') return false;
+  if (signal.direction === 'neutral') return false;
+
+  return signal.score >= minScore() ||
+    signal.status === 'Bekräftad' ||
+    (signal.status === 'Intressant' && signal.score >= 70);
+}
+
+function directionSv(direction) {
+  if (direction === 'down') return 'Ner';
+  if (direction === 'up') return 'Upp';
+  return 'Neutral';
+}
+
+function pct(value) {
+  if (value === null || value === undefined || value === '') return 'okänt';
+  return `${value}%`;
+}
+
+function reasonsFor(result, signal) {
+  const reasons = Array.isArray(signal.reasons) ? signal.reasons : [];
+  const fallback = [
+    result?.mtfExplanationSv,
+    result?.momentumContinuationReasonSv,
+    result?.confidenceExplanationSv,
+  ].filter(Boolean);
+  const unique = [...new Set([...reasons, ...fallback])].filter(Boolean);
+  while (unique.length < 3) unique.push('Kontrollera setup manuellt innan beslut.');
+  return unique.slice(0, 3);
+}
+
+function riskText(result, signal) {
+  const warnings = Array.isArray(signal.warnings) ? signal.warnings : [];
+  if (warnings.length) return warnings.join(' ');
+  if (isHighFakeout(result)) return 'Hög fakeout-risk. Vänta på tydlig bekräftelse.';
+  if (signal.risk === 'medium') return 'Medelrisk. Bevaka volym och MTF.';
+  if (signal.risk === 'low') return 'Lågare risk enligt nuvarande signalfilter.';
+  return 'Risk okänd. Kontrollera marknadsläge manuellt.';
+}
+
+function normalizeSignal(result) {
+  const daytrade = buildDaytradeSignal(result);
+  return {
+    symbol: result?.symbol,
+    direction: daytrade.daytradeDirection,
+    status: daytrade.daytradeStatus,
+    score: daytrade.daytradeScore,
+    risk: daytrade.daytradeRisk,
+    reasons: daytrade.daytradeReasons,
+    warnings: daytrade.daytradeWarnings,
+    currentMovePct: daytrade.targetMove?.currentMovePct,
+    remainingToTargetPct: daytrade.targetMove?.remainingToTargetPct,
+  };
+}
+
+function formatSignalMessage(result, signal) {
+  const reasons = reasonsFor(result, signal);
+  return [
+    '📈 Daytrade-signal',
+    `Symbol: ${signal.symbol}`,
+    `Riktning: ${directionSv(signal.direction)}`,
+    `Status: ${signal.status}`,
+    `Poäng: ${signal.score}/100`,
+    '',
+    'Målzon: 1–2 %',
+    `Nuvarande rörelse: ${pct(signal.currentMovePct)}`,
+    `Kvar till första mål: ${pct(signal.remainingToTargetPct)}`,
+    '',
+    'Varför:',
+    `• ${reasons[0]}`,
+    `• ${reasons[1]}`,
+    `• ${reasons[2]}`,
+    '',
+    'Risk:',
+    riskText(result, signal),
+    '',
+    'Inte finansiell rådgivning.',
+  ].join('\n');
+}
+
+async function sendMessage(message, payload = {}) {
+  if (!isConfigured()) {
+    safeDisabledLog();
+    return { ok: false, skipped: true, reason: 'disabled_or_not_configured' };
+  }
+
+  try {
+    return await notifier().send(message, payload);
+  } catch (err) {
+    console.warn('[Notifier] send failed:', err.message);
+    return { ok: false, error: 'send_failed' };
+  }
+}
+
+async function processScanResults(results, options = {}) {
+  if (!enabled()) return { ok: true, sent: 0, skipped: 'disabled' };
+  if (!notifier().isConfigured()) {
+    safeDisabledLog();
+    return { ok: true, sent: 0, skipped: 'not_configured' };
+  }
+
+  let sent = 0;
+  for (const result of results || []) {
+    const signal = normalizeSignal(result);
+    if (!shouldNotifySignal(signal, result, options.feedStatus)) continue;
+
+    const dedupe = signalDeduper.shouldSend(signal, Date.now(), cooldownMinutes());
+    if (!dedupe.ok) continue;
+
+    const message = formatSignalMessage(result, signal);
+    const response = await sendMessage(message, { event: 'daytrade_signal', group: options.group || null, signal });
+    if (response.ok) {
+      signalDeduper.markSent(signal);
+      sent++;
+    }
+  }
+
+  return { ok: true, sent };
+}
+
+function systemStatus(health) {
+  const status = String(health?.overallStatus || health?.systemstatus || 'OK').toUpperCase();
+  if (status === 'CRITICAL' || status === 'KRITISK') return 'Kritisk';
+  if (status === 'WARNING' || status === 'VARNING') return 'Varning';
+  return 'OK';
+}
+
+function formatSystemMessage(health, status) {
+  const component = (health?.components || []).find((c) => c.severity === 'critical' || c.severity === 'warning' || c.status === 'BROKEN' || c.status === 'STALE');
+  return [
+    '⚠️ Systemstatus',
+    `Status: ${status}`,
+    component?.name ? `Komponent: ${component.name}` : null,
+    component?.messageSv ? `Detalj: ${component.messageSv}` : null,
+    '',
+    'Inte finansiell rådgivning.',
+  ].filter((line) => line !== null).join('\n');
+}
+
+async function processSystemHealth(health) {
+  const status = systemStatus(health);
+  const becameImportant = (status === 'Varning' || status === 'Kritisk') && status !== lastSystemStatus;
+  lastSystemStatus = status;
+
+  if (!becameImportant) return { ok: true, sent: 0, skipped: 'no_status_change' };
+  return sendMessage(formatSystemMessage(health, status), { event: 'system_status', status });
+}
+
+async function sendTestMessage() {
+  if (!enabled()) {
+    safeDisabledLog();
+    return { ok: false, skipped: true, reason: 'disabled' };
+  }
+  return sendMessage([
+    '📈 Daytrade-signal',
+    'Symbol: TEST',
+    'Riktning: Upp',
+    'Status: Test',
+    'Poäng: 100/100',
+    '',
+    'Målzon: 1–2 %',
+    'Nuvarande rörelse: 0%',
+    'Kvar till första mål: 1%',
+    '',
+    'Varför:',
+    '• Testmeddelande från Notification Engine v1',
+    '• Notifications är aktiverat',
+    '• Kanalen är konfigurerad',
+    '',
+    'Risk:',
+    'Testmeddelande. Ingen trading-signal.',
+    '',
+    'Inte finansiell rådgivning.',
+  ].join('\n'), { event: 'notification_test' });
+}
+
+module.exports = {
+  enabled,
+  isConfigured,
+  processScanResults,
+  processSystemHealth,
+  sendTestMessage,
+};

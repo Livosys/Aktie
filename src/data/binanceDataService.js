@@ -1,5 +1,6 @@
 'use strict';
 const https = require('https');
+const { withProviderRetry } = require('../providerStatus');
 
 const BINANCE_BASE = 'https://api.binance.com/api/v3/klines';
 
@@ -15,9 +16,9 @@ function delay(ms) {
   return new Promise((r) => setTimeout(r, ms));
 }
 
-function fetchJson(url) {
+function fetchJson(url, timeoutMs = 20000) {
   return new Promise((resolve, reject) => {
-    https.get(url, (res) => {
+    const req = https.get(url, (res) => {
       let body = '';
       res.on('data', (chunk) => { body += chunk; });
       res.on('end', () => {
@@ -34,7 +35,11 @@ function fetchJson(url) {
         }
       });
       res.on('error', reject);
-    }).on('error', reject);
+    });
+    req.setTimeout(timeoutMs, () => {
+      req.destroy(Object.assign(new Error('Binance request timeout'), { code: 'ETIMEDOUT' }));
+    });
+    req.on('error', reject);
   });
 }
 
@@ -69,7 +74,9 @@ async function fetchBinanceKlines({ symbol, interval = '1m', start, end, limit =
 
     let raw;
     try {
-      raw = await fetchJson(url);
+      raw = await withProviderRetry('binance', () => fetchJson(url), {
+        context: { symbol, endpoint: 'historical_klines' },
+      });
     } catch (err) {
       throw new Error(`Binance fetch failed for ${symbol}: ${err.message}`);
     }

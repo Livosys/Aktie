@@ -1,8 +1,19 @@
 'use strict';
 const express = require('express');
 const router  = express.Router();
-const { getLatestResults, getScanStatus, getWatchlist, getGroups } = require('../scanner/scheduler');
-const { getCryptoResults, getCryptoStatus } = require('../scanner/cryptoScheduler');
+const {
+  getLatestResults,
+  getScanStatus,
+  getStockFeedStatus,
+  getWatchlist,
+  getGroups,
+  getLiveCandlesDebug: getStockLiveCandlesDebug,
+} = require('../scanner/scheduler');
+const {
+  getCryptoResults,
+  getCryptoStatus,
+  getLiveCandlesDebug: getCryptoLiveCandlesDebug,
+} = require('../scanner/cryptoScheduler');
 const { readLatest }          = require('../scanner/featureLogger');
 const { fetchAlpacaBars, isEnabled: alpacaEnabled, hasCredentials } = require('../data/alpacaDataService');
 const { fetchBinanceKlines } = require('../data/binanceDataService');
@@ -17,19 +28,216 @@ const { runLearningEngine, loadLearningSummary } = require('../scanner/learningE
 const { buildRuleMemory, loadRuleMemory }               = require('../scanner/ruleMemoryEngine');
 const { buildSymbolProfiles, loadSymbolProfiles }       = require('../scanner/symbolPersonalityEngine');
 const { buildRegimeProfiles, loadRegimeProfiles }       = require('../scanner/regimeProfileEngine');
+const { loadScoreCalibration }                         = require('../scanner/scoreCalibrationEngine');
+const { loadFakeoutDna }                               = require('../scanner/fakeoutDnaEngine');
+const { loadRuleHealth }                               = require('../scanner/selfHealingRuleEngine');
+const { loadPersonality }                              = require('../scanner/marketPersonalityEngine');
+const { loadMomentumBacktest, buildMomentumBacktest }  = require('../history/momentumBacktestAnalyzer');
+const { loadMicroMoveAnalysis, buildMicroMoveAnalysis } = require('../history/microMoveAnalyzer');
+const { analyzeSignalQuality }                         = require('../history/signalQualityAnalyzer');
+const { buildSystemHealth }                            = require('../systemHealth');
+const { buildDaytradeSignal }                          = require('../scanner/daytradeSignalEngine');
+const { buildSignalDecisionSummary }                   = require('../scanner/signalDecisionSummary');
+const { buildDecisionMonitor }                         = require('../scanner/decisionMonitor');
+const { buildAiContext }                               = require('../ai/contextBuilder');
+const { askAi, isConfigured: aiIsConfigured, RISK_NOTE } = require('../ai/aiService');
+const redisService                                      = require('../services/redisService');
+const agentReasoningService                            = require('../services/agentReasoningService');
+const vectorMemoryService                              = require('../services/vectorMemoryService');
+const replayIntelligenceService                        = require('../services/replayIntelligenceService');
+const riskEngineService                                = require('../services/riskEngineService');
+const exitEngineService                                = require('../services/exitEngineService');
+const notificationEngineV2                             = require('../alerts/notificationEngineV2');
+const TEST_LIVE_SEND_COOLDOWN_MS = 5 * 60 * 1000;
+let testLiveSendLastAt = 0;
+const {
+  buildSignalAnalysisContext,
+  optionallyGenerateAiSummary,
+} = require('../ai/analystService');
+const {
+  acknowledgeAlerts,
+  alertsFromScannerResults,
+  alertsFromSystemHealth,
+  getAlerts,
+  recordAlerts,
+  resolveMissingSystemAlerts,
+  RESOLVED_RECENT_MS,
+} = require('../alerts/alertEngine');
+const { processSystemHealth, sendTestMessage } = require('../alerts/notificationService');
 const { runAutoMachine, isRunning: autoMachineRunning, getStatus: getAutoMachineStatus } = require('../jobs/autoMachine');
 const { getSchedulerStatus } = require('../jobs/autoMachineScheduler');
+const paperTrading = require('../paperTrading/paperTradingAgent');
+const { emptyReport: emptyGateEffectivenessReport } = require('../markets/marketGateEffectiveness');
 
 function buildScanResponse(results, status, group) {
+  const enriched = addDaytradeSignals(results);
   return {
     ok: true,
     group: group || 'all',
     lastScan: status.lastScan,
     scanning: status.scanning,
     marketWarning: status.marketWarning,
-    count: results.length,
-    results,
+    feedStatus: status.feedStatus || null,
+    count: enriched.length,
+    results: enriched,
   };
+}
+
+function addDaytradeSignals(results) {
+  return (results || []).map((r) => ({
+    ...r,
+    ...buildDaytradeSignal(r),
+  }));
+}
+
+function normalizeDebugCandle(c) {
+  const timestamp = c?.timestamp || c?.ts || c?.t || null;
+  return {
+    timestamp,
+    open: c?.open ?? c?.o ?? null,
+    high: c?.high ?? c?.h ?? null,
+    low: c?.low ?? c?.l ?? null,
+    close: c?.close ?? c?.c ?? null,
+    volume: c?.volume ?? c?.v ?? null,
+  };
+}
+
+function secondsSince(iso) {
+  if (!iso) return null;
+  const ms = new Date(iso).getTime();
+  if (!Number.isFinite(ms)) return null;
+  return Math.max(0, Math.round((Date.now() - ms) / 1000));
+}
+
+function readLiveCandleDebug({ symbol, marketType, timeframe, limit }) {
+  const normalizedSymbol = String(symbol || '').trim().toUpperCase();
+  const type = String(marketType || '').toLowerCase();
+  const tf = String(timeframe || '2m').toLowerCase();
+  const checkedSources = [];
+  const notes = [];
+  const reader = type === 'crypto' ? getCryptoLiveCandlesDebug : getStockLiveCandlesDebug;
+
+  let source = reader(normalizedSymbol, tf);
+  checkedSources.push(`${type || 'stock'}:${tf}:live-cache`);
+
+  if (!source && tf === '2m') {
+    const oneMinute = reader(normalizedSymbol, '1m');
+    checkedSources.push(`${type || 'stock'}:1m:live-cache`);
+    if (oneMinute?.candles?.length) {
+      const aggregated = filterComplete(aggregate1mTo2m(oneMinute.candles)).map(normalizeDebugCandle);
+      source = {
+        symbol: normalizedSymbol,
+        marketType: oneMinute.marketType || type || 'stock',
+        timeframe: '2m',
+        sourceName: `${oneMinute.sourceName || 'live_1m'}_aggregated_to_2m`,
+        updatedAt: oneMinute.updatedAt,
+        candles: aggregated,
+      };
+      notes.push('2m candles aggregerade från 1m live bars');
+    }
+  }
+
+  if (!source?.candles?.length) {
+    return {
+      ok: false,
+      error: 'Live candles saknas för symbolen',
+      debug: { checkedSources },
+    };
+  }
+
+  const candles = source.candles
+    .map(normalizeDebugCandle)
+    .filter((c) => c.timestamp)
+    .sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime())
+    .slice(-limit);
+  const latestTimestamp = candles[candles.length - 1]?.timestamp || null;
+
+  return {
+    ok: true,
+    symbol: normalizedSymbol,
+    marketType: source.marketType || type || 'stock',
+    timeframe: source.timeframe || tf,
+    latestTimestamp,
+    dataAgeSeconds: secondsSince(latestTimestamp),
+    source: source.sourceName || 'live-cache',
+    candles,
+    debug: {
+      hasLiveCandles: candles.length > 0,
+      candleCount: candles.length,
+      sourceName: source.sourceName || 'live-cache',
+      notes,
+    },
+  };
+}
+
+function buildTfDebugForCandidate(candidate) {
+  const marketType = candidate.marketType || candidate.market || 'stock';
+  const result = readLiveCandleDebug({
+    symbol: candidate.symbol,
+    marketType,
+    timeframe: '2m',
+    limit: 5,
+  });
+  if (!result.ok) {
+    return {
+      tf2mSource: 'upstream',
+      tf2mReason: 'tf2m kommer från upstream tf2mDirection. Råa live-candles finns inte i candidate-objektet.',
+      latest2mCandles: [],
+      dataAgeSeconds: null,
+      candleScore2m: candidate.candleScore2m || {
+        scoreDirection: 'unknown',
+        reasonSv: '2m candles saknas för candle-score.',
+      },
+    };
+  }
+  return {
+    tf2mSource: result.source,
+    tf2mReason: result.debug.notes?.[0] || 'tf2m kan jämföras mot live 2m candles från debug-cache.',
+    latest2mCandles: result.candles,
+    dataAgeSeconds: result.dataAgeSeconds,
+    candleScore2m: candidate.candleScore2m || null,
+  };
+}
+
+function buildLiveCandleDebugMap(results) {
+  return (results || []).reduce((acc, item) => {
+    if (!item?.symbol) return acc;
+    const marketType = item._market || item.market || (String(item.symbol).endsWith('USDT') ? 'crypto' : 'stock');
+    const result = readLiveCandleDebug({
+      symbol: item.symbol,
+      marketType,
+      timeframe: '2m',
+      limit: 5,
+    });
+    if (result.ok) acc[item.symbol] = result;
+    return acc;
+  }, {});
+}
+
+function buildCurrentDecisionMonitor(options = {}) {
+  const stockResults = addDaytradeSignals(getLatestResults());
+  const cryptoResults = addDaytradeSignals(getCryptoResults());
+  const liveCandleDebugBySymbol = buildLiveCandleDebugMap([
+    ...stockResults.map((r) => ({ ...r, _market: 'stock' })),
+    ...cryptoResults.map((r) => ({ ...r, _market: 'crypto' })),
+  ]);
+  const result = buildDecisionMonitor({
+    stockResults,
+    cryptoResults,
+    liveCandleDebugBySymbol,
+    familyDebug: options.familyDebug === true,
+    stockFeedStatus: getStockFeedStatus(),
+  });
+  return { result, liveCandleDebugBySymbol };
+}
+
+async function attachAnalystSummaries(candidates, liveCandleDebugBySymbol, qualityData) {
+  return Promise.all((candidates || []).map(async (candidate) => {
+    const candles = liveCandleDebugBySymbol?.[candidate.symbol]?.candles || [];
+    const context = buildSignalAnalysisContext(candidate, qualityData, candles);
+    const analyst = await optionallyGenerateAiSummary(context);
+    return { ...candidate, analyst };
+  }));
 }
 
 router.get('/scan', (req, res) => {
@@ -48,9 +256,16 @@ router.get('/scan/nasdaq', (req, res) => {
   res.json(buildScanResponse(filtered, getScanStatus(), 'nasdaq'));
 });
 
+router.get('/scan/etfs', (req, res) => {
+  const { indexEtfs, leveragedEtfs } = getGroups();
+  const all = [...(indexEtfs || []), ...(leveragedEtfs || [])];
+  const filtered = getLatestResults().filter((r) => all.includes(r.symbol));
+  res.json(buildScanResponse(filtered, getScanStatus(), 'etfs'));
+});
+
 router.get('/scan/crypto', (req, res) => {
   const status = getCryptoStatus();
-  const results = getCryptoResults();
+  const results = addDaytradeSignals(getCryptoResults());
   res.json({
     ok: true,
     enabled: true,
@@ -58,9 +273,448 @@ router.get('/scan/crypto', (req, res) => {
     lastScan: status.lastScan,
     scanning: status.scanning,
     marketWarning: false,
+    feedStatus: status.feedStatus || null,
     count: results.length,
     results,
   });
+});
+
+// ── GET /api/debug/live-candles ──────────────────────────────────────────────
+router.get('/debug/live-candles', (req, res) => {
+  try {
+    const symbol = String(req.query.symbol || '').trim().toUpperCase();
+    const marketTypeRaw = String(req.query.marketType || req.query.market || 'stock').trim().toLowerCase();
+    const marketType = marketTypeRaw === 'crypto' ? 'crypto' : 'stock';
+    const timeframe = String(req.query.timeframe || '2m').trim().toLowerCase();
+    const limit = Math.min(Math.max(parseInt(req.query.limit, 10) || 20, 1), 100);
+
+    if (!symbol) return res.status(400).json({ ok: false, error: 'symbol is required' });
+    if (!['1m', '2m'].includes(timeframe)) {
+      return res.status(400).json({ ok: false, error: 'timeframe must be 1m or 2m' });
+    }
+
+    const payload = readLiveCandleDebug({ symbol, marketType, timeframe, limit });
+    return res.status(payload.ok ? 200 : 404).json(payload);
+  } catch (err) {
+    console.error('[debug/live-candles]', err.message);
+    return res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+router.get('/debug/signal-decisions', (req, res) => {
+  const group = String(req.query.group || 'all').toLowerCase();
+  const stockResults = addDaytradeSignals(getLatestResults());
+  const cryptoResults = addDaytradeSignals(getCryptoResults());
+
+  let results;
+  if (group === 'stocks') {
+    const { stocks } = getGroups();
+    results = stockResults.filter((r) => stocks.includes(r.symbol));
+  } else if (group === 'nasdaq') {
+    const { nasdaq } = getGroups();
+    results = stockResults.filter((r) => nasdaq.includes(r.symbol));
+  } else if (group === 'crypto') {
+    results = cryptoResults;
+  } else {
+    results = [...stockResults, ...cryptoResults];
+  }
+
+  const signalDecisionSummary = buildSignalDecisionSummary(results, { group });
+  const counts = signalDecisionSummary.reduce((acc, row) => {
+    acc[row.status] = (acc[row.status] || 0) + 1;
+    return acc;
+  }, {});
+
+  res.json({
+    ok: true,
+    group,
+    count: signalDecisionSummary.length,
+    counts,
+    signalDecisionSummary,
+  });
+});
+
+// ── GET /api/live/decision-monitor ──────────────────────────────────────────
+router.get('/live/decision-monitor', async (req, res) => {
+  try {
+    const includeAi = String(req.query.includeAi || '') === '1';
+    const familyDebug = String(req.query.familyDebug || '') === '1';
+    const { result, liveCandleDebugBySymbol } = buildCurrentDecisionMonitor({ familyDebug });
+    if (String(req.query.debug || '') === '1') {
+      result.candidates = (result.candidates || []).map((candidate) => ({
+        ...candidate,
+        tfDebug: buildTfDebugForCandidate(candidate),
+      }));
+      result.debug = {
+        liveCandles: 'enabled',
+        note: 'tfDebug läser read-only live candle-cache från scheduler.',
+      };
+    }
+    if (includeAi) {
+      const qualityData = analyzeSignalQuality({ days: 14, limit: 300 });
+      result.candidates = await attachAnalystSummaries(result.candidates, liveCandleDebugBySymbol, qualityData);
+      result.ai = {
+        mode: 'rule_based',
+        label: 'AI-läge: regelbaserad analys',
+      };
+    }
+    res.json(result);
+  } catch (err) {
+    console.error('[decision-monitor] error:', err.message);
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+// ── GET /api/ai/signal-analysis ──────────────────────────────────────────────
+router.get('/ai/signal-analysis', async (req, res) => {
+  try {
+    const symbol = String(req.query.symbol || '').trim().toUpperCase();
+    const timeframe = String(req.query.timeframe || '2m').trim().toLowerCase();
+    if (!symbol) return res.status(400).json({ ok: false, error: 'symbol is required' });
+    if (timeframe !== '2m') return res.status(400).json({ ok: false, error: 'timeframe must be 2m' });
+
+    const { result, liveCandleDebugBySymbol } = buildCurrentDecisionMonitor();
+    const candidate = (result.candidates || []).find((c) => c.symbol === symbol);
+    if (!candidate) {
+      return res.status(404).json({
+        ok: false,
+        symbol,
+        error: 'Signaldata saknas för symbolen',
+      });
+    }
+
+    const qualityData = analyzeSignalQuality({ days: 14, limit: 300 });
+    const candles = liveCandleDebugBySymbol?.[symbol]?.candles || [];
+    const context = buildSignalAnalysisContext(candidate, qualityData, candles);
+    const analyst = await optionallyGenerateAiSummary(context);
+
+    return res.json({
+      ok: true,
+      symbol,
+      analyst,
+    });
+  } catch (err) {
+    console.error('[ai/signal-analysis] error:', err.message);
+    return res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+// ── POST /api/ai/ask ─────────────────────────────────────────────────────────
+// Read-only AI Copilot. Uses existing /api auth and rate limit from server.js.
+router.post('/ai/ask', async (req, res) => {
+  try {
+    const question = String(req.body?.question || '').trim();
+    const page = String(req.body?.page || 'live').trim();
+    const symbol = req.body?.symbol ? String(req.body.symbol).trim().toUpperCase() : null;
+
+    if (!question) {
+      return res.status(400).json({ ok: false, error: 'question is required' });
+    }
+    if (question.length > 1200) {
+      return res.status(400).json({ ok: false, error: 'question is too long' });
+    }
+    if (!aiIsConfigured()) {
+      return res.status(503).json({ ok: false, error: 'AI is not configured' });
+    }
+
+    const context = buildAiContext({ page, symbol });
+    const answer = await askAi({ question, page, symbol, context });
+
+    res.json({
+      ok: true,
+      answer,
+      sources: ['scan', 'alerts', 'systemHealth', 'history'],
+      riskNote: RISK_NOTE,
+    });
+  } catch (err) {
+    if (err.code === 'AI_NOT_CONFIGURED') {
+      return res.status(503).json({ ok: false, error: 'AI is not configured' });
+    }
+    if (err.code === 'ECONNABORTED') {
+      return res.status(504).json({ ok: false, error: 'AI request timed out' });
+    }
+    console.warn('[AI] ask failed:', err.message);
+    res.status(500).json({ ok: false, error: 'AI request failed' });
+  }
+});
+
+// ── Hybrid Agent Layer ───────────────────────────────────────────────────────
+// Agents are read-only commentary/risk helpers. They never create trades.
+
+router.get('/system/redis-status', async (req, res) => {
+  try {
+    await redisService.ping();
+    res.json(redisService.status());
+  } catch (err) {
+    res.json({
+      ...redisService.status(),
+      redisAvailable: false,
+      mode: 'fallback',
+      lastError: { message: err.message, at: new Date().toISOString() },
+    });
+  }
+});
+
+// ── Risk Engine v2 ──────────────────────────────────────────────────────────
+// Read/write endpoints inherit /api auth, rate-limit and JSON limits from server.js.
+
+router.get('/risk/status', async (req, res) => {
+  try {
+    res.json(await riskEngineService.getRiskStatus());
+  } catch (err) {
+    console.error('[risk/status] error:', err.message);
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+router.get('/risk/config', async (req, res) => {
+  try {
+    res.json({
+      ok: true,
+      config: await riskEngineService.getRiskConfig(),
+      safeFields: riskEngineService.SAFE_CONFIG_FIELDS,
+      bounds: riskEngineService.CONFIG_BOUNDS,
+    });
+  } catch (err) {
+    console.error('[risk/config] error:', err.message);
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+router.post('/risk/config', async (req, res) => {
+  try {
+    const result = await riskEngineService.updateRiskConfig(req.body || {});
+    res.status(result.ok ? 200 : 400).json(result);
+  } catch (err) {
+    console.error('[risk/config] update error:', err.message);
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+router.post('/risk/evaluate', async (req, res) => {
+  try {
+    const body = req.body && typeof req.body === 'object' ? req.body : {};
+    const signalContext = body.signalContext && typeof body.signalContext === 'object'
+      ? body.signalContext
+      : body;
+    const accountState = body.accountState && typeof body.accountState === 'object'
+      ? body.accountState
+      : {};
+    const persist = body.persist === true;
+    const evaluation = await riskEngineService.evaluateTradeRisk(
+      { ...signalContext, evaluation_source: 'manual_api_test' },
+      accountState,
+      { persist, evaluationSource: 'manual_api_test' },
+    );
+    res.json({ ...evaluation, persisted: persist && signalContext?.replay_mode !== true });
+  } catch (err) {
+    console.error('[risk/evaluate] error:', err.message);
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+// ── Exit Engine v1 ──────────────────────────────────────────────────────────
+// Read/write endpoints inherit /api auth, rate-limit and JSON limits from server.js.
+
+router.get('/exit/status', async (req, res) => {
+  try {
+    res.json(await exitEngineService.getExitEngineStatus());
+  } catch (err) {
+    console.error('[exit/status] error:', err.message);
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+router.get('/exit/config', async (req, res) => {
+  try {
+    res.json({
+      ok: true,
+      config: await exitEngineService.getExitConfig(),
+      keys: exitEngineService.KEYS,
+    });
+  } catch (err) {
+    console.error('[exit/config] error:', err.message);
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+router.post('/exit/config', async (req, res) => {
+  try {
+    const result = await exitEngineService.updateExitConfig(req.body || {});
+    res.status(result.ok ? 200 : 400).json(result);
+  } catch (err) {
+    console.error('[exit/config] update error:', err.message);
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+router.post('/exit/evaluate', async (req, res) => {
+  try {
+    const body = req.body && typeof req.body === 'object' ? req.body : {};
+    const openTrade = body.openTrade || body.open_trade || body.trade || body;
+    const marketState = body.marketState || body.market_state || {};
+    const config = body.exitConfig || body.exit_config || await exitEngineService.getExitConfig();
+    const evaluation = await exitEngineService.evaluateExit(openTrade, marketState, config);
+    res.json(evaluation);
+  } catch (err) {
+    console.error('[exit/evaluate] error:', err.message);
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+// ── Vector Memory / Historical Pattern Similarity ────────────────────────────
+
+router.get('/memory/status', async (req, res) => {
+  try {
+    res.json(await vectorMemoryService.getMemoryStatus());
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+router.post('/memory/similar', async (req, res) => {
+  try {
+    const body = req.body && typeof req.body === 'object' ? req.body : {};
+    const signalContext = body.signalContext && typeof body.signalContext === 'object'
+      ? body.signalContext
+      : body;
+    const result = await vectorMemoryService.findSimilarSetups(signalContext, {
+      limit: body.limit,
+      candidateLimit: body.candidateLimit,
+      minSimilarity: body.minSimilarity,
+    });
+    res.json(result);
+  } catch (err) {
+    console.error('[memory/similar] error:', err.message);
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+router.get('/memory/similar/:symbol', async (req, res) => {
+  try {
+    const symbol = String(req.params.symbol || '').trim().toUpperCase();
+    if (!symbol) return res.status(400).json({ ok: false, error: 'symbol is required' });
+    const cached = await vectorMemoryService.getCachedSimilarity(symbol);
+    if (cached) return res.json({ ...cached, cached: true });
+    res.json({
+      ok: true,
+      cached: false,
+      provider: vectorMemoryService.PROVIDER,
+      symbol,
+      matches: [],
+      summary: vectorMemoryService.summarizeSimilarSetups([]),
+      timestamp: new Date().toISOString(),
+    });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+router.post('/memory/save', async (req, res) => {
+  try {
+    const body = req.body && typeof req.body === 'object' ? req.body : {};
+    const signalContext = body.signalContext && typeof body.signalContext === 'object'
+      ? body.signalContext
+      : body;
+    const outcome = body.outcome && typeof body.outcome === 'object' ? body.outcome : {};
+    const result = await vectorMemoryService.saveSignalMemory(signalContext, outcome);
+    res.json(result);
+  } catch (err) {
+    console.error('[memory/save] error:', err.message);
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+function buildAgentSignalContext(input = {}) {
+  const c = input && typeof input === 'object' ? input : {};
+  return {
+    ...c,
+    symbol: String(c.symbol || '').trim().toUpperCase(),
+    direction: c.direction || c.nextMoveBias || c.bias || null,
+    score: c.score ?? c.priorityScore ?? c.tradeScore ?? c.gateScore ?? c.gate?.gateScore ?? null,
+    confidence: c.confidence ?? c.confidenceScore ?? c.gate?.confidenceScore ?? null,
+    state: c.state || c.narrowState || c.marketState || null,
+    volume: c.volume || {
+      state: c.volumeState || null,
+      relativeVolume: c.relativeVolume ?? null,
+    },
+    indicators: c.indicators || {
+      signalFamily: c.signalFamily || null,
+      signalSubtype: c.signalSubtype || null,
+      agreementCount: c.agreementCount ?? null,
+      extensionLevel: c.extensionLevel || null,
+      tf2m: c.tf2m || c.timeframeAgreement?.tf2m || null,
+    },
+    gate: c.gate || c.gateDecision || {
+      status: c.status || null,
+      hardBlockers: c.hardBlockers || [],
+      softBlockers: c.softBlockers || [],
+      dataFreshness: c.dataFreshness || null,
+      gateScore: c.gateScore ?? null,
+    },
+    paper: c.paper || {},
+    marketPersonality: c.marketPersonality || {},
+    recentDecisions: Array.isArray(c.recentDecisions) ? c.recentDecisions : [],
+  };
+}
+
+router.get('/agent/latest-analysis', async (req, res) => {
+  try {
+    const fallback = paperTrading.getLatestAgentAnalysis
+      ? paperTrading.getLatestAgentAnalysis()
+      : null;
+    const analysis = await agentReasoningService.getLatestAnalysis(fallback);
+    if (!analysis) return res.json({ ok: true, analysis: null, source: 'none' });
+    res.json(analysis);
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+router.get('/agent/analysis/:symbol', async (req, res) => {
+  try {
+    const symbol = String(req.params.symbol || '').trim().toUpperCase();
+    if (!symbol) return res.status(400).json({ ok: false, error: 'symbol is required' });
+    const analysis = await agentReasoningService.getAnalysisForSymbol(symbol, null);
+    if (!analysis) return res.status(404).json({ ok: false, symbol, error: 'Ingen agentanalys hittades för symbolen' });
+    res.json(analysis);
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+router.post('/agent/analyze-signal', async (req, res) => {
+  try {
+    const body = req.body && typeof req.body === 'object' ? req.body : {};
+    const suppliedSignalContext = body.signalContext && typeof body.signalContext === 'object'
+      ? body.signalContext
+      : null;
+    const symbol = String(body.symbol || suppliedSignalContext?.symbol || '').trim().toUpperCase();
+    const suppliedCandidate = req.body?.candidate && typeof req.body.candidate === 'object'
+      ? req.body.candidate
+      : null;
+    const bodyLooksLikeSignalContext = !suppliedSignalContext && !suppliedCandidate && (
+      body.symbol || body.direction || body.score != null || body.confidence != null ||
+      body.state || body.volume || body.indicators || body.gate || body.paper ||
+      body.marketPersonality || body.recentDecisions
+    );
+
+    let signalContext = suppliedSignalContext || suppliedCandidate || (bodyLooksLikeSignalContext ? body : null);
+    if (!signalContext) {
+      const { result } = buildCurrentDecisionMonitor();
+      signalContext = symbol
+        ? (result.candidates || []).find((c) => c.symbol === symbol)
+        : (result.candidates || [])[0];
+    }
+
+    if (!signalContext) signalContext = { symbol: symbol || 'UNKNOWN' };
+    const analysis = await agentReasoningService.analyzeSignal(buildAgentSignalContext(signalContext));
+
+    res.json(analysis);
+  } catch (err) {
+    console.error('[agent/analyze-signal] error:', err.message);
+    res.status(500).json({ ok: false, error: err.message });
+  }
 });
 
 // ── Wave Phase routes ──────────────────────────────────────────────────────────
@@ -441,6 +1095,91 @@ router.get('/history/regime-profiles', (req, res) => {
   }
 });
 
+// ── GET /api/history/score-calibration ───────────────────────────────────────
+router.get('/history/score-calibration', (req, res) => {
+  try {
+    const calibration = loadScoreCalibration();
+    if (!calibration) {
+      return res.json({ ok: true, calibration: null, message: 'Ingen kalibrering ännu — kör POST /api/history/update-learning' });
+    }
+    res.json({ ok: true, calibration });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+// ── GET /api/history/fakeout-dna ─────────────────────────────────────────────
+router.get('/history/fakeout-dna', (req, res) => {
+  try {
+    const dna = loadFakeoutDna();
+    if (!dna) return res.json({ ok: true, dna: null, message: 'Kör Auto Machine för att bygga Fakeout DNA.' });
+    res.json({ ok: true, dna });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+// ── GET /api/history/rule-health ──────────────────────────────────────────────
+router.get('/history/rule-health', (req, res) => {
+  try {
+    const health = loadRuleHealth();
+    if (!health) return res.json({ ok: true, health: null, message: 'Kör Auto Machine för att bygga Rule Health.' });
+    res.json({ ok: true, health });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+// ── GET /api/history/momentum-backtest ───────────────────────────────────────
+router.get('/history/momentum-backtest', (req, res) => {
+  try {
+    let report = loadMomentumBacktest();
+    if (!report && req.query.build === 'true') report = buildMomentumBacktest();
+    if (!report) return res.json({ ok: true, report: null, message: 'Kör Auto Machine eller ?build=true för att bygga Momentum Intelligence Backtest.' });
+    res.json({ ok: true, report });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+// ── GET /api/history/micro-move-analysis ─────────────────────────────────────
+router.get('/history/micro-move-analysis', (req, res) => {
+  try {
+    let report = loadMicroMoveAnalysis();
+    if (!report && req.query.build === 'true') report = buildMicroMoveAnalysis();
+    if (!report) return res.json({ ok: true, report: null, message: 'Kör Auto Machine eller ?build=true för att bygga Micro Move Analysis.' });
+    res.json({ ok: true, report });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+// ── GET /api/market/personality ───────────────────────────────────────────────
+router.get('/market/personality', (req, res) => {
+  try {
+    const group  = req.query.group || null;
+    const stocks = loadPersonality('stocks');
+    const crypto = loadPersonality('crypto');
+    if (group === 'stocks') return res.json({ ok: true, personality: stocks });
+    if (group === 'crypto') return res.json({ ok: true, personality: crypto });
+    res.json({ ok: true, stocks, crypto });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+// ── GET /api/history/signal-quality ──────────────────────────────────────────
+router.get('/history/signal-quality', (req, res) => {
+  try {
+    const days  = Math.min(parseInt(req.query.days,  10) || 7, 30);
+    const limit = Math.min(parseInt(req.query.limit, 10) || 100, 500);
+    const result = analyzeSignalQuality({ days, limit });
+    res.json(result);
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
 // ── GET /api/history/missed-breakouts ────────────────────────────────────────
 const { findMissedBreakouts } = require('../history/missedBreakoutFinder');
 
@@ -528,6 +1267,95 @@ router.post('/history/update-learning', async (req, res) => {
 // ══════════════════════════════════════════════════════════════════════════════
 // REPLAY ENGINE ROUTES
 // ══════════════════════════════════════════════════════════════════════════════
+
+// ── Replay Intelligence v2 session routes ───────────────────────────────────
+router.get('/replay/sessions', (req, res) => {
+  try {
+    res.json({ ok: true, sessions: replayIntelligenceService.listReplaySessions() });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+router.post('/replay/sessions', async (req, res) => {
+  try {
+    const session = await replayIntelligenceService.createReplaySession(req.body || {});
+    res.status(201).json({ ok: true, session });
+  } catch (err) {
+    res.status(400).json({ ok: false, error: err.message });
+  }
+});
+
+router.post('/replay/risk-fixture', async (req, res) => {
+  try {
+    const result = await replayIntelligenceService.runRiskFixtureReplay();
+    res.json(result);
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+router.get('/replay/sessions/:id', (req, res) => {
+  try {
+    const session = replayIntelligenceService.getReplaySessionStatus(req.params.id);
+    if (!session) return res.status(404).json({ ok: false, error: 'Replay session not found' });
+    res.json({ ok: true, session });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+router.post('/replay/sessions/:id/run', async (req, res) => {
+  try {
+    const session = await replayIntelligenceService.runReplaySession(req.params.id);
+    if (!session) return res.status(404).json({ ok: false, error: 'Replay session not found' });
+    res.json({ ok: true, session });
+  } catch (err) {
+    res.status(400).json({ ok: false, error: err.message });
+  }
+});
+
+router.post('/replay/sessions/:id/pause', async (req, res) => {
+  try {
+    const session = await replayIntelligenceService.pauseReplaySession(req.params.id);
+    if (!session) return res.status(404).json({ ok: false, error: 'Replay session not found' });
+    res.json({ ok: true, session });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+router.post('/replay/sessions/:id/stop', async (req, res) => {
+  try {
+    const session = await replayIntelligenceService.stopReplaySession(req.params.id);
+    if (!session) return res.status(404).json({ ok: false, error: 'Replay session not found' });
+    res.json({ ok: true, session });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+router.get('/replay/sessions/:id/events', (req, res) => {
+  const limit = Math.min(parseInt(req.query.limit, 10) || 500, 5000);
+  try {
+    const session = replayIntelligenceService.getReplaySessionStatus(req.params.id);
+    if (!session) return res.status(404).json({ ok: false, error: 'Replay session not found' });
+    const events = replayIntelligenceService.getReplayEvents(req.params.id).slice(-limit);
+    res.json({ ok: true, sessionId: req.params.id, count: events.length, events });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+router.get('/replay/sessions/:id/summary', async (req, res) => {
+  try {
+    const summary = await replayIntelligenceService.summarizeReplaySession(req.params.id);
+    if (!summary) return res.status(404).json({ ok: false, error: 'Replay session not found' });
+    res.json({ ok: true, summary });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
 
 // ── POST /api/replay/run ──────────────────────────────────────────────────────
 router.post('/replay/run', async (req, res) => {
@@ -648,6 +1476,184 @@ router.get('/system/scheduler-status', (req, res) => {
   }
 });
 
+// ── GET /api/system/health ───────────────────────────────────────────────────
+router.get('/system/health', (req, res) => {
+  try {
+    const health = buildSystemHealth();
+    const healthAlerts = alertsFromSystemHealth(health);
+    recordAlerts(healthAlerts);
+    resolveMissingSystemAlerts(healthAlerts.map((a) => a.key));
+    processSystemHealth(health).catch((err) => console.warn('[Notifier] system processing failed:', err.message));
+    notificationEngineV2.processSystemHealth(health).catch((err) => console.warn('[notification-v2] system processing failed:', err.message));
+    res.json(health);
+  } catch (err) {
+    res.status(500).json({
+      ok: false,
+      overallStatus: 'CRITICAL',
+      summarySv: `Kritiskt fel vid health-check: ${err.message}`,
+      components: [],
+      alerts: [{
+        type: 'system',
+        severity: 'critical',
+        titleSv: 'Health-check misslyckades',
+        messageSv: err.message,
+        suggestedActionSv: 'Kontrollera serverloggar och senaste deploy.',
+        createdAt: new Date().toISOString(),
+      }],
+    });
+  }
+});
+
+// ── GET /api/alerts ──────────────────────────────────────────────────────────
+router.get('/alerts', (req, res) => {
+  try {
+    const health = buildSystemHealth();
+    const liveResults = [...getLatestResults(), ...getCryptoResults()];
+    processSystemHealth(health).catch((err) => console.warn('[Notifier] system processing failed:', err.message));
+    const healthAlerts = alertsFromSystemHealth(health);
+    const liveAlerts = alertsFromScannerResults(liveResults, 'live');
+    const generated = recordAlerts([
+      ...healthAlerts,
+      ...liveAlerts,
+    ]);
+    notificationEngineV2.processSystemHealth(health).catch((err) => console.warn('[notification-v2] system processing failed:', err.message));
+    const resolvedHealth = resolveMissingSystemAlerts(healthAlerts.map((a) => a.key), 'systemHealth');
+    const resolvedLive = resolveMissingSystemAlerts(liveAlerts.map((a) => a.key), 'live');
+    const includeAcknowledged = req.query.includeAcknowledged === 'true';
+    const limit = parseInt(req.query.limit || '200', 10);
+    const alerts = getAlerts({ includeAcknowledged, statuses: ['active'], limit });
+    const resolvedLast24h = getAlerts({
+      includeAcknowledged: true,
+      includeResolved: true,
+      statuses: ['resolved'],
+      recentMs: RESOLVED_RECENT_MS,
+      limit: 100,
+    });
+    const historyCount = getAlerts({ includeAcknowledged: true, includeResolved: true, limit: 500 }).length;
+    res.json({
+      ok: true,
+      count: alerts.length,
+      generated: generated.length,
+      autoResolved: resolvedHealth.resolved + resolvedLive.resolved,
+      historyCount,
+      systemHealth: {
+        ok: health.ok,
+        overallStatus: health.overallStatus,
+        summarySv: health.summarySv,
+        generatedAt: health.generatedAt,
+        stockFeed: health.stockFeed,
+      },
+      alerts,
+      resolvedLast24h,
+    });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+// ── POST /api/alerts/acknowledge ─────────────────────────────────────────────
+router.post('/alerts/acknowledge', (req, res) => {
+  try {
+    const ids = req.body?.ids || req.body?.id;
+    const result = acknowledgeAlerts(ids);
+    res.json({ ok: true, ...result });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+// ── POST /api/notifications/test ─────────────────────────────────────────────
+router.post('/notifications/test', async (req, res) => {
+  try {
+    const result = await sendTestMessage();
+    if (!result.ok) {
+      return res.status(503).json({ ok: false, sent: false, reason: result.reason || 'not_configured' });
+    }
+    res.json({ ok: true, sent: true, provider: result.provider || null });
+  } catch (err) {
+    console.warn('[Notifier] test failed:', err.message);
+    res.status(500).json({ ok: false, error: 'notification_test_failed' });
+  }
+});
+
+// ── Notification Engine v2 ───────────────────────────────────────────────────
+router.get('/notifications/status', async (req, res) => {
+  try {
+    res.json(await notificationEngineV2.getStatus());
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+router.get('/notifications/config', async (req, res) => {
+  try {
+    res.json({
+      ok: true,
+      config: await notificationEngineV2.getConfig(),
+      keys: notificationEngineV2.KEYS,
+    });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+router.post('/notifications/config', async (req, res) => {
+  try {
+    const result = await notificationEngineV2.updateConfig(req.body || {});
+    res.status(result.ok ? 200 : 400).json(result);
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+router.get('/notifications/recent', async (req, res) => {
+  try {
+    const limit = Math.min(parseInt(req.query.limit, 10) || 50, 100);
+    res.json({
+      ok: true,
+      source: notificationEngineV2.SOURCE,
+      recent: await notificationEngineV2.getRecentAlerts(limit),
+      status: await notificationEngineV2.getStatus(),
+    });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+router.post('/notifications/test-v2', async (req, res) => {
+  try {
+    const body = req.body || {};
+    const type = body.type || 'TEST_ALERT';
+
+    if (body.replay_mode === true) {
+      return res.json({ ok: false, blocked: true, reason: 'replay_mode_blocked' });
+    }
+
+    const dryRun = body.dry_run !== false;
+    const confirmLive = body.confirm_live_send === true;
+
+    if (!dryRun && !confirmLive) {
+      return res.json({ ok: false, blocked: true, reason: 'missing_confirm_live_send' });
+    }
+
+    if (!dryRun && confirmLive) {
+      const now = Date.now();
+      const remaining = TEST_LIVE_SEND_COOLDOWN_MS - (now - testLiveSendLastAt);
+      if (remaining > 0) {
+        return res.json({ ok: false, blocked: true, reason: 'test_rate_limited', retry_after_seconds: Math.ceil(remaining / 1000) });
+      }
+      testLiveSendLastAt = now;
+      const result = await notificationEngineV2.runTestAlert(type);
+      return res.json({ ok: true, type, dry_run: false, result });
+    }
+
+    const result = await notificationEngineV2.runTestAlert(type, { dry_run: true });
+    return res.json({ ok: true, type, dry_run: true, result });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
 // ── POST /api/system/run-auto-machine ─────────────────────────────────────────
 router.post('/system/run-auto-machine', async (req, res) => {
   if (autoMachineRunning()) {
@@ -736,7 +1742,8 @@ router.get('/review/chart-data', (req, res) => {
       const diff = Math.abs(cMs - tsMs);
       if (diff < minDiff) { minDiff = diff; fullSignalIdx = i; }
     }
-    if (minDiff > msPerCandle + 30000) fullSignalIdx = -1;
+    const exactSignalIdx = minDiff <= msPerCandle + 30000 ? fullSignalIdx : -1;
+    const usedFallbackTimestamp = exactSignalIdx < 0 && fullSignalIdx >= 0;
 
     // Slice to display window only
     const startIdx = fullSignalIdx >= 0 ? Math.max(0, fullSignalIdx - windowBefore) : 0;
@@ -762,11 +1769,136 @@ router.get('/review/chart-data', (req, res) => {
 
     const hasSMA200 = candles.some(c => c.sma200 != null);
 
-    return res.json({ ok: true, symbol, timestamp, signalCandleIdx: newSignalIdx, hasSMA200, candles });
+    const matchedTimestamp = fullSignalIdx >= 0
+      ? (warmupCandles[fullSignalIdx].ts || warmupCandles[fullSignalIdx].t || null)
+      : null;
+
+    return res.json({
+      ok: true,
+      symbol,
+      timestamp,
+      requestedTimestamp: timestamp,
+      matchedTimestamp,
+      timestampFallback: usedFallbackTimestamp,
+      signalCandleIdx: newSignalIdx,
+      hasSMA200,
+      candles,
+    });
   } catch (err) {
     console.error('[review/chart-data]', err);
     return res.status(500).json({ ok: false, error: err.message });
   }
+});
+
+// ── Paper Trading ─────────────────────────────────────────────────────────────
+// All endpoints are paper-only. No real orders are placed, ever.
+
+router.get('/paper-trading/status', (req, res) => {
+  try { res.json(paperTrading.getStatus()); }
+  catch (err) { res.status(500).json({ ok: false, error: err.message }); }
+});
+
+router.get('/paper-trading/live-state', async (req, res) => {
+  try {
+    const fallback = paperTrading.getLiveState ? paperTrading.getLiveState() : {
+      ok: true,
+      status: paperTrading.getStatus(),
+      performance: paperTrading.getPerformance(),
+      gateStatus: paperTrading.getGateStatus(),
+    };
+    const cached = await redisService.getJson('paper:live-state', fallback);
+    res.json({
+      ok: true,
+      source: redisService.status().redisAvailable ? 'redis' : 'fallback',
+      state: cached || fallback,
+      redis: redisService.status(),
+    });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+router.get('/paper-trading/trades', (req, res) => {
+  try { res.json(paperTrading.getTrades()); }
+  catch (err) { res.status(500).json({ ok: false, error: err.message }); }
+});
+
+router.get('/paper-trading/performance', (req, res) => {
+  try { res.json(paperTrading.getPerformance()); }
+  catch (err) { res.status(500).json({ ok: false, error: err.message }); }
+});
+
+router.get('/paper-trading/events', (req, res) => {
+  try { res.json(paperTrading.getEvents()); }
+  catch (err) { res.status(500).json({ ok: false, error: err.message }); }
+});
+
+router.post('/paper-trading/start', (req, res) => {
+  try { res.json(paperTrading.start()); }
+  catch (err) { res.status(500).json({ ok: false, error: err.message }); }
+});
+
+router.post('/paper-trading/stop', (req, res) => {
+  try { res.json(paperTrading.stop()); }
+  catch (err) { res.status(500).json({ ok: false, error: err.message }); }
+});
+
+router.get('/paper-trading/calibration-report', (req, res) => {
+  try { res.json(paperTrading.getCalibrationReport()); }
+  catch (err) { res.status(500).json({ ok: false, error: err.message }); }
+});
+
+router.get('/paper-trading/compass', (req, res) => {
+  try { res.json({ ok: true, ...paperTrading.getCompassStatus() }); }
+  catch (err) { res.status(500).json({ ok: false, error: err.message }); }
+});
+
+router.get('/paper-trading/gate-status', (req, res) => {
+  try { res.json(paperTrading.getGateStatus()); }
+  catch (err) { res.status(500).json({ ok: false, error: err.message }); }
+});
+
+router.get('/paper-trading/gate-history', (req, res) => {
+  try { res.json(paperTrading.getGateHistory()); }
+  catch (err) { res.status(500).json({ ok: false, error: err.message }); }
+});
+
+router.get('/paper-trading/gate-decisions', (req, res) => {
+  try { res.json(paperTrading.getGateDecisions()); }
+  catch (err) { res.status(500).json({ ok: false, error: err.message }); }
+});
+
+router.get('/paper-trading/gate-decisions-history', (req, res) => {
+  try {
+    res.json(paperTrading.getGateDecisionsHistory({
+      limit: req.query.limit,
+      since: req.query.since,
+    }));
+  } catch (err) {
+    res.json({ ok: true, count: 0, decisions: [], error: err.message });
+  }
+});
+
+router.get('/paper-trading/decision-pipeline', (req, res) => {
+  try { res.json(paperTrading.getDecisionPipeline()); }
+  catch (err) { res.status(500).json({ ok: false, error: err.message }); }
+});
+
+router.get('/paper-trading/gate-effectiveness', (req, res) => {
+  try { res.json({ ok: true, report: paperTrading.getGateEffectivenessReport() }); }
+  catch (err) { res.json({ ok: false, error: err.message, report: emptyGateEffectivenessReport() }); }
+});
+
+// ── API 404 — never return HTML for unknown /api/* paths ──────────────────────
+router.use((req, res) => {
+  res.status(404).json({ ok: false, error: 'API route not found' });
+});
+
+// ── API error handler ─────────────────────────────────────────────────────────
+// eslint-disable-next-line no-unused-vars
+router.use((err, req, res, next) => {
+  console.error('[API] Unhandled error:', err.message);
+  res.status(500).json({ ok: false, error: err.message || 'Internal server error' });
 });
 
 module.exports = router;

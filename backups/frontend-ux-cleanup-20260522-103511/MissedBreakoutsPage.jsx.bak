@@ -1,0 +1,756 @@
+import React, { useState, useEffect, useCallback, useMemo } from 'react';
+import { openTradingView } from '../utils/tradingView.js';
+
+// ── Utility ───────────────────────────────────────────────────────────────────
+
+function copyToClipboard(text) {
+  if (navigator.clipboard) {
+    navigator.clipboard.writeText(text).catch(() => {});
+  } else {
+    const el = document.createElement('textarea');
+    el.value = text;
+    document.body.appendChild(el);
+    el.select();
+    document.execCommand('copy');
+    document.body.removeChild(el);
+  }
+}
+
+function CopyButton({ text, label, title: titleProp }) {
+  const [copied, setCopied] = useState(false);
+  const handle = () => { copyToClipboard(text); setCopied(true); setTimeout(() => setCopied(false), 1800); };
+  return (
+    <button className="hist-action-btn hist-copy-btn" onClick={handle} title={titleProp ?? 'Kopiera till urklipp'}>
+      {copied ? '✓ Kopierat' : label}
+    </button>
+  );
+}
+
+function pctFmt(v) {
+  if (v == null) return <span style={{ color: 'var(--muted)' }}>–</span>;
+  const n = Number(v);
+  return (
+    <span style={{ color: n >= 0 ? 'var(--green)' : 'var(--red)', fontFamily: 'var(--mono)', fontWeight: 700 }}>
+      {n >= 0 ? '+' : ''}{n.toFixed(2)}%
+    </span>
+  );
+}
+
+// ── Label maps ────────────────────────────────────────────────────────────────
+
+const MISSED_TYPE_LABEL = {
+  BULLISH_EXTENDED:     'Kraftig bullish',
+  LATE_CONTINUATION:    'Sen fortsättning',
+  TREND_PERSISTENCE:    'Trend fortsatte',
+  BULLISH_CONTINUATION: 'Fortsättning uppåt',
+  BEARISH_CONTINUATION: 'Fortsättning nedåt',
+};
+
+const MISSED_TYPE_CLS = {
+  BULLISH_EXTENDED:     'badge-green',
+  LATE_CONTINUATION:    'badge-green',
+  TREND_PERSISTENCE:    'badge-blue',
+  BULLISH_CONTINUATION: 'badge-green',
+  BEARISH_CONTINUATION: 'badge-red',
+};
+
+const REGIME_SV = {
+  BULLISH_TREND:   'Stark upptrend',   BEARISH_TREND:  'Stark nedtrend',
+  CHOPPY:          'Stökig marknad',   RANGE_DAY:      'Sidledsdag',
+  TREND_DAY_UP:    'Trenddag uppåt',   TREND_DAY_DOWN: 'Trenddag nedåt',
+  HIGH_VOLATILITY: 'Hög volatilitet',  PANIC:          'Panik',
+  UNKNOWN:         'Okänt',
+};
+
+function regimeBadgeCls(regime) {
+  if (!regime) return 'badge-gray';
+  if (regime.includes('BULL'))     return 'badge-green';
+  if (regime.includes('BEAR'))     return 'badge-red';
+  if (regime.includes('CHOPPY'))   return 'badge-yellow';
+  if (regime.includes('PANIC'))    return 'badge-red';
+  if (regime.includes('HIGH_VOL')) return 'badge-orange';
+  return 'badge-gray';
+}
+
+// ── Deduplication ─────────────────────────────────────────────────────────────
+
+function deduplicateItems(items) {
+  const seen = new Map();
+  for (const item of items) {
+    const minuteTs = (item.signalTidUTC || item.timestamp || '').slice(0, 16);
+    const key = `${item.symbol}__${minuteTs}__${item.missedType || ''}__${item.marketRegime || ''}`;
+    if (!seen.has(key)) {
+      seen.set(key, { ...item, _duplicateCount: 1 });
+    } else {
+      seen.get(key)._duplicateCount++;
+    }
+  }
+  return [...seen.values()];
+}
+
+// ── Learning Engine ───────────────────────────────────────────────────────────
+
+function getRecommendation(item) {
+  const cont      = item.continuationStrength || 0;
+  const moved     = Math.abs(item.movedPct10 || 0);
+  const blocked   = !!item.blocked;
+  const relVol    = item.relVol20 || 0;
+  const reasons   = Array.isArray(item.reasonSv) ? item.reasonSv : (item.reasonSv ? [item.reasonSv] : []);
+  const reasonStr = reasons.join(' ').toLowerCase();
+
+  // Extreme momentum + volume despite block
+  if (blocked && moved >= 1.5 && relVol >= 1.5 && cont >= 60)
+    return {
+      key: 'MOMENTUM_EXCEPTION', label: 'FART_UNDANTAG', short: 'Fart-undantag', color: '#a78bfa',
+      desc: 'Stark volym och momentum trots blockering. Systemet bör ha ett undantagsläge för extrema momentumsituationer.',
+    };
+
+  // Technical rule (SMA/spread/gap) blocked but continuation strong
+  if (blocked && cont >= 60 && moved >= 1.0 &&
+      (reasonStr.includes('sma') || reasonStr.includes('spread') || reasonStr.includes('gap') || reasonStr.includes('avstånd')))
+    return {
+      key: 'WATCH_MODE_NEEDED', label: 'BEVAKA_BEHÖVS', short: 'Bevakningsläge saknas', color: 'var(--orange)',
+      desc: 'Teknisk regel blockerade, men rörelsen var stark. Överväg bevakningsläge vid starka momentum-signaler.',
+    };
+
+  // Strong block — filter too strict
+  if (blocked && cont >= 65 && moved >= 1.0)
+    return {
+      key: 'FILTER_TOO_STRICT', label: 'FILTER_FÖR_STRÄNGT', short: 'Filter för strängt', color: 'var(--red)',
+      desc: 'Systemet blockerade en rörelse som fungerade starkt. Filtren kan vara för konservativa för detta marknadsläge.',
+    };
+
+  // Moderate block — rule may need tuning
+  if (blocked && cont >= 40 && moved >= 0.5)
+    return {
+      key: 'REVIEW_RULE', label: 'GRANSKA_REGEL', short: 'Granska regeln', color: 'var(--yellow)',
+      desc: 'Regelblockering med måttlig fortsättning. Granskning rekommenderas för att avgöra om regeln är kalibrerad rätt.',
+    };
+
+  // Not blocked but watch mode would have helped
+  if (!blocked && cont >= 55 && moved >= 0.5)
+    return {
+      key: 'WATCH_MODE_NEEDED', label: 'WATCH_MODE_NEEDED', short: 'Bevakningsläge saknas', color: 'var(--orange)',
+      desc: 'Systemet hade inget aktivt bevakningsläge. Signalen skedde men fångades inte upp.',
+    };
+
+  // Block was correct
+  if (blocked && cont < 35)
+    return {
+      key: 'VALID_BLOCK', label: 'RÄTT_BLOCKERING', short: 'Giltig blockering', color: 'var(--green)',
+      desc: 'Systemet blockerade korrekt — fortsättningen var svag och blockeringen var rätt beslut.',
+    };
+
+  return {
+    key: 'REVIEW_REQUIRED', label: 'GRANSKNING_BEHÖVS', short: 'Granskning krävs', color: 'var(--muted)',
+    desc: 'Blandad signal. Se närmre på detaljer för att förstå mönstret.',
+  };
+}
+
+function getRuleSuggestion(item) {
+  const rec       = getRecommendation(item);
+  if (rec.key === 'VALID_BLOCK' || rec.key === 'REVIEW_REQUIRED') return null;
+  const cont      = item.continuationStrength || 0;
+  const moved     = Math.abs(item.movedPct10 || 0);
+  const relVol    = item.relVol20 || 0;
+  const reasons   = Array.isArray(item.reasonSv) ? item.reasonSv : (item.reasonSv ? [item.reasonSv] : []);
+  const reasonStr = reasons.join(' ').toLowerCase();
+
+  if (reasonStr.includes('sma') && cont >= 60)
+    return 'SMA-gap blockerade signalen men priset fortsatte starkt. Överväg att tillåta WATCH-läge när momentum och volym är höga.';
+  if (reasonStr.includes('spread') && cont >= 60)
+    return 'Spreadkravet blockerade men rörelsen var verklig. Överväg bevakningsläge med reducerad positionsstorlek.';
+  if (reasonStr.includes('volym') && relVol >= 1.2)
+    return 'Volymkravet blockerade, men relativvolymen var god. Kontrollera volymtröskelns kalibrering.';
+  if (rec.key === 'MOMENTUM_EXCEPTION')
+    return `Starkt momentum (${relVol.toFixed(1)}x volym, +${moved.toFixed(1)}% rörelse) trots blockering. Lägg till ett momentumundantag i reglerna.`;
+  if (rec.key === 'FILTER_TOO_STRICT')
+    return `Filtret blockerade en rörelse på +${moved.toFixed(1)}% (styrka ${cont}). Överväg att justera tröskelvärdena för detta marknadsläge.`;
+  if (rec.key === 'WATCH_MODE_NEEDED')
+    return 'Bevakningsläge saknas. Lägg till WATCH som mellanlager — inte köp direkt, bara aktiv bevakning med alert.';
+  if (rec.key === 'REVIEW_RULE')
+    return `Regeln blockerade men fortsättningen var måttlig (styrka ${cont}). Granska om regeln är rätt kalibrerad för aktuellt marknadsläge.`;
+  return null;
+}
+
+function reasonToSuggestion(reason) {
+  const r = reason.toLowerCase();
+  if (r.includes('sma'))     return 'Överväg WATCH-läge vid starka SMA-setup med hög volym.';
+  if (r.includes('spread'))  return 'Kontrollera spreadtröskeln — kan vara för strikt i trendmarknader.';
+  if (r.includes('volym'))   return 'Volymsfilter kan behöva kalibreras per marknadsläge.';
+  if (r.includes('trend'))   return 'Trendfilter kan missa early continuation — lägg till WATCH för trendstarter.';
+  if (r.includes('narrow') || r.includes('smalt')) return 'Narrow-krav kan vara för strikt i volatila marknader.';
+  return 'Granska regeln för att avgöra om den är kalibrerad för nuvarande marknadsförhållanden.';
+}
+
+function computeRuleImpact(blockedItems) {
+  const map = {};
+  for (const item of blockedItems) {
+    const reasons = Array.isArray(item.reasonSv) ? item.reasonSv : (item.reasonSv ? [item.reasonSv] : []);
+    const key = (reasons[0] || 'Okänd anledning').slice(0, 70);
+    if (!map[key]) map[key] = { count: 0, totalCont: 0, maxMoved: 0, maxSym: '' };
+    const e = map[key];
+    e.count++;
+    e.totalCont += item.continuationStrength || 0;
+    const moved = Math.abs(item.movedPct10 || 0);
+    if (moved > e.maxMoved) { e.maxMoved = moved; e.maxSym = item.symbol; }
+  }
+  return Object.entries(map)
+    .map(([reason, d]) => ({
+      reason,
+      count:      d.count,
+      avgCont:    Math.round(d.totalCont / d.count),
+      worstMiss:  d.maxMoved,
+      worstSym:   d.maxSym,
+      suggestion: reasonToSuggestion(reason),
+    }))
+    .sort((a, b) => b.count - a.count)
+    .slice(0, 6);
+}
+
+// ── Systemets Lärdom ──────────────────────────────────────────────────────────
+
+function LearningBox({ items }) {
+  if (!items || items.length === 0) return null;
+
+  const typeCounts = {};
+  items.forEach(i => { const k = i.missedType || 'UNKNOWN'; typeCounts[k] = (typeCounts[k] || 0) + 1; });
+  const [topType] = Object.entries(typeCounts).sort((a, b) => b[1] - a[1])[0] || [];
+
+  const rCounts = {};
+  items.forEach(i => {
+    const arr = Array.isArray(i.reasonSv) ? i.reasonSv : (i.reasonSv ? [i.reasonSv] : []);
+    if (arr.length) { const k = arr[0].slice(0, 60); rCounts[k] = (rCounts[k] || 0) + 1; }
+  });
+  const [topReason, topRC] = Object.entries(rCounts).sort((a, b) => b[1] - a[1])[0] || [];
+
+  const sCounts = {};
+  items.forEach(i => { sCounts[i.symbol] = (sCounts[i.symbol] || 0) + 1; });
+  const [topSym, topSC] = Object.entries(sCounts).sort((a, b) => b[1] - a[1])[0] || [];
+
+  const regCounts = {};
+  items.forEach(i => { if (i.marketRegime) regCounts[i.marketRegime] = (regCounts[i.marketRegime] || 0) + 1; });
+  const [topRegime, topRegC] = Object.entries(regCounts).sort((a, b) => b[1] - a[1])[0] || [];
+
+  const recCounts = {};
+  items.forEach(i => { const r = getRecommendation(i); recCounts[r.key] = (recCounts[r.key] || 0) + 1; });
+
+  const ruleImpact  = computeRuleImpact(items.filter(i => i.blocked));
+  const ruleToReview = ruleImpact.find(r => r.avgCont >= 50) || ruleImpact[0];
+
+  const REC_TAGS = [
+    { key: 'FILTER_TOO_STRICT',   color: 'var(--red)',    bcl: 'var(--red-border)',           bg: 'var(--red-dim)',           text: 'signaler blockerades men fortsatte starkt' },
+    { key: 'MOMENTUM_EXCEPTION',  color: '#a78bfa',        bcl: 'rgba(167,139,250,.3)',         bg: 'rgba(167,139,250,.08)',    text: 'starka momentumsignaler missades' },
+    { key: 'WATCH_MODE_NEEDED',   color: 'var(--orange)',  bcl: 'var(--orange-border)',         bg: 'var(--orange-dim)',        text: 'signaler saknade bevakningsläge' },
+    { key: 'REVIEW_RULE',         color: 'var(--yellow)',  bcl: 'var(--yellow-border)',         bg: 'var(--yellow-dim)',        text: 'regelblockering(ar) bör granskas' },
+    { key: 'VALID_BLOCK',         color: 'var(--green)',   bcl: 'var(--green-border)',          bg: 'var(--green-dim)',         text: 'blockeringar var korrekta beslut' },
+  ];
+
+  return (
+    <div className="mb-learning-box">
+      <div className="mb-learning-header">
+        <span className="mb-learning-icon">🧠</span>
+        <div>
+          <div className="mb-learning-title">Systemets lärdom</div>
+          <div className="mb-learning-sub">Vad bör systemet förbättra baserat på dessa missed moves?</div>
+        </div>
+      </div>
+
+      <div className="mb-learning-grid">
+        <div className="mb-learn-item">
+          <span className="mb-learn-label">Vanligast missad typ</span>
+          <span className="mb-learn-val">{MISSED_TYPE_LABEL[topType] || topType || '–'}</span>
+        </div>
+        <div className="mb-learn-item">
+          <span className="mb-learn-label">Vanligaste blockering</span>
+          <span className="mb-learn-val mb-learn-val-sm">{topReason ? `"${topReason}" (${topRC}×)` : '–'}</span>
+        </div>
+        <div className="mb-learn-item">
+          <span className="mb-learn-label">Mest drabbad symbol</span>
+          <span className="mb-learn-val" style={{ fontFamily: 'var(--mono)' }}>
+            {topSym || '–'}{topSC > 1 ? ` (${topSC}×)` : ''}
+          </span>
+        </div>
+        <div className="mb-learn-item">
+          <span className="mb-learn-label">Värst marknadsläge</span>
+          <span className="mb-learn-val mb-learn-val-sm">
+            {topRegime ? `${REGIME_SV[topRegime] || topRegime} (${topRegC}×)` : '–'}
+          </span>
+        </div>
+      </div>
+
+      <div className="mb-learning-recs">
+        {REC_TAGS.map(({ key, color, bcl, bg, text }) => {
+          const n = recCounts[key] || 0;
+          if (!n) return null;
+          return (
+            <div key={key} className="mb-learn-rec" style={{ borderColor: bcl, background: bg }}>
+              <span className="mb-lrec-badge" style={{ color, borderColor: bcl }}>{key}</span>
+              <span style={{ color }}>{n} {text}</span>
+            </div>
+          );
+        })}
+      </div>
+
+      {ruleToReview && (
+        <div className="mb-learning-rule">
+          <span className="mb-learning-rule-label">Regel att granska:</span>
+          <span className="mb-learning-rule-text">
+            "{ruleToReview.reason}" — {ruleToReview.count}× blockering · snitt {ruleToReview.avgCont} fortsättningsstyrka · värsta miss +{ruleToReview.worstMiss.toFixed(1)}%
+          </span>
+          {ruleToReview.suggestion && (
+            <div className="mb-learning-rule-suggest">💡 {ruleToReview.suggestion}</div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── Rule Impact Section ───────────────────────────────────────────────────────
+
+function RuleImpactSection({ items }) {
+  const [open, setOpen] = useState(false);
+  const blocked = items.filter(i => i.blocked);
+  if (!blocked.length) return null;
+  const impact = computeRuleImpact(blocked);
+
+  return (
+    <div className="mb-rule-impact">
+      <button className="mb-rule-impact-toggle" onClick={() => setOpen(x => !x)}>
+        <span>⚖️ Rule Impact — {impact.length} block-regler analyserade ({blocked.length} blockerade signaler)</span>
+        <span className="mb-ri-toggle-icon">{open ? '▲ Dölj' : '▼ Visa'}</span>
+      </button>
+      {open && (
+        <div className="mb-rule-impact-body">
+          {impact.map((entry, i) => {
+            const isBad = entry.avgCont >= 60;
+            const isMed = !isBad && entry.avgCont >= 40;
+            const cc    = isBad ? 'var(--red)' : isMed ? 'var(--yellow)' : 'var(--green)';
+            return (
+              <div key={i} className="mb-ri-row">
+                <div className="mb-ri-top">
+                  <span className="mb-ri-rank">#{i + 1}</span>
+                  <span className="mb-ri-reason">"{entry.reason}"</span>
+                  <span className="mb-ri-count">{entry.count}×</span>
+                </div>
+                <div className="mb-ri-stats">
+                  <div className="mb-ri-stat">
+                    <span className="mb-ri-stat-label">Avg fortsättning</span>
+                    <span className="mb-ri-stat-val" style={{ color: cc }}>{entry.avgCont}</span>
+                  </div>
+                  <div className="mb-ri-stat">
+                    <span className="mb-ri-stat-label">Värsta miss</span>
+                    <span className="mb-ri-stat-val" style={{ fontFamily: 'var(--mono)', color: 'var(--red)' }}>
+                      +{entry.worstMiss.toFixed(2)}%
+                    </span>
+                  </div>
+                  {entry.worstSym && (
+                    <div className="mb-ri-stat">
+                      <span className="mb-ri-stat-label">Symbol</span>
+                      <span className="mb-ri-stat-val" style={{ fontFamily: 'var(--mono)' }}>{entry.worstSym}</span>
+                    </div>
+                  )}
+                </div>
+                {entry.suggestion && <div className="mb-ri-suggest">💡 {entry.suggestion}</div>}
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── Top Summary Panel ─────────────────────────────────────────────────────────
+
+function TopSummaryPanel({ items, rawTotal }) {
+  if (!items || items.length === 0) return null;
+
+  const avgCont  = items.reduce((a, i) => a + (i.maxUpPct || 0), 0) / items.length;
+  const strong   = items.filter(i => Math.abs(i.movedPct10 || 0) >= 1.0).length;
+  const biggest  = [...items].sort((a, b) => Math.abs(b.movedPct10 || 0) - Math.abs(a.movedPct10 || 0))[0];
+  const sCounts  = {};
+  items.forEach(i => { sCounts[i.symbol] = (sCounts[i.symbol] || 0) + 1; });
+  const [topSym, topSC] = Object.entries(sCounts).sort((a, b) => b[1] - a[1])[0] || [];
+  const dupeNote = rawTotal > items.length ? `${items.length} unika (av ${rawTotal} rådata)` : `${items.length} totalt`;
+
+  return (
+    <div className="mb-top-panel">
+      <div className="mb-top-panel-header">
+        <span className="mb-top-panel-title">Sammanfattning</span>
+        <span className="mb-top-panel-count">{dupeNote}</span>
+      </div>
+      <div className="mb-top-grid">
+        <div className="mb-top-stat">
+          <div className="mb-top-stat-val" style={{ color: 'var(--orange)' }}>{strong}</div>
+          <div className="mb-top-stat-label">≥1% rörelse</div>
+        </div>
+        <div className="mb-top-stat">
+          <div className="mb-top-stat-val" style={{ color: 'var(--green)', fontFamily: 'var(--mono)' }}>+{avgCont.toFixed(2)}%</div>
+          <div className="mb-top-stat-label">Avg max</div>
+        </div>
+        {biggest && (
+          <div className="mb-top-stat mb-top-stat-hl">
+            <div className="mb-top-hl-label">Störst missad rörelse</div>
+            <div className="mb-top-hl-sym">{biggest.symbol}</div>
+            <div style={{ fontFamily: 'var(--mono)', fontWeight: 800, color: 'var(--green)', fontSize: 16 }}>
+              {(biggest.movedPct10 || 0) >= 0 ? '+' : ''}{Number(biggest.movedPct10 || 0).toFixed(2)}%
+            </div>
+          </div>
+        )}
+        {topSym && topSC > 1 && (
+          <div className="mb-top-stat mb-top-stat-hl">
+            <div className="mb-top-hl-label">Mest upprepad symbol</div>
+            <div className="mb-top-hl-sym">{topSym}</div>
+            <div style={{ color: 'var(--muted)', fontSize: 11 }}>{topSC}× totalt</div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ── Missed Card v2 ────────────────────────────────────────────────────────────
+
+function getMissedDescription(item) {
+  const type   = MISSED_TYPE_LABEL[item.missedType] || (item.missedType || 'okänd rörelse').replace(/_/g, ' ').toLowerCase();
+  const regime = REGIME_SV[item.marketRegime] ? `i ${REGIME_SV[item.marketRegime].toLowerCase()}` : '';
+  const moved  = Math.abs(item.movedPct10 || 0);
+  const movStr = moved >= 0.1 ? ` på +${moved.toFixed(1)}%` : '';
+  return `${item.symbol} hade en ${type}${movStr}${regime ? ' ' + regime : ''}.`;
+}
+
+function MissedCard({ item }) {
+  const [chartToast, setChartToast] = useState(false);
+
+  const isBullish   = !item.missedType?.includes('BEARISH');
+  const accentColor = isBullish ? 'var(--green)' : 'var(--red)';
+  const borderColor = isBullish ? 'var(--green-border)' : 'var(--red-border)';
+  const sweDate     = item.signalTidSverige?.split(' ')[0] || '';
+  const sweTime     = item.signalTidSverige?.split(' ')[1] || '';
+  const reasonArr   = Array.isArray(item.reasonSv) ? item.reasonSv : (item.reasonSv ? [item.reasonSv] : []);
+  const rec         = getRecommendation(item);
+  const suggest     = getRuleSuggestion(item);
+  const cont        = item.continuationStrength || 0;
+  const contColor   = cont >= 70 ? 'var(--green)' : cont >= 40 ? 'var(--yellow)' : 'var(--muted)';
+  const dupeCount   = item._duplicateCount || 1;
+
+  function handleOpenChart() {
+    openTradingView(item.symbol);
+    copyToClipboard(sweDate);
+    setChartToast(true);
+    setTimeout(() => setChartToast(false), 3500);
+  }
+
+  return (
+    <div className="mb-card mb-card-v2" style={{ borderColor }}>
+      <div className="mb-card-accent" style={{ background: accentColor }} />
+
+      {/* ── Header ─────────────────────────────────────────── */}
+      <div className="mb-v2-header">
+        <div className="mb-v2-sym-row">
+          <span className="mb-v2-sym">{item.symbol}</span>
+          {dupeCount > 1 && <span className="mb-v2-dupe">{dupeCount}× dubblett</span>}
+          <span className="mb-v2-inline-rec" style={{ color: rec.color, borderColor: `${rec.color}50`, background: `${rec.color}10` }}>
+            {rec.short}
+          </span>
+        </div>
+        <div className="mb-v2-badges">
+          <span className={`badge ${MISSED_TYPE_CLS[item.missedType] || 'badge-gray'}`}>
+            {MISSED_TYPE_LABEL[item.missedType] || item.missedType}
+          </span>
+          {item.blocked && <span className="badge badge-red">Blockerad</span>}
+          {item.marketRegime && (
+            <span className={`badge ${regimeBadgeCls(item.marketRegime)}`} style={{ fontSize: 10 }}>
+              {REGIME_SV[item.marketRegime] || item.marketRegime}
+            </span>
+          )}
+        </div>
+        <div className="mb-v2-time">{sweDate} kl. {sweTime}</div>
+      </div>
+
+      {/* ── Vad missade vi? ─────────────────────────────────── */}
+      <div className="mb-v2-section">
+        <div className="mb-v2-section-title">Vad missade vi?</div>
+        <div className="mb-v2-missed-desc">{getMissedDescription(item)}</div>
+      </div>
+
+      {/* ── Varför blockerades den? ──────────────────────────── */}
+      {reasonArr.length > 0 && (
+        <div className="mb-v2-section">
+          <div className="mb-v2-section-title">Varför blockerades den?</div>
+          <ul className="mb-v2-reason-list">
+            {reasonArr.slice(0, 3).map((r, i) => <li key={i}>{r}</li>)}
+          </ul>
+          {item.actionSv && (
+            <div className="mb-v2-system-action">Systemet sa: <em>{item.actionSv}</em></div>
+          )}
+        </div>
+      )}
+
+      {/* ── Vad hände efteråt? ──────────────────────────────── */}
+      <div className="mb-v2-section">
+        <div className="mb-v2-section-title">Vad hände efteråt?</div>
+        <div className="mb-v2-happened-grid">
+          <div className="mb-v2-hap-cell">
+            <span className="mb-v2-hap-label">20 min</span>
+            <span className="mb-v2-hap-val">{pctFmt(item.movedPct10)}</span>
+          </div>
+          <div className="mb-v2-hap-cell">
+            <span className="mb-v2-hap-label">40 min</span>
+            <span className="mb-v2-hap-val">{pctFmt(item.movedPct20)}</span>
+          </div>
+          {item.outcome10?.maxMoveUp != null && (
+            <div className="mb-v2-hap-cell">
+              <span className="mb-v2-hap-label">Max uppgång</span>
+              <span className="mb-v2-hap-val">{pctFmt(item.outcome10.maxMoveUp)}</span>
+            </div>
+          )}
+        </div>
+        <div className="mb-v2-cont-wrap">
+          <div className="mb-v2-cont-header">
+            <span className="mb-v2-cont-title">Fortsättningsstyrka</span>
+            <span className="mb-v2-cont-num" style={{ color: contColor }}>{cont}</span>
+          </div>
+          <div className="mb-v2-cont-bg">
+            <div className="mb-v2-cont-fill" style={{ width: `${cont}%`, background: contColor }} />
+          </div>
+        </div>
+      </div>
+
+      {/* ── Vad lär vi oss? ─────────────────────────────────── */}
+      {(item.reviewSummarySv || suggest) && (
+        <div className="mb-v2-section">
+          <div className="mb-v2-section-title">Vad lär vi oss?</div>
+          {item.reviewSummarySv && <div className="mb-v2-learn">{item.reviewSummarySv}</div>}
+          {suggest && <div className="mb-v2-rule-suggest">💡 {suggest}</div>}
+        </div>
+      )}
+
+      {/* ── Rekommendation ─────────────────────────────────── */}
+      <div className="mb-v2-rec" style={{ color: rec.color, borderColor: `${rec.color}40`, background: `${rec.color}0f` }}>
+        <div className="mb-v2-rec-top">
+          <span className="mb-v2-rec-key">{rec.label}</span>
+          <span className="mb-v2-rec-short">{rec.short}</span>
+        </div>
+        <div className="mb-v2-rec-desc">{rec.desc}</div>
+      </div>
+
+      {/* ── Score chips ─────────────────────────────────────── */}
+      <div className="mb-v2-chips">
+        {item.tradeScore != null && (
+          <div className="mb-v2-chip">
+            <span className="mb-v2-chip-label">Trade</span>
+            <span className="mb-v2-chip-val" style={{ color: item.tradeScore >= 50 ? 'var(--green)' : 'var(--muted)' }}>
+              {item.tradeScore}
+            </span>
+          </div>
+        )}
+        {item.narrowScore != null && (
+          <div className="mb-v2-chip">
+            <span className="mb-v2-chip-label">Narrow</span>
+            <span className="mb-v2-chip-val">{item.narrowScore}</span>
+          </div>
+        )}
+        {item.distanceFromZone != null && (
+          <div className="mb-v2-chip">
+            <span className="mb-v2-chip-label">Avst. zon</span>
+            <span className="mb-v2-chip-val" style={{ fontFamily: 'var(--mono)' }}>
+              {Number(item.distanceFromZone).toFixed(2)}x
+            </span>
+          </div>
+        )}
+        {item.relVol20 != null && (
+          <div className="mb-v2-chip">
+            <span className="mb-v2-chip-label">relVol</span>
+            <span className="mb-v2-chip-val" style={{ fontFamily: 'var(--mono)' }}>
+              {Number(item.relVol20).toFixed(2)}x
+            </span>
+          </div>
+        )}
+      </div>
+
+      {/* ── Go to date ──────────────────────────────────────── */}
+      <div className="mb-v2-goto">
+        <span className="mb-v2-goto-label">Go to date:</span>
+        <strong className="mb-v2-goto-date">{sweDate}</strong>
+        <span style={{ color: 'var(--muted)' }}>kl.</span>
+        <strong className="mb-v2-goto-time">{sweTime}</strong>
+      </div>
+      <div className="hist-card-actions" style={{ marginTop: 6 }}>
+        <button
+          className="hist-action-btn hist-tv-btn"
+          onClick={handleOpenChart}
+          title={`Öppna ${item.symbol} i TradingView – klistra in ${sweDate} i Go to date`}
+        >
+          {chartToast ? `✓ Klistra in i Go to date: ${sweDate}` : '📈 Öppna chart + kopiera datum'}
+        </button>
+        <CopyButton text={sweDate} label={`📅 ${sweDate}`} title="Kopiera datum för Go to date" />
+        <CopyButton text={sweTime} label={`🕐 kl. ${sweTime}`} title="Kopiera klocktid" />
+        <CopyButton text={item.copyReviewText} label="📋 Review-text" title="Kopiera review-text" />
+      </div>
+      <div className="hist-tv-help">
+        TradingView öppnar ibland vid aktuell tid. Klicka <strong>Go to date</strong> och klistra in den kopierade tiden.
+      </div>
+    </div>
+  );
+}
+
+// ── Filter Bar ────────────────────────────────────────────────────────────────
+
+const ALL_SYMBOLS = ['', 'BTCUSDT', 'ETHUSDT', 'SOLUSDT', 'AAPL', 'NVDA', 'TSLA', 'AMD', 'MSFT', 'META', 'AMZN', 'QQQ'];
+const DAY_OPTIONS = [1, 3, 7, 14, 30];
+
+const REC_FILTER_OPTIONS = [
+  { key: 'all',                label: 'Alla' },
+  { key: 'WATCH_MODE_NEEDED',  label: '👁 Bevaka behövs' },
+  { key: 'FILTER_TOO_STRICT',  label: '🚫 För strängt filter' },
+  { key: 'REVIEW_RULE',        label: '⚠ Granska regel' },
+  { key: 'MOMENTUM_EXCEPTION', label: '⚡ Stark fart' },
+  { key: 'strong',             label: '📈 Stark >2%' },
+];
+
+function FilterBar({ params, onChange, showDuplicates, onToggleDuplicates, rawCount, uniqueCount, recFilter, onRecFilter }) {
+  const hasDupes = rawCount > uniqueCount;
+  return (
+    <div className="mb-filter-bar">
+      <div className="mb-filter-row">
+        <div className="mb-filter-group">
+          <label className="mb-filter-label">Dagar</label>
+          <div className="mb-filter-pills">
+            {DAY_OPTIONS.map(d => (
+              <button key={d} className={`mb-pill${params.days === d ? ' mb-pill-active' : ''}`}
+                onClick={() => onChange({ ...params, days: d })}>{d}d</button>
+            ))}
+          </div>
+        </div>
+        <div className="mb-filter-group">
+          <label className="mb-filter-label">Symbol</label>
+          <select className="mb-select" value={params.symbol} onChange={e => onChange({ ...params, symbol: e.target.value })}>
+            {ALL_SYMBOLS.map(s => <option key={s} value={s}>{s || 'Alla'}</option>)}
+          </select>
+        </div>
+        <div className="mb-filter-group">
+          <label className="mb-filter-label">Typ</label>
+          <label className="mb-checkbox-label">
+            <input type="checkbox" checked={params.onlyBlocked}
+              onChange={e => onChange({ ...params, onlyBlocked: e.target.checked })} />
+            Bara blockerade
+          </label>
+        </div>
+        <div className="mb-filter-group">
+          <label className="mb-filter-label">Limit</label>
+          <select className="mb-select" value={params.limit}
+            onChange={e => onChange({ ...params, limit: parseInt(e.target.value, 10) })}>
+            {[50, 100, 200, 500].map(n => <option key={n} value={n}>{n}</option>)}
+          </select>
+        </div>
+        <div className="mb-filter-group">
+          <label className="mb-filter-label">Dubbletter</label>
+          <label className="mb-checkbox-label">
+            <input type="checkbox" checked={showDuplicates} onChange={e => onToggleDuplicates(e.target.checked)} />
+            Visa alla{hasDupes ? ` (${rawCount} rådata, ${uniqueCount} unika)` : ` (${rawCount})`}
+          </label>
+        </div>
+      </div>
+      <div className="mb-filter-row">
+        <div className="mb-filter-group">
+          <label className="mb-filter-label">Rekommendation</label>
+          <div className="mb-filter-pills">
+            {REC_FILTER_OPTIONS.map(f => (
+              <button key={f.key} className={`mb-pill${recFilter === f.key ? ' mb-pill-active' : ''}`}
+                onClick={() => onRecFilter(f.key)}>{f.label}</button>
+            ))}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── Page ──────────────────────────────────────────────────────────────────────
+
+export default function MissedBreakoutsPage() {
+  const [params, setParams]                 = useState({ days: 7, symbol: '', onlyBlocked: false, limit: 200 });
+  const [items, setItems]                   = useState([]);
+  const [loading, setLoading]               = useState(false);
+  const [error, setError]                   = useState(null);
+  const [showDuplicates, setShowDuplicates] = useState(false);
+  const [recFilter, setRecFilter]           = useState('all');
+
+  const fetchData = useCallback(async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      const qs = new URLSearchParams({
+        days: params.days, limit: params.limit, onlyBlocked: params.onlyBlocked,
+        ...(params.symbol ? { symbol: params.symbol } : {}),
+      });
+      const r = await fetch(`/api/history/missed-breakouts?${qs}`);
+      const d = await r.json();
+      if (!d.ok) throw new Error(d.error || 'API error');
+      setItems(d.items || []);
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setLoading(false);
+    }
+  }, [params]);
+
+  useEffect(() => { fetchData(); }, [fetchData]);
+
+  const uniqueItems  = useMemo(() => deduplicateItems(items), [items]);
+  const baseItems    = showDuplicates ? items : uniqueItems;
+
+  const displayItems = useMemo(() => {
+    if (recFilter === 'all') return baseItems;
+    if (recFilter === 'strong') return baseItems.filter(i => Math.abs(i.movedPct10 || 0) >= 2.0);
+    return baseItems.filter(i => getRecommendation(i).key === recFilter);
+  }, [baseItems, recFilter]);
+
+  return (
+    <div className="page-wrap">
+      <div className="page-hero">
+        <div className="hero-left">
+          <div className="hero-title">🧠 Missed Moves</div>
+          <div className="hero-sub">
+            Setups systemet blockerade — men priset fortsatte starkt. Lär av misstagen.
+          </div>
+        </div>
+      </div>
+
+      <FilterBar
+        params={params} onChange={setParams}
+        showDuplicates={showDuplicates} onToggleDuplicates={setShowDuplicates}
+        rawCount={items.length} uniqueCount={uniqueItems.length}
+        recFilter={recFilter} onRecFilter={setRecFilter}
+      />
+
+      {loading && <div className="empty">Laddar missed moves…</div>}
+      {error   && <div className="empty" style={{ color: 'var(--red)' }}>Fel: {error}</div>}
+
+      {!loading && !error && (
+        <>
+          <LearningBox items={uniqueItems} />
+          <TopSummaryPanel items={uniqueItems} rawTotal={items.length} />
+          <RuleImpactSection items={uniqueItems} />
+
+          {displayItems.length === 0
+            ? <div className="empty">Inga missed moves hittades för valda filter.</div>
+            : (
+              <div className="mb-grid">
+                {displayItems.map((item, i) => (
+                  <MissedCard
+                    key={item.signalId || (item.timestamp ?? '') + item.symbol + i}
+                    item={item}
+                  />
+                ))}
+              </div>
+            )
+          }
+        </>
+      )}
+    </div>
+  );
+}

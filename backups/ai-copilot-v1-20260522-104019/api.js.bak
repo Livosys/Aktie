@@ -1,0 +1,918 @@
+'use strict';
+const express = require('express');
+const router  = express.Router();
+const { getLatestResults, getScanStatus, getWatchlist, getGroups } = require('../scanner/scheduler');
+const { getCryptoResults, getCryptoStatus } = require('../scanner/cryptoScheduler');
+const { readLatest }          = require('../scanner/featureLogger');
+const { fetchAlpacaBars, isEnabled: alpacaEnabled, hasCredentials } = require('../data/alpacaDataService');
+const { fetchBinanceKlines } = require('../data/binanceDataService');
+const { saveRawBars, saveCandles2m, loadCandles, listSymbols, listAvailableDates, countCandles, getDatesInRange } = require('../data/marketDataStore');
+const { aggregate1mTo2m, filterComplete } = require('../data/candleAggregator');
+const { runHistoricalScan, loadSignals }  = require('../scanner/historicalScanner');
+const { analyzeOutcomes, loadOutcomes }         = require('../scanner/signalOutcomeAnalyzer');
+const { saveLearning, loadLearning }            = require('../scanner/signalLearning');
+const { getEdge, getEdgeForSymbol, getEdgeSummary, invalidateCache } = require('../scanner/historicalEdge');
+const { runReplay, listRuns, loadRunSummary, loadRunEvents, loadRunInsights } = require('../scanner/replayEngine');
+const { runLearningEngine, loadLearningSummary } = require('../scanner/learningEngine');
+const { buildRuleMemory, loadRuleMemory }               = require('../scanner/ruleMemoryEngine');
+const { buildSymbolProfiles, loadSymbolProfiles }       = require('../scanner/symbolPersonalityEngine');
+const { buildRegimeProfiles, loadRegimeProfiles }       = require('../scanner/regimeProfileEngine');
+const { loadScoreCalibration }                         = require('../scanner/scoreCalibrationEngine');
+const { loadFakeoutDna }                               = require('../scanner/fakeoutDnaEngine');
+const { loadRuleHealth }                               = require('../scanner/selfHealingRuleEngine');
+const { loadPersonality }                              = require('../scanner/marketPersonalityEngine');
+const { loadMomentumBacktest, buildMomentumBacktest }  = require('../history/momentumBacktestAnalyzer');
+const { buildSystemHealth }                            = require('../systemHealth');
+const {
+  acknowledgeAlerts,
+  alertsFromScannerResults,
+  alertsFromSystemHealth,
+  getAlerts,
+  recordAlerts,
+} = require('../alerts/alertEngine');
+const { runAutoMachine, isRunning: autoMachineRunning, getStatus: getAutoMachineStatus } = require('../jobs/autoMachine');
+const { getSchedulerStatus } = require('../jobs/autoMachineScheduler');
+
+function buildScanResponse(results, status, group) {
+  return {
+    ok: true,
+    group: group || 'all',
+    lastScan: status.lastScan,
+    scanning: status.scanning,
+    marketWarning: status.marketWarning,
+    feedStatus: status.feedStatus || null,
+    count: results.length,
+    results,
+  };
+}
+
+router.get('/scan', (req, res) => {
+  res.json(buildScanResponse(getLatestResults(), getScanStatus()));
+});
+
+router.get('/scan/stocks', (req, res) => {
+  const { stocks } = getGroups();
+  const filtered = getLatestResults().filter((r) => stocks.includes(r.symbol));
+  res.json(buildScanResponse(filtered, getScanStatus(), 'stocks'));
+});
+
+router.get('/scan/nasdaq', (req, res) => {
+  const { nasdaq } = getGroups();
+  const filtered = getLatestResults().filter((r) => nasdaq.includes(r.symbol));
+  res.json(buildScanResponse(filtered, getScanStatus(), 'nasdaq'));
+});
+
+router.get('/scan/crypto', (req, res) => {
+  const status = getCryptoStatus();
+  const results = getCryptoResults();
+  res.json({
+    ok: true,
+    enabled: true,
+    group: 'crypto',
+    lastScan: status.lastScan,
+    scanning: status.scanning,
+    marketWarning: false,
+    feedStatus: status.feedStatus || null,
+    count: results.length,
+    results,
+  });
+});
+
+// ── Wave Phase routes ──────────────────────────────────────────────────────────
+
+function buildWaveResponse(results, label) {
+  const withWave = results.filter((r) => r.waveContext);
+  return {
+    ok: true,
+    group: label,
+    count: withWave.length,
+    results: withWave.map((r) => ({
+      symbol: r.symbol,
+      price: r.price,
+      lastUpdate: r.lastUpdate,
+      waveContext: r.waveContext,
+    })),
+  };
+}
+
+router.get('/wave', (req, res) => {
+  const stocks = getLatestResults();
+  const crypto = getCryptoResults();
+  const all = [...stocks, ...crypto];
+  res.json(buildWaveResponse(all, 'all'));
+});
+
+router.get('/wave/stocks', (req, res) => {
+  res.json(buildWaveResponse(getLatestResults(), 'stocks'));
+});
+
+router.get('/wave/crypto', (req, res) => {
+  res.json(buildWaveResponse(getCryptoResults(), 'crypto'));
+});
+
+router.get('/replay/latest', (req, res) => {
+  const symbol = req.query.symbol || null;
+  const limit  = Math.min(parseInt(req.query.limit, 10) || 100, 500);
+  const entries = readLatest(symbol, limit);
+  res.json({ ok: true, count: entries.length, symbol: symbol || 'all', entries });
+});
+
+router.get('/groups', (req, res) => {
+  res.json({ ok: true, groups: getGroups() });
+});
+
+router.get('/symbols', (req, res) => {
+  res.json({ ok: true, symbols: getWatchlist() });
+});
+
+router.get('/status', (req, res) => {
+  const status = getScanStatus();
+  const alpacaConfigured =
+    !!process.env.ALPACA_API_KEY_ID && !!process.env.ALPACA_API_SECRET_KEY;
+  res.json({
+    ok: true,
+    alpacaConfigured,
+    feed: process.env.ALPACA_DATA_FEED || 'iex',
+    ...status,
+  });
+});
+
+// ── Backfill helpers ──────────────────────────────────────────────────────────
+
+const CRYPTO_SYMBOLS = new Set(['BTCUSDT', 'ETHUSDT', 'SOLUSDT', 'BNBUSDT', 'XRPUSDT', 'ADAUSDT']);
+
+function isCrypto(symbol) {
+  return symbol.endsWith('USDT') || CRYPTO_SYMBOLS.has(symbol.toUpperCase());
+}
+
+async function backfillAlpaca(symbol, start, end) {
+  const bars = await fetchAlpacaBars({ symbol, timeframe: '1Min', start, end, limit: 10000 });
+  if (bars.length === 0) {
+    return { rawBars: 0, candles2m: 0, source: 'alpaca', warning: 'no data returned from Alpaca' };
+  }
+
+  const byDate = {};
+  for (const bar of bars) {
+    const date = (bar.ts || '').slice(0, 10);
+    if (!date) continue;
+    (byDate[date] = byDate[date] || []).push(bar);
+  }
+
+  let totalRaw = 0;
+  let total2m  = 0;
+  for (const [date, dateBars] of Object.entries(byDate)) {
+    const saved = saveRawBars(symbol, date, dateBars, 'alpaca');
+    if (saved > 0) totalRaw += saved;
+    const candles = filterComplete(aggregate1mTo2m(dateBars));
+    const saved2m = saveCandles2m(symbol, date, candles);
+    if (saved2m > 0) total2m += saved2m;
+  }
+
+  return { rawBars: totalRaw, candles2m: total2m, source: 'alpaca' };
+}
+
+async function backfillBinance(symbol, start, end) {
+  const bars = await fetchBinanceKlines({ symbol, interval: '1m', start, end, limit: 1000 });
+  if (bars.length === 0) {
+    return { rawBars: 0, candles2m: 0, source: 'binance', warning: 'no data returned from Binance' };
+  }
+
+  const byDate = {};
+  for (const bar of bars) {
+    const date = (bar.ts || '').slice(0, 10);
+    if (!date) continue;
+    (byDate[date] = byDate[date] || []).push(bar);
+  }
+
+  let totalRaw = 0;
+  let total2m  = 0;
+  for (const [date, dateBars] of Object.entries(byDate)) {
+    const saved = saveRawBars(symbol, date, dateBars, 'binance');
+    if (saved > 0) totalRaw += saved;
+    const candles = filterComplete(aggregate1mTo2m(dateBars));
+    const saved2m = saveCandles2m(symbol, date, candles);
+    if (saved2m > 0) total2m += saved2m;
+  }
+
+  return { rawBars: totalRaw, candles2m: total2m, source: 'binance' };
+}
+
+// ── POST /api/data/backfill ───────────────────────────────────────────────────
+// Stocks → Alpaca, crypto (USDT pairs) → Binance.
+router.post('/data/backfill', async (req, res) => {
+  const { symbols, start, end } = req.body || {};
+
+  if (!symbols || !Array.isArray(symbols) || symbols.length === 0) {
+    return res.status(400).json({ ok: false, error: 'symbols array required' });
+  }
+  if (!start || !end) {
+    return res.status(400).json({ ok: false, error: 'start and end dates required (YYYY-MM-DD)' });
+  }
+
+  const stockSyms  = symbols.filter((s) => !isCrypto(s));
+  const cryptoSyms = symbols.filter((s) =>  isCrypto(s));
+
+  // Alpaca credentials required only if stock symbols are requested
+  if (stockSyms.length > 0 && (!alpacaEnabled() || !hasCredentials())) {
+    return res.status(503).json({
+      ok: false,
+      error: alpacaEnabled()
+        ? 'Alpaca credentials not configured (set ALPACA_API_KEY_ID and ALPACA_API_SECRET_KEY)'
+        : 'ALPACA_ENABLED=false — backfill disabled',
+    });
+  }
+
+  const result = {};
+
+  for (const symbol of stockSyms) {
+    try {
+      result[symbol] = await backfillAlpaca(symbol, start, end);
+    } catch (err) {
+      result[symbol] = { error: err.message, source: 'alpaca' };
+    }
+  }
+
+  for (const symbol of cryptoSyms) {
+    try {
+      result[symbol] = await backfillBinance(symbol, start, end);
+    } catch (err) {
+      result[symbol] = { error: err.message, source: 'binance' };
+    }
+  }
+
+  res.json({ ok: true, start, end, result });
+});
+
+// ── GET /api/data/status ──────────────────────────────────────────────────────
+router.get('/data/status', (req, res) => {
+  try {
+    const symbols = listSymbols();
+    const status  = {};
+
+    for (const symbol of symbols) {
+      const dates   = listAvailableDates(symbol);
+      const raw2m   = dates['2m'] || [];
+      let totalCandles = 0;
+      for (const date of raw2m) {
+        totalCandles += countCandles(symbol, date, '2m');
+      }
+      status[symbol] = {
+        datesRaw:    (dates.raw    || []).length,
+        dates2m:     raw2m.length,
+        dateRange:   raw2m.length > 0 ? { from: raw2m[0], to: raw2m[raw2m.length - 1] } : null,
+        totalCandles2m: totalCandles,
+      };
+    }
+
+    res.json({
+      ok:      true,
+      symbols: symbols.length,
+      alpacaEnabled:  alpacaEnabled(),
+      alpacaConfigured: hasCredentials(),
+      data: status,
+    });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+// ── POST /api/history/scan ────────────────────────────────────────────────────
+router.post('/history/scan', async (req, res) => {
+  const { symbols, start, end } = req.body || {};
+
+  if (!symbols || !Array.isArray(symbols) || symbols.length === 0) {
+    return res.status(400).json({ ok: false, error: 'symbols array required' });
+  }
+  if (!start || !end) {
+    return res.status(400).json({ ok: false, error: 'start and end dates required' });
+  }
+
+  try {
+    const summary = await runHistoricalScan({ symbols, start, end, timeframe: '2m' });
+    res.json({ ok: true, start, end, summary });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+// ── POST /api/history/analyze ─────────────────────────────────────────────────
+router.post('/history/analyze', async (req, res) => {
+  const { symbols, start, end } = req.body || {};
+
+  if (!start || !end) {
+    return res.status(400).json({ ok: false, error: 'start and end dates required' });
+  }
+
+  try {
+    const outcomeSummary  = await analyzeOutcomes({ symbols: symbols || [], start, end });
+    const learningSummary = saveLearning({ start, end, symbols: symbols || [] });
+    invalidateCache(); // rebuild edge cache after new outcomes
+    res.json({ ok: true, start, end, outcomeSummary, learningSummary });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+// ── GET /api/history/signals ──────────────────────────────────────────────────
+router.get('/history/signals', (req, res) => {
+  const symbol = req.query.symbol || null;
+  const start  = req.query.start  || new Date(Date.now() - 7 * 86400000).toISOString().slice(0, 10);
+  const end    = req.query.end    || new Date().toISOString().slice(0, 10);
+  const limit  = Math.min(parseInt(req.query.limit, 10) || 200, 1000);
+
+  try {
+    const signals = loadSignals(start, end, symbol);
+    const sliced  = signals.slice(-limit);
+    res.json({ ok: true, count: sliced.length, symbol, start, end, signals: sliced });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+// ── GET /api/history/outcomes ─────────────────────────────────────────────────
+router.get('/history/outcomes', (req, res) => {
+  const symbol = req.query.symbol || null;
+  const start  = req.query.start  || new Date(Date.now() - 7 * 86400000).toISOString().slice(0, 10);
+  const end    = req.query.end    || new Date().toISOString().slice(0, 10);
+  const limit  = Math.min(parseInt(req.query.limit, 10) || 200, 1000);
+
+  try {
+    const outcomes = loadOutcomes(start, end, symbol);
+    const sliced   = outcomes.slice(-limit);
+    res.json({ ok: true, count: sliced.length, symbol, start, end, outcomes: sliced });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+// ── POST /api/history/hunt-signals ────────────────────────────────────────────
+// Alias for /api/history/scan with cache invalidation after run.
+router.post('/history/hunt-signals', async (req, res) => {
+  const { symbols, start, end } = req.body || {};
+
+  if (!symbols || !Array.isArray(symbols) || symbols.length === 0) {
+    return res.status(400).json({ ok: false, error: 'symbols array required' });
+  }
+  if (!start || !end) {
+    return res.status(400).json({ ok: false, error: 'start and end dates required (YYYY-MM-DD)' });
+  }
+
+  try {
+    const summary = await runHistoricalScan({ symbols, start, end, timeframe: '2m' });
+    invalidateCache(); // edge cache must be rebuilt after new signals
+    res.json({ ok: true, start, end, summary });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+// ── GET /api/history/edge ─────────────────────────────────────────────────────
+router.get('/history/edge', (req, res) => {
+  const symbol = req.query.symbol || null;
+  try {
+    if (symbol) {
+      res.json({ ok: true, ...getEdgeForSymbol(symbol) });
+    } else {
+      res.json({ ok: true, edge: getEdge({}) }); // global fallback
+    }
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+// ── GET /api/history/edge-summary ────────────────────────────────────────────
+router.get('/history/edge-summary', (req, res) => {
+  try {
+    res.json(getEdgeSummary());
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+// ── GET /api/history/learning-summary ────────────────────────────────────────
+router.get('/history/learning-summary', (req, res) => {
+  try {
+    // Prefer Learning Engine v1 summary (new format with full dimensions)
+    let summary = loadLearningSummary();
+    // Fall back to legacy signalLearning summary if v1 hasn't run yet
+    if (!summary) summary = loadLearning();
+    if (!summary) {
+      return res.json({ ok: true, summary: null, message: 'Ingen learning-summary ännu — kör POST /api/history/update-learning' });
+    }
+    res.json({ ok: true, summary });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+// ── GET /api/history/rule-memory ─────────────────────────────────────────────
+router.get('/history/rule-memory', (req, res) => {
+  try {
+    const memory = loadRuleMemory();
+    if (!memory) {
+      return res.json({ ok: true, memory: null, message: 'Ingen rule-memory ännu — kör POST /api/history/update-learning' });
+    }
+    res.json({ ok: true, memory });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+// ── GET /api/history/symbol-profiles ─────────────────────────────────────────
+router.get('/history/symbol-profiles', (req, res) => {
+  try {
+    const profiles = loadSymbolProfiles();
+    if (!profiles) {
+      return res.json({ ok: true, profiles: null, message: 'Inga symbol-profiler ännu — kör POST /api/history/update-learning' });
+    }
+    const symbol = req.query.symbol || null;
+    if (symbol) {
+      const p = profiles.symbols?.[symbol.toUpperCase()];
+      if (!p) return res.status(404).json({ ok: false, error: `Ingen profil för ${symbol}` });
+      return res.json({ ok: true, symbol: symbol.toUpperCase(), profile: p, globalWinRate: profiles.globalWinRate });
+    }
+    res.json({ ok: true, profiles });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+// ── GET /api/history/regime-profiles ─────────────────────────────────────────
+router.get('/history/regime-profiles', (req, res) => {
+  try {
+    const profiles = loadRegimeProfiles();
+    if (!profiles) {
+      return res.json({ ok: true, profiles: null, message: 'Inga regime-profiler ännu — kör POST /api/history/update-learning' });
+    }
+    const regime = req.query.regime || null;
+    if (regime) {
+      const p = profiles.regimes?.[regime.toUpperCase()];
+      if (!p) return res.status(404).json({ ok: false, error: `Ingen profil för regime ${regime}` });
+      return res.json({ ok: true, regime: regime.toUpperCase(), profile: p, globalWinRate: profiles.globalWinRate });
+    }
+    res.json({ ok: true, profiles });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+// ── GET /api/history/score-calibration ───────────────────────────────────────
+router.get('/history/score-calibration', (req, res) => {
+  try {
+    const calibration = loadScoreCalibration();
+    if (!calibration) {
+      return res.json({ ok: true, calibration: null, message: 'Ingen kalibrering ännu — kör POST /api/history/update-learning' });
+    }
+    res.json({ ok: true, calibration });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+// ── GET /api/history/fakeout-dna ─────────────────────────────────────────────
+router.get('/history/fakeout-dna', (req, res) => {
+  try {
+    const dna = loadFakeoutDna();
+    if (!dna) return res.json({ ok: true, dna: null, message: 'Kör Auto Machine för att bygga Fakeout DNA.' });
+    res.json({ ok: true, dna });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+// ── GET /api/history/rule-health ──────────────────────────────────────────────
+router.get('/history/rule-health', (req, res) => {
+  try {
+    const health = loadRuleHealth();
+    if (!health) return res.json({ ok: true, health: null, message: 'Kör Auto Machine för att bygga Rule Health.' });
+    res.json({ ok: true, health });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+// ── GET /api/history/momentum-backtest ───────────────────────────────────────
+router.get('/history/momentum-backtest', (req, res) => {
+  try {
+    let report = loadMomentumBacktest();
+    if (!report && req.query.build === 'true') report = buildMomentumBacktest();
+    if (!report) return res.json({ ok: true, report: null, message: 'Kör Auto Machine eller ?build=true för att bygga Momentum Intelligence Backtest.' });
+    res.json({ ok: true, report });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+// ── GET /api/market/personality ───────────────────────────────────────────────
+router.get('/market/personality', (req, res) => {
+  try {
+    const group  = req.query.group || null;
+    const stocks = loadPersonality('stocks');
+    const crypto = loadPersonality('crypto');
+    if (group === 'stocks') return res.json({ ok: true, personality: stocks });
+    if (group === 'crypto') return res.json({ ok: true, personality: crypto });
+    res.json({ ok: true, stocks, crypto });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+// ── GET /api/history/missed-breakouts ────────────────────────────────────────
+const { findMissedBreakouts } = require('../history/missedBreakoutFinder');
+
+router.get('/history/missed-breakouts', (req, res) => {
+  const { limit, days, symbol, onlyBlocked } = req.query;
+  try {
+    const start = days
+      ? new Date(Date.now() - parseInt(days, 10) * 86400000).toISOString().slice(0, 10)
+      : req.query.start || undefined;
+    const end   = days ? new Date().toISOString().slice(0, 10) : req.query.end || undefined;
+    const items = findMissedBreakouts({
+      start, end,
+      limit,
+      symbol:      symbol      || null,
+      onlyBlocked: onlyBlocked === 'true',
+    });
+    res.json({ ok: true, count: items.length, items });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+// ── POST /api/history/update-learning ────────────────────────────────────────
+router.post('/history/update-learning', async (req, res) => {
+  try {
+    const summary = runLearningEngine();
+
+    // Build rule memory, symbol profiles and regime profiles after learning summary is fresh
+    let ruleMemorySummary     = null;
+    let symbolProfilesSummary = null;
+    let regimeProfilesSummary = null;
+
+    try {
+      const rm = buildRuleMemory();
+      ruleMemorySummary = { totalRules: rm.totalRules, watchModeRules: rm.watchModeRules };
+    } catch (rmErr) {
+      console.warn('[API] buildRuleMemory failed (non-fatal):', rmErr.message);
+    }
+
+    try {
+      const sp = buildSymbolProfiles();
+      symbolProfilesSummary = {
+        totalSymbols:    sp.totalSymbols,
+        highConfSymbols: sp.highConfSymbols,
+        watchSymbols:    sp.watchSymbols,
+        strongSymbols:   sp.strongSymbols,
+      };
+    } catch (spErr) {
+      console.warn('[API] buildSymbolProfiles failed (non-fatal):', spErr.message);
+    }
+
+    try {
+      const rp = buildRegimeProfiles();
+      regimeProfilesSummary = {
+        totalRegimes:    rp.totalRegimes,
+        highConfRegimes: rp.highConfRegimes,
+        bestRegime:      rp.bestRegime,
+        worstRegime:     rp.worstRegime,
+      };
+    } catch (rpErr) {
+      console.warn('[API] buildRegimeProfiles failed (non-fatal):', rpErr.message);
+    }
+
+    res.json({
+      ok:              true,
+      updatedAt:       summary.updatedAt,
+      totalSignals:    summary.totalSignals,
+      totalOutcomes:   summary.totalOutcomes,
+      overallWinRate:  summary.overallWinRate,
+      bestSymbols:     summary.bestSymbols,
+      bestEventTypes:  summary.bestEventTypes,
+      bestHours:       summary.bestHours,
+      bestScoreRanges: summary.bestScoreRanges,
+      insightsSv:      summary.insightsSv,
+      ruleMemory:      ruleMemorySummary,
+      symbolProfiles:  symbolProfilesSummary,
+      regimeProfiles:  regimeProfilesSummary,
+    });
+  } catch (err) {
+    console.error('[API] update-learning error:', err);
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+// ══════════════════════════════════════════════════════════════════════════════
+// REPLAY ENGINE ROUTES
+// ══════════════════════════════════════════════════════════════════════════════
+
+// ── POST /api/replay/run ──────────────────────────────────────────────────────
+router.post('/replay/run', async (req, res) => {
+  const { symbols, start, end, mode = 'scan_only' } = req.body || {};
+
+  if (!symbols || !Array.isArray(symbols) || symbols.length === 0) {
+    return res.status(400).json({ ok: false, error: 'symbols array required' });
+  }
+  if (!start || !end) {
+    return res.status(400).json({ ok: false, error: 'start and end dates required (YYYY-MM-DD)' });
+  }
+  if (!['scan_only', 'with_outcomes', 'debug'].includes(mode)) {
+    return res.status(400).json({ ok: false, error: 'mode must be scan_only | with_outcomes | debug' });
+  }
+
+  try {
+    const { runId, summary } = await runReplay({ symbols, start, end, mode });
+    res.json({ ok: true, runId, summary });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+// ── GET /api/replay/runs ──────────────────────────────────────────────────────
+router.get('/replay/runs', (req, res) => {
+  try {
+    res.json({ ok: true, runs: listRuns() });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+// ── GET /api/replay/runs/:runId ───────────────────────────────────────────────
+router.get('/replay/runs/:runId', (req, res) => {
+  const { runId } = req.params;
+  try {
+    const summary  = loadRunSummary(runId);
+    const insights = loadRunInsights(runId);
+    if (!summary) return res.status(404).json({ ok: false, error: 'Run not found' });
+    res.json({ ok: true, summary, insights });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+// ── GET /api/replay/runs/:runId/events ───────────────────────────────────────
+router.get('/replay/runs/:runId/events', (req, res) => {
+  const { runId } = req.params;
+  const symbol    = req.query.symbol || null;
+  const limit     = Math.min(parseInt(req.query.limit, 10) || 200, 1000);
+  try {
+    const events = loadRunEvents(runId, { symbol, limit });
+    res.json({ ok: true, runId, symbol, count: events.length, events });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+// ── GET /api/replay/compare ───────────────────────────────────────────────────
+router.get('/replay/compare', (req, res) => {
+  const { runA, runB } = req.query;
+  if (!runA || !runB) {
+    return res.status(400).json({ ok: false, error: 'runA and runB query params required' });
+  }
+  try {
+    const a = loadRunSummary(runA);
+    const b = loadRunSummary(runB);
+    if (!a) return res.status(404).json({ ok: false, error: `Run ${runA} not found` });
+    if (!b) return res.status(404).json({ ok: false, error: `Run ${runB} not found` });
+    res.json({
+      ok: true,
+      comparison: {
+        runA: { runId: runA, summary: a },
+        runB: { runId: runB, summary: b },
+        diff: {
+          avgTradeScore: round2(a.avgTradeScore, b.avgTradeScore),
+          totalEvents:   { a: a.totalEvents, b: b.totalEvents },
+          symbols:       { a: a.symbols, b: b.symbols },
+        },
+      },
+    });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+function round2(a, b) {
+  if (a == null || b == null) return null;
+  return { a, b, delta: Math.round((b - a) * 10) / 10 };
+}
+
+// ── GET /api/system/auto-machine-status ───────────────────────────────────────
+router.get('/system/auto-machine-status', (req, res) => {
+  try {
+    const status = getAutoMachineStatus();
+    res.json({
+      ok:      true,
+      running: autoMachineRunning(),
+      enabled: (process.env.AUTO_MACHINE_ENABLED || 'false').toLowerCase() === 'true',
+      config: {
+        intervalMinutes: parseInt(process.env.AUTO_MACHINE_INTERVAL_MINUTES || '60', 10),
+        lookbackDays:    parseInt(process.env.AUTO_MACHINE_LOOKBACK_DAYS    || '7',  10),
+        groups:          (process.env.AUTO_MACHINE_GROUPS || 'stocks,crypto').split(',').map((g) => g.trim()),
+      },
+      status: status || null,
+    });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+// ── GET /api/system/scheduler-status ─────────────────────────────────────────
+router.get('/system/scheduler-status', (req, res) => {
+  try {
+    res.json({ ok: true, ...getSchedulerStatus() });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+// ── GET /api/system/health ───────────────────────────────────────────────────
+router.get('/system/health', (req, res) => {
+  try {
+    const health = buildSystemHealth();
+    recordAlerts(alertsFromSystemHealth(health));
+    res.json(health);
+  } catch (err) {
+    res.status(500).json({
+      ok: false,
+      overallStatus: 'CRITICAL',
+      summarySv: `Kritiskt fel vid health-check: ${err.message}`,
+      components: [],
+      alerts: [{
+        type: 'system',
+        severity: 'critical',
+        titleSv: 'Health-check misslyckades',
+        messageSv: err.message,
+        suggestedActionSv: 'Kontrollera serverloggar och senaste deploy.',
+        createdAt: new Date().toISOString(),
+      }],
+    });
+  }
+});
+
+// ── GET /api/alerts ──────────────────────────────────────────────────────────
+router.get('/alerts', (req, res) => {
+  try {
+    const health = buildSystemHealth();
+    const liveResults = [...getLatestResults(), ...getCryptoResults()];
+    const generated = recordAlerts([
+      ...alertsFromSystemHealth(health),
+      ...alertsFromScannerResults(liveResults, 'live'),
+    ]);
+    const includeAcknowledged = req.query.includeAcknowledged === 'true';
+    const limit = parseInt(req.query.limit || '200', 10);
+    const alerts = getAlerts({ includeAcknowledged, limit });
+    res.json({
+      ok: true,
+      count: alerts.length,
+      generated: generated.length,
+      alerts,
+    });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+// ── POST /api/alerts/acknowledge ─────────────────────────────────────────────
+router.post('/alerts/acknowledge', (req, res) => {
+  try {
+    const ids = req.body?.ids || req.body?.id;
+    const result = acknowledgeAlerts(ids);
+    res.json({ ok: true, ...result });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+// ── POST /api/system/run-auto-machine ─────────────────────────────────────────
+router.post('/system/run-auto-machine', async (req, res) => {
+  if (autoMachineRunning()) {
+    return res.status(409).json({ ok: false, error: 'Auto-machine already running' });
+  }
+
+  const lookbackDays = parseInt(
+    req.body?.lookbackDays ?? process.env.AUTO_MACHINE_LOOKBACK_DAYS ?? '7',
+    10
+  );
+  const groupsRaw = req.body?.groups ?? process.env.AUTO_MACHINE_GROUPS ?? 'stocks,crypto';
+  const groups    = (Array.isArray(groupsRaw) ? groupsRaw : String(groupsRaw).split(',')).map((g) => g.trim()).filter(Boolean);
+
+  if (isNaN(lookbackDays) || lookbackDays < 1 || lookbackDays > 90) {
+    return res.status(400).json({ ok: false, error: 'lookbackDays must be 1–90' });
+  }
+  if (groups.length === 0) {
+    return res.status(400).json({ ok: false, error: 'groups must be a non-empty list (stocks, crypto)' });
+  }
+
+  // Fire and return immediately so the client is not blocked
+  res.json({ ok: true, message: 'Auto-machine pipeline started', lookbackDays, groups });
+
+  runAutoMachine({ lookbackDays, groups }).catch((err) => {
+    console.error('[API] run-auto-machine unhandled error:', err.message);
+  });
+});
+
+// ── GET /api/review/chart-data ────────────────────────────────────────────────
+function calcSMA(closes, period) {
+  const result = new Array(closes.length).fill(null);
+  if (closes.length < period) return result;
+  let sum = 0;
+  for (let i = 0; i < period; i++) sum += closes[i];
+  result[period - 1] = sum / period;
+  for (let i = period; i < closes.length; i++) {
+    sum += closes[i] - closes[i - period];
+    result[i] = sum / period;
+  }
+  return result;
+}
+
+router.get('/review/chart-data', (req, res) => {
+  try {
+    const symbol        = (req.query.symbol || '').toUpperCase();
+    const timestamp     = req.query.timestamp || '';
+    const windowBefore  = Math.min(parseInt(req.query.windowBefore, 10) || 80, 300);
+    const windowAfter   = Math.min(parseInt(req.query.windowAfter,  10) || 40, 300);
+
+    if (!symbol || !timestamp) {
+      return res.status(400).json({ ok: false, error: 'symbol and timestamp are required' });
+    }
+
+    const ts = new Date(timestamp);
+    if (isNaN(ts.getTime())) {
+      return res.status(400).json({ ok: false, error: 'invalid timestamp' });
+    }
+
+    const msPerCandle = 2 * 60 * 1000;
+
+    // Stocks trade ~195 2m candles/day; SMA200 needs ≥200 candles before the window.
+    // Always load 5 calendar days back so weekends/holidays don't starve the warmup.
+    const SMA200_CALENDAR_DAYS = 5;
+    const warmupDate = new Date(ts.getTime() - SMA200_CALENDAR_DAYS * 24 * 60 * 60 * 1000)
+      .toISOString().slice(0, 10);
+    const endMs  = ts.getTime() + (windowAfter + 10) * msPerCandle;
+    const endDate = new Date(endMs).toISOString().slice(0, 10);
+
+    const warmupCandles = loadCandles(symbol, warmupDate, endDate);
+
+    if (warmupCandles.length === 0) {
+      return res.status(404).json({ ok: false, error: `Ingen data hittades för ${symbol}` });
+    }
+
+    // Calculate SMA over all warmup candles
+    const closes   = warmupCandles.map(c => c.close ?? c.c ?? 0);
+    const sma20arr  = calcSMA(closes, 20);
+    const sma200arr = calcSMA(closes, 200);
+
+    // Find candle closest to signal timestamp in warmup array
+    const tsMs = ts.getTime();
+    let fullSignalIdx = -1;
+    let minDiff = Infinity;
+    for (let i = 0; i < warmupCandles.length; i++) {
+      const cMs = new Date(warmupCandles[i].ts || warmupCandles[i].t).getTime();
+      const diff = Math.abs(cMs - tsMs);
+      if (diff < minDiff) { minDiff = diff; fullSignalIdx = i; }
+    }
+    if (minDiff > msPerCandle + 30000) fullSignalIdx = -1;
+
+    // Slice to display window only
+    const startIdx = fullSignalIdx >= 0 ? Math.max(0, fullSignalIdx - windowBefore) : 0;
+    const endIdx   = fullSignalIdx >= 0 ? Math.min(warmupCandles.length - 1, fullSignalIdx + windowAfter) : warmupCandles.length - 1;
+    const slice    = warmupCandles.slice(startIdx, endIdx + 1);
+    const newSignalIdx = fullSignalIdx >= 0 ? fullSignalIdx - startIdx : -1;
+
+    const round4 = v => v != null ? Math.round(v * 10000) / 10000 : null;
+
+    const candles = slice.map((c, i) => {
+      const absIdx = startIdx + i;
+      return {
+        time:   Math.floor(new Date(c.ts || c.t).getTime() / 1000),
+        open:   c.open   ?? c.o,
+        high:   c.high   ?? c.h,
+        low:    c.low    ?? c.l,
+        close:  c.close  ?? c.c,
+        volume: c.volume ?? c.v,
+        sma20:  round4(sma20arr[absIdx]),
+        sma200: round4(sma200arr[absIdx]),
+      };
+    });
+
+    const hasSMA200 = candles.some(c => c.sma200 != null);
+
+    return res.json({ ok: true, symbol, timestamp, signalCandleIdx: newSignalIdx, hasSMA200, candles });
+  } catch (err) {
+    console.error('[review/chart-data]', err);
+    return res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+// ── API 404 — never return HTML for unknown /api/* paths ──────────────────────
+router.use((req, res) => {
+  res.status(404).json({ ok: false, error: 'API route not found' });
+});
+
+// ── API error handler ─────────────────────────────────────────────────────────
+// eslint-disable-next-line no-unused-vars
+router.use((err, req, res, next) => {
+  console.error('[API] Unhandled error:', err.message);
+  res.status(500).json({ ok: false, error: err.message || 'Internal server error' });
+});
+
+module.exports = router;

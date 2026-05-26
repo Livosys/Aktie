@@ -1,5 +1,6 @@
 'use strict';
 const axios = require('axios');
+const { withProviderRetry } = require('../providerStatus');
 
 // Uses same credentials as alpacaClient.js (ALPACA_API_KEY_ID / ALPACA_API_SECRET_KEY)
 // New env vars:
@@ -79,11 +80,11 @@ async function fetchAlpacaBars({ symbol, timeframe = '1Min', start, end, limit =
 
     let res;
     try {
-      res = await axios.get(url, {
+      res = await withProviderRetry('alpaca', () => axios.get(url, {
         headers: headers(),
         params:  reqParams,
         timeout: 20000,
-      });
+      }), { context: { symbol, endpoint: 'historical_bars' } });
     } catch (err) {
       const status = err?.response?.status;
       const msg    = err?.response?.data?.message || err?.response?.data?.error || err.message || 'unknown';

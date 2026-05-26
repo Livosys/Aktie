@@ -2,15 +2,20 @@
 require('dotenv').config();
 const crypto = require('crypto');
 const express = require('express');
+const rateLimit = require('express-rate-limit');
 const cors = require('cors');
 const path = require('path');
 const { startScheduler } = require('./src/scanner/scheduler');
 const { startCryptoScheduler } = require('./src/scanner/cryptoScheduler');
 const { startAutoMachineScheduler } = require('./src/jobs/autoMachineScheduler');
 const apiRouter = require('./src/routes/api');
+const { initOnStartup: initPaperTrading } = require('./src/paperTrading/paperTradingAgent');
+const { buildProviderStatus } = require('./src/providerStatus');
+const redisService = require('./src/services/redisService');
 
 const app = express();
 const PORT = process.env.PORT || 3001;
+app.set('trust proxy', 'loopback');
 
 // ── Basic Auth middleware ─────────────────────────────────────────────────────
 
@@ -64,8 +69,33 @@ function basicAuth(req, res, next) {
 
 // ── App setup ─────────────────────────────────────────────────────────────────
 
-app.use(cors());
-app.use(express.json());
+// CORS — restrict to known origins; localhost variants allowed for local dev
+const CORS_ALLOWED = new Set([
+  'https://aktier.livosys.se',
+  'http://localhost:3001',
+  'http://localhost:5173',
+  'http://127.0.0.1:3001',
+]);
+app.use(cors({
+  origin(origin, cb) {
+    // No origin = server-to-server or same-origin — allow
+    if (!origin || CORS_ALLOWED.has(origin)) return cb(null, true);
+    cb(new Error(`CORS: origin not allowed — ${origin}`));
+  },
+  credentials: true,
+}));
+app.use(express.json({ limit: '1mb' }));
+
+const apiLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: 120,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: {
+    ok: false,
+    error: 'Too many requests, please try again later',
+  },
+});
 
 // /health is open — does not expose secrets
 app.get('/health', (req, res) => {
@@ -78,19 +108,31 @@ app.get('/health', (req, res) => {
     alpacaConfigured,
     feed: process.env.ALPACA_DATA_FEED || 'iex',
     env: process.env.NODE_ENV || 'development',
+    providers: buildProviderStatus(),
+    redis: redisService.status(),
   });
 });
 
 // All API routes and frontend require auth
-app.use('/api', basicAuth, apiRouter);
+app.use('/api', apiLimiter, basicAuth, apiRouter);
 app.use(basicAuth, express.static(path.join(__dirname, 'client', 'dist')));
 app.get('*', basicAuth, (req, res) => {
   res.sendFile(path.join(__dirname, 'client', 'dist', 'index.html'));
 });
 
-app.listen(PORT, () => {
-  console.log(`[Server] nasdaq-2m-scanner running on port ${PORT}`);
+app.listen(PORT, '127.0.0.1', () => {
+  console.log(`[Server] nasdaq-2m-scanner running on port ${PORT} (bound to 127.0.0.1)`);
+  setInterval(() => {
+    const m = process.memoryUsage();
+    console.log(`[Memory] heap=${Math.round(m.heapUsed / 1024 / 1024)}MB rss=${Math.round(m.rss / 1024 / 1024)}MB ext=${Math.round(m.external / 1024 / 1024)}MB`);
+  }, 5 * 60 * 1000);
   startScheduler();
   startCryptoScheduler();
   startAutoMachineScheduler();
+  initPaperTrading();
+  redisService.connect().then((connected) => {
+    console.log(`[Redis] ${connected ? 'connected' : 'fallback mode'} (${redisService.status().clientStatus})`);
+  }).catch((err) => {
+    console.warn('[Redis] startup fallback:', err.message);
+  });
 });

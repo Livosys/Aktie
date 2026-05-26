@@ -1,0 +1,75 @@
+server {
+  listen 80;
+  listen [::]:80;
+  server_name aktier.livosys.se;
+
+  location ^~ /.well-known {
+    auth_basic off;
+    allow all;
+    root /home/livosys-aktier/htdocs/aktier.livosys.se;
+    try_files $uri =404;
+  }
+
+  location / {
+    return 301 https://$host$request_uri;
+  }
+}
+
+server {
+  listen 443 ssl;
+  listen [::]:443 ssl;
+  http2 on;
+
+  ssl_certificate     /etc/letsencrypt/live/aktier.livosys.se/fullchain.pem;
+  ssl_certificate_key /etc/letsencrypt/live/aktier.livosys.se/privkey.pem;
+  ssl_stapling off;
+
+  server_name aktier.livosys.se;
+  root /home/livosys-aktier/htdocs/aktier.livosys.se;
+
+  access_log /home/livosys-aktier/logs/nginx/access.log main;
+  error_log  /home/livosys-aktier/logs/nginx/error.log;
+
+  location @reverse_proxy {
+    proxy_pass http://127.0.0.1:3001;
+    proxy_http_version 1.1;
+    proxy_set_header X-Forwarded-Host   $host;
+    proxy_set_header X-Forwarded-Server $host;
+    proxy_set_header X-Real-IP          $remote_addr;
+    proxy_set_header X-Forwarded-For    $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto  $scheme;
+    proxy_set_header Host               $host;
+    proxy_set_header Upgrade            $http_upgrade;
+    proxy_set_header Connection         "Upgrade";
+    proxy_ssl_server_name on;
+    proxy_ssl_name        $host;
+    proxy_pass_request_headers on;
+    proxy_max_temp_file_size   0;
+    proxy_connect_timeout      900;
+    proxy_send_timeout         900;
+    proxy_read_timeout         900;
+    proxy_buffer_size          128k;
+    proxy_buffers              4 256k;
+    proxy_busy_buffers_size    256k;
+    proxy_temp_file_write_size 256k;
+  }
+
+  add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
+  add_header X-Content-Type-Options "nosniff" always;
+  add_header X-Frame-Options "SAMEORIGIN" always;
+  add_header Referrer-Policy "same-origin" always;
+  add_header Permissions-Policy "camera=(), microphone=(), geolocation=()" always;
+  add_header Cache-Control "no-transform" always;
+
+  index index.html;
+
+  location ^~ /.well-known {
+    auth_basic off;
+    allow all;
+    try_files $uri @reverse_proxy;
+  }
+
+  location / {
+    try_files $uri @reverse_proxy;
+  }
+}

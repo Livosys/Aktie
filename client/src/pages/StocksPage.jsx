@@ -9,6 +9,54 @@ import {
 import { useAlerts } from '../alertContext.jsx';
 import { enrichWithDecisions, isAvoidSignal, getBestSignal, getTopN, groupBySymbol } from '../decisionEngine.js';
 
+function DataStatusPanel({ data, lastFetch, source = 'Alpaca', marketLabel = 'Aktier' }) {
+  if (!data && !lastFetch) return null;
+  const feed = data?.feedStatus || null;
+  const updatedAt = feed?.latestTimestamp || feed?.lastUpdated
+    ? new Date(feed.latestTimestamp || feed.lastUpdated)
+    : data?.lastScan ? new Date(data.lastScan) : lastFetch;
+  const ageMs = updatedAt ? Date.now() - updatedAt.getTime() : null;
+  const ageMin = ageMs != null ? Math.round(ageMs / 60000) : null;
+  const feedStatus = feed?.status || null;
+  const marketClosed = feedStatus === 'MARKET_CLOSED';
+  const providerError = feedStatus === 'BROKEN' || feedStatus === 'WARNING';
+  const isStale = !marketClosed && (feedStatus === 'STALE' || data?.marketWarning || (ageMin != null && ageMin > 15));
+  const isOld = !marketClosed && ageMin != null && ageMin > 5;
+  const statusLabel = providerError
+    ? 'Provider-fel'
+    : marketClosed
+      ? 'Marknaden stängd'
+      : isStale
+        ? 'Aktiedata gammal'
+        : isOld ? 'Osäker' : 'Aktiedata live';
+  const statusColor = providerError || isStale ? '#ef4444' : marketClosed || isOld ? '#eab308' : '#22c55e';
+  const timeStr = updatedAt ? updatedAt.toLocaleTimeString('sv-SE', { hour12: false }) : '–';
+
+  return (
+    <div style={{ background: '#0f172a', border: '1px solid #1e293b', borderRadius: 8, padding: '10px 14px', display: 'flex', flexWrap: 'wrap', gap: 14, alignItems: 'center', fontSize: 12, marginBottom: 2 }}>
+      <span style={{ color: '#64748b' }}>Datakälla: <strong style={{ color: '#e2e8f0' }}>{source}</strong></span>
+      <span style={{ color: '#64748b' }}>Senast uppdaterad: <strong style={{ color: '#e2e8f0', fontFamily: 'monospace' }}>{timeStr}</strong></span>
+      {ageMin != null && <span style={{ color: '#64748b' }}>Dataålder: <strong style={{ color: '#e2e8f0' }}>{ageMin < 1 ? '< 1 min' : `${ageMin} min`}</strong></span>}
+      <span style={{ color: '#64748b' }}>Status: <strong style={{ color: statusColor }}>{statusLabel}</strong></span>
+      {marketClosed && (
+        <span style={{ color: '#eab308', fontSize: 11, background: 'rgba(234,179,8,0.08)', borderRadius: 5, padding: '2px 8px', border: '1px solid rgba(234,179,8,0.25)' }}>
+          {feed?.messageSv || 'Marknaden stängd — senaste aktiedata från senaste handelspass.'}
+        </span>
+      )}
+      {isStale && (
+        <span style={{ color: '#ef4444', fontSize: 11, background: 'rgba(239,68,68,0.08)', borderRadius: 5, padding: '2px 8px', border: '1px solid rgba(239,68,68,0.25)' }}>
+          {marketLabel}data är gammal — kontrollera provider/scanner.
+        </span>
+      )}
+      {providerError && (
+        <span style={{ color: '#ef4444', fontSize: 11, background: 'rgba(239,68,68,0.08)', borderRadius: 5, padding: '2px 8px', border: '1px solid rgba(239,68,68,0.25)' }}>
+          {feed?.latestProviderError?.messageSv || 'Provider-fel i aktiedata.'}
+        </span>
+      )}
+    </div>
+  );
+}
+
 export default function StocksPage() {
   const { data, health, loading, error, lastFetch, refresh } = useScan('/api/scan/stocks');
   const { processResults } = useAlerts();
@@ -82,7 +130,7 @@ export default function StocksPage() {
       {/* Hero */}
       <div className="page-hero">
         <div className="hero-left">
-          <div className="hero-title hero-accent-blue">Aktie Scanner</div>
+          <div className="hero-title hero-accent-blue">Aktiebevakning</div>
           <div className="hero-sub">
             Vi letar efter aktier som är redo att röra sig.{' '}
             <strong>NVDA · AMD · TSLA · AAPL · MSFT · AMZN · META</strong>
@@ -97,7 +145,8 @@ export default function StocksPage() {
       )}
       {error && (
         <div className="market-banner" style={{ borderColor: 'var(--red)', color: 'var(--red)', background: 'var(--red-dim)' }}>
-          ✗ Fel: {error}
+          Kunde inte hämta aktiedata. {error.message || error}
+          {error.detail && <details className="ux-technical"><summary>Visa teknisk detalj</summary>{error.detail}</details>}
         </div>
       )}
 
@@ -105,6 +154,7 @@ export default function StocksPage() {
 
       {!loading && (
         <>
+          <DataStatusPanel data={data} lastFetch={lastFetch} source="Alpaca" marketLabel="Aktie" />
           <SummaryStrip results={results} />
           <TopSignalsPanel results={enriched} />
 
@@ -232,6 +282,16 @@ export default function StocksPage() {
                 desc="Motorn eller reglerna blockerar dessa lägen."
               />
               <SymbolCardList rows={avoid} />
+            </div>
+          )}
+
+          {results.length === 0 && (
+            <div className="hero-empty">
+              <div className="hero-empty-icon">📈</div>
+              <div className="hero-empty-text">
+                <strong>Ingen aktiedata att visa just nu</strong>
+                Systemet bevakar aktierna och fyller på så snart datakällan svarar.
+              </div>
             </div>
           )}
         </>

@@ -6,6 +6,16 @@ function sma(values, period) {
   return slice.reduce((a, b) => a + b, 0) / period;
 }
 
+function ema(values, period) {
+  if (values.length < period) return null;
+  const k = 2 / (period + 1);
+  let value = values.slice(0, period).reduce((a, b) => a + b, 0) / period;
+  for (let i = period; i < values.length; i += 1) {
+    value = values[i] * k + value * (1 - k);
+  }
+  return value;
+}
+
 function rsi(closes, period = 14) {
   if (closes.length < period + 1) return null;
   const slice = closes.slice(closes.length - (period + 1));
@@ -83,6 +93,20 @@ function calcRelVol20(candles) {
   return avg > 0 ? currVol / avg : null;
 }
 
+function calcVwap(candles) {
+  if (!candles || !candles.length) return null;
+  const latestTs = candles[candles.length - 1]?.t || candles[candles.length - 1]?.ts;
+  const latestDay = latestTs ? String(latestTs).slice(0, 10) : null;
+  const session = latestDay
+    ? candles.filter((c) => String(c.t || c.ts || '').slice(0, 10) === latestDay && c.v > 0)
+    : candles.filter((c) => c.v > 0);
+  const source = session.length ? session : candles.filter((c) => c.v > 0);
+  const volume = source.reduce((sum, c) => sum + (c.v || 0), 0);
+  if (!volume) return null;
+  const pv = source.reduce((sum, c) => sum + (((c.h + c.l + c.c) / 3) * c.v), 0);
+  return pv / volume;
+}
+
 // ATR14 now vs ATR14 from 120 bars ago, expressed as percentage
 // <= 45 means current ATR is very compressed vs historical
 function calcAtrPct120(candles) {
@@ -96,8 +120,14 @@ function calcAtrPct120(candles) {
 function calcIndicators(candles2m) {
   if (!candles2m || candles2m.length < 20) return null;
   const closes = candles2m.map((c) => c.c);
+  const e9 = ema(closes, 9);
+  const e21 = ema(closes, 21);
+  const e50 = ema(closes, 50);
   const s20 = sma(closes, 20);
+  const s50 = candles2m.length >= 50 ? sma(closes, 50) : null;
   const s200 = candles2m.length >= 200 ? sma(closes, 200) : null;
+  const vw = calcVwap(candles2m);
+  const price = candles2m[candles2m.length - 1]?.c;
   const rsi14 = rsi(closes, 14);
   const atr14 = atr(candles2m, 14);
   const recent5 = recentRange(candles2m, 5);
@@ -106,7 +136,25 @@ function calcIndicators(candles2m) {
   const bbwPct120 = calcBbwPct120(closes);
   const relVol20 = calcRelVol20(candles2m);
   const atrPct120 = calcAtrPct120(candles2m);
-  return { sma20: s20, sma200: s200, rsi14, atr14, recent5, avgRange20, bbw20, bbwPct120, relVol20, atrPct120 };
+  const vwapDistancePct = vw && price ? ((price - vw) / vw) * 100 : null;
+  return {
+    ema9: e9,
+    ema21: e21,
+    ema50: e50,
+    sma20: s20,
+    sma50: s50,
+    sma200: s200,
+    vwap: vw,
+    vwapDistancePct,
+    rsi14,
+    atr14,
+    recent5,
+    avgRange20,
+    bbw20,
+    bbwPct120,
+    relVol20,
+    atrPct120,
+  };
 }
 
-module.exports = { calcIndicators, sma, rsi, atr, recentRange, avgBarRange, bbWidth };
+module.exports = { calcIndicators, sma, ema, rsi, atr, recentRange, avgBarRange, bbWidth, calcVwap };

@@ -1,0 +1,162 @@
+import React, { useEffect, useMemo, useState } from 'react';
+import { SectionHeader, fmtTime } from '../shared.jsx';
+
+const SEVERITY_ORDER = { CRITICAL: 0, HIGH: 1, WATCH: 2, INFO: 3 };
+
+function severityClass(sev) {
+  if (sev === 'CRITICAL') return 'al-critical';
+  if (sev === 'HIGH') return 'al-high';
+  if (sev === 'WATCH') return 'al-watch';
+  return 'al-info';
+}
+
+function useAlertEvents() {
+  const [data, setData] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(null);
+
+  async function fetchAlerts() {
+    try {
+      const res = await fetch('/api/alerts');
+      const json = await res.json();
+      if (!res.ok) throw new Error(json.error || `API ${res.status}`);
+      setData(json);
+      setError(null);
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  useEffect(() => {
+    fetchAlerts();
+    const t = setInterval(fetchAlerts, 30000);
+    return () => clearInterval(t);
+  }, []);
+
+  return { data, loading, error, refresh: fetchAlerts };
+}
+
+function AlertCard({ alert, onAck }) {
+  const cls = severityClass(alert.severity);
+  return (
+    <div className={`al-card ${cls}`}>
+      <div className="al-card-top">
+        <div>
+          <div className="al-title">{alert.titleSv}</div>
+          <div className="al-meta">
+            <span>{alert.type}</span>
+            {alert.symbol && <span>{alert.symbol}</span>}
+            <span>{fmtTime(alert.createdAt)}</span>
+          </div>
+        </div>
+        <span className={`al-severity ${cls}`}>{alert.severity}</span>
+      </div>
+      <div className="al-message">{alert.messageSv}</div>
+      {alert.suggestedActionSv && (
+        <div className="al-action">Åtgärd: {alert.suggestedActionSv}</div>
+      )}
+      <div className="al-card-actions">
+        <button className="btn al-ack-btn" onClick={() => onAck(alert.id)}>Kvittera</button>
+      </div>
+    </div>
+  );
+}
+
+export default function AlertsPage() {
+  const { data, loading, error, refresh } = useAlertEvents();
+  const [acking, setAcking] = useState(false);
+
+  const alerts = useMemo(() => {
+    return [...(data?.alerts || [])].sort((a, b) => {
+      const s = (SEVERITY_ORDER[a.severity] ?? 9) - (SEVERITY_ORDER[b.severity] ?? 9);
+      if (s !== 0) return s;
+      return new Date(b.createdAt) - new Date(a.createdAt);
+    });
+  }, [data]);
+
+  const critical = alerts.filter((a) => a.severity === 'CRITICAL');
+
+  async function acknowledge(id) {
+    setAcking(true);
+    try {
+      await fetch('/api/alerts/acknowledge', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id }),
+      });
+      await refresh();
+    } finally {
+      setAcking(false);
+    }
+  }
+
+  async function acknowledgeAll() {
+    const ids = alerts.map((a) => a.id);
+    if (!ids.length) return;
+    setAcking(true);
+    try {
+      await fetch('/api/alerts/acknowledge', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ids }),
+      });
+      await refresh();
+    } finally {
+      setAcking(false);
+    }
+  }
+
+  return (
+    <div>
+      <div className="page-hero">
+        <div className="hero-left">
+          <div className="hero-title hero-accent-orange">Larm</div>
+          <div className="hero-sub">Händelsebaserade larm för systemet och marknaden. Ingen SMS eller e-post skickas.</div>
+        </div>
+        <div className="status-bar-v2">
+          <span className="status-pill">Olästa: {alerts.length}</span>
+          {critical.length > 0 && <span className="status-pill" style={{ color: 'var(--red)' }}>Kritiska: {critical.length}</span>}
+          <button className="btn" onClick={refresh}>↻ Uppdatera</button>
+        </div>
+      </div>
+
+      {error && <div className="market-banner" style={{ borderColor: 'var(--red)', color: 'var(--red)', background: 'var(--red-dim)' }}>✗ {error}</div>}
+      {loading && <div className="empty"><span className="spinner" /> Hämtar larm…</div>}
+
+      {!loading && critical.length > 0 && (
+        <div className="sh-alert-banner">
+          <strong>Kritiska larm finns</strong>
+          <div className="sh-alert-line">
+            Kontrollera de röda larmen först. Ingen handel utförs automatiskt.
+          </div>
+        </div>
+      )}
+
+      {!loading && (
+        <div className="sec">
+          <SectionHeader icon="🔔" title="Olästa larm" count={alerts.length} desc="Kritiska larm och hög risk visas först." />
+          {alerts.length > 0 && (
+            <div className="al-toolbar">
+              <button className="btn" onClick={acknowledgeAll} disabled={acking}>Kvittera alla</button>
+            </div>
+          )}
+          {alerts.length === 0 ? (
+            <div className="hero-empty">
+              <div className="hero-empty-icon">🟢</div>
+              <div className="hero-empty-text">
+                <strong>Inga olästa larm</strong>
+                Systemet har inga nya larm att visa just nu.
+              </div>
+            </div>
+          ) : (
+            <div className="al-list">
+              {alerts.map((a) => <AlertCard key={a.id} alert={a} onAck={acknowledge} />)}
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}

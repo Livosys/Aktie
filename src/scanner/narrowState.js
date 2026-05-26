@@ -388,7 +388,10 @@ function deriveReasonSv(state, narrowType, metrics, rsi14, breakoutAlreadyOccurr
 // ── Main classifier ───────────────────────────────────────────────────────────
 
 function classifyNarrowState({ symbol, price, candles2m, indicators, lastUpdate }) {
-  const { sma20, sma200, rsi14, atr14, recent5, avgRange20, bbw20, bbwPct120, relVol20, atrPct120 } = indicators;
+  const {
+    ema9, ema21, ema50, sma20, sma50, sma200, vwap, vwapDistancePct,
+    rsi14, atr14, recent5, avgRange20, bbw20, bbwPct120, relVol20, atrPct120,
+  } = indicators;
 
   if (!sma20 || !atr14 || !recent5) {
     return makeResult(symbol, price, 'NO_TRADE', 0, null, null, indicators, lastUpdate, 'Insufficient indicator data');
@@ -542,8 +545,14 @@ function classifyNarrowState({ symbol, price, candles2m, indicators, lastUpdate 
     positionLabelSv,
     signal,
     confidence,
+    ema9:    ema9    ? round(ema9,    4) : null,
+    ema21:   ema21   ? round(ema21,   4) : null,
+    ema50:   ema50   ? round(ema50,   4) : null,
     sma20:   sma20   ? round(sma20,   2) : null,
+    sma50:   sma50   ? round(sma50,   2) : null,
     sma200:  sma200  ? round(sma200,  2) : null,
+    vwap:    vwap    ? round(vwap,    4) : null,
+    vwapDistancePct: vwapDistancePct !== null ? round(vwapDistancePct, 4) : null,
     smaGap:  smaGap  ? round(smaGap,  4) : null,
     smaGapPct: smaGapPct ? round(smaGapPct, 3) : null,
     rsi14:   rsi14   ? round(rsi14,   1) : null,
@@ -607,8 +616,16 @@ function makeResult(symbol, price, state, confidence, longTrigger, shortTrigger,
     positionLabelSv: 'I zonen',
     signal: 'NO_TRADE',
     confidence,
+    ema9:    indicators?.ema9   ? round(indicators.ema9,   4) : null,
+    ema21:   indicators?.ema21  ? round(indicators.ema21,  4) : null,
+    ema50:   indicators?.ema50  ? round(indicators.ema50,  4) : null,
     sma20:   indicators?.sma20  ? round(indicators.sma20,  2) : null,
+    sma50:   indicators?.sma50  ? round(indicators.sma50,  2) : null,
     sma200:  indicators?.sma200 ? round(indicators.sma200, 2) : null,
+    vwap:    indicators?.vwap   ? round(indicators.vwap,   4) : null,
+    vwapDistancePct: indicators?.vwapDistancePct !== null && indicators?.vwapDistancePct !== undefined
+      ? round(indicators.vwapDistancePct, 4)
+      : null,
     smaGap: null, smaGapPct: null,
     rsi14:   indicators?.rsi14  ? round(indicators.rsi14,  1) : null,
     atr14:   indicators?.atr14  ? round(indicators.atr14,  4) : null,
