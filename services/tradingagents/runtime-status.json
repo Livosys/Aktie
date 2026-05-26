@@ -1,0 +1,11 @@
+{
+  "version": "v1",
+  "mode": "rule_based_v1",
+  "installed": false,
+  "python_runtime_available": false,
+  "can_place_orders": false,
+  "actions_allowed": false,
+  "live_trading_enabled": false,
+  "last_updated": null,
+  "note": "v1 uses rule-based mock adapter. Set python_runtime.enabled=true in config.json when a real runtime is available."
+}

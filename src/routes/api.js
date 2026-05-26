@@ -47,7 +47,13 @@ const vectorMemoryService                              = require('../services/ve
 const replayIntelligenceService                        = require('../services/replayIntelligenceService');
 const riskEngineService                                = require('../services/riskEngineService');
 const exitEngineService                                = require('../services/exitEngineService');
+const exitCalibrationService                           = require('../services/exitCalibrationService');
+const strategyLabService                               = require('../services/strategyLabService');
+const executionSafetyService                           = require('../services/executionSafetyService');
 const notificationEngineV2                             = require('../alerts/notificationEngineV2');
+const intelligenceAgent                                = require('../services/systemIntelligenceAgentService');
+const tradingAgentsAdapter                             = require('../services/tradingAgentsAdapterService');
+const tradingAgentsResultMemory                        = require('../services/tradingAgentsResultMemoryService');
 const TEST_LIVE_SEND_COOLDOWN_MS = 5 * 60 * 1000;
 let testLiveSendLastAt = 0;
 const {
@@ -558,6 +564,226 @@ router.post('/exit/evaluate', async (req, res) => {
     res.json(evaluation);
   } catch (err) {
     console.error('[exit/evaluate] error:', err.message);
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+router.get('/exit/calibration', async (req, res) => {
+  try {
+    res.json(await exitCalibrationService.getCalibration());
+  } catch (err) {
+    console.error('[exit/calibration] error:', err.message);
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+router.get('/exit/calibration/recent', async (req, res) => {
+  try {
+    res.json(await exitCalibrationService.getRecentCalibration());
+  } catch (err) {
+    console.error('[exit/calibration/recent] error:', err.message);
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+router.post('/exit/calibration/rebuild', async (req, res) => {
+  try {
+    res.json(await exitCalibrationService.getCalibration({ force: true }));
+  } catch (err) {
+    console.error('[exit/calibration/rebuild] error:', err.message);
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+// ── Strategy Lab v1 ─────────────────────────────────────────────────────────
+// Read-only strategy experimentation. All tests are forced to replay/paper mode.
+
+router.get('/strategy-lab/pipeline', async (req, res) => {
+  try {
+    res.json(await strategyLabService.getPipelineStatus());
+  } catch (err) {
+    console.error('[strategy-lab/pipeline] error:', err.message);
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+router.get('/strategy-lab/config', async (req, res) => {
+  try {
+    res.json({ ok: true, config: await strategyLabService.getStrategyConfig(), methods: strategyLabService.METHOD_NAMES, live_trading_enabled: false, replay_mode: true, paper_only: true });
+  } catch (err) {
+    console.error('[strategy-lab/config] error:', err.message);
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+router.post('/strategy-lab/config', async (req, res) => {
+  try {
+    const result = await strategyLabService.updateStrategyConfig(req.body || {});
+    res.status(result.ok ? 200 : 400).json(result);
+  } catch (err) {
+    console.error('[strategy-lab/config] update error:', err.message);
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+router.get('/strategy-lab/presets', async (req, res) => {
+  try {
+    res.json({ ok: true, presets: await strategyLabService.listPresets() });
+  } catch (err) {
+    console.error('[strategy-lab/presets] error:', err.message);
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+router.post('/strategy-lab/presets', async (req, res) => {
+  try {
+    const result = await strategyLabService.savePreset(req.body || {});
+    res.status(result.ok ? 201 : 400).json(result);
+  } catch (err) {
+    console.error('[strategy-lab/presets] save error:', err.message);
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+router.post('/strategy-lab/presets/:id/activate', async (req, res) => {
+  try {
+    const result = await strategyLabService.activatePreset(req.params.id);
+    res.status(result.ok ? 200 : 404).json(result);
+  } catch (err) {
+    console.error('[strategy-lab/presets/activate] error:', err.message);
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+router.post('/strategy-lab/test', async (req, res) => {
+  try {
+    res.json(await strategyLabService.runStrategyReplayTest(req.body || {}));
+  } catch (err) {
+    console.error('[strategy-lab/test] error:', err.message);
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+router.post('/strategy-lab/compare', async (req, res) => {
+  try {
+    const body = req.body || {};
+    const runIds = body.runIds || body.run_ids || [body.runA, body.runB, body.runC].filter(Boolean);
+    const result = await strategyLabService.compareStrategyRuns(runIds);
+    res.status(result.ok ? 200 : 400).json(result);
+  } catch (err) {
+    console.error('[strategy-lab/compare] error:', err.message);
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+router.get('/strategy-lab/results', async (req, res) => {
+  try {
+    res.json(await strategyLabService.getResults());
+  } catch (err) {
+    console.error('[strategy-lab/results] error:', err.message);
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+router.get('/strategy-lab/tradingagents/status', (req, res) => {
+  try {
+    res.json(strategyLabService.getTradingAgentsStatus());
+  } catch (err) {
+    console.error('[strategy-lab/tradingagents/status] error:', err.message);
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+// ── Execution Safety v1 ─────────────────────────────────────────────────────
+// Read/write endpoints inherit /api auth, rate-limit and JSON limits from server.js.
+
+router.get('/safety/status', async (req, res) => {
+  try {
+    res.json(await executionSafetyService.getSafetyStatus());
+  } catch (err) {
+    console.error('[safety/status] error:', err.message);
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+router.get('/safety/config', async (req, res) => {
+  try {
+    res.json({
+      ok: true,
+      config: await executionSafetyService.getSafetyConfig(),
+      keys: executionSafetyService.KEYS,
+      bounds: executionSafetyService.NUMBER_LIMITS,
+      safeBooleanFields: executionSafetyService.BOOL_FIELDS,
+    });
+  } catch (err) {
+    console.error('[safety/config] error:', err.message);
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+router.post('/safety/config', async (req, res) => {
+  try {
+    const result = await executionSafetyService.updateSafetyConfig(req.body || {});
+    res.status(result.ok ? 200 : 400).json(result);
+  } catch (err) {
+    console.error('[safety/config] update error:', err.message);
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+router.post('/safety/evaluate', async (req, res) => {
+  try {
+    const body = req.body && typeof req.body === 'object' ? req.body : {};
+    const evaluation = await executionSafetyService.evaluateExecutionSafety({
+      ...body,
+      source: body.source || 'manual_api_test',
+    });
+    res.json(evaluation);
+  } catch (err) {
+    console.error('[safety/evaluate] error:', err.message);
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+router.post('/safety/kill-switch', async (req, res) => {
+  try {
+    const reason = req.body?.reason || 'manual_api_trigger';
+    res.json(await executionSafetyService.triggerKillSwitch(reason));
+  } catch (err) {
+    console.error('[safety/kill-switch] error:', err.message);
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+router.post('/safety/kill-switch/clear', async (req, res) => {
+  try {
+    if (req.body?.confirm !== true) {
+      return res.status(400).json({ ok: false, error: 'confirm_true_required' });
+    }
+    const reason = req.body?.reason || 'manual_api_clear';
+    res.json(await executionSafetyService.clearKillSwitch(reason));
+  } catch (err) {
+    console.error('[safety/kill-switch/clear] error:', err.message);
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+router.post('/safety/manual-arm', async (req, res) => {
+  try {
+    const reason = req.body?.reason || 'manual_api_arm';
+    res.json(await executionSafetyService.manualArm(reason));
+  } catch (err) {
+    console.error('[safety/manual-arm] error:', err.message);
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+router.post('/safety/manual-disarm', async (req, res) => {
+  try {
+    const reason = req.body?.reason || 'manual_api_disarm';
+    res.json(await executionSafetyService.manualDisarm(reason));
+  } catch (err) {
+    console.error('[safety/manual-disarm] error:', err.message);
     res.status(500).json({ ok: false, error: err.message });
   }
 });
@@ -1887,6 +2113,111 @@ router.get('/paper-trading/decision-pipeline', (req, res) => {
 router.get('/paper-trading/gate-effectiveness', (req, res) => {
   try { res.json({ ok: true, report: paperTrading.getGateEffectivenessReport() }); }
   catch (err) { res.json({ ok: false, error: err.message, report: emptyGateEffectivenessReport() }); }
+});
+
+// ── System Intelligence Agent v1 ─────────────────────────────────────────────
+// Read-only: actions_allowed=false, can_modify_system=false always.
+
+router.get('/intelligence/status', (req, res) => {
+  try { res.json(intelligenceAgent.getAgentStatus()); }
+  catch (err) { res.status(500).json({ ok: false, error: err.message }); }
+});
+
+router.get('/intelligence/context', async (req, res) => {
+  try { res.json(await intelligenceAgent.buildSystemContext()); }
+  catch (err) { res.status(500).json({ ok: false, error: err.message }); }
+});
+
+router.post('/intelligence/analyze', async (req, res) => {
+  try {
+    const { question } = req.body || {};
+    if (!question || typeof question !== 'string') {
+      return res.status(400).json({ ok: false, error: 'question required' });
+    }
+    res.json(await intelligenceAgent.analyzeSystem(question.slice(0, 500)));
+  } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
+});
+
+router.get('/intelligence/diagnostics/no-trades', async (req, res) => {
+  try { res.json(await intelligenceAgent.diagnoseNoTrades()); }
+  catch (err) { res.status(500).json({ ok: false, error: err.message }); }
+});
+
+router.get('/intelligence/diagnostics/timeouts', async (req, res) => {
+  try { res.json(await intelligenceAgent.diagnoseTimeouts()); }
+  catch (err) { res.status(500).json({ ok: false, error: err.message }); }
+});
+
+router.get('/intelligence/recommendations', async (req, res) => {
+  try { res.json(await intelligenceAgent.getRecommendations()); }
+  catch (err) { res.status(500).json({ ok: false, error: err.message }); }
+});
+
+router.get('/intelligence/explain/latest/:symbol', async (req, res) => {
+  try {
+    const symbol = String(req.params.symbol || '').toUpperCase().slice(0, 20);
+    res.json(await intelligenceAgent.explainLatestDecision(symbol));
+  } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
+});
+
+// ── TradingAgents v1 ──────────────────────────────────────────────────────────
+// Read-only research layer: can_place_orders=false, actions_allowed=false always.
+
+router.get('/tradingagents/status', async (req, res) => {
+  try { res.json(await tradingAgentsAdapter.getTradingAgentsStatus()); }
+  catch (err) { res.status(500).json({ ok: false, error: err.message }); }
+});
+
+router.post('/tradingagents/analyze', async (req, res) => {
+  try {
+    const context = req.body || {};
+    if (!context.symbol || typeof context.symbol !== 'string') {
+      return res.status(400).json({ ok: false, error: 'symbol required' });
+    }
+    const safe = { ...context, can_place_orders: false, actions_allowed: false };
+    res.json(await tradingAgentsAdapter.analyzeWithTradingAgents(safe));
+  } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
+});
+
+router.get('/tradingagents/latest/:symbol', async (req, res) => {
+  try {
+    const symbol = String(req.params.symbol || '').toUpperCase().slice(0, 20);
+    res.json(await tradingAgentsAdapter.getLatestAnalysis(symbol));
+  } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
+});
+
+// ── TradingAgents Result Memory v1 ────────────────────────────────────────────
+// Read-only: actions_allowed=false, can_place_orders=false always.
+
+router.get('/tradingagents/results/status', async (req, res) => {
+  try {
+    const global = await tradingAgentsResultMemory.getTradingAgentsGlobalStats();
+    res.json({ ok: true, ...global, ...tradingAgentsResultMemory.SAFETY });
+  } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
+});
+
+router.get('/tradingagents/results/:symbol', async (req, res) => {
+  try {
+    const symbol = String(req.params.symbol || '').toUpperCase().slice(0, 20);
+    if (!symbol) return res.status(400).json({ ok: false, error: 'symbol required' });
+    res.json(await tradingAgentsResultMemory.buildResultMemorySummary(symbol));
+  } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
+});
+
+router.get('/tradingagents/lessons/:symbol', async (req, res) => {
+  try {
+    const symbol = String(req.params.symbol || '').toUpperCase().slice(0, 20);
+    if (!symbol) return res.status(400).json({ ok: false, error: 'symbol required' });
+    res.json(await tradingAgentsResultMemory.getTradingAgentsLessons(symbol));
+  } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
+});
+
+router.post('/tradingagents/results/reset/:symbol', async (req, res) => {
+  try {
+    const symbol = String(req.params.symbol || '').toUpperCase().slice(0, 20);
+    if (!symbol) return res.status(400).json({ ok: false, error: 'symbol required' });
+    res.json(await tradingAgentsResultMemory.resetTradingAgentsResultMemoryForSymbol(symbol));
+  } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
 });
 
 // ── API 404 — never return HTML for unknown /api/* paths ──────────────────────

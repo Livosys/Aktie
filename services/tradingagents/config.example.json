@@ -1,0 +1,29 @@
+{
+  "_comment": "Copy this file to config.json to customise TradingAgents adapter settings.",
+  "enabled": false,
+  "mode": "rule_based_v1",
+  "can_place_orders": false,
+  "actions_allowed": false,
+  "live_trading_enabled": false,
+  "confidence_adjustment": {
+    "max_positive": 10,
+    "max_negative": -15,
+    "vwap_reclaim_bonus": 4,
+    "strong_volume_bonus": 3,
+    "ema_conflict_penalty": -8,
+    "compass_conflict_penalty": -6,
+    "low_score_penalty": -5,
+    "kill_switch_penalty": -15
+  },
+  "block_thresholds": {
+    "block_on_kill_switch": true,
+    "block_on_adjustment_below": -12
+  },
+  "python_runtime": {
+    "_comment": "Activate when a real TradingAgents Python service is available.",
+    "enabled": false,
+    "endpoint": "http://localhost:7860",
+    "timeout_ms": 8000,
+    "api_key": ""
+  }
+}
