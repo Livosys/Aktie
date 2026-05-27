@@ -39,6 +39,8 @@ const agentReasoningService                     = require('../services/agentReas
 const vectorMemoryService                       = require('../services/vectorMemoryService');
 const riskEngineService                         = require('../services/riskEngineService');
 const exitEngineService                         = require('../services/exitEngineService');
+const executionSafetyService                    = require('../services/executionSafetyService');
+const auditTrail                                = require('../services/auditTrailService');
 const notificationEngineV2                      = require('../alerts/notificationEngineV2');
 
 // ── Paths ─────────────────────────────────────────────────────────────────────
@@ -141,9 +143,59 @@ function makeEventId() {
   return `pte_${Date.now()}_${crypto.randomBytes(3).toString('hex')}`;
 }
 
+function durationSeconds(start, end) {
+  const a = new Date(start).getTime();
+  const b = new Date(end).getTime();
+  if (!Number.isFinite(a) || !Number.isFinite(b)) return 0;
+  return Math.max(0, Math.round((b - a) / 1000));
+}
+
+function durationLabel(seconds) {
+  const s = Math.max(0, Math.round(Number(seconds) || 0));
+  if (s < 60) return `${s}s`;
+  const m = Math.floor(s / 60);
+  const rest = s % 60;
+  if (m < 60) return rest ? `${m}m ${rest}s` : `${m}m`;
+  const h = Math.floor(m / 60);
+  const mm = m % 60;
+  return mm ? `${h}h ${mm}m` : `${h}h`;
+}
+
+function enrichTradeTimestamps(trade = {}, fallbackEnd = null) {
+  const openedAt = trade.opened_at || trade.openedAt || trade.entryTime || trade.createdAt || null;
+  const closedAt = trade.closed_at || trade.closedAt || trade.exitTime || (trade.result && trade.result !== 'OPEN' ? fallbackEnd : null);
+  const lastUpdateAt = trade.last_update_at || trade.lastUpdateAt || closedAt || trade.updatedAt || openedAt || null;
+  const end = closedAt || lastUpdateAt || new Date().toISOString();
+  const seconds = durationSeconds(openedAt, end);
+  return {
+    ...trade,
+    opened_at: openedAt,
+    closed_at: closedAt,
+    last_update_at: lastUpdateAt,
+    duration_seconds: seconds,
+    duration_label: durationLabel(seconds),
+  };
+}
+
 function loadEvents(limit = MEMORY_EVENTS) {
   const rows = loadJsonl(EVENTS_FILE);
   return rows.slice(-limit).reverse();
+}
+
+function safeEventValue(value) {
+  if (value == null) return value;
+  const seen = new WeakSet();
+  try {
+    return JSON.parse(JSON.stringify(value, (key, val) => {
+      if (val && typeof val === 'object') {
+        if (seen.has(val)) return '[Circular]';
+        seen.add(val);
+      }
+      return val;
+    }));
+  } catch (_) {
+    return null;
+  }
 }
 
 function eventMarketType(input) {
@@ -197,21 +249,55 @@ function appendEvent(input) {
     volumeState:     input.volumeState   || null,
     aiConfidenceAdjustment: input.aiConfidenceAdjustment ?? null,
     aiShouldBlockTrade: input.aiAgentAnalysis?.should_block_trade === true || input.aiShouldBlockTrade === true,
-    riskEvaluation: input.riskEvaluation || null,
+    riskEvaluation: safeEventValue(input.riskEvaluation || null),
     riskBlockReasons: input.riskEvaluation?.block_reasons || input.riskBlockReasons || [],
     riskWarnings: input.riskEvaluation?.warnings || input.riskWarnings || [],
     riskPositionSizeSek: input.riskEvaluation?.position_size_sek ?? input.riskPositionSizeSek ?? null,
     riskPositionUnits: input.riskEvaluation?.position_size_units ?? input.riskPositionUnits ?? null,
     riskPauseTrading: input.riskEvaluation?.pause_trading === true || input.riskPauseTrading === true,
+    executionSafety: safeEventValue(input.executionSafety || null),
+    safetyBlockReasons: input.executionSafety?.paper_block_reasons || input.executionSafety?.block_reasons || input.safetyBlockReasons || [],
+    safetyWarnings: input.executionSafety?.warnings || input.safetyWarnings || [],
     exitReasonCode: input.exitReasonCode || null,
     exitSource: input.exitSource || null,
-    exitEngineDecision: input.exitEngineDecision || null,
+    exitEngineDecision: safeEventValue(input.exitEngineDecision || null),
     mode: 'paper',
   };
 
   if (!event.type || !shouldRecordEvent(event)) return null;
 
   fs.appendFileSync(EVENTS_FILE, JSON.stringify(event) + '\n', 'utf8');
+  const auditType = {
+    TRADE_OPENED: 'PAPER_TRADE_OPENED',
+    TRADE_CLOSED: 'PAPER_TRADE_CLOSED',
+    RISK_BLOCKED: 'RISK_BLOCKED',
+    SAFETY_BLOCKED: 'SAFETY_BLOCKED',
+  }[event.type];
+  if (auditType) {
+    const label = auditType === 'PAPER_TRADE_OPENED' ? 'Papertrade öppnad'
+      : auditType === 'PAPER_TRADE_CLOSED' ? 'Papertrade stängd'
+      : auditType === 'SAFETY_BLOCKED' ? 'Safety stoppade signal'
+      : 'Risk stoppade signal';
+    auditTrail.logAuditEvent({
+      type: auditType,
+      source: 'paper_trading',
+      timestamp: event.timestamp,
+      symbol: event.symbol,
+      strategy_id: event.signalSubtype || event.signalFamily || null,
+      message: event.symbol ? `${label} för ${event.symbol}` : label,
+      details: {
+        paper_event_id: event.eventId,
+        decision: event.decision,
+        reasonSv: event.reasonSv,
+        status: event.status,
+        signalFamily: event.signalFamily,
+        signalSubtype: event.signalSubtype,
+        riskBlockReasons: event.riskBlockReasons,
+        safetyBlockReasons: event.safetyBlockReasons,
+        exitReasonCode: event.exitReasonCode,
+      },
+    });
+  }
   const rows = loadJsonl(EVENTS_FILE);
   if (rows.length > MAX_EVENT_ROWS) {
     fs.writeFileSync(EVENTS_FILE, rows.slice(-MAX_EVENT_ROWS).map(e => JSON.stringify(e)).join('\n') + '\n', 'utf8');
@@ -386,6 +472,7 @@ function buildOpenTrade(c, gateDecision = null) {
       (c.nextMoveBias === 'UP'   && compass.riskOff) ||
       (c.nextMoveBias === 'DOWN' && compass.riskOn)
     );
+  const openedAt = new Date().toISOString();
 
   return {
     tradeId:          makeTradeId(),
@@ -397,7 +484,12 @@ function buildOpenTrade(c, gateDecision = null) {
     paperOnly:        mpRisk?.paperOnly ?? false,
     session:          mpRisk?.session ?? null,
     direction:        c.nextMoveBias,
-    entryTime:        new Date().toISOString(),
+    entryTime:        openedAt,
+    opened_at:        openedAt,
+    closed_at:        null,
+    last_update_at:   openedAt,
+    duration_seconds: 0,
+    duration_label:   '0s',
     entryPrice:       c.price,
     entryReasonSv:    c.decisionTextSv || '–',
     signalFamily:     c.signalFamily,
@@ -410,7 +502,8 @@ function buildOpenTrade(c, gateDecision = null) {
     aiConfidenceAdjustment: c.aiConfidenceAdjustment ?? null,
     aiRiskFlag:      c.aiRiskFlag === true,
     aiAgentAnalysis: c.aiAgentAnalysis || null,
-    riskEvaluation:  c.riskEvaluation || null,
+    riskEvaluation:  safeEventValue(c.riskEvaluation || null),
+    executionSafety: safeEventValue(c.executionSafety || null),
     riskPositionSizeSek: c.riskEvaluation?.position_size_sek ?? null,
     riskPositionUnits: c.riskEvaluation?.position_size_units ?? null,
     riskMaxLossSek: c.riskEvaluation?.max_loss_sek ?? null,
@@ -517,6 +610,7 @@ function checkTimeoutExit(trade, currentPrice) {
 
 function updateIntrabar(trade, currentPrice) {
   if (!currentPrice || !trade.entryPrice) return;
+  trade.last_update_at = new Date().toISOString();
   const pnl    = calcPnlPct(trade, currentPrice);
   const target = trade.targetPct ?? TARGET_PCT;
   const stop   = trade.stopPct   ?? STOP_PCT;
@@ -1209,6 +1303,68 @@ function buildRiskSignalContext(c, gateDecision, agentAnalysis, riskProfile) {
   };
 }
 
+function candidateTime(c, fallback = new Date().toISOString()) {
+  return c?.lastUpdate || c?.last_updated || c?.timestamp || c?.candleTs || c?.candle_ts || c?.updatedAt || fallback;
+}
+
+function providerStatusForCandidate(c) {
+  const freshness = String(c?.dataFreshness || '').toUpperCase();
+  if (freshness === 'LIVE') return 'ok';
+  if (freshness === 'STALE') return 'degraded';
+  if (freshness === 'MISSING' || freshness === 'ERROR') return 'down';
+  return 'ok';
+}
+
+async function buildExecutionSafetyContext(c, gateDecision, riskEvaluation, riskProfile) {
+  const redis = redisService.status();
+  const compass = getMarketCompass();
+  const memory = process.memoryUsage ? process.memoryUsage() : {};
+  let feedStatus = null;
+  try { feedStatus = getStockFeedStatus?.(); } catch (_) {}
+  const rowTime = candidateTime(c);
+  const group = getMarketGroup(c?.symbol) || c?.marketGroup || 'UNKNOWN';
+
+  return {
+    symbol: c?.symbol,
+    direction: c?.nextMoveBias || c?.direction,
+    tradeIntent: 'ENTER',
+    source: 'paper_pipeline',
+    replay_mode: false,
+    market: {
+      is_open: c?.marketClosed === true ? false : feedStatus?.status === 'MARKET_CLOSED' && String(c?.marketType || c?.market || '').toLowerCase() !== 'crypto' ? false : true,
+      market_group: group,
+      session: String(c?.marketType || c?.market || '').toLowerCase() === 'crypto' ? 'crypto_24_7' : 'market_hours',
+      compass: compass?.bias || gateDecision?.compassBias || null,
+    },
+    data: {
+      last_price_at: rowTime,
+      last_candle_at: c?.candleTs || c?.latest2mTimestamp || rowTime,
+      last_scan_at: rowTime,
+      provider_status: providerStatusForCandidate(c),
+    },
+    system: {
+      redis_status: redis.redisAvailable ? 'ok' : redis.mode === 'fallback' ? 'fallback' : 'down',
+      memory_mb: memory.rss ? Math.round(memory.rss / 1024 / 1024) : null,
+      pm2_restarts_1h: 0,
+      api_errors_5m: 0,
+      notification_status: 'ok',
+      overall_status: 'OK',
+    },
+    risk: {
+      allowed: riskEvaluation?.allowed === true,
+      pause_trading: riskEvaluation?.pause_trading === true,
+    },
+    exit: {
+      ready: true,
+    },
+    gate: {
+      allowed: gateDecision?.allowed === true,
+      mode: gateDecision?.mode || null,
+    },
+    risk_profile: riskProfile?.name || c?.paperRiskProfile || null,
+  };
+}
+
 // ── Main tick ─────────────────────────────────────────────────────────────────
 
 async function runTick() {
@@ -1284,7 +1440,7 @@ async function runTick() {
     }
     if (!exit) exit = checkTimeoutExit(trade, currentPrice);
     if (exit) {
-      const closed = { ...trade, exitTime: now, ...exit };
+      const closed = enrichTradeTimestamps({ ...trade, exitTime: now, closed_at: now, last_update_at: now, ...exit }, now);
       appendTrade(closed);
       void saveClosedTradeMemory(closed).catch((err) => {
         console.warn(`[paper-trading] memory save failed for ${closed.symbol}:`, err.message);
@@ -1481,7 +1637,70 @@ async function runTick() {
           continue;
         }
 
+        let executionSafety = null;
+        try {
+          executionSafety = await executionSafetyService.evaluateExecutionSafety(
+            await buildExecutionSafetyContext(candidateWithAgent, gateDecision, riskEvaluation, riskProfile),
+          );
+        } catch (err) {
+          const failClosed = {
+            ok: true,
+            allowed: false,
+            safety_level: 'block',
+            live_execution_allowed: false,
+            paper_execution_allowed: false,
+            block_reasons: ['system_health_bad'],
+            paper_block_reasons: ['safety_error_fail_closed'],
+            warnings: [`execution_safety_error:${err.message || String(err)}`],
+            source: 'execution_safety_v1',
+            timestamp: new Date().toISOString(),
+          };
+          appendEvent({
+            ...eventFromCandidate('SAFETY_BLOCKED', candidateWithAgent, 'Säkerhetsmotor blockerade entry: safety_error_fail_closed.', 'skipped'),
+            aiConfidenceAdjustment: aiAdjustment,
+            aiAgentAnalysis: agentAnalysis,
+            riskEvaluation,
+            executionSafety: failClosed,
+          });
+          void notificationEngineV2.processExecutionSafetyEvent({
+            type: 'safety_block',
+            symbol: candidateWithAgent.symbol,
+            block_reasons: ['safety_error_fail_closed'],
+            safety_level: 'block',
+            source: 'execution_safety_v1',
+          }).catch((notifyErr) => {
+            console.warn('[paper-trading] execution safety fail-closed notification failed:', notifyErr.message);
+          });
+          console.warn(`[paper-trading] execution safety fail-closed ${c.symbol}:`, err.message);
+          continue;
+        }
+
+        if (executionSafety.paper_execution_allowed === false) {
+          const reasons = executionSafety.paper_block_reasons?.length
+            ? executionSafety.paper_block_reasons
+            : executionSafety.block_reasons || [];
+          appendEvent({
+            ...eventFromCandidate('SAFETY_BLOCKED', candidateWithAgent, `Säkerhetsmotor blockerade entry: ${reasons.join(', ') || 'safety_block'}.`, 'skipped'),
+            aiConfidenceAdjustment: aiAdjustment,
+            aiAgentAnalysis: agentAnalysis,
+            riskEvaluation,
+            executionSafety,
+          });
+          void notificationEngineV2.processExecutionSafetyEvent({
+            type: 'safety_block',
+            symbol: candidateWithAgent.symbol,
+            block_reasons: reasons,
+            safety_level: executionSafety.safety_level,
+            source: 'execution_safety_v1',
+          }).catch((err) => {
+            console.warn('[paper-trading] execution safety notification failed:', err.message);
+          });
+          console.warn(`[paper-trading] safety block ${c.symbol}: ${reasons.join(',')}`);
+          continue;
+        }
+
         candidateWithAgent.riskEvaluation = riskEvaluation;
+        candidateWithAgent.executionSafety = executionSafety;
         const trade = buildOpenTrade(candidateWithAgent, gateDecision);
         _bump('tradesOpened', 'opened');
         state.openTrades.push(trade);
@@ -1490,6 +1709,7 @@ async function runTick() {
           ...eventFromCandidate('TRADE_OPENED', candidateWithAgent, openedReasonSv(candidateWithAgent), 'opened'),
           aiConfidenceAdjustment: aiAdjustment,
           riskEvaluation,
+          executionSafety,
         });
         changed = true;
         console.log(`[paper-trading] OPEN ${c.symbol} ${trade.direction} ${c.signalFamily}/${c.signalSubtype} @ ${c.price}`);
@@ -1675,8 +1895,8 @@ function getLatestAgentAnalysis() {
 
 function getTrades() {
   const state  = loadState();
-  const closed = loadClosedTrades();
-  const open   = state.openTrades;
+  const closed = loadClosedTrades().map((trade) => enrichTradeTimestamps(trade));
+  const open   = state.openTrades.map((trade) => enrichTradeTimestamps(trade));
   const all    = [...closed, ...open].sort((a, b) => new Date(b.entryTime) - new Date(a.entryTime));
   return { ok: true, trades: all, closedCount: closed.length, openCount: open.length };
 }

@@ -54,8 +54,22 @@ const notificationEngineV2                             = require('../alerts/noti
 const intelligenceAgent                                = require('../services/systemIntelligenceAgentService');
 const tradingAgentsAdapter                             = require('../services/tradingAgentsAdapterService');
 const tradingAgentsResultMemory                        = require('../services/tradingAgentsResultMemoryService');
+const setupPerformance                                 = require('../services/setupPerformanceService');
+const setupFocusMode                                   = require('../services/setupFocusModeService');
+const aiOptimizationAgent                              = require('../services/aiOptimizationAgentService');
+const marketUniverse    = require('../services/marketUniverseService');
+const blockerConfig     = require('../services/blockerConfigService');
+const strategyCatalog   = require('../services/strategyCatalogService');
+const daytradingStrategyCatalog = require('../services/daytradingStrategyCatalogService');
+const strategyPerformance = require('../services/strategyPerformanceService');
+const strategyBatchTest = require('../services/strategyBatchTestService');
+const candidateLog      = require('../services/candidateLogService');
+const auditTrail        = require('../services/auditTrailService');
+const marketRegime      = require('../services/marketRegimeService');
+const priorityEngine    = require('../services/priorityEngineService');
 const TEST_LIVE_SEND_COOLDOWN_MS = 5 * 60 * 1000;
 let testLiveSendLastAt = 0;
+const auditScanLastAt = new Map();
 const {
   buildSignalAnalysisContext,
   optionallyGenerateAiSummary,
@@ -75,11 +89,46 @@ const { getSchedulerStatus } = require('../jobs/autoMachineScheduler');
 const paperTrading = require('../paperTrading/paperTradingAgent');
 const { emptyReport: emptyGateEffectivenessReport } = require('../markets/marketGateEffectiveness');
 
+function auditFilters(req) {
+  return {
+    limit: req.query.limit || req.query.n,
+    type: req.query.type,
+    symbol: req.query.symbol,
+    source: req.query.source,
+    batch_id: req.query.batch_id || req.query.batchId,
+    category: req.query.category,
+  };
+}
+
 function buildScanResponse(results, status, group) {
   const enriched = addDaytradeSignals(results);
+  const scanGroup = group || 'all';
+  const lastAuditAt = auditScanLastAt.get(scanGroup) || 0;
+  if (Date.now() - lastAuditAt > 60_000) {
+    auditScanLastAt.set(scanGroup, Date.now());
+    auditTrail.logAuditEvent({
+      type: 'SYSTEM_SCAN',
+      source: 'scanner',
+      timestamp: status.lastScan || new Date().toISOString(),
+      message: `Systemscan ${scanGroup}`,
+      details: { group: scanGroup, count: enriched.length, scanning: status.scanning, feedStatus: status.feedStatus || null },
+    });
+    const top = enriched.find((row) => row?.symbol);
+    if (top) {
+      auditTrail.logAuditEvent({
+        type: 'SIGNAL_DETECTED',
+        source: 'scanner',
+        timestamp: status.lastScan || new Date().toISOString(),
+        symbol: top.symbol,
+        strategy_id: top.signalSubtype || top.signalFamily || null,
+        message: `Signal upptäckt för ${top.symbol}`,
+        details: { group: scanGroup, score: top.tradeScore ?? top.signalScore ?? top.priorityScore ?? null, signal: top.signal || null },
+      });
+    }
+  }
   return {
     ok: true,
-    group: group || 'all',
+    group: scanGroup,
     lastScan: status.lastScan,
     scanning: status.scanning,
     marketWarning: status.marketWarning,
@@ -93,7 +142,34 @@ function addDaytradeSignals(results) {
   return (results || []).map((r) => ({
     ...r,
     ...buildDaytradeSignal(r),
-  }));
+  })).map(addStrategyPerformanceContext);
+}
+
+function addStrategyPerformanceContext(result) {
+  try {
+    const strategy = daytradingStrategyCatalog.inferStrategyForSignal(result);
+    if (!strategy) return result;
+    const performance = strategyPerformance.getSignalPerformanceBadge(strategy.id);
+    const priorityBase = Number(result.priorityScore ?? result.tradeScore ?? result.signalScore ?? 0) || 0;
+    return {
+      ...result,
+      strategy_id: strategy.id,
+      strategy_name: strategy.name,
+      strategyLabel: strategy.name,
+      strategy_market_group: strategy.market_group,
+      strategy_performance_badge: performance.badge,
+      strategy_performance_message: performance.message,
+      strategy_priority_score: Math.max(0, Math.min(100, Math.round(priorityBase + performance.priority_adjustment))),
+      strategy_performance: {
+        win_rate: performance.win_rate,
+        trades: performance.trades,
+        score: performance.score,
+        priority_adjustment: performance.priority_adjustment,
+      },
+    };
+  } catch (_) {
+    return result;
+  }
 }
 
 function normalizeDebugCandle(c) {
@@ -692,6 +768,196 @@ router.get('/strategy-lab/tradingagents/status', (req, res) => {
     console.error('[strategy-lab/tradingagents/status] error:', err.message);
     res.status(500).json({ ok: false, error: err.message });
   }
+});
+
+// ── Daytrading Strategy Expansion v1 ────────────────────────────────────────
+// Paper/replay only. These endpoints never place orders and always return
+// explicit safety flags.
+
+router.get('/daytrading-strategies/catalog', (req, res) => {
+  try {
+    res.json(daytradingStrategyCatalog.getCatalog());
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message, ...daytradingStrategyCatalog.SAFETY });
+  }
+});
+
+router.get('/daytrading-strategies/performance', (req, res) => {
+  try {
+    res.json(strategyPerformance.getStrategyPerformance());
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message, ...strategyPerformance.SAFETY });
+  }
+});
+
+router.get('/daytrading-strategies/top', (req, res) => {
+  try {
+    res.json(strategyPerformance.getTopStrategies(Number(req.query.limit) || 5));
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message, ...strategyPerformance.SAFETY });
+  }
+});
+
+router.get('/daytrading-strategies/worst', (req, res) => {
+  try {
+    res.json(strategyPerformance.getWorstStrategies(Number(req.query.limit) || 5));
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message, ...strategyPerformance.SAFETY });
+  }
+});
+
+router.get('/daytrading-strategies/:id', (req, res) => {
+  try {
+    const result = strategyPerformance.getStrategyDetails(req.params.id);
+    res.status(result.ok ? 200 : 404).json(result);
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message, ...strategyPerformance.SAFETY });
+  }
+});
+
+router.post('/daytrading-strategies/test', (req, res) => {
+  try {
+    const body = req.body && typeof req.body === 'object' ? req.body : {};
+    const mode = String(body.mode || body.test_mode || 'paper_replay').toLowerCase();
+    if (mode.includes('live') || body.live_trading_enabled === true || body.can_place_orders === true || body.actions_allowed === true) {
+      return res.status(400).json({
+        ok: false,
+        error: 'daytrading_strategy_tests_are_paper_replay_only',
+        ...strategyPerformance.SAFETY,
+      });
+    }
+    const result = strategyPerformance.saveSimulatedStrategyTest({
+      ...body,
+      mode: 'paper_replay',
+      actions_allowed: false,
+      can_place_orders: false,
+      live_trading_enabled: false,
+    });
+    res.json(result);
+  } catch (err) {
+    res.status(err.statusCode || 500).json({ ok: false, error: err.message, ...strategyPerformance.SAFETY });
+  }
+});
+
+router.post('/daytrading-strategies/compare', (req, res) => {
+  try {
+    const body = req.body && typeof req.body === 'object' ? req.body : {};
+    const ids = body.strategy_ids || body.strategyIds || body.ids || [];
+    res.json(strategyPerformance.compareStrategies(ids));
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message, ...strategyPerformance.SAFETY });
+  }
+});
+
+// ── Strategy Batch Testing v1 ───────────────────────────────────────────────
+// Runs parameter-grid tests in paper/replay simulation only.
+
+router.get('/strategy-batches', (req, res) => {
+  try {
+    res.json(strategyBatchTest.listBatchTests());
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message, ...strategyBatchTest.SAFETY });
+  }
+});
+
+router.post('/strategy-batches', (req, res) => {
+  try {
+    const body = req.body && typeof req.body === 'object' ? req.body : {};
+    if (body.live_trading_enabled === true || body.can_place_orders === true || body.actions_allowed === true) {
+      return res.status(400).json({ ok: false, error: 'strategy_batches_are_paper_replay_only', ...strategyBatchTest.SAFETY });
+    }
+    const result = strategyBatchTest.createBatchTest(body);
+    res.status(result.ok ? 201 : 400).json(result);
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message, ...strategyBatchTest.SAFETY });
+  }
+});
+
+router.get('/strategy-batches/:id', (req, res) => {
+  try {
+    const result = strategyBatchTest.getBatchTestStatus(req.params.id);
+    res.status(result.ok ? 200 : 404).json(result);
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message, ...strategyBatchTest.SAFETY });
+  }
+});
+
+router.post('/strategy-batches/:id/run', (req, res) => {
+  try {
+    const result = strategyBatchTest.runBatchTest(req.params.id);
+    res.status(result.ok ? 200 : 400).json(result);
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message, ...strategyBatchTest.SAFETY });
+  }
+});
+
+router.post('/strategy-batches/:id/pause', (req, res) => {
+  try {
+    const result = strategyBatchTest.pauseBatchTest(req.params.id);
+    res.status(result.ok ? 200 : 404).json(result);
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message, ...strategyBatchTest.SAFETY });
+  }
+});
+
+router.post('/strategy-batches/:id/stop', (req, res) => {
+  try {
+    const result = strategyBatchTest.stopBatchTest(req.params.id);
+    res.status(result.ok ? 200 : 404).json(result);
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message, ...strategyBatchTest.SAFETY });
+  }
+});
+
+router.get('/strategy-batches/:id/results', (req, res) => {
+  try {
+    const result = strategyBatchTest.getBatchTestResults(req.params.id);
+    res.status(result.ok ? 200 : 404).json(result);
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message, ...strategyBatchTest.SAFETY });
+  }
+});
+
+router.get('/strategy-batches/:id/compare', (req, res) => {
+  try {
+    const result = strategyBatchTest.compareBatchResults(req.params.id);
+    res.status(result.ok ? 200 : 404).json(result);
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message, ...strategyBatchTest.SAFETY });
+  }
+});
+
+// ── Audit Trail v1 ───────────────────────────────────────────────────────────
+// Read-only paper/replay audit log. It never creates trades or enables live mode.
+
+router.get('/audit/status', (req, res) => {
+  try { res.json(auditTrail.getAuditStatus()); }
+  catch (err) { res.status(500).json({ ok: false, error: err.message, ...auditTrail.SAFETY }); }
+});
+
+router.get('/audit/recent', (req, res) => {
+  try { res.json(auditTrail.getRecentAuditEvents(auditFilters(req))); }
+  catch (err) { res.status(500).json({ ok: false, error: err.message, ...auditTrail.SAFETY }); }
+});
+
+router.get('/audit/trades/recent', (req, res) => {
+  try { res.json(auditTrail.getTradeAuditEvents(auditFilters(req))); }
+  catch (err) { res.status(500).json({ ok: false, error: err.message, ...auditTrail.SAFETY }); }
+});
+
+router.get('/audit/candidates/recent', (req, res) => {
+  try { res.json(auditTrail.getCandidateAuditEvents(auditFilters(req))); }
+  catch (err) { res.status(500).json({ ok: false, error: err.message, ...auditTrail.SAFETY }); }
+});
+
+router.get('/audit/batches/recent', (req, res) => {
+  try { res.json(auditTrail.getBatchAuditEvents(auditFilters(req))); }
+  catch (err) { res.status(500).json({ ok: false, error: err.message, ...auditTrail.SAFETY }); }
+});
+
+router.get('/audit/summary', (req, res) => {
+  try { res.json(auditTrail.buildActivitySummary()); }
+  catch (err) { res.status(500).json({ ok: false, error: err.message, ...auditTrail.SAFETY }); }
 });
 
 // ── Execution Safety v1 ─────────────────────────────────────────────────────
@@ -2218,6 +2484,275 @@ router.post('/tradingagents/results/reset/:symbol', async (req, res) => {
     if (!symbol) return res.status(400).json({ ok: false, error: 'symbol required' });
     res.json(await tradingAgentsResultMemory.resetTradingAgentsResultMemoryForSymbol(symbol));
   } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
+});
+
+// ── Setup Performance v1 ─────────────────────────────────────────────────────
+router.get('/setups/status', async (req, res) => {
+  try { res.json(await setupPerformance.getStatus()); }
+  catch (err) { res.status(500).json({ ok: false, error: err.message }); }
+});
+
+router.get('/setups/performance', async (req, res) => {
+  try {
+    const force = req.query.refresh === 'true';
+    res.json(await setupPerformance.getPerformance(force));
+  } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
+});
+
+router.get('/setups/top', async (req, res) => {
+  try {
+    const n = Math.min(Number(req.query.n) || 5, 20);
+    res.json(await setupPerformance.getTopSetups(n));
+  } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
+});
+
+router.get('/setups/worst', async (req, res) => {
+  try {
+    const n = Math.min(Number(req.query.n) || 5, 20);
+    res.json(await setupPerformance.getWorstSetups(n));
+  } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
+});
+
+router.get('/setups/:setupId', async (req, res) => {
+  try {
+    const { setupId } = req.params;
+    if (!/^[a-z0-9_]{3,80}$/.test(setupId)) {
+      return res.status(400).json({ ok: false, error: 'Invalid setupId format' });
+    }
+    const result = await setupPerformance.getSetupById(setupId);
+    if (!result) return res.status(404).json({ ok: false, error: 'Setup not found' });
+    res.json(result);
+  } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
+});
+
+// ── Setup Focus Mode v1 ───────────────────────────────────────────────────────
+router.get('/setups/focus/status', async (req, res) => {
+  try { res.json(await setupFocusMode.getFocusModeStatus()); }
+  catch (err) { res.status(500).json({ ok: false, error: err.message }); }
+});
+
+router.get('/setups/focus/config', async (req, res) => {
+  try { res.json(await setupFocusMode.getFocusConfig()); }
+  catch (err) { res.status(500).json({ ok: false, error: err.message }); }
+});
+
+router.post('/setups/focus/config', async (req, res) => {
+  try {
+    const result = await setupFocusMode.updateFocusConfig(req.body);
+    res.status(result.ok ? 200 : 400).json(result);
+  } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
+});
+
+router.get('/setups/focus/top', async (req, res) => {
+  try {
+    const limit = Math.min(Number(req.query.limit) || 3, 10);
+    const top   = await setupFocusMode.selectTopSetups(limit);
+    res.json({ ok: true, setups: top, count: top.length, ...setupFocusMode.SAFETY });
+  } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
+});
+
+router.get('/setups/focus/recommendation', async (req, res) => {
+  try { res.json(await setupFocusMode.buildFocusRecommendation()); }
+  catch (err) { res.status(500).json({ ok: false, error: err.message }); }
+});
+
+// ── AI Optimization Agent ─────────────────────────────────────────────────────
+router.get('/optimization/status', (req, res) => {
+  try { res.json(aiOptimizationAgent.getOptimizationStatus()); }
+  catch (err) { res.status(500).json({ ok: false, error: err.message }); }
+});
+
+router.get('/optimization/summary', (req, res) => {
+  try {
+    const force = req.query.rebuild === '1';
+    const data  = force ? aiOptimizationAgent.buildOptimizationSummary() : aiOptimizationAgent.getCachedSummary();
+    res.json(data);
+  } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
+});
+
+router.get('/optimization/top-configs', (req, res) => {
+  try {
+    const configs = aiOptimizationAgent.rankBestConfigurations();
+    res.json({ ok: true, configs, count: configs.length, ...aiOptimizationAgent.SAFETY });
+  } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
+});
+
+router.get('/optimization/weak-configs', (req, res) => {
+  try {
+    const configs = aiOptimizationAgent.detectWeakConfigurations();
+    res.json({ ok: true, configs, count: configs.length, ...aiOptimizationAgent.SAFETY });
+  } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
+});
+
+router.get('/optimization/exits', (req, res) => {
+  try { res.json(aiOptimizationAgent.suggestExitImprovements()); }
+  catch (err) { res.status(500).json({ ok: false, error: err.message }); }
+});
+
+router.get('/optimization/holding-times', (req, res) => {
+  try { res.json(aiOptimizationAgent.suggestHoldingTimeImprovements()); }
+  catch (err) { res.status(500).json({ ok: false, error: err.message }); }
+});
+
+router.get('/optimization/stop-loss', (req, res) => {
+  try { res.json(aiOptimizationAgent.suggestStopLossImprovements()); }
+  catch (err) { res.status(500).json({ ok: false, error: err.message }); }
+});
+
+router.get('/optimization/combinations', (req, res) => {
+  try { res.json(aiOptimizationAgent.suggestSignalCombinations()); }
+  catch (err) { res.status(500).json({ ok: false, error: err.message }); }
+});
+
+router.get('/optimization/recommendations', (req, res) => {
+  try {
+    const summary = aiOptimizationAgent.getCachedSummary();
+    res.json({ ok: true, recommendations: summary.recommendations, ...aiOptimizationAgent.SAFETY });
+  } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
+});
+
+router.get('/optimization/recommended-config', (req, res) => {
+  try {
+    res.json({ ok: true, ...aiOptimizationAgent.getRecommendedConfig() });
+  } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
+});
+
+// ── Market Universe ───────────────────────────────────────────────────────────
+router.get('/markets/universe', (req, res) => {
+  try { res.json({ ok: true, ...marketUniverse.getUniverse() }); }
+  catch (err) { res.status(500).json({ ok: false, error: err.message }); }
+});
+
+router.post('/markets/universe', (req, res) => {
+  try {
+    let result;
+    if (req.body.groups)  result = marketUniverse.updateGroups(req.body.groups);
+    if (req.body.symbols) result = marketUniverse.updateSymbols(req.body.symbols);
+    res.json({ ok: true, ...(result || marketUniverse.getUniverse()) });
+  } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
+});
+
+router.post('/markets/symbols/add', (req, res) => {
+  try { res.json(marketUniverse.addSymbol(req.body)); }
+  catch (err) { res.status(500).json({ ok: false, error: err.message }); }
+});
+
+router.post('/markets/symbols/remove', (req, res) => {
+  try { res.json(marketUniverse.removeSymbol(req.body.symbol)); }
+  catch (err) { res.status(500).json({ ok: false, error: err.message }); }
+});
+
+router.post('/markets/symbols/patch', (req, res) => {
+  try { res.json(marketUniverse.patchSymbol(req.body.symbol, req.body.patch)); }
+  catch (err) { res.status(500).json({ ok: false, error: err.message }); }
+});
+
+// ── Strategy Catalog ──────────────────────────────────────────────────────────
+router.get('/strategies/catalog', (req, res) => {
+  try { res.json({ ok: true, ...strategyCatalog.getCatalog() }); }
+  catch (err) { res.status(500).json({ ok: false, error: err.message }); }
+});
+
+router.get('/strategies/presets', (req, res) => {
+  try { res.json({ ok: true, ...strategyCatalog.getPresets() }); }
+  catch (err) { res.status(500).json({ ok: false, error: err.message }); }
+});
+
+router.post('/strategies/presets', (req, res) => {
+  try {
+    if (req.body.action === 'save')   return res.json(strategyCatalog.saveCustomPreset(req.body.preset));
+    if (req.body.action === 'delete') return res.json(strategyCatalog.deleteCustomPreset(req.body.id));
+    res.status(400).json({ ok: false, error: 'action must be save or delete' });
+  } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
+});
+
+// ── Blocker Config ────────────────────────────────────────────────────────────
+router.get('/blockers/config', (req, res) => {
+  try { res.json({ ok: true, ...blockerConfig.getBlockerConfig() }); }
+  catch (err) { res.status(500).json({ ok: false, error: err.message }); }
+});
+
+router.post('/blockers/config', (req, res) => {
+  try { res.json(blockerConfig.updateBlockerConfig(req.body)); }
+  catch (err) { res.status(500).json({ ok: false, error: err.message }); }
+});
+
+// ── Candidate Log ─────────────────────────────────────────────────────────────
+router.get('/candidates/recent', (req, res) => {
+  try {
+    res.json({ ok: true, candidates: candidateLog.loadRecent(parseInt(req.query.n) || 50), ...candidateLog.SAFETY });
+  } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
+});
+
+router.get('/candidates/stats', (req, res) => {
+  try { res.json({ ok: true, ...candidateLog.getStats() }); }
+  catch (err) { res.status(500).json({ ok: false, error: err.message }); }
+});
+
+// ── Market Regime / Adaptive Market Intelligence ──────────────────────────────
+router.get('/market-regime/status', (req, res) => {
+  try {
+    const force = req.query.rebuild === '1';
+    res.json(marketRegime.buildRegimeSummary(force));
+  } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
+});
+
+router.get('/market-regime/history', (req, res) => {
+  try { res.json(marketRegime.getRegimeHistory()); }
+  catch (err) { res.status(500).json({ ok: false, error: err.message }); }
+});
+
+router.get('/market-regime/strategies', (req, res) => {
+  try { res.json(marketRegime.getRegimeStrategies()); }
+  catch (err) { res.status(500).json({ ok: false, error: err.message }); }
+});
+
+router.get('/market-regime/weights', (req, res) => {
+  try {
+    const regime  = marketRegime.detectMarketRegime();
+    const weights = marketRegime.calculateStrategyWeights(regime);
+    res.json({ ok: true, ...weights, ...marketRegime.SAFETY });
+  } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
+});
+
+router.get('/market-regime/bias', (req, res) => {
+  try {
+    const bias = marketRegime.buildMarketBias();
+    res.json({ ok: true, ...bias, ...marketRegime.SAFETY });
+  } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
+});
+
+router.get('/market-regime/heatmap', (req, res) => {
+  try {
+    const heatmap = marketRegime.buildMarketHeatmap();
+    res.json({ ok: true, heatmap, count: heatmap.length, ...marketRegime.SAFETY });
+  } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
+});
+
+// ── Priority & Trade Selection Engine v1 ─────────────────────────────────────
+router.get('/priority/top-focus', async (req, res) => {
+  try { res.json(await priorityEngine.buildTopFocusResponse()); }
+  catch (err) { res.status(500).json({ ok: false, error: err.message, ...priorityEngine.SAFETY }); }
+});
+
+router.get('/priority/watchlist', async (req, res) => {
+  try { res.json(await priorityEngine.buildWatchlistResponse()); }
+  catch (err) { res.status(500).json({ ok: false, error: err.message, ...priorityEngine.SAFETY }); }
+});
+
+router.get('/priority/avoid', async (req, res) => {
+  try { res.json(await priorityEngine.buildAvoidResponse()); }
+  catch (err) { res.status(500).json({ ok: false, error: err.message, ...priorityEngine.SAFETY }); }
+});
+
+router.get('/priority/summary', async (req, res) => {
+  try { res.json(await priorityEngine.buildPrioritySummary()); }
+  catch (err) { res.status(500).json({ ok: false, error: err.message, ...priorityEngine.SAFETY }); }
+});
+
+router.get('/priority/market-context', async (req, res) => {
+  try { res.json(await priorityEngine.buildMarketContextResponse()); }
+  catch (err) { res.status(500).json({ ok: false, error: err.message, ...priorityEngine.SAFETY }); }
 });
 
 // ── API 404 — never return HTML for unknown /api/* paths ──────────────────────
