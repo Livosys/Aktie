@@ -55,6 +55,7 @@ export default function MobileBottomNav() {
   const [moreOpen, setMoreOpen] = useState(false);
 
   const isLive    = pathname === '/' || pathname === '/live';
+  const isDay     = pathname.startsWith('/daytrading');
   const isIntel   = pathname.startsWith('/intelligence') || pathname.startsWith('/machine');
   const isAlerts  = pathname.startsWith('/alerts');
   const isHealth  = pathname.startsWith('/health') || pathname.startsWith('/system-health');
@@ -64,6 +65,7 @@ export default function MobileBottomNav() {
 
   const tabs = [
     { id: 'live',   label: 'Live',       icon: '📈', active: isLive,   to: '/live' },
+    { id: 'day',    label: 'DAY',        icon: '◉', active: isDay,    to: '/daytrading' },
     { id: 'intel',  label: 'Intelligens', icon: '🧠', active: isIntel,  to: '/machine' },
     { id: 'alerts', label: 'Larm',       icon: '🔔', active: isAlerts, to: '/alerts', badge: hasBadge, live: enabled },
     { id: 'health', label: 'Hälsa',      icon: '🩺', active: isHealth, to: '/system-health' },

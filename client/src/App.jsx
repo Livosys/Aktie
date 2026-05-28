@@ -26,6 +26,7 @@ import QualityPage         from './pages/QualityPage.jsx';
 import PaperTradingPage    from './pages/PaperTradingPage.jsx';
 import RiskEnginePage      from './pages/RiskEnginePage.jsx';
 import ExitEnginePage      from './pages/ExitEnginePage.jsx';
+import DaytradingPage     from './pages/DaytradingPage.jsx';
 
 export default function App() {
   return (
@@ -36,6 +37,7 @@ export default function App() {
             {/* Default → Live */}
             <Route path="/"              element={<Navigate to="/live" replace />} />
             <Route path="/live"          element={<LivePage />} />
+            <Route path="/daytrading"    element={<DaytradingPage />} />
 
             {/* New premium pages */}
             <Route path="/scanner"       element={<ScannerPage />} />

@@ -104,6 +104,7 @@ function OversiktTab() {
 
       <div className="res-quick-links">
         <Link to="/trading-lab" className="res-quick-btn">🧪 Trading Lab — justera parametrar</Link>
+        <Link to="/daytrading" className="res-quick-btn">📡 Daytrading — kontrollcenter</Link>
         <Link to="/sakerhet" className="res-quick-btn">🛡️ Säkerhet — se skyddsstatus</Link>
       </div>
     </div>

@@ -9,6 +9,7 @@ const NAV_GROUPS = [
     label: null,
     items: [
       { path: '/live',     label: 'Live',     icon: '◉', match: ['/', '/live'], accent: 'blue' },
+      { path: '/daytrading', label: 'Daytrading', icon: 'D', match: ['/daytrading'], accent: 'teal' },
       { path: '/scanner',  label: 'Scanner',  icon: '◆', accent: 'blue' },
       { path: '/signaler', label: 'Signaler', icon: '▣', accent: 'blue' },
     ],
@@ -48,6 +49,7 @@ const ACCENT_CLASS = {
   green:  'sb-icon-green',
   orange: 'sb-icon-orange',
   purple: 'sb-icon-purple',
+  teal:   'sb-icon-teal',
 };
 
 function isActive(item, pathname) {

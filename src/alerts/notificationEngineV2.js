@@ -37,6 +37,12 @@ const DEFAULT_CONFIG = Object.freeze({
     EXIT_ENGINE_TRAILING_STOP: 10 * 60,
     EXIT_ENGINE_MOMENTUM_FADE: 10 * 60,
     EXIT_ENGINE_TIMEOUT_SAVE: 10 * 60,
+    EXECUTION_SAFETY_BLOCK: 10 * 60,
+    EXECUTION_KILL_SWITCH_TRIGGERED: 60 * 60,
+    EXECUTION_KILL_SWITCH_CLEARED: 10 * 60,
+    EXECUTION_MANUAL_ARMED: 10 * 60,
+    EXECUTION_MANUAL_DISARMED: 10 * 60,
+    EXECUTION_STALE_DATA: 10 * 60,
     STRONG_SIGNAL: 20 * 60,
     REPLAY_COMPLETED: 60 * 60,
     SYSTEM_HEALTH_ALERT: 30 * 60,
@@ -276,6 +282,12 @@ function alertTitle(type, data) {
   if (type === 'EXIT_ENGINE_TRAILING_STOP') return `${data.symbol || 'UNKNOWN'}: trailing stop`;
   if (type === 'EXIT_ENGINE_MOMENTUM_FADE') return `${data.symbol || 'UNKNOWN'}: momentum fade`;
   if (type === 'EXIT_ENGINE_TIMEOUT_SAVE') return `${data.symbol || 'UNKNOWN'}: timeout räddad`;
+  if (type === 'EXECUTION_SAFETY_BLOCK') return `${data.symbol || 'SYSTEM'}: execution block`;
+  if (type === 'EXECUTION_KILL_SWITCH_TRIGGERED') return 'Nödstopp aktiverat';
+  if (type === 'EXECUTION_KILL_SWITCH_CLEARED') return 'Nödstopp rensat';
+  if (type === 'EXECUTION_MANUAL_ARMED') return 'Manuell armering aktiv';
+  if (type === 'EXECUTION_MANUAL_DISARMED') return 'Manuell armering av';
+  if (type === 'EXECUTION_STALE_DATA') return `${data.symbol || 'SYSTEM'}: stale data`;
   if (type === 'STRONG_SIGNAL') return `${data.symbol || 'UNKNOWN'}: stark signal`;
   if (type === 'REPLAY_COMPLETED') return 'Replay klar';
   if (type === 'SYSTEM_HEALTH_ALERT') return 'Systemhälsa kräver åtgärd';
@@ -292,6 +304,12 @@ function alertMessage(type, data) {
   if (type === 'EXIT_ENGINE_TRAILING_STOP') return `Exit Engine v1 stängde ${data.symbol || 'UNKNOWN'} via trailing stop vid ${data.pnl_pct ?? 'okänd'}% PnL.`;
   if (type === 'EXIT_ENGINE_MOMENTUM_FADE') return `Exit Engine v1 stängde ${data.symbol || 'UNKNOWN'} när momentum fadeade.`;
   if (type === 'EXIT_ENGINE_TIMEOUT_SAVE') return `Exit Engine v1 stängde ${data.symbol || 'UNKNOWN'} före timeout.`;
+  if (type === 'EXECUTION_SAFETY_BLOCK') return `Execution Safety blockerade entry/liveflöde: ${(data.reasons || []).join(', ') || 'safety_block'}.`;
+  if (type === 'EXECUTION_KILL_SWITCH_TRIGGERED') return `Execution Safety nödstopp aktiverat: ${data.reason || 'okänd orsak'}.`;
+  if (type === 'EXECUTION_KILL_SWITCH_CLEARED') return `Execution Safety nödstopp rensat: ${data.reason || 'okänd orsak'}.`;
+  if (type === 'EXECUTION_MANUAL_ARMED') return `Manuell armering satt för live-readiness test: ${data.reason || 'ingen orsak'}. Riktig handel är fortfarande avstängd.`;
+  if (type === 'EXECUTION_MANUAL_DISARMED') return `Manuell armering stängdes av: ${data.reason || 'ingen orsak'}.`;
+  if (type === 'EXECUTION_STALE_DATA') return `Execution Safety ser stale data: ${(data.reasons || []).join(', ') || 'stale_data'}.`;
   if (type === 'STRONG_SIGNAL') return `Stark signal i ${data.group || 'live'}: score ${data.score ?? '–'}/100.`;
   if (type === 'REPLAY_COMPLETED') return `Replay ${data.session_id || ''} klar: ${data.total_trades ?? 0} trades, win rate ${data.win_rate ?? 0}%.`;
   if (type === 'SYSTEM_HEALTH_ALERT') return data.component_message || 'System Health rapporterar varning.';
@@ -304,6 +322,7 @@ function suggestedAction(type) {
   if (type === 'TRADE_OPENED') return 'Följ paper-positionen. Detta är inte en riktig order.';
   if (type === 'REPLAY_COMPLETED') return 'Öppna Replay Intelligence och jämför riskutfall.';
   if (String(type || '').startsWith('EXIT_ENGINE_')) return 'Granska senaste exitbeslut i Exitmotor-panelen.';
+  if (String(type || '').startsWith('EXECUTION_')) return 'Öppna Säkerhetsmotor och kontrollera blockeringarna. Riktig handel är avstängd.';
   if (type === 'SYSTEM_HEALTH_ALERT') return 'Öppna System Health och kontrollera detaljerna.';
   return 'Ingen åtgärd krävs.';
 }
@@ -556,6 +575,53 @@ async function processExitEngineDecision(decision = {}, options = {}) {
   });
 }
 
+async function processExecutionSafetyEvent(event = {}, options = {}) {
+  if (!event) return { ok: true, skipped: true, reason: 'missing_event' };
+  if (event.replay_mode === true || options.replay_mode === true || event.mode === 'replay') {
+    return { ok: true, skipped: true, reason: 'replay_ignored' };
+  }
+
+  const rawType = String(event.type || '').toLowerCase();
+  const reasons = event.block_reasons || event.paper_block_reasons || event.reasons || [];
+  let type = null;
+  let severity = 'warning';
+
+  if (rawType === 'kill_switch_triggered' || rawType === 'execution_kill_switch_triggered') {
+    type = 'EXECUTION_KILL_SWITCH_TRIGGERED';
+    severity = 'critical';
+  } else if (rawType === 'kill_switch_cleared' || rawType === 'execution_kill_switch_cleared') {
+    type = 'EXECUTION_KILL_SWITCH_CLEARED';
+    severity = 'info';
+  } else if (rawType === 'manual_armed' || rawType === 'execution_manual_armed') {
+    type = 'EXECUTION_MANUAL_ARMED';
+    severity = 'info';
+  } else if (rawType === 'manual_disarmed' || rawType === 'execution_manual_disarmed') {
+    type = 'EXECUTION_MANUAL_DISARMED';
+    severity = 'info';
+  } else if ((reasons || []).some((reason) => String(reason).startsWith('stale_'))) {
+    type = 'EXECUTION_STALE_DATA';
+    severity = 'warning';
+  } else if (rawType === 'safety_block' || rawType === 'safety_blocked' || rawType === 'execution_safety_block') {
+    type = 'EXECUTION_SAFETY_BLOCK';
+    severity = event.safety_level === 'kill_switch' ? 'critical' : 'warning';
+  }
+
+  if (!type) return { ok: true, skipped: true, reason: 'event_type_not_notifiable' };
+
+  return sendAlert({
+    type,
+    severity,
+    dedupeKey: `${type}_${event.symbol || 'system'}_${(reasons || []).join('_') || event.reason || rawType}`,
+    data: {
+      symbol: event.symbol,
+      reasons,
+      reason: event.reason,
+      safety_level: event.safety_level,
+      source: event.source || 'execution_safety_v1',
+    },
+  });
+}
+
 async function processStrongSignals(results = [], options = {}) {
   if (notificationService.isReplayPayload(options)) return notificationService.sendMessage('blocked', { replay_mode: true });
   const config = await getConfig();
@@ -686,6 +752,7 @@ module.exports = {
   processRiskEvaluation,
   processPaperEvent,
   processExitEngineDecision,
+  processExecutionSafetyEvent,
   processStrongSignals,
   processReplaySummary,
   processSystemHealth,

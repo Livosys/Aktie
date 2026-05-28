@@ -42,6 +42,7 @@ const exitEngineService                         = require('../services/exitEngin
 const executionSafetyService                    = require('../services/executionSafetyService');
 const auditTrail                                = require('../services/auditTrailService');
 const notificationEngineV2                      = require('../alerts/notificationEngineV2');
+const strategyRuntimeConnector                  = require('../services/strategyRuntimeConnectorService');
 
 // ── Paths ─────────────────────────────────────────────────────────────────────
 
@@ -474,7 +475,7 @@ function buildOpenTrade(c, gateDecision = null) {
     );
   const openedAt = new Date().toISOString();
 
-  return {
+  const trade = {
     tradeId:          makeTradeId(),
     signalId:         c.signalId || null,
     symbol:           c.symbol,
@@ -542,6 +543,7 @@ function buildOpenTrade(c, gateDecision = null) {
     result:                  'OPEN',
     mode:                    'paper',
   };
+  return strategyRuntimeConnector.enrichPaperTradeWithStrategy(trade);
 }
 
 // Direction-adjusted P&L: positive = profitable regardless of direction

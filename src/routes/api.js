@@ -67,6 +67,7 @@ const candidateLog      = require('../services/candidateLogService');
 const auditTrail        = require('../services/auditTrailService');
 const marketRegime      = require('../services/marketRegimeService');
 const priorityEngine    = require('../services/priorityEngineService');
+const daytradingControl = require('../services/daytradingControlService');
 const TEST_LIVE_SEND_COOLDOWN_MS = 5 * 60 * 1000;
 let testLiveSendLastAt = 0;
 const auditScanLastAt = new Map();
@@ -847,6 +848,88 @@ router.post('/daytrading-strategies/compare', (req, res) => {
   } catch (err) {
     res.status(500).json({ ok: false, error: err.message, ...strategyPerformance.SAFETY });
   }
+});
+
+// ── Daytrading Control Center ───────────────────────────────────────────────
+// Aggregates existing scanner, paper trading, strategy, safety and data APIs.
+// This is control/config for test and paper mode only. It never places orders.
+
+router.get('/daytrading/status', async (req, res) => {
+  try { res.json(await daytradingControl.getStatus()); }
+  catch (err) { res.status(500).json({ ok: false, error: err.message, ...daytradingControl.SAFETY }); }
+});
+
+router.get('/daytrading/strategies', (req, res) => {
+  try { res.json(daytradingControl.getStrategies()); }
+  catch (err) { res.status(500).json({ ok: false, error: err.message, ...daytradingControl.SAFETY }); }
+});
+
+router.get('/daytrading/runtime-strategies', (req, res) => {
+  try { res.json(daytradingControl.getRuntimeStrategies()); }
+  catch (err) { res.status(500).json({ ok: false, error: err.message, ...daytradingControl.SAFETY }); }
+});
+
+router.get('/daytrading/control', async (req, res) => {
+  try {
+    res.json({
+      ok: true,
+      status: await daytradingControl.getStatus(),
+      strategies: daytradingControl.getStrategies(),
+      runtime: daytradingControl.getRuntimeStrategies(),
+      ...daytradingControl.SAFETY,
+    });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message, ...daytradingControl.SAFETY });
+  }
+});
+
+router.post('/daytrading/strategies/:id/update', (req, res) => {
+  try {
+    const result = daytradingControl.updateStrategy(req.params.id, req.body || {});
+    res.status(result.ok ? 200 : 400).json(result);
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message, ...daytradingControl.SAFETY });
+  }
+});
+
+router.post('/daytrading/filters', (req, res) => {
+  try { res.json(daytradingControl.updateFilters(req.body || {})); }
+  catch (err) { res.status(500).json({ ok: false, error: err.message, ...daytradingControl.SAFETY }); }
+});
+
+router.post('/daytrading/scan', (req, res) => {
+  try { res.json(daytradingControl.runScan(req.body || {})); }
+  catch (err) { res.status(500).json({ ok: false, error: err.message, ...daytradingControl.SAFETY }); }
+});
+
+router.get('/daytrading/pipeline', (req, res) => {
+  try { res.json(daytradingControl.getPipeline()); }
+  catch (err) { res.status(500).json({ ok: false, error: err.message, ...daytradingControl.SAFETY }); }
+});
+
+router.get('/daytrading/live-trades', (req, res) => {
+  try { res.json(daytradingControl.getLiveTrades()); }
+  catch (err) { res.status(500).json({ ok: false, error: err.message, ...daytradingControl.SAFETY }); }
+});
+
+router.get('/daytrading/recommendation', (req, res) => {
+  try { res.json(daytradingControl.getRecommendation()); }
+  catch (err) { res.status(500).json({ ok: false, error: err.message, ...daytradingControl.SAFETY }); }
+});
+
+router.get('/daytrading/impact-summary', (req, res) => {
+  try { res.json(daytradingControl.getImpactSummary()); }
+  catch (err) { res.status(500).json({ ok: false, error: err.message, ...daytradingControl.SAFETY }); }
+});
+
+router.get('/daytrading/symbols', (req, res) => {
+  try { res.json(daytradingControl.getSymbols()); }
+  catch (err) { res.status(500).json({ ok: false, error: err.message, ...daytradingControl.SAFETY }); }
+});
+
+router.get('/daytrading/markets', (req, res) => {
+  try { res.json(daytradingControl.getMarkets()); }
+  catch (err) { res.status(500).json({ ok: false, error: err.message, ...daytradingControl.SAFETY }); }
 });
 
 // ── Strategy Batch Testing v1 ───────────────────────────────────────────────
