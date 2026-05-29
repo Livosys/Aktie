@@ -6,21 +6,21 @@ import { PlatformEmptyState } from '../components/PlatformControls.jsx';
 function useDaytradingData() {
   const [state, setState] = useState({
     status: null, strategies: null, pipeline: null,
-    liveTrades: null, recommendation: null, impact: null, symbols: null,
+    liveTrades: null, recommendation: null, impact: null, symbols: null, runtime: null,
     loading: true, error: false,
   });
 
   const fetchAll = useCallback(async () => {
     const get = url => fetch(url).then(r => r.json()).catch(() => null);
-    const [statusD, strD, pipeD, tradesD, recD, impD, symD] = await Promise.all([
+    const [statusD, strD, pipeD, tradesD, recD, impD, symD, runtimeD] = await Promise.all([
       get('/api/daytrading/status'), get('/api/daytrading/strategies'),
       get('/api/daytrading/pipeline'), get('/api/daytrading/live-trades'),
       get('/api/daytrading/recommendation'), get('/api/daytrading/impact-summary'),
-      get('/api/daytrading/symbols'),
+      get('/api/daytrading/symbols'), get('/api/daytrading/runtime-strategies'),
     ]);
     setState({
       status: statusD, strategies: strD, pipeline: pipeD, liveTrades: tradesD,
-      recommendation: recD, impact: impD, symbols: symD,
+      recommendation: recD, impact: impD, symbols: symD, runtime: runtimeD,
       loading: false, error: !statusD?.ok,
     });
   }, []);
@@ -71,6 +71,8 @@ function runtimeClass(status) {
   if (s === 'active' || s === 'aktiv') return 'dt-runtime-active';
   if (s === 'partial' || s === 'delvis') return 'dt-runtime-partial';
   if (s === 'paused' || s === 'pausad') return 'dt-runtime-paused';
+  if (s === 'disabled' || s.includes('avstängd')) return 'dt-runtime-paused';
+  if (s === 'no_entry_rule' || s.includes('entry')) return 'dt-runtime-data';
   if (s === 'needs_data' || s.includes('behöver')) return 'dt-runtime-data';
   return 'dt-runtime-unlinked';
 }
@@ -423,10 +425,12 @@ function StrategyDetailModal({ strategy, onClose, onSave, saving }) {
 function StrategyCard({ strategy, onUpdate, onScan }) {
   const [showDetail, setShowDetail] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [runtimeSaving, setRuntimeSaving] = useState(false);
   const [toast, setToast] = useState(null);
 
   const cfg = strategy.config || {};
-  const status = strategy.status || (cfg.active !== false ? 'Aktiv' : 'Pausad');
+  const enabledByUser = strategy.enabled_by_user ?? cfg.enabled_by_user ?? (cfg.active !== false);
+  const status = strategy.status || (enabledByUser ? 'Aktiv' : 'Pausad');
   const runtime = strategy.runtime || {};
   const runtimeStatus = strategy.runtime_status || runtime.runtime_status || 'not_connected';
   const runtimeLabel = strategy.runtime_label || runtime.runtime_label || 'Ej kopplad till paper ännu';
@@ -435,6 +439,9 @@ function StrategyCard({ strategy, onUpdate, onScan }) {
   const paperTrades48h = strategy.paper_trades_48h ?? runtime.paper_trades_48h ?? 0;
   const lastPaperTradeAt = strategy.last_paper_trade_at || runtime.last_paper_trade_at || null;
   const catalogBadges = strategy.catalog_badges || ['Katalog', runtimeLabel];
+  const connected = strategy.connected ?? runtime.connected ?? false;
+  const entryRuleImplemented = strategy.entry_rule_implemented ?? runtime.entry_rule_implemented ?? false;
+  const canCreatePaperTrade = strategy.can_create_paper_trade ?? runtime.can_create_paper_trade ?? false;
 
   function showToast(msg) { setToast(msg); setTimeout(()=>setToast(null), 2500); }
 
@@ -453,8 +460,13 @@ function StrategyCard({ strategy, onUpdate, onScan }) {
   }
 
   async function handleToggle(active) {
-    const res = await postUpdate({active});
-    if (res?.ok) { showToast(active ? 'Aktiverad i testläge' : 'Pausad i testläge'); onUpdate?.(); }
+    if (runtimeSaving) return;
+    setRuntimeSaving(true);
+    const res = await fetch(`/api/daytrading/runtime-strategies/${encodeURIComponent(strategy.id)}/toggle`, { method: 'POST' })
+      .then(r=>r.json()).catch(()=>null);
+    setRuntimeSaving(false);
+    if (res?.ok) { showToast(active ? 'Aktiverad i paper test' : 'Pausad i paper test'); onUpdate?.(); }
+    else showToast(res?.error || 'Kunde inte uppdatera strategi-runtime. Försök igen.');
   }
 
   return (
@@ -503,8 +515,20 @@ function StrategyCard({ strategy, onUpdate, onScan }) {
 
       <div className={`dt-runtime-box ${runtimeClass(runtimeStatus)}`}>
         <div className="dt-runtime-row">
+          <span>Connected</span>
+          <strong>{connected ? 'Ja' : 'Nej'}</strong>
+        </div>
+        <div className="dt-runtime-row">
+          <span>Paper test</span>
+          <strong>{enabledByUser ? 'På' : 'Av'}</strong>
+        </div>
+        <div className="dt-runtime-row">
           <span>Paper-runtime</span>
           <strong>{runtimeLabel}</strong>
+        </div>
+        <div className="dt-runtime-row">
+          <span>Entry-regel</span>
+          <strong>{entryRuleImplemented ? (canCreatePaperTrade === 'partial' ? 'Delvis' : 'Implementerad') : 'Saknas'}</strong>
         </div>
         <div className="dt-runtime-row">
           <span>Rå signal</span>
@@ -524,14 +548,14 @@ function StrategyCard({ strategy, onUpdate, onScan }) {
       </div>
 
       <div className="dt-strategy-actions">
-        {cfg.active!==false
-          ? <button type="button" className="dt-btn-sm dt-btn-warn" onClick={()=>handleToggle(false)}>Pausa i test</button>
-          : <button type="button" className="dt-btn-sm dt-btn-ok"   onClick={()=>handleToggle(true)}>Aktivera i test</button>
+        {enabledByUser
+          ? <button type="button" className="dt-btn-sm dt-btn-warn" disabled={runtimeSaving} onClick={()=>handleToggle(false)}>{runtimeSaving ? 'Sparar...' : 'Paper test Av'}</button>
+          : <button type="button" className="dt-btn-sm dt-btn-ok" disabled={runtimeSaving} onClick={()=>handleToggle(true)}>{runtimeSaving ? 'Sparar...' : 'Paper test På'}</button>
         }
         <button type="button" className="dt-btn-sm dt-btn-sec" onClick={()=>onScan?.(strategy.id)}>Kör scan</button>
         <button type="button" className="dt-btn-sm dt-btn-pri" onClick={()=>setShowDetail(true)}>Detaljer</button>
       </div>
-      <div className="dt-strategy-mode-note">Status Aktiv/Pausad är testinställning. Paper-runtime visar om strategin faktiskt är kopplad till paper trades.</div>
+      <div className="dt-strategy-mode-note">Paper test styr användarens På/Av. Runtime-status avgör om strategin faktiskt kan skapa paper trades.</div>
 
       {showDetail && (
         <StrategyDetailModal strategy={strategy} onClose={()=>setShowDetail(false)} onSave={handleSave} saving={saving} />
@@ -559,11 +583,41 @@ function CollapsibleGroup({ label, colorClass, items, defaultOpen, onUpdate, onS
   );
 }
 
-function StrategiesSection({ strategies, total, onUpdate, onScan }) {
-  const [showAll, setShowAll] = useState(false);
+function RuntimeSummary({ runtime }) {
+  const summary = runtime?.summary || {};
+  return (
+    <div className="dt-runtime-summary">
+      <div><strong>{summary.total_catalog_strategies ?? 0}</strong><span>Katalogstrategier</span></div>
+      <div><strong>{summary.runtime_connected ?? 0}</strong><span>Connected</span></div>
+      <div><strong>{summary.enabled_by_user ?? 0}</strong><span>Paper test På</span></div>
+      <div><strong>{summary.runtime_active ?? 0}</strong><span>Active</span></div>
+      <div><strong>{summary.runtime_partial ?? 0}</strong><span>Partial</span></div>
+      <div><strong>{summary.runtime_no_entry_rule ?? 0}</strong><span>Saknar entry</span></div>
+      <div><strong>{summary.runtime_disabled ?? 0}</strong><span>Av</span></div>
+    </div>
+  );
+}
 
-  const active    = strategies.filter(s => s.config?.active !== false);
-  const paused    = strategies.filter(s => s.config?.active === false);
+function StrategiesSection({ strategies, total, runtime, onUpdate, onScan }) {
+  const [showAll, setShowAll] = useState(false);
+  const [bulkBusy, setBulkBusy] = useState(false);
+  const [runtimeError, setRuntimeError] = useState(null);
+
+  async function bulk(path) {
+    setBulkBusy(true);
+    setRuntimeError(null);
+    try {
+      const res = await fetch(path, { method: 'POST' }).then(r => r.json()).catch(() => null);
+      if (res?.ok) onUpdate?.();
+      else setRuntimeError(res?.error || 'Kunde inte uppdatera strategi-runtime. Försök igen.');
+    } finally {
+      setBulkBusy(false);
+    }
+  }
+
+  const isEnabled = (s) => (s.enabled_by_user ?? s.config?.enabled_by_user ?? (s.config?.active !== false)) === true;
+  const active    = strategies.filter(isEnabled);
+  const paused    = strategies.filter(s => !isEnabled(s));
   const withTrades= active.filter(s=>(s.trades||0)>0).sort((a,b)=>(b.score??0)-(a.score??0));
   const noTrades  = active.filter(s=>(s.trades||0)===0);
   const best      = withTrades.slice(0,5);
@@ -576,14 +630,24 @@ function StrategiesSection({ strategies, total, onUpdate, onScan }) {
         <h3 className="dt-panel-title">Strategikontroll</h3>
         <span className="dt-count-badge">{strategies.length} st</span>
       </div>
+      <div className="dt-strategy-bulk-actions">
+        <button type="button" className="dt-btn dt-btn-ok" disabled={bulkBusy} onClick={()=>bulk('/api/daytrading/runtime-strategies/enable-all')}>
+          Slå på alla i paper test
+        </button>
+        <button type="button" className="dt-btn dt-btn-warn" disabled={bulkBusy} onClick={()=>bulk('/api/daytrading/runtime-strategies/disable-all')}>
+          Pausa alla i paper test
+        </button>
+      </div>
+      {runtimeError && <div className="dt-inline-error">{runtimeError}</div>}
+      <RuntimeSummary runtime={runtime} />
       <div className="dt-strategy-explainer">
-        <strong>Detta är strategi-katalog och teststatistik.</strong>
-        <span>Alla strategier här skapar inte nödvändigtvis paper trades just nu.</span>
+        <strong>Source of truth: Daytrading styr strategi-runtime och paper test.</strong>
+        <span>Alla katalogstrategier är connected. Strategier utan entry-regel visas som på men kan inte skapa paper trades.</span>
         <div className="dt-strategy-explainer-badges">
           <span>Katalog</span>
-          <span>Historisk statistik</span>
-          <span>Runtime-kopplad</span>
-          <span>Ej kopplad till paper ännu</span>
+          <span>Connected</span>
+          <span>Paper test På/Av</span>
+          <span>Runtime summary</span>
         </div>
       </div>
 
@@ -770,7 +834,7 @@ function ImpactPanel({ impact, onScan }) {
 const DEFAULT_FILTERS = { market:'all', direction:'all', minScore:0, symbol:'', _dirty:false };
 
 export default function DaytradingPage() {
-  const { status, strategies, pipeline, liveTrades, recommendation, impact, symbols, loading, error, refresh } = useDaytradingData();
+  const { status, strategies, pipeline, liveTrades, recommendation, impact, symbols, runtime, loading, error, refresh } = useDaytradingData();
   const [filters, setFilters] = useState(DEFAULT_FILTERS);
   const [scanning, setScanning] = useState(false);
   const [scanResult, setScanResult] = useState(null);
@@ -897,6 +961,7 @@ export default function DaytradingPage() {
         <StrategiesSection
           strategies={visibleStrategies}
           total={allStrategies.length}
+          runtime={runtime}
           onUpdate={refresh}
           onScan={handleScan}
         />

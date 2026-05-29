@@ -782,6 +782,21 @@ function classifySkip(c, reason) {
   if (raw.includes('duplicate signalid')) {
     return { type: 'DUPLICATE_SIGNAL', reasonSv: 'Skippad — samma signal har redan testats.' };
   }
+  if (raw.includes('runtime_status=disabled')) {
+    return { type: 'TRADE_SKIPPED', reasonSv: 'Skippad — strategin är avstängd av användaren.' };
+  }
+  if (raw.includes('runtime_status=paused')) {
+    return { type: 'TRADE_SKIPPED', reasonSv: 'Skippad — strategin är pausad i paper-runtime.' };
+  }
+  if (raw.includes('runtime_status=no_entry_rule')) {
+    return { type: 'TRADE_SKIPPED', reasonSv: 'Skippad — strategin är på men saknar entry-regel.' };
+  }
+  if (raw.includes('runtime_status=not_connected')) {
+    return { type: 'TRADE_SKIPPED', reasonSv: 'Skippad — signalen är inte kopplad till katalogstrategi.' };
+  }
+  if (raw.includes('runtime_mapping_error')) {
+    return { type: 'TRADE_SKIPPED', reasonSv: 'Skippad — runtime-mapping kunde inte läsas.' };
+  }
   if (raw.includes('gate blockerad') || raw.includes('data inte färsk — signal') || raw.includes('ema nedåt i crypto') || raw.includes('normal volym i crypto') || raw.includes('ema uppåt i crypto')) {
     return { type: 'GATE_BLOCKED', reasonSv: reason || 'Skippad — market gate blockerade signalen.' };
   }
@@ -1518,6 +1533,29 @@ async function runTick() {
       }
       try {
         _bump('qualifiesChecked', null);
+        const runtimeDecision = strategyRuntimeConnector.canCreatePaperTradeForSignal(c);
+        if (!runtimeDecision.allowed) {
+          _bump('qualifiesRejected', null);
+          const runtimeStrategy = runtimeDecision.strategy || {};
+          _recentRejections = [{
+            type:          'RUNTIME_REJECTED',
+            symbol:        c.symbol,
+            marketGroup:   getMarketGroup(c.symbol) || c.marketGroup || 'UNKNOWN',
+            signalSubtype: c.signalSubtype || null,
+            strategyId:    runtimeStrategy.strategy_id || null,
+            reason:        runtimeDecision.reason || 'runtime_status=unknown',
+            timestamp:     new Date().toISOString(),
+          }, ..._recentRejections].slice(0, 100);
+          const skip = classifySkip(c, runtimeDecision.reason);
+          appendEvent({
+            ...eventFromCandidate(skip.type, c, skip.reasonSv),
+            runtimeStatus: runtimeStrategy.runtime_status || null,
+            strategyId: runtimeStrategy.strategy_id || null,
+            strategyName: runtimeStrategy.strategy_name || null,
+          });
+          continue;
+        }
+
         const check = qualifiesForEntry(c, state);
         if (!check.ok) {
           _bump('qualifiesRejected', null);

@@ -869,6 +869,25 @@ router.get('/daytrading/runtime-strategies', (req, res) => {
   catch (err) { res.status(500).json({ ok: false, error: err.message, ...daytradingControl.SAFETY }); }
 });
 
+router.post('/daytrading/runtime-strategies/enable-all', (req, res) => {
+  try { res.json(daytradingControl.setAllRuntimeStrategies(true)); }
+  catch (err) { res.status(500).json({ ok: false, error: err.message, ...daytradingControl.SAFETY }); }
+});
+
+router.post('/daytrading/runtime-strategies/disable-all', (req, res) => {
+  try { res.json(daytradingControl.setAllRuntimeStrategies(false)); }
+  catch (err) { res.status(500).json({ ok: false, error: err.message, ...daytradingControl.SAFETY }); }
+});
+
+router.post('/daytrading/runtime-strategies/:strategyId/toggle', (req, res) => {
+  try {
+    const result = daytradingControl.toggleRuntimeStrategy(req.params.strategyId);
+    res.status(result.ok ? 200 : 404).json(result);
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message, ...daytradingControl.SAFETY });
+  }
+});
+
 router.get('/daytrading/control', async (req, res) => {
   try {
     res.json({

@@ -4,6 +4,7 @@ const SAFETY = Object.freeze({
   actions_allowed: false,
   can_place_orders: false,
   live_trading_enabled: false,
+  live_enabled: false,
   paper_only: true,
   replay_mode: true,
 });
@@ -59,6 +60,7 @@ function strategy({
     default_timeout_min: timeout,
     confidence_threshold,
     paper_only: true,
+    connected: true,
     replay_enabled: true,
     batch_enabled: true,
     live_enabled: false,

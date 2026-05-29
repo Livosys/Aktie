@@ -19,6 +19,7 @@ const SAFETY = Object.freeze({
   actions_allowed: false,
   can_place_orders: false,
   live_trading_enabled: false,
+  live_enabled: false,
   paper_only: true,
 });
 
@@ -308,9 +309,10 @@ function writeImpact(beforeRows, afterRows, config, reason) {
 function strategyConfigFor(id, strategy) {
   const config = loadConfig();
   const saved = config.strategies[id] || {};
-  const active = saved.active ?? strategy.active ?? true;
+  const active = saved.enabled_by_user ?? saved.active ?? strategy.active ?? true;
   return {
     active,
+    enabled_by_user: active === true,
     status: saved.status || (active ? 'Aktiv' : 'Pausad'),
     market: saved.market || strategy.market_group || strategy.market || 'all',
     symbols: safeArray(saved.symbols),
@@ -416,6 +418,9 @@ function getStrategies() {
       runtime_status: runtime.runtime_status,
       runtime_label: runtime.runtime_label,
       runtime_raw_signals: runtime.runtime_raw_signals || [],
+      connected: runtime.connected === true,
+      enabled_by_user: runtime.enabled_by_user === true,
+      entry_rule_implemented: runtime.entry_rule_implemented === true,
       paper_trades_48h: runtime.paper_trades_48h || 0,
       last_paper_trade_at: runtime.last_paper_trade_at || null,
       skip_reasons: runtime.skip_reasons || [],
@@ -424,6 +429,7 @@ function getStrategies() {
       can_create_paper_trade: runtime.can_create_paper_trade,
       catalog_badges: [
         'Katalog',
+        runtime.connected === true ? 'Connected' : null,
         trades ? 'Historisk statistik' : null,
         runtime.runtime_label,
       ].filter(Boolean),
@@ -459,7 +465,9 @@ function updateStrategy(id, patch = {}) {
   const next = {
     ...current,
     ...patch,
-    active: patch.active === undefined ? current.active : patch.active === true,
+    active: patch.enabled_by_user === undefined && patch.active === undefined
+      ? current.active
+      : (patch.enabled_by_user ?? patch.active) === true,
     market: normalizeMarket(patch.market || patch.market_group || current.market),
     symbols: safeArray(patch.symbols).map(normalizeSymbol),
     min_score: Math.max(0, Math.min(100, Number(patch.min_score ?? current.min_score) || 0)),
@@ -472,6 +480,7 @@ function updateStrategy(id, patch = {}) {
     paper_only: true,
     ...SAFETY,
   };
+  next.enabled_by_user = next.active === true;
   next.status = next.active ? 'Aktiv' : 'Pausad';
   config.strategies[id] = next;
   saveConfig(config);
@@ -486,6 +495,46 @@ function updateStrategy(id, patch = {}) {
     details: { config: next, safety: SAFETY },
   });
   return { ok: true, strategy_id: id, config: next, impact, message_sv: 'Strategin uppdaterad', ...SAFETY };
+}
+
+function setAllRuntimeStrategies(enabled) {
+  const catalogRows = daytradingCatalog.getCatalog().strategies || [];
+  const config = loadConfig();
+  for (const strategy of catalogRows) {
+    const current = strategyConfigFor(strategy.id, strategy);
+    config.strategies[strategy.id] = {
+      ...current,
+      active: enabled === true,
+      enabled_by_user: enabled === true,
+      status: enabled === true ? 'Aktiv' : 'Pausad',
+      paper_only: true,
+      ...SAFETY,
+    };
+  }
+  saveConfig(config);
+  auditTrail.logAuditEvent({
+    type: enabled ? 'DAYTRADING_RUNTIME_ENABLE_ALL' : 'DAYTRADING_RUNTIME_DISABLE_ALL',
+    source: 'daytrading_control',
+    timestamp: nowIso(),
+    message: enabled ? 'Alla katalogstrategier aktiverade i paper test' : 'Alla katalogstrategier pausade i paper test',
+    details: { count: catalogRows.length, enabled_by_user: enabled === true, safety: SAFETY },
+  });
+  const runtime = getRuntimeStrategies();
+  return {
+    ok: true,
+    message_sv: enabled ? 'Alla strategier är på i paper test.' : 'Alla strategier är pausade i paper test.',
+    enabled_by_user: enabled === true,
+    runtime,
+    strategies: runtime.strategies || [],
+    ...SAFETY,
+  };
+}
+
+function toggleRuntimeStrategy(id) {
+  const strategy = daytradingCatalog.getStrategyById(id);
+  if (!strategy) return { ok: false, error: 'Strategin finns inte.', ...SAFETY };
+  const current = strategyConfigFor(id, strategy);
+  return updateStrategy(id, { enabled_by_user: current.enabled_by_user !== true });
 }
 
 function updateFilters(patch = {}) {
@@ -602,7 +651,15 @@ function getLiveTrades() {
 }
 
 function getRuntimeStrategies() {
-  return strategyRuntimeConnector.getStrategyRuntimeSummary();
+  const runtime = strategyRuntimeConnector.getStrategyRuntimeSummary();
+  return {
+    ...runtime,
+    strategies: (runtime.strategies || []).map((strategy) => ({
+      ...strategy,
+      config: strategyConfigFor(strategy.id || strategy.strategy_id, strategy),
+    })),
+    ...SAFETY,
+  };
 }
 
 function hasTradeHistory(strategy) {
@@ -647,6 +704,8 @@ module.exports = {
   getPipeline,
   getLiveTrades,
   getRuntimeStrategies,
+  setAllRuntimeStrategies,
+  toggleRuntimeStrategy,
   getRecommendation,
   getImpactSummary,
 };

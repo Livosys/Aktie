@@ -1263,7 +1263,7 @@ function StrategyMiniSlider({ label, value, min, max, step, format, onChange }) 
   );
 }
 
-function StrategyCard({ strategy, value, onChange, performance, settings, onSettingsChange, onTest }) {
+function StrategyCard({ strategy, performance, settings, onSettingsChange, onTest }) {
   const [open, setOpen] = React.useState(false);
   const [testing, setTesting] = React.useState(false);
   const [lastResult, setLastResult] = React.useState(null);
@@ -1281,7 +1281,7 @@ function StrategyCard({ strategy, value, onChange, performance, settings, onSett
   }
 
   return (
-    <div className={`strat-card${value ? ' strat-card-on' : ''}`}>
+    <div className="strat-card">
       <div className="strat-card-header">
         <div className="strat-info">
           <div className="strat-title-row">
@@ -1298,14 +1298,6 @@ function StrategyCard({ strategy, value, onChange, performance, settings, onSett
             {testing ? 'Testar...' : 'Testa strategi'}
           </button>
           <button className="strat-expand" onClick={() => setOpen(v => !v)} type="button">{open ? '▲' : '▼'}</button>
-          <button
-            className={`tl-switch tl-switch-sm${value ? ' tl-switch-on' : ''}`}
-            onClick={() => onChange(!value)}
-            type="button"
-            aria-pressed={value}
-          >
-            <span className="tl-switch-thumb" />
-          </button>
         </div>
       </div>
       <div className="strat-desc">{strategy.explanation}</div>
@@ -1354,7 +1346,7 @@ function StrategyCard({ strategy, value, onChange, performance, settings, onSett
   );
 }
 
-function StrategiesTab({ toggles, onChange }) {
+function StrategiesTab() {
   const [catalog, setCatalog] = React.useState(null);
   const [performance, setPerformance] = React.useState({});
   const [settings, setSettings] = React.useState(() => loadStrategySettings());
@@ -1416,21 +1408,25 @@ function StrategiesTab({ toggles, onChange }) {
 
   if (loading) return <div className="tl-tab-content"><div className="tl-loading">Laddar strategikatalog...</div></div>;
   const strategies = catalog?.strategies || [];
-  const activeCount = strategies.filter(s => toggles[s.id]).length;
 
   return (
     <div className="tl-tab-content">
       <GroupHeader icon="🧩" title="Strategikatalog" />
       <p className="tl-combo-intro">
-        {activeCount} av {strategies.length} aktiverade · Paper &amp; Replay only · Inga riktiga orders
+        {strategies.length} katalogstrategier · Read-only strategiinfo · Test och replay only
       </p>
+      <div className="batch-info">
+        <div>
+          <strong>Strategier och paper-runtime styrs från Daytrading-sidan.</strong>
+          <div>Lab används för tester, replay och analys.</div>
+        </div>
+        <Link className="strat-test-btn" to="/daytrading">Öppna Daytrading-kontroll</Link>
+      </div>
       <div className="strat-list">
         {strategies.map(strategy => (
           <StrategyCard
             key={strategy.id}
             strategy={strategy}
-            value={!!toggles[strategy.id]}
-            onChange={v => onChange(strategy.id, v)}
             performance={performance}
             settings={getSettings(strategy)}
             onSettingsChange={patch => patchSettings(strategy.id, patch)}
@@ -2113,7 +2109,7 @@ export default function TradingLabPage() {
       {/* Tab: Signaler */}
       {tab === 'strategier' && (
         <>
-          <StrategiesTab toggles={toggles} onChange={(k, v) => setToggle(k, v)} />
+          <StrategiesTab />
           {advancedMode && (
             <div className="tl-tab-content">
               <GroupHeader icon="📡" title="Signalmotorer" />

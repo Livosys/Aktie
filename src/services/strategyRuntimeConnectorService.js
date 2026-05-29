@@ -9,12 +9,14 @@ const SAFETY = Object.freeze({
   actions_allowed: false,
   can_place_orders: false,
   live_trading_enabled: false,
+  live_enabled: false,
   paper_only: true,
 });
 
 const TRADES_FILE = path.resolve(__dirname, '../../data/paper-trading/trades.jsonl');
 const EVENTS_FILE = path.resolve(__dirname, '../../data/paper-trading/events.jsonl');
 const STATE_FILE = path.resolve(__dirname, '../../data/paper-trading/state.json');
+const CONTROL_CONFIG_FILE = path.resolve(__dirname, '../../data/config/daytrading-control.json');
 const WINDOW_HOURS = 48;
 
 function allowEmaPaperTrades() {
@@ -48,6 +50,13 @@ function readJson(file, fallback = null) {
   } catch (_) {
     return fallback;
   }
+}
+
+function readControlConfig() {
+  const saved = readJson(CONTROL_CONFIG_FILE, {});
+  return {
+    strategies: saved && typeof saved.strategies === 'object' ? saved.strategies : {},
+  };
 }
 
 function parseTime(value) {
@@ -108,8 +117,11 @@ function statusLabel(status) {
   if (status === 'active') return 'Aktiv';
   if (status === 'partial') return 'Delvis';
   if (status === 'paused') return 'Pausad';
+  if (status === 'disabled') return 'Avstängd av användaren';
+  if (status === 'no_entry_rule') return 'På men saknar entry-regel';
   if (status === 'needs_data') return 'Behöver mer data';
-  return 'Ej kopplad';
+  if (status === 'not_connected') return 'Ej kopplad';
+  return 'Okänd';
 }
 
 function canCreateLabel(value) {
@@ -141,8 +153,11 @@ function runtimeEntry({
     mapping_confidence,
     can_create_paper_trade,
     can_create_paper_trade_label: canCreateLabel(can_create_paper_trade),
+    entry_rule_implemented: can_create_paper_trade === true || can_create_paper_trade === 'partial',
+    connected: true,
     market,
     comment_sv,
+    ...SAFETY,
   };
 }
 
@@ -286,14 +301,22 @@ function findMapEntry(signal = {}) {
 }
 
 function inferStrategyForSignal(signal = {}) {
-  const entry = findMapEntry(signal);
-  const raw = rawSignalOf(signal);
+  let entry = null;
+  let raw = 'UNKNOWN';
+  try {
+    entry = findMapEntry(signal);
+    raw = rawSignalOf(signal);
+  } catch (_) {
+    entry = null;
+  }
   if (entry) {
+    const runtime = baseRuntimeForStrategy(entry.strategy_id, readControlConfig().strategies?.[entry.strategy_id] || {});
     return {
       ...entry,
+      ...runtime,
       raw_strategy: raw,
       signal_subtype: raw,
-      runtime_comment_sv: entry.comment_sv,
+      runtime_comment_sv: runtime.runtime_comment_sv || runtime.comment_sv || entry.comment_sv,
       source: 'strategy_runtime_connector_v1',
       ...SAFETY,
     };
@@ -309,6 +332,9 @@ function inferStrategyForSignal(signal = {}) {
     mapping_confidence: 'low',
     can_create_paper_trade: false,
     can_create_paper_trade_label: 'nej',
+    connected: false,
+    entry_rule_implemented: false,
+    enabled_by_user: false,
     runtime_comment_sv: 'Ingen säker runtime-mapping finns. Strategin markeras som ej kopplad.',
     source: 'strategy_runtime_connector_v1',
     ...SAFETY,
@@ -335,7 +361,26 @@ function enrichSignalWithStrategy(signal = {}) {
 }
 
 function enrichPaperTradeWithStrategy(trade = {}) {
-  const inferred = inferStrategyForSignal(trade);
+  let inferred = null;
+  try {
+    inferred = inferStrategyForSignal(trade);
+  } catch (_) {
+    inferred = {
+      strategy_id: null,
+      strategy_name: null,
+      strategy_family: 'UNKNOWN',
+      raw_strategy: rawSignalOf(trade),
+      signal_subtype: rawSignalOf(trade),
+      mapping_confidence: 'low',
+      runtime_status: 'not_connected',
+      runtime_label: statusLabel('not_connected'),
+      runtime_comment_sv: 'Runtime-mapping kunde inte läsas.',
+      can_create_paper_trade: false,
+      connected: false,
+      entry_rule_implemented: false,
+      ...SAFETY,
+    };
+  }
   const strategyId = trade.strategy_id || trade.strategyId || inferred.strategy_id;
   const strategyName = trade.strategy_name || trade.strategyName || inferred.strategy_name;
   const raw = trade.raw_strategy || trade.signal_subtype || trade.signalSubtype || trade.strategy || inferred.raw_strategy;
@@ -353,6 +398,10 @@ function enrichPaperTradeWithStrategy(trade = {}) {
     runtime_status: trade.runtime_status || inferred.runtime_status,
     runtime_label: trade.runtime_label || inferred.runtime_label,
     runtime_comment_sv: trade.runtime_comment_sv || inferred.runtime_comment_sv,
+    can_create_paper_trade: trade.can_create_paper_trade ?? inferred.can_create_paper_trade,
+    connected: trade.connected ?? inferred.connected ?? false,
+    enabled_by_user: trade.enabled_by_user ?? inferred.enabled_by_user ?? false,
+    entry_rule_implemented: trade.entry_rule_implemented ?? inferred.entry_rule_implemented ?? false,
   };
 }
 
@@ -391,16 +440,59 @@ function tradeStatsByStrategy() {
   return { trades, stats, rawCounts };
 }
 
-function baseRuntimeForStrategy(strategyId) {
+function baseRuntimeForStrategy(strategyId, savedConfig = {}) {
   const entries = getRuntimeStrategyMap().filter((entry) => entry.strategy_id === strategyId);
+  const catalogStrategy = catalog.getStrategyById(strategyId);
+  const connected = Boolean(catalogStrategy);
+  const enabledByUser = savedConfig.enabled_by_user ?? savedConfig.active ?? catalogStrategy?.active ?? true;
+
   if (!entries.length) {
+    const status = enabledByUser ? 'no_entry_rule' : 'disabled';
     return {
-      runtime_status: 'not_connected',
-      runtime_label: statusLabel('not_connected'),
+      runtime_status: status,
+      runtime_label: statusLabel(status),
       runtime_raw_signals: [],
       mapping_confidence: 'low',
       can_create_paper_trade: false,
-      comment_sv: 'Finns i katalog/teststatistik men har ingen säker paper-runtime-koppling ännu.',
+      can_create_paper_trade_label: 'nej',
+      entry_rule_implemented: false,
+      connected,
+      enabled_by_user: enabledByUser === true,
+      comment_sv: enabledByUser
+        ? 'Strategin är ansluten i katalogen men saknar implementerad entry-regel i paper-runtime.'
+        : 'Strategin är avstängd av användaren.',
+    };
+  }
+  const entryRuleImplemented = entries.some((entry) => entry.can_create_paper_trade === true || entry.can_create_paper_trade === 'partial');
+  const canCreate = entries.some((entry) => entry.can_create_paper_trade === true)
+    ? true
+    : entries.some((entry) => entry.can_create_paper_trade === 'partial') ? 'partial' : false;
+  if (enabledByUser !== true) {
+    return {
+      runtime_status: 'disabled',
+      runtime_label: statusLabel('disabled'),
+      runtime_raw_signals: [...new Set(entries.map((entry) => entry.raw_signal))],
+      mapping_confidence: entries.some((entry) => entry.mapping_confidence === 'high') ? 'high' : entries[0].mapping_confidence,
+      can_create_paper_trade: false,
+      can_create_paper_trade_label: 'nej',
+      entry_rule_implemented: entryRuleImplemented,
+      connected,
+      enabled_by_user: false,
+      comment_sv: 'Strategin är avstängd av användaren och kan inte skapa paper trades.',
+    };
+  }
+  if (!entryRuleImplemented) {
+    return {
+      runtime_status: 'no_entry_rule',
+      runtime_label: statusLabel('no_entry_rule'),
+      runtime_raw_signals: [...new Set(entries.map((entry) => entry.raw_signal))],
+      mapping_confidence: entries.some((entry) => entry.mapping_confidence === 'high') ? 'high' : entries[0].mapping_confidence,
+      can_create_paper_trade: false,
+      can_create_paper_trade_label: 'nej',
+      entry_rule_implemented: false,
+      connected,
+      enabled_by_user: true,
+      comment_sv: 'Strategin är på men saknar entry-regel som får skapa paper trade.',
     };
   }
   const hasActive = entries.some((entry) => entry.runtime_status === 'active');
@@ -412,14 +504,19 @@ function baseRuntimeForStrategy(strategyId) {
     runtime_label: statusLabel(status),
     runtime_raw_signals: [...new Set(entries.map((entry) => entry.raw_signal))],
     mapping_confidence: entries.some((entry) => entry.mapping_confidence === 'high') ? 'high' : entries[0].mapping_confidence,
-    can_create_paper_trade: entries.some((entry) => entry.can_create_paper_trade === true) ? true : entries.some((entry) => entry.can_create_paper_trade === 'partial') ? 'partial' : false,
+    can_create_paper_trade: status === 'paused' ? false : canCreate,
+    can_create_paper_trade_label: canCreateLabel(status === 'paused' ? false : canCreate),
+    entry_rule_implemented: entryRuleImplemented,
+    connected,
+    enabled_by_user: true,
     comment_sv: [...new Set(entries.map((entry) => entry.comment_sv).filter(Boolean))].join(' '),
   };
 }
 
 function getRuntimeStatusForStrategy(strategyId) {
   const { stats } = tradeStatsByStrategy();
-  const base = baseRuntimeForStrategy(strategyId);
+  const savedConfig = readControlConfig().strategies?.[strategyId] || {};
+  const base = baseRuntimeForStrategy(strategyId, savedConfig);
   const stat = stats.get(strategyId) || {};
   return {
     strategy_id: strategyId,
@@ -429,6 +526,33 @@ function getRuntimeStatusForStrategy(strategyId) {
     runtime_raw_signals: [...new Set([...(base.runtime_raw_signals || []), ...[...(stat.raw_signals || [])]])],
     ...SAFETY,
   };
+}
+
+function canCreatePaperTradeForSignal(signal = {}) {
+  try {
+    const inferred = inferStrategyForSignal(signal);
+    const blockedStatuses = new Set(['disabled', 'paused', 'no_entry_rule', 'not_connected']);
+    const allowed = inferred.enabled_by_user === true
+      && inferred.connected === true
+      && inferred.entry_rule_implemented === true
+      && inferred.can_create_paper_trade !== false
+      && !blockedStatuses.has(inferred.runtime_status);
+    return {
+      ok: true,
+      allowed,
+      strategy: inferred,
+      reason: allowed ? null : `runtime_status=${inferred.runtime_status}`,
+      ...SAFETY,
+    };
+  } catch (err) {
+    return {
+      ok: false,
+      allowed: false,
+      strategy: null,
+      reason: `runtime_mapping_error:${err.message || String(err)}`,
+      ...SAFETY,
+    };
+  }
 }
 
 function getStrategyRuntimeSummary() {
@@ -448,18 +572,37 @@ function getStrategyRuntimeSummary() {
       ...SAFETY,
     };
   });
+  const unknownSignals = new Set(
+    trades
+      .filter((trade) => trade.connected === false || !trade.strategy_id)
+      .map(rawSignalOf),
+  );
   const summary = {
     total_catalog_strategies: strategies.length,
     runtime_active: strategies.filter((s) => s.runtime_status === 'active').length,
     runtime_partial: strategies.filter((s) => s.runtime_status === 'partial').length,
     runtime_paused: strategies.filter((s) => s.runtime_status === 'paused').length,
     runtime_not_connected: strategies.filter((s) => s.runtime_status === 'not_connected').length,
+    runtime_disabled: strategies.filter((s) => s.runtime_status === 'disabled').length,
+    runtime_no_entry_rule: strategies.filter((s) => s.runtime_status === 'no_entry_rule').length,
+    runtime_connected: strategies.filter((s) => s.connected === true).length,
+    enabled_by_user: strategies.filter((s) => s.enabled_by_user === true).length,
+    disabled_by_user: strategies.filter((s) => s.enabled_by_user === false).length,
+    needs_data: strategies.filter((s) => s.runtime_status === 'needs_data').length,
+    not_connected_unknown: unknownSignals.size,
+    can_create_paper_trade_count: strategies.filter((s) => s.can_create_paper_trade === true).length,
     paper_trades_48h: trades.length,
   };
+  summary.connected = summary.runtime_connected;
+  summary.active = summary.runtime_active;
+  summary.partial = summary.runtime_partial;
+  summary.paused = summary.runtime_paused;
+  summary.no_entry_rule = summary.runtime_no_entry_rule;
   return {
     ok: true,
     paper_only: true,
     live_trading_enabled: false,
+    live_enabled: false,
     actions_allowed: false,
     can_place_orders: false,
     window_hours: WINDOW_HOURS,
@@ -476,4 +619,5 @@ module.exports = {
   enrichPaperTradeWithStrategy,
   getRuntimeStatusForStrategy,
   getStrategyRuntimeSummary,
+  canCreatePaperTradeForSignal,
 };

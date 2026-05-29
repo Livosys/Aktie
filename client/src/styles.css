@@ -13205,6 +13205,44 @@ body {
   color: var(--text-muted);
 }
 .dt-strategy-explainer strong { color: var(--text); }
+.dt-strategy-bulk-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+.dt-inline-error {
+  border: 1px solid var(--red-border);
+  border-radius: var(--r-sm);
+  background: var(--red-dim);
+  color: var(--red);
+  padding: 8px 10px;
+  margin-bottom: 10px;
+  font-size: .78rem;
+}
+.dt-runtime-summary {
+  display: grid;
+  grid-template-columns: repeat(7, minmax(90px, 1fr));
+  gap: 8px;
+  margin-bottom: 10px;
+}
+.dt-runtime-summary div {
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  background: var(--surface-2);
+  padding: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.dt-runtime-summary strong {
+  color: var(--text);
+  font-size: 1rem;
+}
+.dt-runtime-summary span {
+  color: var(--text-muted);
+  font-size: .7rem;
+}
 .dt-strategy-explainer-badges,
 .dt-catalog-badges {
   display: flex;
@@ -13254,6 +13292,9 @@ body {
 .dt-runtime-comment {
   font-size: .7rem;
   line-height: 1.35;
+}
+@media (max-width: 900px) {
+  .dt-runtime-summary { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
 .dt-paper-summary {
   border: 1px solid var(--green-border);
