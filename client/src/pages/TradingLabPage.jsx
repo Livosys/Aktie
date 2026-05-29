@@ -50,7 +50,421 @@ const COMBOS = [
   { label: 'Narrow + Stark rörelse',    keys: ['narrow_state', 'momentum'],              hint: 'Ihoptryckt pris + fart' },
 ];
 
+const SLIDER_META = {
+  stop_loss: {
+    label: 'Max förlust',
+    desc: 'Hur mycket priset får gå emot traden innan den stängs.',
+    raise: 'Du vill ge traden mer utrymme.',
+    lower: 'Du vill stoppa dåliga trades snabbare.',
+    risk: 'Högre stop loss betyder större möjlig förlust.',
+    riskLevel: 'high',
+    recommended: 'För snabba trades: 0.15%-0.30%',
+    min: 0.1,
+    max: 5,
+    step: 0.1,
+    defaultValue: 1.5,
+    format: v => `${Number(v).toFixed(1)}%`,
+  },
+  take_profit: {
+    label: 'Vinstmål',
+    desc: 'Här väljer du hur stor vinst systemet ska sikta på. 1R betyder samma storlek som risken. 2R betyder dubbelt så mycket som risken.',
+    raise: 'Du vill sikta på större vinnare.',
+    lower: 'Du vill att fler test-trades ska kunna nå målet snabbare.',
+    risk: 'Stort vinstmål kan göra att färre trades når målet.',
+    riskLevel: 'medium',
+    recommended: 'För snabba trades: 1R-3R',
+    min: 0.5,
+    max: 10,
+    step: 0.5,
+    defaultValue: 3,
+    format: v => `${Number(v).toFixed(1).replace('.0', '')}R`,
+  },
+  confidence_threshold: {
+    label: 'Minsta signalstyrka',
+    desc: 'Hur stark signalen måste vara för att systemet ska testa den.',
+    raise: 'Du vill ha färre men starkare signaler.',
+    lower: 'Du vill testa fler signaler.',
+    risk: 'Lågt värde kan släppa igenom fler svaga signaler.',
+    riskLevel: 'medium',
+    recommended: 'Normal test: 55-75/100',
+    min: 40,
+    max: 95,
+    step: 1,
+    defaultValue: 60,
+    format: v => `${Math.round(Number(v))}/100`,
+  },
+  holding_time: {
+    label: 'Max tid i trade',
+    desc: 'Här bestämmer du hur länge en test-trade får vara öppen.',
+    raise: 'Du vill ge setupen mer tid att utvecklas.',
+    lower: 'Du testar snabbare trades eller scalping.',
+    risk: 'Lång hålltid kan ge fler timeout eller svagare scalping-resultat.',
+    riskLevel: 'medium',
+    recommended: 'Scalping: 5-45 min',
+    min: 1,
+    max: 240,
+    step: 1,
+    defaultValue: 30,
+    format: v => formatDuration(v),
+  },
+  cooldown: {
+    label: 'Paus mellan trades',
+    desc: 'Hindrar systemet från att ta många trades direkt efter varandra på samma symbol.',
+    raise: 'Du vill minska överhandel och upprepade test på samma symbol.',
+    lower: 'Du vill testa fler möjligheter snabbare.',
+    risk: 'Kort paus kan ge många liknande test-trades i rad.',
+    riskLevel: 'low',
+    recommended: 'Normal test: 5-20 min',
+    min: 0,
+    max: 60,
+    step: 1,
+    defaultValue: 5,
+    format: v => Number(v) === 0 ? 'Ingen' : `${Math.round(Number(v))} min`,
+  },
+  volume_filter: {
+    label: 'Minsta volym',
+    desc: 'Systemet kräver att volymen är tillräckligt stark innan signalen testas.',
+    raise: 'Du vill kräva tydligare aktivitet i symbolen.',
+    lower: 'Du vill testa fler signaler även när volymen är svagare.',
+    risk: 'Lågt volymkrav kan släppa in svaga signaler.',
+    riskLevel: 'medium',
+    recommended: 'Normal test: 1.0x-2.0x',
+    min: 0.5,
+    max: 3,
+    step: 0.1,
+    defaultValue: 1,
+    format: v => `${Number(v).toFixed(1)}x`,
+  },
+  risk_per_trade: {
+    label: 'Test-risk per trade',
+    desc: 'Hur stor del av testkapitalet som riskeras i simuleringen.',
+    raise: 'Du vill se hur profilen beter sig med större simulerad risk.',
+    lower: 'Du vill testa försiktigare kapitalpåverkan.',
+    risk: 'Hög risk per trade är endast för test.',
+    riskLevel: 'high',
+    recommended: 'För test: 0.25%-1.0%',
+    min: 0.1,
+    max: 5,
+    step: 0.1,
+    defaultValue: 1,
+    format: v => `${Number(v).toFixed(1)}%`,
+  },
+  timeout: {
+    label: 'Avbryt om inget händer',
+    desc: 'Om priset inte rör sig tillräckligt inom denna tid stängs testet.',
+    raise: 'Du vill ge signalen längre tid att visa riktning.',
+    lower: 'Du vill avbryta stillastående test snabbare.',
+    risk: 'För lång timeout kan binda testet i svaga lägen.',
+    riskLevel: 'low',
+    recommended: 'Scalping: 5-45 min',
+    min: 1,
+    max: 240,
+    step: 1,
+    defaultValue: 30,
+    format: v => formatDuration(v),
+  },
+  momentum_requirement: {
+    label: 'Momentumkrav',
+    desc: 'Här väljer du hur stark fart priset måste ha.',
+    raise: 'Du bara vill testa starka rörelser.',
+    lower: 'Du vill fånga tidigare signaler.',
+    risk: 'Lägre krav kan fånga tidigt men släpper igenom mer brus.',
+    riskLevel: 'medium',
+    recommended: 'Normal test: 55-75/100',
+    min: 0,
+    max: 100,
+    step: 1,
+    defaultValue: 60,
+    format: v => `${Math.round(Number(v))}/100`,
+  },
+  vwap_distance: {
+    label: 'Avstånd till VWAP',
+    desc: 'Här väljer du hur nära priset ska vara VWAP för att signalen ska räknas.',
+    raise: 'Du vill tillåta signaler längre från VWAP.',
+    lower: 'Du vill kräva tätare VWAP-koppling.',
+    risk: 'Stort avstånd kan ge sämre entry efter att rörelsen redan gått.',
+    riskLevel: 'medium',
+    recommended: 'Normal test: 0.2%-0.8%',
+    min: 0.05,
+    max: 2,
+    step: 0.05,
+    defaultValue: 0.4,
+    format: v => `${Number(v).toFixed(2)}%`,
+  },
+  ema_distance: {
+    label: 'Avstånd till EMA',
+    desc: 'Här väljer du hur nära priset ska vara EMA-linjen.',
+    raise: 'Du vill tillåta pullbacks och trendlägen längre från EMA.',
+    lower: 'Du vill bara testa signaler nära EMA.',
+    risk: 'Stort avstånd kan betyda sämre risk/reward i testet.',
+    riskLevel: 'medium',
+    recommended: 'Normal test: 0.2%-0.8%',
+    min: 0.05,
+    max: 2,
+    step: 0.05,
+    defaultValue: 0.5,
+    format: v => `${Number(v).toFixed(2)}%`,
+  },
+  narrow_sensitivity: {
+    label: 'Narrow-känslighet',
+    desc: 'Här väljer du hur ihoptryckt priset måste vara för att räknas som Narrow State.',
+    raise: 'Strängare - färre signaler.',
+    lower: 'Mjukare - fler signaler.',
+    risk: 'För mjukt läge kan klassa vanliga rörelser som narrow.',
+    riskLevel: 'low',
+    recommended: 'Normal test: 4-7',
+    min: 1,
+    max: 10,
+    step: 1,
+    defaultValue: 5,
+    format: v => `${Math.round(Number(v))}/10`,
+  },
+  breakout_strength: {
+    label: 'Utbrottsstyrka',
+    desc: 'Här väljer du hur starkt priset måste bryta ut från en nivå.',
+    raise: 'Du vill kräva tydligare utbrott.',
+    lower: 'Du vill testa tidigare eller svagare utbrott.',
+    risk: 'Lågt krav kan släppa igenom falska utbrott.',
+    riskLevel: 'medium',
+    recommended: 'Normal test: 60-80/100',
+    min: 0,
+    max: 100,
+    step: 1,
+    defaultValue: 65,
+    format: v => `${Math.round(Number(v))}/100`,
+  },
+  reversal_sensitivity: {
+    label: 'Vändningskänslighet',
+    desc: 'Här testar systemet hur tidigt det ska reagera på en möjlig vändning.',
+    raise: 'Du vill att testet ska reagera tidigare på vändningstecken.',
+    lower: 'Du vill kräva tydligare bekräftelse innan exit.',
+    risk: 'Hög känslighet kan stänga test-trades för tidigt.',
+    riskLevel: 'medium',
+    recommended: 'Normal test: 45-65/100',
+    min: 0,
+    max: 100,
+    step: 1,
+    defaultValue: 55,
+    format: v => `${Math.round(Number(v))}/100`,
+  },
+  max_volatility: {
+    label: 'Max volatilitet',
+    desc: 'Hindrar systemet från att testa trades när priset hoppar för mycket.',
+    raise: 'Du vill tillåta stökigare rörelser i testet.',
+    lower: 'Du vill filtrera bort fler ryckiga lägen.',
+    risk: 'Högre tak kan ge fler svåra och ryckiga test-trades.',
+    riskLevel: 'high',
+    recommended: 'Normal test: 1.5-3.0',
+    min: 0.5,
+    max: 5,
+    step: 0.1,
+    defaultValue: 3,
+    format: v => Number(v).toFixed(1),
+  },
+  max_spread: {
+    label: 'Max spread',
+    desc: 'Hindrar test på symboler där skillnaden mellan köp och sälj är för stor.',
+    raise: 'Du vill tillåta fler symboler med bredare spread i test.',
+    lower: 'Du vill bara testa tajtare och mer likvida lägen.',
+    risk: 'Hög spread kan försämra simulerade entries och exits.',
+    riskLevel: 'high',
+    recommended: 'Scalping: 0.01%-0.20%',
+    min: 0.01,
+    max: 1,
+    step: 0.01,
+    defaultValue: 0.15,
+    format: v => `${Number(v).toFixed(2)}%`,
+  },
+  trend_requirement: {
+    label: 'Trendkrav',
+    desc: 'Här väljer du hur tydlig trenden måste vara.',
+    raise: 'Du vill bara testa signaler med tydlig trend.',
+    lower: 'Du vill även testa mer neutrala eller tidiga trendlägen.',
+    risk: 'Lågt trendkrav kan ge fler sidledes signaler.',
+    riskLevel: 'medium',
+    recommended: 'Normal test: 50-70/100',
+    min: 0,
+    max: 100,
+    step: 1,
+    defaultValue: 55,
+    format: v => `${Math.round(Number(v))}/100`,
+  },
+  index_support: {
+    label: 'Index-stöd',
+    desc: 'För aktier: kräver att index som QQQ eller SPY stödjer signalen.',
+    raise: 'Du vill ha starkare marknadsbekräftelse.',
+    lower: 'Du vill testa aktiesignaler mer fristående.',
+    risk: 'Lägre indexkrav kan ge fler signaler mot marknaden.',
+    riskLevel: 'medium',
+    recommended: 'Normal',
+    options: ['Av', 'Svag', 'Normal', 'Stark'],
+    defaultValue: 'Normal',
+  },
+  news_risk: {
+    label: 'Nyhetsrisk',
+    desc: 'Här väljer du om systemet ska vara försiktigt när nyheter skapar stora rörelser.',
+    raise: 'Du vill vara mer försiktig runt nyhetsdrivna rörelser.',
+    lower: 'Du vill testa fler nyhetslägen.',
+    risk: 'Lägre nyhetsskydd kan ge fler stökiga testresultat.',
+    riskLevel: 'medium',
+    recommended: 'Normal',
+    options: ['Av', 'Låg', 'Normal', 'Hög'],
+    defaultValue: 'Normal',
+  },
+  certificate_risk: {
+    label: 'Certifikat-risk',
+    desc: 'Används för test av Bull/Bear-certifikat och Mini futures. Högre värde gör systemet mer försiktigt.',
+    raise: 'Du vill vara mer försiktig med hävstång, spread och produktvillkor.',
+    lower: 'Du vill testa fler certifikatlägen med mindre skydd.',
+    risk: 'Certifikat kan ha hävstång, spread och produktvillkor. Endast test.',
+    riskLevel: 'high',
+    recommended: 'Hög eller Mycket hög för certifikat-test',
+    options: ['Av', 'Låg', 'Normal', 'Hög', 'Mycket hög'],
+    defaultValue: 'Hög',
+  },
+};
+
+const SLIDER_GROUPS = [
+  { title: 'Risk', keys: ['stop_loss', 'risk_per_trade', 'max_spread', 'max_volatility', 'certificate_risk'] },
+  { title: 'Entry', keys: ['confidence_threshold', 'momentum_requirement', 'volume_filter', 'vwap_distance', 'ema_distance', 'narrow_sensitivity', 'breakout_strength', 'trend_requirement', 'index_support'] },
+  { title: 'Exit', keys: ['take_profit', 'holding_time', 'timeout', 'reversal_sensitivity'] },
+  { title: 'Skydd', keys: ['cooldown', 'news_risk', 'certificate_risk'] },
+];
+
+const TEST_PRESETS = [
+  {
+    id: 'careful',
+    name: 'Försiktig test',
+    desc: 'Lägre risk, högre signalstyrka, kortare hålltid och strängare volymkrav.',
+    params: {
+      stop_loss: 0.3,
+      take_profit: 2,
+      confidence_threshold: 75,
+      holding_time: 25,
+      cooldown: 15,
+      volume_filter: 1.8,
+      risk_per_trade: 0.5,
+      timeout: 20,
+      momentum_requirement: 70,
+      max_spread: 0.1,
+      max_volatility: 2,
+      trend_requirement: 65,
+      index_support: 'Stark',
+      news_risk: 'Hög',
+      certificate_risk: 'Mycket hög',
+    },
+  },
+  {
+    id: 'normal',
+    name: 'Normal test',
+    desc: 'Balanserade värden för vanlig paper och replay.',
+    params: { ...DEFAULT_PARAMS },
+  },
+  {
+    id: 'aggressive',
+    name: 'Aggressiv test',
+    desc: 'Lägre signalstyrka, fler signaler och lite högre risk.',
+    warning: 'Endast test - använd inte för live trading.',
+    params: {
+      stop_loss: 0.8,
+      take_profit: 4,
+      confidence_threshold: 50,
+      holding_time: 90,
+      cooldown: 1,
+      volume_filter: 0.8,
+      risk_per_trade: 1.5,
+      timeout: 75,
+      momentum_requirement: 45,
+      max_spread: 0.35,
+      max_volatility: 3.8,
+      trend_requirement: 45,
+      index_support: 'Svag',
+      news_risk: 'Låg',
+      certificate_risk: 'Normal',
+    },
+  },
+  {
+    id: 'scalping',
+    name: 'Snabb scalping',
+    desc: 'Kort hålltid, tight stop, mindre vinstmål och hög volym.',
+    params: {
+      stop_loss: 0.2,
+      take_profit: 1.5,
+      confidence_threshold: 68,
+      holding_time: 12,
+      cooldown: 8,
+      volume_filter: 2.2,
+      risk_per_trade: 0.5,
+      timeout: 10,
+      momentum_requirement: 72,
+      vwap_distance: 0.25,
+      ema_distance: 0.25,
+      max_spread: 0.08,
+      max_volatility: 1.8,
+      trend_requirement: 62,
+      news_risk: 'Normal',
+      certificate_risk: 'Hög',
+    },
+  },
+  {
+    id: 'certificate',
+    name: 'Certifikat-test',
+    desc: 'Endast test, mycket försiktig risk, kort hålltid och hög spreadkontroll. live_enabled=false.',
+    warning: 'Endast test - använd inte för live trading.',
+    params: {
+      stop_loss: 0.2,
+      take_profit: 1.5,
+      confidence_threshold: 78,
+      holding_time: 15,
+      cooldown: 20,
+      volume_filter: 2,
+      risk_per_trade: 0.25,
+      timeout: 12,
+      momentum_requirement: 75,
+      max_spread: 0.05,
+      max_volatility: 1.5,
+      trend_requirement: 70,
+      index_support: 'Stark',
+      news_risk: 'Hög',
+      certificate_risk: 'Mycket hög',
+    },
+  },
+];
+
 // ── Components ────────────────────────────────────────────────────────────────
+
+function finiteNumber(value, fallback = 0) {
+  if (value === null || value === undefined || value === '') return fallback;
+  const num = Number(value);
+  return Number.isFinite(num) ? num : fallback;
+}
+
+function clamp(num, min, max) {
+  return Math.max(min, Math.min(max, num));
+}
+
+function safeText(value, fallback = 'Ej inställt') {
+  if (value === null || value === undefined) return fallback;
+  if (typeof value === 'number') return Number.isFinite(value) ? String(value) : fallback;
+  if (typeof value === 'string') return value.trim() || fallback;
+  return fallback;
+}
+
+function formatDuration(value) {
+  const minutes = finiteNumber(value, 0);
+  if (minutes <= 0) return 'Ej inställt';
+  return minutes < 60 ? `${Math.round(minutes)} min` : `${(minutes / 60).toFixed(1)} h`;
+}
+
+function formatSliderValue(meta, value) {
+  if (meta.options) return meta.options.includes(value) ? value : meta.defaultValue || 'Ej inställt';
+  const safe = finiteNumber(value, meta.defaultValue);
+  try {
+    return safeText(meta.format ? meta.format(safe) : safe);
+  } catch {
+    return 'Ej inställt';
+  }
+}
 
 function GroupHeader({ icon, title }) {
   return (
@@ -84,30 +498,141 @@ function Toggle({ label, desc, value, onChange, disabled, scope = 'test' }) {
   );
 }
 
-function Slider({ label, desc, value, min, max, step, unit, format, onChange }) {
-  const pct = ((value - min) / (max - min)) * 100;
-  const display = format ? format(value) : `${value}${unit || ''}`;
+function Slider({ meta, value, onChange }) {
+  const options = meta.options || null;
+  const numericValue = finiteNumber(value, meta.defaultValue);
+  const sliderValue = options
+    ? Math.max(0, options.indexOf(options.includes(value) ? value : meta.defaultValue || options[0]))
+    : clamp(numericValue, meta.min, meta.max);
+  const pct = options
+    ? (options.length <= 1 ? 0 : (sliderValue / (options.length - 1)) * 100)
+    : ((sliderValue - meta.min) / (meta.max - meta.min)) * 100;
+  const display = formatSliderValue(meta, options ? options[sliderValue] : sliderValue);
+  const minLabel = options ? options[0] : formatSliderValue(meta, meta.min);
+  const maxLabel = options ? options[options.length - 1] : formatSliderValue(meta, meta.max);
+  const riskClass = meta.riskLevel ? ` tl-risk-${meta.riskLevel}` : '';
   return (
     <div className="tl-slider-wrap">
       <div className="tl-slider-top">
-        <div className="tl-slider-label">{label}</div>
+        <div className="tl-slider-label">{meta.label}</div>
         <div className="tl-slider-value">{display}</div>
       </div>
-      {desc && <div className="tl-slider-desc">{desc}</div>}
+      <div className="tl-slider-desc">{meta.desc}</div>
       <div className="tl-slider-track">
-        <div className="tl-slider-fill" style={{ width: `${pct}%` }} />
+        <div className="tl-slider-fill" style={{ width: `${clamp(pct, 0, 100)}%` }} />
         <input
           type="range"
-          min={min} max={max} step={step}
-          value={value}
-          onChange={e => onChange(parseFloat(e.target.value))}
+          min={options ? 0 : meta.min}
+          max={options ? options.length - 1 : meta.max}
+          step={options ? 1 : meta.step}
+          value={sliderValue}
+          onChange={e => {
+            const next = options ? options[Number(e.target.value)] : parseFloat(e.target.value);
+            onChange(next);
+          }}
           className="tl-slider-input"
+          aria-label={meta.label}
         />
       </div>
       <div className="tl-slider-ends">
-        <span>{format ? format(min) : `${min}${unit || ''}`}</span>
-        <span>{format ? format(max) : `${max}${unit || ''}`}</span>
+        <span>{minLabel}</span>
+        <span>{maxLabel}</span>
       </div>
+      <div className="tl-slider-help">
+        <div><strong>Höj om:</strong> {meta.raise}</div>
+        <div><strong>Sänk om:</strong> {meta.lower}</div>
+        <div className={`tl-slider-risk${riskClass}`}><strong>Risk:</strong> {meta.risk}</div>
+        <div><strong>Rekommenderat:</strong> {meta.recommended}</div>
+        <div className="tl-slider-test-only">Endast test, paper och replay.</div>
+      </div>
+    </div>
+  );
+}
+
+function SliderGroup({ title, keys, params, onChange }) {
+  return (
+    <section className="tl-slider-section">
+      <h3>{title}</h3>
+      <div className="tl-sliders-grid">
+        {keys.map(key => (
+          <Slider
+            key={`${title}-${key}`}
+            meta={SLIDER_META[key]}
+            value={params[key]}
+            onChange={value => onChange(key, value)}
+          />
+        ))}
+      </div>
+    </section>
+  );
+}
+
+function SliderPresetButtons({ onApply }) {
+  return (
+    <div className="tl-preset-strip">
+      {TEST_PRESETS.map(preset => (
+        <button
+          key={preset.id}
+          className={`tl-preset-chip tl-preset-${preset.id}`}
+          type="button"
+          onClick={() => onApply(preset.params)}
+        >
+          <span>{preset.name}</span>
+          <small>{preset.desc}</small>
+          {preset.warning && <em>{preset.warning}</em>}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+function buildSliderWarnings(params) {
+  const warnings = [];
+  if (finiteNumber(params.stop_loss, 0) > 0.5) warnings.push('Varning: hög stop loss kan ge större förluster i test.');
+  if (finiteNumber(params.take_profit, 0) >= 5) warnings.push('Stort vinstmål kan göra att färre trades når målet.');
+  if (finiteNumber(params.holding_time, 0) > 60) warnings.push('Lång hålltid kan ge fler timeout eller svagare scalping-resultat.');
+  if (finiteNumber(params.volume_filter, 1) < 1) warnings.push('Lågt volymkrav kan släppa in svaga signaler.');
+  if (finiteNumber(params.risk_per_trade, 0) > 1) warnings.push('Hög risk per trade är endast för test.');
+  if (safeText(params.certificate_risk, 'Av') !== 'Av') warnings.push('Certifikat kan ha hävstång, spread och produktvillkor. Endast test.');
+  return warnings;
+}
+
+function profileInterpretation(params) {
+  const reasons = [];
+  if (finiteNumber(params.stop_loss, 0) > 0.5) reasons.push('stop loss är hög för scalping');
+  if (finiteNumber(params.holding_time, 0) > 60) reasons.push('lång hålltid');
+  if (finiteNumber(params.risk_per_trade, 0) > 1) reasons.push('hög test-risk');
+  if (finiteNumber(params.confidence_threshold, 100) < 55) reasons.push('många svagare signaler kan släppas igenom');
+  if (reasons.length === 0) return 'Denna profil är balanserad för test och paper.';
+  return `Denna profil är ganska aggressiv eftersom ${reasons.join(', ')}.`;
+}
+
+function CurrentTestProfile({ params }) {
+  const warnings = buildSliderWarnings(params);
+  const rows = [
+    ['Max förlust', formatSliderValue(SLIDER_META.stop_loss, params.stop_loss)],
+    ['Vinstmål', formatSliderValue(SLIDER_META.take_profit, params.take_profit)],
+    ['Minsta signalstyrka', formatSliderValue(SLIDER_META.confidence_threshold, params.confidence_threshold)],
+    ['Max tid i trade', formatSliderValue(SLIDER_META.holding_time, params.holding_time)],
+    ['Paus mellan trades', formatSliderValue(SLIDER_META.cooldown, params.cooldown)],
+    ['Minsta volym', formatSliderValue(SLIDER_META.volume_filter, params.volume_filter)],
+    ['Test-risk', formatSliderValue(SLIDER_META.risk_per_trade, params.risk_per_trade)],
+    ['Avbryt om inget händer', formatSliderValue(SLIDER_META.timeout, params.timeout)],
+  ];
+  return (
+    <div className="tl-params-summary">
+      <div className="tl-params-summary-title">Aktuell testprofil</div>
+      <div className="tl-params-grid">
+        {rows.map(([label, value]) => (
+          <div className="tl-param-chip" key={label}><span>{label}</span> {value}</div>
+        ))}
+      </div>
+      <div className="tl-profile-ai">{profileInterpretation(params)}</div>
+      {warnings.length > 0 && (
+        <div className="tl-warning-list">
+          {warnings.map(warning => <div key={warning} className="tl-warning-item">{warning}</div>)}
+        </div>
+      )}
     </div>
   );
 }
@@ -1076,124 +1601,150 @@ function usePresets() {
   return { data, reload: load };
 }
 
+const DATA_STATUS_LABELS = {
+  active: 'Data aktiv',
+  missing: 'Data saknas',
+  symbol_unverified: 'Symbol ej verifierad',
+  manual_watchlist: 'Endast manuell watchlist',
+  needs_provider: 'Kräver Avanza/NGM/Nordic data-källa',
+  unknown: 'Datakälla saknas',
+};
+
+const RISK_LABELS = {
+  low: 'Låg risk',
+  medium: 'Medelrisk',
+  high: 'Hög risk',
+  very_high: 'Mycket hög risk',
+};
+
+function textOr(value, fallback = 'För lite data') {
+  if (value === null || value === undefined || value === '') return fallback;
+  if (typeof value === 'number' && !Number.isFinite(value)) return fallback;
+  if (typeof value === 'object') return fallback;
+  return String(value);
+}
+
+function groupLabel(grp, key) {
+  return textOr(grp?.label_sv || grp?.label, key || 'Marknad saknas');
+}
+
+function groupMaxSymbols(grp) {
+  const n = Number(grp?.maxSymbols ?? grp?.max_symbols);
+  return Number.isFinite(n) ? n : 0;
+}
+
+function groupDataStatus(grp) {
+  const key = grp?.data_status || grp?.dataStatus || 'unknown';
+  return DATA_STATUS_LABELS[key] || 'Datakälla saknas';
+}
+
+function isAdvancedProduct(grp) {
+  const id = grp?.id || '';
+  return Boolean(grp?.test_only || ['avanza_certificates', 'bull_certificates', 'bear_certificates', 'mini_futures', 'commodities', 'forex', 'crypto_certificates'].includes(id));
+}
+
+function MarketGroupCard({ groupKey, group, symbols }) {
+  const grp = { ...(group || {}), id: groupKey };
+  const advanced = isAdvancedProduct(grp);
+  const symbolCount = symbols.filter((s) => s.marketGroup === groupKey).length;
+  return (
+    <div className={`mu-group-card${grp.enabled ? ' mu-group-on' : ''}${advanced ? ' mu-group-risk' : ''}`}>
+      <div className="mu-group-header">
+        <div className="mu-group-info">
+          <div className="mu-group-label" style={{ color: grp.color }}>{groupLabel(grp, groupKey)}</div>
+          <div className="mu-group-meta">
+            Max {groupMaxSymbols(grp)} · Prio {Number.isFinite(Number(grp.priority)) ? grp.priority : '–'} · {textOr(grp.mode, 'observe')}
+          </div>
+        </div>
+        <span className="mu-static-status">{grp.enabled ? 'På' : 'Av'}</span>
+      </div>
+      {grp.description_sv && <div className="mu-group-desc">{textOr(grp.description_sv, 'För lite data')}</div>}
+      {advanced && (
+        <div className="mu-advanced-note">
+          Certifikat är inte samma sak som aktier. De kan röra sig mycket snabbare och påverkas av hävstång, spread och produktvillkor.
+        </div>
+      )}
+      {grp.warning_sv && <div className="mu-group-warning">{textOr(grp.warning_sv, 'Endast testläge')}</div>}
+      {grp.data_status === 'needs_provider' && (
+        <div className="mu-group-provider">
+          Behöver datakälla innan riktiga tester kan köras. Test kan köras mot underliggande marknad, men inte exakt certifikatpris.
+        </div>
+      )}
+      <div className="mu-group-badges">
+        {grp.paper_enabled !== false && <span className="mu-badge mu-paper">Paper</span>}
+        {grp.batch_enabled !== false && <span className="mu-badge mu-paper">Batch</span>}
+        {grp.replay_enabled !== false && <span className="mu-badge mu-paper">Replay</span>}
+        {grp.observeOnly && <span className="mu-badge mu-observe">Bara observera</span>}
+        {advanced && <span className="mu-badge mu-risk">Avancerad produkt</span>}
+        {advanced && <span className="mu-badge mu-risk">Hävstång</span>}
+        {grp.test_only && <span className="mu-badge mu-test">Endast test</span>}
+        {grp.live_enabled === false && <span className="mu-badge mu-no-live">Inte live</span>}
+        <span className="mu-badge mu-data">{groupDataStatus(grp)}</span>
+        <span className="mu-badge mu-data">{RISK_LABELS[grp.risk_level] || 'Risk ej verifierad'}</span>
+        <span className="mu-badge mu-data">{symbolCount} symboler</span>
+      </div>
+    </div>
+  );
+}
+
 // ── Markets Tab ───────────────────────────────────────────────────────────────
 function MarketsTab() {
-  const { data, loading, reload } = useMarketUniverse();
-  const [addSym, setAddSym] = React.useState('');
-  const [addGroup, setAddGroup] = React.useState('stocks');
-
-  async function toggleGroup(key, val, current) {
-    await fetch('/api/markets/universe', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ groups: { [key]: { ...current, enabled: val } } }),
-    }).catch(() => {});
-    reload();
-  }
-
-  async function addSymbol() {
-    const sym = addSym.trim().toUpperCase();
-    if (!sym) return;
-    await fetch('/api/markets/symbols/add', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ symbol: sym, marketGroup: addGroup }),
-    }).catch(() => {});
-    setAddSym('');
-    reload();
-  }
-
-  async function patchSym(symbol, patch) {
-    await fetch('/api/markets/symbols/patch', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ symbol, patch }),
-    }).catch(() => {});
-    reload();
-  }
-
-  async function removeSym(symbol) {
-    await fetch('/api/markets/symbols/remove', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ symbol }),
-    }).catch(() => {});
-    reload();
-  }
+  const { data, loading } = useMarketUniverse();
 
   if (loading) return <div className="tl-loading">Laddar marknader...</div>;
   if (!data) return <div className="tl-empty">Ingen marknadsdata.</div>;
 
   const { groups = {}, symbols = [] } = data;
+  const groupEntries = Object.entries(groups).sort((a, b) => (Number(a[1]?.priority) || 99) - (Number(b[1]?.priority) || 99));
+  const scannerGroups = groupEntries.filter(([, grp]) => grp.section !== 'test' && !grp.test_only);
+  const testGroups = groupEntries.filter(([, grp]) => grp.section === 'test' || grp.test_only);
 
   return (
     <div className="tl-tab-content">
-      <GroupHeader icon="🌍" title="Marknadsgrupper" />
+      <GroupHeader icon="🌍" title="Scanner-marknader" />
       <div className="tl-scope-row">
         <ConfigScopeBadge scope="global" />
-        <span>Marknadsuniversum är global scanner-config. Ändringar här påverkar riktiga scannerurvalet.</span>
+        <span>Marknader och riskinstrument styrs från Daytrading. Lab visar detta endast för analys/test.</span>
       </div>
       <div className="mu-group-grid">
-        {Object.entries(groups).map(([key, grp]) => (
-          <div key={key} className={`mu-group-card${grp.enabled ? ' mu-group-on' : ''}`}>
-            <div className="mu-group-header">
-              <div className="mu-group-info">
-                <div className="mu-group-label" style={{ color: grp.color }}>{grp.label}</div>
-                <div className="mu-group-meta">Max {grp.maxSymbols} · Prio {grp.priority}</div>
-              </div>
-              <button
-                className={`tl-switch tl-switch-sm${grp.enabled ? ' tl-switch-on' : ''}`}
-                onClick={() => toggleGroup(key, !grp.enabled, grp)}
-                type="button"
-              >
-                <span className="tl-switch-thumb" />
-              </button>
-            </div>
-            <div className="mu-group-badges">
-              {grp.paperEnabled && <span className="mu-badge mu-paper">Paper</span>}
-              {grp.observeOnly && <span className="mu-badge mu-observe">Bara observera</span>}
-            </div>
-          </div>
+        {scannerGroups.map(([key, grp]) => (
+          <MarketGroupCard key={key} groupKey={key} group={grp} symbols={symbols} />
+        ))}
+      </div>
+
+      <GroupHeader icon="🧪" title="Testmarknader" />
+      <div className="tl-scope-row">
+        <ConfigScopeBadge scope="test" />
+        <span>Marknader och riskinstrument styrs från Daytrading. Lab visar detta endast för analys/test.</span>
+      </div>
+      <div className="mu-group-grid">
+        {testGroups.map(([key, grp]) => (
+          <MarketGroupCard key={key} groupKey={key} group={grp} symbols={symbols} />
         ))}
       </div>
 
       <GroupHeader icon="📋" title="Symboler" />
-      <div className="mu-add-row">
-        <input
-          className="mu-sym-input"
-          value={addSym}
-          onChange={e => setAddSym(e.target.value.toUpperCase())}
-          placeholder="Symbol (t.ex. GOOGL)"
-          onKeyDown={e => e.key === 'Enter' && addSymbol()}
-        />
-        <select className="mu-group-select" value={addGroup} onChange={e => setAddGroup(e.target.value)}>
-          {Object.entries(groups).map(([key, g]) => <option key={key} value={key}>{g.label}</option>)}
-        </select>
-        <button className="mu-add-btn" onClick={addSymbol} type="button">+ Lägg till</button>
+      <div className="tl-scope-row">
+        <ConfigScopeBadge scope="test" />
+        <span>Symboler visas read-only här. Lägg till eller pausa marknader från Daytrading.</span>
       </div>
       <div className="mu-sym-list">
         {symbols.map(sym => (
           <div key={sym.symbol} className={`mu-sym-row${sym.paused ? ' mu-sym-paused' : ''}${!sym.enabled ? ' mu-sym-off' : ''}`}>
             <div className="mu-sym-main">
-              <span className="mu-sym-name">{sym.symbol}</span>
+              <span className="mu-sym-name">{textOr(sym.symbol, 'Symbol ej verifierad')}</span>
               <span className="mu-sym-group" style={{ color: groups[sym.marketGroup]?.color }}>
-                {groups[sym.marketGroup]?.label || sym.marketGroup}
+                {groupLabel(groups[sym.marketGroup], sym.marketGroup)}
               </span>
-              <span className={`mu-sym-mode mu-mode-${sym.testMode}`}>{sym.testMode}</span>
+              <span className={`mu-sym-mode mu-mode-${sym.testMode || 'observe'}`}>{textOr(sym.testMode || sym.mode, 'observe')}</span>
+              {(sym.status_label_sv || sym.verification_status === 'unverified' || sym.verification_status === 'invalid') && (
+                <span className="mu-sym-status">{textOr(sym.status_label_sv, 'Symbol ej verifierad')}</span>
+              )}
+              {sym.test_only && <span className="mu-sym-status">Endast testläge</span>}
             </div>
             <div className="mu-sym-actions">
-              <button
-                className={`mu-sym-toggle${sym.enabled && !sym.paused ? ' mu-active' : ''}`}
-                onClick={() => patchSym(sym.symbol, { enabled: !sym.enabled })}
-                type="button"
-              >{sym.enabled ? 'På' : 'Av'}</button>
-              <button
-                className={`mu-sym-pause${sym.paused ? ' mu-paused' : ''}`}
-                onClick={() => patchSym(sym.symbol, { paused: !sym.paused })}
-                type="button"
-                title={sym.paused ? 'Återuppta' : 'Pausa'}
-              >{sym.paused ? '▶' : '⏸'}</button>
-              <button className="mu-sym-remove" onClick={() => removeSym(sym.symbol)} type="button">✕</button>
+              <span className={`mu-sym-toggle${sym.enabled && !sym.paused ? ' mu-active' : ''}`}>{sym.enabled ? 'På' : 'Av'}</span>
+              <span className={`mu-sym-pause${sym.paused ? ' mu-paused' : ''}`}>{sym.paused ? 'Pausad' : 'Aktiv'}</span>
             </div>
           </div>
         ))}
@@ -1214,21 +1765,21 @@ const MARKET_OPTIONS = [
 const TIMEFRAME_OPTIONS = ['1m', '2m', '5m', '15m', '30m', '1h'];
 
 function pctText(v) {
-  if (v == null || Number.isNaN(Number(v))) return 'Ingen data';
+  if (v == null || Number.isNaN(Number(v))) return 'Ingen data ännu';
   return `${Number(v).toFixed(1)}%`;
 }
 
 function defaultStrategySettings(strategy) {
   return {
-    sl: strategy.default_sl ?? 0.2,
-    tp: strategy.default_tp ?? 1.5,
-    holding_time: strategy.default_holding_time ?? 10,
-    timeout: strategy.default_holding_time ?? 10,
-    confidence_threshold: 65,
+    sl: strategy.default_stop_loss_pct ?? strategy.default_sl ?? 0.2,
+    tp: strategy.default_take_profit_r ?? strategy.default_tp ?? 1.5,
+    holding_time: strategy.default_holding_time_min ?? strategy.default_holding_time ?? 10,
+    timeout: strategy.default_timeout_min ?? strategy.default_holding_time_min ?? strategy.default_holding_time ?? 10,
+    confidence_threshold: strategy.confidence_threshold ?? 65,
     volume_requirement: 1.2,
     cooldown: 5,
     max_trades_per_day: 5,
-    market_group: strategy.market_group || 'all',
+    market_group: strategy.market || strategy.market_group || 'all',
     timeframe: strategy.default_timeframes?.[0] || '2m',
     symbols: '',
   };
@@ -1287,9 +1838,10 @@ function StrategyCard({ strategy, performance, settings, onSettingsChange, onTes
           <div className="strat-title-row">
             <div className="strat-label">{strategy.name}</div>
             <span className="strat-paper-badge">Paper only</span>
+            {strategy.is_new && <span className="strat-new-badge">Ny strategi</span>}
           </div>
           <div className="strat-score-impact">
-            {strategy.market_label || strategy.market_group} · SL {strategy.default_sl}% · TP {strategy.default_tp}R · {strategy.default_holding_time} min
+            {strategy.market_label || strategy.market || strategy.market_group || 'Alla'} · SL {strategy.default_stop_loss_pct ?? strategy.default_sl}% · TP {strategy.default_take_profit_r ?? strategy.default_tp}R · {strategy.default_holding_time_min ?? strategy.default_holding_time} min
           </div>
         </div>
         <ConfigScopeBadge scope="test" />
@@ -1300,16 +1852,16 @@ function StrategyCard({ strategy, performance, settings, onSettingsChange, onTes
           <button className="strat-expand" onClick={() => setOpen(v => !v)} type="button">{open ? '▲' : '▼'}</button>
         </div>
       </div>
-      <div className="strat-desc">{strategy.explanation}</div>
+      <div className="strat-desc">{strategy.simple_explanation_sv || strategy.description_sv || strategy.explanation}</div>
       <div className="strat-result-row">
-        <span>Historisk vinstprocent: <strong>{perf ? pctText(perf.win_rate) : 'Ingen data'}</strong></span>
+        <span>Historisk vinstprocent: <strong>{perf ? pctText(perf.win_rate) : 'Ingen data ännu'}</strong></span>
         {badge && <span className={`strat-perf-badge strat-perf-${badge.tone}`}>{badge.label}</span>}
         {lastResult && <span>Senast: {lastResult.trades} trades · {pctText(lastResult.win_rate)} WR · {lastResult.total_pnl >= 0 ? '+' : ''}{lastResult.total_pnl}% P/L</span>}
       </div>
       {open && (
         <div className="strat-details">
           <div className="strat-rules">
-            {(strategy.signal_rules || []).map(rule => <span key={rule}>{rule.replace(/_/g, ' ')}</span>)}
+            {(strategy.engines_used?.length ? strategy.engines_used : strategy.signal_rules || []).map(rule => <span key={rule}>{String(rule).replace(/_/g, ' ')}</span>)}
           </div>
           <div className="strat-param-grid">
             <StrategyMiniSlider label="Stop loss" value={settings.sl} min={0.05} max={2} step={0.01} format={v => `${Number(v).toFixed(2)}%`} onChange={v => onSettingsChange({ sl: v })} />
@@ -1457,12 +2009,98 @@ function batchDurationLabel(batch) {
   return batch?.duration_label || batch?.details?.duration_label || '–';
 }
 
+function fmtBatchMetric(value, suffix = '') {
+  if (value == null || value === '') return '–';
+  const n = Number(value);
+  if (!Number.isFinite(n)) return String(value);
+  const fixed = Math.abs(n) >= 10 ? n.toFixed(1) : n.toFixed(2);
+  return `${fixed.replace(/\.0+$/, '').replace(/(\.\d)0$/, '$1')}${suffix}`;
+}
+
+function batchSetupLabel(row) {
+  if (!row) return '–';
+  const parts = [
+    `SL ${fmtBatchMetric(row.stop_loss, '%')}`,
+    `TP ${fmtBatchMetric(row.take_profit, 'R')}`,
+    `${row.holding_time ?? '–'} min`,
+  ];
+  if (row.timeout != null) parts.push(`timeout ${row.timeout} min`);
+  if (row.confidence_threshold != null) parts.push(`styrka ${row.confidence_threshold}`);
+  if (row.volume_requirement != null) parts.push(`volym ${row.volume_requirement}x`);
+  return parts.join(' / ');
+}
+
+function batchStatusLabel(status) {
+  const key = String(status || '').toLowerCase();
+  if (key === 'completed') return 'Klar';
+  if (key === 'running') return 'Kör';
+  if (key === 'stopped') return 'Stoppad';
+  if (key === 'paused') return 'Pausad';
+  if (key === 'created') return 'Väntar';
+  if (key === 'failed' || key === 'error') return 'Fel';
+  return status || 'Ingen batch';
+}
+
+function batchDecision(row) {
+  const trades = Number(row?.trades || 0);
+  const score = Number(row?.score || 0);
+  const winRate = Number(row?.win_rate || 0);
+  const avgPnl = Number(row?.avg_pnl || 0);
+  const quality = String(row?.sample_quality || '');
+  if (score >= 60 && winRate >= 50 && avgPnl > 0 && !['low', 'needs_more_data'].includes(quality)) {
+    return { label: '✅ Testa vidare', tone: 'go' };
+  }
+  if (trades < 20 || quality === 'low' || quality === 'needs_more_data') {
+    return { label: '⚠️ Behöver mer data', tone: 'more' };
+  }
+  return { label: '❌ Undvik', tone: 'avoid' };
+}
+
+function batchAuditMeta(event) {
+  const type = String(event?.type || '').toUpperCase();
+  if (type.includes('STARTED')) return { icon: '▶', status: 'Kör', text: 'Batchen har startat och tester körs.' };
+  if (type.includes('PROGRESS')) return { icon: '↻', status: 'Kör', text: 'Resultat fylls på steg för steg.' };
+  if (type.includes('COMPLETED')) return { icon: '✓', status: 'Klar', text: 'Alla planerade tester är klara.' };
+  if (type.includes('STOPPED')) return { icon: '■', status: 'Stoppad', text: 'Batchen stoppades innan allt var klart.' };
+  if (type.includes('PAUSED')) return { icon: 'Ⅱ', status: 'Pausad', text: 'Batchen är pausad och kan fortsätta senare.' };
+  if (type.includes('CREATED')) return { icon: '+', status: 'Väntar', text: 'Batchen är skapad men inte färdigkörd.' };
+  if (type.includes('ERROR') || type.includes('FAILED')) return { icon: '!', status: 'Fel', text: 'Ett test eller steg misslyckades.' };
+  return { icon: '•', status: event?.type || 'Status', text: event?.message || 'Batch-händelse registrerad.' };
+}
+
+function batchPipelineSteps({ form, comboCount, batchBlocked, activeBatch, compare }) {
+  const status = String(activeBatch?.status || '').toLowerCase();
+  const hasBatch = !!activeBatch?.id;
+  const hasResults = (compare?.best_overall || []).length > 0;
+  const hasBest = !!(compare?.recommended_config?.strategy_id || compare?.best_overall?.[0]?.strategy_id);
+  const paramsReady = ['stop_losses', 'take_profits', 'holding_times', 'timeouts', 'confidence_thresholds', 'volume_requirements']
+    .every((key) => csvNumbers(form[key]).length > 0);
+  const stopped = status === 'stopped';
+  const failed = status === 'failed' || status === 'error' || !!activeBatch?.error;
+  const completed = status === 'completed';
+  const running = status === 'running';
+
+  return [
+    { label: 'Välj strategier', status: form.strategy_ids.length ? 'Klar' : 'Väntar' },
+    { label: 'Välj symboler', status: csvSymbols(form.symbols).length ? 'Klar' : 'Väntar' },
+    { label: 'Välj timeframes', status: form.timeframes.length ? 'Klar' : 'Väntar' },
+    { label: 'Välj parametrar', status: batchBlocked || comboCount > 500 ? 'Fel' : paramsReady ? 'Klar' : 'Väntar' },
+    { label: 'Skapa batch', status: hasBatch ? 'Klar' : 'Väntar' },
+    { label: 'Kör tester', status: failed ? 'Fel' : stopped ? 'Stoppad' : running ? 'Kör' : completed ? 'Klar' : hasBatch ? 'Väntar' : 'Väntar' },
+    { label: 'Jämför resultat', status: hasResults ? 'Klar' : running ? 'Kör' : stopped ? 'Stoppad' : 'Väntar' },
+    { label: 'Välj bästa setup', status: hasBest ? 'Klar' : hasResults ? 'Kör' : 'Väntar' },
+    { label: 'Analysera slutsats', status: hasBest ? 'Klar' : 'Väntar' },
+  ];
+}
+
 function BatchTestTab() {
+  const { data: marketUniverse } = useMarketUniverse();
   const [catalog, setCatalog] = React.useState([]);
   const [batches, setBatches] = React.useState([]);
   const [activeBatch, setActiveBatch] = React.useState(null);
   const [compare, setCompare] = React.useState(null);
   const [auditTimeline, setAuditTimeline] = React.useState([]);
+  const [coverageMap, setCoverageMap] = React.useState({});
   const [message, setMessage] = React.useState('');
   const [loading, setLoading] = React.useState(true);
   const [form, setForm] = React.useState({
@@ -1478,15 +2116,20 @@ function BatchTestTab() {
     timeouts: '8',
     confidence_thresholds: '65',
     volume_requirements: '1.2',
+    certificate_simulation_mode: 'off',
   });
 
   const load = React.useCallback(async () => {
-    const [cat, list] = await Promise.all([
+    const [cat, list, coverage] = await Promise.all([
       fetch('/api/daytrading-strategies/catalog').then(r => r.ok ? r.json() : null).catch(() => null),
       fetch('/api/strategy-batches').then(r => r.ok ? r.json() : null).catch(() => null),
+      fetch('/api/data-coverage/symbols').then(r => r.ok ? r.json() : null).catch(() => null),
     ]);
     setCatalog(cat?.strategies || []);
     setBatches(list?.batches || []);
+    const map = {};
+    (coverage?.symbols || []).forEach((row) => { map[row.symbol] = row; });
+    setCoverageMap(map);
     if (!activeBatch && list?.batches?.[0]) setActiveBatch(list.batches[0]);
     setLoading(false);
   }, [activeBatch]);
@@ -1508,6 +2151,20 @@ function BatchTestTab() {
     return () => clearInterval(t);
   }, [activeBatch?.id]);
 
+  React.useEffect(() => {
+    if (!activeBatch?.id) return undefined;
+    let cancelled = false;
+    Promise.all([
+      fetch(`/api/strategy-batches/${activeBatch.id}/compare`).then(r => r.ok ? r.json() : null).catch(() => null),
+      fetch(`/api/audit/batches/recent?batch_id=${encodeURIComponent(activeBatch.id)}&limit=30`).then(r => r.ok ? r.json() : null).catch(() => null),
+    ]).then(([cmp, audit]) => {
+      if (cancelled) return;
+      if (cmp?.ok) setCompare(cmp);
+      if (audit?.events) setAuditTimeline(audit.events);
+    });
+    return () => { cancelled = true; };
+  }, [activeBatch?.id]);
+
   function toggleArray(key, value) {
     setForm(prev => {
       const set = new Set(prev[key] || []);
@@ -1520,6 +2177,7 @@ function BatchTestTab() {
     return {
       strategy_ids: form.strategy_ids,
       markets: form.markets,
+      certificate_simulation_mode: form.certificate_simulation_mode,
       symbols: csvSymbols(form.symbols),
       timeframes: form.timeframes,
       date_from: form.date_from,
@@ -1545,6 +2203,10 @@ function BatchTestTab() {
 
   async function createBatch() {
     setMessage('');
+    if (batchBlocked) {
+      setMessage('Kan inte köras ännu - datakälla saknas. Välj "Simulera mot underliggande" för test som inte använder exakt certifikatpris.');
+      return null;
+    }
     const res = await fetch('/api/strategy-batches', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -1595,11 +2257,125 @@ function BatchTestTab() {
 
   if (loading) return <div className="tl-tab-content"><div className="tl-loading">Laddar batch-test...</div></div>;
   const progress = activeBatch?.progress || {};
+  const marketGroups = marketUniverse?.groups || {};
+  const marketOptions = [{ id: 'all', label: 'Alla', dataStatus: 'active', group: { label: 'Alla', data_status: 'active' } }]
+    .concat(Object.entries(marketGroups)
+      .filter(([, grp]) => grp.batch_enabled !== false)
+      .sort((a, b) => (Number(a[1]?.priority) || 99) - (Number(b[1]?.priority) || 99))
+      .map(([id, group]) => ({
+        id,
+        label: groupLabel(group, id),
+        dataStatus: group.data_status || group.dataStatus || 'unknown',
+        group,
+      })));
+  const selectedProviderMissing = marketOptions.filter((m) => form.markets.includes(m.id) && m.dataStatus === 'needs_provider');
+  const batchBlocked = selectedProviderMissing.length > 0 && form.certificate_simulation_mode !== 'underlying_only';
+  const batchCoverageWarnings = csvSymbols(form.symbols).map((symbol) => coverageMap[symbol]).filter(Boolean).filter((row) => !row.usable_for_batch);
+  const bestResult = compare?.recommended_config?.strategy_id ? compare.recommended_config : compare?.best_overall?.[0];
+  const bestDecision = batchDecision(bestResult);
+  const pipelineSteps = batchPipelineSteps({ form, comboCount, batchBlocked, activeBatch, compare });
+  const completedTests = compare?.total_results ?? progress.completed ?? 0;
+  const statusText = batchStatusLabel(activeBatch?.status);
+  const summarySentence = bestResult
+    ? `${bestResult.strategy_name || bestResult.strategy_id} på ${bestResult.symbol || 'vald symbol'} gav bäst resultat i denna batch.`
+    : activeBatch?.id
+      ? 'Batchen har ännu ingen tydlig vinnare. Kör klart testerna eller uppdatera resultat.'
+      : 'Skapa och kör en batch för att få en tydlig slutsats.';
 
   return (
     <div className="tl-tab-content">
       <GroupHeader icon="🧪" title="Batch-test" />
+      <section className="batch-summary-card">
+        <div className="batch-summary-header">
+          <div>
+            <h2>Batch-slutsats</h2>
+            <p>{summarySentence}</p>
+          </div>
+          <div className={`batch-summary-status batch-summary-status-${String(activeBatch?.status || 'none').toLowerCase()}`}>
+            {statusText}
+          </div>
+        </div>
+
+        {/* Prominent winner highlight */}
+        {bestResult ? (
+          <div className="batch-winner-box">
+            <div className="batch-winner-trophy">🏆 Bäst i denna batch</div>
+            <div className="batch-winner-title">
+              {bestResult.strategy_name || bestResult.strategy_id}
+              {bestResult.symbol && <span className="batch-winner-on"> på {bestResult.symbol}</span>}
+            </div>
+            {(bestResult.timeframe || batchSetupLabel(bestResult) !== '–') && (
+              <div className="batch-winner-setup">
+                {[bestResult.timeframe, batchSetupLabel(bestResult)].filter(s => s && s !== '–').join(' · ')}
+              </div>
+            )}
+            <div className="batch-winner-metrics">
+              {bestResult.score != null && (
+                <div className="batch-winner-metric"><span>Score</span><strong>{fmtBatchMetric(bestResult.score)}</strong></div>
+              )}
+              {bestResult.win_rate != null && (
+                <div className="batch-winner-metric"><span>Win rate</span><strong>{fmtBatchMetric(bestResult.win_rate, '%')}</strong></div>
+              )}
+              {bestResult.avg_pnl != null && (
+                <div className="batch-winner-metric"><span>Snitt P/L</span><strong>{bestResult.avg_pnl >= 0 ? '+' : ''}{fmtBatchMetric(bestResult.avg_pnl, '%')}</strong></div>
+              )}
+              <span className={`batch-winner-decision-chip batch-result-${bestDecision.tone}`}>{bestDecision.label}</span>
+            </div>
+          </div>
+        ) : activeBatch?.id ? (
+          <div className="batch-winner-empty">
+            Batchen är igång eller klar men ingen tydlig vinnare finns ännu. Klicka <strong>Uppdatera resultat</strong> för att hämta jämförelse.
+          </div>
+        ) : (
+          <div className="batch-winner-empty">
+            Skapa och kör en batch för att se vilken strategi, symbol och setup som ger bäst resultat.
+          </div>
+        )}
+
+        <div className="batch-summary-grid">
+          <div><span>Bästa strategi</span><strong>{bestResult?.strategy_name || bestResult?.strategy_id || '–'}</strong></div>
+          <div><span>Bästa symbol</span><strong>{bestResult?.symbol || '–'}</strong></div>
+          <div><span>Bästa timeframe</span><strong>{bestResult?.timeframe || '–'}</strong></div>
+          <div><span>Bästa setup</span><strong style={{fontSize:'11px'}}>{batchSetupLabel(bestResult)}</strong></div>
+          <div><span>Score</span><strong>{fmtBatchMetric(bestResult?.score)}</strong></div>
+          <div><span>Win rate</span><strong>{fmtBatchMetric(bestResult?.win_rate, '%')}</strong></div>
+          <div><span>Snitt P/L</span><strong>{bestResult?.avg_pnl != null ? `${bestResult.avg_pnl >= 0 ? '+' : ''}${fmtBatchMetric(bestResult.avg_pnl, '%')}` : '–'}</strong></div>
+          <div><span>Antal tester</span><strong>{completedTests}</strong></div>
+        </div>
+
+        <div className="batch-summary-recommendation">
+          <strong>Rekommendation:</strong> Testa denna setup vidare i replay/paper innan den används i daytrading-test.
+          {bestResult && <span> Nästa steg: {bestDecision.label}. Undvik setup med negativt snitt P/L, låg score eller för lite data.</span>}
+        </div>
+        <div className="batch-summary-actions">
+          <span className="batch-summary-safety-note">Resultatet är analys-only. Runtime och paper test styrs på Daytrading.</span>
+        </div>
+      </section>
       <div className="batch-safety">Paper/replay only · actions_allowed=false · can_place_orders=false · live_trading_enabled=false</div>
+
+      <section className="batch-pipeline-card">
+        <div className="batch-pipeline-header">
+          <div>
+            <div className="batch-section-title">Batch-pipeline</div>
+            <div className="batch-pipeline-subtitle">Från konfiguration till paper-test</div>
+          </div>
+        </div>
+        <div className="batch-pipeline-flow">
+          {pipelineSteps.map((step, i) => {
+            const ico = step.status === 'Klar' ? '✓' : step.status === 'Kör' ? '◌' : step.status === 'Fel' ? '!' : step.status === 'Stoppad' ? '■' : '○';
+            return (
+              <React.Fragment key={step.label}>
+                {i > 0 && <span className="batch-pipeline-arrow">›</span>}
+                <div className={`batch-pipeline-step batch-pipeline-${step.status.toLowerCase()}`}>
+                  <span className="batch-pipeline-step-icon">{ico}</span>
+                  <strong>{step.label}</strong>
+                  <span>{step.status}</span>
+                </div>
+              </React.Fragment>
+            );
+          })}
+        </div>
+      </section>
 
       <div className="batch-layout">
         <div className="batch-panel">
@@ -1614,18 +2390,55 @@ function BatchTestTab() {
           </div>
 
           <div className="batch-section-title">Marknader och symboler</div>
+          <label className="batch-field">
+            <span>Certifikat-testläge</span>
+            <select
+              value={form.certificate_simulation_mode}
+              onChange={e => setForm(f => ({ ...f, certificate_simulation_mode: e.target.value }))}
+            >
+              <option value="off">Av</option>
+              <option value="underlying_only">Simulera mot underliggande</option>
+              <option value="estimated_leverage" disabled>Uppskattad hävstång (ej aktivt)</option>
+              <option value="real_certificate_data" disabled>Riktig certifikatdata (kräver datakälla)</option>
+            </select>
+          </label>
+          {form.certificate_simulation_mode === 'underlying_only' && (
+            <div className="batch-info">
+              Systemet testar idén mot underliggande marknad, inte mot exakt certifikatpris.
+            </div>
+          )}
+          {form.certificate_simulation_mode === 'estimated_leverage' && (
+            <div className="batch-warning">
+              Detta är bara uppskattning. Certifikatets riktiga pris kan avvika på grund av spread, avgifter och produktvillkor.
+            </div>
+          )}
           <div className="batch-inline-checks">
-            {['all', 'crypto', 'stocks', 'index', 'etf'].map(m => (
-              <label key={m} className="batch-pill-check">
-                <input type="checkbox" checked={form.markets.includes(m)} onChange={() => toggleArray('markets', m)} />
-                <span>{m}</span>
+            {marketOptions.map(m => {
+              const needsProvider = m.dataStatus === 'needs_provider';
+              const blocked = needsProvider && form.certificate_simulation_mode !== 'underlying_only';
+              return (
+              <label key={m.id} className={`batch-pill-check${blocked ? ' batch-pill-blocked' : ''}`}>
+                <input type="checkbox" checked={form.markets.includes(m.id)} disabled={blocked} onChange={() => toggleArray('markets', m.id)} />
+                <span>{m.label}</span>
+                {needsProvider && <em>{blocked ? 'Kan inte köras ännu - datakälla saknas' : 'Simuleras mot underliggande'}</em>}
               </label>
-            ))}
+              );
+            })}
           </div>
+          {batchBlocked && (
+            <div className="batch-warning">
+              Kan inte köras ännu - datakälla saknas: {selectedProviderMissing.map(m => m.label).join(', ')}.
+            </div>
+          )}
           <label className="batch-field">
             <span>Symboler</span>
             <input value={form.symbols} onChange={e => setForm(f => ({ ...f, symbols: e.target.value }))} />
           </label>
+          {batchCoverageWarnings.length > 0 && (
+            <div className="batch-warning">
+              För lite historik för säkert test: {batchCoverageWarnings.map((row) => row.symbol).join(', ')}.
+            </div>
+          )}
           <div className="batch-inline-checks">
             {TIMEFRAME_OPTIONS.map(tf => (
               <label key={tf} className="batch-pill-check">
@@ -1642,27 +2455,33 @@ function BatchTestTab() {
         </div>
 
         <div className="batch-panel">
-          <div className="batch-section-title">Parameter grid</div>
+          <div className="batch-section-title">Parametrar</div>
           <label className="batch-field"><span>Stop loss %</span><input value={form.stop_losses} onChange={e => setForm(f => ({ ...f, stop_losses: e.target.value }))} /></label>
           <label className="batch-field"><span>Take profit R</span><input value={form.take_profits} onChange={e => setForm(f => ({ ...f, take_profits: e.target.value }))} /></label>
-          <label className="batch-field"><span>Holding time min</span><input value={form.holding_times} onChange={e => setForm(f => ({ ...f, holding_times: e.target.value }))} /></label>
+          <label className="batch-field"><span>Max tid i trade</span><input value={form.holding_times} onChange={e => setForm(f => ({ ...f, holding_times: e.target.value }))} /></label>
           <label className="batch-field"><span>Timeout min</span><input value={form.timeouts} onChange={e => setForm(f => ({ ...f, timeouts: e.target.value }))} /></label>
-          <label className="batch-field"><span>Confidence</span><input value={form.confidence_thresholds} onChange={e => setForm(f => ({ ...f, confidence_thresholds: e.target.value }))} /></label>
+          <label className="batch-field"><span>Minsta styrka</span><input value={form.confidence_thresholds} onChange={e => setForm(f => ({ ...f, confidence_thresholds: e.target.value }))} /></label>
           <label className="batch-field"><span>Volymkrav</span><input value={form.volume_requirements} onChange={e => setForm(f => ({ ...f, volume_requirements: e.target.value }))} /></label>
+          <div className="lab-batch-help">
+            SL = Stop loss · TP = Take profit · R = Risk/reward · Timeframe = vilken tidsram testet kördes på · WR = Win rate
+          </div>
         </div>
       </div>
 
-      <div className={`batch-combo-card${comboCount > 500 ? ' batch-too-large' : ''}`}>
-        <div><strong>{comboCount}</strong><span>kombinationer</span></div>
-        <div><strong>{activeBatch?.status || 'ingen batch'}</strong><span>status</span></div>
-        <div><strong>{progress.completed ?? 0}/{progress.total ?? 0}</strong><span>progress</span></div>
-        <div><strong>{progress.pct ?? 0}%</strong><span>klart</span></div>
+      <div className={`lab-batch-status-grid${comboCount > 500 ? ' batch-too-large' : ''}`}>
+        <div><strong>{comboCount}</strong><span>Kombinationer</span></div>
+        <div><strong>{statusText}</strong><span>Status</span></div>
+        <div><strong>{progress.completed ?? 0}/{progress.total ?? 0}</strong><span>Progress</span></div>
+        <div><strong>{progress.pct ?? 0}%</strong><span>Klart %</span></div>
+        <div><strong>{fmtBatchTime(activeBatch?.batch_started_at || activeBatch?.started_at)}</strong><span>Starttid</span></div>
+        <div><strong>{fmtBatchTime(activeBatch?.batch_completed_at || activeBatch?.completed_at)}</strong><span>Sluttid</span></div>
+        <div><strong>{fmtBatchTime(activeBatch?.updated_at)}</strong><span>Senast uppdaterad</span></div>
       </div>
       {message && <div className="batch-message">{message}</div>}
 
       <div className="batch-actions">
-        <button type="button" onClick={createBatch}>Skapa batch</button>
-        <button type="button" onClick={() => runBatch()} disabled={comboCount > 500}>Starta batch</button>
+        <button type="button" onClick={createBatch} disabled={batchBlocked}>Skapa batch</button>
+        <button type="button" onClick={() => runBatch()} disabled={comboCount > 500 || batchBlocked}>Starta batch</button>
         <button type="button" onClick={pauseBatch} disabled={!activeBatch}>Pausa</button>
         <button type="button" onClick={stopBatch} disabled={!activeBatch}>Stoppa</button>
         <button type="button" onClick={() => loadCompare()} disabled={!activeBatch}>Uppdatera resultat</button>
@@ -1673,24 +2492,31 @@ function BatchTestTab() {
       </div>
 
       {activeBatch && (
-        <div className="batch-timeline">
-          <div className="batch-section-title">Audit-timeline</div>
-          <div className="batch-timeline-grid">
+	        <div className="batch-timeline lab-batch-timeline">
+	          <div className="batch-section-title">Audit-timeline</div>
+	          <div className="batch-timeline-grid">
             <div><span>Skapad</span><strong>{fmtBatchTime(activeBatch.batch_created_at || activeBatch.created_at)}</strong></div>
             <div><span>Startad</span><strong>{fmtBatchTime(activeBatch.batch_started_at || activeBatch.started_at)}</strong></div>
             <div><span>Klar</span><strong>{fmtBatchTime(activeBatch.batch_completed_at || activeBatch.completed_at)}</strong></div>
             <div><span>Duration</span><strong>{batchDurationLabel(activeBatch)}</strong></div>
-          </div>
-          <div className="batch-audit-list">
-            {auditTimeline.length > 0 ? auditTimeline.map(event => (
-              <div key={event.event_id} className="batch-audit-row">
-                <span>{fmtBatchTime(event.timestamp)}</span>
-                <strong>{event.message}</strong>
-                <em>{event.details?.progress ? `${event.details.progress.completed || 0}/${event.details.progress.total || 0}` : event.type}</em>
-              </div>
-            )) : (
-              <div className="batch-audit-empty">Ingen audit-timeline ännu.</div>
-            )}
+	          </div>
+	          <div className="batch-audit-list">
+	            {auditTimeline.length > 0 ? auditTimeline.map(event => {
+              const meta = batchAuditMeta(event);
+              const eventProgress = event.details?.progress ? `${event.details.progress.completed || 0}/${event.details.progress.total || 0}` : '–';
+              return (
+	              <div key={event.event_id || `${event.timestamp}-${event.type}`} className="batch-audit-row lab-batch-audit-row">
+	                <span className="lab-batch-audit-icon">{meta.icon}</span>
+	                <span>{fmtBatchTime(event.timestamp)}</span>
+	                <strong>{event.message || meta.text}</strong>
+	                <em>{meta.status}</em>
+	                <span>{eventProgress}</span>
+	                <small>{meta.text}</small>
+	              </div>
+              );
+            }) : (
+	              <div className="batch-audit-empty">Ingen audit-timeline ännu.</div>
+	            )}
           </div>
         </div>
       )}
@@ -1698,28 +2524,49 @@ function BatchTestTab() {
       {batches.length > 0 && (
         <div className="batch-history">
           {batches.slice(0, 6).map(b => (
-            <button key={b.id} type="button" className={activeBatch?.id === b.id ? 'active' : ''} onClick={() => { setActiveBatch(b); setCompare(null); setAuditTimeline([]); }}>
-              <strong>{b.name}</strong>
-              <span>{b.status} · {b.progress?.completed || 0}/{b.progress?.total || 0}</span>
-            </button>
-          ))}
-        </div>
-      )}
+	            <button key={b.id} type="button" className={activeBatch?.id === b.id ? 'active' : ''} onClick={() => { setActiveBatch(b); setCompare(null); setAuditTimeline([]); }}>
+	              <strong>{b.name}</strong>
+	              <span>{batchStatusLabel(b.status)} · {b.progress?.completed || 0}/{b.progress?.total || 0}</span>
+	            </button>
+	          ))}
+	        </div>
+	      )}
 
-      {compare?.best_overall?.length > 0 && (
-        <div className="batch-results">
-          <div className="batch-section-title">Toppresultat</div>
-          {compare.best_overall.slice(0, 8).map((r, i) => (
-            <div key={`${r.strategy_id}-${r.symbol}-${i}`} className="batch-result-row">
-              <strong>{r.score}</strong>
-              <span>{r.strategy_name}</span>
-              <span>{r.symbol}</span>
-              <span>SL {r.stop_loss}% / TP {r.take_profit}R / {r.holding_time}m</span>
-              <span>{r.win_rate}% WR · {r.avg_pnl >= 0 ? '+' : ''}{r.avg_pnl}%</span>
+	      {compare?.best_overall?.length > 0 && (
+	        <div className="batch-results batch-result-table">
+	          <div className="batch-section-title">Topplista</div>
+            <div className="batch-result-row batch-result-head">
+              <span>Rank</span>
+              <span>Score</span>
+              <span>Strategi</span>
+              <span>Symbol</span>
+              <span>Setup</span>
+              <span>Timeframe</span>
+              <span>Win rate</span>
+              <span>Snitt P/L</span>
+              <span>Beslut</span>
             </div>
-          ))}
-        </div>
-      )}
+	          {compare.best_overall.slice(0, 8).map((r, i) => {
+              const decision = batchDecision(r);
+              return (
+	            <div key={`${r.strategy_id}-${r.symbol}-${i}`} className={`batch-result-row${i === 0 ? ' batch-result-row-winner' : ''}`}>
+	              <strong>#{i + 1}</strong>
+	              <span className="batch-result-score">{fmtBatchMetric(r.score)}</span>
+	              <span>{r.strategy_name || r.strategy_id}</span>
+	              <span>{r.symbol}</span>
+	              <span className="batch-result-setup">{batchSetupLabel(r)}</span>
+	              <span>{r.timeframe || '–'}</span>
+	              <span>{fmtBatchMetric(r.win_rate, '%')}</span>
+	              <span className={r.avg_pnl >= 0 ? 'batch-result-pos' : 'batch-result-neg'}>{r.avg_pnl >= 0 ? '+' : ''}{fmtBatchMetric(r.avg_pnl, '%')}</span>
+	              <span className={`batch-result-decision batch-result-${decision.tone}`}>{decision.label}</span>
+	            </div>
+              );
+            })}
+          <div className="batch-result-legend">
+            <strong>Förklaring:</strong> SL = Stop loss · TP = Take profit · R = Risk/reward · WR = Win rate · Timeframe = tidsram för testet
+          </div>
+	        </div>
+	      )}
     </div>
   );
 }
@@ -1963,24 +2810,37 @@ function PresetsTab({ toggles, params, exits, onApplyToggles, onApplyParams, onA
   );
 }
 
-function CandidatesTab() {
+function useRecentCandidates(limit = 40) {
   const [data, setData] = useState(null);
   const [stats, setStats] = useState(null);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(null);
 
-  useEffect(() => {
+  const load = React.useCallback(() => {
+    setLoading(true);
+    setError(null);
     Promise.all([
-      fetch('/api/candidates/recent?n=40').then(r => r.ok ? r.json() : null).catch(() => null),
+      fetch(`/api/candidates/recent?n=${limit}`).then(r => r.ok ? r.json() : null).catch(() => null),
       fetch('/api/candidates/stats').then(r => r.ok ? r.json() : null).catch(() => null),
     ]).then(([recent, s]) => {
       setData(recent);
       setStats(s);
       setLoading(false);
+    }).catch(err => {
+      setError(err.message);
+      setLoading(false);
     });
-  }, []);
+  }, [limit]);
+
+  useEffect(() => { load(); }, [load]);
+
+  return { data, stats, candidates: data?.candidates || [], loading, error, reload: load };
+}
+
+function CandidatesTab() {
+  const { data, stats, candidates, loading } = useRecentCandidates(40);
 
   if (loading) return <div className="tl-loading">Laddar kandidater...</div>;
-  const candidates = data?.candidates || [];
 
   return (
     <div className="tl-tab-content">
@@ -2008,6 +2868,280 @@ function CandidatesTab() {
   );
 }
 
+function signalDirection(signal = {}) {
+  const raw = String(signal.direction || signal.nextMoveBias || signal.bias || signal.signal || '').toUpperCase();
+  if (/SHORT|BEAR|DOWN|SELL/.test(raw)) return 'DOWN';
+  if (/LONG|BULL|UP|BUY/.test(raw)) return 'UP';
+  return 'NEUTRAL';
+}
+
+function signalStrength(signal = {}) {
+  return nullableNumber(signal.confidence, signal.confidenceScore, signal.tradeScore, signal.priorityScore, signal.score);
+}
+
+function nullableNumber(...values) {
+  const value = values.find(v => v !== undefined && v !== null && v !== '');
+  if (value === undefined) return null;
+  const n = Number(value);
+  return Number.isFinite(n) ? n : null;
+}
+
+function signalStrategyLabel(signal = {}) {
+  return signal.strategyName || signal.strategy_name || signal.strategy_id || signal.setupId || signal.signalFamily || signal.signal || 'Strategi saknas';
+}
+
+function signalOptionLabel(signal = {}, index = 0) {
+  const time = formatSignalTimestamp(signal.detected_at || signal.ts || signal.evaluated_at, `#${index + 1}`);
+  const strength = signalStrength(signal);
+  return `${signal.symbol || 'Okänd'} · ${signalStrategyLabel(signal)} · ${strength == null ? 'score saknas' : strength} · ${time}`;
+}
+
+function signalTimestampMs(signal = {}) {
+  const raw = signal.detected_at || signal.ts || signal.evaluated_at || signal.timestamp || signal.created_at;
+  if (!raw) return 0;
+  const d = new Date(raw);
+  const ms = d.getTime();
+  return Number.isNaN(ms) ? 0 : ms;
+}
+
+function formatSignalTimestamp(value, fallback = 'Saknas') {
+  if (!value) return fallback;
+  const d = new Date(value);
+  if (Number.isNaN(d.getTime())) return fallback;
+  return d.toLocaleString('sv-SE', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+}
+
+function displaySignalValue(value, suffix = '') {
+  if (value === null || value === undefined || value === '') return 'Saknas';
+  if (typeof value === 'number' && !Number.isFinite(value)) return 'Saknas';
+  return `${value}${suffix}`;
+}
+
+function agentDebateText(agent = {}) {
+  return agent.rationale_sv || agent.thesis_sv || agent.main_risk || 'Saknas';
+}
+
+function buildAgentDebateSignalContext(signal = {}) {
+  const marketGroup = signal.market_group || signal.marketGroup || signal.marketType || signal.market || 'unknown';
+  const confidence = signalStrength(signal);
+  const volumeRatio = nullableNumber(signal.volume_ratio, signal.relativeVolume, signal.volumeRatio, signal.volume_requirement);
+  const spreadEstimate = nullableNumber(signal.spread_estimate, signal.spreadEstimate, signal.spread_percent, signal.spreadPct);
+  const volatility = nullableNumber(signal.volatility, signal.volatility_score, signal.atr_percent, signal.atrPct);
+  const rsi = nullableNumber(signal.rsi, signal.rsi14);
+  const missingFields = [];
+  if (confidence == null) missingFields.push('confidence');
+  if (volumeRatio == null) missingFields.push('volume_ratio');
+  if (spreadEstimate == null) missingFields.push('spread_estimate');
+  if (volatility == null) missingFields.push('volatility');
+  if (rsi == null) missingFields.push('rsi');
+  const context = {
+    symbol: signal.symbol,
+    market_group: marketGroup,
+    timeframe: signal.timeframe || signal.tf || '2m',
+    direction: signalDirection(signal),
+    volume_ratio: volumeRatio,
+    spread_estimate: spreadEstimate,
+    volatility,
+    rsi,
+    missing_fields: missingFields,
+    risk_class: signal.risk_class || signal.riskClass || 'unknown',
+    signalFamily: signal.signalFamily || signal.signal_family || signal.setupId || signal.signal || 'unknown',
+    strategy_name: signalStrategyLabel(signal),
+    live: false,
+    live_enabled: false,
+    live_trading_enabled: false,
+    actions_allowed: false,
+    can_place_orders: false,
+    can_modify_system: false,
+  };
+  if (confidence != null) context.confidence = confidence;
+  return context;
+}
+
+function AgentDebateTab() {
+  const [status, setStatus] = React.useState(null);
+  const { candidates, loading: signalsLoading, error: signalsError } = useRecentCandidates(40);
+  const [selectedIndex, setSelectedIndex] = React.useState(0);
+  const [result, setResult] = React.useState(null);
+  const [loading, setLoading] = React.useState(false);
+  const [error, setError] = React.useState(null);
+
+  React.useEffect(() => {
+    fetch('/api/agent-debate/status')
+      .then(r => r.ok ? r.json() : null)
+      .then(setStatus)
+      .catch(() => setStatus(null));
+  }, []);
+
+  const sortedCandidates = React.useMemo(() => (
+    [...candidates].sort((a, b) => signalTimestampMs(b) - signalTimestampMs(a))
+  ), [candidates]);
+
+  React.useEffect(() => {
+    if (sortedCandidates.length > 0 && selectedIndex >= sortedCandidates.length) setSelectedIndex(0);
+  }, [selectedIndex, sortedCandidates.length]);
+
+  async function analyze() {
+    const selected = sortedCandidates[selectedIndex] || sortedCandidates[0];
+    if (!selected) {
+      setError('Ingen signal vald.');
+      return;
+    }
+    setLoading(true);
+    setError(null);
+    try {
+      const signalContext = buildAgentDebateSignalContext(selected);
+      const res = await fetch('/api/agent-debate/analyze-signal', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(signalContext),
+      });
+      const body = await res.json();
+      setResult(body);
+      if (!res.ok || body.ok === false) setError(body.error || 'Analysen kunde inte köras.');
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  const agents = result?.agents ? Object.entries(result.agents) : [];
+  const selectedSignal = sortedCandidates[selectedIndex] || sortedCandidates[0] || null;
+  const selectedContext = selectedSignal ? buildAgentDebateSignalContext(selectedSignal) : null;
+  const selectedTimestamp = selectedSignal
+    ? (selectedSignal.detected_at || selectedSignal.ts || selectedSignal.evaluated_at || selectedSignal.timestamp || selectedSignal.created_at)
+    : null;
+  const selectedIsLatest = sortedCandidates.length > 0 && selectedIndex === 0;
+  const missingFields = result?.missing_fields?.length ? result.missing_fields : selectedContext?.missing_fields || [];
+  const blockedBySafety = result?.error === 'live_or_order_intent_blocked' || error === 'live_or_order_intent_blocked';
+  const roleLabels = {
+    technical: 'Teknisk bild',
+    sentiment: 'Sentiment',
+    bull: 'Bull case',
+    bear: 'Bear case',
+    risk: 'Risk',
+  };
+
+  return (
+    <div className="tl-tab-content">
+      <GroupHeader icon="AI" title="AI Beslutsråd" />
+      <div className="ad-safety">
+        <span>analysis_only={String((result || status)?.analysis_only === true)}</span>
+        <span>paper_only={String((result || status)?.paper_only === true)}</span>
+        <span>live=false</span>
+        <span>live_enabled=false</span>
+        <span>actions_allowed=false</span>
+        <span>can_place_orders=false</span>
+        <span>can_modify_system=false</span>
+      </div>
+      <div className="ad-advisory">
+        <strong>AI Beslutsråd förklarar en signal.</strong> Det optimerar inte strategier och lägger inga order.
+      </div>
+      <div className="ad-difference">Skillnad: AI Optimization Agent analyserar historiska trades. AI Beslutsråd analyserar en enskild signal.</div>
+      <div className="agent-debate-safety-row">Rådgivande analys. Ingen riktig order kan läggas.</div>
+
+      <div className="ad-panel">
+        {signalsLoading && <div className="tl-loading">Hämtar senaste signaler...</div>}
+        {!signalsLoading && signalsError && <div className="ad-error">Kunde inte hämta signaler: {signalsError}</div>}
+        {!signalsLoading && !signalsError && sortedCandidates.length === 0 && (
+          <PlatformEmptyState title="Inga senaste signaler hittades" text="Inga senaste signaler hittades. Kör scanner eller vänta på nya kandidater." />
+        )}
+        {!signalsLoading && sortedCandidates.length > 0 && (
+          <>
+            <label className="agent-debate-select">
+              <span>Välj signal</span>
+              <select value={selectedIndex} onChange={e => { setSelectedIndex(Number(e.target.value)); setResult(null); setError(null); }}>
+                {sortedCandidates.map((signal, index) => (
+                  <option key={`${signal.symbol || 'signal'}-${signal.ts || signal.detected_at || index}`} value={index}>
+                    {index === 0 ? 'Senaste signal - ' : ''}{signalOptionLabel(signal, index)}
+                  </option>
+                ))}
+              </select>
+            </label>
+            {selectedContext && (
+              <div className="agent-debate-latest-card">
+                <div className="agent-debate-latest-head">
+                  <strong>{selectedIsLatest ? 'Senaste signal' : 'Vald signal'}</strong>
+                  {selectedIsLatest && <span>Senaste signal</span>}
+                </div>
+                <div className="agent-debate-signal-summary">
+                  <span><b>Symbol</b>{displaySignalValue(selectedContext.symbol || selectedSignal.symbol)}</span>
+                  <span><b>Strategi</b>{displaySignalValue(selectedContext.strategy_name)}</span>
+                  <span><b>Timeframe</b>{displaySignalValue(selectedContext.timeframe)}</span>
+                  <span><b>Riktning</b>{displaySignalValue(selectedContext.direction)}</span>
+                  <span><b>Confidence/score</b>{displaySignalValue(selectedContext.confidence, '/100')}</span>
+                  <span><b>Timestamp</b>{formatSignalTimestamp(selectedTimestamp)}</span>
+                </div>
+              </div>
+            )}
+            {selectedContext?.missing_fields?.length > 0 && (
+              <div className="agent-debate-missing">Saknad data: {selectedContext.missing_fields.join(', ')}. Null/undefined tolkas inte som 0.</div>
+            )}
+          </>
+        )}
+        <button className="ad-run-btn" type="button" onClick={analyze} disabled={loading || signalsLoading || sortedCandidates.length === 0}>
+          {loading ? 'Analyserar signal...' : selectedIsLatest ? 'Analysera senaste signal' : 'Analysera vald signal'}
+        </button>
+      </div>
+
+      {error && <div className="ad-error">{blockedBySafety ? 'Säkerhetsvarning: signalen innehöll live/order-intent och blockerades.' : error}</div>}
+
+      {result?.ok && (
+        <div className="ad-result">
+          {missingFields.length > 0 && (
+            <div className="agent-debate-missing">
+              Saknad data: {missingFields.join(', ')}. {result.data_quality_warning || 'Analysen är mer osäker.'}
+            </div>
+          )}
+          <div className="ad-final">
+            <div>
+              <span>Symbol</span>
+              <strong>{displaySignalValue(result.symbol || selectedContext?.symbol || 'Okänd')}</strong>
+            </div>
+            <div>
+              <span>Strategi</span>
+              <strong>{displaySignalValue(selectedContext?.strategy_name || result.signal?.signal_family)}</strong>
+            </div>
+            <div>
+              <span>Timeframe</span>
+              <strong>{displaySignalValue(result.timeframe || selectedContext?.timeframe)}</strong>
+            </div>
+            <div>
+              <span>Slutbeslut</span>
+              <strong>{displaySignalValue(result.final_decision)}</strong>
+            </div>
+            <div>
+              <span>Confidence</span>
+              <strong>{displaySignalValue(result.confidence_score, '/100')}</strong>
+            </div>
+            <div>
+              <span>Safety</span>
+              <strong>Order blockerad</strong>
+            </div>
+          </div>
+          <p className="ad-rationale">{result.rationale_sv}</p>
+          <div className="ad-agent-grid">
+            {agents.map(([key, agent]) => (
+              <div key={key} className="ad-agent-card">
+                <div className="ad-agent-title">{roleLabels[key] || key.replace(/_/g, ' ')}</div>
+                <div className="ad-agent-score">
+                  {agent.score ?? agent.case_strength ?? agent.risk_level ?? 'neutral'}
+                </div>
+                <div className="ad-agent-text">{agentDebateText(agent)}</div>
+              </div>
+            ))}
+          </div>
+          <div className="agent-debate-safety-row">Rådgivande analys. Ingen riktig order kan läggas.</div>
+        </div>
+      )}
+      {!result?.ok && blockedBySafety && (
+        <div className="agent-debate-safety-row">Rådgivande analys. Ingen riktig order kan läggas.</div>
+      )}
+    </div>
+  );
+}
+
 // ── Tab bar ───────────────────────────────────────────────────────────────────
 const TABS = [
   { key: 'strategier',    label: 'Strategier',    icon: '🧩' },
@@ -2017,6 +3151,7 @@ const TABS = [
   { key: 'exits',         label: 'Exits',         icon: '↘️' },
   { key: 'replay',        label: 'Replay',        icon: '▶️' },
   { key: 'ai_agent',      label: 'AI Agent',      icon: '🤖' },
+  { key: 'agent_debate',  label: 'AI Beslutsråd', icon: 'AI' },
   { key: 'adaptive',      label: 'Adaptive Intelligence', icon: '🧠' },
   { key: 'review',        label: 'Graf',          icon: '⌁' },
   { key: 'candidates',    label: 'Kandidater',    icon: '◎' },
@@ -2074,7 +3209,7 @@ export default function TradingLabPage() {
       {/* Header */}
       <div className="tl-page-header">
         <div className="tl-page-title-row">
-          <h1 className="tl-page-title">🧪 Trading Lab</h1>
+          <h1 className="tl-page-title">🧪 LAB</h1>
           <div className="tl-page-meta">
             <span className="tl-active-count">{activeSignalCount} aktiva motorer</span>
             <ConfigScopeBadge scope="test" />
@@ -2083,7 +3218,7 @@ export default function TradingLabPage() {
           </div>
         </div>
         <p className="tl-page-sub">
-          Experimentera med signalmotorer, parametrar och exitstrategier.
+          Testa strategier, replay, batch, parametrar, AI-agent, adaptive intelligence och exits.
           Påverkar endast tester och analys, inte live-scannerns globala config.
         </p>
       </div>
@@ -2160,69 +3295,50 @@ export default function TradingLabPage() {
       {/* Tab: Parametrar */}
       {tab === 'sliders' && (
         <div className="tl-tab-content">
-          <GroupHeader icon="🎯" title="Handelsparametrar" />
-          <div className="tl-sliders-grid">
-            <Slider
-              label="Stop Loss" unit="%" desc="Maximalt tillåtet nedgång från entry"
-              value={params.stop_loss} min={0.1} max={5} step={0.1}
-              onChange={v => setParam('stop_loss', v)}
-            />
-            <Slider
-              label="Take Profit" desc="Vinstmål i förhållande till risk (R)"
-              value={params.take_profit} min={0.5} max={10} step={0.5}
-              format={v => `${v}R`}
-              onChange={v => setParam('take_profit', v)}
-            />
-            <Slider
-              label="Styrketröskell" desc="Minsta signalstyrka för att tillåtas"
-              value={params.confidence_threshold} min={40} max={95} step={1}
-              format={v => `${v}/100`}
-              onChange={v => setParam('confidence_threshold', v)}
-            />
-            <Slider
-              label="Maximal hålltid" desc="Stäng automatiskt efter denna tid"
-              value={params.holding_time} min={1} max={240} step={1}
-              format={v => v < 60 ? `${v} min` : `${(v/60).toFixed(1)} h`}
-              onChange={v => setParam('holding_time', v)}
-            />
-            <Slider
-              label="Väntetid (cooldown)" desc="Paus mellan trades på samma symbol"
-              value={params.cooldown} min={0} max={60} step={1}
-              format={v => v === 0 ? 'Ingen' : `${v} min`}
-              onChange={v => setParam('cooldown', v)}
-            />
-            <Slider
-              label="Volymfilter" desc="Lägsta relativ volym (1.0 = normal)"
-              value={params.volume_filter} min={0.5} max={3} step={0.1}
-              format={v => `${v}x`}
-              onChange={v => setParam('volume_filter', v)}
-            />
-            <Slider
-              label="Risk per trade" unit="%" desc="Max förlust per trade som andel av kapital"
-              value={params.risk_per_trade} min={0.1} max={5} step={0.1}
-              onChange={v => setParam('risk_per_trade', v)}
-            />
-            <Slider
-              label="Timeout" desc="Stäng om priset inte rört sig inom denna tid"
-              value={params.timeout} min={1} max={240} step={1}
-              format={v => v < 60 ? `${v} min` : `${(v/60).toFixed(1)} h`}
-              onChange={v => setParam('timeout', v)}
-            />
+          <GroupHeader icon="🎯" title="Testinställningar" />
+          <p className="tl-sliders-intro">
+            Här kan du ändra hur systemet testar signaler. Detta påverkar bara test, paper och replay - inte riktiga trades.
+          </p>
+
+          <div className="tl-howto-box">
+            <div>
+              <h2>Så använder du sliders</h2>
+              <p>En slider är bara ett reglage som gör systemet mer försiktigt eller mer aggressivt.</p>
+            </div>
+            <ol>
+              <li>Börja med små ändringar.</li>
+              <li>Testa en sak i taget.</li>
+              <li>Kör batch-test efter ändring.</li>
+              <li>Jämför resultat före och efter.</li>
+              <li>Använd inte höga riskvärden utan mycket testdata.</li>
+            </ol>
           </div>
 
-          <div className="tl-params-summary">
-            <div className="tl-params-summary-title">Aktuell konfiguration</div>
-            <div className="tl-params-grid">
-              <div className="tl-param-chip"><span>SL</span> {params.stop_loss}%</div>
-              <div className="tl-param-chip"><span>TP</span> {params.take_profit}R</div>
-              <div className="tl-param-chip"><span>Styrka</span> {params.confidence_threshold}/100</div>
-              <div className="tl-param-chip"><span>Hålltid</span> {params.holding_time < 60 ? `${params.holding_time}m` : `${(params.holding_time/60).toFixed(1)}h`}</div>
-              <div className="tl-param-chip"><span>Cooldown</span> {params.cooldown === 0 ? 'Ingen' : `${params.cooldown}m`}</div>
-              <div className="tl-param-chip"><span>Volym</span> {params.volume_filter}x</div>
-              <div className="tl-param-chip"><span>Risk</span> {params.risk_per_trade}%</div>
-              <div className="tl-param-chip"><span>Timeout</span> {params.timeout < 60 ? `${params.timeout}m` : `${(params.timeout/60).toFixed(1)}h`}</div>
+          <div className="tl-test-safe-box">
+            <div>
+              <h2>Säkert testläge</h2>
+              <p>Inga riktiga köp eller sälj görs. Dessa reglage används bara för analys och låtsastrading.</p>
+            </div>
+            <div className="tl-tech-flags">
+              <span>actions_allowed=false</span>
+              <span>can_place_orders=false</span>
+              <span>live_trading_enabled=false</span>
             </div>
           </div>
+
+          <SliderPresetButtons onApply={applyParams} />
+
+          {SLIDER_GROUPS.map(group => (
+            <SliderGroup
+              key={group.title}
+              title={group.title}
+              keys={group.keys}
+              params={params}
+              onChange={setParam}
+            />
+          ))}
+
+          <CurrentTestProfile params={params} />
         </div>
       )}
 
@@ -2263,7 +3379,7 @@ export default function TradingLabPage() {
         <div className="tl-tab-content">
           <GroupHeader icon="🧬" title="Signalkombinationer" />
           <p className="tl-combo-intro">
-            Fördefinierade kombinationer av signalmotorer. Aktivera motorer i fliken Signaler för att slå på dem.
+            Fördefinierade kombinationer av signalmotorer för analys i Lab.
           </p>
           <div className="tl-combo-grid">
             {COMBOS.map((combo, i) => (
@@ -2314,6 +3430,8 @@ export default function TradingLabPage() {
         />
       )}
 
+      {tab === 'agent_debate' && <AgentDebateTab />}
+
       {tab === 'replay' && (
         <div className="tl-embedded-page"><ReplayPage /></div>
       )}
@@ -2328,9 +3446,9 @@ export default function TradingLabPage() {
 
       {/* Bottom nav */}
       <div className="tl-bottom-nav">
-        <Link to="/signalpuls" className="tl-bottom-link">❤️ Signalpuls</Link>
-        <Link to="/resultat"   className="tl-bottom-link">📊 Resultat</Link>
-        <Link to="/sakerhet"   className="tl-bottom-link">🛡️ Säkerhet</Link>
+        <Link to="/live" className="tl-bottom-link">❤️ LIVE</Link>
+        <Link to="/insikter" className="tl-bottom-link">📊 INSIKTER</Link>
+        <Link to="/system?tab=safety" className="tl-bottom-link">🛡️ SYSTEM</Link>
       </div>
     </div>
   );
