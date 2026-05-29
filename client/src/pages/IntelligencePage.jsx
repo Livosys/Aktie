@@ -174,6 +174,152 @@ function TradingAgentsPanel() {
 
 // ── Main page ─────────────────────────────────────────────────────────────────
 
+// ── Learning Connector panel (DEL 9) ──────────────────────────────────────────
+
+const REC_COLORS = {
+  active: 'var(--green)', watch: 'var(--blue)', test_more: 'var(--yellow)',
+  pause: 'var(--red)', not_enough_data: 'var(--muted)',
+};
+const REC_LABELS = {
+  active: 'Aktiv', watch: 'Bevaka', test_more: 'Testa mer',
+  pause: 'Pausa', not_enough_data: 'För lite data',
+};
+
+function Dot({ on }) {
+  return <span style={{ color: on ? 'var(--green)' : 'var(--muted)', fontWeight: 700 }}>{on ? '✓' : '–'}</span>;
+}
+
+function LearningConnectorPanel() {
+  const [status, setStatus] = useState(null);
+  const [strategies, setStrategies] = useState([]);
+  const [summary, setSummary] = useState(null);
+  const [busy, setBusy] = useState(false);
+
+  const load = useCallback(async () => {
+    try {
+      const [s, st, sum] = await Promise.all([
+        fetch('/api/learning/connector/status').then(r => r.json()).catch(() => null),
+        fetch('/api/learning/strategies').then(r => r.json()).catch(() => null),
+        fetch('/api/learning/latest-summary').then(r => r.json()).catch(() => null),
+      ]);
+      if (s?.ok) setStatus(s);
+      if (st?.ok) setStrategies(st.strategies || []);
+      if (sum?.ok) setSummary(sum.summary || null);
+    } catch (_) {}
+  }, []);
+
+  useEffect(() => { load(); }, [load]);
+
+  async function rebuild() {
+    setBusy(true);
+    try {
+      await fetch('/api/learning/rebuild', { method: 'POST' });
+      await load();
+    } catch (_) {} finally { setBusy(false); }
+  }
+
+  const ebs = status?.events_by_source || {};
+  const active = status?.connector_active;
+
+  return (
+    <div style={{ marginTop: 24 }}>
+      <SectionHeader title="Learning Connector" />
+      <p style={{ color: 'var(--muted)', fontSize: 13, marginTop: -6 }}>
+        Learning Connector är bron mellan testerna och hjärnan. Den ser till att paper, replay och batch faktiskt matar systemets minne. Den kan aldrig lägga en order.
+      </p>
+
+      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10, margin: '12px 0' }}>
+        <Badge label={active ? 'Aktiv' : 'Ej aktiv'} color={active ? 'info' : 'gray'} />
+        <Badge label={`Paper ${status?.paper_connected ? '✓' : '–'}`} color={status?.paper_connected ? 'info' : 'gray'} />
+        <Badge label={`Replay ${status?.replay_connected ? '✓' : '–'}`} color={status?.replay_connected ? 'info' : 'gray'} />
+        <Badge label={`Batch ${status?.batch_connected ? '✓' : '–'}`} color={status?.batch_connected ? 'info' : 'gray'} />
+        <Badge label={`Agenter ${status?.agents_connected ? '✓' : '–'}`} color={status?.agents_connected ? 'info' : 'gray'} />
+        <Badge label="can_place_orders: false" color="high" />
+      </div>
+
+      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 16, fontSize: 13, color: 'var(--muted)' }}>
+        <span>Totalt events: <b style={{ color: 'var(--text)' }}>{status?.total_events ?? 0}</b></span>
+        <span>Scanner: <b style={{ color: 'var(--text)' }}>{ebs.scanner ?? 0}</b></span>
+        <span>Paper: <b style={{ color: 'var(--text)' }}>{ebs.paper ?? 0}</b></span>
+        <span>Replay: <b style={{ color: 'var(--text)' }}>{ebs.replay ?? 0}</b></span>
+        <span>Batch: <b style={{ color: 'var(--text)' }}>{ebs.batch ?? 0}</b></span>
+        <span>Agent findings: <b style={{ color: 'var(--text)' }}>{ebs.agent ?? 0}</b></span>
+        <span>Senaste: <b style={{ color: 'var(--text)' }}>{status?.last_event_at ? new Date(status.last_event_at).toLocaleString('sv-SE') : '–'}</b></span>
+      </div>
+
+      {summary?.connector && (
+        <div style={{ marginTop: 10, fontSize: 13, color: 'var(--muted)' }}>
+          Senaste learning summary — win rate: <b style={{ color: 'var(--text)' }}>{summary.connector.win_rate ?? '–'}%</b>,
+          {' '}avg PnL: <b style={{ color: 'var(--text)' }}>{summary.connector.avg_pnl_pct ?? '–'}%</b>,
+          {' '}kärn-hjärna kopplad: <b style={{ color: 'var(--text)' }}>{summary.core_learning_present ? 'ja' : 'nej'}</b>
+        </div>
+      )}
+
+      <button onClick={rebuild} disabled={busy} style={{ marginTop: 12 }}>
+        {busy ? 'Bygger om…' : 'Bygg om learning summary'}
+      </button>
+
+      {Array.isArray(status?.agents) && status.agents.length > 0 && (
+        <div style={{ marginTop: 16 }}>
+          <div style={{ fontWeight: 700, marginBottom: 6 }}>Agent Health</div>
+          <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
+            <thead>
+              <tr style={{ textAlign: 'left', color: 'var(--muted)' }}>
+                <th>Agent</th><th>Körs</th><th>Output</th><th>Används</th><th>Findings</th><th>Senaste</th>
+              </tr>
+            </thead>
+            <tbody>
+              {status.agents.map((a) => (
+                <tr key={a.agent_id} style={{ borderTop: '1px solid var(--card-border)' }}>
+                  <td>{a.agent_name}</td>
+                  <td><Dot on={a.runs} /></td>
+                  <td><Dot on={a.gives_output} /></td>
+                  <td><Dot on={a.output_used} /></td>
+                  <td>{a.findings_count || 0}</td>
+                  <td>{a.last_finding_at ? new Date(a.last_finding_at).toLocaleString('sv-SE') : '–'}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      <div style={{ marginTop: 16 }}>
+        <div style={{ fontWeight: 700, marginBottom: 6 }}>Strategier</div>
+        <div style={{ overflowX: 'auto' }}>
+          <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
+            <thead>
+              <tr style={{ textAlign: 'left', color: 'var(--muted)' }}>
+                <th>Strategi</th><th>Scanner</th><th>Paper</th><th>Replay</th><th>Batch</th><th>Learning Score</th><th>Rekommendation</th>
+              </tr>
+            </thead>
+            <tbody>
+              {strategies.map((s) => (
+                <tr key={s.strategy_id} style={{ borderTop: '1px solid var(--card-border)' }}>
+                  <td>{s.strategy_name || s.strategy_id}</td>
+                  <td><Dot on={s.scanner_enabled} /></td>
+                  <td>{s.paper_trades || 0}</td>
+                  <td>{s.replay_tests || 0}</td>
+                  <td>{s.batch_tests || 0}</td>
+                  <td><b>{s.learning_score ?? '–'}</b></td>
+                  <td>
+                    <span style={{ background: REC_COLORS[s.recommendation] || 'var(--muted)', color: '#fff', borderRadius: 4, padding: '2px 8px', fontSize: 12, fontWeight: 700 }}>
+                      {REC_LABELS[s.recommendation] || s.recommendation}
+                    </span>
+                  </td>
+                </tr>
+              ))}
+              {strategies.length === 0 && (
+                <tr><td colSpan={7} style={{ color: 'var(--muted)', padding: 8 }}>Ingen strategidata ännu.</td></tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export default function IntelligencePage() {
   const [question, setQuestion] = useState('');
   const [result, setResult] = useState(null);
@@ -376,6 +522,9 @@ export default function IntelligencePage() {
 
       {/* TradingAgents panel */}
       <TradingAgentsPanel />
+
+      {/* Learning Connector panel */}
+      <LearningConnectorPanel />
     </div>
   );
 }
