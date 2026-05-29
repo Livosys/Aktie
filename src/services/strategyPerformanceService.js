@@ -59,6 +59,9 @@ function safeArray(value) {
   if (value == null || value === '') return [];
   return String(value).split(',').map((s) => s.trim()).filter(Boolean);
 }
+function firstPresent(...values) {
+  return values.find((value) => value !== undefined && value !== null && value !== '') ?? null;
+}
 
 function maxDrawdownFromPnls(pnls) {
   let equity = 0;
@@ -93,6 +96,9 @@ function normalizeResult(input = {}) {
   const startedAt = input.test_started_at || input.started_at || createdAt;
   const completedAt = input.test_completed_at || input.completed_at || nowIso();
   const runDuration = durationSeconds(startedAt, completedAt);
+  const marketGroup = input.market_group || input.marketGroup || strategy.market_group;
+  const tradedSymbol = firstPresent(input.traded_symbol, input.tradedSymbol, input.symbol, symbols[0]);
+  const underlyingSymbol = firstPresent(input.underlying_symbol, input.underlyingSymbol, input.signal_symbol, input.signalSymbol, tradedSymbol);
 
   return {
     id: input.id || crypto.randomUUID(),
@@ -103,10 +109,34 @@ function normalizeResult(input = {}) {
     duration_seconds: runDuration,
     duration_label: durationLabel(runDuration),
     mode: 'paper_replay',
+    source: input.source || (input.batch_id || input.batchId ? 'batch_test' : 'strategy_test'),
+    live: false,
     strategy_id: strategy.id,
     strategy_name: strategy.name,
-    market_group: input.market_group || input.marketGroup || strategy.market_group,
+    market_group: marketGroup,
     symbols,
+    underlying_symbol: underlyingSymbol,
+    underlying_market: firstPresent(input.underlying_market, input.underlyingMarket, marketGroup),
+    underlying_signal_direction: firstPresent(input.underlying_signal_direction, input.underlyingSignalDirection, input.direction, strategy.direction),
+    underlying_signal_strength: Number.isFinite(Number(input.underlying_signal_strength ?? input.underlyingSignalStrength ?? input.confidence ?? input.confidence_threshold))
+      ? round(input.underlying_signal_strength ?? input.underlyingSignalStrength ?? input.confidence ?? input.confidence_threshold, 2)
+      : null,
+    traded_symbol: tradedSymbol,
+    traded_instrument_type: firstPresent(input.traded_instrument_type, input.tradedInstrumentType, input.instrument_type, input.instrumentType),
+    risk_class: firstPresent(input.risk_class, input.riskClass),
+    leverage_factor: Number.isFinite(Number(input.leverage_factor ?? input.leverageFactor ?? input.leverage))
+      ? round(input.leverage_factor ?? input.leverageFactor ?? input.leverage, 3)
+      : null,
+    spread_estimate: Number.isFinite(Number(input.spread_estimate ?? input.spreadEstimate ?? input.spread_percent ?? input.spreadPct))
+      ? round(input.spread_estimate ?? input.spreadEstimate ?? input.spread_percent ?? input.spreadPct, 4)
+      : null,
+    tracking_quality: firstPresent(input.tracking_quality, input.trackingQuality),
+    paper_pnl_percent: Number.isFinite(Number(input.paper_pnl_percent ?? input.paperPnlPercent ?? totalPnl))
+      ? round(input.paper_pnl_percent ?? input.paperPnlPercent ?? totalPnl, 4)
+      : null,
+    underlying_move_percent: Number.isFinite(Number(input.underlying_move_percent ?? input.underlyingMovePercent))
+      ? round(input.underlying_move_percent ?? input.underlyingMovePercent, 4)
+      : null,
     timeframe: String(input.timeframe || strategy.default_timeframes[0] || '2m'),
     sl: round(input.sl ?? input.stop_loss ?? input.stopLoss ?? strategy.default_sl, 3),
     tp: round(input.tp ?? input.take_profit ?? input.takeProfit ?? strategy.default_tp, 3),
@@ -182,6 +212,16 @@ function deterministicTestResult(input = {}) {
     strategy_id: strategy.id,
     market_group: marketGroup,
     symbols,
+    underlying_symbol: input.underlying_symbol || input.underlyingSymbol || input.signal_symbol || input.signalSymbol || symbols[0],
+    underlying_market: input.underlying_market || input.underlyingMarket || marketGroup,
+    underlying_signal_direction: input.underlying_signal_direction || input.underlyingSignalDirection || input.direction || strategy.direction,
+    underlying_signal_strength: input.underlying_signal_strength ?? input.underlyingSignalStrength ?? input.confidence ?? confidence,
+    traded_symbol: input.traded_symbol || input.tradedSymbol || input.symbol || symbols[0],
+    traded_instrument_type: input.traded_instrument_type || input.tradedInstrumentType || input.instrument_type || input.instrumentType || null,
+    risk_class: input.risk_class || input.riskClass || null,
+    leverage_factor: input.leverage_factor ?? input.leverageFactor ?? input.leverage ?? null,
+    spread_estimate: input.spread_estimate ?? input.spreadEstimate ?? input.spread_percent ?? input.spreadPct ?? null,
+    tracking_quality: input.tracking_quality || input.trackingQuality || null,
     timeframe,
     sl,
     tp,
