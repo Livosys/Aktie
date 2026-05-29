@@ -51,7 +51,7 @@ function OverviewTab() {
       <div className="sys-hero-state">
         <div>
           <div className="sys-hero-title">{data?.summarySv || 'Systemstatus är inte tillgänglig just nu.'}</div>
-        <div className="sys-hero-sub">Tekniska detaljer, providers, loggar och safety-status ligger här. Normal användning sker via LIVE.</div>
+        <div className="sys-hero-sub">Tekniska detaljer, providers, loggar och safety-status ligger här. Safety-flödet är samlat här som den kanoniska ytan.</div>
         </div>
         <ConfigScopeBadge scope="global" />
         <span className={`sys-state sys-state-${(data?.overallStatus || 'unknown').toLowerCase()}`}>
@@ -70,7 +70,7 @@ function OverviewTab() {
         <Link to="/system?tab=health" className="sys-link-card">🩺 Systemhälsa</Link>
         <Link to="/system?tab=providers" className="sys-link-card">🔌 Datakällor</Link>
         <Link to="/system?tab=logs" className="sys-link-card">🔔 Loggar & larm</Link>
-        <Link to="/system?tab=safety" className="sys-link-card">🛡️ Safety-status</Link>
+        <Link to="/system?tab=safety" className="sys-link-card">🛡️ Safety-status (kanonisk)</Link>
       </div>
     </div>
   );

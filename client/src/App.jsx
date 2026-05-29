@@ -72,6 +72,7 @@ export default function App() {
           <Route path="/paper-trading"     element={<Navigate to="/insikter?tab=paper" replace />} />
           <Route path="/risk-engine"       element={<Navigate to="/system?tab=safety" replace />} />
           <Route path="/exit-engine"       element={<Navigate to="/lab?tab=exits" replace />} />
+          {/* Legacy alias: canonical safety lives at /system?tab=safety */}
           <Route path="/execution-safety"  element={<Navigate to="/system?tab=safety" replace />} />
           <Route path="/strategy-lab"      element={<Navigate to="/lab?tab=strategier" replace />} />
           <Route path="/strategilabb"      element={<Navigate to="/lab?tab=strategier" replace />} />

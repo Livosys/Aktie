@@ -20,6 +20,8 @@ const SEARCH_ROUTES = [
   { key: 'pipeline', to: '/daytrading' },
   { key: 'paper trades', to: '/daytrading' },
   { key: 'larm', to: '/system?tab=logs' },
+  { key: 'säkerhet', to: '/system?tab=safety' },
+  { key: 'safety', to: '/system?tab=safety' },
   { key: 'diagram', to: '/lab?tab=review' },
   { key: 'historik', to: '/insikter?tab=memory' },
   { key: 'replay', to: '/lab?tab=replay' },
