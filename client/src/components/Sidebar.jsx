@@ -8,38 +8,11 @@ const NAV_GROUPS = [
     id: 'main',
     label: null,
     items: [
-      { path: '/live',     label: 'Live',     icon: '◉', match: ['/', '/live'], accent: 'blue' },
-      { path: '/daytrading', label: 'Daytrading', icon: 'D', match: ['/daytrading'], accent: 'teal' },
-      { path: '/scanner',  label: 'Scanner',  icon: '◆', accent: 'blue' },
-      { path: '/signaler', label: 'Signaler', icon: '▣', accent: 'blue' },
-    ],
-  },
-  {
-    id: 'markets',
-    label: 'Marknader',
-    items: [
-      { path: '/aktier', label: 'Aktier', icon: 'A', accent: 'green' },
-      { path: '/krypto', label: 'Krypto', icon: '₿', accent: 'green' },
-    ],
-  },
-  {
-    id: 'tools',
-    label: 'Verktyg',
-    items: [
-      { path: '/review-chart',  label: 'Diagram',       icon: '⌁', accent: 'orange' },
-      { path: '/historik',      label: 'Historik',      icon: 'H',  accent: 'orange', match: ['/historik', '/history'] },
-      { path: '/replay',        label: 'Replay',        icon: '▶',  accent: 'orange' },
-      { path: '/paper-trading', label: 'Paper Trading', icon: '🧪', accent: 'orange' },
-      { path: '/risk-engine',   label: 'Riskmotor',     icon: 'R',  accent: 'orange' },
-    ],
-  },
-  {
-    id: 'system',
-    label: 'System',
-    items: [
-      { path: '/alerts',        label: 'Larm',        icon: '!', accent: 'purple' },
-      { path: '/machine',       label: 'Intelligens', icon: 'I', accent: 'purple', match: ['/machine', '/intelligence', '/intelligens'] },
-      { path: '/system-health', label: 'Hälsa',       icon: '+', accent: 'purple', match: ['/system-health', '/health', '/halsa'] },
+      { path: '/live',       label: 'LIVE',       icon: '♥', match: ['/', '/live', '/signalpuls', '/scanner', '/signaler', '/aktier', '/krypto', '/nasdaq'], accent: 'blue' },
+      { path: '/daytrading', label: 'DAYTRADING', icon: '◉', match: ['/daytrading'], accent: 'teal' },
+      { path: '/lab',        label: 'LAB',        icon: 'L', match: ['/lab', '/trading-lab', '/strategy-lab', '/replay', '/review-chart', '/intelligence', '/machine'], accent: 'orange' },
+      { path: '/insikter',   label: 'INSIKTER',   icon: 'I', match: ['/insikter', '/resultat', '/setup-performance', '/historik', '/paper-trading'], accent: 'green' },
+      { path: '/system',     label: 'SYSTEM',     icon: 'S', match: ['/system', '/system-health', '/alerts', '/sakerhet', '/risk', '/risk-engine', '/safety', '/execution-safety'], accent: 'purple' },
     ],
   },
 ];
@@ -53,8 +26,8 @@ const ACCENT_CLASS = {
 };
 
 function isActive(item, pathname) {
-  const matches = item.match || [item.path];
-  if (item.path === '/live') return pathname === '/' || pathname === '/live';
+  const matches = (item.match || [item.path]).map((p) => p.split('?')[0]);
+  if (item.path === '/live') return pathname === '/' || pathname === '/signalpuls' || pathname === '/live';
   return matches.some((p) => pathname === p || pathname.startsWith(`${p}/`));
 }
 
@@ -121,8 +94,8 @@ export default function Sidebar({ open, onClose }) {
         <Link to="/live" className="sb-brand" onClick={onClose}>
           <img src="/evin.png" alt="" className="sb-brand-logo" />
           <div className="sb-brand-text">
-            <strong>Aktier Livosys</strong>
-            <small>Fintech kontrollrum</small>
+            <strong>Trading OS v2</strong>
+            <small>Live · Test · Historik</small>
           </div>
         </Link>
 
@@ -150,7 +123,7 @@ export default function Sidebar({ open, onClose }) {
         <div className="sb-footer">
           <ThemeToggle />
           <div className="sb-footer-meta">
-            <span>2M Scanner v2</span>
+            <span>Trading OS v2</span>
             <span>Ingen handel utförs</span>
           </div>
         </div>

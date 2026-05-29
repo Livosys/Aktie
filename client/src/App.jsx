@@ -1,32 +1,23 @@
 import React from 'react';
-import { Routes, Route, Navigate } from 'react-router-dom';
+import { Routes, Route, Navigate, useLocation } from 'react-router-dom';
 import AppShell from './layout/AppShell.jsx';
 import MobileBottomNav from './MobileBottomNav.jsx';
 import AiCopilot from './components/AiCopilot.jsx';
-import LivePage from './pages/LivePage.jsx';
-import AlertsPage from './pages/AlertsPage.jsx';
 import { AlertProvider, HeroToastContainer } from './alertContext.jsx';
 
-// Eagerly loaded critical pages
-import ScannerPage  from './pages/ScannerPage.jsx';
-import SignalerPage from './pages/SignalerPage.jsx';
+// New primary pages
+import SignalpulsPage   from './pages/SignalpulsPage.jsx';
+import TradingLabPage   from './pages/TradingLabPage.jsx';
+import ResultatPage     from './pages/ResultatPage.jsx';
+import SystemPage       from './pages/SystemPage.jsx';
+import DaytradingPage   from './pages/DaytradingPage.jsx';
 
-import StocksPage          from './pages/StocksPage.jsx';
-import NasdaqPage          from './pages/NasdaqPage.jsx';
-import CryptoPage          from './pages/CryptoPage.jsx';
-import HistoryPage         from './pages/HistoryPage.jsx';
-import ReplayPage          from './pages/ReplayPage.jsx';
-import MachinePage         from './pages/MachinePage.jsx';
-import MissedBreakoutsPage from './pages/MissedBreakoutsPage.jsx';
-import MicroMovePage       from './pages/MicroMovePage.jsx';
-import WavePage            from './pages/WavePage.jsx';
-import ReviewChartPage     from './pages/ReviewChartPage.jsx';
-import SystemHealthPage    from './pages/SystemHealthPage.jsx';
-import QualityPage         from './pages/QualityPage.jsx';
-import PaperTradingPage    from './pages/PaperTradingPage.jsx';
-import RiskEnginePage      from './pages/RiskEnginePage.jsx';
-import ExitEnginePage      from './pages/ExitEnginePage.jsx';
-import DaytradingPage     from './pages/DaytradingPage.jsx';
+function RedirectWithSearch({ to }) {
+  const { search } = useLocation();
+  const joiner = to.includes('?') ? '&' : '';
+  const suffix = search ? `${joiner}${search.slice(1)}` : '';
+  return <Navigate to={`${to}${suffix}`} replace />;
+}
 
 export default function App() {
   return (
@@ -34,42 +25,61 @@ export default function App() {
       <AppShell>
         <HeroToastContainer />
         <Routes>
-            {/* Default → Live */}
-            <Route path="/"              element={<Navigate to="/live" replace />} />
-            <Route path="/live"          element={<LivePage />} />
-            <Route path="/daytrading"    element={<DaytradingPage />} />
+          {/* Trading OS v2 */}
+          <Route path="/"             element={<Navigate to="/live" replace />} />
+          <Route path="/live"         element={<SignalpulsPage />} />
+          <Route path="/lab"          element={<TradingLabPage />} />
+          <Route path="/insikter"     element={<ResultatPage />} />
+          <Route path="/system"       element={<SystemPage />} />
+          <Route path="/daytrading"   element={<DaytradingPage />} />
 
-            {/* New premium pages */}
-            <Route path="/scanner"       element={<ScannerPage />} />
-            <Route path="/signaler"      element={<SignalerPage />} />
+          {/* Legacy primary routes */}
+          <Route path="/signalpuls"  element={<RedirectWithSearch to="/live" />} />
+          <Route path="/trading-lab" element={<RedirectWithSearch to="/lab" />} />
+          <Route path="/resultat"    element={<RedirectWithSearch to="/insikter" />} />
+          <Route path="/sakerhet"    element={<Navigate to="/system?tab=safety" replace />} />
 
-            {/* Alias routes */}
-            <Route path="/intelligence"  element={<Navigate to="/machine" replace />} />
-            <Route path="/intelligens"   element={<Navigate to="/machine" replace />} />
-            <Route path="/health"        element={<Navigate to="/system-health" replace />} />
-            <Route path="/halsa"         element={<Navigate to="/system-health" replace />} />
-            <Route path="/history"       element={<Navigate to="/historik" replace />} />
-            <Route path="/larm"          element={<Navigate to="/alerts" replace />} />
+          {/* Alerts */}
+          <Route path="/alerts"      element={<Navigate to="/system?tab=logs" replace />} />
 
-            {/* Alerts */}
-            <Route path="/alerts"        element={<AlertsPage />} />
+          {/* Legacy premium pages */}
+          <Route path="/scanner"     element={<Navigate to="/live?filter=all" replace />} />
+          <Route path="/signaler"    element={<Navigate to="/live?filter=all" replace />} />
 
-            {/* Original routes — unchanged */}
-            <Route path="/aktier"            element={<StocksPage />} />
-            <Route path="/nasdaq"            element={<NasdaqPage />} />
-            <Route path="/krypto"            element={<CryptoPage />} />
-            <Route path="/historik"          element={<HistoryPage />} />
-            <Route path="/replay"            element={<ReplayPage />} />
-            <Route path="/machine"           element={<MachinePage />} />
-            <Route path="/missed-breakouts"  element={<MissedBreakoutsPage />} />
-            <Route path="/micro-move"        element={<MicroMovePage />} />
-            <Route path="/wave"              element={<WavePage />} />
-            <Route path="/review-chart"      element={<ReviewChartPage />} />
-            <Route path="/system-health"     element={<SystemHealthPage />} />
-            <Route path="/quality"           element={<QualityPage />} />
-            <Route path="/paper-trading"     element={<PaperTradingPage />} />
-            <Route path="/risk-engine"       element={<RiskEnginePage />} />
-            <Route path="/exit-engine"       element={<ExitEnginePage />} />
+          {/* Alias routes */}
+          <Route path="/intelligence"  element={<Navigate to="/lab?tab=adaptive" replace />} />
+          <Route path="/intelligens"   element={<Navigate to="/lab?tab=adaptive" replace />} />
+          <Route path="/health"        element={<Navigate to="/system?tab=health" replace />} />
+          <Route path="/halsa"         element={<Navigate to="/system?tab=health" replace />} />
+          <Route path="/history"       element={<Navigate to="/insikter?tab=memory" replace />} />
+          <Route path="/data-center"   element={<Navigate to="/insikter?tab=data-center" replace />} />
+          <Route path="/larm"          element={<Navigate to="/system?tab=logs" replace />} />
+
+          {/* Legacy routes — unchanged */}
+          <Route path="/aktier"            element={<Navigate to="/live?filter=stocks" replace />} />
+          <Route path="/nasdaq"            element={<Navigate to="/live?filter=nasdaq" replace />} />
+          <Route path="/krypto"            element={<Navigate to="/live?filter=crypto" replace />} />
+          <Route path="/historik"          element={<Navigate to="/insikter?tab=memory" replace />} />
+          <Route path="/datacenter"        element={<Navigate to="/insikter?tab=data-center" replace />} />
+          <Route path="/replay"            element={<Navigate to="/lab?tab=replay" replace />} />
+          <Route path="/machine"           element={<Navigate to="/lab?tab=ai_agent" replace />} />
+          <Route path="/missed-breakouts"  element={<Navigate to="/lab?tab=candidates" replace />} />
+          <Route path="/micro-move"        element={<Navigate to="/lab?tab=adaptive" replace />} />
+          <Route path="/wave"              element={<Navigate to="/lab?tab=adaptive" replace />} />
+          <Route path="/review-chart"      element={<RedirectWithSearch to="/lab?tab=review" />} />
+          <Route path="/system-health"     element={<Navigate to="/system?tab=health" replace />} />
+          <Route path="/quality"           element={<Navigate to="/insikter?tab=ai" replace />} />
+          <Route path="/paper-trading"     element={<Navigate to="/insikter?tab=paper" replace />} />
+          <Route path="/risk-engine"       element={<Navigate to="/system?tab=safety" replace />} />
+          <Route path="/exit-engine"       element={<Navigate to="/lab?tab=exits" replace />} />
+          <Route path="/execution-safety"  element={<Navigate to="/system?tab=safety" replace />} />
+          <Route path="/strategy-lab"      element={<Navigate to="/lab?tab=strategier" replace />} />
+          <Route path="/strategilabb"      element={<Navigate to="/lab?tab=strategier" replace />} />
+          <Route path="/setup-performance" element={<Navigate to="/insikter?tab=setups" replace />} />
+          <Route path="/setup-resultat"    element={<Navigate to="/insikter?tab=setups" replace />} />
+          <Route path="/safety"            element={<Navigate to="/system?tab=safety" replace />} />
+          <Route path="/risk"              element={<Navigate to="/system?tab=safety" replace />} />
+          <Route path="/exit"              element={<Navigate to="/lab?tab=exits" replace />} />
         </Routes>
       </AppShell>
       <MobileBottomNav />

@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
+import { useUnifiedConfig } from './hooks/useUnifiedConfig.js';
 
 const REFRESH_MS = 15_000;
 
@@ -12,25 +13,20 @@ export function friendlyApiError(message) {
 }
 
 export function useScan(endpoint) {
+  const unified = useUnifiedConfig('health');
   const [data, setData] = useState(null);
-  const [health, setHealth] = useState(null);
+  const [health, setHealth] = useState(unified.global.systemHealth);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [lastFetch, setLastFetch] = useState(null);
 
   const fetchAll = useCallback(async () => {
     try {
-      const [scanRes, healthRes] = await Promise.all([
-        fetch(endpoint),
-        fetch('/health'),
-      ]);
+      const scanRes = await fetch(endpoint);
       if (!scanRes.ok) throw new Error(`API ${scanRes.status}`);
-      const [scanData, healthData] = await Promise.all([
-        scanRes.json(),
-        healthRes.json(),
-      ]);
+      const scanData = await scanRes.json();
       setData(scanData);
-      setHealth(healthData);
+      setHealth(unified.global.systemHealth);
       setError(null);
       setLastFetch(new Date());
     } catch (e) {
@@ -38,7 +34,11 @@ export function useScan(endpoint) {
     } finally {
       setLoading(false);
     }
-  }, [endpoint]);
+  }, [endpoint, unified.global.systemHealth]);
+
+  useEffect(() => {
+    setHealth(unified.global.systemHealth);
+  }, [unified.global.systemHealth]);
 
   useEffect(() => {
     fetchAll();
