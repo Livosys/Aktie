@@ -5,12 +5,17 @@ node_modules/
 logs/
 *.log
 tmp/
+.temp/
 cache/
 runtime/
 backups/
 *.bak
+data/
 data/paper-trading/
 data/replay-intelligence/
+data/strategy-lab/
+data/exit-calibration/
+_review_snapshots/
 dump.rdb
 dist/
 build/
