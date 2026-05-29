@@ -63,6 +63,7 @@ const blockerConfig     = require('../services/blockerConfigService');
 const strategyCatalog   = require('../services/strategyCatalogService');
 const daytradingStrategyCatalog = require('../services/daytradingStrategyCatalogService');
 const strategyPerformance = require('../services/strategyPerformanceService');
+const strategyPerformanceRead = require('../services/strategyPerformanceReadService');
 const strategyBatchTest = require('../services/strategyBatchTestService');
 const learningConnector = require('../services/learningConnectorService');
 const topStrategyGrid = require('../services/topStrategyGridService');
@@ -793,7 +794,7 @@ router.get('/daytrading-strategies/catalog', (req, res) => {
 
 router.get('/daytrading-strategies/performance', (req, res) => {
   try {
-    res.json(strategyPerformance.getStrategyPerformance());
+    res.json(strategyPerformanceRead.getStrategyPerformance());
   } catch (err) {
     res.status(500).json({ ok: false, error: err.message, ...strategyPerformance.SAFETY });
   }
@@ -801,7 +802,7 @@ router.get('/daytrading-strategies/performance', (req, res) => {
 
 router.get('/daytrading-strategies/top', (req, res) => {
   try {
-    res.json(strategyPerformance.getTopStrategies(Number(req.query.limit) || 5));
+    res.json(strategyPerformanceRead.getTopStrategies(Number(req.query.limit) || 5));
   } catch (err) {
     res.status(500).json({ ok: false, error: err.message, ...strategyPerformance.SAFETY });
   }
@@ -809,7 +810,7 @@ router.get('/daytrading-strategies/top', (req, res) => {
 
 router.get('/daytrading-strategies/worst', (req, res) => {
   try {
-    res.json(strategyPerformance.getWorstStrategies(Number(req.query.limit) || 5));
+    res.json(strategyPerformanceRead.getWorstStrategies(Number(req.query.limit) || 5));
   } catch (err) {
     res.status(500).json({ ok: false, error: err.message, ...strategyPerformance.SAFETY });
   }
@@ -817,7 +818,7 @@ router.get('/daytrading-strategies/worst', (req, res) => {
 
 router.get('/daytrading-strategies/:id', (req, res) => {
   try {
-    const result = strategyPerformance.getStrategyDetails(req.params.id);
+    const result = strategyPerformanceRead.getStrategyDetails(req.params.id);
     res.status(result.ok ? 200 : 404).json(result);
   } catch (err) {
     res.status(500).json({ ok: false, error: err.message, ...strategyPerformance.SAFETY });
@@ -852,7 +853,7 @@ router.post('/daytrading-strategies/compare', (req, res) => {
   try {
     const body = req.body && typeof req.body === 'object' ? req.body : {};
     const ids = body.strategy_ids || body.strategyIds || body.ids || [];
-    res.json(strategyPerformance.compareStrategies(ids));
+    res.json(strategyPerformanceRead.compareStrategies(ids));
   } catch (err) {
     res.status(500).json({ ok: false, error: err.message, ...strategyPerformance.SAFETY });
   }
