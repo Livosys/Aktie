@@ -7,6 +7,7 @@ import { useAlerts } from '../alertContext.jsx';
 import { enrichWithDecisions, getBestSignal, getTopN, isAvoidSignal } from '../decisionEngine.js';
 import { isCryptoSymbol, openTradingView } from '../utils/tradingView.js';
 import { familyCalibrationMeta, signalFamilyMeta } from '../utils/signalFamilyLabels.js';
+import { useUnifiedConfig } from '../hooks/useUnifiedConfig.js';
 
 const REFRESH_MS = 15_000;
 
@@ -76,15 +77,12 @@ function useMultiScan() {
 }
 
 function useSystemSnapshot() {
-  const [health, setHealth] = useState(null);
+  const unified = useUnifiedConfig('health');
+  const health = unified.global.systemHealth;
   const [alerts, setAlerts] = useState(null);
 
   const fetchSnapshot = useCallback(async () => {
-    const [h, a] = await Promise.all([
-      fetch('/api/system/health').then(r => r.ok ? r.json() : null).catch(() => null),
-      fetch('/api/alerts').then(r => r.ok ? r.json() : null).catch(() => null),
-    ]);
-    setHealth(h);
+    const a = await fetch('/api/alerts').then(r => r.ok ? r.json() : null).catch(() => null);
     setAlerts(a);
   }, []);
 
