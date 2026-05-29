@@ -329,12 +329,14 @@ async function autoLinkClosedTrades(symbol) {
     const entryMs = new Date(trade.entryTime || trade.timestamp).getTime();
     if (!entryMs) continue;
 
-    const match = pending.find((o) => {
+    const matchIdx = pending.findIndex((o) => {
       const analysisMs = new Date(o.timestamp).getTime();
       return Math.abs(analysisMs - entryMs) <= LINK_WINDOW_MS;
     });
 
-    if (match) {
+    if (matchIdx !== -1) {
+      const match = pending[matchIdx];
+      pending.splice(matchIdx, 1); // remove to prevent double-linking same analysis
       await linkAnalysisToTrade(match.analysis_id, tradeId, {
         pnl_pct:     trade.pnlPct,
         win:         trade.result === 'WIN',
