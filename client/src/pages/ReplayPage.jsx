@@ -119,12 +119,25 @@ function CreateSessionForm({ onCreated }) {
     use_memory_similarity: true,
     use_risk_engine: true,
     use_exit_engine: true,
+    use_execution_safety: false,
     initial_balance: 100000,
     max_trades: 50,
     risk_profile: 'normal',
   });
   const [error, setError] = useState(null);
   const [submitting, setSubmitting] = useState(false);
+  const [coverageMap, setCoverageMap] = useState({});
+
+  useEffect(() => {
+    fetch('/api/data-coverage/symbols')
+      .then(r => r.ok ? r.json() : null)
+      .then(d => {
+        const map = {};
+        (d?.symbols || []).forEach((row) => { map[row.symbol] = row; });
+        setCoverageMap(map);
+      })
+      .catch(() => {});
+  }, []);
 
   function set(key, value) {
     setForm((prev) => ({ ...prev, [key]: value }));
@@ -154,6 +167,11 @@ function CreateSessionForm({ onCreated }) {
     }
   }
 
+  const selectedCoverage = form.symbols.split(',').map((s) => s.trim().toUpperCase()).filter(Boolean)
+    .map((symbol) => coverageMap[symbol])
+    .filter(Boolean);
+  const replayWarnings = selectedCoverage.filter((row) => !row.usable_for_replay);
+
   return (
     <div className="rpl-form">
       <div className="rpl-form-header">
@@ -168,6 +186,11 @@ function CreateSessionForm({ onCreated }) {
             <span className="rpl-form-label">Symboler</span>
             <input className="rpl-form-input" value={form.symbols} onChange={(e) => set('symbols', e.target.value)} />
           </label>
+          {replayWarnings.length > 0 && (
+            <div className="rpl-form-group rpl-form-group-wide replay-data-warning">
+              För lite historik för säkert test: {replayWarnings.map((row) => row.symbol).join(', ')}.
+            </div>
+          )}
           <label className="rpl-form-group">
             <span className="rpl-form-label">Från</span>
             <input className="rpl-form-input" type="date" value={form.date_from} onChange={(e) => set('date_from', e.target.value)} />
@@ -207,6 +230,7 @@ function CreateSessionForm({ onCreated }) {
           <label><input type="checkbox" checked={form.use_memory_similarity} onChange={(e) => set('use_memory_similarity', e.target.checked)} /> Minnespåverkan</label>
           <label><input type="checkbox" checked={form.use_risk_engine} onChange={(e) => set('use_risk_engine', e.target.checked)} /> Risk Engine v2</label>
           <label><input type="checkbox" checked={form.use_exit_engine} onChange={(e) => set('use_exit_engine', e.target.checked)} /> Exit Engine v1</label>
+          <label><input type="checkbox" checked={form.use_execution_safety} onChange={(e) => set('use_execution_safety', e.target.checked)} /> Execution Safety v1</label>
         </div>
         <div className="rpl-form-actions">
           <button className="rpl-btn-submit" type="submit" disabled={submitting}>
@@ -296,6 +320,7 @@ function ImpactPanel({ summary }) {
   const memory = summary?.memory_impact || {};
   const risk = summary?.risk_engine || {};
   const exit = summary?.exit_engine || {};
+  const safety = summary?.execution_safety || {};
   return (
     <div className="replay-v2-impact-grid">
       <div className="rpl-sym-group">
@@ -337,6 +362,16 @@ function ImpactPanel({ summary }) {
         <div className="replay-v2-kv"><span>Missade större vinnare</span><strong>{exit.missed_bigger_winners ?? 0}</strong></div>
         <div className="replay-v2-kv"><span>Förbättrade exits</span><strong>{exit.improved_exits_vs_baseline ?? 0}</strong></div>
       </div>
+      <div className="rpl-sym-group">
+        <div className="rpl-sym-group-title">Execution Safety v1</div>
+        <div className="replay-v2-kv"><span>Aktiv</span><strong>{safety.enabled ? 'Ja' : 'Nej'}</strong></div>
+        <div className="replay-v2-kv"><span>Safety blocks</span><strong>{safety.safety_blocks ?? 0}</strong></div>
+        <div className="replay-v2-kv"><span>Stale data blocks</span><strong>{safety.stale_data_blocks ?? 0}</strong></div>
+        <div className="replay-v2-kv"><span>Risk pause blocks</span><strong>{safety.risk_pause_blocks ?? 0}</strong></div>
+        <div className="replay-v2-kv"><span>Kill switch blocks</span><strong>{safety.kill_switch_blocks ?? 0}</strong></div>
+        <div className="replay-v2-kv"><span>Entries prevented</span><strong>{safety.entries_prevented ?? 0}</strong></div>
+        <div className="replay-v2-kv"><span>Would-have-entered</span><strong>{safety.would_have_entered_count ?? 0}</strong></div>
+      </div>
     </div>
   );
 }
@@ -371,7 +406,7 @@ function EventTimeline({ events }) {
               <td>{event.gate_passed ? 'Ja' : 'Nej'}</td>
               <td>{event.agent_adjustment}</td>
               <td>{event.memory_adjustment}</td>
-              <td>{event.risk_allowed === false ? `Block: ${(event.risk_block_reasons || []).join(', ')}` : event.risk_position_size_sek ? fmtMoney(event.risk_position_size_sek) : '-'}</td>
+              <td>{event.execution_safety_allowed === false ? `Safety: ${(event.execution_safety_block_reasons || []).join(', ')}` : event.risk_allowed === false ? `Block: ${(event.risk_block_reasons || []).join(', ')}` : event.risk_position_size_sek ? fmtMoney(event.risk_position_size_sek) : '-'}</td>
               <td>{event.final_confidence}</td>
               <td><span className={`badge ${decisionClass(event.decision, event.simulated_pnl_pct)}`}>{event.decision}</span></td>
               <td className={Number(event.simulated_pnl_pct) >= 0 ? 'replay-v2-pos' : 'replay-v2-neg'}>{fmtPct(event.simulated_pnl_pct)}</td>
