@@ -2,6 +2,7 @@ import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
 import { enrichWithDecisions, getBestSignal, getTopN, isAvoidSignal } from '../decisionEngine.js';
 import { AdvancedModeToggle, ConfigScopeBadge, PlatformEmptyState, PlatformSafetyBar, useAdvancedMode } from '../components/PlatformControls.jsx';
+import TradeReplayPanel from '../components/TradeReplayPanel.jsx';
 import { useUnifiedConfig } from '../hooks/useUnifiedConfig.js';
 
 const REFRESH_MS = 15_000;
@@ -255,6 +256,7 @@ function secondsLabel(seconds) {
 }
 
 function AuditActivityPanel({ summary }) {
+  const [selectedTradeId, setSelectedTradeId] = useState('');
   const latest = summary?.latest || {};
   const rows = [
     latest.signal,
@@ -264,6 +266,14 @@ function AuditActivityPanel({ summary }) {
     latest.batch,
     latest.blocker,
   ].filter(Boolean);
+
+  function replayIdForEvent(event) {
+    return event?.details?.trade_id || event?.details?.tradeId || event?.details?.paper_event_id || event?.event_id || '';
+  }
+
+  function isPaperTradeEvent(event) {
+    return ['PAPER_TRADE_OPENED', 'PAPER_TRADE_CLOSED'].includes(String(event?.type || '').toUpperCase());
+  }
 
   return (
     <div className="sp-activity-panel">
@@ -291,12 +301,18 @@ function AuditActivityPanel({ summary }) {
               <span>{fmtAuditTime(event.timestamp)}</span>
               <strong>{event.symbol || event.details?.batch_id || 'System'}</strong>
               <em>{event.message || event.type}</em>
+              {isPaperTradeEvent(event) && (
+                <button className="sp-mini-action" type="button" onClick={() => setSelectedTradeId(replayIdForEvent(event))}>
+                  Visa trade
+                </button>
+              )}
             </div>
           ))}
         </div>
       ) : (
         <div className="sp-activity-empty">Inga nya trades ännu. Systemet väntar på bättre signaler.</div>
       )}
+      <TradeReplayPanel tradeId={selectedTradeId} onClose={() => setSelectedTradeId('')} />
     </div>
   );
 }
@@ -505,8 +521,16 @@ function LiveDot() {
   return <span className="sp-live-dot" title="Live data" />;
 }
 
+function DataCoverageBadge({ coverage }) {
+  if (!coverage) return null;
+  const quality = coverage.data_quality;
+  const tone = quality === 'good' ? 'green' : quality === 'missing' || quality === 'missing_provider' ? 'red' : 'yellow';
+  const label = quality === 'good' ? 'Data stark' : quality === 'missing' || quality === 'missing_provider' ? 'Saknar historik' : 'Lite historik';
+  return <span className={`sp-data-badge sp-data-${tone}`}>{label}</span>;
+}
+
 // ── Hero Card ─────────────────────────────────────────────────────────────────
-function HeroSignal({ signal, score, ls }) {
+function HeroSignal({ signal, score, ls, coverage }) {
   if (!signal) {
     return (
       <div className="sp-hero sp-hero-empty">
@@ -539,6 +563,7 @@ function HeroSignal({ signal, score, ls }) {
           <div className="sp-hero-badge-row">
             <span className={`sp-status-badge ${statusCls}`}>{status}</span>
             {market && <span className="sp-market-badge">{market}</span>}
+            <DataCoverageBadge coverage={coverage} />
             {strategyBadge && <span className={`sp-strategy-badge sp-strategy-${strategyBadge.tone}`}>{strategyBadge.label}</span>}
             <span className="sp-paper-badge">Paper</span>
           </div>
@@ -561,7 +586,7 @@ function HeroSignal({ signal, score, ls }) {
 const MG_COLORS = { crypto: '#f7931a', stocks: '#3b82f6', nasdaq: '#8b5cf6', index: '#06b6d4', leveraged_etf: '#f59e0b', etf: '#06b6d4' };
 const MG_LABELS = { crypto: 'Krypto', stocks: 'Aktier', nasdaq: 'Nasdaq', index: 'Index', leveraged_etf: 'Leveraged', etf: 'ETF' };
 
-function SignalRow({ rank, signal, score, ls, regimeSummary }) {
+function SignalRow({ rank, signal, score, ls, regimeSummary, coverage }) {
   const status = pulseStatus(signal);
   const statusCls = pulseStatusClass(status);
   const warnings = warningsSv(signal);
@@ -584,6 +609,7 @@ function SignalRow({ rank, signal, score, ls, regimeSummary }) {
           <span className="sp-mg-badge" style={{ color: MG_COLORS[mg], borderColor: MG_COLORS[mg] + '40' }}>
             {MG_LABELS[mg] || mg}
           </span>
+          <DataCoverageBadge coverage={coverage} />
           {regimeBadge && (
             <span className={`ami-row-badge ${regimeBadge.cls}`}>{regimeBadge.label}</span>
           )}
@@ -729,9 +755,9 @@ function QuickActions({ onFilter, topSetups }) {
       <button type="button" onClick={() => onFilter('crypto')}>Visa bara krypto</button>
       <button type="button" onClick={() => onFilter('strong_setup')}>Visa starka setups</button>
       <button type="button" onClick={() => onFilter('volatility')}>Visa timeout-problem</button>
-      <Link to="/resultat?tab=setups">Visa starkaste mönster</Link>
-      <Link to="/resultat?tab=setups">Visa svaga strategier</Link>
-      {topSetups?.[0] && <Link to={`/trading-lab?tab=strategier&setup=${encodeURIComponent(topSetups[0].setup_id || topSetups[0].label)}`}>Öppna Trading Lab med detta mönster</Link>}
+      <Link to="/insikter?tab=setups">Visa starkaste mönster</Link>
+      <Link to="/insikter?tab=setups">Visa svaga strategier</Link>
+      {topSetups?.[0] && <Link to={`/lab?tab=strategier&setup=${encodeURIComponent(topSetups[0].setup_id || topSetups[0].label)}`}>Öppna LAB med detta mönster</Link>}
     </div>
   );
 }
@@ -921,16 +947,31 @@ export default function SignalpulsPage() {
   const prioritySummary = unifiedConfig.test.prioritySummary;
   const auditSummary = useAuditSummary();
   const [advancedMode, setAdvancedMode] = useAdvancedMode();
-  const [marketFilter, setMarketFilterState] = useState(() => params.get('filter') || 'all');
+  const [dataCoverageMap, setDataCoverageMap] = useState({});
   const adaptiveMode = unifiedConfig.test.adaptiveConfig.enabled;
+  const globalFilters = unifiedConfig.ui.globalFilters;
+  const marketFilter = globalFilters.market || 'all';
+
+  useEffect(() => {
+    fetch('/api/data-coverage/symbols')
+      .then(r => r.ok ? r.json() : null)
+      .then(d => {
+        const map = {};
+        (d?.symbols || []).forEach((row) => { map[row.symbol] = row; });
+        setDataCoverageMap(map);
+      })
+      .catch(() => {});
+  }, []);
 
   useEffect(() => {
     const next = params.get('filter') || 'all';
-    if (MARKET_FILTERS.some(f => f.key === next)) setMarketFilterState(next);
-  }, [params]);
+    if (MARKET_FILTERS.some(f => f.key === next) && next !== marketFilter) {
+      unifiedConfig.setGlobalFilters({ market: next });
+    }
+  }, [params, marketFilter, unifiedConfig]);
 
   function setMarketFilter(next) {
-    setMarketFilterState(next);
+    unifiedConfig.setGlobalFilters({ market: next });
     setParams(next === 'all' ? {} : { filter: next });
   }
 
@@ -959,26 +1000,34 @@ export default function SignalpulsPage() {
 
   const sorted = useMemo(() => {
     return [...enriched]
-      .filter(r => !isAvoidSignal(r))
+      .filter(r => (globalFilters.hideAvoid ? !isAvoidSignal(r) : true))
       .sort((a, b) => (b._priorityScore ?? b._pulseScore) - (a._priorityScore ?? a._pulseScore));
-  }, [enriched]);
+  }, [enriched, globalFilters.hideAvoid]);
 
   const filtered = useMemo(() => {
-    if (marketFilter === 'all') return sorted;
+    let rows = sorted;
+    if (globalFilters.symbol) {
+      const needle = globalFilters.symbol.toUpperCase();
+      rows = rows.filter(r => String(r.symbol || '').toUpperCase().includes(needle));
+    }
+    if (globalFilters.direction === 'long') rows = rows.filter(r => r.momentumBias === 'bullish' || r.signal?.startsWith('LONG'));
+    if (globalFilters.direction === 'short') rows = rows.filter(r => r.momentumBias === 'bearish' || r.signal?.startsWith('SHORT'));
+    if (globalFilters.minScore > 0) rows = rows.filter(r => (r._priorityScore ?? r._pulseScore ?? 0) >= globalFilters.minScore);
+    if (marketFilter === 'all') return rows;
     if (marketFilter === 'focus') {
       const focusSymbols = new Set((prioritySummary?.topFocus || []).map((item) => item.symbol));
-      return sorted.filter(r => focusSymbols.has(r.symbol));
+      return rows.filter(r => focusSymbols.has(r.symbol));
     }
-    if (marketFilter === 'bullish') return sorted.filter(r => r.momentumBias === 'bullish' || r.signal?.startsWith('LONG'));
-    if (marketFilter === 'bearish') return sorted.filter(r => r.momentumBias === 'bearish' || r.signal?.startsWith('SHORT'));
-    if (marketFilter === 'low_timeout') return sorted.filter(r => r._priorityContext?.timeoutRisk === 'låg');
-    if (marketFilter === 'strong_setup') return sorted.filter(r => r._priorityContext?.strategyStrength === 'strategin fungerar bra' || (r._priorityScore ?? 0) >= 72);
-    if (marketFilter === 'strength') return sorted.filter(r => (r._pulseScore ?? 0) >= 70);
-    if (marketFilter === 'volatility') return sorted.filter(r => (r.atrPct ?? r.volatilityPct ?? 0) >= 2 || ['HIGH_VOLATILITY', 'PANIC'].includes(r.marketRegime));
-    if (marketFilter === 'discovery') return sorted.filter(r => (r._pulseScore ?? 0) >= 35 && (r._pulseScore ?? 0) < 70);
-    if (marketFilter === 'etf') return sorted.filter(r => ['etf', 'leveraged_etf'].includes(r._marketGroup));
-    return sorted.filter(r => r._marketGroup === marketFilter);
-  }, [sorted, marketFilter, prioritySummary]);
+    if (marketFilter === 'bullish') return rows.filter(r => r.momentumBias === 'bullish' || r.signal?.startsWith('LONG'));
+    if (marketFilter === 'bearish') return rows.filter(r => r.momentumBias === 'bearish' || r.signal?.startsWith('SHORT'));
+    if (marketFilter === 'low_timeout') return rows.filter(r => r._priorityContext?.timeoutRisk === 'låg');
+    if (marketFilter === 'strong_setup') return rows.filter(r => r._priorityContext?.strategyStrength === 'strategin fungerar bra' || (r._priorityScore ?? 0) >= 72);
+    if (marketFilter === 'strength') return rows.filter(r => (r._pulseScore ?? 0) >= 70);
+    if (marketFilter === 'volatility') return rows.filter(r => (r.atrPct ?? r.volatilityPct ?? 0) >= 2 || ['HIGH_VOLATILITY', 'PANIC'].includes(r.marketRegime));
+    if (marketFilter === 'discovery') return rows.filter(r => (r._pulseScore ?? 0) >= 35 && (r._pulseScore ?? 0) < 70);
+    if (marketFilter === 'etf') return rows.filter(r => ['etf', 'leveraged_etf'].includes(r._marketGroup));
+    return rows.filter(r => r._marketGroup === marketFilter);
+  }, [sorted, marketFilter, prioritySummary, globalFilters]);
 
   const bestSignal = filtered[0] || null;
   const top20 = filtered.slice(0, 20);
@@ -1006,7 +1055,7 @@ export default function SignalpulsPage() {
       <div className="sp-page-header">
         <h1 className="sp-page-title">
           <PulsingHeart active={!loading && !!bestSignal} />
-          Signalpuls
+          LIVE
         </h1>
         <div className="sp-page-meta">
           <ConfigScopeBadge scope="ui" />
@@ -1044,7 +1093,7 @@ export default function SignalpulsPage() {
           <span>Hämtar signaler...</span>
         </div>
       ) : (
-        <HeroSignal signal={bestSignal} score={bestScore} ls={ls} />
+        <HeroSignal signal={bestSignal} score={bestScore} ls={ls} coverage={dataCoverageMap[String(bestSignal?.symbol || '').toUpperCase()]} />
       )}
 
       <QuickInsights regimeSummary={regimeSummary} topSetups={topSetups} poorSetups={poorSetups} />
@@ -1075,6 +1124,7 @@ export default function SignalpulsPage() {
               score={s._priorityScore ?? s._pulseScore}
               ls={ls}
               regimeSummary={advancedMode ? regimeSummary : null}
+              coverage={dataCoverageMap[String(s.symbol || '').toUpperCase()]}
             />
           ))}
         </div>
@@ -1090,7 +1140,7 @@ export default function SignalpulsPage() {
 
       <div className="sp-perf-header">
         <h2 className="sp-section-h2">Mönsterhistorik</h2>
-        <Link to="/resultat" className="sp-perf-link">Se alla resultat →</Link>
+        <Link to="/insikter" className="sp-perf-link">Se alla resultat →</Link>
       </div>
 
       {advancedMode && setupData ? (
@@ -1126,9 +1176,9 @@ export default function SignalpulsPage() {
 
       {/* Quick nav */}
       <div className="sp-quick-nav">
-        <Link to="/trading-lab" className="sp-quick-btn sp-qb-lab">🧪 Trading Lab</Link>
-        <Link to="/resultat" className="sp-quick-btn sp-qb-results">📊 Resultat &amp; Historik</Link>
-        <Link to="/sakerhet" className="sp-quick-btn sp-qb-safety">🛡️ Säkerhet</Link>
+        <Link to="/lab" className="sp-quick-btn sp-qb-lab">🧪 LAB</Link>
+        <Link to="/insikter" className="sp-quick-btn sp-qb-results">📊 INSIKTER</Link>
+        <Link to="/system?tab=safety" className="sp-quick-btn sp-qb-safety">🛡️ SYSTEM Safety</Link>
       </div>
     </div>
   );
