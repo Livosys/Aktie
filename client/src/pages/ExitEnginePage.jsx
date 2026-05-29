@@ -9,6 +9,12 @@ function fmtPct(value) {
   return `${n.toFixed(2)}%`;
 }
 
+function fmtSignedPct(value) {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return '–';
+  return `${n >= 0 ? '+' : ''}${n.toFixed(2)}%`;
+}
+
 function fmtTime(iso) {
   if (!iso) return '–';
   return `${iso.slice(0, 10)} ${iso.slice(11, 16)}`;
@@ -84,24 +90,94 @@ function RecentDecisions({ decisions }) {
   );
 }
 
+function CalibrationPanel({ calibration }) {
+  const overall = calibration?.overall;
+  const live = calibration?.live_before_after;
+  const recommendations = calibration?.recommendations || [];
+  const best = calibration?.best_exit_reason;
+  const worst = calibration?.worst_exit_reason;
+
+  return (
+    <div className="exit-panel exit-calibration-panel">
+      <SectionHeader icon="C" title="Exitkalibrering" desc="Replay baseline jämfört med Exit Engine och live paper före/efter." />
+      {calibration ? (
+        <>
+          <div className="exit-calibration-band">
+            <div>
+              <span>Före Exit Engine</span>
+              <strong>{overall?.before?.trades ?? 0}</strong>
+              <small>{fmtPct(overall?.before?.avg_pl_pct)} avg P/L · {overall?.wins_before ?? 0}/{overall?.losses_before ?? 0}/{overall?.timeouts_before ?? 0}</small>
+            </div>
+            <div>
+              <span>Efter Exit Engine</span>
+              <strong>{overall?.after?.trades ?? 0}</strong>
+              <small>{fmtPct(overall?.after?.avg_pl_pct)} avg P/L · {overall?.wins_after ?? 0}/{overall?.losses_after ?? 0}/{overall?.timeouts_after ?? 0}</small>
+            </div>
+          </div>
+          <div className="exit-metric-grid">
+            <Metric label="Timeout reduction" value={overall?.timeout_reduction ?? 0} sub={fmtPct(overall?.timeout_reduction_pct)} />
+            <Metric label="Avg P/L change" value={fmtSignedPct(overall?.avg_pl_change_pct)} />
+            <Metric label="Saved winners" value={overall?.saved_winners ?? 0} sub={`${overall?.near_target_pullbacks_saved ?? 0} pullbacks`} />
+            <Metric label="Early exits" value={overall?.early_exits ?? 0} />
+            <Metric label="Missed bigger winners" value={overall?.missed_bigger_winners ?? 0} />
+            <Metric label="Förbättrade P/L" value={overall?.exits_improved_pl ?? 0} sub={`${overall?.exits_worsened_pl ?? 0} försämrade`} />
+            <Metric label="Best exit reason" value={best?.key || '–'} sub={best ? fmtSignedPct(best.avg_pl_change_pct) : null} />
+            <Metric label="Worst exit reason" value={worst?.key || '–'} sub={worst ? fmtSignedPct(worst.avg_pl_change_pct) : null} />
+          </div>
+          <div className="exit-calibration-split">
+            <div>
+              <h3>Live före/efter</h3>
+              <div className="exit-mini-kv"><span>Före</span><strong>{live?.before?.trades ?? 0} trades · {fmtPct(live?.before?.avg_pl_pct)}</strong></div>
+              <div className="exit-mini-kv"><span>Efter</span><strong>{live?.after?.trades ?? 0} trades · {fmtPct(live?.after?.avg_pl_pct)}</strong></div>
+              <div className="exit-mini-kv"><span>Delta</span><strong>{fmtSignedPct(live?.avg_pl_change_pct)}</strong></div>
+            </div>
+            <div>
+              <h3>Rekommendationer</h3>
+              <div className="exit-rec-list">
+                {recommendations.length ? recommendations.slice(0, 5).map((rec, i) => (
+                  <div className={`exit-rec exit-rec-${rec.severity || 'info'}`} key={`${rec.message}-${i}`}>
+                    <strong>{rec.message}</strong>
+                    <span>{rec.basis}</span>
+                  </div>
+                )) : <div className="empty">Inga rekommendationer ännu.</div>}
+              </div>
+            </div>
+          </div>
+        </>
+      ) : (
+        <div className="empty">Kalibrering saknas.</div>
+      )}
+    </div>
+  );
+}
+
 export default function ExitEnginePage() {
   const [status, setStatus] = useState(null);
   const [config, setConfig] = useState(null);
   const [replayExit, setReplayExit] = useState(null);
+  const [calibration, setCalibration] = useState(null);
   const [error, setError] = useState(null);
 
   async function refresh() {
     try {
-      const [statusRes, configRes, sessionsRes] = await Promise.all([
+      const [statusRes, configRes, sessionsRes, calibrationRes] = await Promise.all([
         fetch('/api/exit/status'),
         fetch('/api/exit/config'),
         fetch('/api/replay/sessions'),
+        fetch('/api/exit/calibration'),
       ]);
-      const [statusJson, configJson, sessionsJson] = await Promise.all([statusRes.json(), configRes.json(), sessionsRes.json()]);
+      const [statusJson, configJson, sessionsJson, calibrationJson] = await Promise.all([
+        statusRes.json(),
+        configRes.json(),
+        sessionsRes.json(),
+        calibrationRes.json(),
+      ]);
       if (!statusRes.ok) throw new Error(statusJson?.error || `API ${statusRes.status}`);
       if (!configRes.ok) throw new Error(configJson?.error || `API ${configRes.status}`);
+      if (!calibrationRes.ok) throw new Error(calibrationJson?.error || `API ${calibrationRes.status}`);
       setStatus(statusJson);
       setConfig(configJson.config);
+      setCalibration(calibrationJson);
       const latestWithExit = (sessionsJson.sessions || []).find((s) => s.summary?.exit_engine);
       setReplayExit(latestWithExit?.summary?.exit_engine || null);
       setError(null);
@@ -153,6 +229,8 @@ export default function ExitEnginePage() {
           </div>
         </div>
       </div>
+
+      <CalibrationPanel calibration={calibration} />
 
       <RecentDecisions decisions={decisions} />
     </div>
