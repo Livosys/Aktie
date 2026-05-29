@@ -1,4 +1,5 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useMemo } from 'react';
+import { useUnifiedConfig } from '../hooks/useUnifiedConfig.js';
 
 function ageText(iso) {
   if (!iso) return '–';
@@ -26,27 +27,13 @@ function StatusPill({ state = 'unknown', label, value }) {
 }
 
 export function useSystemStatus() {
-  const [state, setState] = useState({ health: null, scan: null, loading: true });
-
-  const load = useCallback(async () => {
-    try {
-      const [health, scan] = await Promise.all([
-        fetch('/api/system/health').then((r) => (r.ok ? r.json() : null)).catch(() => null),
-        fetch('/api/status').then((r) => (r.ok ? r.json() : null)).catch(() => null),
-      ]);
-      setState({ health, scan, loading: false });
-    } catch {
-      setState({ health: null, scan: null, loading: false });
-    }
-  }, []);
-
-  useEffect(() => {
-    load();
-    const timer = setInterval(load, 30_000);
-    return () => clearInterval(timer);
-  }, [load]);
-
-  return state;
+  const unified = useUnifiedConfig('health');
+  return {
+    health: unified.global.systemHealth,
+    scan: unified.global.scannerStatus,
+    loading: unified.meta.loading && !unified.global.systemHealth,
+    refresh: () => unified.refresh('health'),
+  };
 }
 
 export default function SystemStatusStrip({ status }) {

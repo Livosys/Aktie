@@ -1,5 +1,6 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useMemo, useState } from 'react';
 import { SectionHeader, fmtTime } from '../shared.jsx';
+import { useUnifiedConfig } from '../hooks/useUnifiedConfig.js';
 
 const GROUPS = [
   { key: 'Scanner', title: 'Scanner', icon: '📡' },
@@ -14,31 +15,13 @@ const GROUPS = [
 ];
 
 function useSystemHealth() {
-  const [data, setData] = useState(null);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState(null);
-
-  async function fetchHealth() {
-    try {
-      const res = await fetch('/api/system/health');
-      const json = await res.json();
-      if (!res.ok) throw new Error(json?.summarySv || json?.error || `API ${res.status}`);
-      setData(json);
-      setError(null);
-    } catch (err) {
-      setError(err.message);
-    } finally {
-      setLoading(false);
-    }
-  }
-
-  useEffect(() => {
-    fetchHealth();
-    const t = setInterval(fetchHealth, 30000);
-    return () => clearInterval(t);
-  }, []);
-
-  return { data, loading, error, refresh: fetchHealth };
+  const unified = useUnifiedConfig('health');
+  return {
+    data: unified.global.systemHealth,
+    loading: unified.meta.loading && !unified.global.systemHealth,
+    error: unified.meta.errors.systemHealth || null,
+    refresh: () => unified.refresh('systemHealth'),
+  };
 }
 
 function groupStatus(items) {
