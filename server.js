@@ -12,6 +12,7 @@ const apiRouter = require('./src/routes/api');
 const { initOnStartup: initPaperTrading } = require('./src/paperTrading/paperTradingAgent');
 const { buildProviderStatus } = require('./src/providerStatus');
 const redisService = require('./src/services/redisService');
+const dailyIntelligencePipeline = require('./src/services/dailyIntelligencePipelineService');
 
 const app = express();
 const PORT = process.env.PORT || 3001;
@@ -129,6 +130,7 @@ app.listen(PORT, '127.0.0.1', () => {
   startScheduler();
   startCryptoScheduler();
   startAutoMachineScheduler();
+  dailyIntelligencePipeline.startScheduler();
   initPaperTrading();
   redisService.connect().then((connected) => {
     console.log(`[Redis] ${connected ? 'connected' : 'fallback mode'} (${redisService.status().clientStatus})`);
