@@ -427,6 +427,7 @@ function createBatchTest(input = {}) {
   const batch = {
     id: input.id || `batch_${Date.now()}_${crypto.randomBytes(4).toString('hex')}`,
     name: input.name || `Strategy batch ${new Date().toLocaleDateString('sv-SE')}`,
+    metadata: input.metadata && typeof input.metadata === 'object' ? cleanValue(input.metadata) : {},
     created_at: createdAt,
     batch_created_at: createdAt,
     updated_at: createdAt,
@@ -486,6 +487,28 @@ function sampleQuality(trades) {
   return 'needs_more_data';
 }
 
+function instrumentMeta(combo = {}) {
+  const group = marketUniverse.getGroup(combo.market_group) || {};
+  return {
+    underlying_symbol: combo.underlying_symbol || combo.underlyingSymbol || combo.signal_symbol || combo.signalSymbol || combo.symbol,
+    underlying_market: combo.underlying_market || combo.underlyingMarket || combo.market_group,
+    underlying_signal_direction: combo.underlying_signal_direction || combo.underlyingSignalDirection || null,
+    underlying_signal_strength: Number.isFinite(Number(combo.underlying_signal_strength ?? combo.underlyingSignalStrength ?? combo.confidence_threshold))
+      ? Number(combo.underlying_signal_strength ?? combo.underlyingSignalStrength ?? combo.confidence_threshold)
+      : null,
+    traded_symbol: combo.traded_symbol || combo.tradedSymbol || combo.symbol,
+    traded_instrument_type: combo.traded_instrument_type || combo.tradedInstrumentType || combo.instrument_type || combo.instrumentType || group.product_type || null,
+    risk_class: combo.risk_class || combo.riskClass || group.risk_class || null,
+    leverage_factor: Number.isFinite(Number(combo.leverage_factor ?? combo.leverageFactor ?? combo.leverage))
+      ? Number(combo.leverage_factor ?? combo.leverageFactor ?? combo.leverage)
+      : null,
+    spread_estimate: Number.isFinite(Number(combo.spread_estimate ?? combo.spreadEstimate ?? combo.spread_percent ?? combo.spreadPct))
+      ? Number(combo.spread_estimate ?? combo.spreadEstimate ?? combo.spread_percent ?? combo.spreadPct)
+      : null,
+    tracking_quality: combo.tracking_quality || combo.trackingQuality || null,
+  };
+}
+
 function normalizeBatchResult(batchId, combo, saved) {
   const result = saved.result || saved;
   const createdAt = nowIso();
@@ -522,7 +545,13 @@ function normalizeBatchResult(batchId, combo, saved) {
     max_drawdown: result.max_drawdown || 0,
     score: 0,
     sample_quality: sampleQuality(result.trades || 0),
+    ...instrumentMeta(combo),
+    paper_pnl_percent: result.total_pnl || 0,
+    underlying_move_percent: result.underlying_move_percent || result.underlyingMovePercent || null,
     created_at: createdAt,
+    source: 'batch_test',
+    mode: 'paper_replay',
+    live: false,
     actions_allowed: false,
     can_place_orders: false,
     live_trading_enabled: false,
@@ -537,6 +566,7 @@ function runOneCombination(batchId, combo) {
     strategy_id: combo.strategy_id,
     symbols: [combo.symbol],
     market_group: combo.market_group,
+    ...instrumentMeta(combo),
     timeframe: combo.timeframe,
     sl: combo.stop_loss,
     tp: combo.take_profit,
@@ -544,6 +574,8 @@ function runOneCombination(batchId, combo) {
     timeout: combo.timeout,
     confidence_threshold: combo.confidence_threshold,
     volume_requirement: combo.volume_requirement,
+    source: 'batch_test',
+    live: false,
     mode: 'paper_replay',
     certificate_simulation_mode: combo.certificate_simulation_mode || 'off',
     actions_allowed: false,
