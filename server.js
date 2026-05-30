@@ -68,6 +68,13 @@ function basicAuth(req, res, next) {
   return res.status(401).send('Felaktigt användarnamn eller lösenord');
 }
 
+function requireAuthForMutations(req, res, next) {
+  if (req.method === 'GET' || req.method === 'HEAD' || req.method === 'OPTIONS') {
+    return next();
+  }
+  return basicAuth(req, res, next);
+}
+
 // ── App setup ─────────────────────────────────────────────────────────────────
 
 // CORS — restrict to known origins; localhost variants allowed for local dev
@@ -114,10 +121,11 @@ app.get('/health', (req, res) => {
   });
 });
 
-// All API routes and frontend require auth
-app.use('/api', apiLimiter, basicAuth, apiRouter);
-app.use(basicAuth, express.static(path.join(__dirname, 'client', 'dist')));
-app.get('*', basicAuth, (req, res) => {
+// Public dashboard views and read-only GET API routes stay open.
+// Mutating API routes still require dashboard auth.
+app.use('/api', apiLimiter, requireAuthForMutations, apiRouter);
+app.use(express.static(path.join(__dirname, 'client', 'dist')));
+app.get('*', (req, res) => {
   res.sendFile(path.join(__dirname, 'client', 'dist', 'index.html'));
 });
 
