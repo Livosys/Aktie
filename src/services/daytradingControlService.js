@@ -503,6 +503,15 @@ function getStrategies() {
   const runtimeSummary = strategyRuntimeConnector.getStrategyRuntimeSummary();
   const runtimeById = Object.fromEntries((runtimeSummary.strategies || []).map((row) => [row.id || row.strategy_id, row]));
   const byId = Object.fromEntries((perf.strategies || []).map((row) => [row.strategy_id, row]));
+  // Learning Engine v1 — read-only, fail-safe. Lazy require (undvik circular dep).
+  let learnById = {};
+  try {
+    const learning = require('./daytradingLearningEngineService');
+    const summary = learning.getLearningSummary({ hours: 48, limit: 1000 });
+    learnById = Object.fromEntries((summary.by_strategy || []).map((row) => [row.key, row]));
+  } catch (err) {
+    console.warn('[daytrading] learning summary unavailable:', err.message);
+  }
   const rows = (catalog.strategies || []).map((strategy) => {
     const p = byId[strategy.id] || {};
     const cfg = strategyConfigFor(strategy.id, strategy);
@@ -538,11 +547,23 @@ function getStrategies() {
       latest_signal: p.latest_result?.test_completed_at || p.latest_result?.created_at || null,
       latest_result: p.performance_badge?.label || (trades ? 'Testad' : 'Ingen historik ännu'),
       score: p.score ?? (trades ? 50 : 0),
-      needs_more_data: trades < 10,
+      needs_more_data: trades < 10 && ((learnById[strategy.id]?.closed || 0) < 20),
+      learning_present: Boolean(learnById[strategy.id]),
+      learning_summary: learnById[strategy.id]
+        ? {
+          closed: learnById[strategy.id].closed,
+          win_rate: learnById[strategy.id].win_rate,
+          avg_pl: learnById[strategy.id].avg_pl,
+          total_pl: learnById[strategy.id].total_pl,
+          skipped: learnById[strategy.id].skipped,
+          top_skip_reason: learnById[strategy.id].top_skip_reason,
+          status: learnById[strategy.id].status,
+        }
+        : null,
       ...SAFETY,
     };
   });
-  return { ok: true, strategies: rows, count: rows.length, config: loadConfig(), ...SAFETY };
+  return { ok: true, strategies: rows, count: rows.length, config: loadConfig(), learning_present: Object.keys(learnById).length > 0, ...SAFETY };
 }
 
 function updateStrategy(id, patch = {}) {
