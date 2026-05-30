@@ -588,9 +588,59 @@ function getPipeline() {
   return { ok: true, updated_at: nowIso(), pipeline: pipelineFromScan(rows, config, 'klar'), ...SAFETY };
 }
 
-function getLiveTrades() {
+function normalizeTradeLimit(value) {
+  const parsed = Number.parseInt(value, 10);
+  if (!Number.isFinite(parsed) || parsed <= 0) return 200;
+  return Math.min(parsed, 500);
+}
+
+function numericPnl(value) {
+  if (value == null || value === '–') return null;
+  const n = Number(value);
+  return Number.isFinite(n) ? n : null;
+}
+
+function tradeSummary(rows) {
+  const total = rows.length;
+  const wins = rows.filter((t) => String(t.result || '').toUpperCase() === 'WIN' || String(t.status || '').toLowerCase().includes('vinst')).length;
+  const losses = rows.filter((t) => String(t.result || '').toUpperCase() === 'LOSS' || String(t.status || '').toLowerCase().includes('förlust')).length;
+  const timeout = rows.filter((t) => String(t.result || '').toUpperCase() === 'TIMEOUT' || String(t.status || '').toLowerCase().includes('timeout')).length;
+  const open = rows.filter((t) => String(t.result || '').toUpperCase() === 'OPEN' || String(t.status || '').toLowerCase().includes('pågående')).length;
+  const closed = rows.filter((t) => String(t.result || '').toUpperCase() !== 'OPEN' && !String(t.status || '').toLowerCase().includes('pågående'));
+  const pnlValues = rows.map((t) => numericPnl(t.pnl)).filter((v) => v != null);
+  const totalPl = pnlValues.reduce((sum, v) => sum + v, 0);
+  const longUp = rows.filter((t) => ['UP', 'LONG'].includes(String(t.direction || '').toUpperCase())).length;
+  const shortDown = rows.filter((t) => ['DOWN', 'SHORT'].includes(String(t.direction || '').toUpperCase())).length;
+  return {
+    total,
+    wins,
+    losses,
+    timeout,
+    open,
+    closed: closed.length,
+    win_rate: closed.length ? Math.round((wins / closed.length) * 10000) / 100 : null,
+    timeout_rate: total ? Math.round((timeout / total) * 10000) / 100 : null,
+    avg_pl: pnlValues.length ? Math.round((totalPl / pnlValues.length) * 100) / 100 : null,
+    total_pl: pnlValues.length ? Math.round(totalPl * 100) / 100 : null,
+    best_pl: pnlValues.length ? Math.round(Math.max(...pnlValues) * 100) / 100 : null,
+    worst_pl: pnlValues.length ? Math.round(Math.min(...pnlValues) * 100) / 100 : null,
+    long_up: longUp,
+    short_down: shortDown,
+  };
+}
+
+function firstText(...values) {
+  const value = values.find((candidate) => {
+    if (Array.isArray(candidate)) return candidate.length > 0;
+    return candidate != null && candidate !== '';
+  });
+  return Array.isArray(value) ? value.filter(Boolean).join(', ') : (value || null);
+}
+
+function getLiveTrades(options = {}) {
+  const limit = normalizeTradeLimit(options.limit);
   const trades = paperTrading.getTrades().trades || [];
-  const rows = trades.slice(0, 50).map((trade) => {
+  const rows = trades.slice(0, limit).map((trade) => {
     const enriched = strategyRuntimeConnector.enrichPaperTradeWithStrategy(trade);
     const market = enriched.marketType || enriched.market || marketForSymbol(enriched.symbol);
     const status = trade.result === 'OPEN'
@@ -620,22 +670,33 @@ function getLiveTrades() {
       runtime_label: enriched.runtime_label || null,
       direction: enriched.direction || enriched.type || '–',
       entry: enriched.entryPrice ?? enriched.entry ?? null,
+      exit: enriched.exitPrice ?? enriched.exit ?? null,
       current_price: enriched.currentPrice ?? enriched.exitPrice ?? null,
       stop_loss: enriched.stopPct ?? enriched.stop_loss ?? null,
       take_profit: enriched.targetPct ?? enriched.take_profit ?? null,
       pnl: enriched.pnlPct ?? enriched.unrealizedPct ?? null,
+      result: enriched.result || null,
       status,
-      reason: enriched.reasonSv || enriched.exitReason || enriched.signal || 'Paper/test',
+      confidence: enriched.confidenceScore ?? enriched.baseConfidenceScore ?? null,
+      risk_reason: firstText(enriched.riskBlockReasons, enriched.riskWarnings, enriched.riskEvaluation?.block_reasons, enriched.riskEvaluation?.warnings),
+      block_reason: firstText(enriched.safetyBlockReasons, enriched.executionSafety?.paper_block_reasons, enriched.executionSafety?.block_reasons, enriched.observeOnlyReasonSv),
+      exit_reason: enriched.exitReason || enriched.exitReasonCode || null,
+      duration: enriched.duration_label || null,
+      reason: enriched.reasonSv || enriched.exitReason || enriched.signal || enriched.entryReasonSv || 'Paper/test',
       trade_id: enriched.tradeId || enriched.trade_id || enriched.id || '',
       ...SAFETY,
     };
   });
   const runtimeSummary = strategyRuntimeConnector.getStrategyRuntimeSummary();
   const paperSummary = getPaperTradeSummary48h();
+  const summary = tradeSummary(rows);
   return {
     ok: true,
+    limit,
+    total_available: trades.length,
     trades: rows,
     count: rows.length,
+    summary,
     summary_48h: { ...paperSummary, runtime: runtimeSummary.summary },
     runtime_summary: runtimeSummary.summary,
     runtime_strategies: runtimeSummary.strategies,
