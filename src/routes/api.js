@@ -65,6 +65,7 @@ const daytradingStrategyCatalog = require('../services/daytradingStrategyCatalog
 const strategyPerformance = require('../services/strategyPerformanceService');
 const strategyPerformanceRead = require('../services/strategyPerformanceReadService');
 const strategyBatchTest = require('../services/strategyBatchTestService');
+const strategyTestAutopilot = require('../services/strategyTestAutopilotService');
 const learningConnector = require('../services/learningConnectorService');
 const topStrategyGrid = require('../services/topStrategyGridService');
 const candidateLog      = require('../services/candidateLogService');
@@ -1099,6 +1100,64 @@ router.get('/strategy-batches/:id/compare', (req, res) => {
     res.status(result.ok ? 200 : 404).json(result);
   } catch (err) {
     res.status(500).json({ ok: false, error: err.message, ...strategyBatchTest.SAFETY });
+  }
+});
+
+// ── Strategy Test Autopilot v1 ──────────────────────────────────────────────
+// Manual-first, paper/replay/batch-only planning. No live trading or orders.
+
+router.get('/strategy-test-autopilot/status', (req, res) => {
+  try {
+    res.json(strategyTestAutopilot.getStatus());
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message, ...strategyTestAutopilot.SAFETY });
+  }
+});
+
+router.get('/strategy-test-autopilot/config', (req, res) => {
+  try {
+    res.json(strategyTestAutopilot.getConfig());
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message, ...strategyTestAutopilot.SAFETY });
+  }
+});
+
+router.post('/strategy-test-autopilot/config', (req, res) => {
+  try {
+    const body = req.body && typeof req.body === 'object' ? req.body : {};
+    const result = strategyTestAutopilot.saveConfig(body);
+    res.status(result.ok ? 200 : 400).json(result);
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message, ...strategyTestAutopilot.SAFETY });
+  }
+});
+
+router.post('/strategy-test-autopilot/run-once', (req, res) => {
+  try {
+    const body = req.body && typeof req.body === 'object' ? req.body : {};
+    const result = strategyTestAutopilot.runOnce(body);
+    res.status(result.ok ? 200 : 400).json(result);
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message, ...strategyTestAutopilot.SAFETY });
+  }
+});
+
+router.post('/strategy-test-autopilot/enable', (req, res) => {
+  try {
+    const body = req.body && typeof req.body === 'object' ? req.body : {};
+    const result = strategyTestAutopilot.enable(body);
+    res.status(result.ok ? 200 : 400).json(result);
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message, ...strategyTestAutopilot.SAFETY });
+  }
+});
+
+router.post('/strategy-test-autopilot/disable', (req, res) => {
+  try {
+    const result = strategyTestAutopilot.disable();
+    res.status(result.ok ? 200 : 400).json(result);
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message, ...strategyTestAutopilot.SAFETY });
   }
 });
 
