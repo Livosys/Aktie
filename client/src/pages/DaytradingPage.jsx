@@ -3,27 +3,31 @@ import { PlatformEmptyState } from '../components/PlatformControls.jsx';
 
 // ─── Data hook ────────────────────────────────────────────────────────────────
 
-function useDaytradingData() {
+function useDaytradingData(tradeLimit = 200) {
   const [state, setState] = useState({
     status: null, strategies: null, pipeline: null,
     liveTrades: null, recommendation: null, impact: null, symbols: null, runtime: null,
+    marketControls: null, learning: null,
     loading: true, error: false,
   });
 
   const fetchAll = useCallback(async () => {
     const get = url => fetch(url).then(r => r.json()).catch(() => null);
-    const [statusD, strD, pipeD, tradesD, recD, impD, symD, runtimeD] = await Promise.all([
+    const [statusD, strD, pipeD, tradesD, recD, impD, symD, runtimeD, marketControlsD, learningD] = await Promise.all([
       get('/api/daytrading/status'), get('/api/daytrading/strategies'),
-      get('/api/daytrading/pipeline'), get('/api/daytrading/live-trades'),
+      get('/api/daytrading/pipeline'), get(`/api/daytrading/live-trades?limit=${tradeLimit}`),
       get('/api/daytrading/recommendation'), get('/api/daytrading/impact-summary'),
       get('/api/daytrading/symbols'), get('/api/daytrading/runtime-strategies'),
+      get('/api/daytrading/market-controls'),
+      get('/api/daytrading/learning-summary?hours=48&limit=200'),
     ]);
     setState({
       status: statusD, strategies: strD, pipeline: pipeD, liveTrades: tradesD,
       recommendation: recD, impact: impD, symbols: symD, runtime: runtimeD,
+      marketControls: marketControlsD, learning: learningD,
       loading: false, error: !statusD?.ok,
     });
-  }, []);
+  }, [tradeLimit]);
 
   useEffect(() => {
     fetchAll();
@@ -50,6 +54,34 @@ function fmtPct(v) {
   const n = Number(v);
   return isNaN(n) ? '–' : `${n >= 0 ? '+' : ''}${n.toFixed(2)}%`;
 }
+function fmtPrice(v) {
+  if (v == null || v === '') return '–';
+  const n = Number(v);
+  if (!Number.isFinite(n)) return String(v);
+  return n >= 100 ? n.toFixed(2) : n.toFixed(4);
+}
+function fmtTradeTime(iso) {
+  if (!iso) return '–';
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return '–';
+  return d.toLocaleString('sv-SE', { month:'2-digit', day:'2-digit', hour:'2-digit', minute:'2-digit' });
+}
+function numericPnl(v) {
+  if (v == null || v === '–') return null;
+  const n = Number(v);
+  return Number.isFinite(n) ? n : null;
+}
+function valueTone(v) {
+  const n = numericPnl(v);
+  if (n == null) return 'neutral';
+  if (n > 0) return 'positive';
+  if (n < 0) return 'negative';
+  return 'neutral';
+}
+function fmtReason(value) {
+  if (Array.isArray(value)) return value.filter(Boolean).join(', ');
+  return value || '–';
+}
 
 function sanitizePipeText(text) {
   if (!text) return text;
@@ -75,6 +107,84 @@ function runtimeClass(status) {
   if (s === 'no_entry_rule' || s.includes('entry')) return 'dt-runtime-data';
   if (s === 'needs_data' || s.includes('behöver')) return 'dt-runtime-data';
   return 'dt-runtime-unlinked';
+}
+
+const RUNTIME_FILTERS = [
+  { id: 'all', label: 'Alla' },
+  { id: 'runtime_ready', label: 'Kan köra paper trades' },
+  { id: 'selected_blocked', label: 'Valda men kan inte köra' },
+  { id: 'missing_entry', label: 'Saknar entry-regel' },
+  { id: 'partial', label: 'Delvis kopplade' },
+  { id: 'disabled', label: 'Av' },
+  { id: 'catalog_only', label: 'Lab-only' },
+];
+
+const LIST_LIMIT_OPTIONS = [
+  { id: 10, label: '10' },
+  { id: 25, label: '25' },
+  { id: 50, label: '50' },
+  { id: 0, label: 'Alla' },
+];
+
+const MAX_ACTIVE_OPTIONS = [
+  { id: 1, label: '1' },
+  { id: 3, label: '3' },
+  { id: 5, label: '5' },
+  { id: 10, label: '10' },
+  { id: 0, label: 'Alla Runtime Ready' },
+];
+
+function runtimeStatusLabel(state) {
+  return {
+    RUNTIME_READY: '✅ Kan köra paper trades',
+    PARTIAL_RUNTIME: '🟡 Delvis kopplad',
+    MISSING_ENTRY: '🔴 Saknar entry-regel',
+    CATALOG_ONLY: '⚪ Endast katalog/test',
+    DISABLED: 'Av',
+  }[state] || 'Av';
+}
+
+function strategyRuntimeState(strategy) {
+  const cfg = strategy.config || {};
+  const runtime = strategy.runtime || {};
+  const enabled = strategy.enabled_by_user ?? cfg.enabled_by_user ?? (cfg.active !== false);
+  const connected = strategy.connected ?? runtime.connected ?? false;
+  const entryRuleImplemented = strategy.entry_rule_implemented ?? runtime.entry_rule_implemented ?? false;
+  const runtimeStatus = strategy.runtime_status || runtime.runtime_status || 'not_connected';
+  const rawSignals = strategy.runtime_raw_signals || runtime.runtime_raw_signals || [];
+  const canCreatePaperTrade = strategy.can_create_paper_trade ?? runtime.can_create_paper_trade ?? false;
+  let state = 'CATALOG_ONLY';
+  if (!enabled) state = 'DISABLED';
+  else if (!connected) state = 'CATALOG_ONLY';
+  else if (!entryRuleImplemented) state = 'MISSING_ENTRY';
+  else if (runtimeStatus === 'partial' || canCreatePaperTrade === 'partial') state = 'PARTIAL_RUNTIME';
+  else if (runtimeStatus === 'active' && canCreatePaperTrade === true) state = 'RUNTIME_READY';
+  else if (runtimeStatus === 'paused' || runtimeStatus === 'disabled') state = 'DISABLED';
+  else state = 'PARTIAL_RUNTIME';
+  return {
+    state,
+    enabled,
+    connected,
+    entryRuleImplemented,
+    runtimeStatus,
+    rawSignals,
+    canCreatePaperTrade,
+  };
+}
+
+function runtimeReasonText(strategy, runtimeState) {
+  if (!runtimeState.enabled) return 'Av för paper-runtime.';
+  if (!runtimeState.connected) return 'Signal inte kopplad till katalogstrategi.';
+  if (!runtimeState.entryRuleImplemented) {
+    return runtimeState.state === 'MISSING_ENTRY'
+      ? 'Vald men saknar entry-regel.'
+      : 'Entry-regel saknas.';
+  }
+  if (runtimeState.state === 'PARTIAL_RUNTIME') {
+    return strategy.runtime_comment_sv || strategy.runtime?.comment_sv || 'Vald men kan inte köra ännu.';
+  }
+  if (runtimeState.state === 'RUNTIME_READY') return 'Kan skapa paper trades.';
+  return 'Vald men kan inte köra ännu.';
 }
 
 function pipeClass(status) {
@@ -113,9 +223,9 @@ function StatusBar({ status }) {
       <Chip label="Data"          value={status.data_active ? 'Aktiv' : 'Saknas'}                color={status.data_active ? 'green' : 'yellow'} />
       <Chip label="Inlärning"     value={status.learning_active ? 'Aktiv' : 'Av'}                color={status.learning_active ? 'green' : 'yellow'} />
       {status.latest_scan && <Chip label="Senaste scan" value={timeSince(status.latest_scan)} color="blue" />}
-      <Chip label="Paper trading" value={status.paper_trading ? 'PÅ' : 'AV'}                     color={status.paper_trading ? 'green' : 'gray'} />
+      <Chip label="Paper trading" value={status.paper_trading ? 'Aktiv' : 'Av'}                  color={status.paper_trading ? 'green' : 'gray'} />
       {liveOn
-        ? <Chip label="Live trading" value="PÅ — kontrollera backend" color="red" />
+        ? <Chip label="Live trading" value="Aktiv — kontrollera backend" color="red" />
         : <Chip label="Live trading" value="AV" color="gray" />
       }
     </div>
@@ -126,6 +236,7 @@ function StatusBar({ status }) {
 
 function SafetyBanner({ status }) {
   const liveOn = status?.live_trading === true || status?.live_trading_enabled === true;
+  const paperOn = status?.paper_trading !== false;
   if (liveOn) {
     return (
       <div className="dt-safety-banner dt-safety-warn">
@@ -138,8 +249,12 @@ function SafetyBanner({ status }) {
     <div className="dt-safety-banner dt-safety-ok">
       <span>🔒</span>
       <div>
-        <strong>Safety aktiv:</strong>
-        <span>Systemet kan analysera och paper-trada, men kan inte lägga riktiga ordrar.</span>
+        <div className="dt-safety-title-row">
+          <span className="dt-safety-pill dt-safety-pill-paper">🧪 Paper trading: {paperOn ? 'Aktiv' : 'Av'}</span>
+          <span className="dt-safety-pill dt-safety-pill-locked">🔒 Riktig order: Låst</span>
+          <span className="dt-safety-pill dt-safety-pill-live">Live trading: Av</span>
+        </div>
+        <strong>Systemet testar bara. Inga riktiga ordrar skickas.</strong>
         <div className="dt-safety-flags">
           <code>actions_allowed=false</code>
           <code>can_place_orders=false</code>
@@ -170,7 +285,7 @@ function ProcessCard({ status, pipeline }) {
     { label: 'Senaste beslut',   value: sanitizePipeText(decStep?.text) || '–' },
     { label: 'Safety',           value: '🔒 Aktiv',                              cls: 'dt-pv-green' },
     { label: 'Senaste scan',     value: status?.latest_scan ? timeSince(status.latest_scan) : '–' },
-    { label: 'Paper trading',    value: status?.paper_trading ? 'PÅ' : 'AV',    cls: status?.paper_trading ? 'dt-pv-green' : '' },
+    { label: 'Paper trading',    value: status?.paper_trading ? 'Aktiv' : 'Av',  cls: status?.paper_trading ? 'dt-pv-green' : '' },
     { label: 'Live trading',     value: 'AV',                                    cls: 'dt-pv-gray' },
   ];
 
@@ -422,7 +537,7 @@ function StrategyDetailModal({ strategy, onClose, onSave, saving }) {
   );
 }
 
-function StrategyCard({ strategy, onUpdate, onScan }) {
+function StrategyCard({ strategy, onUpdate, onScan, paperLimit, activeRuntimeReadyCount }) {
   const [showDetail, setShowDetail] = useState(false);
   const [saving, setSaving] = useState(false);
   const [runtimeSaving, setRuntimeSaving] = useState(false);
@@ -430,18 +545,47 @@ function StrategyCard({ strategy, onUpdate, onScan }) {
 
   const cfg = strategy.config || {};
   const enabledByUser = strategy.enabled_by_user ?? cfg.enabled_by_user ?? (cfg.active !== false);
-  const status = strategy.status || (enabledByUser ? 'Aktiv' : 'Pausad');
   const runtime = strategy.runtime || {};
-  const runtimeStatus = strategy.runtime_status || runtime.runtime_status || 'not_connected';
-  const runtimeLabel = strategy.runtime_label || runtime.runtime_label || 'Ej kopplad till paper ännu';
-  const runtimeSignals = strategy.runtime_raw_signals || runtime.runtime_raw_signals || [];
-  const runtimeComment = strategy.runtime_comment_sv || runtime.runtime_comment_sv || runtime.comment_sv || 'Finns i katalog/teststatistik men skapar inte paper trades ännu.';
+  const runtimeState = strategyRuntimeState(strategy);
+  const runtimeStatus = strategy.runtime_status || runtime.runtime_status || runtimeState.runtimeStatus || 'not_connected';
+  const runtimeSignals = runtimeState.rawSignals;
+  const runtimeComment = runtimeReasonText(strategy, runtimeState);
   const paperTrades48h = strategy.paper_trades_48h ?? runtime.paper_trades_48h ?? 0;
   const lastPaperTradeAt = strategy.last_paper_trade_at || runtime.last_paper_trade_at || null;
-  const catalogBadges = strategy.catalog_badges || ['Katalog', runtimeLabel];
+  const catalogBadges = strategy.catalog_badges || ['Katalog', runtimeStatusLabel(runtimeState.state)];
   const connected = strategy.connected ?? runtime.connected ?? false;
   const entryRuleImplemented = strategy.entry_rule_implemented ?? runtime.entry_rule_implemented ?? false;
   const canCreatePaperTrade = strategy.can_create_paper_trade ?? runtime.can_create_paper_trade ?? false;
+  const canActuallyRun = runtimeState.state === 'RUNTIME_READY';
+  const runtimeBadge = (() => {
+    if (runtimeState.state === 'RUNTIME_READY') return { label: '✅ Kan köra paper trades', tone: 'green' };
+    if (runtimeState.state === 'PARTIAL_RUNTIME') return { label: '🟡 Delvis kopplad', tone: 'yellow' };
+    if (runtimeState.state === 'MISSING_ENTRY') {
+      return {
+        label: enabledByUser ? '🔴 Vald men saknar entry-regel' : '🔴 Saknar entry-regel',
+        tone: 'red',
+      };
+    }
+    if (runtimeState.state === 'CATALOG_ONLY') {
+      return {
+        label: enabledByUser ? '⚪ Vald men kan inte köra' : '⚪ Endast katalog/test',
+        tone: 'gray',
+      };
+    }
+    return { label: 'Av', tone: 'gray' };
+  })();
+  const paperButtonLabel = (() => {
+    if (enabledByUser) return 'Ta bort från paper';
+    if (runtimeState.state === 'MISSING_ENTRY') return 'Kan inte köra — entry saknas';
+    if (runtimeState.state === 'PARTIAL_RUNTIME') return 'Kan inte köra — delvis kopplad';
+    if (runtimeState.state === 'CATALOG_ONLY') return 'Kan inte köra — endast katalog/test';
+    return 'Kan inte köra';
+  })();
+  const paperButtonDisabled = runtimeSaving || (!enabledByUser && !canActuallyRun);
+  const hitRuntimeLimit = canActuallyRun
+    && enabledByUser !== true
+    && paperLimit > 0
+    && activeRuntimeReadyCount >= paperLimit;
 
   function showToast(msg) { setToast(msg); setTimeout(()=>setToast(null), 2500); }
 
@@ -461,23 +605,36 @@ function StrategyCard({ strategy, onUpdate, onScan }) {
 
   async function handleToggle(active) {
     if (runtimeSaving) return;
+    if (active === true && canActuallyRun && hitRuntimeLimit) {
+      showToast(`Max aktiva paper-strategier nått (${paperLimit}).`);
+      return;
+    }
     setRuntimeSaving(true);
     const res = await fetch(`/api/daytrading/runtime-strategies/${encodeURIComponent(strategy.id)}/toggle`, { method: 'POST' })
       .then(r=>r.json()).catch(()=>null);
     setRuntimeSaving(false);
-    if (res?.ok) { showToast(active ? 'Aktiverad i paper test' : 'Pausad i paper test'); onUpdate?.(); }
+    if (res?.ok) {
+      if (active && runtimeState.state !== 'RUNTIME_READY') {
+        showToast(runtimeState.state === 'MISSING_ENTRY'
+          ? 'Kan inte aktivera för paper trades. Orsak: Entry-regel saknas.'
+          : 'Vald för paper, men strategin är inte runtime-ready ännu.');
+      } else {
+        showToast(active ? 'Vald för paper' : 'Av från paper');
+      }
+      onUpdate?.();
+    }
     else showToast(res?.error || 'Kunde inte uppdatera strategi-runtime. Försök igen.');
   }
 
   return (
-    <div className={`dt-strategy-card dt-strategy-card-compact ${badgeColor(status).replace('dt-badge-','dt-card-')}`}>
+    <div className={`dt-strategy-card dt-strategy-card-compact ${runtimeBadge.tone === 'green' ? 'dt-card-green' : runtimeBadge.tone === 'yellow' ? 'dt-card-yellow' : runtimeBadge.tone === 'red' ? 'dt-card-red' : 'dt-card-gray'}`}>
       {toast && <div className="dt-toast">{toast}</div>}
 
       <div className="dt-strategy-head">
         <div className="dt-strategy-title-wrap">
           <div className="dt-strategy-name">{strategy.name}</div>
         </div>
-        <span className={`dt-badge ${badgeColor(status)}`}>{status}</span>
+        <span className={`dt-badge dt-badge-${runtimeBadge.tone}`}>{runtimeBadge.label}</span>
       </div>
 
       <div className="dt-catalog-badges">
@@ -519,12 +676,12 @@ function StrategyCard({ strategy, onUpdate, onScan }) {
           <strong>{connected ? 'Ja' : 'Nej'}</strong>
         </div>
         <div className="dt-runtime-row">
-          <span>Paper test</span>
-          <strong>{enabledByUser ? 'På' : 'Av'}</strong>
+          <span>Vald för paper</span>
+          <strong>{enabledByUser ? 'Ja' : 'Nej'}</strong>
         </div>
         <div className="dt-runtime-row">
-          <span>Paper-runtime</span>
-          <strong>{runtimeLabel}</strong>
+          <span>Kan köra paper trades</span>
+          <strong>{canActuallyRun ? 'Ja' : 'Nej'}</strong>
         </div>
         <div className="dt-runtime-row">
           <span>Entry-regel</span>
@@ -549,13 +706,13 @@ function StrategyCard({ strategy, onUpdate, onScan }) {
 
       <div className="dt-strategy-actions">
         {enabledByUser
-          ? <button type="button" className="dt-btn-sm dt-btn-warn" disabled={runtimeSaving} onClick={()=>handleToggle(false)}>{runtimeSaving ? 'Sparar...' : 'Paper test Av'}</button>
-          : <button type="button" className="dt-btn-sm dt-btn-ok" disabled={runtimeSaving} onClick={()=>handleToggle(true)}>{runtimeSaving ? 'Sparar...' : 'Paper test På'}</button>
+          ? <button type="button" className="dt-btn-sm dt-btn-warn" disabled={runtimeSaving} onClick={()=>handleToggle(false)}>{runtimeSaving ? 'Sparar...' : 'Ta bort från paper'}</button>
+          : <button type="button" className="dt-btn-sm dt-btn-ok" disabled={paperButtonDisabled || (canActuallyRun && hitRuntimeLimit)} onClick={()=>handleToggle(true)}>{runtimeSaving ? 'Sparar...' : paperButtonLabel}</button>
         }
         <button type="button" className="dt-btn-sm dt-btn-sec" onClick={()=>onScan?.(strategy.id)}>Kör scan</button>
         <button type="button" className="dt-btn-sm dt-btn-pri" onClick={()=>setShowDetail(true)}>Detaljer</button>
       </div>
-      <div className="dt-strategy-mode-note">Paper test styr användarens På/Av. Runtime-status avgör om strategin faktiskt kan skapa paper trades.</div>
+      <div className="dt-strategy-mode-note">Vald för paper är inte samma sak som kan köra paper trades. Runtime-status avgör om strategin faktiskt kan skapa paper trades.</div>
 
       {showDetail && (
         <StrategyDetailModal strategy={strategy} onClose={()=>setShowDetail(false)} onSave={handleSave} saving={saving} />
@@ -564,7 +721,7 @@ function StrategyCard({ strategy, onUpdate, onScan }) {
   );
 }
 
-function CollapsibleGroup({ label, colorClass, items, defaultOpen, onUpdate, onScan }) {
+function CollapsibleGroup({ label, colorClass, items, defaultOpen, onUpdate, onScan, paperLimit, activeRuntimeReadyCount }) {
   const [open, setOpen] = useState(defaultOpen);
   if (!items.length) return null;
   return (
@@ -576,7 +733,7 @@ function CollapsibleGroup({ label, colorClass, items, defaultOpen, onUpdate, onS
       </button>
       {open && (
         <div className="dt-strategy-grid">
-          {items.map(s=><StrategyCard key={s.id} strategy={s} onUpdate={onUpdate} onScan={onScan} />)}
+          {items.map(s=><StrategyCard key={s.id} strategy={s} onUpdate={onUpdate} onScan={onScan} paperLimit={paperLimit} activeRuntimeReadyCount={activeRuntimeReadyCount} />)}
         </div>
       )}
     </div>
@@ -587,19 +744,215 @@ function RuntimeSummary({ runtime }) {
   const summary = runtime?.summary || {};
   return (
     <div className="dt-runtime-summary">
-      <div><strong>{summary.total_catalog_strategies ?? 0}</strong><span>Katalogstrategier</span></div>
-      <div><strong>{summary.runtime_connected ?? 0}</strong><span>Connected</span></div>
-      <div><strong>{summary.enabled_by_user ?? 0}</strong><span>Paper test På</span></div>
-      <div><strong>{summary.runtime_active ?? 0}</strong><span>Active</span></div>
-      <div><strong>{summary.runtime_partial ?? 0}</strong><span>Partial</span></div>
-      <div><strong>{summary.runtime_no_entry_rule ?? 0}</strong><span>Saknar entry</span></div>
+      <div><strong>{summary.total_catalog_strategies ?? 0}</strong><span>Strategier totalt</span></div>
+      <div><strong>{summary.enabled_by_user ?? 0}</strong><span>Valda för paper</span></div>
+      <div><strong>{summary.can_create_paper_trade_count ?? 0}</strong><span>Kan faktiskt köra</span></div>
+      <div><strong>{summary.runtime_no_entry_rule ?? 0}</strong><span>Saknar entry-regel</span></div>
+      <div><strong>{summary.runtime_partial ?? 0}</strong><span>Delvis kopplade</span></div>
       <div><strong>{summary.runtime_disabled ?? 0}</strong><span>Av</span></div>
+      <div><strong>{summary.runtime_not_connected ?? 0}</strong><span>Lab-only</span></div>
     </div>
   );
 }
 
-function StrategiesSection({ strategies, total, runtime, onUpdate, onScan }) {
-  const [showAll, setShowAll] = useState(false);
+const MARKET_RISK_LABELS = {
+  normal: 'Normal',
+  high: 'Hög',
+  extreme: 'Mycket hög',
+};
+
+const MARKET_SCOPE_FIELDS = [
+  ['enabled_for_paper', 'Paper-runtime'],
+  ['enabled_for_scanner', 'Scanner'],
+  ['enabled_for_replay', 'Replay'],
+  ['enabled_for_batch', 'Batch'],
+];
+
+function MarketToggle({ value, label, disabled, onClick }) {
+  return (
+    <button
+      type="button"
+      className={`dt-market-toggle${value ? ' dt-market-toggle-on' : ''}`}
+      disabled={disabled}
+      onClick={onClick}
+    >
+      <span>{label}</span>
+      <strong>{value ? 'Aktiv' : 'Av'}</strong>
+    </button>
+  );
+}
+
+function MarketControlCard({ control, busy, onToggle }) {
+  const risk = control.risk_class || 'normal';
+  return (
+    <div className={`dt-market-card dt-market-risk-${risk}`}>
+      <div className="dt-market-card-head">
+        <div>
+          <h4>{control.group_name || control.group_id}</h4>
+          <div className="dt-market-meta">
+            <span>Connected: {control.connected === false ? 'Nej' : 'Ja'}</span>
+            <span>{control.symbol_count ?? 0} symboler</span>
+            {(control.unverified_symbol_count ?? 0) > 0 && <span>{control.unverified_symbol_count} ej verifierade</span>}
+          </div>
+        </div>
+        <span className={`dt-market-risk-badge dt-market-risk-badge-${risk}`}>{MARKET_RISK_LABELS[risk] || risk}</span>
+      </div>
+      <div className="dt-market-toggle-grid">
+        {MARKET_SCOPE_FIELDS.map(([field, label]) => (
+          <MarketToggle
+            key={field}
+            label={label}
+            value={control[field] !== false}
+            disabled={busy}
+            onClick={() => onToggle(control.group_id, field, control[field] === false)}
+          />
+        ))}
+        <div className="dt-market-live-lock">
+          <span>Live</span>
+          <strong>Låst Av</strong>
+        </div>
+      </div>
+      <p className="dt-market-reason">{control.restricted_reason || control.warning_sv || 'Endast paper/test. Riktig handel är låst.'}</p>
+      {(control.unverified_symbol_count ?? 0) > 0 && (
+        <p className="dt-market-unverified">Symbol ej verifierad - kan endast observeras tills datakälla finns.</p>
+      )}
+    </div>
+  );
+}
+
+function MarketSlider({ label, value, min, max, step = 1, suffix = '', onChange }) {
+  return (
+    <label className="dt-market-slider">
+      <span>{label}: <strong>{value}{suffix}</strong></span>
+      <input className="dt-slider" type="range" min={min} max={max} step={step} value={value} onChange={e => onChange(Number(e.target.value))} />
+    </label>
+  );
+}
+
+function MarketControlsSection({ marketControls, onUpdate }) {
+  const controls = marketControls?.controls || [];
+  const [localControls, setLocalControls] = useState(controls);
+  const [filters, setFilters] = useState(marketControls?.filters || {
+    min_score: 60,
+    min_confidence: 70,
+    max_risk_class: 'extreme',
+    max_trades_per_hour: 10,
+    cooldown_minutes: 5,
+    max_spread_percent: 0.5,
+    max_leverage: 10,
+  });
+  const [busy, setBusy] = useState(null);
+  const [error, setError] = useState(null);
+  const [message, setMessage] = useState(null);
+
+  useEffect(() => {
+    setLocalControls(controls);
+    if (marketControls?.filters) setFilters(marketControls.filters);
+  }, [marketControls]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  function applyResponse(res) {
+    if (Array.isArray(res?.controls)) setLocalControls(res.controls);
+    if (res?.filters) setFilters(res.filters);
+    if (res?.message_sv) setMessage(res.message_sv);
+    onUpdate?.();
+  }
+
+  async function post(path, body, busyKey) {
+    setBusy(busyKey);
+    setError(null);
+    setMessage(null);
+    try {
+      const res = await fetch(path, {
+        method: 'POST',
+        headers: body ? { 'Content-Type': 'application/json' } : undefined,
+        body: body ? JSON.stringify(body) : undefined,
+      }).then(r => r.json()).catch(() => null);
+      if (res?.ok === false) setError(res.error || 'Kunde inte uppdatera marknadskontroll.');
+      else applyResponse(res || {});
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  function toggle(groupId, field, value) {
+    post(`/api/daytrading/market-controls/${encodeURIComponent(groupId)}/toggle`, { [field]: value }, `${groupId}:${field}`);
+  }
+
+  function saveFilters() {
+    post('/api/daytrading/market-controls/sliders', filters, 'filters');
+  }
+
+  return (
+    <div className="dt-panel dt-market-controls-panel">
+      <div className="dt-panel-head">
+        <div>
+          <h3 className="dt-panel-title">Marknader &amp; riskinstrument</h3>
+          <p className="dt-market-note">Riskinstrument kan aktiveras för scanner, paper, replay och batch. Riktig handel är fortfarande låst.</p>
+        </div>
+        <span className="dt-count-badge">{localControls.length} grupper</span>
+      </div>
+
+      <div className="dt-market-warning">
+        Certifikat och mini futures kan ge missvisande testresultat om spread, hävstång eller knock-out saknas i datan.
+      </div>
+
+      <div className="dt-market-bulk-actions">
+        <button type="button" className="dt-btn dt-btn-ok" disabled={!!busy} onClick={() => post('/api/daytrading/market-controls/enable-all-risk', null, 'risk-on')}>Slå på alla riskinstrument i paper test</button>
+        <button type="button" className="dt-btn dt-btn-warn" disabled={!!busy} onClick={() => post('/api/daytrading/market-controls/disable-all-risk', null, 'risk-off')}>Pausa alla riskinstrument</button>
+        <button type="button" className="dt-btn dt-btn-sec" disabled={!!busy} onClick={() => post('/api/daytrading/market-controls/enable-all', null, 'all-on')}>Slå på alla marknader</button>
+        <button type="button" className="dt-btn dt-btn-sec" disabled={!!busy} onClick={() => post('/api/daytrading/market-controls/disable-all', null, 'all-off')}>Pausa alla marknader</button>
+      </div>
+
+      {error && <div className="dt-inline-error">{error}</div>}
+      {message && <div className="dt-inline-ok">{message}</div>}
+
+      {!localControls.length ? (
+        <PlatformEmptyState title="Inga marknadskontroller kunde läsas" text="Daytrading fortsätter i säkert paperläge. Försök uppdatera sidan." />
+      ) : (
+        <div className="dt-market-grid">
+          {localControls.map((control) => (
+            <MarketControlCard
+              key={control.group_id}
+              control={control}
+              busy={!!busy}
+              onToggle={toggle}
+            />
+          ))}
+        </div>
+      )}
+
+      <div className="dt-market-filter-panel">
+        <div className="dt-market-filter-head">
+          <h4>Paper/scanner-filter</h4>
+          <button type="button" className="dt-btn dt-btn-pri" disabled={!!busy} onClick={saveFilters}>
+            {busy === 'filters' ? 'Sparar...' : 'Spara filter'}
+          </button>
+        </div>
+        <div className="dt-market-sliders">
+          <MarketSlider label="Min score" value={filters.min_score ?? 60} min={0} max={100} onChange={v => setFilters(f => ({ ...f, min_score: v }))} />
+          <MarketSlider label="Min confidence" value={filters.min_confidence ?? 70} min={0} max={100} suffix="%" onChange={v => setFilters(f => ({ ...f, min_confidence: v }))} />
+          <label className="dt-market-slider">
+            <span>Max riskklass: <strong>{MARKET_RISK_LABELS[filters.max_risk_class] || 'Mycket hög'}</strong></span>
+            <select className="dt-filter-select" value={filters.max_risk_class || 'extreme'} onChange={e => setFilters(f => ({ ...f, max_risk_class: e.target.value }))}>
+              <option value="normal">Normal</option>
+              <option value="high">Hög</option>
+              <option value="extreme">Mycket hög</option>
+            </select>
+          </label>
+          <MarketSlider label="Max trades per timme" value={filters.max_trades_per_hour ?? 10} min={0} max={50} onChange={v => setFilters(f => ({ ...f, max_trades_per_hour: v }))} />
+          <MarketSlider label="Cooldown minuter" value={filters.cooldown_minutes ?? 5} min={0} max={120} onChange={v => setFilters(f => ({ ...f, cooldown_minutes: v }))} />
+          <MarketSlider label="Max spread" value={filters.max_spread_percent ?? 0.5} min={0} max={5} step={0.1} suffix="%" onChange={v => setFilters(f => ({ ...f, max_spread_percent: v }))} />
+          <MarketSlider label="Max hävstång" value={filters.max_leverage ?? 10} min={1} max={100} onChange={v => setFilters(f => ({ ...f, max_leverage: v }))} />
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function StrategiesSection({ strategies, total, runtime, liveTrades, onUpdate, onScan }) {
+  const [visibleCount, setVisibleCount] = useState(25);
+  const [paperLimit, setPaperLimit] = useState(5);
+  const [runtimeFilter, setRuntimeFilter] = useState('all');
   const [bulkBusy, setBulkBusy] = useState(false);
   const [runtimeError, setRuntimeError] = useState(null);
 
@@ -615,51 +968,147 @@ function StrategiesSection({ strategies, total, runtime, onUpdate, onScan }) {
     }
   }
 
-  const isEnabled = (s) => (s.enabled_by_user ?? s.config?.enabled_by_user ?? (s.config?.active !== false)) === true;
-  const active    = strategies.filter(isEnabled);
-  const paused    = strategies.filter(s => !isEnabled(s));
-  const withTrades= active.filter(s=>(s.trades||0)>0).sort((a,b)=>(b.score??0)-(a.score??0));
-  const noTrades  = active.filter(s=>(s.trades||0)===0);
-  const best      = withTrades.slice(0,5);
-  const promising = [...withTrades.slice(5),...noTrades.slice(0,4)];
-  const needsData = noTrades.slice(4);
+  const rows = strategies.map((strategy) => ({
+    ...strategy,
+    runtimeView: strategyRuntimeState(strategy),
+  }));
+
+  const summary = runtime?.summary || {};
+  const activeRuntimeReadyCount = summary.can_create_paper_trade_count ?? rows.filter((row) => row.runtimeView.state === 'RUNTIME_READY' && row.runtimeView.enabled).length;
+  const selectedCount = summary.enabled_by_user ?? rows.filter((row) => row.runtimeView.enabled).length;
+  const selectedBlockedCount = Math.max(0, selectedCount - activeRuntimeReadyCount);
+  const missingEntryCount = summary.runtime_no_entry_rule ?? rows.filter((row) => row.runtimeView.state === 'MISSING_ENTRY').length;
+  const partialCount = summary.runtime_partial ?? rows.filter((row) => row.runtimeView.state === 'PARTIAL_RUNTIME').length;
+  const disabledCount = summary.runtime_disabled ?? rows.filter((row) => row.runtimeView.state === 'DISABLED').length;
+  const catalogOnlyCount = rows.filter((row) => row.runtimeView.state === 'CATALOG_ONLY').length;
+
+  const filteredRows = rows.filter((row) => {
+    const { state, enabled } = row.runtimeView;
+    if (runtimeFilter === 'runtime_ready') return state === 'RUNTIME_READY';
+    if (runtimeFilter === 'selected_blocked') return enabled && state !== 'RUNTIME_READY';
+    if (runtimeFilter === 'missing_entry') return state === 'MISSING_ENTRY';
+    if (runtimeFilter === 'partial') return state === 'PARTIAL_RUNTIME';
+    if (runtimeFilter === 'disabled') return state === 'DISABLED';
+    if (runtimeFilter === 'catalog_only') return state === 'CATALOG_ONLY';
+    return true;
+  }).sort((a, b) => {
+    const order = { RUNTIME_READY: 0, PARTIAL_RUNTIME: 1, MISSING_ENTRY: 2, CATALOG_ONLY: 3, DISABLED: 4 };
+    const oa = order[a.runtimeView.state] ?? 9;
+    const ob = order[b.runtimeView.state] ?? 9;
+    if (oa !== ob) return oa - ob;
+    return (Number(b.score ?? 0) - Number(a.score ?? 0)) || (Number(b.trades ?? 0) - Number(a.trades ?? 0));
+  });
+
+  const visibleRows = visibleCount > 0 ? filteredRows.slice(0, visibleCount) : filteredRows;
+  const activeReadyRows = visibleRows.filter((row) => row.runtimeView.state === 'RUNTIME_READY');
+  const selectedBlockedRows = visibleRows.filter((row) => row.runtimeView.enabled && row.runtimeView.state !== 'RUNTIME_READY');
+  const missingEntryRows = visibleRows.filter((row) => row.runtimeView.state === 'MISSING_ENTRY');
+  const partialRows = visibleRows.filter((row) => row.runtimeView.state === 'PARTIAL_RUNTIME');
+  const catalogRows = visibleRows.filter((row) => row.runtimeView.state === 'CATALOG_ONLY');
+  const disabledRows = visibleRows.filter((row) => row.runtimeView.state === 'DISABLED');
+
+  const stoppageTopReasons = liveTrades?.stoppage_summary_48h?.top_reasons || [];
+  const explainReasons = [
+    { label: 'Entry-regel saknas', value: missingEntryCount },
+    { label: 'Raw signal saknas', value: rows.filter((row) => row.runtimeView.rawSignals.length === 0).length },
+    { label: 'Marknaden är stängd', value: stoppageTopReasons.find((r) => /stopp|closed|market/i.test(r.reason || ''))?.count || 0 },
+    { label: 'Signal för svag', value: stoppageTopReasons.find((r) => /svag|weak|low/i.test(r.reason || ''))?.count || 0 },
+    { label: 'Marknadsläge passar inte', value: stoppageTopReasons.find((r) => /regim|läge|regime/i.test(r.reason || ''))?.count || 0 },
+    { label: 'Cooldown aktiv', value: stoppageTopReasons.find((r) => /cooldown/i.test(r.reason || ''))?.count || 0 },
+    { label: 'Strategi pausad', value: disabledCount },
+    { label: 'Riskfilter stoppar', value: stoppageTopReasons.find((r) => /risk|block/i.test(r.reason || ''))?.count || 0 },
+    { label: 'Signal inte kopplad till katalogstrategi', value: catalogOnlyCount },
+  ].filter((item) => item.value > 0);
 
   return (
     <div className="dt-panel dt-strategies-panel">
       <div className="dt-panel-head">
-        <h3 className="dt-panel-title">Strategikontroll</h3>
+        <h3 className="dt-panel-title">Strategi-runtime och paper trades</h3>
         <span className="dt-count-badge">{strategies.length} st</span>
       </div>
       <div className="dt-strategy-bulk-actions">
         <button type="button" className="dt-btn dt-btn-ok" disabled={bulkBusy} onClick={()=>bulk('/api/daytrading/runtime-strategies/enable-all')}>
-          Slå på alla i paper test
+          Välj alla för paper
         </button>
         <button type="button" className="dt-btn dt-btn-warn" disabled={bulkBusy} onClick={()=>bulk('/api/daytrading/runtime-strategies/disable-all')}>
-          Pausa alla i paper test
+          Ta bort alla från paper
         </button>
       </div>
       {runtimeError && <div className="dt-inline-error">{runtimeError}</div>}
       <RuntimeSummary runtime={runtime} />
       <div className="dt-strategy-explainer">
-        <strong>Source of truth: Daytrading styr strategi-runtime och paper test.</strong>
-        <span>Alla katalogstrategier är connected. Strategier utan entry-regel visas som på men kan inte skapa paper trades.</span>
+        <strong>Source of truth: Daytrading styr strategi-runtime och paper trading.</strong>
+        <span>Vald för paper är inte samma sak som kan köra paper trades. Strategier utan entry-regel kan inte räknas som körbara.</span>
         <div className="dt-strategy-explainer-badges">
-          <span>Katalog</span>
-          <span>Connected</span>
-          <span>Paper test På/Av</span>
-          <span>Runtime summary</span>
+          <span>Vald för paper</span>
+          <span>Kan köra paper trades</span>
+          <span>Kan inte köra</span>
+          <span>Lab-only</span>
         </div>
       </div>
 
-      <CollapsibleGroup label="★ Bäst just nu"        colorClass="dt-group-green"  items={best}      defaultOpen={true}  onUpdate={onUpdate} onScan={onScan} />
-      <CollapsibleGroup label="◈ Lovande för testning" colorClass="dt-group-blue"   items={promising}  defaultOpen={false} onUpdate={onUpdate} onScan={onScan} />
-      <CollapsibleGroup label="◷ Behöver mer data"     colorClass="dt-group-yellow" items={needsData}  defaultOpen={false} onUpdate={onUpdate} onScan={onScan} />
-      <CollapsibleGroup label="⏸ Pausade"              colorClass="dt-group-gray"   items={paused}     defaultOpen={false} onUpdate={onUpdate} onScan={onScan} />
+      <div className="dt-runtime-controls">
+        <label className="dt-limit-control">
+          <span>Visa antal strategier</span>
+          <select value={visibleCount} onChange={e => setVisibleCount(Number(e.target.value))}>
+            {LIST_LIMIT_OPTIONS.map(opt => <option key={opt.id} value={opt.id}>{opt.label}</option>)}
+          </select>
+        </label>
+        <label className="dt-limit-control">
+          <span>Max aktiva paper-strategier</span>
+          <select value={paperLimit} onChange={e => setPaperLimit(Number(e.target.value))}>
+            {MAX_ACTIVE_OPTIONS.map(opt => <option key={opt.id} value={opt.id}>{opt.label}</option>)}
+          </select>
+        </label>
+        <label className="dt-limit-control">
+          <span>Filter</span>
+          <select value={runtimeFilter} onChange={e => setRuntimeFilter(e.target.value)}>
+            {RUNTIME_FILTERS.map(opt => <option key={opt.id} value={opt.id}>{opt.label}</option>)}
+          </select>
+        </label>
+      </div>
 
-      {total > strategies.length && (
+      <div className="dt-runtime-control-note">
+        Visar {visibleRows.length} av {filteredRows.length} strategier. Runtime-ready aktiva: {activeRuntimeReadyCount}. Valda men kan inte köra: {selectedBlockedCount}.
+      </div>
+
+      {paperLimit > 0 && activeRuntimeReadyCount > paperLimit && (
+        <div className="dt-inline-error">
+          Max aktiva paper-strategier är satt till {paperLimit}. {activeRuntimeReadyCount} runtime-ready strategier är valda.
+        </div>
+      )}
+
+      <div className="dt-runtime-why-panel">
+        <div className="dt-runtime-why-title">Varför kör inte fler strategier?</div>
+        <div className="dt-runtime-why-grid">
+          {explainReasons.map((item) => (
+            <div key={item.label} className="dt-runtime-why-item">
+              <span>{item.label}</span>
+              <strong>{item.value}</strong>
+            </div>
+          ))}
+          {explainReasons.length === 0 && (
+            <div className="dt-runtime-why-empty">Inga tydliga stopporsaker hittades i de senaste 48 timmarna.</div>
+          )}
+        </div>
+      </div>
+
+      <CollapsibleGroup label="✅ Kan köra paper trades" colorClass="dt-group-green" items={activeReadyRows} defaultOpen={true} onUpdate={onUpdate} onScan={onScan} paperLimit={paperLimit} activeRuntimeReadyCount={activeRuntimeReadyCount} />
+      <CollapsibleGroup label="🟡 Delvis kopplade" colorClass="dt-group-yellow" items={partialRows} defaultOpen={false} onUpdate={onUpdate} onScan={onScan} paperLimit={paperLimit} activeRuntimeReadyCount={activeRuntimeReadyCount} />
+      <CollapsibleGroup label="🔴 Saknar entry-regel" colorClass="dt-group-red" items={missingEntryRows} defaultOpen={false} onUpdate={onUpdate} onScan={onScan} paperLimit={paperLimit} activeRuntimeReadyCount={activeRuntimeReadyCount} />
+      <CollapsibleGroup label="⚪ Lab-only" colorClass="dt-group-gray" items={catalogRows} defaultOpen={false} onUpdate={onUpdate} onScan={onScan} paperLimit={paperLimit} activeRuntimeReadyCount={activeRuntimeReadyCount} />
+      <CollapsibleGroup label="Av" colorClass="dt-group-gray" items={disabledRows} defaultOpen={false} onUpdate={onUpdate} onScan={onScan} paperLimit={paperLimit} activeRuntimeReadyCount={activeRuntimeReadyCount} />
+
+      {selectedBlockedRows.length > 0 && (
+        <div className="dt-runtime-blocked-note">
+          {selectedBlockedRows.length} valda strategier kan inte köra paper trades ännu. Entry-regel eller runtime-koppling saknas.
+        </div>
+      )}
+
+      {visibleCount > 0 && filteredRows.length > visibleCount && (
         <div className="dt-show-all-wrap">
-          <button type="button" className="dt-btn dt-btn-sec" onClick={()=>setShowAll(v=>!v)}>
-            {showAll ? '↑ Dölj' : `Visa alla ${total} strategier`}
+          <button type="button" className="dt-btn dt-btn-sec" onClick={() => setVisibleCount(0)}>
+            Visa alla {filteredRows.length} strategier
           </button>
         </div>
       )}
@@ -679,6 +1128,76 @@ function tradeRowColor(status) {
   return '';
 }
 
+function tradeStatusClass(status) {
+  const s = String(status || '').toLowerCase();
+  if (s.includes('vinst')) return 'dt-status-win';
+  if (s.includes('förlust')) return 'dt-status-loss';
+  if (s.includes('timeout')) return 'dt-status-timeout';
+  if (s.includes('pågående') || s.includes('öppnad')) return 'dt-status-open';
+  if (s.includes('block')) return 'dt-status-blocked';
+  return 'dt-status-neutral';
+}
+
+function runtimeStatusText(trade) {
+  return trade.runtime_label || trade.runtime_status || '–';
+}
+
+function localTradeSummary(trades) {
+  const rows = trades || [];
+  const wins = rows.filter(t => String(t.status || '').toLowerCase().includes('vinst') || String(t.result || '').toUpperCase() === 'WIN').length;
+  const losses = rows.filter(t => String(t.status || '').toLowerCase().includes('förlust') || String(t.result || '').toUpperCase() === 'LOSS').length;
+  const timeout = rows.filter(t => String(t.status || '').toLowerCase().includes('timeout') || String(t.result || '').toUpperCase() === 'TIMEOUT').length;
+  const open = rows.filter(t => String(t.status || '').toLowerCase().includes('pågående') || String(t.result || '').toUpperCase() === 'OPEN').length;
+  const closed = rows.length - open;
+  const pnl = rows.map(t => numericPnl(t.pnl)).filter(v => v != null);
+  const total = pnl.reduce((sum, v) => sum + v, 0);
+  return {
+    total: rows.length,
+    wins,
+    losses,
+    timeout,
+    open,
+    closed,
+    win_rate: closed ? (wins / closed) * 100 : null,
+    avg_pl: pnl.length ? total / pnl.length : null,
+    total_pl: pnl.length ? total : null,
+    best_pl: pnl.length ? Math.max(...pnl) : null,
+    worst_pl: pnl.length ? Math.min(...pnl) : null,
+    long_up: rows.filter(t => ['UP','LONG'].includes(String(t.direction || '').toUpperCase())).length,
+    short_down: rows.filter(t => ['DOWN','SHORT'].includes(String(t.direction || '').toUpperCase())).length,
+  };
+}
+
+function StatCard({ label, value, tone = 'neutral', sub }) {
+  return (
+    <div className={`dt-trade-stat dt-trade-stat-${tone}`}>
+      <strong>{value}</strong>
+      <span>{label}</span>
+      {sub && <small>{sub}</small>}
+    </div>
+  );
+}
+
+function TradeStats({ summary }) {
+  const s = summary || {};
+  return (
+    <div className="dt-trade-stats">
+      <StatCard label="Trades" value={s.total ?? 0} />
+      <StatCard label="Vinnare" value={s.wins ?? 0} tone="positive" />
+      <StatCard label="Förlorare" value={s.losses ?? 0} tone="negative" />
+      <StatCard label="Timeout" value={s.timeout ?? 0} tone="warning" />
+      <StatCard label="Pågående" value={s.open ?? 0} tone="info" />
+      <StatCard label="Win rate" value={s.win_rate == null ? '–' : `${Number(s.win_rate).toFixed(1)}%`} tone={Number(s.win_rate) >= 50 ? 'positive' : 'neutral'} />
+      <StatCard label="Snitt P/L" value={fmtPct(s.avg_pl)} tone={valueTone(s.avg_pl)} />
+      <StatCard label="Total P/L" value={fmtPct(s.total_pl)} tone={valueTone(s.total_pl)} />
+      <StatCard label="Bästa trade" value={fmtPct(s.best_pl)} tone="positive" />
+      <StatCard label="Sämsta trade" value={fmtPct(s.worst_pl)} tone="negative" />
+      <StatCard label="Long/up" value={s.long_up ?? 0} tone="info" />
+      <StatCard label="Short/down" value={s.short_down ?? 0} tone="neutral" />
+    </div>
+  );
+}
+
 function TradeModal({ trade, onClose }) {
   return (
     <div className="dt-modal-overlay" onClick={onClose}>
@@ -691,12 +1210,14 @@ function TradeModal({ trade, onClose }) {
           {[
             ['Symbol',trade.symbol],['Strategi',trade.strategy],['Riktning',trade.direction],
             ['Rå signal',trade.raw_signal],['Katalogstrategi',trade.catalog_strategy],
-            ['Mapping',trade.catalog_mapping_confidence],
+            ['Mapping',trade.catalog_mapping_confidence],['Runtime',runtimeStatusText(trade)],
             ['Status',trade.status],['Anledning',trade.reason],
-            ['Entry',trade.entry!=null?trade.entry:null],
+            ['Entry',fmtPrice(trade.entry)],['Exit',fmtPrice(trade.exit)],
             ['Stop loss',trade.stop_loss!=null?`${trade.stop_loss}%`:null],
             ['Take profit',trade.take_profit!=null?`${trade.take_profit}R`:null],
-            ['P/L',fmtPct(trade.pnl)],
+            ['P/L',fmtPct(trade.pnl)],['Confidence',trade.confidence!=null?`${trade.confidence}%`:null],
+            ['Risk/block',fmtReason(trade.risk_reason || trade.block_reason)],
+            ['Exit reason',trade.exit_reason],['Duration',trade.duration],
           ].map(([lbl,val])=>val!=null?(
             <div key={lbl} className="dt-analyze-row"><span>{lbl}</span><span>{val}</span></div>
           ):null)}
@@ -712,60 +1233,115 @@ function TradeModal({ trade, onClose }) {
   );
 }
 
-function LiveTradesSection({ liveTrades }) {
+const TRADE_LIMITS = [50, 100, 200];
+
+function LiveTradesSection({ liveTrades, tradeLimit, onTradeLimitChange }) {
   const [selected, setSelected] = useState(null);
   const trades = liveTrades?.trades || [];
+  const summaryStats = liveTrades?.summary || localTradeSummary(trades);
   const summary = liveTrades?.summary_48h || {};
   const stoppage = liveTrades?.stoppage_summary_48h || {};
   const source = liveTrades?.source_of_truth || {};
+  const runtimeSummary = liveTrades?.runtime_summary || {};
+  const runtimeStrategies = liveTrades?.runtime_strategies || [];
+  const strategiesWithTrades = runtimeStrategies
+    .filter(s => (s.paper_trades_48h ?? 0) > 0)
+    .sort((a, b) => (b.paper_trades_48h ?? 0) - (a.paper_trades_48h ?? 0));
+  const selectedZeroTrade = runtimeStrategies.filter(s => (s.enabled_by_user === true) && (s.paper_trades_48h ?? 0) === 0);
+  const noTradeReason = summary.other_strategies === 0
+    ? 'Dessa strategier är valda men saknar aktiv entry-regel eller stoppas innan paper trade.'
+    : stoppage.text_sv || 'Strategier kan stoppas innan paper trade om signalen är för svag, marknaden inte passar, cooldown finns, eller strategin är pausad.';
   return (
     <div className="dt-panel">
       <div className="dt-panel-head">
         <h3 className="dt-panel-title">Kandidater &amp; paper trades</h3>
-        <span className="dt-count-badge">{trades.length} st</span>
-      </div>
-      <div className="dt-paper-note">Detta är test-/paper trades. Inga riktiga ordrar skickas.</div>
-      <div className="dt-paper-summary">
-        <div className="dt-paper-summary-head">Senaste 48h</div>
-        <div className="dt-paper-summary-grid">
-          <div><strong>{summary.total ?? 0}</strong><span>Totalt paper trades</span></div>
-          <div><strong>{summary.vwap_reclaim_up ?? 0}</strong><span>VWAP_RECLAIM_UP</span></div>
-          <div><strong>{summary.vwap_rejection_down ?? 0}</strong><span>VWAP_REJECTION_DOWN</span></div>
-          <div><strong>{summary.other_strategies ?? 0}</strong><span>Övriga strategier</span></div>
+        <div className="dt-panel-actions">
+          <label className="dt-limit-control">
+            <span>Visa senaste</span>
+            <select value={tradeLimit} onChange={e=>onTradeLimitChange(Number(e.target.value))}>
+              {TRADE_LIMITS.map(limit => <option key={limit} value={limit}>{limit}</option>)}
+            </select>
+          </label>
+          <span className="dt-count-badge">{trades.length} st</span>
         </div>
-        <p>{summary.text_sv || 'TODO: Kunde inte läsa paper trading history. Kontrollera data/paper-trading/trades.jsonl.'}</p>
       </div>
-      <div className="dt-paper-info-grid">
-        <div className="dt-paper-info-box">
-          <div className="dt-paper-info-title">Varför kördes inte andra strategier?</div>
-          <p>{stoppage.text_sv || 'Strategier kan stoppas innan paper trade om signalen är för svag, marknaden inte passar, cooldown finns, eller strategin är pausad.'}</p>
-          {stoppage.top_reasons?.length > 0 && (
+      <div className="dt-paper-note"><strong>Paper-only.</strong> Detta är test-/paper trades. Inga riktiga ordrar skickas.</div>
+      <TradeStats summary={summaryStats} />
+      <div className="dt-paper-analysis">
+        <div className="dt-paper-summary">
+          <div className="dt-paper-summary-head">Senaste 48h</div>
+          <div className="dt-paper-summary-grid">
+            <div><strong>{summary.total ?? 0}</strong><span>Totalt paper trades</span></div>
+            <div><strong>{summary.vwap_reclaim_up ?? 0}</strong><span>VWAP_RECLAIM_UP</span></div>
+            <div><strong>{summary.vwap_rejection_down ?? 0}</strong><span>VWAP_REJECTION_DOWN</span></div>
+            <div><strong>{summary.other_strategies ?? 0}</strong><span>Övriga strategier</span></div>
+          </div>
+          <p>{summary.text_sv || 'TODO: Kunde inte läsa paper trading history. Kontrollera data/paper-trading/trades.jsonl.'}</p>
+        </div>
+
+        <div className="dt-paper-info-grid">
+          <div className="dt-paper-info-box">
+            <div className="dt-paper-info-title">Raw signals som skapade trades</div>
             <ul>
-              {stoppage.top_reasons.slice(0, 5).map((row) => (
-                <li key={row.reason}><span>{row.reason}</span><strong>{row.count}</strong></li>
+              {(summary.by_raw_signal || []).slice(0, 5).map((row) => (
+                <li key={row.raw_signal}><span>{row.raw_signal}</span><strong>{row.count}</strong></li>
               ))}
+              {(summary.by_raw_signal || []).length === 0 && <li><span>Inga signaler</span><strong>0</strong></li>}
             </ul>
-          )}
+          </div>
+          <div className="dt-paper-info-box">
+            <div className="dt-paper-info-title">Strategier som skapade trades</div>
+            <ul>
+              {strategiesWithTrades.slice(0, 5).map((row) => (
+                <li key={row.strategy_id || row.id}><span>{row.strategy_name || row.name || row.strategy_id}</span><strong>{row.paper_trades_48h}</strong></li>
+              ))}
+              {strategiesWithTrades.length === 0 && <li><span>Inga strategier</span><strong>0</strong></li>}
+            </ul>
+          </div>
+          <div className="dt-paper-info-box">
+            <div className="dt-paper-info-title">Valda strategier med 0 trades</div>
+            <ul>
+              {selectedZeroTrade.slice(0, 5).map((row) => (
+                <li key={row.strategy_id || row.id}><span>{row.strategy_name || row.name || row.strategy_id}</span><strong>0</strong></li>
+              ))}
+              {selectedZeroTrade.length === 0 && <li><span>Inga valda strategier med 0 trades</span><strong>0</strong></li>}
+            </ul>
+          </div>
         </div>
-        <div className="dt-paper-info-box">
-          <div className="dt-paper-info-title">Vad betyder siffrorna?</div>
-          <ul>
-            <li><span>{source.strategy_control || 'Strategikontroll = katalog + teststatistik + historik'}</span></li>
-            <li><span>{source.candidates_paper || 'Kandidater & paper trades = faktiska paper trades från scanner'}</span></li>
-            <li><span>{source.safety || 'Safety = live trading är avstängt'}</span></li>
-          </ul>
+
+        <div className="dt-paper-info-grid">
+          <div className="dt-paper-info-box">
+            <div className="dt-paper-info-title">Varför körs inte andra strategier?</div>
+            <p>{noTradeReason}</p>
+            {stoppage.top_reasons?.length > 0 && (
+              <ul>
+                {stoppage.top_reasons.slice(0, 5).map((row) => (
+                  <li key={row.reason}><span>{row.reason}</span><strong>{row.count}</strong></li>
+                ))}
+              </ul>
+            )}
+          </div>
+          <div className="dt-paper-info-box">
+            <div className="dt-paper-info-title">Vad betyder siffrorna?</div>
+            <ul>
+              <li><span>{source.strategy_control || 'Strategikontroll = katalog + teststatistik + historik'}</span></li>
+              <li><span>{source.candidates_paper || 'Kandidater & paper trades = faktiska paper trades från scanner'}</span></li>
+              <li><span>{source.safety || 'Safety = live trading är avstängt'}</span></li>
+              <li><span>{runtimeSummary.can_create_paper_trade_count != null ? `Runtime-ready kan köra: ${runtimeSummary.can_create_paper_trade_count}` : 'Runtime summary saknas'}</span></li>
+            </ul>
+          </div>
         </div>
       </div>
       {!trades.length ? (
-        <PlatformEmptyState title="Inga aktiva paper trades just nu" text="Kör ny scan för att leta efter kandidater." />
+        <PlatformEmptyState title="Inga paper trades att visa" text={`Det finns inga trades inom senaste ${tradeLimit}. Kör ny scan eller välj ett lägre antal.`} />
       ) : (
         <div className="dt-table-wrap">
           <table className="dt-table">
-            <thead><tr><th>Tid</th><th>Symbol</th><th>Marknad</th><th>Rå signal</th><th>Katalogstrategi</th><th>Rikt.</th><th>P/L</th><th>Status</th><th></th></tr></thead>
+            <thead><tr><th>Tid</th><th>Symbol</th><th>Marknad</th><th>Rå signal</th><th>Katalogstrategi</th><th>Rikt.</th><th>Entry</th><th>Exit</th><th>P/L</th><th>Status</th><th>Confidence</th><th>Risk/block</th><th>Runtime</th><th></th></tr></thead>
             <tbody>
               {trades.map((trade,i)=>(
                 <tr key={trade.trade_id||i} className={tradeRowColor(trade.status)}>
-                  <td className="dt-td-time">{trade.time?new Date(trade.time).toLocaleTimeString('sv-SE',{hour:'2-digit',minute:'2-digit'}):'–'}</td>
+                  <td className="dt-td-time">{fmtTradeTime(trade.time)}</td>
                   <td className="dt-td-sym"><strong>{trade.symbol}</strong></td>
                   <td>{trade.market||'–'}</td>
                   <td className="dt-td-raw">{trade.raw_signal||'–'}</td>
@@ -775,8 +1351,13 @@ function LiveTradesSection({ liveTrades }) {
                     {trade.catalog_mapping_confidence === 'low' && <span className="dt-uncertain">låg säkerhet</span>}
                   </td>
                   <td>{trade.direction||'–'}</td>
+                  <td className="dt-mono-cell">{fmtPrice(trade.entry)}</td>
+                  <td className="dt-mono-cell">{fmtPrice(trade.exit)}</td>
                   <td className={trade.pnl>0?'dt-pos':trade.pnl<0?'dt-neg':''}>{fmtPct(trade.pnl)}</td>
-                  <td><span className="dt-status-tag">{trade.status||'–'}</span></td>
+                  <td><span className={`dt-status-tag ${tradeStatusClass(trade.status)}`}>{trade.status||'–'}</span></td>
+                  <td>{trade.confidence!=null?`${trade.confidence}%`:'–'}</td>
+                  <td className="dt-td-reason">{fmtReason(trade.risk_reason || trade.block_reason)}</td>
+                  <td><span className={`dt-runtime-tag ${runtimeClass(trade.runtime_status)}`}>{runtimeStatusText(trade)}</span></td>
                   <td><button type="button" className="dt-btn-xs" onClick={()=>setSelected(trade)}>Analysera</button></td>
                 </tr>
               ))}
@@ -833,8 +1414,138 @@ function ImpactPanel({ impact, onScan }) {
 
 const DEFAULT_FILTERS = { market:'all', direction:'all', minScore:0, symbol:'', _dirty:false };
 
+// ─── Learning Engine v1 ─────────────────────────────────────────────────────
+
+function learnStatusLabel(s) {
+  return {
+    strong: 'Stark', promising: 'Lovande', needs_more_data: 'Behöver mer data',
+    weak: 'Svag', avoid: 'Undvik', needs_review: 'Granska', unknown: 'Okänd',
+  }[s] || s || 'Okänd';
+}
+function learnStatusClass(s) {
+  if (s === 'strong') return 'dt-learn-strong';
+  if (s === 'promising') return 'dt-learn-promising';
+  if (s === 'weak') return 'dt-learn-weak';
+  if (s === 'avoid') return 'dt-learn-avoid';
+  if (s === 'needs_review') return 'dt-learn-review';
+  return 'dt-learn-neutral';
+}
+function fmtPl(v) {
+  if (v == null || isNaN(v)) return '–';
+  const n = Number(v);
+  return `${n > 0 ? '+' : ''}${n.toFixed(3)}%`;
+}
+
+function LearnTable({ rows, keyLabel }) {
+  if (!rows?.length) return <div className="dt-learn-empty">Behöver mer data innan säker slutsats.</div>;
+  return (
+    <div className="dt-learn-table-wrap">
+      <table className="dt-learn-table">
+        <thead>
+          <tr>
+            <th>{keyLabel}</th><th>Trades</th><th>Stängda</th><th>Win%</th>
+            <th>Snitt P/L</th><th>Total P/L</th><th>Skippade</th><th>Status</th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((r) => (
+            <tr key={r.key}>
+              <td className="dt-learn-key">{r.label || r.key}</td>
+              <td>{r.trades}</td>
+              <td>{r.closed}</td>
+              <td>{r.win_rate != null ? `${r.win_rate}%` : '–'}</td>
+              <td className={numericPnl(r.avg_pl) > 0 ? 'dt-pos' : numericPnl(r.avg_pl) < 0 ? 'dt-neg' : ''}>{fmtPl(r.avg_pl)}</td>
+              <td className={numericPnl(r.total_pl) > 0 ? 'dt-pos' : numericPnl(r.total_pl) < 0 ? 'dt-neg' : ''}>{fmtPl(r.total_pl)}</td>
+              <td>{r.skipped || 0}{r.top_skip_reason ? ` · ${r.top_skip_reason}` : ''}</td>
+              <td><span className={`dt-learn-badge ${learnStatusClass(r.status)}`}>{learnStatusLabel(r.status)}</span></td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function LearningEngineSection({ learning }) {
+  const [tab, setTab] = useState('strategy');
+  const data = learning?.data || null;
+  const s = data?.summary || null;
+
+  const TABS = [
+    ['strategy', 'Per strategi'],
+    ['market', 'Per marknadsgrupp'],
+    ['risk', 'Per riskklass'],
+    ['symbol', 'Per symbol'],
+    ['signal', 'Per signal'],
+    ['skip', 'Skip reasons'],
+  ];
+
+  const hasData = s && (s.trades_total > 0 || s.skipped_total > 0);
+
+  return (
+    <div className="dt-panel dt-learn-panel">
+      <div className="dt-panel-head">
+        <h2 className="dt-panel-title">🧠 Learning Engine</h2>
+        <span className="dt-learn-window">Senaste {data?.window?.hours ?? 48}h</span>
+      </div>
+      <p className="dt-learn-note">
+        Systemet lär sig bara från paper/test. Inga riktiga order skickas.
+      </p>
+
+      {!hasData ? (
+        <div className="dt-learn-empty">Behöver mer data innan säker slutsats. Learning-loopen samlar in paper trades och skippade signaler löpande.</div>
+      ) : (
+        <>
+          <div className="dt-learn-cards">
+            <div className="dt-learn-card"><span className="dt-learn-num">{s.trades_total}</span><span className="dt-learn-lbl">Trades total</span></div>
+            <div className="dt-learn-card"><span className="dt-learn-num">{s.win_rate}%</span><span className="dt-learn-lbl">Win rate</span></div>
+            <div className="dt-learn-card"><span className={`dt-learn-num ${numericPnl(s.avg_pl) >= 0 ? 'dt-pos' : 'dt-neg'}`}>{fmtPl(s.avg_pl)}</span><span className="dt-learn-lbl">Snitt P/L</span></div>
+            <div className="dt-learn-card"><span className={`dt-learn-num ${numericPnl(s.total_pl) >= 0 ? 'dt-pos' : 'dt-neg'}`}>{fmtPl(s.total_pl)}</span><span className="dt-learn-lbl">Total P/L</span></div>
+            <div className="dt-learn-card"><span className="dt-learn-num">{s.skipped_total}</span><span className="dt-learn-lbl">Skippade signaler</span></div>
+            <div className="dt-learn-card"><span className="dt-learn-num">{s.risk_blocks_total}</span><span className="dt-learn-lbl">Risk blocks</span></div>
+          </div>
+
+          <div className="dt-learn-best">
+            <div className="dt-learn-best-item"><span className="dt-learn-best-lbl">Bästa strategi</span><strong>{s.best_strategy?.label || '–'}</strong>{s.best_strategy && <span className="dt-learn-best-meta">{s.best_strategy.win_rate}% · {fmtPl(s.best_strategy.avg_pl)} · {s.best_strategy.closed} trades</span>}</div>
+            <div className="dt-learn-best-item"><span className="dt-learn-best-lbl">Sämsta strategi</span><strong>{s.worst_strategy?.label || '–'}</strong>{s.worst_strategy && <span className="dt-learn-best-meta">{s.worst_strategy.win_rate}% · {fmtPl(s.worst_strategy.avg_pl)} · {s.worst_strategy.closed} trades</span>}</div>
+            <div className="dt-learn-best-item"><span className="dt-learn-best-lbl">Bästa marknadsgrupp</span><strong>{s.best_market_group?.label || '–'}</strong>{s.best_market_group && <span className="dt-learn-best-meta">{s.best_market_group.win_rate}% · {fmtPl(s.best_market_group.avg_pl)}</span>}</div>
+            <div className="dt-learn-best-item"><span className="dt-learn-best-lbl">Bästa riskklass</span><strong>{s.best_risk_class?.label || '–'}</strong>{s.best_risk_class && <span className="dt-learn-best-meta">{s.best_risk_class.win_rate}% · {fmtPl(s.best_risk_class.avg_pl)}</span>}</div>
+          </div>
+
+          <div className="dt-learn-tabs">
+            {TABS.map(([id, lbl]) => (
+              <button key={id} type="button" className={`dt-learn-tab ${tab === id ? 'dt-learn-tab-active' : ''}`} onClick={() => setTab(id)}>{lbl}</button>
+            ))}
+          </div>
+
+          {tab === 'strategy' && <LearnTable rows={data.by_strategy} keyLabel="Strategi" />}
+          {tab === 'market' && <LearnTable rows={data.by_market_group} keyLabel="Marknadsgrupp" />}
+          {tab === 'risk' && <LearnTable rows={data.by_risk_class} keyLabel="Riskklass" />}
+          {tab === 'symbol' && <LearnTable rows={data.by_symbol} keyLabel="Symbol" />}
+          {tab === 'signal' && <LearnTable rows={data.by_raw_signal} keyLabel="Signal" />}
+          {tab === 'skip' && (
+            !data.skip_reasons?.length ? <div className="dt-learn-empty">Inga skippade signaler i fönstret ännu.</div> : (
+              <div className="dt-learn-table-wrap">
+                <table className="dt-learn-table">
+                  <thead><tr><th>Orsak</th><th>Antal</th><th>Andel</th></tr></thead>
+                  <tbody>
+                    {data.skip_reasons.map((r) => (
+                      <tr key={r.key}><td className="dt-learn-key">{r.key}</td><td>{r.count}</td><td>{r.share}%</td></tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )
+          )}
+        </>
+      )}
+    </div>
+  );
+}
+
 export default function DaytradingPage() {
-  const { status, strategies, pipeline, liveTrades, recommendation, impact, symbols, runtime, loading, error, refresh } = useDaytradingData();
+  const [tradeLimit, setTradeLimit] = useState(200);
+  const { status, strategies, pipeline, liveTrades, recommendation, impact, symbols, runtime, marketControls, learning, loading, error, refresh } = useDaytradingData(tradeLimit);
   const [filters, setFilters] = useState(DEFAULT_FILTERS);
   const [scanning, setScanning] = useState(false);
   const [scanResult, setScanResult] = useState(null);
@@ -914,7 +1625,7 @@ export default function DaytradingPage() {
       <div className="dt-page-head">
         <div>
           <h1 className="dt-page-title">Daytrading Control Center</h1>
-          <p className="dt-page-sub">Livekontroll för strategier, signaler, pipeline och paper trades.</p>
+          <p className="dt-page-sub">Source of truth för strategi-runtime och paper trades. Vald för paper är inte samma sak som kan köra paper trades.</p>
         </div>
         <button type="button" className="dt-btn dt-btn-sec" onClick={refresh}>Uppdatera</button>
       </div>
@@ -924,6 +1635,14 @@ export default function DaytradingPage() {
 
       {/* B) Safety */}
       <SafetyBanner status={status} />
+
+      <div className="dt-page-runtime-summary">
+        <div className="dt-panel-head">
+          <h3 className="dt-panel-title">Runtime-sammanfattning</h3>
+          <span className="dt-count-badge">{runtime?.summary?.total_catalog_strategies ?? 0} strategier</span>
+        </div>
+        <RuntimeSummary runtime={runtime} />
+      </div>
 
       {/* Scan result */}
       {scanResult && (
@@ -936,6 +1655,9 @@ export default function DaytradingPage() {
 
       {/* C) Process just nu */}
       <ProcessCard status={status} pipeline={pipeline} />
+
+      {/* Market & risk controls */}
+      <MarketControlsSection marketControls={marketControls} onUpdate={refresh} />
 
       {/* D) Pipeline — fullbredd, prominent */}
       <PipelineSection pipeline={pipeline} />
@@ -962,15 +1684,19 @@ export default function DaytradingPage() {
           strategies={visibleStrategies}
           total={allStrategies.length}
           runtime={runtime}
+          liveTrades={liveTrades}
           onUpdate={refresh}
           onScan={handleScan}
         />
       )}
 
       {/* H) Kandidater & paper trades */}
-      <LiveTradesSection liveTrades={liveTrades} />
+      <LiveTradesSection liveTrades={liveTrades} tradeLimit={tradeLimit} onTradeLimitChange={setTradeLimit} />
 
-      {/* I) Effekt av senaste ändring */}
+      {/* I) Learning Engine v1 */}
+      <LearningEngineSection learning={learning} />
+
+      {/* J) Effekt av senaste ändring */}
       <ImpactPanel impact={impact} onScan={()=>handleScan()} />
 
     </div>
