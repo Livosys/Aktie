@@ -12,10 +12,13 @@ const ENDPOINTS = [
   { key: 'safety', url: '/api/safety/status', label: 'Safety' },
   { key: 'pipelineStatus', url: '/api/pipeline/daily/status', label: 'Daily pipeline' },
   { key: 'dailyResults', url: '/api/results/daily-intelligence', label: 'Daily intelligence' },
+  { key: 'autopilotStatus', url: '/api/strategy-test-autopilot/status', label: 'Strategy Test Autopilot status' },
+  { key: 'autopilotConfig', url: '/api/strategy-test-autopilot/config', label: 'Strategy Test Autopilot config' },
   { key: 'priority', url: '/api/priority/summary', label: 'Priority summary' },
   { key: 'marketRegime', url: '/api/market-regime/status', label: 'Market regime' },
   { key: 'intelligenceStatus', url: '/api/intelligence/status', label: 'Intelligence status' },
   { key: 'intelligenceRecommendations', url: '/api/intelligence/recommendations', label: 'AI recommendations' },
+  { key: 'learningConnectorStatus', url: '/api/learning/connector/status', label: 'Learning connector status' },
   { key: 'learningSummary', url: '/api/learning/latest-summary', label: 'Learning summary' },
   { key: 'optimization', url: '/api/optimization/summary', label: 'Optimization summary' },
   { key: 'paperStatus', url: '/api/paper-trading/status', label: 'Paper trading status' },
@@ -271,6 +274,10 @@ function buildFallbackAiAnswer(question, view) {
     return optimization || 'Optimeringsrekommendation saknas just nu.';
   }
 
+  if (q.includes('autopilot') || q.includes('strategy test autopilot')) {
+    return view.autopilotSummaryText || 'Autopilot-status saknas.';
+  }
+
   return [
     top ? `Top focus: ${top.symbol}.` : 'Top focus saknas.',
     watch ? `Watchlist: ${watch.symbol}.` : 'Watchlist saknas.',
@@ -338,6 +345,10 @@ function buildAssistantAnswer(question, view) {
     return optimization;
   }
 
+  if (/autopilot|strategy test autopilot/i.test(normalized)) {
+    return view.autopilotSummaryText || 'Autopilot-status saknas.';
+  }
+
   return buildFallbackAiAnswer(normalized, view);
 }
 
@@ -391,6 +402,9 @@ export default function SupervisorPage() {
     const safety = resources.safety?.data || null;
     const pipelineStatus = resources.pipelineStatus?.data || null;
     const dailyResults = resources.dailyResults?.data || null;
+    const autopilotStatus = resources.autopilotStatus?.data || null;
+    const autopilotConfig = resources.autopilotConfig?.data || null;
+    const learningConnectorStatus = resources.learningConnectorStatus?.data || null;
     const priority = resources.priority?.data || null;
     const regime = resources.marketRegime?.data || null;
     const intelligence = resources.intelligenceRecommendations?.data || null;
@@ -401,6 +415,30 @@ export default function SupervisorPage() {
     const paperPerformance = resources.paperPerformance?.data || null;
     const replayLatest = resources.replayLatest?.data || null;
     const candidates = resources.candidates?.data || null;
+    const autopilotEffectiveConfig = autopilotStatus?.config || autopilotConfig?.config || autopilotConfig?.data?.config || autopilotConfig?.data || autopilotConfig || null;
+    const autopilotRecentRuns = normalizeArray(autopilotStatus?.recent_runs || autopilotStatus?.status?.recent_runs || []);
+    const autopilotLatestRun = autopilotRecentRuns[0] || null;
+    const autopilotLastRunText = autopilotLatestRun
+      ? [
+        autopilotLatestRun.summary_sv || autopilotLatestRun.message_sv || autopilotLatestRun.run_type || 'Plan skapad.',
+        autopilotLatestRun.counts?.combinations != null ? `${autopilotLatestRun.counts.combinations} kombinationer` : '',
+      ].filter(Boolean).join(' · ')
+      : 'Inga planerade körningar ännu.';
+    const autopilotStatusMissing = Boolean(resources.autopilotStatus?.missing || resources.autopilotStatus?.error || resources.autopilotConfig?.missing || resources.autopilotConfig?.error);
+    const autopilotEnabled = autopilotStatus?.enabled === true || autopilotEffectiveConfig?.enabled === true;
+    const autopilotStateText = autopilotStatusMissing
+      ? 'Autopilot-status saknas'
+      : autopilotEnabled
+        ? 'På'
+        : 'Av';
+    const autopilotMode = pickText(autopilotEffectiveConfig, [['mode']], 'saknas');
+    const autopilotInterval = autopilotEffectiveConfig?.interval_minutes != null ? `${autopilotEffectiveConfig.interval_minutes} min` : 'saknas';
+    const autopilotMaxRuns = autopilotEffectiveConfig?.max_runs_per_day != null ? String(autopilotEffectiveConfig.max_runs_per_day) : 'saknas';
+    const autopilotMaxParallel = autopilotEffectiveConfig?.max_parallel_jobs != null ? String(autopilotEffectiveConfig.max_parallel_jobs) : 'saknas';
+    const autopilotAllowedStrategies = normalizeArray(autopilotEffectiveConfig?.allowed_strategies);
+    const autopilotAllowedSymbols = normalizeArray(autopilotEffectiveConfig?.allowed_symbols);
+    const autopilotAllowedTimeframes = normalizeArray(autopilotEffectiveConfig?.allowed_timeframes);
+    const autopilotSafetyText = 'actions_allowed=false · can_place_orders=false · live_trading_enabled=false · auto_apply_results=false';
 
     const topFocus = normalizeArray(priority?.topFocus || priority?.signals || []);
     const watchlist = normalizeArray(priority?.watchlist || []);
@@ -439,6 +477,13 @@ export default function SupervisorPage() {
       normalizeArray(optimization?.recommendations || []).map((item) => toText(item, '')).filter(Boolean)[0] || '',
     ].filter(Boolean).join(' · ') || 'saknas';
     const learningText = bestSummaryLine(learning) || 'saknas';
+    const learningConnectorActive = learningConnectorStatus?.connector_active !== false;
+    const learningConnectorSources = learningConnectorStatus?.sources_connected || {};
+    const learningConnectorText = learningConnectorStatus?.missing
+      ? 'Autopilot-status saknas'
+      : learningConnectorActive
+        ? `Connector aktiv · scanner ${learningConnectorSources.scanner ? 'på' : 'av'} · paper ${learningConnectorSources.paper ? 'på' : 'av'} · replay ${learningConnectorSources.replay ? 'på' : 'av'} · batch ${learningConnectorSources.batch ? 'på' : 'av'}`
+        : 'Connector av';
     const safetyText = [
       pickText(safety, [
         ['summarySv'],
@@ -454,6 +499,50 @@ export default function SupervisorPage() {
       pickText(regime, [['regimeLabelSv'], ['regime'], ['volatilityLabelSv']], ''),
       pickText(regime, [['riskEnvLabelSv'], ['trendLabelSv']], ''),
     ].filter(Boolean).join(' · ') || 'saknas';
+    const systemHealthAnswer = [
+      `Backend ${status?.ok || health?.ok ? 'ok' : 'saknas'}`,
+      `Scanner ${status?.running || status?.scannerActive ? 'på' : 'oklart'}`,
+      `Paper ${paperStatus?.enabled ? 'på' : 'av'}`,
+      `Pipeline ${pipelineStatus?.daily_pipeline_running || pipelineStatus?.running ? 'aktiv' : 'av'}`,
+      `Safety ${view?.safetySafe === false ? 'varning' : 'aktiv'}`,
+    ].join(' · ');
+    const learningAnswer = [
+      latestAiSummary,
+      learningText !== 'saknas' ? learningText : '',
+      learningConnectorText,
+    ].filter(Boolean).join(' · ') || 'Ingen tydlig learning-sammanfattning ännu.';
+    const bestStrategiesAnswer = topFocus.length
+      ? `Top focus: ${topFocus.slice(0, 3).map((item) => item.symbol || item.name || 'okänd').join(', ')}.`
+      : 'Ingen tydlig toppstrategi ännu.';
+    const worstStrategiesAnswer = avoid.length
+      ? `Avoid: ${avoid.slice(0, 3).map((item) => item.symbol || item.name || 'okänd').join(', ')}.`
+      : 'Ingen tydlig avoid-signal ännu.';
+    const nextTestAnswer = [
+      topFocus[0] ? `Testa nästa top focus: ${topFocus[0].symbol || topFocus[0].name || 'okänd'}.` : 'Ingen tydlig signal att testa ännu.',
+      autopilotEnabled ? `Autopilot kan köra paper/replay/batch-only i mode ${autopilotMode}.` : 'Autopilot är avstängd och planerar bara testlägen.',
+    ].join(' ');
+    const plannedTestsAnswer = autopilotStatusMissing
+      ? 'Autopilot-status saknas.'
+      : [
+        `Autopilot ${autopilotStateText.toLowerCase()} i mode ${autopilotMode}.`,
+        `${autopilotAllowedStrategies.length} strategier, ${autopilotAllowedSymbols.length} symboler, ${autopilotAllowedTimeframes.length} timeframes.`,
+        `Interval ${autopilotInterval}, max ${autopilotMaxRuns} körningar/dygn, ${autopilotMaxParallel} parallelljobb.`,
+        autopilotLastRunText,
+      ].join(' ');
+    const riskAnswer = [
+      safetyText,
+      regimeText !== 'saknas' ? `Regim: ${regimeText}.` : 'Regim saknas.',
+      'Ingen riktig order kan läggas.',
+    ].join(' ');
+    const supervisorAnswers = [
+      { q: '1. Hur mår systemet?', a: systemHealthAnswer, tone: view.safetySafe ? 'ok' : 'neutral' },
+      { q: '2. Vad lärde sig systemet senaste dygnet?', a: learningAnswer, tone: 'neutral' },
+      { q: '3. Vilka strategier fungerar bäst?', a: bestStrategiesAnswer, tone: 'ok' },
+      { q: '4. Vilka fungerar sämst?', a: worstStrategiesAnswer, tone: 'danger' },
+      { q: '5. Vad borde testas härnäst?', a: nextTestAnswer, tone: 'neutral' },
+      { q: '6. Vilka tester är planerade?', a: plannedTestsAnswer, tone: autopilotStatusMissing ? 'neutral' : 'ok' },
+      { q: '7. Vilka risker ser systemet?', a: riskAnswer, tone: view.safetySafe ? 'neutral' : 'danger' },
+    ];
     const actionItems = [];
     if (!resources.status?.data && !resources.systemHealth?.data) {
       actionItems.push('Data saknas');
@@ -496,6 +585,33 @@ export default function SupervisorPage() {
       learningText,
       safetyText,
       regimeText,
+      autopilotStatus,
+      autopilotConfig,
+      autopilotEffectiveConfig,
+      autopilotStatusMissing,
+      autopilotEnabled,
+      autopilotStateText,
+      autopilotMode,
+      autopilotInterval,
+      autopilotMaxRuns,
+      autopilotMaxParallel,
+      autopilotAllowedStrategies,
+      autopilotAllowedSymbols,
+      autopilotAllowedTimeframes,
+      autopilotSafetyText,
+      autopilotRecentRuns,
+      autopilotLatestRun,
+      autopilotLastRunText,
+      learningConnectorStatus,
+      learningConnectorText,
+      systemHealthAnswer,
+      learningAnswer,
+      bestStrategiesAnswer,
+      worstStrategiesAnswer,
+      nextTestAnswer,
+      plannedTestsAnswer,
+      riskAnswer,
+      supervisorAnswers,
       actionItems,
       backendOk: !!(status?.ok || health?.ok),
       scannerActive: Boolean(
