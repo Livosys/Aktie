@@ -8,6 +8,7 @@ const strategyPerformance = require('./strategyPerformanceService');
 const auditTrail = require('./auditTrailService');
 const marketUniverse = require('./marketUniverseService');
 const dataCoverage = require('./dataCoverageExpansionService');
+const learningConnector = require('./learningConnectorService');
 
 const SAFETY = Object.freeze({
   actions_allowed: false,
@@ -713,6 +714,7 @@ function processRunner(batchId) {
     batch.status = 'running';
   }
   saveBatch(batch);
+  if (batch.status === 'completed') forwardBatchToLearning(batch);
   auditTrail.logAuditEvent({
     type: batch.status === 'completed' ? 'BATCH_COMPLETED' : 'BATCH_PROGRESS',
     source: 'strategy_batch',
@@ -727,6 +729,67 @@ function processRunner(batchId) {
     },
   });
   if (batch.status === 'running') setTimeout(() => processRunner(batchId), 10);
+}
+
+/**
+ * Skickar en klar batch till Learning Connector — en sammanfattning per strategi.
+ * Batch ger bara en REKOMMENDATION (promote/keep/demote/pause_candidate);
+ * den slår aldrig på/av strategier och lägger aldrig order. Fail-safe.
+ */
+function forwardBatchToLearning(batch) {
+  try {
+    if (!batch || batch.status !== 'completed') return;
+    const results = loadResults(batch.id);
+    if (!results.length) return;
+    const byStrategy = new Map();
+    for (const r of results) {
+      const sid = r.strategy_id || 'unknown';
+      if (!byStrategy.has(sid)) byStrategy.set(sid, []);
+      byStrategy.get(sid).push(r);
+    }
+    for (const [strategyId, rows] of byStrategy.entries()) {
+      const trades = rows.reduce((s, r) => s + (r.trades || 0), 0);
+      const wins = rows.reduce((s, r) => s + (r.wins || 0), 0);
+      const winRate = trades ? round((wins / trades) * 100, 2) : 0;
+      const avgReturn = rows.length ? round(rows.reduce((s, r) => s + (r.avg_pnl || 0), 0) / rows.length, 4) : 0;
+      const maxDd = rows.reduce((m, r) => Math.max(m, r.max_drawdown || 0), 0);
+      const grossWin = rows.reduce((s, r) => s + (r.total_pnl > 0 ? r.total_pnl : 0), 0);
+      const grossLoss = Math.abs(rows.reduce((s, r) => s + (r.total_pnl < 0 ? r.total_pnl : 0), 0));
+      const profitFactor = grossLoss > 0 ? round(grossWin / grossLoss, 3) : null;
+      const byMarket = aggregateField(rows, 'market_group');
+      const best = rows.slice().sort((a, b) => (b.score || 0) - (a.score || 0))[0] || {};
+      learningConnector.recordBatchResult({
+        batch_id: `${batch.id}:${strategyId}`,
+        strategy_id: strategyId === 'unknown' ? null : strategyId,
+        symbol: best.symbol || null,
+        market: best.market_group || null,
+        underlying_symbol: best.underlying_symbol || best.symbol || null,
+        underlying_market: best.underlying_market || best.market_group || null,
+        underlying_signal_direction: best.underlying_signal_direction || null,
+        underlying_signal_strength: best.underlying_signal_strength ?? best.confidence_threshold ?? null,
+        traded_symbol: best.traded_symbol || best.symbol || null,
+        traded_instrument_type: best.traded_instrument_type || null,
+        market_group: best.market_group || null,
+        risk_class: best.risk_class || null,
+        leverage_factor: best.leverage_factor ?? null,
+        spread_estimate: best.spread_estimate ?? null,
+        tracking_quality: best.tracking_quality || null,
+        paper_pnl_percent: avgReturn,
+        underlying_move_percent: best.underlying_move_percent ?? null,
+        timeframe: best.timeframe || '2m',
+        parameter_set: { stop_loss: best.stop_loss, take_profit: best.take_profit, holding_time: best.holding_time, confidence_threshold: best.confidence_threshold },
+        total_tests: rows.length,
+        win_rate: winRate,
+        avg_return: avgReturn,
+        profit_factor: profitFactor,
+        max_drawdown: maxDd,
+        best_market_regime: byMarket[0]?.key || null,
+        worst_market_regime: byMarket[byMarket.length - 1]?.key || null,
+      });
+    }
+  } catch (err) {
+    console.warn('[batch] learning connector forward failed:', err.message);
+  }
 }
 
 function pauseBatchTest(batchId) {
