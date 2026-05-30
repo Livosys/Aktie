@@ -6,6 +6,10 @@ import AiSummaryBar from './AiSummaryBar.jsx';
 import GlobalFilterBar from './GlobalFilterBar.jsx';
 
 const SEARCH_ROUTES = [
+  { key: 'supervisor', to: '/supervisor' },
+  { key: 'översikt', to: '/supervisor' },
+  { key: 'oversikt', to: '/supervisor' },
+  { key: 'kör bilen', to: '/supervisor' },
   { key: 'live', to: '/live' },
   { key: 'scanner', to: '/live' },
   { key: 'signaler', to: '/live' },

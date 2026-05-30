@@ -85,6 +85,7 @@ function ThemeToggle() {
 export default function Navigation() {
   const { pathname } = useLocation();
 
+  const isSupervisor = pathname.startsWith('/supervisor') || pathname.startsWith('/oversikt');
   const isPuls       = pathname === '/' || pathname.startsWith('/live') || pathname.startsWith('/signalpuls');
   const isDaytrading = pathname.startsWith('/daytrading');
   const isLab        = pathname.startsWith('/lab') || pathname.startsWith('/trading-lab');
@@ -93,12 +94,15 @@ export default function Navigation() {
 
   return (
     <nav className="nav">
-      <Link to="/live" className="nav-brand">
+      <Link to="/supervisor" className="nav-brand">
         <img src="/evin.png" alt="Aktier Livosys" className="app-logo" />
         <span className="nav-brand-text">Trading OS v2</span>
       </Link>
 
       <div className="nav-links nav-links-desktop">
+        <Link to="/supervisor" className={`nav-link${isSupervisor ? ' active' : ''}`}>
+          <span>🧭</span><span>ÖVERSIKT</span>
+        </Link>
         <Link to="/live"       className={`nav-link nav-live${isPuls ? ' active' : ''}`}>
           <span>❤️</span><span>LIVE</span>
         </Link>

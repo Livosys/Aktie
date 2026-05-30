@@ -11,6 +11,7 @@ import TradingLabPage   from './pages/TradingLabPage.jsx';
 import ResultatPage     from './pages/ResultatPage.jsx';
 import SystemPage       from './pages/SystemPage.jsx';
 import DaytradingPage   from './pages/DaytradingPage.jsx';
+import SupervisorPage   from './pages/SupervisorPage.jsx';
 
 function RedirectWithSearch({ to }) {
   const { search } = useLocation();
@@ -26,7 +27,9 @@ export default function App() {
         <HeroToastContainer />
         <Routes>
           {/* Trading OS v2 */}
-          <Route path="/"             element={<Navigate to="/live" replace />} />
+          <Route path="/"             element={<Navigate to="/supervisor" replace />} />
+          <Route path="/supervisor"   element={<SupervisorPage />} />
+          <Route path="/oversikt"     element={<Navigate to="/supervisor" replace />} />
           <Route path="/live"         element={<SignalpulsPage />} />
           <Route path="/lab"          element={<TradingLabPage />} />
           <Route path="/insikter"     element={<ResultatPage />} />
