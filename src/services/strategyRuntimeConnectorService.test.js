@@ -49,7 +49,6 @@ const previouslyNoEntry = [
   'index_supported_momentum_long',
   'opening_range_retest_long',
   'mean_reversion_vwap',
-  'trend_continuation',
   'support_bounce',
   'resistance_rejection',
   'index_confirmed_long',
@@ -160,11 +159,11 @@ const expectedActive = new Set([
   const summary = getStrategyRuntimeSummary();
   assert('T4: total_catalog_strategies=30', summary.summary.total_catalog_strategies === 30, summary.summary.total_catalog_strategies);
   assert('T4: runtime_no_entry_rule=0', summary.summary.runtime_no_entry_rule === 0, summary.summary.runtime_no_entry_rule);
-  assert('T4: runtime_active=18', summary.summary.runtime_active === 18, summary.summary.runtime_active);
+  assert('T4: runtime_active=17', summary.summary.runtime_active === 17, summary.summary.runtime_active);
   assert('T4: runtime_partial=11', summary.summary.runtime_partial === 11, summary.summary.runtime_partial);
-  assert('T4: runtime_disabled=1', summary.summary.runtime_disabled === 1, summary.summary.runtime_disabled);
-  assert('T4: enabled_by_user=29', summary.summary.enabled_by_user === 29, summary.summary.enabled_by_user);
-  assert('T4: can_create_paper_trade_count=18', summary.summary.can_create_paper_trade_count === 18, summary.summary.can_create_paper_trade_count);
+  assert('T4: runtime_disabled=2', summary.summary.runtime_disabled === 2, summary.summary.runtime_disabled);
+  assert('T4: enabled_by_user=28', summary.summary.enabled_by_user === 28, summary.summary.enabled_by_user);
+  assert('T4: can_create_paper_trade_count=17', summary.summary.can_create_paper_trade_count === 17, summary.summary.can_create_paper_trade_count);
   assert('T4: runtime_connected=30', summary.summary.runtime_connected === 30, summary.summary.runtime_connected);
   assertSafety('T4: summary', SAFETY);
 }
@@ -181,24 +180,35 @@ const expectedActive = new Set([
   assert('T5: vwap_momentum_long strategy_id preserved', readyDecision.strategy?.strategy_id === 'vwap_momentum_long', readyDecision.strategy?.strategy_id);
   assertSafety('T5: readyDecision', readyDecision);
 
-  const partialDecision = canCreatePaperTradeForSignal({
-    strategy_id: 'opening_range_breakout',
-    symbol: 'AAPL',
-    raw_strategy: 'OPENING_RANGE_BREAKOUT_UP',
-  });
-  assert('T5: opening_range_breakout blocked', partialDecision.allowed === false, partialDecision);
-  assert('T5: opening_range_breakout runtime_status=partial', partialDecision.strategy?.runtime_status === 'partial', partialDecision.strategy?.runtime_status);
-  assert('T5: opening_range_breakout can_create_paper_trade=false', partialDecision.strategy?.can_create_paper_trade === false, partialDecision.strategy?.can_create_paper_trade);
-  assertSafety('T5: partialDecision', partialDecision);
-
-  const cryptoDecision = canCreatePaperTradeForSignal({
-    raw_strategy: 'VWAP_RECLAIM_UP',
+  const cryptoReclaimDecision = canCreatePaperTradeForSignal({
     symbol: 'BTCUSDT',
+    raw_strategy: 'VWAP_RECLAIM_UP',
   });
-  assert('T5: crypto decision blocked', cryptoDecision.allowed === false, cryptoDecision);
-  assert('T5: crypto decision strategy partial', cryptoDecision.strategy?.runtime_status === 'partial', cryptoDecision.strategy?.runtime_status);
-  assert('T5: crypto decision strategy_id=crypto_momentum_scalper', cryptoDecision.strategy?.strategy_id === 'crypto_momentum_scalper', cryptoDecision.strategy?.strategy_id);
-  assertSafety('T5: cryptoDecision', cryptoDecision);
+  assert('T5: crypto VWAP_RECLAIM_UP allowed', cryptoReclaimDecision.allowed === true, cryptoReclaimDecision);
+  assert('T5: crypto VWAP_RECLAIM_UP runtime_status=active', cryptoReclaimDecision.strategy?.runtime_status === 'active', cryptoReclaimDecision.strategy?.runtime_status);
+  assert('T5: crypto VWAP_RECLAIM_UP strategy_id=vwap_volume_breakout_long', cryptoReclaimDecision.strategy?.strategy_id === 'vwap_volume_breakout_long', cryptoReclaimDecision.strategy?.strategy_id);
+  assert('T5: crypto VWAP_RECLAIM_UP can_create_paper_trade=true', cryptoReclaimDecision.strategy?.can_create_paper_trade === true, cryptoReclaimDecision.strategy?.can_create_paper_trade);
+  assertSafety('T5: cryptoReclaimDecision', cryptoReclaimDecision);
+
+  const cryptoRejectDecision = canCreatePaperTradeForSignal({
+    symbol: 'ADAUSDT',
+    raw_strategy: 'VWAP_REJECTION_DOWN',
+  });
+  assert('T5: crypto VWAP_REJECTION_DOWN allowed', cryptoRejectDecision.allowed === true, cryptoRejectDecision);
+  assert('T5: crypto VWAP_REJECTION_DOWN runtime_status=active', cryptoRejectDecision.strategy?.runtime_status === 'active', cryptoRejectDecision.strategy?.runtime_status);
+  assert('T5: crypto VWAP_REJECTION_DOWN strategy_id=vwap_failed_breakout_short', cryptoRejectDecision.strategy?.strategy_id === 'vwap_failed_breakout_short', cryptoRejectDecision.strategy?.strategy_id);
+  assert('T5: crypto VWAP_REJECTION_DOWN can_create_paper_trade=true', cryptoRejectDecision.strategy?.can_create_paper_trade === true, cryptoRejectDecision.strategy?.can_create_paper_trade);
+  assertSafety('T5: cryptoRejectDecision', cryptoRejectDecision);
+
+  const cryptoMomentumDecision = canCreatePaperTradeForSignal({
+    symbol: 'BTCUSDT',
+    raw_strategy: 'CRYPTO_MOMENTUM_SCALPER',
+  });
+  assert('T5: generic crypto momentum blocked', cryptoMomentumDecision.allowed === false, cryptoMomentumDecision);
+  assert('T5: generic crypto momentum strategy partial', cryptoMomentumDecision.strategy?.runtime_status === 'partial', cryptoMomentumDecision.strategy?.runtime_status);
+  assert('T5: generic crypto momentum strategy_id=crypto_momentum_scalper', cryptoMomentumDecision.strategy?.strategy_id === 'crypto_momentum_scalper', cryptoMomentumDecision.strategy?.strategy_id);
+  assert('T5: generic crypto momentum can_create_paper_trade=false', cryptoMomentumDecision.strategy?.can_create_paper_trade === false, cryptoMomentumDecision.strategy?.can_create_paper_trade);
+  assertSafety('T5: cryptoMomentumDecision', cryptoMomentumDecision);
 }
 
 // ── Summary ───────────────────────────────────────────────────────────────────

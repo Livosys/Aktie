@@ -733,12 +733,15 @@ function strategyIdFromKeywords(signal = {}) {
   const market = marketOf(signal);
   const symbol = String(signal.symbol || '').toUpperCase();
 
-  if (market === 'crypto' || symbol.endsWith('USDT')) {
-    if (raw.includes('FAST_MOMENTUM')) return 'crypto_fast_momentum';
-    return 'crypto_momentum_scalper';
-  }
-
   if (raw.includes('VWAP')) {
+    if (market === 'crypto' || symbol.endsWith('USDT')) {
+      if (raw.includes('RECLAIM') || raw.includes('BREAKOUT') || raw.includes('MOMENTUM')) {
+        return 'vwap_volume_breakout_long';
+      }
+      if (raw.includes('REJECTION') || raw.includes('FAIL')) {
+        return 'vwap_failed_breakout_short';
+      }
+    }
     if (raw.includes('MEAN_REVERSION') || raw.includes('REVERSION')) return 'mean_reversion_vwap';
     if (raw.includes('PULLBACK')) return 'pullback_to_vwap_long';
     if (raw.includes('REJECTION') || raw.includes('FAIL')) return 'vwap_rejection_short';
@@ -746,6 +749,12 @@ function strategyIdFromKeywords(signal = {}) {
       return direction === 'DOWN' ? 'vwap_rejection_short' : 'vwap_momentum_long';
     }
   }
+
+  if (market === 'crypto' || symbol.endsWith('USDT')) {
+    if (raw.includes('FAST_MOMENTUM')) return 'crypto_fast_momentum';
+    return 'crypto_momentum_scalper';
+  }
+
   if (raw.includes('VOLUME_SPIKE')) {
     return raw.includes('CONTINUATION') ? 'volume_spike_continuation' : 'volume_spike_momentum';
   }
