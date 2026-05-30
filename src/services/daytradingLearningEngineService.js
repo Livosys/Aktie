@@ -187,6 +187,46 @@ function productTypeForGroup(groupId) {
   return PRODUCT_TYPE_BY_GROUP[String(groupId).toLowerCase()] || 'market';
 }
 
+function firstPresent(...values) {
+  return values.find((value) => value !== undefined && value !== null && value !== '') ?? null;
+}
+
+function buildInstrumentSignalFields(input = {}, marketGroup = null, pnlPct = null) {
+  const symbol = input.symbol || input.traded_symbol || input.tradedSymbol || null;
+  const underlyingSymbol = firstPresent(
+    input.underlying_symbol,
+    input.underlyingSymbol,
+    input.underlying?.symbol,
+    input.signal_symbol,
+    input.signalSymbol,
+    symbol,
+  );
+  const group = marketGroup || input.market_group || input.marketGroup || resolveMarketGroup(symbol, input.market || input.marketType);
+  const tradedSymbol = firstPresent(input.traded_symbol, input.tradedSymbol, symbol);
+  const paperPnl = num(firstPresent(input.paper_pnl_percent, input.paperPnlPercent, input.pnl_percent, input.pnlPct, pnlPct));
+  const underlyingMove = num(firstPresent(
+    input.underlying_move_percent,
+    input.underlyingMovePercent,
+    input.underlying?.move_percent,
+    tradedSymbol === underlyingSymbol ? paperPnl : null,
+  ));
+  return {
+    underlying_symbol: underlyingSymbol,
+    underlying_market: firstPresent(input.underlying_market, input.underlyingMarket, input.underlying?.market, input.market || input.marketType, group),
+    underlying_signal_direction: firstPresent(input.underlying_signal_direction, input.underlyingSignalDirection, input.direction, input.nextMoveBias),
+    underlying_signal_strength: num(firstPresent(input.underlying_signal_strength, input.underlyingSignalStrength, input.confidence, input.confidenceScore, input.score, input.tradeScore, input.gateScore)),
+    traded_symbol: tradedSymbol,
+    traded_instrument_type: firstPresent(input.traded_instrument_type, input.tradedInstrumentType, input.instrument_type, input.instrumentType, productTypeForGroup(group)),
+    market_group: group,
+    risk_class: firstPresent(input.risk_class, input.riskClass, riskClassForGroup(group)),
+    leverage_factor: num(firstPresent(input.leverage_factor, input.leverageFactor, input.leverage)),
+    spread_estimate: num(firstPresent(input.spread_estimate, input.spreadEstimate, input.spread_percent, input.spreadPct)),
+    tracking_quality: firstPresent(input.tracking_quality, input.trackingQuality),
+    paper_pnl_percent: paperPnl,
+    underlying_move_percent: underlyingMove,
+  };
+}
+
 /**
  * Hämtar aktuell config (sliders/kontroller). Helt fail-safe — returnerar
  * null-fält om något saknas istället för att krascha.
@@ -313,6 +353,7 @@ function recordSignalEvent(event = {}) {
   try {
     const symbol = event.symbol || null;
     const market_group = event.market_group || resolveMarketGroup(symbol, event.market || event.marketGroup);
+    const instrumentFields = buildInstrumentSignalFields(event, market_group);
     const row = {
       ...baseEnvelope('signal_detected', event.source || 'scanner'),
       symbol,
@@ -335,6 +376,7 @@ function recordSignalEvent(event = {}) {
       enabled_for_scanner: event.enabled_for_scanner ?? null,
       config_snapshot: event.config_snapshot || buildConfigSnapshot({ market_group }),
       scanner_context: event.scanner_context || null,
+      ...instrumentFields,
     };
     return appendJsonl(EVENTS_FILE, row);
   } catch (err) {
@@ -349,6 +391,7 @@ function recordSkippedSignal(event = {}) {
     const symbol = event.symbol || null;
     const market_group = event.market_group || resolveMarketGroup(symbol, event.market || event.marketGroup);
     const skip_category = classifySkipCategory(event);
+    const instrumentFields = buildInstrumentSignalFields(event, market_group);
     const row = {
       ...baseEnvelope('signal_skipped', event.source || 'paper_agent'),
       symbol,
@@ -372,6 +415,7 @@ function recordSkippedSignal(event = {}) {
       enabled_for_scanner: event.enabled_for_scanner ?? null,
       config_snapshot: event.config_snapshot || buildConfigSnapshot({ market_group }),
       scanner_context: event.scanner_context || null,
+      ...instrumentFields,
     };
     return appendJsonl(SKIPPED_FILE, row);
   } catch (err) {
@@ -385,6 +429,7 @@ function recordPaperTradeOpened(trade = {}) {
   try {
     const symbol = trade.symbol || null;
     const market_group = trade.market_group || resolveMarketGroup(symbol, trade.marketGroup || trade.marketType);
+    const instrumentFields = buildInstrumentSignalFields(trade, market_group);
     const row = {
       ...baseEnvelope('paper_trade_opened', 'paper_agent'),
       trade_id: trade.tradeId || trade.trade_id || null,
@@ -409,6 +454,7 @@ function recordPaperTradeOpened(trade = {}) {
       enabled_for_scanner: trade.enabled_for_scanner ?? null,
       config_snapshot: trade.config_snapshot || buildConfigSnapshot({ market_group }),
       scanner_context: trade.scanner_context || null,
+      ...instrumentFields,
     };
     return appendJsonl(OUTCOMES_FILE, row);
   } catch (err) {
@@ -424,6 +470,7 @@ function recordPaperTradeClosed(trade = {}, exit = null) {
     const market_group = trade.market_group || resolveMarketGroup(symbol, trade.marketGroup || trade.marketType);
     const result = exit?.result || trade.result || null;
     const pnlPct = num(exit?.pnlPct ?? trade.pnlPct ?? trade.pnl_percent);
+    const instrumentFields = buildInstrumentSignalFields({ ...trade, ...(exit || {}) }, market_group, pnlPct);
     const row = {
       ...baseEnvelope('paper_trade_closed', 'paper_agent'),
       trade_id: trade.tradeId || trade.trade_id || null,
@@ -449,6 +496,7 @@ function recordPaperTradeClosed(trade = {}, exit = null) {
       score: num(trade.score ?? trade.gateScore),
       runtime_status: trade.runtime_status || null,
       config_snapshot: trade.config_snapshot || buildConfigSnapshot({ market_group }),
+      ...instrumentFields,
     };
     return appendJsonl(OUTCOMES_FILE, row);
   } catch (err) {
@@ -553,6 +601,16 @@ const rawSignalKey = (r) => r.signal_subtype || r.signalSubtype || r.raw_strateg
 const marketGroupKey = (r) => r.market_group || resolveMarketGroup(r.symbol, r.marketGroup || r.marketType) || 'unknown';
 const riskClassKey = (r) => r.risk_class || riskClassForGroup(marketGroupKey(r)) || 'unknown';
 const symbolKey = (r) => r.symbol || 'unknown';
+const underlyingSignalKey = (r) => {
+  const symbol = r.underlying_symbol || r.symbol || 'unknown';
+  const direction = r.underlying_signal_direction || r.direction || r.nextMoveBias || 'unknown';
+  return `${symbol}:${String(direction).toUpperCase()}`;
+};
+const tradedInstrumentKey = (r) => {
+  const symbol = r.traded_symbol || r.symbol || 'unknown';
+  const type = r.traded_instrument_type || productTypeForGroup(marketGroupKey(r)) || 'market';
+  return `${symbol}:${type}`;
+};
 
 function aggregateByStrategy(trades, skipped) { return aggregateBy(trades, skipped, strategyKey, strategyLabel); }
 function aggregateByRawSignal(trades, skipped) { return aggregateBy(trades, skipped, rawSignalKey); }
@@ -564,6 +622,20 @@ function aggregateByMarketGroup(trades, skipped) {
 }
 function aggregateByRiskClass(trades, skipped) { return aggregateBy(trades, skipped, riskClassKey); }
 function aggregateBySymbol(trades, skipped) { return aggregateBy(trades, skipped, symbolKey); }
+function aggregateByUnderlyingSignal(trades, skipped) {
+  return aggregateBy(trades, skipped, underlyingSignalKey, (r, key) => {
+    const symbol = r.underlying_symbol || r.symbol || key;
+    const direction = r.underlying_signal_direction || r.direction || r.nextMoveBias || 'unknown';
+    return `${symbol} ${String(direction).toUpperCase()}`;
+  });
+}
+function aggregateByTradedInstrument(trades, skipped) {
+  return aggregateBy(trades, skipped, tradedInstrumentKey, (r, key) => {
+    const symbol = r.traded_symbol || r.symbol || key;
+    const type = r.traded_instrument_type || productTypeForGroup(marketGroupKey(r)) || 'market';
+    return `${symbol} (${type})`;
+  });
+}
 function aggregateByConfig(trades, skipped) {
   return aggregateBy(
     trades, skipped,
@@ -594,6 +666,52 @@ function withinWindow(row, sinceMs) {
   return t >= sinceMs;
 }
 
+const RICH_OUTCOME_FIELDS = [
+  'underlying_symbol',
+  'underlying_market',
+  'underlying_signal_direction',
+  'underlying_signal_strength',
+  'traded_symbol',
+  'traded_instrument_type',
+  'market_group',
+  'risk_class',
+  'leverage_factor',
+  'spread_estimate',
+  'tracking_quality',
+  'paper_pnl_percent',
+  'underlying_move_percent',
+];
+
+function tradeKey(row = {}) {
+  return firstPresent(row.trade_id, row.tradeId, row.id);
+}
+
+function mergeTradeOutcome(trade = {}, outcome = null) {
+  if (!outcome) return trade;
+  const merged = { ...outcome, ...trade };
+  for (const field of RICH_OUTCOME_FIELDS) {
+    if (outcome[field] !== undefined && outcome[field] !== null && outcome[field] !== '') {
+      merged[field] = outcome[field];
+    }
+  }
+  if (merged.pnlPct == null && outcome.pnl_percent != null) merged.pnlPct = outcome.pnl_percent;
+  if (merged.pnl_percent == null && outcome.pnl_percent != null) merged.pnl_percent = outcome.pnl_percent;
+  if (merged.result == null && outcome.outcome != null) merged.result = outcome.outcome;
+  if (merged.outcome == null && outcome.outcome != null) merged.outcome = outcome.outcome;
+  if (!merged.symbol) merged.symbol = outcome.traded_symbol || outcome.symbol || outcome.underlying_symbol || null;
+  return merged;
+}
+
+function enrichTradeForSummary(trade = {}) {
+  const mg = trade.market_group || resolveMarketGroup(trade.symbol || trade.traded_symbol, trade.marketGroup || trade.marketType || trade.market);
+  return {
+    ...trade,
+    ...buildInstrumentSignalFields(trade, mg, trade.paper_pnl_percent ?? trade.pnlPct ?? trade.pnl_percent),
+    market_group: mg,
+    risk_class: trade.risk_class || riskClassForGroup(mg),
+  };
+}
+
 /**
  * Bygger learning summary från canonical trades.jsonl (closed trades),
  * skipped-signals.jsonl och outcomes.jsonl. Helt fail-safe.
@@ -622,11 +740,27 @@ function buildLearningSummary(options = {}) {
     openTradesCount = Array.isArray(state.openTrades) ? state.openTrades.length : 0;
   } catch { openTradesCount = 0; }
 
-  // Enrich varje trade med market_group/risk_class om saknas (canonical trades
-  // saknar dessa kanoniska fält).
+  const closedOutcomeRows = outcomeRows.filter((r) => r.type === 'paper_trade_closed');
+  const outcomesByTradeId = new Map();
+  for (const row of closedOutcomeRows) {
+    const key = tradeKey(row);
+    if (key) outcomesByTradeId.set(String(key), row);
+  }
+  const matchedOutcomeKeys = new Set();
   const trades = closedTrades.map((t) => {
-    const mg = t.market_group || resolveMarketGroup(t.symbol, t.marketGroup || t.marketType);
-    return { ...t, market_group: mg, risk_class: t.risk_class || riskClassForGroup(mg) };
+    const key = tradeKey(t);
+    const outcome = key ? outcomesByTradeId.get(String(key)) : null;
+    if (key && outcome) matchedOutcomeKeys.add(String(key));
+    return enrichTradeForSummary(mergeTradeOutcome(t, outcome));
+  });
+  for (const outcome of closedOutcomeRows) {
+    const key = tradeKey(outcome);
+    if (key && matchedOutcomeKeys.has(String(key))) continue;
+    trades.push(enrichTradeForSummary(mergeTradeOutcome({}, outcome)));
+  }
+  skipped = skipped.map((s) => {
+    const mg = s.market_group || resolveMarketGroup(s.symbol, s.marketGroup || s.marketType);
+    return { ...s, ...buildInstrumentSignalFields(s, mg), market_group: mg, risk_class: s.risk_class || riskClassForGroup(mg) };
   });
 
   const closedCount = trades.filter((t) => normalizeOutcome(t.result ?? t.outcome) !== 'open').length;
@@ -645,9 +779,11 @@ function buildLearningSummary(options = {}) {
   const byMarketGroup = aggregateByMarketGroup(trades, skipped);
   const byRiskClass = aggregateByRiskClass(trades, skipped);
   const bySymbol = aggregateBySymbol(trades, skipped);
+  const byUnderlyingSignal = aggregateByUnderlyingSignal(trades, skipped);
+  const byTradedInstrument = aggregateByTradedInstrument(trades, skipped);
   // Config-learning: canonical trades saknar config_snapshot, så vi använder
   // våra egna stängda outcome-rader (som sparar config_snapshot) + skipped.
-  const closedOutcomes = outcomeRows.filter((r) => r.type === 'paper_trade_closed' && r.config_snapshot);
+  const closedOutcomes = closedOutcomeRows.filter((r) => r.config_snapshot);
   const byConfig = aggregateByConfig(closedOutcomes.length ? closedOutcomes : trades, skipped);
   const skipReasons = aggregateSkipReasons(skipped);
 
@@ -657,6 +793,8 @@ function buildLearningSummary(options = {}) {
   const worstStrategy = pickWorst(ranked);
   const bestMarketGroup = pickBest(byMarketGroup.filter((g) => g.closed > 0));
   const bestRiskClass = pickBest(byRiskClass.filter((g) => g.closed > 0));
+  const bestUnderlyingSignal = pickBest(byUnderlyingSignal.filter((g) => g.closed > 0));
+  const bestTradedInstrument = pickBest(byTradedInstrument.filter((g) => g.closed > 0));
   const needsMoreData = byStrategy.filter((s) => s.status === 'needs_more_data').length;
 
   const summary = {
@@ -677,6 +815,8 @@ function buildLearningSummary(options = {}) {
     worst_strategy: worstStrategy ? { key: worstStrategy.key, label: worstStrategy.label, win_rate: worstStrategy.win_rate, avg_pl: worstStrategy.avg_pl, closed: worstStrategy.closed } : null,
     best_market_group: bestMarketGroup ? { key: bestMarketGroup.key, label: bestMarketGroup.label, win_rate: bestMarketGroup.win_rate, avg_pl: bestMarketGroup.avg_pl, closed: bestMarketGroup.closed } : null,
     best_risk_class: bestRiskClass ? { key: bestRiskClass.key, label: bestRiskClass.label, win_rate: bestRiskClass.win_rate, avg_pl: bestRiskClass.avg_pl, closed: bestRiskClass.closed } : null,
+    best_underlying_signal: bestUnderlyingSignal ? { key: bestUnderlyingSignal.key, label: bestUnderlyingSignal.label, win_rate: bestUnderlyingSignal.win_rate, avg_pl: bestUnderlyingSignal.avg_pl, closed: bestUnderlyingSignal.closed } : null,
+    best_traded_instrument: bestTradedInstrument ? { key: bestTradedInstrument.key, label: bestTradedInstrument.label, win_rate: bestTradedInstrument.win_rate, avg_pl: bestTradedInstrument.avg_pl, closed: bestTradedInstrument.closed } : null,
     needs_more_data_count: needsMoreData,
   };
 
@@ -691,6 +831,8 @@ function buildLearningSummary(options = {}) {
     by_market_group: byMarketGroup.slice(0, limit),
     by_risk_class: byRiskClass.slice(0, limit),
     by_symbol: bySymbol.slice(0, limit),
+    by_underlying_signal: byUnderlyingSignal.slice(0, limit),
+    by_traded_instrument: byTradedInstrument.slice(0, limit),
     by_config: byConfig.slice(0, limit),
     skip_reasons: skipReasons,
   };
