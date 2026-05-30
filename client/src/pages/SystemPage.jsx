@@ -15,6 +15,18 @@ const TABS = [
   { key: 'debug', label: 'Debug', icon: '🧰' },
 ];
 
+const SAFETY_FLAGS = Object.freeze({
+  actions_allowed: false,
+  can_place_orders: false,
+  live_trading_enabled: false,
+});
+
+function componentState(items) {
+  if (!items || items.length === 0) return 'Fel';
+  if (items.some((c) => c.status === 'BROKEN' || c.severity === 'critical')) return 'Fel';
+  return 'OK';
+}
+
 function useHealth() {
   const unified = useUnifiedConfig('health');
   return {
@@ -43,6 +55,12 @@ function OverviewTab() {
       broken: comps.filter(c => c.status === 'BROKEN').length,
     };
   }, [data]);
+  const backendState = componentState((data?.components || []).filter((c) => ['Runtime', 'APIs'].includes(c.area)));
+  const dataState = componentState((data?.components || []).filter((c) => c.area === 'Data Files'));
+  const scannerState = componentState((data?.components || []).filter((c) => c.area === 'Scanner'));
+  const learningState = componentState((data?.components || []).filter((c) => c.area === 'Learning'));
+  const providerState = componentState((data?.components || []).filter((c) => c.area === 'Providers'));
+  const safetyState = 'Låst';
 
   if (loading) return <div className="sys-loading">Kontrollerar systemet...</div>;
 
@@ -51,7 +69,7 @@ function OverviewTab() {
       <div className="sys-hero-state">
         <div>
           <div className="sys-hero-title">{data?.summarySv || 'Systemstatus är inte tillgänglig just nu.'}</div>
-        <div className="sys-hero-sub">Tekniska detaljer, providers, loggar och safety-status ligger här. Safety-flödet är samlat här som den kanoniska ytan.</div>
+          <div className="sys-hero-sub">System är teknik och safety. Ingen strategi- eller runtime-styrning ska göras här.</div>
         </div>
         <ConfigScopeBadge scope="global" />
         <span className={`sys-state sys-state-${(data?.overallStatus || 'unknown').toLowerCase()}`}>
@@ -60,10 +78,20 @@ function OverviewTab() {
       </div>
 
       <div className="sys-metrics">
-        <SystemMetric label="Komponenter" value={counts.total} />
-        <SystemMetric label="OK" value={counts.ok} state="ok" />
-        <SystemMetric label="Varning" value={counts.stale} state="warn" />
-        <SystemMetric label="Fel" value={counts.broken} state="bad" />
+        <SystemMetric label="Backend" value={backendState} state={backendState === 'OK' ? 'ok' : 'bad'} />
+        <SystemMetric label="Data" value={dataState} state={dataState === 'OK' ? 'ok' : 'bad'} />
+        <SystemMetric label="Scanner" value={scannerState} state={scannerState === 'OK' ? 'ok' : 'bad'} />
+        <SystemMetric label="Learning" value={learningState} state={learningState === 'OK' ? 'ok' : 'bad'} />
+        <SystemMetric label="Providers" value={providerState} state={providerState === 'OK' ? 'ok' : 'bad'} />
+        <SystemMetric label="Safety" value={safetyState} state="ok" />
+      </div>
+
+      <div className="sys-hero-sub">Komponenter: {counts.total} totalt, {counts.ok} OK, {counts.stale} varningar, {counts.broken} fel.</div>
+
+      <div className="sys-metrics">
+        <SystemMetric label="actions_allowed" value="false" state="ok" />
+        <SystemMetric label="can_place_orders" value="false" state="ok" />
+        <SystemMetric label="live_trading_enabled" value="false" state="ok" />
       </div>
 
       <div className="sys-link-grid">
@@ -87,6 +115,7 @@ function ProvidersTab() {
 
   return (
     <div className="sys-tab-content">
+      <div className="sys-hero-sub">Providers är tekniska källor. De styr inte strategibeslut, bara dataflödet.</div>
       <div className="sys-provider-grid">
         {rows.map(row => (
           <div key={row.key} className="sys-provider-card">
@@ -109,7 +138,7 @@ function DebugTab() {
     <div className="sys-tab-content">
       <PlatformEmptyState
         title="Avancerad debug är dold"
-        text="Rå JSON och interna testverktyg ska bara öppnas vid felsökning. Systemet visar först hälsa, providers och larm."
+        text="Rå JSON och interna testverktyg ska bara öppnas vid felsökning. Systemet visar först hälsa, providers och safety."
         action={<Link className="sys-debug-link" to="/system-health">Öppna äldre systemhälsa</Link>}
       />
     </div>
@@ -141,7 +170,7 @@ export default function SystemPage() {
 
       <div className="sys-page-header">
         <h1 className="sys-page-title">🛡 SYSTEM</h1>
-        <p className="sys-page-sub">Teknisk status för hälsa, providers, loggar, debug och safety. Alla skyddsflaggor är kvar och visas read-only.</p>
+        <p className="sys-page-sub">Teknisk status och safety. Ingen strategi- eller runtime-styrning görs här.</p>
       </div>
 
       <div className="sys-tabs">
