@@ -6,6 +6,7 @@ const crypto = require('crypto');
 const daytradingCatalog = require('./daytradingStrategyCatalogService');
 const strategyPerformance = require('./strategyPerformanceService');
 const auditTrail = require('./auditTrailService');
+const dataCoverage = require('./dataCoverageExpansionService');
 
 const SAFETY = Object.freeze({
   actions_allowed: false,
@@ -135,9 +136,14 @@ function defaultConfig(input = {}) {
   const selected = strategyIds.length ? strategyIds : catalog.slice(0, 3).map((s) => s.id);
   const dateFrom = normalizeDate(input.date_from || input.dateFrom, today);
   const dateTo = normalizeDate(input.date_to || input.dateTo, dateFrom);
+  const rawSymbols = safeArray(input.symbols).length ? safeArray(input.symbols).map((s) => s.toUpperCase()) : ['BTCUSDT', 'ETHUSDT', 'SOLUSDT', 'AAPL', 'TSLA', 'NVDA', 'QQQ'];
+  const symbolPolicy = normalizeSymbolsForBatch(rawSymbols);
   return {
     strategy_ids: selected,
-    symbols: safeArray(input.symbols).length ? safeArray(input.symbols).map((s) => s.toUpperCase()) : ['BTCUSDT', 'ETHUSDT', 'SOLUSDT', 'AAPL', 'TSLA', 'NVDA', 'QQQ'],
+    symbols: symbolPolicy.symbols,
+    requested_symbols: symbolPolicy.requested_symbols,
+    skipped_symbols: symbolPolicy.skipped_symbols,
+    skipped_reasons: symbolPolicy.skipped_reasons,
     markets: safeArray(input.markets || input.market_groups || input.marketGroups).length ? safeArray(input.markets || input.market_groups || input.marketGroups) : ['all'],
     timeframes: safeArray(input.timeframes || input.timeframe).length ? safeArray(input.timeframes || input.timeframe) : ['2m'],
     date_from: dateFrom,
@@ -166,18 +172,33 @@ function configSize(config) {
 
 function validateConfig(config) {
   const errors = {};
+  const warnings = {};
+  if (config.skipped_symbols?.length) {
+    warnings.needs_data_symbols = config.skipped_symbols;
+    warnings.skipped_symbols = config.skipped_symbols;
+    warnings.skipped_reasons = config.skipped_reasons || config.skipped_symbols.map((row) => ({ symbol: row.symbol, reason: row.reason || 'missing_data' }));
+  }
   if (config.strategy_ids.length > LIMITS.maxStrategiesPerBatch) errors.strategy_ids = `max_${LIMITS.maxStrategiesPerBatch}`;
   if (config.symbols.length > LIMITS.maxSymbolsPerBatch) errors.symbols = `max_${LIMITS.maxSymbolsPerBatch}`;
+  if (!config.symbols.length) {
+    errors.missing_data = 'no_runnable_symbols';
+  }
   if (daysBetween(config.date_from, config.date_to) > LIMITS.maxDateRangeDays) errors.date_range = `max_${LIMITS.maxDateRangeDays}_days`;
   if (configSize(config) > LIMITS.maxParameterCombinations) {
     errors.parameter_combinations = 'too_large';
   }
   const unknown = config.strategy_ids.filter((id) => !daytradingCatalog.getStrategyById(id));
   if (unknown.length) errors.strategy_ids_unknown = unknown;
+  const reason = errors.missing_data ? 'missing_data' : null;
+  const message = errors.missing_data
+    ? 'No runnable symbols with historical data'
+    : Object.keys(errors).length ? 'Testet är för stort. Minska antal symboler eller parametrar.' : null;
   return {
     ok: Object.keys(errors).length === 0,
     errors,
-    message: Object.keys(errors).length ? 'Testet är för stort. Minska antal symboler eller parametrar.' : null,
+    warnings,
+    reason,
+    message,
   };
 }
 
