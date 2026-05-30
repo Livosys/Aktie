@@ -290,6 +290,65 @@ function status() {
   };
 }
 
+function parseInfo(info = '') {
+  const out = {};
+  for (const line of String(info).split('\n')) {
+    const clean = line.trim();
+    if (!clean || clean.startsWith('#')) continue;
+    const idx = clean.indexOf(':');
+    if (idx === -1) continue;
+    out[clean.slice(0, idx)] = clean.slice(idx + 1);
+  }
+  return out;
+}
+
+async function usage() {
+  const base = status();
+  const c = ensureClient();
+  if (!c) {
+    return {
+      ...base,
+      dbsize: 0,
+      used_memory_bytes: 0,
+      used_memory_human: null,
+      memoryFallbackKeys: memoryStore.size,
+    };
+  }
+  try {
+    if (c.status !== 'ready') await connect();
+    if (c.status !== 'ready') {
+      return {
+        ...status(),
+        dbsize: 0,
+        used_memory_bytes: 0,
+        used_memory_human: null,
+        memoryFallbackKeys: memoryStore.size,
+      };
+    }
+    const [info, dbsize] = await Promise.all([c.info('memory'), c.dbsize()]);
+    const memory = parseInfo(info);
+    return {
+      ...status(),
+      dbsize,
+      used_memory_bytes: Number(memory.used_memory || 0) || 0,
+      used_memory_human: memory.used_memory_human || null,
+      maxmemory_bytes: Number(memory.maxmemory || 0) || 0,
+      maxmemory_policy: memory.maxmemory_policy || null,
+      memoryFallbackKeys: memoryStore.size,
+    };
+  } catch (err) {
+    setLastError(err);
+    return {
+      ...status(),
+      dbsize: 0,
+      used_memory_bytes: 0,
+      used_memory_human: null,
+      memoryFallbackKeys: memoryStore.size,
+      lastError,
+    };
+  }
+}
+
 async function close() {
   try { if (client) await client.quit(); } catch (_) {}
   try { if (subscriberClient) await subscriberClient.quit(); } catch (_) {}
@@ -299,6 +358,7 @@ module.exports = {
   connect,
   ping,
   status,
+  usage,
   setJson,
   getJson,
   incrWithExpire,
