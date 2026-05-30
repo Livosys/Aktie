@@ -33,6 +33,15 @@ const DEFAULT_CONFIG = Object.freeze({
   symbols: [],
   auto_scan: false,
   strategies: {},
+  market_control_filters: {
+    min_score: 60,
+    min_confidence: 70,
+    max_risk_class: 'extreme',
+    max_trades_per_hour: 10,
+    cooldown_minutes: 5,
+    max_spread_percent: 0.5,
+    max_leverage: 10,
+  },
 });
 
 const MARKET_LABELS = Object.freeze({
@@ -158,6 +167,10 @@ function loadConfig() {
     ...DEFAULT_CONFIG,
     ...saved,
     strategies: saved.strategies && typeof saved.strategies === 'object' ? saved.strategies : {},
+    market_control_filters: {
+      ...DEFAULT_CONFIG.market_control_filters,
+      ...(saved.market_control_filters && typeof saved.market_control_filters === 'object' ? saved.market_control_filters : {}),
+    },
     ...SAFETY,
   };
 }
@@ -238,6 +251,7 @@ function filterScanRows(rows, config) {
   return (rows || []).filter((row) => {
     const sym = normalizeSymbol(row.symbol);
     if (symbols.length && !symbols.includes(sym)) return false;
+    if (!marketUniverse.symbolEnabledFor(sym, 'scanner', row.market_group || row.marketGroup || row.marketType)) return false;
     return groupMatches(config.market, row.market_group || row.marketGroup || row.marketType, sym);
   });
 }
@@ -389,6 +403,73 @@ function getMarkets() {
     actions_allowed: false,
   }));
   return { ok: true, markets, active_market: loadConfig().market || 'all', ...SAFETY };
+}
+
+function getMarketControls() {
+  const controls = marketUniverse.getMarketControls();
+  return {
+    ...controls,
+    filters: loadConfig().market_control_filters,
+    ...SAFETY,
+  };
+}
+
+function updateMarketControl(groupId, patch = {}) {
+  if (hasLiveOrderRequest(patch)) return liveOrderBlockedResponse();
+  const result = marketUniverse.patchMarketControl(groupId, patch);
+  return {
+    ...result,
+    filters: loadConfig().market_control_filters,
+    ...SAFETY,
+  };
+}
+
+function setRiskMarketControls(enabled) {
+  const result = marketUniverse.setRiskControls(enabled === true);
+  return {
+    ...result,
+    filters: loadConfig().market_control_filters,
+    ...SAFETY,
+  };
+}
+
+function setAllMarketControls(enabled) {
+  const result = marketUniverse.setAllMarketControls(enabled === true);
+  return {
+    ...result,
+    filters: loadConfig().market_control_filters,
+    ...SAFETY,
+  };
+}
+
+function saveMarketControlSliders(patch = {}) {
+  if (hasLiveOrderRequest(patch)) return liveOrderBlockedResponse();
+  const riskClasses = new Set(['normal', 'high', 'extreme']);
+  const current = loadConfig();
+  const nextFilters = {
+    ...current.market_control_filters,
+    min_score: Math.max(0, Math.min(100, Number(patch.min_score ?? current.market_control_filters.min_score) || 0)),
+    min_confidence: Math.max(0, Math.min(100, Number(patch.min_confidence ?? current.market_control_filters.min_confidence) || 0)),
+    max_risk_class: riskClasses.has(patch.max_risk_class) ? patch.max_risk_class : current.market_control_filters.max_risk_class,
+    max_trades_per_hour: Math.max(0, Math.min(100, Number(patch.max_trades_per_hour ?? current.market_control_filters.max_trades_per_hour) || 0)),
+    cooldown_minutes: Math.max(0, Math.min(240, Number(patch.cooldown_minutes ?? current.market_control_filters.cooldown_minutes) || 0)),
+    max_spread_percent: Math.max(0, Math.min(25, Number(patch.max_spread_percent ?? current.market_control_filters.max_spread_percent) || 0)),
+    max_leverage: Math.max(1, Math.min(100, Number(patch.max_leverage ?? current.market_control_filters.max_leverage) || 1)),
+  };
+  const next = saveConfig({ ...current, market_control_filters: nextFilters });
+  auditTrail.logAuditEvent({
+    type: 'DAYTRADING_MARKET_CONTROL_FILTERS_UPDATED',
+    source: 'daytrading_control',
+    timestamp: nowIso(),
+    message: 'Market & risk-filter uppdaterade för paper/scanner.',
+    details: { filters: nextFilters, safety: SAFETY },
+  });
+  return {
+    ok: true,
+    filters: next.market_control_filters,
+    message_sv: 'Filter sparade för paper/scanner.',
+    ...SAFETY,
+  };
 }
 
 function getSymbols() {
@@ -774,6 +855,11 @@ module.exports = {
   SAFETY,
   getStatus,
   getMarkets,
+  getMarketControls,
+  updateMarketControl,
+  setRiskMarketControls,
+  setAllMarketControls,
+  saveMarketControlSliders,
   getSymbols,
   getStrategies,
   updateStrategy,
