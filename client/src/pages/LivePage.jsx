@@ -8,6 +8,10 @@ import { enrichWithDecisions, getBestSignal, getTopN, isAvoidSignal } from '../d
 import { isCryptoSymbol, openTradingView } from '../utils/tradingView.js';
 import { familyCalibrationMeta, signalFamilyMeta } from '../utils/signalFamilyLabels.js';
 import { useUnifiedConfig } from '../hooks/useUnifiedConfig.js';
+import { normalizeSignalForChart } from '../utils/chartSignalUtils.js';
+import TradingViewSignalPanel from '../components/TradingViewSignalPanel.jsx';
+
+const CHART_SIGNAL_EVENT = 'live:open-chart-signal';
 
 const REFRESH_MS = 15_000;
 
@@ -276,6 +280,15 @@ function useOpenReviewChart() {
   }, [navigate]);
 }
 
+// Öppnar intern chart-panel på samma sida (read-only) via fönster-event,
+// så att alla signalkort kan trigga panelen utan prop-drilling.
+function useOpenChartSignal() {
+  return useCallback((c) => {
+    if (!c?.symbol) return;
+    window.dispatchEvent(new CustomEvent(CHART_SIGNAL_EVENT, { detail: c }));
+  }, []);
+}
+
 function healthComponent(health, name) {
   return (health?.components || []).find((c) => c.name === name);
 }
@@ -457,6 +470,7 @@ function AnalystMiniPanel({ analyst }) {
 function BestDecisionBox({ c, loading }) {
   const [open, setOpen] = useState(false);
   const openReviewChart = useOpenReviewChart();
+  const openChartSignal = useOpenChartSignal();
 
   if (loading) {
     return (
@@ -551,6 +565,12 @@ function BestDecisionBox({ c, loading }) {
 
       <div className="bdb-actions">
         <button
+          className="btn btn-chart"
+          onClick={() => openChartSignal(c)}
+        >
+          📊 Öppna chart
+        </button>
+        <button
           className="btn btn-tv"
           onClick={() => openReviewChart(c)}
         >
@@ -569,6 +589,7 @@ function BestDecisionBox({ c, loading }) {
 function CandidateCard({ c, rank }) {
   const [open, setOpen] = useState(false);
   const openReviewChart = useOpenReviewChart();
+  const openChartSignal = useOpenChartSignal();
   const bias = BIAS_SV[c.nextMoveBias] || BIAS_SV.UNCERTAIN;
   const decisionText = DECISION_SV[c.priority] || 'Vänta';
 
@@ -623,6 +644,9 @@ function CandidateCard({ c, rank }) {
 
       {/* Knappar */}
       <div className="cand-actions">
+        <button className="btn btn-sm btn-chart" onClick={() => openChartSignal(c)}>
+          📊 Öppna chart
+        </button>
         <button className="btn btn-sm btn-tv" onClick={() => openReviewChart(c)}>
           📈 Graf
         </button>
@@ -1471,6 +1495,14 @@ export default function LivePage() {
   const { processResults } = useAlerts();
   const [learning, setLearning] = useState(null);
   const [showAdvanced, setShowAdvanced] = useState(false);
+  const [chartSignal, setChartSignal] = useState(null);
+
+  // Intern chart-panel: lyssna på öppna-event från valfritt signalkort.
+  useEffect(() => {
+    function handler(e) { setChartSignal(normalizeSignalForChart(e.detail || {})); }
+    window.addEventListener(CHART_SIGNAL_EVENT, handler);
+    return () => window.removeEventListener(CHART_SIGNAL_EVENT, handler);
+  }, []);
 
   useEffect(() => {
     fetch('/api/history/learning-summary')
@@ -1567,6 +1599,9 @@ export default function LivePage() {
           </div>
         )}
       </div>
+
+      {/* Intern read-only chart-panel */}
+      <TradingViewSignalPanel signal={chartSignal} onClose={() => setChartSignal(null)} />
     </div>
   );
 }
