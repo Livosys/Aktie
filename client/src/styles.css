@@ -5740,6 +5740,47 @@ tbody td {
   background: var(--surface2);
 }
 .sup-pill-missing strong { color: var(--muted); }
+.sup-v2-report-lead {
+  border: 1px solid var(--border);
+  background: linear-gradient(180deg, rgba(59,130,246,.09), rgba(15,23,42,.03));
+  border-radius: 18px;
+  padding: 14px 16px;
+  font-size: 14px;
+  line-height: 1.55;
+  color: var(--text);
+  margin: 12px 0 14px;
+}
+.sup-warning {
+  border: 1px solid rgba(245,158,11,.45);
+  background: rgba(245,158,11,.12);
+  color: var(--text);
+  border-radius: 16px;
+  padding: 12px 14px;
+  margin-bottom: 14px;
+  font-size: 13px;
+  line-height: 1.5;
+}
+.sup-tech-details {
+  border: 1px solid var(--border);
+  background: var(--panel-bg);
+  border-radius: 18px;
+  padding: 0;
+  overflow: hidden;
+}
+.sup-tech-details > summary {
+  cursor: pointer;
+  list-style: none;
+  padding: 14px 16px;
+  font-weight: 800;
+  color: var(--text);
+  border-bottom: 1px solid var(--border);
+}
+.sup-tech-details > summary::-webkit-details-marker { display: none; }
+.sup-tech-body {
+  padding: 16px;
+  display: grid;
+  gap: 16px;
+}
 .sup-block {
   border-radius: 14px;
   padding: 12px 13px;
@@ -6048,6 +6089,115 @@ tbody td {
   font-weight: 700;
 }
 
+/* ── AI Supervisor v2 ──────────────────────────────────────────────────────── */
+.sup-v2-page {
+  position: relative;
+}
+.sup-v2-hero {
+  background:
+    radial-gradient(circle at 16% 18%, rgba(34,197,94,.16), transparent 28%),
+    radial-gradient(circle at 84% 18%, rgba(59,130,246,.20), transparent 30%),
+    radial-gradient(circle at 50% 0%, rgba(148,163,184,.08), transparent 36%),
+    linear-gradient(135deg, rgba(7,11,20,.98), rgba(11,16,27,.98));
+}
+.sup-v2-pill-grid .sup-pill {
+  min-height: 84px;
+}
+.sup-v2-metrics .sup-block {
+  min-height: 100%;
+}
+.sup-v2-answer-grid,
+.sup-v2-module-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+  gap: 12px;
+}
+.sup-v2-answer,
+.sup-v2-card {
+  border-radius: 16px;
+  padding: 16px;
+  border: 1px solid var(--border);
+  background: rgba(255,255,255,.03);
+}
+.sup-v2-answer-ok,
+.sup-v2-card-ok {
+  border-color: var(--green-border);
+  background: var(--green-dim);
+}
+.sup-v2-answer-warn {
+  border-color: var(--yellow-border);
+  background: var(--yellow-dim);
+}
+.sup-v2-answer-danger,
+.sup-v2-card-danger {
+  border-color: var(--red-border);
+  background: var(--red-dim);
+}
+.sup-v2-answer-neutral,
+.sup-v2-card-neutral {
+  border-color: var(--border);
+  background: rgba(255,255,255,.03);
+}
+.sup-v2-answer-head,
+.sup-v2-card-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+.sup-v2-answer-kicker,
+.sup-v2-card-kicker {
+  font-size: 10px;
+  font-weight: 900;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+.sup-v2-answer h3,
+.sup-v2-card h3 {
+  margin-top: 2px;
+  font-size: 15px;
+  font-weight: 900;
+  letter-spacing: -0.01em;
+}
+.sup-v2-answer-main,
+.sup-v2-card-summary {
+  margin-top: 10px;
+  color: var(--text);
+  line-height: 1.55;
+}
+.sup-v2-answer-list {
+  margin-top: 10px;
+  padding-left: 18px;
+  color: var(--muted);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.sup-v2-card-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 12px;
+}
+.sup-v2-chip {
+  display: inline-flex;
+  align-items: center;
+  padding: 5px 10px;
+  border-radius: 999px;
+  border: 1px solid var(--border2);
+  background: var(--surface2);
+  color: var(--text);
+  font-size: 11px;
+  font-weight: 700;
+}
+.sup-v2-card-source {
+  margin-top: 12px;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.5;
+}
+
 @media (max-width: 1100px) {
   .sup-hero,
   .sup-section-head {
@@ -6059,6 +6209,10 @@ tbody td {
   .sup-grid-2,
   .sup-grid-5,
   .sup-next-grid {
+    grid-template-columns: 1fr;
+  }
+  .sup-v2-answer-grid,
+  .sup-v2-module-grid {
     grid-template-columns: 1fr;
   }
 }
@@ -14522,6 +14676,70 @@ body {
   color: var(--text-muted);
   margin-top: 2px;
 }
+.dt-page-runtime-summary {
+  border: 1px solid var(--border);
+  background: linear-gradient(180deg, rgba(59,130,246,.08), rgba(15,23,42,.03));
+  border-radius: 18px;
+  padding: 14px 16px 12px;
+  margin-bottom: 14px;
+}
+.dt-runtime-controls {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+  margin-bottom: 10px;
+}
+.dt-runtime-control-note,
+.dt-runtime-blocked-note {
+  color: var(--text-muted);
+  font-size: 12px;
+  line-height: 1.45;
+  margin-bottom: 10px;
+}
+.dt-runtime-why-panel {
+  border: 1px solid var(--border);
+  background: linear-gradient(180deg, rgba(245,158,11,.08), rgba(15,23,42,.03));
+  border-radius: 18px;
+  padding: 14px 16px;
+  margin-bottom: 14px;
+}
+.dt-runtime-why-title {
+  font-size: 14px;
+  font-weight: 800;
+  color: var(--text);
+  margin-bottom: 10px;
+}
+.dt-runtime-why-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+}
+.dt-runtime-why-item {
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  padding: 10px 12px;
+  background: var(--panel);
+}
+.dt-runtime-why-item span {
+  display: block;
+  font-size: 12px;
+  color: var(--text-muted);
+  margin-bottom: 6px;
+}
+.dt-runtime-why-item strong {
+  display: block;
+  font-size: 16px;
+  color: var(--text);
+}
+.dt-runtime-why-empty {
+  color: var(--text-muted);
+  font-size: 12px;
+}
+.dt-paper-analysis {
+  display: grid;
+  gap: 12px;
+  margin-top: 10px;
+}
 .dt-strategy-explainer {
   display: flex;
   flex-direction: column;
@@ -14625,6 +14843,8 @@ body {
 }
 @media (max-width: 900px) {
   .dt-runtime-summary { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .dt-runtime-controls,
+  .dt-runtime-why-grid { grid-template-columns: 1fr; }
   .dt-trade-stats { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
 .dt-paper-summary {
@@ -14707,6 +14927,9 @@ body {
 .dt-paper-info-box li strong {
   color: var(--text);
   flex-shrink: 0;
+}
+.dt-paper-info-box li {
+  gap: 10px;
 }
 .dt-td-raw {
   max-width: 160px;
@@ -15045,6 +15268,7 @@ body {
   .dt-pipeline-header { flex-direction: column; }
   .dt-paper-summary-grid,
   .dt-paper-info-grid { grid-template-columns: 1fr; }
+  .dt-runtime-controls { grid-template-columns: 1fr; }
   .dt-panel-actions { justify-content: flex-start; width: 100%; }
   .dt-limit-control { width: 100%; justify-content: space-between; }
   .dt-limit-control select { flex: 0 0 96px; }
