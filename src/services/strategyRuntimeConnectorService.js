@@ -114,11 +114,11 @@ function strategyMeta(strategyId) {
 }
 
 function statusLabel(status) {
-  if (status === 'active') return 'Aktiv';
-  if (status === 'partial') return 'Delvis';
+  if (status === 'active') return 'Kan köra paper trades';
+  if (status === 'partial') return 'Delvis kopplad';
   if (status === 'paused') return 'Pausad';
-  if (status === 'disabled') return 'Avstängd av användaren';
-  if (status === 'no_entry_rule') return 'På men saknar entry-regel';
+  if (status === 'disabled') return 'Av';
+  if (status === 'no_entry_rule') return 'Saknar entry-regel';
   if (status === 'needs_data') return 'Behöver mer data';
   if (status === 'not_connected') return 'Ej kopplad';
   return 'Okänd';
@@ -301,11 +301,37 @@ function findMapEntry(signal = {}) {
 }
 
 function inferStrategyForSignal(signal = {}) {
-  let entry = null;
   let raw = 'UNKNOWN';
+  let strategyId = null;
+  try {
+    raw = rawSignalOf(signal);
+    strategyId = strategyIdFromSignal(signal) || strategyIdFromKeywords(signal);
+    if (!strategyId) {
+      const catalogStrategy = catalog.inferStrategyForSignal(signal);
+      if (catalogStrategy?.id) strategyId = catalogStrategy.id;
+    }
+  } catch (_) {
+    strategyId = null;
+  }
+  if (strategyId) {
+    const runtime = baseRuntimeForStrategy(strategyId, readControlConfig().strategies?.[strategyId] || {});
+    const strategy = catalog.getStrategyById(strategyId);
+    return {
+      strategy_id: strategyId,
+      strategy_name: strategy?.name || runtime.strategy_name || strategyId,
+      strategy_family: strategy?.engines_used?.[0] || runtime.strategy_family || strategy?.market_label || strategy?.market_group || 'UNKNOWN',
+      ...runtime,
+      raw_strategy: raw,
+      signal_subtype: raw,
+      runtime_comment_sv: runtime.runtime_comment_sv || runtime.comment_sv,
+      comment_sv: runtime.runtime_comment_sv || runtime.comment_sv,
+      source: 'strategy_runtime_connector_v2',
+      ...SAFETY,
+    };
+  }
+  let entry = null;
   try {
     entry = findMapEntry(signal);
-    raw = rawSignalOf(signal);
   } catch (_) {
     entry = null;
   }
@@ -317,7 +343,8 @@ function inferStrategyForSignal(signal = {}) {
       raw_strategy: raw,
       signal_subtype: raw,
       runtime_comment_sv: runtime.runtime_comment_sv || runtime.comment_sv || entry.comment_sv,
-      source: 'strategy_runtime_connector_v1',
+      comment_sv: runtime.runtime_comment_sv || runtime.comment_sv || entry.comment_sv,
+      source: 'strategy_runtime_connector_v2',
       ...SAFETY,
     };
   }
@@ -336,7 +363,8 @@ function inferStrategyForSignal(signal = {}) {
     entry_rule_implemented: false,
     enabled_by_user: false,
     runtime_comment_sv: 'Ingen säker runtime-mapping finns. Strategin markeras som ej kopplad.',
-    source: 'strategy_runtime_connector_v1',
+    comment_sv: 'Ingen säker runtime-mapping finns. Strategin markeras som ej kopplad.',
+    source: 'strategy_runtime_connector_v2',
     ...SAFETY,
   };
 }
@@ -440,108 +468,355 @@ function tradeStatsByStrategy() {
   return { trades, stats, rawCounts };
 }
 
-function baseRuntimeForStrategy(strategyId, savedConfig = {}) {
-  const entries = getRuntimeStrategyMap().filter((entry) => entry.strategy_id === strategyId);
-  const catalogStrategy = catalog.getStrategyById(strategyId);
-  const connected = Boolean(catalogStrategy);
-  const enabledByUser = savedConfig.enabled_by_user ?? savedConfig.active ?? catalogStrategy?.active ?? true;
+const PARTIAL_RUNTIME_STRATEGY_IDS = new Set([
+  'opening_range_breakout',
+  'opening_range_fakeout',
+  'opening_range_retest_long',
+  'index_supported_momentum_long',
+  'index_confirmed_long',
+  'index_confirmed_short',
+  'crypto_momentum_scalper',
+  'narrow_breakout',
+  'narrow_state_expansion_long',
+  'narrow_state_fakeout_reversal',
+  'news_volatility_watch',
+]);
 
-  if (!entries.length) {
-    const status = enabledByUser ? 'no_entry_rule' : 'disabled';
+const DISABLED_RUNTIME_STRATEGY_IDS = new Set(['crypto_fast_momentum']);
+
+function strategyRulesOf(strategy = {}) {
+  return new Set((strategy.signal_rules || []).map((rule) => String(rule || '').toLowerCase()));
+}
+
+function runtimeRawSignalsForStrategy(strategyId) {
+  switch (strategyId) {
+    case 'vwap_momentum_long':
+    case 'vwap_volume_breakout_long':
+      return ['VWAP_RECLAIM_UP'];
+    case 'vwap_rejection_short':
+    case 'vwap_failed_breakout_short':
+      return ['VWAP_REJECTION_DOWN'];
+    case 'opening_range_breakout':
+      return ['OPENING_RANGE_BREAKOUT_UP', 'OPENING_RANGE_BREAKOUT_DOWN'];
+    case 'opening_range_fakeout':
+      return ['OPENING_RANGE_FAKEOUT_UP', 'OPENING_RANGE_FAKEOUT_DOWN'];
+    case 'opening_range_retest_long':
+      return ['OPENING_RANGE_RETEST_LONG'];
+    case 'ema_pullback_continuation':
+      return ['EMA_PULLBACK_UP', 'EMA_PULLBACK_DOWN'];
+    case 'ema_breakdown':
+      return ['EMA_BREAKDOWN_DOWN'];
+    case 'narrow_breakout':
+      return ['NARROW_BULL_ENTRY', 'NARROW_BEAR_ENTRY'];
+    case 'narrow_state_expansion_long':
+      return ['NARROW_BULL_ENTRY'];
+    case 'narrow_state_fakeout_reversal':
+      return ['NARROW_FAKEOUT'];
+    case 'volume_spike_momentum':
+      return ['VOLUME_SPIKE_MOMENTUM'];
+    case 'volume_spike_continuation':
+      return ['VOLUME_SPIKE_CONTINUATION'];
+    case 'pullback_to_vwap_long':
+      return ['VWAP_PULLBACK_LONG'];
+    case 'trend_exhaustion_short':
+      return ['TREND_EXHAUSTION_SHORT'];
+    case 'index_supported_momentum_long':
+      return ['INDEX_SUPPORTED_MOMENTUM_LONG'];
+    case 'mean_reversion_vwap':
+      return ['VWAP_MEAN_REVERSION'];
+    case 'trend_continuation':
+      return ['TREND_CONTINUATION_UP', 'TREND_CONTINUATION_DOWN'];
+    case 'support_bounce':
+      return ['SUPPORT_BOUNCE_LONG'];
+    case 'resistance_rejection':
+      return ['RESISTANCE_REJECTION_SHORT'];
+    case 'index_confirmed_long':
+      return ['INDEX_CONFIRMED_LONG'];
+    case 'index_confirmed_short':
+      return ['INDEX_CONFIRMED_SHORT'];
+    case 'crypto_momentum_scalper':
+      return ['CRYPTO_MOMENTUM_SCALPER'];
+    case 'low_volatility_breakout':
+      return ['LOW_VOLATILITY_BREAKOUT'];
+    case 'high_volatility_reversal':
+      return ['HIGH_VOLATILITY_REVERSAL'];
+    case 'gap_continuation':
+      return ['GAP_CONTINUATION_UP', 'GAP_CONTINUATION_DOWN'];
+    case 'gap_fade':
+      return ['GAP_FADE_UP', 'GAP_FADE_DOWN'];
+    case 'news_volatility_watch':
+      return ['NEWS_VOLATILITY_WATCH'];
+    default:
+      return [];
+  }
+}
+
+function requiredDataForStrategy(strategy = {}) {
+  const rules = strategyRulesOf(strategy);
+  const required = new Set(['price', 'volume']);
+  if ([...rules].some((rule) => rule.includes('vwap'))) {
+    required.add('vwap');
+    required.add('momentum');
+  }
+  if ([...rules].some((rule) => rule.includes('ema'))) {
+    required.add('ema');
+    required.add('momentum');
+  }
+  if ([...rules].some((rule) => rule.includes('narrow'))) {
+    required.add('narrow_state_data');
+  }
+  if ([...rules].some((rule) => rule.includes('opening_range'))) {
+    required.add('opening_range_data');
+    required.add('market_open_session');
+  }
+  if ([...rules].some((rule) => rule.includes('qqq_or_spy') || rule.includes('market_compass') || rule.includes('index_'))) {
+    required.add('index_confirmation_data');
+    required.add('market_compass');
+  }
+  if ([...rules].some((rule) => rule.includes('support_') || rule.includes('resistance_'))) {
+    required.add('support_resistance_data');
+  }
+  if ([...rules].some((rule) => rule.includes('low_volatility') || rule.includes('high_volatility'))) {
+    required.add('volatility_regime');
+  }
+  if ([...rules].some((rule) => rule.includes('opening_gap'))) {
+    required.add('opening_gap');
+    required.add('prior_close');
+    required.add('open_price');
+  }
+  if ([...rules].some((rule) => rule.includes('news'))) {
+    required.add('news_feed');
+    required.add('spread');
+  }
+  if (strategy.market_group === 'crypto' || String(strategy.id || '').startsWith('crypto_')) {
+    required.add('crypto_context');
+  }
+  if ([...rules].some((rule) => rule.includes('trend'))) {
+    required.add('trend_context');
+  }
+  return [...required];
+}
+
+function missingDataForStrategy(strategy = {}) {
+  switch (strategy.id) {
+    case 'opening_range_breakout':
+    case 'opening_range_fakeout':
+    case 'opening_range_retest_long':
+      return ['opening_range_data'];
+    case 'index_supported_momentum_long':
+    case 'index_confirmed_long':
+    case 'index_confirmed_short':
+      return ['index_confirmation_data'];
+    case 'crypto_momentum_scalper':
+      return ['crypto_signal_context'];
+    case 'narrow_breakout':
+    case 'narrow_state_expansion_long':
+    case 'narrow_state_fakeout_reversal':
+      return ['narrow_state_data'];
+    case 'news_volatility_watch':
+      return ['news_feed'];
+    default:
+      return [];
+  }
+}
+
+function reasonForStrategy(strategy, runtimeStatus) {
+  if (!strategy) return 'Strategin saknar runtime-metadata.';
+  if (runtimeStatus === 'disabled') return 'Strategin är avstängd av användaren.';
+  if (runtimeStatus === 'partial') {
+    const missing = missingDataForStrategy(strategy);
+    return `Partial: missing ${missing.join(', ')}.`;
+  }
+  return `Ready: ${strategy.name || strategy.id} entry available for paper/replay/batch only.`;
+}
+
+function runtimeProfileForStrategy(strategyId, savedConfig = {}) {
+  const strategy = catalog.getStrategyById(strategyId);
+  if (!strategy) {
     return {
-      runtime_status: status,
-      runtime_label: statusLabel(status),
+      strategy_id: strategyId,
+      strategy_name: strategyId,
+      strategy_family: 'UNKNOWN',
+      market: 'all',
+      direction: 'UNKNOWN',
+      runtime_status: 'not_connected',
+      runtime_label: statusLabel('not_connected'),
       runtime_raw_signals: [],
+      required_data: [],
+      missing_data: ['strategy_catalog'],
+      reason_sv: 'Strategin finns inte i katalogen.',
+      skip_reason_sv: 'Strategin finns inte i katalogen.',
+      runtime_comment_sv: 'Strategin finns inte i katalogen.',
+      comment_sv: 'Strategin finns inte i katalogen.',
       mapping_confidence: 'low',
       can_create_paper_trade: false,
-      can_create_paper_trade_label: 'nej',
+      can_create_paper_trade_label: canCreateLabel(false),
       entry_rule_implemented: false,
-      connected,
-      enabled_by_user: enabledByUser === true,
-      comment_sv: enabledByUser
-        ? 'Strategin är ansluten i katalogen men saknar implementerad entry-regel i paper-runtime.'
-        : 'Strategin är avstängd av användaren.',
-    };
-  }
-  const entryRuleImplemented = entries.some((entry) => entry.can_create_paper_trade === true || entry.can_create_paper_trade === 'partial');
-  const canCreate = entries.some((entry) => entry.can_create_paper_trade === true)
-    ? true
-    : entries.some((entry) => entry.can_create_paper_trade === 'partial') ? 'partial' : false;
-  if (enabledByUser !== true) {
-    return {
-      runtime_status: 'disabled',
-      runtime_label: statusLabel('disabled'),
-      runtime_raw_signals: [...new Set(entries.map((entry) => entry.raw_signal))],
-      mapping_confidence: entries.some((entry) => entry.mapping_confidence === 'high') ? 'high' : entries[0].mapping_confidence,
-      can_create_paper_trade: false,
-      can_create_paper_trade_label: 'nej',
-      entry_rule_implemented: entryRuleImplemented,
-      connected,
+      connected: false,
       enabled_by_user: false,
-      comment_sv: 'Strategin är avstängd av användaren och kan inte skapa paper trades.',
+      ...SAFETY,
     };
   }
-  if (!entryRuleImplemented) {
-    return {
-      runtime_status: 'no_entry_rule',
-      runtime_label: statusLabel('no_entry_rule'),
-      runtime_raw_signals: [...new Set(entries.map((entry) => entry.raw_signal))],
-      mapping_confidence: entries.some((entry) => entry.mapping_confidence === 'high') ? 'high' : entries[0].mapping_confidence,
-      can_create_paper_trade: false,
-      can_create_paper_trade_label: 'nej',
-      entry_rule_implemented: false,
-      connected,
-      enabled_by_user: true,
-      comment_sv: 'Strategin är på men saknar entry-regel som får skapa paper trade.',
-    };
-  }
-  const hasActive = entries.some((entry) => entry.runtime_status === 'active');
-  const hasPaused = entries.some((entry) => entry.runtime_status === 'paused');
-  const hasPartial = entries.some((entry) => entry.runtime_status === 'partial');
-  const status = hasActive ? 'active' : hasPaused ? 'paused' : hasPartial ? 'partial' : entries[0].runtime_status;
+
+  const enabledByUser = savedConfig.enabled_by_user ?? savedConfig.active ?? strategy.active ?? true;
+  const runtimeStatus = enabledByUser === false
+    ? 'disabled'
+    : DISABLED_RUNTIME_STRATEGY_IDS.has(strategyId)
+      ? 'disabled'
+      : PARTIAL_RUNTIME_STRATEGY_IDS.has(strategyId)
+        ? 'partial'
+        : 'active';
+  const canCreate = runtimeStatus === 'active';
+  const rawSignals = runtimeRawSignalsForStrategy(strategyId);
+  const requiredData = requiredDataForStrategy(strategy);
+  const missingData = runtimeStatus === 'partial' ? missingDataForStrategy(strategy) : [];
+  const reasonSv = reasonForStrategy(strategy, runtimeStatus);
+  const strategyFamily = strategy.engines_used?.[0] || strategy.market_label || strategy.market_group || 'UNKNOWN';
+  const mappingConfidence = runtimeStatus === 'active' ? 'high' : runtimeStatus === 'partial' ? 'medium' : 'low';
+
   return {
-    runtime_status: status,
-    runtime_label: statusLabel(status),
-    runtime_raw_signals: [...new Set(entries.map((entry) => entry.raw_signal))],
-    mapping_confidence: entries.some((entry) => entry.mapping_confidence === 'high') ? 'high' : entries[0].mapping_confidence,
-    can_create_paper_trade: status === 'paused' ? false : canCreate,
-    can_create_paper_trade_label: canCreateLabel(status === 'paused' ? false : canCreate),
-    entry_rule_implemented: entryRuleImplemented,
-    connected,
-    enabled_by_user: true,
-    comment_sv: [...new Set(entries.map((entry) => entry.comment_sv).filter(Boolean))].join(' '),
+    strategy_id: strategy.id,
+    strategy_name: strategy.name || strategy.id,
+    strategy_family: strategyFamily,
+    market: strategy.market_group || strategy.market || 'all',
+    direction: strategy.direction || 'UNKNOWN',
+    runtime_status: runtimeStatus,
+    runtime_label: statusLabel(runtimeStatus),
+    runtime_raw_signals: rawSignals,
+    required_data: requiredData,
+    missing_data: missingData,
+    reason_sv: reasonSv,
+    skip_reason_sv: runtimeStatus === 'partial' ? reasonSv : null,
+    runtime_comment_sv: reasonSv,
+    comment_sv: reasonSv,
+    mapping_confidence: mappingConfidence,
+    can_create_paper_trade: canCreate,
+    can_create_paper_trade_label: canCreateLabel(canCreate),
+    entry_rule_implemented: runtimeStatus !== 'disabled',
+    connected: true,
+    enabled_by_user: enabledByUser === true,
+    profile_source: 'strategy_runtime_connector_v2',
+    ...SAFETY,
   };
 }
 
-function getRuntimeStatusForStrategy(strategyId) {
+function runtimeProfileSnapshot(strategyId, savedConfig = {}) {
+  const profile = runtimeProfileForStrategy(strategyId, savedConfig);
   const { stats } = tradeStatsByStrategy();
-  const savedConfig = readControlConfig().strategies?.[strategyId] || {};
-  const base = baseRuntimeForStrategy(strategyId, savedConfig);
   const stat = stats.get(strategyId) || {};
   return {
-    strategy_id: strategyId,
-    ...base,
+    ...profile,
     paper_trades_48h: stat.paper_trades_48h || 0,
     last_paper_trade_at: stat.last_paper_trade_at || null,
-    runtime_raw_signals: [...new Set([...(base.runtime_raw_signals || []), ...[...(stat.raw_signals || [])]])],
+    runtime_raw_signals: [...new Set([...(profile.runtime_raw_signals || []), ...[...(stat.raw_signals || [])]])],
     ...SAFETY,
   };
+}
+
+function strategyIdFromSignal(signal = {}) {
+  const rawStrategy = String(signal.strategy_id || signal.strategyId || signal.strategy || signal.preset || signal.runtime_strategy || signal.strategyName || signal.strategy_name || '').trim();
+  if (!rawStrategy) return null;
+  if (catalog.getStrategyById(rawStrategy)) return rawStrategy;
+  const strategies = catalog.getCatalog().strategies || [];
+  const byName = strategies.find((strategy) => String(strategy.name || '').toLowerCase() === rawStrategy.toLowerCase());
+  return byName?.id || null;
+}
+
+function strategyIdFromKeywords(signal = {}) {
+  const raw = [
+    rawSignalOf(signal),
+    String(signal.signalFamily || ''),
+    String(signal.signalSubtype || ''),
+    String(signal.eventType || ''),
+  ].join(' ').toUpperCase();
+  const direction = directionOf(signal);
+  const market = marketOf(signal);
+  const symbol = String(signal.symbol || '').toUpperCase();
+
+  if (market === 'crypto' || symbol.endsWith('USDT')) {
+    if (raw.includes('FAST_MOMENTUM')) return 'crypto_fast_momentum';
+    return 'crypto_momentum_scalper';
+  }
+
+  if (raw.includes('VWAP')) {
+    if (raw.includes('MEAN_REVERSION') || raw.includes('REVERSION')) return 'mean_reversion_vwap';
+    if (raw.includes('PULLBACK')) return 'pullback_to_vwap_long';
+    if (raw.includes('REJECTION') || raw.includes('FAIL')) return 'vwap_rejection_short';
+    if (raw.includes('MOMENTUM') || raw.includes('BREAKOUT') || raw.includes('RECLAIM')) {
+      return direction === 'DOWN' ? 'vwap_rejection_short' : 'vwap_momentum_long';
+    }
+  }
+  if (raw.includes('VOLUME_SPIKE')) {
+    return raw.includes('CONTINUATION') ? 'volume_spike_continuation' : 'volume_spike_momentum';
+  }
+  if (raw.includes('EMA')) {
+    return raw.includes('BREAKDOWN') || direction === 'DOWN'
+      ? 'ema_breakdown'
+      : 'ema_pullback_continuation';
+  }
+  if (raw.includes('OPENING_RANGE')) {
+    if (raw.includes('RETEST')) return 'opening_range_retest_long';
+    if (raw.includes('FAKEOUT') || raw.includes('FAIL')) return 'opening_range_fakeout';
+    return 'opening_range_breakout';
+  }
+  if (raw.includes('INDEX')) {
+    if (raw.includes('SUPPORTED') || raw.includes('LONG') || direction === 'UP') return 'index_supported_momentum_long';
+    if (raw.includes('SHORT') || direction === 'DOWN') return 'index_confirmed_short';
+    return direction === 'UP' ? 'index_confirmed_long' : 'index_confirmed_short';
+  }
+  if (raw.includes('NEWS')) return 'news_volatility_watch';
+  if (raw.includes('GAP')) return raw.includes('FADE') || direction === 'DOWN' ? 'gap_fade' : 'gap_continuation';
+  if (raw.includes('SUPPORT')) return 'support_bounce';
+  if (raw.includes('RESISTANCE')) return 'resistance_rejection';
+  if (raw.includes('VOLATILITY')) return raw.includes('HIGH') || raw.includes('REVERSAL') ? 'high_volatility_reversal' : 'low_volatility_breakout';
+  if (raw.includes('TREND')) return raw.includes('EXHAUST') || raw.includes('WEAK') ? 'trend_exhaustion_short' : 'trend_continuation';
+  if (raw.includes('BREAKOUT')) return 'low_volatility_breakout';
+  return null;
+}
+
+function baseRuntimeForStrategy(strategyId, savedConfig = {}) {
+  const profile = runtimeProfileForStrategy(strategyId, savedConfig);
+  if (profile.runtime_status === 'not_connected') {
+    const enabledByUser = savedConfig.enabled_by_user ?? savedConfig.active ?? true;
+    return {
+      runtime_status: enabledByUser ? 'no_entry_rule' : 'disabled',
+      runtime_label: statusLabel(enabledByUser ? 'no_entry_rule' : 'disabled'),
+      runtime_raw_signals: [],
+      required_data: [],
+      missing_data: [],
+      reason_sv: enabledByUser ? 'Strategin finns inte i katalogen.' : 'Strategin är avstängd av användaren.',
+      skip_reason_sv: enabledByUser ? 'Strategin finns inte i katalogen.' : 'Strategin är avstängd av användaren.',
+      runtime_comment_sv: enabledByUser ? 'Strategin finns inte i katalogen.' : 'Strategin är avstängd av användaren.',
+      mapping_confidence: 'low',
+      can_create_paper_trade: false,
+      can_create_paper_trade_label: canCreateLabel(false),
+      entry_rule_implemented: false,
+      connected: false,
+      enabled_by_user: enabledByUser === true,
+      ...SAFETY,
+    };
+  }
+  return profile;
+}
+
+function getRuntimeStatusForStrategy(strategyId) {
+  const savedConfig = readControlConfig().strategies?.[strategyId] || {};
+  return runtimeProfileSnapshot(strategyId, savedConfig);
 }
 
 function canCreatePaperTradeForSignal(signal = {}) {
   try {
     const inferred = inferStrategyForSignal(signal);
-    const blockedStatuses = new Set(['disabled', 'paused', 'no_entry_rule', 'not_connected']);
     const allowed = inferred.enabled_by_user === true
       && inferred.connected === true
       && inferred.entry_rule_implemented === true
-      && inferred.can_create_paper_trade !== false
-      && !blockedStatuses.has(inferred.runtime_status);
+      && inferred.runtime_status === 'active'
+      && inferred.can_create_paper_trade === true;
     return {
       ok: true,
       allowed,
       strategy: inferred,
-      reason: allowed ? null : `runtime_status=${inferred.runtime_status}`,
+      reason: allowed ? null : inferred.skip_reason_sv || inferred.reason_sv || `runtime_status=${inferred.runtime_status}`,
       ...SAFETY,
     };
   } catch (err) {
@@ -565,7 +840,7 @@ function getStrategyRuntimeSummary() {
     return {
       ...strategy,
       ...runtime,
-      runtime_comment_sv: runtime.comment_sv,
+      runtime_comment_sv: runtime.runtime_comment_sv || runtime.reason_sv,
       skip_reasons: topReasons(events, runtime.runtime_raw_signals),
       paper_trades_48h: stat.paper_trades_48h || runtime.paper_trades_48h || 0,
       last_paper_trade_at: stat.last_paper_trade_at || runtime.last_paper_trade_at || null,

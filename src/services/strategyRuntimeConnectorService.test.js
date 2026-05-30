@@ -2,7 +2,12 @@
 
 process.env.PAPER_ALLOW_EMA = process.env.PAPER_ALLOW_EMA || 'false';
 
-const { getStrategyRuntimeSummary, getRuntimeStatusForStrategy, canCreatePaperTradeForSignal, SAFETY } = require('./strategyRuntimeConnectorService');
+const {
+  getStrategyRuntimeSummary,
+  getRuntimeStatusForStrategy,
+  canCreatePaperTradeForSignal,
+  SAFETY,
+} = require('./strategyRuntimeConnectorService');
 
 let passed = 0;
 let failed = 0;
@@ -29,26 +34,91 @@ function assertSafety(prefix, item) {
   assert(`${prefix}: paper_only=true`, item.paper_only === true, item.paper_only);
 }
 
-// ── Test 1: strategies enabled_by_user=true but missing runtime entry are no_entry_rule ──
+const previouslyNoEntry = [
+  'vwap_momentum_long',
+  'vwap_rejection_short',
+  'opening_range_breakout',
+  'opening_range_fakeout',
+  'ema_pullback_continuation',
+  'ema_breakdown',
+  'volume_spike_momentum',
+  'narrow_state_fakeout_reversal',
+  'volume_spike_continuation',
+  'pullback_to_vwap_long',
+  'trend_exhaustion_short',
+  'index_supported_momentum_long',
+  'opening_range_retest_long',
+  'mean_reversion_vwap',
+  'trend_continuation',
+  'support_bounce',
+  'resistance_rejection',
+  'index_confirmed_long',
+  'index_confirmed_short',
+  'low_volatility_breakout',
+  'high_volatility_reversal',
+  'gap_continuation',
+  'gap_fade',
+  'news_volatility_watch',
+];
+
+const expectedPartial = new Set([
+  'opening_range_breakout',
+  'opening_range_fakeout',
+  'index_supported_momentum_long',
+  'opening_range_retest_long',
+  'index_confirmed_long',
+  'index_confirmed_short',
+  'narrow_breakout',
+  'narrow_state_expansion_long',
+  'narrow_state_fakeout_reversal',
+  'crypto_momentum_scalper',
+  'news_volatility_watch',
+]);
+
+const expectedActive = new Set([
+  'vwap_momentum_long',
+  'vwap_rejection_short',
+  'ema_pullback_continuation',
+  'ema_breakdown',
+  'volume_spike_momentum',
+  'volume_spike_continuation',
+  'pullback_to_vwap_long',
+  'trend_exhaustion_short',
+  'mean_reversion_vwap',
+  'trend_continuation',
+  'support_bounce',
+  'resistance_rejection',
+  'low_volatility_breakout',
+  'high_volatility_reversal',
+  'gap_continuation',
+  'gap_fade',
+]);
+
+// ── Test 1: previously no_entry_rule strategies are now active or partial ──
 {
   const summary = getStrategyRuntimeSummary();
-  const missing = [
-    'trend_continuation',
-    'vwap_momentum_long',
-  ].map((id) => byId(summary, id));
-
-  for (const row of missing) {
-    assert(`T1: ${row?.id} exists`, !!row, row);
+  for (const id of previouslyNoEntry) {
+    const row = byId(summary, id);
+    assert(`T1: ${id} exists`, !!row, row);
     if (!row) continue;
-    assert(`T1: ${row.id} enabled_by_user=true`, row.enabled_by_user === true, row.enabled_by_user);
-    assert(`T1: ${row.id} runtime_status=no_entry_rule`, row.runtime_status === 'no_entry_rule', row.runtime_status);
-    assert(`T1: ${row.id} entry_rule_implemented=false`, row.entry_rule_implemented === false, row.entry_rule_implemented);
-    assert(`T1: ${row.id} can_create_paper_trade=false`, row.can_create_paper_trade === false, row.can_create_paper_trade);
-    assertSafety(`T1: ${row.id}`, row);
+    assert(`T1: ${id} no longer no_entry_rule`, row.runtime_status !== 'no_entry_rule', row.runtime_status);
+    assert(`T1: ${id} entry_rule_implemented=true`, row.entry_rule_implemented === true, row.entry_rule_implemented);
+    assertSafety(`T1: ${id}`, row);
+
+    if (expectedPartial.has(id)) {
+      assert(`T1: ${id} runtime_status=partial`, row.runtime_status === 'partial', row.runtime_status);
+      assert(`T1: ${id} can_create_paper_trade=false`, row.can_create_paper_trade === false, row.can_create_paper_trade);
+      assert(`T1: ${id} has missing_data`, Array.isArray(row.missing_data) && row.missing_data.length > 0, row.missing_data);
+      assert(`T1: ${id} has skip_reason`, typeof row.skip_reason_sv === 'string' && row.skip_reason_sv.length > 0, row.skip_reason_sv);
+    } else {
+      assert(`T1: ${id} runtime_status=active`, row.runtime_status === 'active', row.runtime_status);
+      assert(`T1: ${id} can_create_paper_trade=true`, row.can_create_paper_trade === true, row.can_create_paper_trade);
+      assert(`T1: ${id} has required_data`, Array.isArray(row.required_data) && row.required_data.length > 0, row.required_data);
+    }
   }
 }
 
-// ── Test 2: runtime-ready strategies are actually runnable ──
+// ── Test 2: runtime-ready strategies remain active and runnable ──
 {
   const summary = getStrategyRuntimeSummary();
   for (const id of ['vwap_volume_breakout_long', 'vwap_failed_breakout_short']) {
@@ -58,54 +128,77 @@ function assertSafety(prefix, item) {
     assert(`T2: ${id} runtime_status=active`, row.runtime_status === 'active', row.runtime_status);
     assert(`T2: ${id} can_create_paper_trade=true`, row.can_create_paper_trade === true, row.can_create_paper_trade);
     assert(`T2: ${id} entry_rule_implemented=true`, row.entry_rule_implemented === true, row.entry_rule_implemented);
-    assert(`T2: ${id} enabled_by_user=true`, row.enabled_by_user === true, row.enabled_by_user);
+    assert(`T2: ${id} runtime_label=Kan köra paper trades`, row.runtime_label === 'Kan köra paper trades', row.runtime_label);
     assertSafety(`T2: ${id}`, row);
   }
 }
 
-// ── Test 3: partial strategies remain partial and are not counted as fully runnable ──
+// ── Test 3: partial strategies remain partial and blocked for paper trades ──
 {
   const summary = getStrategyRuntimeSummary();
-  for (const id of ['narrow_breakout', 'narrow_state_expansion_long', 'crypto_momentum_scalper']) {
+  for (const id of ['narrow_breakout', 'narrow_state_expansion_long', 'crypto_momentum_scalper', 'news_volatility_watch']) {
     const row = byId(summary, id);
     assert(`T3: ${id} exists`, !!row, row);
     if (!row) continue;
     assert(`T3: ${id} runtime_status=partial`, row.runtime_status === 'partial', row.runtime_status);
+    assert(`T3: ${id} can_create_paper_trade=false`, row.can_create_paper_trade === false, row.can_create_paper_trade);
     assert(`T3: ${id} entry_rule_implemented=true`, row.entry_rule_implemented === true, row.entry_rule_implemented);
-    assert(`T3: ${id} can_create_paper_trade=partial`, row.can_create_paper_trade === 'partial', row.can_create_paper_trade);
+    assert(`T3: ${id} runtime_label=Delvis kopplad`, row.runtime_label === 'Delvis kopplad', row.runtime_label);
     assertSafety(`T3: ${id}`, row);
   }
+
+  const openingRange = getRuntimeStatusForStrategy('opening_range_breakout');
+  assert('T3: opening_range_breakout missing opening range data', Array.isArray(openingRange.missing_data) && openingRange.missing_data.includes('opening_range_data'), openingRange.missing_data);
+  assert('T3: opening_range_breakout skip reason mentions opening range', String(openingRange.skip_reason_sv || '').toLowerCase().includes('opening_range') || String(openingRange.skip_reason_sv || '').toLowerCase().includes('opening range'), openingRange.skip_reason_sv);
+
+  const newsWatch = getRuntimeStatusForStrategy('news_volatility_watch');
+  assert('T3: news_volatility_watch missing news_feed', Array.isArray(newsWatch.missing_data) && newsWatch.missing_data.includes('news_feed'), newsWatch.missing_data);
 }
 
 // ── Test 4: summary counters reflect selected vs runnable separation ──
 {
   const summary = getStrategyRuntimeSummary();
-  assert('T4: runtime_no_entry_rule=24', summary.summary.runtime_no_entry_rule === 24, summary.summary.runtime_no_entry_rule);
-  assert('T4: enabled_by_user=29', summary.summary.enabled_by_user === 29, summary.summary.enabled_by_user);
-  assert('T4: can_create_paper_trade_count=2', summary.summary.can_create_paper_trade_count === 2, summary.summary.can_create_paper_trade_count);
-  assert('T4: runtime_active=2', summary.summary.runtime_active === 2, summary.summary.runtime_active);
-  assert('T4: runtime_partial=3', summary.summary.runtime_partial === 3, summary.summary.runtime_partial);
+  assert('T4: total_catalog_strategies=30', summary.summary.total_catalog_strategies === 30, summary.summary.total_catalog_strategies);
+  assert('T4: runtime_no_entry_rule=0', summary.summary.runtime_no_entry_rule === 0, summary.summary.runtime_no_entry_rule);
+  assert('T4: runtime_active=18', summary.summary.runtime_active === 18, summary.summary.runtime_active);
+  assert('T4: runtime_partial=11', summary.summary.runtime_partial === 11, summary.summary.runtime_partial);
   assert('T4: runtime_disabled=1', summary.summary.runtime_disabled === 1, summary.summary.runtime_disabled);
+  assert('T4: enabled_by_user=29', summary.summary.enabled_by_user === 29, summary.summary.enabled_by_user);
+  assert('T4: can_create_paper_trade_count=18', summary.summary.can_create_paper_trade_count === 18, summary.summary.can_create_paper_trade_count);
+  assert('T4: runtime_connected=30', summary.summary.runtime_connected === 30, summary.summary.runtime_connected);
   assertSafety('T4: summary', SAFETY);
 }
 
-// ── Test 5: strategy inference and paper-trade gating agree on runtime-only behavior ──
+// ── Test 5: strategy inference and paper-trade gating agree with runtime state ──
 {
-  const noEntryRuntime = getRuntimeStatusForStrategy('trend_continuation');
-  assert('T5: trend_continuation runtime_status=no_entry_rule', noEntryRuntime.runtime_status === 'no_entry_rule', noEntryRuntime.runtime_status);
-  assert('T5: trend_continuation can_create_paper_trade=false', noEntryRuntime.can_create_paper_trade === false, noEntryRuntime.can_create_paper_trade);
-  assertSafety('T5: noEntryRuntime', noEntryRuntime);
-
-  const readyDecision = canCreatePaperTradeForSignal({ raw_strategy: 'VWAP_RECLAIM_UP', symbol: 'AAPL', marketGroup: 'stocks' });
-  assert('T5: VWAP_RECLAIM_UP allowed', readyDecision.allowed === true, readyDecision);
-  assert('T5: VWAP_RECLAIM_UP strategy active', readyDecision.strategy?.runtime_status === 'active', readyDecision.strategy?.runtime_status);
+  const readyDecision = canCreatePaperTradeForSignal({
+    strategy_id: 'vwap_momentum_long',
+    symbol: 'AAPL',
+    raw_strategy: 'VWAP_RECLAIM_UP',
+  });
+  assert('T5: vwap_momentum_long allowed', readyDecision.allowed === true, readyDecision);
+  assert('T5: vwap_momentum_long runtime_status=active', readyDecision.strategy?.runtime_status === 'active', readyDecision.strategy?.runtime_status);
+  assert('T5: vwap_momentum_long strategy_id preserved', readyDecision.strategy?.strategy_id === 'vwap_momentum_long', readyDecision.strategy?.strategy_id);
   assertSafety('T5: readyDecision', readyDecision);
 
-  const partialDecision = canCreatePaperTradeForSignal({ raw_strategy: 'VWAP_RECLAIM_UP', symbol: 'BTCUSDT', marketGroup: 'crypto' });
-  assert('T5: crypto VWAP partial allowed', partialDecision.allowed === true, partialDecision);
-  assert('T5: crypto VWAP runtime_status=partial', partialDecision.strategy?.runtime_status === 'partial', partialDecision.strategy?.runtime_status);
-  assert('T5: crypto VWAP can_create_paper_trade=partial', partialDecision.strategy?.can_create_paper_trade === 'partial', partialDecision.strategy?.can_create_paper_trade);
+  const partialDecision = canCreatePaperTradeForSignal({
+    strategy_id: 'opening_range_breakout',
+    symbol: 'AAPL',
+    raw_strategy: 'OPENING_RANGE_BREAKOUT_UP',
+  });
+  assert('T5: opening_range_breakout blocked', partialDecision.allowed === false, partialDecision);
+  assert('T5: opening_range_breakout runtime_status=partial', partialDecision.strategy?.runtime_status === 'partial', partialDecision.strategy?.runtime_status);
+  assert('T5: opening_range_breakout can_create_paper_trade=false', partialDecision.strategy?.can_create_paper_trade === false, partialDecision.strategy?.can_create_paper_trade);
   assertSafety('T5: partialDecision', partialDecision);
+
+  const cryptoDecision = canCreatePaperTradeForSignal({
+    raw_strategy: 'VWAP_RECLAIM_UP',
+    symbol: 'BTCUSDT',
+  });
+  assert('T5: crypto decision blocked', cryptoDecision.allowed === false, cryptoDecision);
+  assert('T5: crypto decision strategy partial', cryptoDecision.strategy?.runtime_status === 'partial', cryptoDecision.strategy?.runtime_status);
+  assert('T5: crypto decision strategy_id=crypto_momentum_scalper', cryptoDecision.strategy?.strategy_id === 'crypto_momentum_scalper', cryptoDecision.strategy?.strategy_id);
+  assertSafety('T5: cryptoDecision', cryptoDecision);
 }
 
 // ── Summary ───────────────────────────────────────────────────────────────────
