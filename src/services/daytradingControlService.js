@@ -200,6 +200,23 @@ function marketForSymbol(symbol, fallback = 'stocks') {
   return fallback || 'stocks';
 }
 
+function hasLiveOrderRequest(patch = {}) {
+  return patch.live_enabled === true ||
+    patch.live_trading_enabled === true ||
+    patch.can_place_orders === true ||
+    patch.actions_allowed === true ||
+    patch.mode === 'live' ||
+    patch.testMode === 'live';
+}
+
+function liveOrderBlockedResponse() {
+  return {
+    ok: false,
+    error: 'Live/order-flaggor är avstängda. Endast paper/test/scanner/replay/batch är tillåtet.',
+    ...SAFETY,
+  };
+}
+
 function groupMatches(filter, group, symbol) {
   const f = normalizeMarket(filter);
   const g = String(group || marketForSymbol(symbol)).toLowerCase();
