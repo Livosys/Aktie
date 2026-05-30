@@ -6,6 +6,7 @@ const crypto = require('crypto');
 const daytradingCatalog = require('./daytradingStrategyCatalogService');
 const strategyPerformance = require('./strategyPerformanceService');
 const auditTrail = require('./auditTrailService');
+const marketUniverse = require('./marketUniverseService');
 const dataCoverage = require('./dataCoverageExpansionService');
 
 const SAFETY = Object.freeze({
@@ -24,6 +25,8 @@ const LIMITS = Object.freeze({
   maxConcurrentRuns: 2,
   timeoutPerRunMs: 1500,
 });
+
+const CERTIFICATE_SIMULATION_MODES = new Set(['off', 'underlying_only', 'estimated_leverage', 'real_certificate_data']);
 
 const DATA_DIR = path.resolve(__dirname, '../../data/strategy-batches');
 const BATCHES_FILE = path.join(DATA_DIR, 'batches-v1.json');
@@ -128,6 +131,105 @@ function daysBetween(from, to) {
   return Math.max(1, Math.round((b - a) / 86400000) + 1);
 }
 
+function symbolCoverage(symbol) {
+  try {
+    return dataCoverage.getSymbolCoverage(symbol).coverage || {};
+  } catch (_) {
+    return { symbol, usable_for_batch: false, data_quality: 'unknown', status_sv: 'Datakontroll misslyckades' };
+  }
+}
+
+function normalizeSymbolsForBatch(symbols) {
+  const requested = symbols.map((s) => String(s).toUpperCase());
+  const runnable = [];
+  const skipped = [];
+  for (const symbol of requested) {
+    const coverage = symbolCoverage(symbol);
+    if (coverage.usable_for_batch) {
+      runnable.push(symbol);
+    } else {
+      skipped.push({
+        symbol,
+        data_quality: coverage.data_quality,
+        status_sv: coverage.status_sv,
+        reason: 'missing_data',
+        message: 'För lite historik för säkert batchtest.',
+        usable_for_batch: false,
+      });
+    }
+  }
+  return {
+    symbols: [...new Set(runnable)],
+    requested_symbols: [...new Set(requested)],
+    skipped_symbols: skipped,
+    skipped_reasons: skipped.map((row) => ({ symbol: row.symbol, reason: row.reason })),
+  };
+}
+
+function marketLabel(group, id) {
+  return group?.label_sv || group?.label || id;
+}
+
+function normalizeMarketsForBatch(markets, certificateSimulationMode) {
+  const requested = safeArray(markets).length ? safeArray(markets) : ['all'];
+  const hasAll = requested.includes('all');
+  const controls = (() => {
+    try { return marketUniverse.getMarketControls().controls || []; } catch (_) { return []; }
+  })();
+  const byId = new Map(controls.map((row) => [row.group_id || row.id, row]).filter(([id]) => id));
+  const selected = [];
+  const skipped = [];
+  const disabled = [];
+  const missingData = [];
+
+  const consider = (id, fromAll) => {
+    const group = marketUniverse.getGroup(id) || {};
+    const control = byId.get(id) || {};
+    const enabled = control.enabled_for_batch !== false && marketUniverse.groupEnabledFor(id, 'batch') !== false;
+    if (!enabled) {
+      const row = {
+        id,
+        label: marketLabel(group, id),
+        reason: 'disabled_by_user',
+        message: 'Marknaden är avstängd för batch från Daytrading.',
+      };
+      skipped.push(row);
+      if (!fromAll) disabled.push(row);
+      return;
+    }
+    if ((group?.data_status || control.data_status) === 'needs_provider' && certificateSimulationMode !== 'underlying_only') {
+      const row = {
+        id,
+        label: marketLabel(group, id),
+        reason: 'missing_data',
+        message: 'Kan inte köras ännu - datakälla saknas.',
+      };
+      skipped.push(row);
+      missingData.push(row);
+      return;
+    }
+    selected.push(id);
+  };
+
+  if (hasAll) {
+    for (const row of controls) {
+      const id = row.group_id || row.id;
+      if (id) consider(id, true);
+    }
+  } else {
+    for (const id of requested) consider(id, false);
+  }
+
+  return {
+    markets: [...new Set(selected)],
+    requested_markets: requested,
+    skipped_markets: skipped,
+    skipped_market_reasons: skipped.map((row) => ({ id: row.id, reason: row.reason })),
+    disabled_markets: disabled,
+    missing_data_markets: missingData,
+  };
+}
+
 function defaultConfig(input = {}) {
   const today = nowIso().slice(0, 10);
   const catalog = daytradingCatalog.getCatalog().strategies;
@@ -136,15 +238,24 @@ function defaultConfig(input = {}) {
   const selected = strategyIds.length ? strategyIds : catalog.slice(0, 3).map((s) => s.id);
   const dateFrom = normalizeDate(input.date_from || input.dateFrom, today);
   const dateTo = normalizeDate(input.date_to || input.dateTo, dateFrom);
+  const certificateSimulationMode = CERTIFICATE_SIMULATION_MODES.has(input.certificate_simulation_mode) ? input.certificate_simulation_mode : 'off';
   const rawSymbols = safeArray(input.symbols).length ? safeArray(input.symbols).map((s) => s.toUpperCase()) : ['BTCUSDT', 'ETHUSDT', 'SOLUSDT', 'AAPL', 'TSLA', 'NVDA', 'QQQ'];
+  const rawMarkets = safeArray(input.markets || input.market_groups || input.marketGroups).length ? safeArray(input.markets || input.market_groups || input.marketGroups) : ['all'];
   const symbolPolicy = normalizeSymbolsForBatch(rawSymbols);
+  const marketPolicy = normalizeMarketsForBatch(rawMarkets, certificateSimulationMode);
   return {
     strategy_ids: selected,
     symbols: symbolPolicy.symbols,
     requested_symbols: symbolPolicy.requested_symbols,
     skipped_symbols: symbolPolicy.skipped_symbols,
     skipped_reasons: symbolPolicy.skipped_reasons,
-    markets: safeArray(input.markets || input.market_groups || input.marketGroups).length ? safeArray(input.markets || input.market_groups || input.marketGroups) : ['all'],
+    markets: marketPolicy.markets,
+    requested_markets: marketPolicy.requested_markets,
+    skipped_markets: marketPolicy.skipped_markets,
+    skipped_market_reasons: marketPolicy.skipped_market_reasons,
+    disabled_markets: marketPolicy.disabled_markets,
+    missing_data_markets: marketPolicy.missing_data_markets,
+    certificate_simulation_mode: certificateSimulationMode,
     timeframes: safeArray(input.timeframes || input.timeframe).length ? safeArray(input.timeframes || input.timeframe) : ['2m'],
     date_from: dateFrom,
     date_to: dateTo,
@@ -178,10 +289,17 @@ function validateConfig(config) {
     warnings.skipped_symbols = config.skipped_symbols;
     warnings.skipped_reasons = config.skipped_reasons || config.skipped_symbols.map((row) => ({ symbol: row.symbol, reason: row.reason || 'missing_data' }));
   }
+  if (config.skipped_markets?.length) {
+    warnings.skipped_markets = config.skipped_markets;
+    warnings.skipped_market_reasons = config.skipped_market_reasons || config.skipped_markets.map((row) => ({ id: row.id, reason: row.reason || 'missing_data' }));
+  }
   if (config.strategy_ids.length > LIMITS.maxStrategiesPerBatch) errors.strategy_ids = `max_${LIMITS.maxStrategiesPerBatch}`;
   if (config.symbols.length > LIMITS.maxSymbolsPerBatch) errors.symbols = `max_${LIMITS.maxSymbolsPerBatch}`;
   if (!config.symbols.length) {
     errors.missing_data = 'no_runnable_symbols';
+  }
+  if (!config.markets.length) {
+    errors.market_data = config.disabled_markets?.length ? 'disabled_by_user' : 'missing_data';
   }
   if (daysBetween(config.date_from, config.date_to) > LIMITS.maxDateRangeDays) errors.date_range = `max_${LIMITS.maxDateRangeDays}_days`;
   if (configSize(config) > LIMITS.maxParameterCombinations) {
@@ -189,10 +307,33 @@ function validateConfig(config) {
   }
   const unknown = config.strategy_ids.filter((id) => !daytradingCatalog.getStrategyById(id));
   if (unknown.length) errors.strategy_ids_unknown = unknown;
-  const reason = errors.missing_data ? 'missing_data' : null;
+  if (config.missing_data_markets?.length && !config.markets.length) {
+    errors.unavailable_markets = config.missing_data_markets;
+  }
+  if (config.disabled_markets?.length) {
+    errors.market_controls = 'disabled_by_user';
+    errors.batch_disabled_markets = config.disabled_markets;
+  }
+  if (config.certificate_simulation_mode === 'estimated_leverage') {
+    errors.certificate_simulation_mode = 'estimated_leverage_not_supported_yet';
+  }
+  if (config.certificate_simulation_mode === 'real_certificate_data' && config.missing_data_markets?.length && !config.markets.length) {
+    errors.certificate_simulation_mode = 'real_certificate_data_needs_provider';
+  }
+  const reason = errors.market_controls === 'disabled_by_user'
+    ? 'disabled_by_user'
+    : errors.missing_data || errors.market_data === 'missing_data'
+      ? 'missing_data'
+      : null;
   const message = errors.missing_data
     ? 'No runnable symbols with historical data'
-    : Object.keys(errors).length ? 'Testet är för stort. Minska antal symboler eller parametrar.' : null;
+    : errors.market_controls === 'disabled_by_user'
+      ? 'En eller flera valda marknadsgrupper är avstängda av användaren.'
+      : errors.market_data
+        ? 'Kan inte köras ännu - datakälla saknas.'
+        : errors.certificate_simulation_mode
+          ? 'Valt certifikat-testläge stöds inte för körning ännu.'
+          : Object.keys(errors).length ? 'Testet är för stort. Minska antal symboler eller parametrar.' : null;
   return {
     ok: Object.keys(errors).length === 0,
     errors,
@@ -214,7 +355,12 @@ function buildParameterGrid(configInput = {}) {
       count: configSize(config),
       limits: LIMITS,
       error: validation.message,
+      reason: validation.reason,
       errors: validation.errors,
+      warnings: validation.warnings,
+      skipped_symbols: config.skipped_symbols || [],
+      skipped_reasons: config.skipped_reasons || [],
+      skipped_markets: config.skipped_markets || [],
       ...SAFETY,
     });
   }
@@ -234,6 +380,7 @@ function buildParameterGrid(configInput = {}) {
                         strategy_name: strategy.name,
                         symbol,
                         market_group: market === 'all' ? strategy.market_group : market,
+                        certificate_simulation_mode: config.certificate_simulation_mode,
                         timeframe,
                         date_from: config.date_from,
                         date_to: config.date_to,
@@ -254,7 +401,7 @@ function buildParameterGrid(configInput = {}) {
       }
     }
   }
-  return cleanValue({ ok: true, config, grid, count: grid.length, limits: LIMITS, ...SAFETY });
+  return cleanValue({ ok: true, config, grid, count: grid.length, limits: LIMITS, warnings: validation.warnings, ...SAFETY });
 }
 
 function createBatchTest(input = {}) {
@@ -264,9 +411,14 @@ function createBatchTest(input = {}) {
     return cleanValue({
       ok: false,
       error: validation.message,
+      reason: validation.reason,
       errors: validation.errors,
       combination_count: configSize(config),
       limits: LIMITS,
+      warnings: validation.warnings,
+      skipped_symbols: config.skipped_symbols || [],
+      skipped_reasons: config.skipped_reasons || [],
+      skipped_markets: config.skipped_markets || [],
       ...SAFETY,
     });
   }
@@ -283,6 +435,11 @@ function createBatchTest(input = {}) {
     last_run_at: null,
     status: 'created',
     config,
+    coverage_warnings: validation.warnings,
+    needs_data_symbols: validation.warnings.needs_data_symbols || [],
+    skipped_symbols: config.skipped_symbols || [],
+    skipped_reasons: config.skipped_reasons || [],
+    skipped_markets: config.skipped_markets || [],
     progress: {
       total: grid.count,
       completed: 0,
@@ -345,6 +502,7 @@ function normalizeBatchResult(batchId, combo, saved) {
     strategy_name: combo.strategy_name,
     symbol: combo.symbol,
     market_group: combo.market_group,
+    certificate_simulation_mode: combo.certificate_simulation_mode || 'off',
     timeframe: combo.timeframe,
     date_from: combo.date_from,
     date_to: combo.date_to,
@@ -387,6 +545,7 @@ function runOneCombination(batchId, combo) {
     confidence_threshold: combo.confidence_threshold,
     volume_requirement: combo.volume_requirement,
     mode: 'paper_replay',
+    certificate_simulation_mode: combo.certificate_simulation_mode || 'off',
     actions_allowed: false,
     can_place_orders: false,
     live_trading_enabled: false,
@@ -402,7 +561,19 @@ function runBatchTest(batchId) {
   if (activeRunCount() >= LIMITS.maxConcurrentRuns) return cleanValue({ ok: false, error: 'max_concurrent_runs_reached', limits: LIMITS, ...SAFETY });
 
   const gridResult = buildParameterGrid(batch.config);
-  if (!gridResult.ok) return cleanValue({ ok: false, error: gridResult.error, errors: gridResult.errors, limits: LIMITS, ...SAFETY });
+  if (!gridResult.ok) {
+    return cleanValue({
+      ok: false,
+      error: gridResult.error,
+      reason: gridResult.reason,
+      errors: gridResult.errors,
+      warnings: gridResult.warnings,
+      skipped_symbols: gridResult.skipped_symbols || [],
+      skipped_markets: gridResult.skipped_markets || [],
+      limits: LIMITS,
+      ...SAFETY,
+    });
+  }
 
   const existing = loadResults(batchId);
   const runner = {
