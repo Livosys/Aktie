@@ -742,6 +742,89 @@ async function saveClosedTradeMemory(closedTrade) {
   return vectorMemoryService.saveSignalMemory(signalContext, outcome);
 }
 
+/**
+ * Skickar paper-trade event (opened/closed) till Learning Connector.
+ * Helt fail-safe: får aldrig störa paper-loopen och lägger aldrig order.
+ */
+function recordPaperTradeToLearning(eventType, trade, exit = null) {
+  try {
+    if (!trade) return;
+    let strategyId = trade.strategy_id || trade.strategyId || null;
+    if (!strategyId) {
+      try { strategyId = strategyRuntimeConnector.inferStrategyForSignal(trade)?.strategy_id || null; } catch { strategyId = null; }
+    }
+    learningConnector.recordPaperTradeEvent({
+      event_type: eventType,
+      strategy_id: strategyId,
+      strategy_name: trade.strategy_name || trade.strategyName || null,
+      symbol: trade.symbol,
+      market: trade.marketGroup || trade.marketType || null,
+      timeframe: trade.timeframe || '2m',
+      signal_type: trade.signalSubtype || trade.signalFamily || null,
+      direction: trade.direction || trade.nextMoveBias || null,
+      confidence: trade.confidenceScore ?? null,
+      outcome: eventType === 'closed' ? (exit?.result || trade.result) : null,
+      pnl_pct: eventType === 'closed' ? (exit?.pnlPct ?? trade.pnlPct ?? null) : null,
+      max_drawdown_pct: trade.maxAdversePct ?? null,
+      duration_minutes: trade.duration_seconds != null ? Math.round(trade.duration_seconds / 60) : null,
+      exit_reason: exit?.exitReasonCode || exit?.exitSource || null,
+      entry_price: trade.entryPrice ?? null,
+      market_regime: trade.compassBias || trade.marketRegime || null,
+      volume_state: trade.volumeState || null,
+      underlying_symbol: trade.underlying_symbol || trade.underlyingSymbol || trade.signal_symbol || trade.signalSymbol || trade.symbol,
+      underlying_market: trade.underlying_market || trade.underlyingMarket || trade.marketGroup || trade.marketType || null,
+      underlying_signal_direction: trade.underlying_signal_direction || trade.underlyingSignalDirection || trade.direction || trade.nextMoveBias || null,
+      underlying_signal_strength: trade.underlying_signal_strength || trade.underlyingSignalStrength || trade.confidenceScore || trade.score || trade.gateScore || null,
+      traded_symbol: trade.traded_symbol || trade.tradedSymbol || trade.symbol,
+      traded_instrument_type: trade.traded_instrument_type || trade.tradedInstrumentType || trade.instrument_type || trade.instrumentType || null,
+      market_group: trade.market_group || trade.marketGroup || trade.marketType || null,
+      risk_class: trade.risk_class || trade.riskClass || null,
+      leverage_factor: trade.leverage_factor || trade.leverageFactor || trade.leverage || null,
+      spread_estimate: trade.spread_estimate || trade.spreadEstimate || trade.spread_percent || trade.spreadPct || null,
+      tracking_quality: trade.tracking_quality || trade.trackingQuality || null,
+      paper_pnl_percent: eventType === 'closed' ? (exit?.pnlPct ?? trade.pnlPct ?? null) : null,
+      underlying_move_percent: trade.underlying_move_percent || trade.underlyingMovePercent || null,
+      timestamp: eventType === 'closed' ? (trade.exitTime || trade.closed_at) : (trade.entryTime || trade.opened_at),
+    });
+  } catch (err) {
+    console.warn('[paper-trading] learning connector (trade) failed:', err.message);
+  }
+  // Daytrading Learning Engine v1 — helt fail-safe, lägger aldrig order.
+  try {
+    if (eventType === 'opened') learningEngine.recordPaperTradeOpened(trade);
+    else if (eventType === 'closed') learningEngine.recordPaperTradeClosed(trade, exit);
+  } catch (err) {
+    console.warn('[learning] failed to record trade', eventType, err.message);
+  }
+}
+
+/**
+ * Skickar agentens signalanalys till Learning Connector som agent-finding.
+ */
+function recordAgentAnalysisToLearning(agentAnalysis, candidate) {
+  try {
+    if (!agentAnalysis) return;
+    let strategyId = candidate?.strategy_id || candidate?.strategyId || null;
+    if (!strategyId) {
+      try { strategyId = strategyRuntimeConnector.inferStrategyForSignal(candidate)?.strategy_id || null; } catch { strategyId = null; }
+    }
+    learningConnector.recordAgentFinding({
+      agent_id: 'agent_reasoning',
+      agent_name: 'Agent Reasoning (signalanalys)',
+      finding_type: 'signal_analysis',
+      confidence: candidate?.confidenceScore ?? null,
+      recommendation: agentAnalysis.recommendation || null,
+      affected_strategy: strategyId,
+      affected_symbol: candidate?.symbol || null,
+      evidence: agentAnalysis.risk_notes || agentAnalysis.final_commentary || null,
+      output_used: true,
+      timestamp: new Date().toISOString(),
+    });
+  } catch (err) {
+    console.warn('[paper-trading] learning connector (agent) failed:', err.message);
+  }
+}
+
 function decisionLabel(status) {
   if (status === 'wait') return 'Vänta';
   if (status === 'avoid') return 'Jaga inte';
@@ -1491,6 +1574,7 @@ async function runTick() {
       void saveClosedTradeMemory(closed).catch((err) => {
         console.warn(`[paper-trading] memory save failed for ${closed.symbol}:`, err.message);
       });
+      recordPaperTradeToLearning('closed', closed, exit);
       appendEvent({
         type: 'TRADE_CLOSED',
         symbol: trade.symbol,
@@ -1792,6 +1876,8 @@ async function runTick() {
         _bump('tradesOpened', 'opened');
         state.openTrades.push(trade);
         if (c.signalId) state.seenSignalIds = [...state.seenSignalIds, c.signalId].slice(-200);
+        recordPaperTradeToLearning('opened', trade);
+        if (agentAnalysis) recordAgentAnalysisToLearning(agentAnalysis, candidateWithAgent);
         appendEvent({
           ...eventFromCandidate('TRADE_OPENED', candidateWithAgent, openedReasonSv(candidateWithAgent), 'opened'),
           aiConfidenceAdjustment: aiAdjustment,
