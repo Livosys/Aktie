@@ -34,6 +34,7 @@ const notificationEngineV2                         = require('../alerts/notifica
 const { getMarketGroup }                          = require('../markets/marketProfiles');
 const { computeAndSaveCompass }                   = require('../markets/marketCompass');
 const redisService                                = require('../services/redisService');
+const marketUniverse                              = require('../services/marketUniverseService');
 
 const GROUPS = {
   stocks:        ['NVDA', 'AMD', 'TSLA', 'AAPL', 'MSFT', 'AMZN', 'META', 'NFLX', 'GOOGL'],
@@ -201,7 +202,9 @@ async function runScan() {
   const results = [];
   let anyMarketWarning = false;
 
-  for (const symbol of WATCHLIST) {
+  const activeWatchlist = WATCHLIST.filter((symbol) => marketUniverse.symbolEnabledFor(symbol, 'scanner', getMarketGroup(symbol)));
+
+  for (const symbol of activeWatchlist) {
     const result = await scanSymbol(symbol);
     results.push(result);
     if (result.note && result.note.includes('Market may be closed')) {
@@ -269,7 +272,7 @@ async function runScan() {
     feedStatus: getStockFeedStatus(),
   }).catch((err) => console.warn('[notification-v2] scan processing failed:', err.message));
 
-  console.log(`[Scanner] Scan complete at ${scanStatus.lastScan} – ${results.length} symbols (Engine v3)`);
+  console.log(`[Scanner] Scan complete at ${scanStatus.lastScan} – ${results.length} symbols (Engine v3, market-controls)`);
 }
 
 function startScheduler() {

@@ -33,6 +33,7 @@ const { processScanResults }                      = require('../alerts/notificat
 const notificationEngineV2                         = require('../alerts/notificationEngineV2');
 const { getMarketGroup }                          = require('../markets/marketProfiles');
 const redisService                                = require('../services/redisService');
+const marketUniverse                              = require('../services/marketUniverseService');
 
 const CRYPTO_MAJOR     = ['BTCUSDT', 'ETHUSDT', 'SOLUSDT'];
 const CRYPTO_SECONDARY = ['BNBUSDT', 'XRPUSDT', 'DOGEUSDT', 'ADAUSDT', 'LINKUSDT', 'AVAXUSDT'];
@@ -172,7 +173,9 @@ async function runCryptoScan() {
   cryptoStatus.error = null;
 
   const results = [];
-  for (const symbol of CRYPTO_SYMBOLS) {
+  const activeSymbols = CRYPTO_SYMBOLS.filter((symbol) => marketUniverse.symbolEnabledFor(symbol, 'scanner', getMarketGroup(symbol) || 'crypto'));
+
+  for (const symbol of activeSymbols) {
     const result = await scanCryptoSymbol(symbol);
     results.push(result);
     await delay(300);
