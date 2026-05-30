@@ -12,6 +12,7 @@ const exitEngineService = require('./exitEngineService');
 const executionSafetyService = require('./executionSafetyService');
 const marketUniverse = require('./marketUniverseService');
 const notificationEngineV2 = require('../alerts/notificationEngineV2');
+const learningConnector = require('./learningConnectorService');
 const { loadCandles } = require('../data/marketDataStore');
 const { toScannerFormat } = require('../data/candleAggregator');
 const { calcIndicators } = require('../scanner/indicators');
@@ -1013,6 +1014,7 @@ async function executeSession(sessionId) {
     const events = readJsonl(eventsFile);
     const summary = summarizeEvents(session, events);
     await persistSummary(sessionId, summary);
+    forwardReplayToLearning(summary);
     void notificationEngineV2.processReplaySummary(summary).catch((err) => {
       console.warn('[replay-intelligence] notification v2 failed:', err.message);
     });
@@ -1128,6 +1130,7 @@ async function stopReplaySession(sessionId) {
   const summary = summarizeEvents(session, events);
   await persistSummary(sessionId, summary);
   await persistEventsCache(sessionId);
+  forwardReplayToLearning(summary);
   return session;
 }
 
@@ -1143,11 +1146,43 @@ async function summarizeReplaySession(sessionId) {
   const session = loadSession(sessionId);
   if (!session) return null;
   const existing = readJson(summaryPath(sessionId), null);
-  if (existing && ['completed', 'stopped', 'failed'].includes(session.status)) return existing;
+  if (existing && ['completed', 'stopped', 'failed'].includes(session.status)) {
+    forwardReplayToLearning(existing);
+    return existing;
+  }
   const events = getReplayEvents(sessionId);
   const summary = summarizeEvents(session, events);
   await persistSummary(sessionId, summary);
+  forwardReplayToLearning(summary);
   return summary;
+}
+
+/**
+ * Skickar en avslutad replay-sammanfattning till Learning Connector.
+ * Fail-safe och dedupar per session_id. Replay påverkar bara learning-/
+ * research-score — aldrig live och aldrig order.
+ */
+function forwardReplayToLearning(summary) {
+  try {
+    if (!summary || !['completed', 'stopped', 'failed'].includes(summary.status)) return;
+    const cfg = summary.config || {};
+    const symbols = Array.isArray(cfg.symbols) ? cfg.symbols : [];
+    learningConnector.recordReplayResult({
+      session_id: summary.session_id,
+      strategy_id: cfg.strategy_id || null,
+      symbol: symbols[0] || 'MULTI',
+      timeframe: cfg.timeframe || '2m',
+      win_rate: summary.win_rate,
+      total_trades: summary.total_trades,
+      pnl_pct: summary.total_pl_pct,
+      max_drawdown_pct: summary.max_drawdown,
+      confidence: null,
+      replay_window: `${cfg.date_from || '?'}..${cfg.date_to || '?'}`,
+      market_regime: summary.market_regime || 'unknown',
+    });
+  } catch (err) {
+    console.warn('[replay] learning connector forward failed:', err.message);
+  }
 }
 
 async function runRiskFixtureReplay() {
