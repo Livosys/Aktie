@@ -1562,6 +1562,24 @@ async function runTick() {
       }
       try {
         _bump('qualifiesChecked', null);
+        const controlGroup = marketUniverse.getGroupForSymbol(c.symbol, c.marketGroup || getMarketGroup(c.symbol));
+        if (!marketUniverse.groupEnabledFor(controlGroup, 'paper')) {
+          _bump('qualifiesRejected', null);
+          _recentRejections = [{
+            type:          'MARKET_CONTROL_PAPER_DISABLED',
+            symbol:        c.symbol,
+            marketGroup:   controlGroup || getMarketGroup(c.symbol) || c.marketGroup || 'UNKNOWN',
+            signalSubtype: c.signalSubtype || null,
+            reason:        'enabled_for_paper=false',
+            timestamp:     new Date().toISOString(),
+          }, ..._recentRejections].slice(0, 100);
+          appendEvent(eventFromCandidate(
+            'MARKET_CONTROL_PAPER_DISABLED',
+            c,
+            'Marknadsgruppen är avstängd för paper test från Daytrading.',
+          ));
+          continue;
+        }
         const runtimeDecision = strategyRuntimeConnector.canCreatePaperTradeForSignal(c);
         if (!runtimeDecision.allowed) {
           _bump('qualifiesRejected', null);
