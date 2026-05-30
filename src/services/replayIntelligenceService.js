@@ -9,6 +9,7 @@ const agentReasoningService = require('./agentReasoningService');
 const vectorMemoryService = require('./vectorMemoryService');
 const riskEngineService = require('./riskEngineService');
 const exitEngineService = require('./exitEngineService');
+const executionSafetyService = require('./executionSafetyService');
 const notificationEngineV2 = require('../alerts/notificationEngineV2');
 const { loadCandles } = require('../data/marketDataStore');
 const { toScannerFormat } = require('../data/candleAggregator');
@@ -146,6 +147,7 @@ function normalizeConfig(config = {}) {
     use_memory_similarity: config.use_memory_similarity === true,
     use_risk_engine: config.use_risk_engine !== false,
     use_exit_engine: config.use_exit_engine === true,
+    use_execution_safety: config.use_execution_safety === true,
     initial_balance: clamp(config.initial_balance ?? 100000, 1000, 100000000),
     max_trades: Math.round(clamp(config.max_trades ?? 50, 1, 10000)),
     risk_profile: riskProfile,
@@ -288,6 +290,46 @@ function buildReplayRiskContext(signalContext, finalConfidence, agentBlocked, ag
     memory: {
       ...(memorySummary || {}),
       risk_flags: memoryFlags,
+    },
+  };
+}
+
+function buildReplaySafetyContext(signalContext, riskEvaluation, config) {
+  const timestamp = signalContext.timestamp || nowIso();
+  return {
+    symbol: signalContext.symbol,
+    direction: signalContext.direction,
+    tradeIntent: 'ENTER',
+    source: 'replay',
+    replay_mode: true,
+    market: {
+      is_open: true,
+      market_group: signalContext.marketGroup || 'REPLAY',
+      session: 'replay',
+    },
+    data: {
+      last_price_at: timestamp,
+      last_candle_at: timestamp,
+      last_scan_at: timestamp,
+      provider_status: 'ok',
+    },
+    system: {
+      redis_status: 'fallback',
+      memory_mb: Math.round((process.memoryUsage?.().rss || 0) / 1024 / 1024) || null,
+      pm2_restarts_1h: 0,
+      api_errors_5m: 0,
+      notification_status: 'ok',
+      overall_status: 'OK',
+    },
+    risk: {
+      allowed: riskEvaluation?.allowed !== false,
+      pause_trading: riskEvaluation?.pause_trading === true,
+    },
+    exit: {
+      ready: true,
+    },
+    config_snapshot: {
+      use_execution_safety: config.use_execution_safety === true,
     },
   };
 }
@@ -607,6 +649,8 @@ async function replayDecision({ session, symbol, candles, index }) {
   const threshold = confidenceThreshold(config.risk_profile);
   const gatePassed = gateDecision.allowed === true;
   let riskEvaluation = null;
+  let executionSafety = null;
+  let wouldHaveEntered = false;
 
   let decision = 'HOLD';
   let reason = 'Fast engine gav ingen köp/sälj-signal.';
@@ -638,6 +682,20 @@ async function replayDecision({ session, symbol, candles, index }) {
       } else if (session.progress.tradesTaken >= config.max_trades) {
         decision = 'L_SKIP';
         reason = `Max trades (${config.max_trades}) uppnått i replay-session.`;
+      } else if (config.use_execution_safety) {
+        wouldHaveEntered = true;
+        executionSafety = await executionSafetyService.evaluateExecutionSafety(
+          buildReplaySafetyContext(signalContext, riskEvaluation, config),
+          { persist: false },
+        );
+        if ((executionSafety.block_reasons || []).length || executionSafety.paper_execution_allowed === false) {
+          decision = 'L_SKIP';
+          reason = `Execution Safety v1 blockerade replay-entry: ${(executionSafety.block_reasons || executionSafety.paper_block_reasons || []).join(', ') || 'safety_block'}.`;
+        } else {
+          decision = 'ENTER';
+          reason = `Replay-entry: ${engineSignal}, gate godkänd, risk godkänd, safety godkänd och konfidens ${finalConfidence}.`;
+          session.progress.tradesTaken += 1;
+        }
       } else {
         decision = 'ENTER';
         reason = `Replay-entry: ${engineSignal}, gate godkänd, risk godkänd och konfidens ${finalConfidence}.`;
@@ -652,6 +710,20 @@ async function replayDecision({ session, symbol, candles, index }) {
     } else if (session.progress.tradesTaken >= config.max_trades) {
       decision = 'L_SKIP';
       reason = `Max trades (${config.max_trades}) uppnått i replay-session.`;
+    } else if (config.use_execution_safety) {
+      wouldHaveEntered = true;
+      executionSafety = await executionSafetyService.evaluateExecutionSafety(
+        buildReplaySafetyContext(signalContext, riskEvaluation, config),
+        { persist: false },
+      );
+      if ((executionSafety.block_reasons || []).length || executionSafety.paper_execution_allowed === false) {
+        decision = 'L_SKIP';
+        reason = `Execution Safety v1 blockerade replay-entry: ${(executionSafety.block_reasons || executionSafety.paper_block_reasons || []).join(', ') || 'safety_block'}.`;
+      } else {
+        decision = 'ENTER';
+        reason = `Replay-entry: ${engineSignal}, gate godkänd, safety godkänd och konfidens ${finalConfidence}.`;
+        session.progress.tradesTaken += 1;
+      }
     } else {
       decision = 'ENTER';
       reason = `Replay-entry: ${engineSignal}, gate godkänd och konfidens ${finalConfidence}.`;
@@ -702,6 +774,13 @@ async function replayDecision({ session, symbol, candles, index }) {
     risk_actual_position_risk_sek: riskEvaluation?.actual_position_risk_sek ?? null,
     risk_position_clamped: riskEvaluation?.position_clamped === true,
     risk_pause_trading: riskEvaluation?.pause_trading === true,
+    execution_safety_enabled: config.use_execution_safety === true,
+    execution_safety_allowed: executionSafety ? ((executionSafety.block_reasons || []).length === 0 && executionSafety.paper_execution_allowed !== false) : null,
+    execution_safety_level: executionSafety?.safety_level || null,
+    execution_safety_block_reasons: executionSafety?.block_reasons || [],
+    execution_safety_paper_block_reasons: executionSafety?.paper_block_reasons || [],
+    execution_safety_warnings: executionSafety?.warnings || [],
+    execution_safety_would_have_entered: wouldHaveEntered === true,
   };
 
   if (decision === 'ENTER' && riskEvaluation) {
@@ -769,6 +848,8 @@ function summarizeEvents(session, events) {
   const improvedExits = exitEngineTrades.filter((e) => Number(e.simulated_pnl_pct) > Number(e.baseline_pnl_pct ?? e.simulated_pnl_pct) + 0.02);
   const missedBiggerWinners = exitEngineTrades.filter((e) => Number(e.baseline_pnl_pct ?? e.simulated_pnl_pct) > Number(e.simulated_pnl_pct) + 0.02);
   const nearTargetSaved = improvedExits.filter((e) => ['near_target_profit', 'near_target_pullback'].includes(e.exit_reason_code)).length;
+  const safetyBlocks = blocked.filter((e) => e.execution_safety_enabled === true && (e.execution_safety_allowed === false || (e.execution_safety_block_reasons || []).length));
+  const safetyReasons = safetyBlocks.flatMap((e) => (e.execution_safety_block_reasons || []).map((reason) => ({ reason })));
 
   return {
     ok: true,
@@ -830,6 +911,16 @@ function summarizeEvents(session, events) {
       timeout_saves: exitEngineTrades.filter((e) => e.exit_reason_code === 'timeout_intelligence').length,
       missed_bigger_winners: missedBiggerWinners.length,
       improved_exits_vs_baseline: improvedExits.length,
+    },
+    execution_safety: {
+      enabled: session.config.use_execution_safety === true,
+      safety_blocks: safetyBlocks.length,
+      stale_data_blocks: safetyBlocks.filter((e) => (e.execution_safety_block_reasons || []).some((reason) => String(reason).startsWith('stale_'))).length,
+      risk_pause_blocks: safetyBlocks.filter((e) => (e.execution_safety_block_reasons || []).includes('risk_pause')).length,
+      kill_switch_blocks: safetyBlocks.filter((e) => (e.execution_safety_block_reasons || []).includes('kill_switch_active')).length,
+      entries_prevented: safetyBlocks.length,
+      would_have_entered_count: events.filter((e) => e.execution_safety_would_have_entered === true).length,
+      blocks_by_reason: groupCount(safetyReasons, (e) => e.reason),
     },
     blocked_trades_that_would_have_lost: blockedLost,
     blocked_trades_that_would_have_won: blockedWon,
