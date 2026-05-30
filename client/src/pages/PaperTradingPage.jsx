@@ -1,10 +1,12 @@
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
+import { useUnifiedConfig } from '../hooks/useUnifiedConfig.js';
 
 const REFRESH_MS = 15_000;
 
 function usePaperTrading() {
   const [status,          setStatus]          = useState(null);
-  const [perf,            setPerf]            = useState(null);
+  const unified = useUnifiedConfig('results');
+  const perf = unified.test.paperPerformance;
   const [trades,          setTrades]          = useState(null);
   const [events,          setEvents]          = useState(null);
   const [calibration,     setCalibration]     = useState(null);
@@ -15,10 +17,11 @@ function usePaperTrading() {
   const [redisStatus,     setRedisStatus]      = useState(null);
   const [agentAnalysis,   setAgentAnalysis]    = useState(null);
   const [busy,            setBusy]            = useState(false);
+  const refreshShared = unified.refresh;
 
   const fetchAll = useCallback(() => {
     fetch('/api/paper-trading/status').then(r => r.ok ? r.json() : null).then(d => { if (d?.ok) setStatus(d); }).catch(() => {});
-    fetch('/api/paper-trading/performance').then(r => r.ok ? r.json() : null).then(d => { if (d?.ok) setPerf(d); }).catch(() => {});
+    refreshShared('paperPerformance');
     fetch('/api/paper-trading/trades').then(r => r.ok ? r.json() : null).then(d => { if (d?.ok) setTrades(d); }).catch(() => {});
     fetch('/api/paper-trading/events').then(r => r.ok ? r.json() : null).then(d => { if (d?.ok) setEvents(d); }).catch(() => {});
     fetch('/api/paper-trading/calibration-report').then(r => r.ok ? r.json() : null).then(d => { if (d?.ok) setCalibration(d); }).catch(() => {});
@@ -30,7 +33,7 @@ function usePaperTrading() {
     fetch('/api/agent/latest-analysis').then(r => r.ok ? r.json() : null).then(d => {
       if (d?.ok) setAgentAnalysis(d.analysis || (d.symbol ? d : null));
     }).catch(() => {});
-  }, []);
+  }, [refreshShared]);
 
   useEffect(() => {
     fetchAll();
