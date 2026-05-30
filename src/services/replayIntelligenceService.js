@@ -10,6 +10,7 @@ const vectorMemoryService = require('./vectorMemoryService');
 const riskEngineService = require('./riskEngineService');
 const exitEngineService = require('./exitEngineService');
 const executionSafetyService = require('./executionSafetyService');
+const marketUniverse = require('./marketUniverseService');
 const notificationEngineV2 = require('../alerts/notificationEngineV2');
 const { loadCandles } = require('../data/marketDataStore');
 const { toScannerFormat } = require('../data/candleAggregator');
@@ -137,8 +138,19 @@ function normalizeConfig(config = {}) {
   const riskProfile = String(config.risk_profile || 'normal').toLowerCase();
   if (!VALID_RISK.has(riskProfile)) throw new Error('risk_profile must be conservative, normal or aggressive');
 
+  const skippedByMarketControls = [...new Set(symbols)]
+    .filter((symbol) => !marketUniverse.symbolEnabledFor(symbol, 'replay'))
+    .map((symbol) => ({ symbol, reason: 'Marknadsgruppen är avstängd för replay från Daytrading.' }));
+  const replaySymbols = [...new Set(symbols)]
+    .filter((symbol) => marketUniverse.symbolEnabledFor(symbol, 'replay'))
+    .slice(0, 50);
+  if (!replaySymbols.length) throw new Error('Alla valda symboler är avstängda för replay i Daytrading.');
+
+
   return {
-    symbols: [...new Set(symbols)].slice(0, 50),
+    symbols: replaySymbols,
+    requested_symbols: [...new Set(symbols)].slice(0, 50),
+    skipped_by_market_controls: skippedByMarketControls,
     date_from: dateFrom,
     date_to: dateTo,
     timeframe,
