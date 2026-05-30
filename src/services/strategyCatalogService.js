@@ -9,7 +9,7 @@ const SAFETY = Object.freeze({
   agent_mode: 'config_only',
 });
 
-const PRESETS_FILE = '/var/www/nasdaq-scanner/data/config/strategy-presets.json';
+const PRESETS_FILE = path.resolve(__dirname, '../../data/config/strategy-presets.json');
 
 const STRATEGY_CATALOG = [
   { key: 'vwap_reclaim',            label: 'VWAP-återtagning',         group: 'classic', scoreImpact: '+8',  desc: 'Pris återtar VWAP',                       paperOnly: false },

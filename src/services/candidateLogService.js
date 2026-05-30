@@ -10,7 +10,7 @@ const SAFETY = Object.freeze({
   agent_mode: 'config_only',
 });
 
-const LOG_FILE = '/var/www/nasdaq-scanner/data/signals/candidates.jsonl';
+const LOG_FILE = path.resolve(__dirname, '../../data/signals/candidates.jsonl');
 
 function ensureDir() {
   fs.mkdirSync(path.dirname(LOG_FILE), { recursive: true });
