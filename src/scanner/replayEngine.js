@@ -19,6 +19,8 @@ const { applyEngineV3 }       = require('./engineV3');
 const { calcMarketRegimeV2, applyMarketRegimeV2 } = require('./marketRegimeEngine');
 const { applyHistoricalEdge } = require('./historicalEdge');
 const { buildInsights }       = require('./replayInsights');
+const dataCoverage            = require('../services/dataCoverageExpansionService');
+const marketUniverse          = require('../services/marketUniverseService');
 
 const REPLAY_DIR   = path.resolve(__dirname, '../../data/replay/runs');
 const MIN_CANDLES  = 20;
@@ -167,6 +169,14 @@ function replaySymbol(symbol, candles, runId, mode, refResultFn) {
  */
 async function runReplay({ symbols, start, end, mode = 'scan_only' }) {
   const runId  = makeRunId();
+  const requestedSymbols = Array.isArray(symbols) ? symbols : [];
+  const replaySymbols = requestedSymbols.filter((symbol) => marketUniverse.symbolEnabledFor(symbol, 'replay'));
+  const skippedByControls = requestedSymbols
+    .filter((symbol) => !marketUniverse.symbolEnabledFor(symbol, 'replay'))
+    .map((symbol) => ({
+      symbol,
+      reason: 'Marknadsgruppen är avstängd för replay från Daytrading.',
+    }));
   const runDir = path.join(REPLAY_DIR, runId);
   ensureDir(runDir);
 
@@ -177,7 +187,8 @@ async function runReplay({ symbols, start, end, mode = 'scan_only' }) {
     runId,
     start,
     end,
-    symbols,
+    symbols: replaySymbols,
+    requestedSymbols,
     mode,
     totalCandles:  0,
     totalEvents:   0,
@@ -186,6 +197,12 @@ async function runReplay({ symbols, start, end, mode = 'scan_only' }) {
     avgTradeScore: null,
     bestSymbols:   [],
     worstSymbols:  [],
+    coverage: {
+      replay_ready: [],
+      needs_data: [],
+      skipped_by_market_controls: skippedByControls,
+      message_sv: '',
+    },
     createdAt:     new Date().toISOString(),
   };
 
@@ -195,11 +212,23 @@ async function runReplay({ symbols, start, end, mode = 'scan_only' }) {
   const symStats  = {};
 
   // Determine reference symbols for market context
-  const refSymbol = symbols.includes('QQQ')     ? 'QQQ'     :
-                    symbols.includes('BTCUSDT')  ? 'BTCUSDT' : null;
+  const refSymbol = replaySymbols.includes('QQQ')     ? 'QQQ'     :
+                    replaySymbols.includes('BTCUSDT')  ? 'BTCUSDT' : null;
 
-  for (const symbol of symbols) {
+  for (const symbol of replaySymbols) {
     console.log(`[ReplayEngine] ${symbol} — loading ${start} → ${end}`);
+    const coverage = dataCoverage.getSymbolCoverage(symbol).coverage;
+    if (coverage.usable_for_replay) {
+      summary.coverage.replay_ready.push(symbol);
+    } else {
+      summary.coverage.needs_data.push({
+        symbol,
+        data_quality: coverage.data_quality,
+        reason: 'För lite historik för säkert test.',
+        candles_count: coverage.candles_count,
+        days_covered: coverage.days_covered,
+      });
+    }
     let candles;
     try {
       const raw = loadCandles(symbol, start, end, '2m');
@@ -240,6 +269,11 @@ async function runReplay({ symbols, start, end, mode = 'scan_only' }) {
   }
 
   summary.avgTradeScore = scoreN > 0 ? round(scoreSum / scoreN, 1) : null;
+  summary.coverage.message_sv = summary.coverage.needs_data.length
+    ? 'Vissa symboler har för lite historik för säkert replay.'
+    : skippedByControls.length
+      ? 'Vissa symboler hoppades över eftersom de är avstängda för replay i Daytrading.'
+      : 'Alla valda symboler är replay-ready.';
 
   // Best/worst symbols
   const ranked = Object.entries(symStats).sort((a, b) => b[1].avgScore - a[1].avgScore);
