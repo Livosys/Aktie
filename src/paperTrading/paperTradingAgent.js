@@ -43,6 +43,9 @@ const executionSafetyService                    = require('../services/execution
 const auditTrail                                = require('../services/auditTrailService');
 const notificationEngineV2                      = require('../alerts/notificationEngineV2');
 const strategyRuntimeConnector                  = require('../services/strategyRuntimeConnectorService');
+const marketUniverse                            = require('../services/marketUniverseService');
+const learningConnector                         = require('../services/learningConnectorService');
+const learningEngine                            = require('../services/daytradingLearningEngineService');
 
 // ── Paths ─────────────────────────────────────────────────────────────────────
 
@@ -268,6 +271,32 @@ function appendEvent(input) {
   if (!event.type || !shouldRecordEvent(event)) return null;
 
   fs.appendFileSync(EVENTS_FILE, JSON.stringify(event) + '\n', 'utf8');
+
+  // Daytrading Learning Engine v1 — logga skippade/blockerade signaler.
+  // Helt fail-safe: får aldrig störa paper-loopen och lägger aldrig order.
+  if (event.decision === 'skipped' || event.decision === 'observe_only') {
+    try {
+      const blockReasons = (event.riskBlockReasons?.length ? event.riskBlockReasons
+        : event.safetyBlockReasons?.length ? event.safetyBlockReasons
+        : []);
+      learningEngine.recordSkippedSignal({
+        type: event.type,
+        symbol: event.symbol,
+        market: event.marketType,
+        signalFamily: event.signalFamily,
+        signalSubtype: event.signalSubtype,
+        direction: event.nextMoveBias,
+        confidence: event.confidenceScore,
+        skip_reason: blockReasons.length ? blockReasons.join(', ') : event.reasonSv,
+        runtime_status: event.runtimeStatus || null,
+        strategy_id: event.strategyId || null,
+        strategy_name: event.strategyName || null,
+        source: 'paper_agent',
+      });
+    } catch (err) {
+      console.warn('[learning] failed to record skipped signal', err.message);
+    }
+  }
   const auditType = {
     TRADE_OPENED: 'PAPER_TRADE_OPENED',
     TRADE_CLOSED: 'PAPER_TRADE_CLOSED',
