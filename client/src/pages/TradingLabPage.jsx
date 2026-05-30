@@ -907,7 +907,7 @@ function ApplyPanel({ toggles, params, exits, onApplyParams, onApplyToggles, onA
   }
 
   function formatValue(val, change) {
-    if (typeof val === 'boolean') return val ? 'På' : 'Av';
+    if (typeof val === 'boolean') return val ? 'Aktiv' : 'Av';
     if (val === undefined || val === null) return '–';
     if (change.unit) return `${val}${change.unit}`;
     return `${val}`;
@@ -1109,7 +1109,7 @@ function AdaptiveIntelligenceTab() {
           onClick={toggleAdaptive}
           type="button"
         >
-          {adaptiveMode ? '🟢 PÅ' : '⚪ AV'}
+          {adaptiveMode ? '🟢 Aktiv' : '⚪ Av'}
         </button>
       </div>
       <div className="ami-tl-desc">
@@ -1656,7 +1656,7 @@ function MarketGroupCard({ groupKey, group, symbols }) {
             Max {groupMaxSymbols(grp)} · Prio {Number.isFinite(Number(grp.priority)) ? grp.priority : '–'} · {textOr(grp.mode, 'observe')}
           </div>
         </div>
-        <span className="mu-static-status">{grp.enabled ? 'På' : 'Av'}</span>
+        <span className="mu-static-status">{grp.enabled ? 'Aktiv' : 'Av'}</span>
       </div>
       {grp.description_sv && <div className="mu-group-desc">{textOr(grp.description_sv, 'För lite data')}</div>}
       {advanced && (
@@ -1743,7 +1743,7 @@ function MarketsTab() {
               {sym.test_only && <span className="mu-sym-status">Endast testläge</span>}
             </div>
             <div className="mu-sym-actions">
-              <span className={`mu-sym-toggle${sym.enabled && !sym.paused ? ' mu-active' : ''}`}>{sym.enabled ? 'På' : 'Av'}</span>
+              <span className={`mu-sym-toggle${sym.enabled && !sym.paused ? ' mu-active' : ''}`}>{sym.enabled ? 'Aktiv' : 'Av'}</span>
               <span className={`mu-sym-pause${sym.paused ? ' mu-paused' : ''}`}>{sym.paused ? 'Pausad' : 'Aktiv'}</span>
             </div>
           </div>
@@ -1837,7 +1837,7 @@ function StrategyCard({ strategy, performance, settings, onSettingsChange, onTes
         <div className="strat-info">
           <div className="strat-title-row">
             <div className="strat-label">{strategy.name}</div>
-            <span className="strat-paper-badge">Paper only</span>
+            <span className="strat-paper-badge">Lab-only</span>
             {strategy.is_new && <span className="strat-new-badge">Ny strategi</span>}
           </div>
           <div className="strat-score-impact">
@@ -1847,12 +1847,13 @@ function StrategyCard({ strategy, performance, settings, onSettingsChange, onTes
         <ConfigScopeBadge scope="test" />
         <div className="strat-controls">
           <button className="strat-test-btn" onClick={testStrategy} disabled={testing} type="button">
-            {testing ? 'Testar...' : 'Testa strategi'}
+            {testing ? 'Kör Lab-test...' : 'Kör Lab-test'}
           </button>
           <button className="strat-expand" onClick={() => setOpen(v => !v)} type="button">{open ? '▲' : '▼'}</button>
         </div>
       </div>
       <div className="strat-desc">{strategy.simple_explanation_sv || strategy.description_sv || strategy.explanation}</div>
+      <div className="strat-runtime-note">Lab-only · Saknar paper-runtime · Kan testas historiskt men inte skapa paper trades</div>
       <div className="strat-result-row">
         <span>Historisk vinstprocent: <strong>{perf ? pctText(perf.win_rate) : 'Ingen data ännu'}</strong></span>
         {badge && <span className={`strat-perf-badge strat-perf-${badge.tone}`}>{badge.label}</span>}
@@ -1965,12 +1966,12 @@ function StrategiesTab() {
     <div className="tl-tab-content">
       <GroupHeader icon="🧩" title="Strategikatalog" />
       <p className="tl-combo-intro">
-        {strategies.length} katalogstrategier · Read-only strategiinfo · Test och replay only
+        {strategies.length} katalogstrategier · Read-only strategiinfo · Lab påverkar inte paper-runtime
       </p>
       <div className="batch-info">
         <div>
-          <strong>Strategier och paper-runtime styrs från Daytrading-sidan.</strong>
-          <div>Lab används för tester, replay och analys.</div>
+          <strong>Lab påverkar inte vilka strategier som kör paper trades.</strong>
+          <div>Vill du styra paper-runtime, gå till Daytrading. Här körs bara test, replay, batch och analys.</div>
         </div>
         <Link className="strat-test-btn" to="/daytrading">Öppna Daytrading-kontroll</Link>
       </div>
@@ -2638,7 +2639,7 @@ function BlockersTab() {
             <div className="blk-disc-title">Fri testinsamling</div>
             <div className="blk-disc-sub">
               {discoveryMode
-                ? 'PÅ — fler signaler släpps igenom. Säkerhetsskyddet är fortfarande aktivt.'
+                ? 'Aktivt — fler signaler släpps igenom. Säkerhetsskyddet är fortfarande aktivt.'
                 : 'AV — standard blockeringar gäller. Aktivera för att samla mer data.'}
             </div>
           </div>
@@ -3145,14 +3146,14 @@ function AgentDebateTab() {
 // ── Tab bar ───────────────────────────────────────────────────────────────────
 const TABS = [
   { key: 'strategier',    label: 'Strategier',    icon: '🧩' },
-  { key: 'batch',         label: 'Batch-test',     icon: '🧪' },
+  { key: 'batch',         label: 'Kör historiskt batch-test',     icon: '🧪' },
   { key: 'marknader',     label: 'Marknader',     icon: '🌍' },
   { key: 'sliders',       label: 'Sliders',        icon: '🎚️' },
   { key: 'exits',         label: 'Exits',         icon: '↘️' },
-  { key: 'replay',        label: 'Replay',        icon: '▶️' },
-  { key: 'ai_agent',      label: 'AI Agent',      icon: '🤖' },
+  { key: 'replay',        label: 'Spela upp historiska signaler',        icon: '▶️' },
+  { key: 'ai_agent',      label: 'Föreslå testplan',      icon: '🤖' },
   { key: 'agent_debate',  label: 'AI Beslutsråd', icon: 'AI' },
-  { key: 'adaptive',      label: 'Adaptive Intelligence', icon: '🧠' },
+  { key: 'adaptive',      label: 'Visa lärande från tester', icon: '🧠' },
   { key: 'review',        label: 'Graf',          icon: '⌁' },
   { key: 'candidates',    label: 'Kandidater',    icon: '◎' },
 ];
@@ -3218,8 +3219,7 @@ export default function TradingLabPage() {
           </div>
         </div>
         <p className="tl-page-sub">
-          Testa strategier, replay, batch, parametrar, AI-agent, adaptive intelligence och exits.
-          Påverkar endast tester och analys, inte live-scannerns globala config.
+          Lab påverkar inte vilka strategier som kör paper trades. Här kör du bara test, replay, batch, AI-agent, parametrar och analys.
         </p>
       </div>
 
