@@ -1,7 +1,7 @@
-import React, { useState, useEffect, useCallback, useMemo } from 'react';
+import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
 import { enrichWithDecisions, getBestSignal, getTopN, isAvoidSignal } from '../decisionEngine.js';
-import { SignalAge, SignalStaleNotice, TradingViewLink } from '../shared.jsx';
+import { SignalAge, SignalImportanceTimes, TradingViewLink } from '../shared.jsx';
 import { AdvancedModeToggle, ConfigScopeBadge, PlatformEmptyState, PlatformSafetyBar, useAdvancedMode } from '../components/PlatformControls.jsx';
 import TradeReplayPanel from '../components/TradeReplayPanel.jsx';
 import { useUnifiedConfig } from '../hooks/useUnifiedConfig.js';
@@ -535,7 +535,7 @@ function DataCoverageBadge({ coverage }) {
 }
 
 // ── Hero Card ─────────────────────────────────────────────────────────────────
-function HeroSignal({ signal, score, ls, coverage }) {
+function HeroSignal({ signal, score, ls, coverage, timeline }) {
   if (!signal) {
     return (
       <div className="sp-hero sp-hero-empty">
@@ -583,7 +583,13 @@ function HeroSignal({ signal, score, ls, coverage }) {
               <SignalAge timestamp={signal.lastUpdate} />
               <TradingViewLink symbol={signal.symbol} marketType={signal.marketType} size="sm" showHint />
             </div>
-            <SignalStaleNotice timestamp={signal.lastUpdate} marketClosed={signal.marketType !== 'crypto'} />
+            <SignalImportanceTimes
+              mode="top"
+              created={tlFor(timeline, signal.symbol).firstSeen}
+              becameTop={tlFor(timeline, signal.symbol).topSeen}
+              lastUpdate={signal.lastUpdate}
+              marketClosed={signal.marketType !== 'crypto'}
+            />
           </div>
           <PulseGauge score={score} />
         </div>
@@ -862,10 +868,12 @@ function ReasonList({ item }) {
   );
 }
 
-function PriorityCard({ item, rank, tone = 'focus' }) {
+function PriorityCard({ item, rank, tone = 'focus', timeline, lastUpdate }) {
   if (!item) return null;
   const ctx = item.marketContext || {};
   const score = item.priorityScore ?? 0;
+  const tl = tlFor(timeline, item.symbol);
+  const lu = item.lastUpdate || lastUpdate;
   return (
     <div className={`sp-priority-card sp-priority-${tone}`}>
       <div className="sp-priority-top">
@@ -890,11 +898,21 @@ function PriorityCard({ item, rank, tone = 'focus' }) {
         <span>{ctx.historicalConsistency || 'Historik saknas'}</span>
       </div>
       <ReasonList item={item} />
+      {tone !== 'avoid' && (
+        <SignalImportanceTimes
+          mode={tone === 'watch' ? 'good' : 'top'}
+          created={tl.firstSeen}
+          becameTop={tl.topSeen}
+          becameGood={tl.goodSeen}
+          lastUpdate={lu}
+          marketClosed={(item.marketType || item.market) !== 'crypto'}
+        />
+      )}
     </div>
   );
 }
 
-function PrioritySections({ priority }) {
+function PrioritySections({ priority, timeline, lastUpdateBySymbol = {} }) {
   if (!priority) return (
     <div className="sp-priority-loading">
       <div className="sp-loading-dot" />
@@ -926,7 +944,7 @@ function PrioritySections({ priority }) {
       {focus.length > 0 ? (
         <div className="sp-priority-grid sp-priority-grid-focus">
           {focus.slice(0, 3).map((item, i) => (
-            <PriorityCard key={`${item.symbol}-${item.strategyKey}-${i}`} item={item} rank={i === 0 ? '🥇' : i === 1 ? '🥈' : '🥉'} tone="focus" />
+            <PriorityCard key={`${item.symbol}-${item.strategyKey}-${i}`} item={item} rank={i === 0 ? '🥇' : i === 1 ? '🥈' : '🥉'} tone="focus" timeline={timeline} lastUpdate={lastUpdateBySymbol[String(item.symbol || '').toUpperCase()]} />
           ))}
         </div>
       ) : (
@@ -937,7 +955,7 @@ function PrioritySections({ priority }) {
         <div className="sp-priority-column">
           <div className="sp-priority-subhead">👀 Watchlist</div>
           {watch.slice(0, 4).map((item, i) => (
-            <PriorityCard key={`${item.symbol}-watch-${i}`} item={item} rank={`#${i + 1}`} tone="watch" />
+            <PriorityCard key={`${item.symbol}-watch-${i}`} item={item} rank={`#${i + 1}`} tone="watch" timeline={timeline} lastUpdate={lastUpdateBySymbol[String(item.symbol || '').toUpperCase()]} />
           ))}
           {!watch.length && <div className="sp-priority-empty">Inga nästan-starka signaler.</div>}
         </div>
@@ -1058,6 +1076,57 @@ function Crypto247Status({ cryptoResp }) {
   );
 }
 
+// ── Signal-tidslinje (frontend-only, sessionsbaserad) ─────────────────────────
+// Backend saknar firstSeen/topSeen på live-signaler (endast lastUpdate finns), så
+// "dök upp som topp" / "bra läge sedan" / "legat i topp" spåras i klienten och
+// sparas i localStorage per dag. Ingen backend-, trading- eller rankinglogik rörs.
+const TL_PREFIX = 'sp-sig-timeline-';
+function tlKey() { return TL_PREFIX + new Date().toISOString().slice(0, 10); }
+function tlLoad() {
+  try {
+    const key = tlKey();
+    Object.keys(localStorage).forEach((k) => {
+      if (k.startsWith(TL_PREFIX) && k !== key) localStorage.removeItem(k); // städa gamla dagar
+    });
+    const raw = localStorage.getItem(key);
+    return raw ? JSON.parse(raw) : {};
+  } catch { return {}; }
+}
+function tlSave(tl) { try { localStorage.setItem(tlKey(), JSON.stringify(tl)); } catch { /* ignore */ } }
+
+// Spårar när varje symbol först dök upp (firstSeen, ej nollställd), och kontinuerligt
+// hur länge den legat som topp (topSeen) respektive bra läge (goodSeen).
+function useSignalTimeline(topSymbols, goodSymbols) {
+  const ref = useRef(undefined);
+  if (ref.current === undefined) ref.current = tlLoad();
+  const [, force] = useState(0);
+  const topKey = (topSymbols || []).join(',');
+  const goodKey = (goodSymbols || []).join(',');
+  useEffect(() => {
+    const tl = ref.current;
+    const now = Date.now();
+    const top = new Set((topSymbols || []).map((s) => String(s || '').toUpperCase()).filter(Boolean));
+    const good = new Set((goodSymbols || []).map((s) => String(s || '').toUpperCase()).filter(Boolean));
+    let changed = false;
+    [...top, ...good].forEach((sym) => {
+      if (!tl[sym]) tl[sym] = {};
+      if (tl[sym].firstSeen == null) { tl[sym].firstSeen = now; changed = true; }
+    });
+    Object.keys(tl).forEach((sym) => {
+      if (top.has(sym)) { if (tl[sym].topSeen == null) { tl[sym].topSeen = now; changed = true; } }
+      else if (tl[sym].topSeen != null) { tl[sym].topSeen = null; changed = true; }
+      if (good.has(sym)) { if (tl[sym].goodSeen == null) { tl[sym].goodSeen = now; changed = true; } }
+      else if (tl[sym].goodSeen != null) { tl[sym].goodSeen = null; changed = true; }
+    });
+    if (changed) { tlSave(tl); force((n) => n + 1); }
+  }, [topKey, goodKey]); // eslint-disable-line react-hooks/exhaustive-deps
+  return ref.current;
+}
+
+function tlFor(timeline, symbol) {
+  return timeline?.[String(symbol || '').toUpperCase()] || {};
+}
+
 // ── Main page ─────────────────────────────────────────────────────────────────
 export default function SignalpulsPage() {
   const [params, setParams] = useSearchParams();
@@ -1154,6 +1223,29 @@ export default function SignalpulsPage() {
   const bestSignal = filtered[0] || null;
   const top20 = filtered.slice(0, 20);
 
+  // Tidslinje: vilka är topp ("topp/fokus") resp. bra läge ("watchlist") just nu.
+  const topSymbols = useMemo(
+    () => [
+      ...top20.map((s) => s.symbol),
+      ...(prioritySummary?.topFocus || []).map((i) => i.symbol),
+    ],
+    [top20, prioritySummary],
+  );
+  const goodSymbols = useMemo(
+    () => (prioritySummary?.watchlist || []).map((i) => i.symbol),
+    [prioritySummary],
+  );
+  const timeline = useSignalTimeline(topSymbols, goodSymbols);
+  // Senast uppdaterad per symbol (backend lastUpdate) — för prioritetskort utan eget fält.
+  const lastUpdateBySymbol = useMemo(() => {
+    const m = {};
+    enriched.forEach((r) => {
+      const s = String(r.symbol || '').toUpperCase();
+      if (s && r.lastUpdate) m[s] = r.lastUpdate;
+    });
+    return m;
+  }, [enriched]);
+
   // Setup performance
   const allSetups = useMemo(() => {
     if (!setupData) return [];
@@ -1213,7 +1305,7 @@ export default function SignalpulsPage() {
         advancedMode={advancedMode}
       />
 
-      <PrioritySections priority={prioritySummary} />
+      <PrioritySections priority={prioritySummary} timeline={timeline} lastUpdateBySymbol={lastUpdateBySymbol} />
       <AuditActivityPanel summary={auditSummary} />
 
       {/* DEL 1: Vad händer just nu */}
@@ -1229,7 +1321,7 @@ export default function SignalpulsPage() {
           <span>Hämtar signaler...</span>
         </div>
       ) : (
-        <HeroSignal signal={bestSignal} score={bestScore} ls={ls} coverage={dataCoverageMap[String(bestSignal?.symbol || '').toUpperCase()]} />
+        <HeroSignal signal={bestSignal} score={bestScore} ls={ls} coverage={dataCoverageMap[String(bestSignal?.symbol || '').toUpperCase()]} timeline={timeline} />
       )}
 
       <QuickInsights regimeSummary={regimeSummary} topSetups={topSetups} poorSetups={poorSetups} />

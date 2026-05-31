@@ -94,6 +94,76 @@ export function SignalStaleNotice({ timestamp, marketClosed = false }) {
   );
 }
 
+// Kort varaktighet utan "för/sedan": "20 sek", "4 min", "2h", "1d".
+export function formatAgeShort(ts) {
+  const info = signalAgeInfo(ts);
+  if (info.ageSeconds == null) return null;
+  const s = info.ageSeconds;
+  if (s < 60) return `${s} sek`;
+  if (s < 3600) return `${Math.round(s / 60)} min`;
+  if (s < 86400) return `${Math.round(s / 3600)}h`;
+  return `${Math.round(s / 86400)}d`;
+}
+
+function clockOf(ts) {
+  const info = signalAgeInfo(ts);
+  return info.status === 'unknown' ? null : info.timeText;
+}
+
+// Tider för när en signal blev "viktig" på sidan. Endast UI/förklaring.
+// mode 'top'  → toppsignal/fokus-kort (skapad, dök upp som topp, legat i topp, senast uppdaterad)
+// mode 'good' → bra läge/kandidatkort (bra läge sedan, ålder, senaste signal)
+// created/becameTop/becameGood = klient-spårade tider (sessionsbaserade). lastUpdate = backend.
+export function SignalImportanceTimes({
+  mode = 'top', created, becameTop, becameGood, lastUpdate, marketClosed = false,
+}) {
+  const primary = mode === 'good' ? becameGood : becameTop;
+  const primaryInfo = signalAgeInfo(primary);
+  const stale = primaryInfo.status === 'stale' || signalAgeInfo(lastUpdate).status === 'stale';
+
+  // Krav 5: saknas primär tid → visa förklaring, inte tomt.
+  if (primaryInfo.status === 'unknown') {
+    return (
+      <div className="sig-times sig-times-unknown">
+        <div className="sig-times-missing">⚪ Tid saknas – kan inte avgöra hur färsk signalen är.</div>
+        {clockOf(lastUpdate) && (
+          <div className="sig-times-rows">
+            <span><b>{mode === 'good' ? 'Senaste signal' : 'Senast uppdaterad'}:</b> {clockOf(lastUpdate)}</span>
+          </div>
+        )}
+      </div>
+    );
+  }
+
+  return (
+    <div className={`sig-times sig-times-${primaryInfo.status}`}>
+      <div className="sig-times-rows">
+        {mode === 'top' ? (
+          <>
+            {clockOf(created) && <span><b>Signal skapad:</b> {clockOf(created)}</span>}
+            <span className="sig-times-key"><b>Dök upp som topp:</b> {primaryInfo.dot} {primaryInfo.timeText}</span>
+            {formatAgeShort(becameTop) && <span><b>Legat i topp:</b> {formatAgeShort(becameTop)}</span>}
+            {clockOf(lastUpdate) && <span><b>Senast uppdaterad:</b> {clockOf(lastUpdate)}</span>}
+          </>
+        ) : (
+          <>
+            <span className="sig-times-key"><b>Bra läge sedan:</b> {primaryInfo.dot} {primaryInfo.timeText}</span>
+            {formatAgeShort(becameGood) && <span><b>Ålder:</b> {formatAgeShort(becameGood)}</span>}
+            {clockOf(lastUpdate) && <span><b>Senaste signal:</b> {clockOf(lastUpdate)}</span>}
+          </>
+        )}
+      </div>
+      {stale && (
+        <div className="sig-times-warn">
+          <span>🔴 Den här signalen är gammal.</span>
+          <span>Kontrollera grafen innan du litar på den.</span>
+          {marketClosed && <span>Aktiedata kan vara fryst om börsen är stängd.</span>}
+        </div>
+      )}
+    </div>
+  );
+}
+
 // "Öppna i TradingView"-länk. Visar inget om symbol saknas. showHint visar hjälptext.
 export function TradingViewLink({ symbol, marketType, label = 'Öppna i TradingView', showHint = false, className = '', size = '' }) {
   const url = buildTradingViewUrl(symbol, marketType);
