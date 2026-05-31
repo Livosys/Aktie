@@ -171,7 +171,7 @@ function DailySystemReport() {
       <div className="res-section-header">
         <div>
           <h2 className="res-section-h2">Daglig systemrapport</h2>
-          <p className="res-section-sub">Avancerad resultat- och historikvy för data, replay, batch och lärande. Inte live trading.</p>
+          <p className="res-section-sub">Historik och analys för data, replay, batch och lärande. Inte live trading och inte runtime.</p>
         </div>
         <button className="res-mini-action" type="button" onClick={load}>Uppdatera</button>
       </div>
@@ -512,9 +512,10 @@ function PaperTab() {
   return (
     <div className="res-tab-content">
       <div className="res-section-header">
-        <h2 className="res-section-h2">Låtsastrades (Låtsastrading)</h2>
+        <h2 className="res-section-h2">Historiska paper trades</h2>
         <Link to="/paper-trading" className="res-nav-link">Gå till Låtsastrading →</Link>
       </div>
+      <div className="res-daily-muted">Det här är historik över redan skapade paper trades. Nya val för runtime och paper görs i Daytrading. Gamla trades kan bära äldre strateginamn och äldre routingregler.</div>
 
       {data && (
         <div className="res-metrics-row">
@@ -1217,6 +1218,7 @@ export default function ResultatPage() {
       <div className="res-page-header">
         <h1 className="res-page-title">📊 RESULTAT &amp; HISTORIK</h1>
         <p className="res-page-sub">Sammanfattning och historik för mönster, AI, replay, paper och inlärning. För operativ kontroll: Daytrading. För safety: System → Safety.</p>
+        <div className="res-daily-muted">Historiska trades kan visa äldre strateginamn och äldre routingregler. Resultat visar historik och analys, inte runtime eller paper-val.</div>
       </div>
 
       <div className="res-tabs">

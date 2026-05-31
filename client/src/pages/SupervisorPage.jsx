@@ -690,13 +690,13 @@ export default function SupervisorPage() {
     <div className="sup-page">
       <div className="sup-hero">
         <div className="sup-hero-copy">
-          <div className="sup-kicker">Kör bilen</div>
+          <div className="sup-kicker">Översikt</div>
           <h1>Trading OS Supervisor</h1>
           <p>
-            En enkel huvudvy som visar vad systemet gör, vad som är viktigast och vad du kan göra härnäst.
+            En enkel översikt som visar systemhälsa, fokus, watchlist, risk och senaste läget.
           </p>
           <div className="sup-safety-copy">
-            Systemet analyserar och paper-tradar. Ingen riktig order kan läggas.
+            Översikt, inte beslutsmotor. Den här sidan sammanfattar status men fattar inga tradingbeslut.
           </div>
         </div>
         <div className="sup-hero-actions">
@@ -711,7 +711,7 @@ export default function SupervisorPage() {
         <div className="sup-section-head">
           <div>
             <h2>Systemläge</h2>
-            <p>Snabb översikt över om backend, scanner, paper trading, pipeline och safety är tillgängliga.</p>
+            <p>Snabb översikt över backend, scanner, paper trading, pipeline och safety. Här ser du läget, inte besluten.</p>
           </div>
         </div>
 
@@ -736,8 +736,8 @@ export default function SupervisorPage() {
         <section className="sup-section">
           <div className="sup-section-head">
             <div>
-              <h2>Vad händer nu?</h2>
-              <p>Det här är det senaste som systemet ser just nu.</p>
+              <h2>Läget just nu</h2>
+              <p>Det här är den senaste sammanfattningen av vad systemet ser just nu.</p>
             </div>
           </div>
 
@@ -830,7 +830,7 @@ export default function SupervisorPage() {
           <div className="sup-section-head">
             <div>
               <h2>Vad rekommenderar systemet?</h2>
-              <p>En enkel tolkning av AI, optimering, lärande och risk.</p>
+              <p>En enkel tolkning av AI, optimering, lärande och risk. Det här är en översikt, inte en beslutsmotor.</p>
             </div>
           </div>
 

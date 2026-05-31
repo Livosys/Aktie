@@ -7,24 +7,25 @@ function useDaytradingData(tradeLimit = 200) {
   const [state, setState] = useState({
     status: null, strategies: null, pipeline: null,
     liveTrades: null, recommendation: null, impact: null, symbols: null, runtime: null,
-    marketControls: null, learning: null,
+    marketControls: null, learning: null, paperStatus: null,
     loading: true, error: false,
   });
 
   const fetchAll = useCallback(async () => {
     const get = url => fetch(url).then(r => r.json()).catch(() => null);
-    const [statusD, strD, pipeD, tradesD, recD, impD, symD, runtimeD, marketControlsD, learningD] = await Promise.all([
+    const [statusD, strD, pipeD, tradesD, recD, impD, symD, runtimeD, marketControlsD, learningD, paperStatusD] = await Promise.all([
       get('/api/daytrading/status'), get('/api/daytrading/strategies'),
       get('/api/daytrading/pipeline'), get(`/api/daytrading/live-trades?limit=${tradeLimit}`),
       get('/api/daytrading/recommendation'), get('/api/daytrading/impact-summary'),
       get('/api/daytrading/symbols'), get('/api/daytrading/runtime-strategies'),
       get('/api/daytrading/market-controls'),
       get('/api/daytrading/learning-summary?hours=48&limit=200'),
+      get('/api/paper-trading/status'),
     ]);
     setState({
       status: statusD, strategies: strD, pipeline: pipeD, liveTrades: tradesD,
       recommendation: recD, impact: impD, symbols: symD, runtime: runtimeD,
-      marketControls: marketControlsD, learning: learningD,
+      marketControls: marketControlsD, learning: learningD, paperStatus: paperStatusD,
       loading: false, error: !statusD?.ok,
     });
   }, [tradeLimit]);
@@ -66,6 +67,14 @@ function fmtTradeTime(iso) {
   if (Number.isNaN(d.getTime())) return '–';
   return d.toLocaleString('sv-SE', { month:'2-digit', day:'2-digit', hour:'2-digit', minute:'2-digit' });
 }
+function fmtPaperAge(mins) {
+  if (mins == null || Number.isNaN(Number(mins))) return '–';
+  const n = Math.max(0, Math.round(Number(mins)));
+  if (n < 60) return `${n} min`;
+  const hours = Math.floor(n / 60);
+  const rem = n % 60;
+  return rem ? `${hours} h ${rem} min` : `${hours} h`;
+}
 function numericPnl(v) {
   if (v == null || v === '–') return null;
   const n = Number(v);
@@ -81,6 +90,28 @@ function valueTone(v) {
 function fmtReason(value) {
   if (Array.isArray(value)) return value.filter(Boolean).join(', ');
   return value || '–';
+}
+
+function friendlySkipReason(reason) {
+  const text = String(reason || '').trim();
+  const lower = text.toLowerCase();
+  if (!text) return 'Okänd orsak';
+  if (lower.includes('market closed') || lower.includes('market is closed') || (lower.includes('market') && lower.includes('closed'))) {
+    return 'Market closed';
+  }
+  if (lower.includes('no entry') || lower.includes('entry rule') || lower.includes('saknar entry')) {
+    return 'No entry rule';
+  }
+  if (lower.includes('weak volume') || lower.includes('svag volym') || lower.includes('låg volym')) {
+    return 'Weak volume';
+  }
+  if (lower.includes('partial') || lower.includes('delvis')) {
+    return 'Runtime partial';
+  }
+  if (lower.includes('conservative') || lower.includes('konservativ')) {
+    return 'Conservative mode';
+  }
+  return text;
 }
 
 function sanitizePipeText(text) {
@@ -265,13 +296,59 @@ function SafetyBanner({ status }) {
   );
 }
 
+function LivePaperBanner({ paperStatus }) {
+  const openTrades = paperStatus?.openTrades || [];
+  if (!paperStatus?.ok || (paperStatus?.openCount ?? openTrades.length) <= 0) return null;
+  const openCount = paperStatus.openCount ?? openTrades.length;
+  return (
+    <div className="dt-live-paper-banner">
+      <div className="dt-live-paper-head">
+        <div className="dt-live-paper-kicker">LIVE PAPER TRADE</div>
+        <div className="dt-live-paper-title">
+          {openCount === 1 ? '1 aktiv paper trade kör just nu' : `${openCount} aktiva paper trades kör just nu`}
+        </div>
+        <div className="dt-live-paper-sub">Detta är fortfarande paper-only. Du kan följa öppna positioner live här utan att riktiga ordrar skickas.</div>
+      </div>
+      <div className="dt-live-paper-grid">
+        {openTrades.map((trade, i) => {
+          const symbol = trade.symbol || '–';
+          const direction = trade.direction || '–';
+          const strategy = trade.strategy_name || trade.strategy_id || trade.strategy || '–';
+          const openedAt = trade.opened_at || trade.entryTime || trade.openedAt || trade.time || null;
+          const entry = trade.entryPrice ?? trade.entry ?? trade.entry_price ?? null;
+          const current = trade.currentPrice ?? trade.current_price ?? null;
+          const pnl = trade.unrealizedPct ?? trade.unrealized_pct ?? trade.pnl ?? null;
+          return (
+            <div key={`${symbol}-${i}`} className="dt-live-paper-card">
+              <div className="dt-live-paper-card-top">
+                <div>
+                  <div className="dt-live-paper-symbol">{symbol}</div>
+                  <div className="dt-live-paper-meta">{direction} · {strategy}</div>
+                </div>
+                <span className={`dt-live-paper-pnl ${valueTone(pnl)}`}>{fmtPct(pnl)}</span>
+              </div>
+              <div className="dt-live-paper-grid-mini">
+                <div><span>Öppnad</span><strong>{openedAt ? fmtTradeTime(openedAt) : '–'}</strong></div>
+                <div><span>Ålder</span><strong>{fmtPaperAge(trade.ageMin)}</strong></div>
+                <div><span>Entry</span><strong>{fmtPrice(entry)}</strong></div>
+                <div><span>Nu</span><strong>{fmtPrice(current)}</strong></div>
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
 // ─── C) Process just nu ───────────────────────────────────────────────────────
 
-function ProcessCard({ status, pipeline }) {
+function ProcessCard({ status, pipeline, paperStatus }) {
   const steps = pipeline?.pipeline || [];
   const symStep   = steps.find(s => s.id === 'symbol');
   const stratStep = steps.find(s => s.id === 'strategy');
   const decStep   = steps.find(s => s.id === 'paper');
+  const openCount = paperStatus?.openCount ?? paperStatus?.openTrades?.length ?? 0;
 
   const symbol   = symStep?.text?.match(/^(\S+)\s/)?.[1] ?? '–';
   const stratTxt = stratStep?.text || '';
@@ -285,7 +362,7 @@ function ProcessCard({ status, pipeline }) {
     { label: 'Senaste beslut',   value: sanitizePipeText(decStep?.text) || '–' },
     { label: 'Safety',           value: '🔒 Aktiv',                              cls: 'dt-pv-green' },
     { label: 'Senaste scan',     value: status?.latest_scan ? timeSince(status.latest_scan) : '–' },
-    { label: 'Paper trading',    value: status?.paper_trading ? 'Aktiv' : 'Av',  cls: status?.paper_trading ? 'dt-pv-green' : '' },
+    { label: 'Paper trading',    value: status?.paper_trading ? `Aktiv${openCount ? ` · ${openCount} öppen${openCount === 1 ? '' : 'a'}` : ''}` : 'Av',  cls: status?.paper_trading ? 'dt-pv-green' : '' },
     { label: 'Live trading',     value: 'AV',                                    cls: 'dt-pv-gray' },
   ];
 
@@ -1008,13 +1085,18 @@ function StrategiesSection({ strategies, total, runtime, liveTrades, onUpdate, o
   const disabledRows = visibleRows.filter((row) => row.runtimeView.state === 'DISABLED');
 
   const stoppageTopReasons = liveTrades?.stoppage_summary_48h?.top_reasons || [];
+  const topSkipReasons = stoppageTopReasons.slice(0, 5).map((row) => ({
+    label: friendlySkipReason(row.reason),
+    raw: row.reason || '',
+    value: row.count || 0,
+  }));
   const explainReasons = [
-    { label: 'Entry-regel saknas', value: missingEntryCount },
+    { label: 'No entry rule', value: missingEntryCount },
     { label: 'Raw signal saknas', value: rows.filter((row) => row.runtimeView.rawSignals.length === 0).length },
-    { label: 'Marknaden är stängd', value: stoppageTopReasons.find((r) => /stopp|closed|market/i.test(r.reason || ''))?.count || 0 },
-    { label: 'Signal för svag', value: stoppageTopReasons.find((r) => /svag|weak|low/i.test(r.reason || ''))?.count || 0 },
-    { label: 'Marknadsläge passar inte', value: stoppageTopReasons.find((r) => /regim|läge|regime/i.test(r.reason || ''))?.count || 0 },
-    { label: 'Cooldown aktiv', value: stoppageTopReasons.find((r) => /cooldown/i.test(r.reason || ''))?.count || 0 },
+    { label: 'Market closed', value: stoppageTopReasons.find((r) => /stopp|closed|market/i.test(r.reason || ''))?.count || 0 },
+    { label: 'Weak volume', value: stoppageTopReasons.find((r) => /svag|weak|low/i.test(r.reason || ''))?.count || 0 },
+    { label: 'Runtime partial', value: partialCount },
+    { label: 'Conservative mode', value: stoppageTopReasons.find((r) => /conservative|försikt/i.test(r.reason || ''))?.count || 0 },
     { label: 'Strategi pausad', value: disabledCount },
     { label: 'Riskfilter stoppar', value: stoppageTopReasons.find((r) => /risk|block/i.test(r.reason || ''))?.count || 0 },
     { label: 'Signal inte kopplad till katalogstrategi', value: catalogOnlyCount },
@@ -1037,14 +1119,23 @@ function StrategiesSection({ strategies, total, runtime, liveTrades, onUpdate, o
       {runtimeError && <div className="dt-inline-error">{runtimeError}</div>}
       <RuntimeSummary runtime={runtime} />
       <div className="dt-strategy-explainer">
-        <strong>Source of truth: Daytrading styr strategi-runtime och paper trading.</strong>
-        <span>Vald för paper är inte samma sak som kan köra paper trades. Strategier utan entry-regel kan inte räknas som körbara.</span>
+        <strong>Source of Truth för runtime och paper trading.</strong>
+        <span><b>Vald för paper</b> = strategin är markerad i UI.</span>
+        <span><b>Runtime active</b> = strategin är tekniskt redo att skapa paper trades.</span>
+        <span><b>Kan skapa paper trade</b> = signal + runtime + entry-regler räcker.</span>
+        <span><b>Har skapat paper trade</b> = en faktisk trade finns i historiken.</span>
         <div className="dt-strategy-explainer-badges">
-          <span>Vald för paper</span>
-          <span>Kan köra paper trades</span>
-          <span>Kan inte köra</span>
-          <span>Lab-only</span>
+          <span>🟢 Active</span>
+          <span>🟡 Partial</span>
+          <span>🔵 Skipped</span>
+          <span>✅ Paper Trade</span>
         </div>
+      </div>
+      <div className="dt-strategy-explainer">
+        <strong>Crypto-routing</strong>
+        <span>Historiska crypto-trades kan visas som <b>Crypto Momentum Scalper</b>.</span>
+        <span>Nya crypto-VWAP-signaler routas till <b>VWAP Volume Breakout Long</b> eller <b>VWAP Failed Breakout Short</b>.</span>
+        <span>Detta påverkar endast nya trades.</span>
       </div>
 
       <div className="dt-runtime-controls">
@@ -1079,11 +1170,18 @@ function StrategiesSection({ strategies, total, runtime, liveTrades, onUpdate, o
       )}
 
       <div className="dt-runtime-why-panel">
-        <div className="dt-runtime-why-title">Varför kör inte fler strategier?</div>
+        <div className="dt-runtime-why-title">Topporsaker till att signaler stoppas</div>
         <div className="dt-runtime-why-grid">
           {explainReasons.map((item) => (
             <div key={item.label} className="dt-runtime-why-item">
               <span>{item.label}</span>
+              <strong>{item.value}</strong>
+            </div>
+          ))}
+          {topSkipReasons.map((item) => (
+            <div key={`${item.label}-${item.raw}`} className="dt-runtime-why-item">
+              <span>{item.label}</span>
+              {item.raw && item.raw !== item.label && <small>{item.raw}</small>}
               <strong>{item.value}</strong>
             </div>
           ))}
@@ -1249,8 +1347,8 @@ function LiveTradesSection({ liveTrades, tradeLimit, onTradeLimitChange }) {
     .sort((a, b) => (b.paper_trades_48h ?? 0) - (a.paper_trades_48h ?? 0));
   const selectedZeroTrade = runtimeStrategies.filter(s => (s.enabled_by_user === true) && (s.paper_trades_48h ?? 0) === 0);
   const noTradeReason = summary.other_strategies === 0
-    ? 'Dessa strategier är valda men saknar aktiv entry-regel eller stoppas innan paper trade.'
-    : stoppage.text_sv || 'Strategier kan stoppas innan paper trade om signalen är för svag, marknaden inte passar, cooldown finns, eller strategin är pausad.';
+    ? 'Valda strategier saknar aktiv entry-regel eller stoppas innan paper trade.'
+    : stoppage.text_sv || 'Signal hittades men reglerna stoppade entry innan paper trade skapades.';
   return (
     <div className="dt-panel">
       <div className="dt-panel-head">
@@ -1266,6 +1364,7 @@ function LiveTradesSection({ liveTrades, tradeLimit, onTradeLimitChange }) {
         </div>
       </div>
       <div className="dt-paper-note"><strong>Paper-only.</strong> Detta är test-/paper trades. Inga riktiga ordrar skickas.</div>
+      <div className="dt-paper-note"><strong>Historik.</strong> Listan nedan visar trades som redan skapats eller stängts. Öppna trades visas i live-bannern ovan.</div>
       <TradeStats summary={summaryStats} />
       <div className="dt-paper-analysis">
         <div className="dt-paper-summary">
@@ -1311,7 +1410,7 @@ function LiveTradesSection({ liveTrades, tradeLimit, onTradeLimitChange }) {
 
         <div className="dt-paper-info-grid">
           <div className="dt-paper-info-box">
-            <div className="dt-paper-info-title">Varför körs inte andra strategier?</div>
+            <div className="dt-paper-info-title">Varför skapades inte fler paper trades?</div>
             <p>{noTradeReason}</p>
             {stoppage.top_reasons?.length > 0 && (
               <ul>
@@ -1545,7 +1644,7 @@ function LearningEngineSection({ learning }) {
 
 export default function DaytradingPage() {
   const [tradeLimit, setTradeLimit] = useState(200);
-  const { status, strategies, pipeline, liveTrades, recommendation, impact, symbols, runtime, marketControls, learning, loading, error, refresh } = useDaytradingData(tradeLimit);
+  const { status, strategies, pipeline, liveTrades, recommendation, impact, symbols, runtime, marketControls, learning, paperStatus, loading, error, refresh } = useDaytradingData(tradeLimit);
   const [filters, setFilters] = useState(DEFAULT_FILTERS);
   const [scanning, setScanning] = useState(false);
   const [scanResult, setScanResult] = useState(null);
@@ -1625,7 +1724,7 @@ export default function DaytradingPage() {
       <div className="dt-page-head">
         <div>
           <h1 className="dt-page-title">Daytrading Control Center</h1>
-          <p className="dt-page-sub">Source of truth för strategi-runtime och paper trades. Vald för paper är inte samma sak som kan köra paper trades.</p>
+          <p className="dt-page-sub">Operativ sida och source of truth för runtime, paper trading, skipped signals och öppna paper trades. Historik visas separat.</p>
         </div>
         <button type="button" className="dt-btn dt-btn-sec" onClick={refresh}>Uppdatera</button>
       </div>
@@ -1635,6 +1734,7 @@ export default function DaytradingPage() {
 
       {/* B) Safety */}
       <SafetyBanner status={status} />
+      <LivePaperBanner paperStatus={paperStatus} />
 
       <div className="dt-page-runtime-summary">
         <div className="dt-panel-head">
@@ -1654,7 +1754,7 @@ export default function DaytradingPage() {
       )}
 
       {/* C) Process just nu */}
-      <ProcessCard status={status} pipeline={pipeline} />
+      <ProcessCard status={status} pipeline={pipeline} paperStatus={paperStatus} />
 
       {/* Market & risk controls */}
       <MarketControlsSection marketControls={marketControls} onUpdate={refresh} />
