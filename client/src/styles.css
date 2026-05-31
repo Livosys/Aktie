@@ -6089,6 +6089,72 @@ tbody td {
   font-weight: 700;
 }
 
+[data-theme="light"] .sup-hero {
+  border-color: var(--border);
+  background:
+    radial-gradient(circle at top right, rgba(79,70,229,.10), transparent 34%),
+    radial-gradient(circle at 18% 18%, rgba(22,163,74,.08), transparent 30%),
+    linear-gradient(135deg, var(--surface), var(--surface-2));
+  box-shadow: 0 14px 40px rgba(15,23,42,.08);
+}
+[data-theme="light"] .sup-kicker {
+  color: var(--blue);
+}
+[data-theme="light"] .sup-hero p {
+  color: var(--text-muted);
+}
+[data-theme="light"] .sup-section {
+  background: var(--surface);
+}
+[data-theme="light"] .sup-pill {
+  background: var(--surface);
+}
+[data-theme="light"] .sup-pill-missing {
+  background: var(--surface-2);
+}
+[data-theme="light"] .sup-v2-report-lead {
+  background: linear-gradient(180deg, var(--surface), var(--surface-2));
+}
+[data-theme="light"] .sup-v2-hero {
+  background:
+    radial-gradient(circle at 16% 18%, rgba(22,163,74,.10), transparent 28%),
+    radial-gradient(circle at 84% 18%, rgba(79,70,229,.12), transparent 30%),
+    radial-gradient(circle at 50% 0%, rgba(100,116,139,.08), transparent 36%),
+    linear-gradient(135deg, var(--surface), var(--surface-2));
+}
+[data-theme="light"] .sup-v2-answer,
+[data-theme="light"] .sup-v2-card,
+[data-theme="light"] .sup-advisor-window-btn,
+[data-theme="light"] .sup-advisor-section {
+  background: var(--surface);
+}
+[data-theme="light"] .sup-v2-answer-neutral,
+[data-theme="light"] .sup-v2-card-neutral {
+  background: var(--surface);
+}
+[data-theme="light"] .sup-advisor-section {
+  border-color: var(--border);
+}
+[data-theme="light"] .sup-advisor-window-btn small,
+[data-theme="light"] .sup-advisor-lead-copy p,
+[data-theme="light"] .sup-advisor-lead-meta,
+[data-theme="light"] .sup-v2-answer-main,
+[data-theme="light"] .sup-v2-card-summary,
+[data-theme="light"] .sup-v2-card-source {
+  color: var(--text-muted);
+}
+[data-theme="light"] .sup-json {
+  background: var(--surface-2);
+  color: var(--text);
+}
+[data-theme="light"] .sup-loading {
+  background: var(--surface);
+  box-shadow: 0 8px 30px rgba(15,23,42,.08);
+}
+[data-theme="light"] .sup-advanced {
+  background: var(--surface);
+}
+
 /* ── AI Supervisor v2 ──────────────────────────────────────────────────────── */
 .sup-v2-page {
   position: relative;
