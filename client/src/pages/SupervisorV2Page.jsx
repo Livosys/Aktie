@@ -99,13 +99,6 @@ function firstText(values, fallback = 'Ej konfigurerad') {
   return fallback;
 }
 
-function advisorToneClass(tone) {
-  if (tone === 'green' || tone === 'ok') return 'good';
-  if (tone === 'red' || tone === 'danger') return 'bad';
-  if (tone === 'yellow' || tone === 'warn') return 'missing';
-  return 'missing';
-}
-
 function buildAdvisorPrompt(advisor) {
   if (!advisor) return '';
   const summary = advisor.summary || {};
