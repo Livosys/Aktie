@@ -5,7 +5,6 @@ const path = require('path');
 
 const daytradingLearning = require('./daytradingLearningEngineService');
 const daytradingControl = require('./daytradingControlService');
-const strategyBatchTest = require('./strategyBatchTestService');
 const paperTrading = require('../paperTrading/paperTradingAgent');
 
 const SAFETY = Object.freeze({
