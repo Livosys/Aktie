@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { PlatformEmptyState } from '../components/PlatformControls.jsx';
+import { SignalAge, TradingViewLink } from '../shared.jsx';
 
 // ─── Data hook ────────────────────────────────────────────────────────────────
 
@@ -438,6 +439,12 @@ function CurrentDecisionCard({ status, pipeline, liveTrades, runtime, marketCont
           <div className="dt-now-summary-sub">
             {current.candidateRawSignal ? `Raw signal: ${current.candidateRawSignal}` : 'Ingen färsk raw signal ännu.'}
           </div>
+          {current.candidateSymbol && (
+            <div className="dt-now-summary-meta">
+              <SignalAge timestamp={current.latestTrade?.time || current.latestTrade?.opened_at || current.latestTrade?.created_at || status?.latest_scan} />
+              <TradingViewLink symbol={current.candidateSymbol} marketType={current.latestTrade?.marketType} label="TradingView" size="sm" />
+            </div>
+          )}
         </div>
         <div className={`dt-now-summary-card dt-now-summary-card-${current.stopStage === 'runtime' ? 'blue' : current.stopStage === 'gate' || current.stopStage === 'safety' ? 'red' : 'yellow'}`}>
           <div className="dt-now-summary-lbl">Stopporsak</div>
@@ -687,6 +694,12 @@ function LivePaperBanner({ paperStatus }) {
                 </div>
                 <span className={`dt-live-paper-pnl ${valueTone(pnl)}`}>{fmtPct(pnl)}</span>
               </div>
+              {trade.symbol && (
+                <div className="dt-live-paper-tv">
+                  {openedAt && <SignalAge timestamp={openedAt} />}
+                  <TradingViewLink symbol={trade.symbol} marketType={trade.marketType} label="TradingView" size="sm" />
+                </div>
+              )}
               <div className="dt-live-paper-grid-mini">
                 <div><span>Öppnad</span><strong>{openedAt ? fmtTradeTime(openedAt) : '–'}</strong></div>
                 <div><span>Ålder</span><strong>{fmtPaperAge(trade.ageMin)}</strong></div>

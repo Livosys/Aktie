@@ -10,6 +10,7 @@ import {
   DEFAULT_TRADING_LAB_TOGGLES as DEFAULT_TOGGLES,
   useUnifiedConfig,
 } from '../hooks/useUnifiedConfig.js';
+import { SignalAge, TradingViewLink } from '../shared.jsx';
 
 // ── Default configs ───────────────────────────────────────────────────────────
 const TOGGLE_META = [
@@ -1521,7 +1522,7 @@ function AiOptimizationTab({ toggles, params, exits, onApplyParams, onApplyToggl
                 </div>
               </div>
               <div className="opt-rec-note">
-                Batch {strategyBatchTesting.latestBatch.name} · {strategyBatchTesting.latestBatch.status} · {strategyBatchTesting.latestBatch.progress?.completed || 0}/{strategyBatchTesting.latestBatch.progress?.total || 0}
+                Batch {strategyBatchTesting.latestBatch.name} · {getBatchUiStatus(strategyBatchTesting.latestBatch).emoji} {getBatchUiStatus(strategyBatchTesting.latestBatch).label} · {strategyBatchTesting.latestBatch.progress?.completed || 0}/{strategyBatchTesting.latestBatch.progress?.total || 0}
               </div>
               <RecommendationsList recs={strategyBatchTesting.recommendations} />
               {strategyBatchTesting.pauseCandidates?.length > 0 && (
@@ -2042,6 +2043,80 @@ function batchStatusLabel(status) {
   return status || 'Ingen batch';
 }
 
+const SWE_MONTHS = ['jan', 'feb', 'mars', 'apr', 'maj', 'juni', 'juli', 'aug', 'sep', 'okt', 'nov', 'dec'];
+
+// Skapar ett tydligt automatiskt batchnamn när användaren inte angett ett eget.
+// Exempel: "BTC ETH NVDA · 2m/5m · 180 tester · 31 maj"
+function buildAutoBatchName(form, comboCount) {
+  const syms = csvSymbols(form?.symbols).slice(0, 4);
+  const symPart = syms.length ? syms.join(' ') : 'Batch';
+  const tfPart = (form?.timeframes || []).join('/') || '–';
+  const d = new Date();
+  const datePart = `${d.getDate()} ${SWE_MONTHS[d.getMonth()] || ''}`.trim();
+  const count = Number(comboCount) || 0;
+  return `${symPart} · ${tfPart} · ${count} tester · ${datePart}`;
+}
+
+// Översätter teknisk batch-status till en tydlig UI-status på enkel svenska.
+// Returnerar { key, emoji, label, tone, sentence, busy }.
+function getBatchUiStatus(batch) {
+  if (!batch || !batch.id) {
+    return { key: 'none', emoji: '', label: 'Ingen batch', tone: 'none', sentence: 'Skapa och kör en batch för att börja.', busy: false };
+  }
+  const status = String(batch.status || '').toLowerCase();
+  const total = Number(batch.progress?.total || 0);
+  const completed = Number(batch.progress?.completed || 0);
+  const done = total > 0 && completed >= total;
+  const hasError = !!batch.error || status === 'failed' || status === 'error';
+
+  if (hasError) {
+    return { key: 'failed', emoji: '🔴', label: 'Misslyckades', tone: 'failed', busy: false,
+      sentence: 'Batch misslyckades. Något gick fel — se orsak och rekommenderad åtgärd nedan.' };
+  }
+  if (['preparing', 'planning', 'thinking', 'queued'].includes(status)) {
+    return { key: 'thinking', emoji: '🔵', label: 'Förbereder', tone: 'thinking', busy: true,
+      sentence: 'Systemet förbereder testet. Vänta några sekunder innan du gör något.' };
+  }
+  if (status === 'running' && !done) {
+    return { key: 'running', emoji: '🟡', label: 'Körs', tone: 'running', busy: true,
+      sentence: 'Batch körs just nu. Systemet testar strategier. Vänta med att starta en ny batch.' };
+  }
+  if (status === 'paused') {
+    return { key: 'paused', emoji: '🟠', label: 'Pausad', tone: 'partial', busy: false,
+      sentence: `Batchen är pausad efter ${completed}/${total} tester. Resultatet är ofullständigt — fortsätt eller kör om.` };
+  }
+  if (done && status === 'stopped') {
+    return { key: 'done_stopped', emoji: '⚪', label: 'Stoppad efter färdig körning', tone: 'stopped', busy: false,
+      sentence: 'Batch stoppad efter att alla tester redan var klara. Resultatet är komplett.' };
+  }
+  if (done) {
+    return { key: 'done', emoji: '🟢', label: 'Klar', tone: 'done', busy: false,
+      sentence: 'Batch klar. Alla tester är färdiga. Du kan läsa resultatet eller starta en ny batch.' };
+  }
+  if (status === 'stopped') {
+    return { key: 'stopped', emoji: '⚪', label: 'Stoppad – ej klar', tone: 'partial', busy: false,
+      sentence: `Batchen stoppades efter ${completed}/${total} tester. Resultatet är halvklart och ska inte användas som slutsats.` };
+  }
+  if (completed > 0 && completed < total) {
+    return { key: 'partial', emoji: '🟠', label: 'Halvklar', tone: 'partial', busy: false,
+      sentence: `Batchen hann bara köra ${completed}/${total} tester. Resultatet är inte färdigt och ska bara ses som tidig indikation.` };
+  }
+  return { key: 'waiting', emoji: '⚪', label: 'Väntar', tone: 'waiting', busy: false,
+    sentence: 'Batch väntar på att startas. Klicka "Starta batch" när du är redo.' };
+}
+
+// En batch räknas som "upptagen" (systemet arbetar) om den förbereder, ligger i kö eller kör.
+function isBatchBusy(batch) {
+  const status = String(batch?.status || '').toLowerCase();
+  if (['thinking', 'preparing', 'planning', 'queued'].includes(status)) return true;
+  if (status === 'running') {
+    const total = Number(batch?.progress?.total || 0);
+    const completed = Number(batch?.progress?.completed || 0);
+    return !(total > 0 && completed >= total);
+  }
+  return false;
+}
+
 function batchDecision(row) {
   const trades = Number(row?.trades || 0);
   const score = Number(row?.score || 0);
@@ -2059,14 +2134,15 @@ function batchDecision(row) {
 
 function batchAuditMeta(event) {
   const type = String(event?.type || '').toUpperCase();
-  if (type.includes('STARTED')) return { icon: '▶', status: 'Kör', text: 'Batchen har startat och tester körs.' };
-  if (type.includes('PROGRESS')) return { icon: '↻', status: 'Kör', text: 'Resultat fylls på steg för steg.' };
-  if (type.includes('COMPLETED')) return { icon: '✓', status: 'Klar', text: 'Alla planerade tester är klara.' };
-  if (type.includes('STOPPED')) return { icon: '■', status: 'Stoppad', text: 'Batchen stoppades innan allt var klart.' };
-  if (type.includes('PAUSED')) return { icon: 'Ⅱ', status: 'Pausad', text: 'Batchen är pausad och kan fortsätta senare.' };
-  if (type.includes('CREATED')) return { icon: '+', status: 'Väntar', text: 'Batchen är skapad men inte färdigkörd.' };
-  if (type.includes('ERROR') || type.includes('FAILED')) return { icon: '!', status: 'Fel', text: 'Ett test eller steg misslyckades.' };
-  return { icon: '•', status: event?.type || 'Status', text: event?.message || 'Batch-händelse registrerad.' };
+  // title = enkel svensk rubrik (ersätter teknisk text), text = förklaring
+  if (type.includes('STARTED')) return { icon: '▶', status: 'Kör', title: 'Testet har börjat', text: 'Systemet har börjat köra tester.' };
+  if (type.includes('PROGRESS')) return { icon: '↻', status: 'Kör', title: 'Systemet har kört fler tester', text: 'Resultat fylls på steg för steg.' };
+  if (type.includes('COMPLETED')) return { icon: '✓', status: 'Klar', title: 'Alla tester är färdiga', text: 'Alla planerade tester är klara.' };
+  if (type.includes('STOPPED')) return { icon: '■', status: 'Stoppad', title: 'Testet stoppades', text: 'Batchen stoppades innan allt var klart.' };
+  if (type.includes('PAUSED')) return { icon: 'Ⅱ', status: 'Pausad', title: 'Testet pausades', text: 'Batchen är pausad och kan fortsätta senare.' };
+  if (type.includes('CREATED')) return { icon: '+', status: 'Väntar', title: 'Testpaket skapat', text: 'Batchen är skapad men inte färdigkörd.' };
+  if (type.includes('ERROR') || type.includes('FAILED')) return { icon: '!', status: 'Fel', title: 'Något gick fel', text: 'Ett test eller steg misslyckades.' };
+  return { icon: '•', status: event?.type || 'Status', title: event?.message || 'Batch-händelse', text: 'Batch-händelse registrerad.' };
 }
 
 function batchPipelineSteps({ form, comboCount, batchBlocked, activeBatch, compare }) {
@@ -2105,6 +2181,7 @@ function BatchTestTab() {
   const [message, setMessage] = React.useState('');
   const [loading, setLoading] = React.useState(true);
   const [form, setForm] = React.useState({
+    name: '',
     strategy_ids: ['vwap_momentum_long', 'opening_range_breakout'],
     markets: ['all'],
     symbols: 'BTCUSDT,ETHUSDT,NVDA',
@@ -2204,14 +2281,19 @@ function BatchTestTab() {
 
   async function createBatch() {
     setMessage('');
+    if (anyBatchBusy) {
+      setMessage('En batch körs redan. Vänta tills den är klar, stoppad eller har misslyckats innan du startar en ny.');
+      return null;
+    }
     if (batchBlocked) {
       setMessage('Kan inte köras ännu - datakälla saknas. Välj "Simulera mot underliggande" för test som inte använder exakt certifikatpris.');
       return null;
     }
+    const batchName = form.name?.trim() || buildAutoBatchName(form, comboCount);
     const res = await fetch('/api/strategy-batches', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload()),
+      body: JSON.stringify({ ...payload(), name: batchName }),
     }).then(async r => ({ ok: r.ok, body: await r.json().catch(() => null) })).catch(e => ({ ok: false, body: { error: e.message } }));
     if (!res.ok || !res.body?.ok) {
       setMessage(res.body?.error || 'Kunde inte skapa batch.');
@@ -2225,6 +2307,13 @@ function BatchTestTab() {
   }
 
   async function runBatch(batch = activeBatch) {
+    setMessage('');
+    // Tillåt att starta/återuppta den batch som redan är vald, men blockera om en ANNAN batch arbetar.
+    const otherBusy = [activeBatch, ...batches].some(b => b && b.id !== batch?.id && isBatchBusy(b));
+    if (otherBusy || (!batch && anyBatchBusy)) {
+      setMessage('En batch körs redan. Vänta tills den är klar, stoppad eller har misslyckats innan du startar en ny.');
+      return;
+    }
     const target = batch || await createBatch();
     if (!target?.id) return;
     const res = await fetch(`/api/strategy-batches/${target.id}/run`, { method: 'POST' }).then(r => r.ok ? r.json() : null).catch(() => null);
@@ -2276,7 +2365,10 @@ function BatchTestTab() {
   const bestDecision = batchDecision(bestResult);
   const pipelineSteps = batchPipelineSteps({ form, comboCount, batchBlocked, activeBatch, compare });
   const completedTests = compare?.total_results ?? progress.completed ?? 0;
-  const statusText = batchStatusLabel(activeBatch?.status);
+  const uiStatus = getBatchUiStatus(activeBatch);
+  const busyBatch = [activeBatch, ...batches].find((b) => b && isBatchBusy(b));
+  const anyBatchBusy = !!busyBatch;
+  const autoBatchName = buildAutoBatchName(form, comboCount);
   const summarySentence = bestResult
     ? `${bestResult.strategy_name || bestResult.strategy_id} på ${bestResult.symbol || 'vald symbol'} gav bäst resultat i denna batch.`
     : activeBatch?.id
@@ -2286,14 +2378,51 @@ function BatchTestTab() {
   return (
     <div className="tl-tab-content">
       <GroupHeader icon="🧪" title="Batch-test" />
+
+      {/* Tydlig aktiv batch-panel: visar alltid vald batch, status, progress och rekommenderad åtgärd */}
+      <section className={`batch-active-panel batch-active-${uiStatus.tone}`}>
+        <div className="batch-active-head">
+          <div className="batch-active-id">
+            <span className="batch-active-eyebrow">Vald batch</span>
+            <strong className="batch-active-name">{activeBatch?.name || 'Ingen batch vald'}</strong>
+          </div>
+          <div className={`batch-active-badge batch-active-badge-${uiStatus.tone}`}>
+            <span className="batch-active-emoji">{uiStatus.emoji}</span>
+            <span>{uiStatus.label}</span>
+          </div>
+        </div>
+        <div className="batch-active-sentence">{uiStatus.sentence}</div>
+        <div className="batch-active-meta">
+          <div><span>Status</span><strong>{uiStatus.emoji} {uiStatus.label}</strong></div>
+          <div><span>Progress</span><strong>{progress.completed ?? 0}/{progress.total ?? 0}</strong></div>
+          <div><span>Senast uppdaterad</span><strong>{fmtBatchTime(activeBatch?.updated_at)}</strong></div>
+        </div>
+        {anyBatchBusy && (
+          <div className="batch-active-warn">
+            ⚠️ En batch körs redan{busyBatch?.name ? ` (${busyBatch.name})` : ''}. Vänta tills den är klar, stoppad eller har misslyckats innan du startar en ny.
+          </div>
+        )}
+        {uiStatus.key === 'failed' && (
+          <div className="batch-active-error">
+            <strong>🔴 Vad gick fel?</strong>
+            <p>{activeBatch?.error || 'Okänt fel under körningen.'}</p>
+            <p className="batch-active-error-meta">
+              Påverkad körning: {progress.completed ?? 0}/{progress.total ?? 0} tester hann köras.
+              {' '}Resultatet är {(progress.completed || 0) >= (progress.total || 0) && progress.total ? 'troligen användbart men kontrollera' : 'ofullständigt och ska inte användas som slutsats'}.
+            </p>
+            <p className="batch-active-error-meta">Rekommenderad åtgärd: kontrollera data för valda symboler/timeframes och kör om batchen.</p>
+          </div>
+        )}
+      </section>
+
       <section className="batch-summary-card">
         <div className="batch-summary-header">
           <div>
             <h2>Batch-slutsats</h2>
             <p>{summarySentence}</p>
           </div>
-          <div className={`batch-summary-status batch-summary-status-${String(activeBatch?.status || 'none').toLowerCase()}`}>
-            {statusText}
+          <div className={`batch-summary-status batch-summary-status-${uiStatus.tone}`}>
+            {uiStatus.emoji} {uiStatus.label}
           </div>
         </div>
 
@@ -2380,6 +2509,19 @@ function BatchTestTab() {
 
       <div className="batch-layout">
         <div className="batch-panel">
+          <div className="batch-section-title">Batchnamn</div>
+          <label className="batch-field">
+            <span>Ge batchen ett tydligt namn (valfritt)</span>
+            <input
+              value={form.name}
+              placeholder={autoBatchName}
+              onChange={e => setForm(f => ({ ...f, name: e.target.value }))}
+            />
+          </label>
+          <div className="batch-info">
+            Lämna tomt så namnges batchen automatiskt: <strong>{autoBatchName}</strong>
+          </div>
+
           <div className="batch-section-title">Strategier</div>
           <div className="batch-check-grid">
             {catalog.map(s => (
@@ -2471,7 +2613,7 @@ function BatchTestTab() {
 
       <div className={`lab-batch-status-grid${comboCount > 500 ? ' batch-too-large' : ''}`}>
         <div><strong>{comboCount}</strong><span>Kombinationer</span></div>
-        <div><strong>{statusText}</strong><span>Status</span></div>
+        <div><strong>{uiStatus.emoji} {uiStatus.label}</strong><span>Status</span></div>
         <div><strong>{progress.completed ?? 0}/{progress.total ?? 0}</strong><span>Progress</span></div>
         <div><strong>{progress.pct ?? 0}%</strong><span>Klart %</span></div>
         <div><strong>{fmtBatchTime(activeBatch?.batch_started_at || activeBatch?.started_at)}</strong><span>Starttid</span></div>
@@ -2479,10 +2621,15 @@ function BatchTestTab() {
         <div><strong>{fmtBatchTime(activeBatch?.updated_at)}</strong><span>Senast uppdaterad</span></div>
       </div>
       {message && <div className="batch-message">{message}</div>}
+      {anyBatchBusy && (
+        <div className="batch-warning">
+          En batch körs redan. Vänta tills den är klar, stoppad eller har misslyckats innan du startar en ny.
+        </div>
+      )}
 
       <div className="batch-actions">
-        <button type="button" onClick={createBatch} disabled={batchBlocked}>Skapa batch</button>
-        <button type="button" onClick={() => runBatch()} disabled={comboCount > 500 || batchBlocked}>Starta batch</button>
+        <button type="button" onClick={createBatch} disabled={batchBlocked || anyBatchBusy}>Skapa batch</button>
+        <button type="button" onClick={() => runBatch()} disabled={comboCount > 500 || batchBlocked || anyBatchBusy}>Starta batch</button>
         <button type="button" onClick={pauseBatch} disabled={!activeBatch}>Pausa</button>
         <button type="button" onClick={stopBatch} disabled={!activeBatch}>Stoppa</button>
         <button type="button" onClick={() => loadCompare()} disabled={!activeBatch}>Uppdatera resultat</button>
@@ -2509,7 +2656,7 @@ function BatchTestTab() {
 	              <div key={event.event_id || `${event.timestamp}-${event.type}`} className="batch-audit-row lab-batch-audit-row">
 	                <span className="lab-batch-audit-icon">{meta.icon}</span>
 	                <span>{fmtBatchTime(event.timestamp)}</span>
-	                <strong>{event.message || meta.text}</strong>
+	                <strong>{meta.title}</strong>
 	                <em>{meta.status}</em>
 	                <span>{eventProgress}</span>
 	                <small>{meta.text}</small>
@@ -2524,17 +2671,29 @@ function BatchTestTab() {
 
       {batches.length > 0 && (
         <div className="batch-history">
-          {batches.slice(0, 6).map(b => (
-	            <button key={b.id} type="button" className={activeBatch?.id === b.id ? 'active' : ''} onClick={() => { setActiveBatch(b); setCompare(null); setAuditTimeline([]); }}>
+          {batches.slice(0, 6).map(b => {
+            const bUi = getBatchUiStatus(b);
+            return (
+	            <button key={b.id} type="button" className={`${activeBatch?.id === b.id ? 'active' : ''} batch-history-${bUi.tone}`} onClick={() => { setActiveBatch(b); setCompare(null); setAuditTimeline([]); }}>
+	              {activeBatch?.id === b.id && <span className="batch-history-selected">✓ Vald</span>}
 	              <strong>{b.name}</strong>
-	              <span>{batchStatusLabel(b.status)} · {b.progress?.completed || 0}/{b.progress?.total || 0}</span>
+	              <span>{bUi.emoji} {bUi.label} · {b.progress?.completed || 0}/{b.progress?.total || 0}</span>
 	            </button>
-	          ))}
+	            );
+	          })}
 	        </div>
 	      )}
 
 	      {compare?.best_overall?.length > 0 && (
 	        <div className="batch-results batch-result-table">
+	          <div className="batch-selected-banner">
+	            <div>Du tittar på resultat från: <strong>{activeBatch?.name || '–'}</strong></div>
+	            <div>Status: <strong>{uiStatus.emoji} {uiStatus.label}</strong> · Progress: <strong>{progress.completed ?? 0}/{progress.total ?? 0}</strong></div>
+	            <div className="batch-selected-note">Detta resultat gäller endast den här batchen.</div>
+	            {(uiStatus.tone === 'partial' || uiStatus.key === 'stopped' || uiStatus.key === 'paused') && (
+	              <div className="batch-selected-warn">⚠️ Batchen är inte färdigkörd. Resultatet är bara en tidig indikation och ska inte användas som slutsats.</div>
+	            )}
+	          </div>
 	          <div className="batch-section-title">Topplista</div>
             <div className="batch-result-row batch-result-head">
               <span>Rank</span>
@@ -2554,7 +2713,7 @@ function BatchTestTab() {
 	              <strong>#{i + 1}</strong>
 	              <span className="batch-result-score">{fmtBatchMetric(r.score)}</span>
 	              <span>{r.strategy_name || r.strategy_id}</span>
-	              <span>{r.symbol}</span>
+	              <span className="batch-result-sym">{r.symbol}{r.symbol && <TradingViewLink symbol={r.symbol} marketType={r.marketType} label="TV" size="sm" />}</span>
 	              <span className="batch-result-setup">{batchSetupLabel(r)}</span>
 	              <span>{r.timeframe || '–'}</span>
 	              <span>{fmtBatchMetric(r.win_rate, '%')}</span>
@@ -2861,6 +3020,10 @@ function CandidatesTab() {
               <span>{c.signalFamily || c.setup || c.eventType || 'Mönster saknas'}</span>
               <span>{c.marketType || c.market || 'Marknad saknas'}</span>
               <span>{c.tradeScore ?? c.score ?? '–'} styrka</span>
+              <span className="tl-candidate-actions">
+                <SignalAge timestamp={c.timestamp || c.lastUpdate || c.created_at} />
+                {c.symbol && <TradingViewLink symbol={c.symbol} marketType={c.marketType || c.market} label="TV" size="sm" />}
+              </span>
             </div>
           ))}
         </div>

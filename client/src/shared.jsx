@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { useAlerts } from './alertContext.jsx';
 import { getTradingViewUrl } from './utils/tradingView.js';
+import { mapSymbolToTradingView } from './utils/chartSignalUtils.js';
 import {
   PreMovePanel,
   FatiguePanel,
@@ -23,6 +24,95 @@ export function cryptoTvLink(symbol) {
 export function fmtTime(iso) {
   if (!iso) return '–';
   return new Date(iso).toLocaleTimeString('sv-SE', { hour12: false });
+}
+
+// ── Signalålder + TradingView (delade hjälpare) ───────────────────────────────
+// Read-only. Ingen trading-, order- eller risklogik. Bygger bara UI-text/länkar.
+
+// Bygger en TradingView-chart-URL från en symbol via robust exchange-mappning:
+// USDT→BINANCE, känd aktie→NASDAQ/AMEX, SPY/QQQ via karta, okänd→NASDAQ-fallback,
+// och om symbolen redan har "EXCHANGE:" behålls den. Returnerar null om symbol saknas.
+export function buildTradingViewUrl(symbol, marketType) {
+  const raw = String(symbol || '').trim();
+  if (!raw) return null;
+  // marketType-hint: behandla uttrycklig crypto utan suffix som USDT-par.
+  const hinted = marketType === 'crypto' && !/[:]/.test(raw) && !/USDT?$/i.test(raw)
+    ? `${raw.toUpperCase()}USDT`
+    : raw;
+  const { tvSymbol } = mapSymbolToTradingView(hinted);
+  if (!tvSymbol) return null;
+  return `https://www.tradingview.com/chart/?symbol=${encodeURIComponent(tvSymbol)}`;
+}
+
+// Beräknar färskhet för en signal-timestamp (lastUpdate m.fl.).
+// Returnerar { status, dot, timeText, ageText, ageSeconds }.
+// status: fresh (<2 min), aging (2–15 min), stale (>15 min), unknown (saknas).
+export function signalAgeInfo(ts) {
+  const miss = { status: 'unknown', dot: '⚪', timeText: 'Tid saknas', ageText: null, ageSeconds: null };
+  if (ts == null || ts === '') return miss;
+  const ms = typeof ts === 'number'
+    ? (ts < 1e12 ? ts * 1000 : ts) // epok-sekunder vs millisekunder
+    : new Date(ts).getTime();
+  if (!Number.isFinite(ms)) return miss;
+  const sec = Math.max(0, Math.round((Date.now() - ms) / 1000));
+  let ageText;
+  if (sec < 60) ageText = `för ${sec} sek sedan`;
+  else if (sec < 3600) ageText = `för ${Math.round(sec / 60)} min sedan`;
+  else if (sec < 86400) ageText = `för ${Math.round(sec / 3600)}h sedan`;
+  else ageText = `för ${Math.round(sec / 86400)}d sedan`;
+  let status = 'fresh', dot = '🟢';
+  if (sec > 900) { status = 'stale'; dot = '🔴'; }
+  else if (sec >= 120) { status = 'aging'; dot = '🟡'; }
+  const timeText = new Date(ms).toLocaleTimeString('sv-SE', { hour12: false });
+  return { status, dot, timeText, ageText, ageSeconds: sec };
+}
+
+// Liten inline-etikett: 🟢 13:25:50 · för 20 sek sedan
+export function SignalAge({ timestamp, className = '' }) {
+  const info = signalAgeInfo(timestamp);
+  const title = info.ageText ? `${info.timeText} · ${info.ageText}` : 'Tid saknas';
+  return (
+    <span className={`signal-age signal-age-${info.status} ${className}`.trim()} title={title}>
+      <span className="signal-age-dot">{info.dot}</span>
+      <span className="signal-age-time">{info.timeText}</span>
+      {info.ageText && <span className="signal-age-rel">· {info.ageText}</span>}
+    </span>
+  );
+}
+
+// Varningsruta som bara visas när signalen är stale (>15 min).
+export function SignalStaleNotice({ timestamp, marketClosed = false }) {
+  const info = signalAgeInfo(timestamp);
+  if (info.status !== 'stale') return null;
+  return (
+    <div className="signal-stale-notice">
+      <span>⚠️ Gammal signal – använd inte som aktuell kandidat.</span>
+      {marketClosed && (
+        <span className="signal-stale-frozen">Aktiedata kan vara fryst eftersom börsen är stängd.</span>
+      )}
+    </div>
+  );
+}
+
+// "Öppna i TradingView"-länk. Visar inget om symbol saknas. showHint visar hjälptext.
+export function TradingViewLink({ symbol, marketType, label = 'Öppna i TradingView', showHint = false, className = '', size = '' }) {
+  const url = buildTradingViewUrl(symbol, marketType);
+  if (!url) return null;
+  return (
+    <span className={`tv-link-wrap ${className}`.trim()}>
+      <a
+        className={`tv-link-btn${size === 'sm' ? ' tv-link-sm' : ''}`}
+        href={url}
+        target="_blank"
+        rel="noopener noreferrer"
+        title="Öppnar grafen i TradingView. Ingen order läggs."
+        onClick={(e) => e.stopPropagation()}
+      >
+        📈 {label}
+      </a>
+      {showHint && <span className="tv-link-hint">TradingView-länken öppnar grafen. Ingen order läggs.</span>}
+    </span>
+  );
 }
 
 function alertText(r) {

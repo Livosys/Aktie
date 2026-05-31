@@ -11715,6 +11715,54 @@ body {
 .sp-page-title  { font-size: 24px; font-weight: 800; display: flex; align-items: center; gap: 10px; }
 .sp-page-meta   { display: flex; align-items: center; gap: 8px; }
 .sp-last-update { font-size: 11px; color: var(--text-muted); }
+.sp-feed-ages { display: inline-flex; gap: 6px; flex-wrap: wrap; }
+.sp-feed-chip { font-size: 10px; font-weight: 800; color: var(--text-muted); border: 1px solid var(--border); background: var(--surface-2); border-radius: 999px; padding: 2px 7px; }
+.sp-feed-chip.stale { color: #f59e0b; border-color: rgba(245,158,11,.4); background: rgba(245,158,11,.1); }
+
+/* Krypto 24/7-status-panel */
+.sp-crypto247 { border: 1px solid rgba(247,147,26,.32); background: rgba(247,147,26,.06); border-radius: 10px; padding: 12px 14px; margin-bottom: 12px; border-left: 4px solid #f7931a; }
+.sp-crypto247-head { display: flex; justify-content: space-between; align-items: center; gap: 10px; margin-bottom: 8px; flex-wrap: wrap; }
+.sp-crypto247-title { font-size: 13px; font-weight: 900; color: var(--text); }
+.sp-crypto247-livedot { font-size: 11px; font-weight: 800; color: var(--text-muted); }
+.sp-crypto247-livedot.scanning { color: #22c55e; }
+.sp-crypto247-row { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.sp-crypto247-sym { display: flex; flex-direction: column; min-width: 0; }
+.sp-crypto247-sym strong { font-size: 16px; color: var(--text); }
+.sp-crypto247-sym span { font-size: 10px; color: var(--text-muted); }
+.sp-crypto247-decision { font-size: 12px; font-weight: 900; border-radius: 999px; padding: 4px 10px; border: 1px solid currentColor; }
+.sp-crypto247-score { margin-left: auto; text-align: right; }
+.sp-crypto247-score strong { display: block; font-size: 18px; color: var(--text); }
+.sp-crypto247-score span { font-size: 9px; font-weight: 900; text-transform: uppercase; color: var(--text-muted); }
+.sp-crypto247-note { margin-top: 8px; font-size: 12px; font-weight: 700; color: #f59e0b; }
+.sp-crypto247-meta { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 8px; margin-top: 10px; }
+.sp-crypto247-meta div { border: 1px solid var(--border); background: var(--surface-2); border-radius: 7px; padding: 7px 9px; min-width: 0; }
+.sp-crypto247-meta div.wide { grid-column: 1 / -1; }
+.sp-crypto247-meta span { display: block; font-size: 9px; font-weight: 900; text-transform: uppercase; color: var(--text-muted); margin-bottom: 3px; }
+.sp-crypto247-meta strong { display: block; font-size: 12px; color: var(--text); overflow-wrap: anywhere; }
+
+/* ── Signalålder + TradingView-länk (delade komponenter) ───────────────────── */
+.signal-age { display: inline-flex; align-items: center; gap: 5px; font-size: 11px; font-weight: 700; white-space: nowrap; }
+.signal-age-dot { font-size: 9px; line-height: 1; }
+.signal-age-time { font-variant-numeric: tabular-nums; }
+.signal-age-rel { color: var(--text-muted); font-weight: 600; }
+.signal-age-fresh .signal-age-time { color: #22c55e; }
+.signal-age-aging .signal-age-time { color: #f59e0b; }
+.signal-age-stale .signal-age-time { color: #ef4444; }
+.signal-age-unknown { color: var(--text-muted); }
+
+.signal-stale-notice { display: flex; flex-direction: column; gap: 2px; margin-top: 6px; padding: 6px 9px; font-size: 11px; font-weight: 700; color: #ef4444; background: rgba(239,68,68,.08); border: 1px solid rgba(239,68,68,.32); border-radius: 7px; }
+.signal-stale-frozen { font-weight: 600; color: #f59e0b; }
+
+.tv-link-wrap { display: inline-flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.tv-link-btn { display: inline-flex; align-items: center; gap: 5px; font-size: 11px; font-weight: 800; color: #3b82f6; text-decoration: none; border: 1px solid rgba(59,130,246,.4); background: rgba(59,130,246,.08); border-radius: 7px; padding: 4px 9px; cursor: pointer; }
+.tv-link-btn:hover { background: rgba(59,130,246,.16); }
+.tv-link-sm { font-size: 10px; padding: 2px 7px; }
+.tv-link-hint { font-size: 10px; color: var(--text-muted); }
+.sp-hero-meta-row { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-top: 8px; }
+.sp-priority-meta-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-top: 4px; }
+.sp-row-sub .signal-age, .sp-row-sub .tv-link-wrap { display: inline-flex; }
+.dt-now-summary-meta { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-top: 8px; }
+.dt-live-paper-tv { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-top: 8px; }
 
 .sp-section-label {
   display: flex; align-items: center; gap: 10px; margin-bottom: 14px;
@@ -13524,11 +13572,13 @@ body {
 .tl-candidate-summary span { color: var(--text-muted); font-size: 11px; }
 .tl-candidate-list { display: flex; flex-direction: column; gap: 6px; }
 .tl-candidate-row {
-  display: grid; grid-template-columns: 90px 1fr 110px 80px; gap: 10px; align-items: center;
+  display: grid; grid-template-columns: 90px 1fr 110px 80px auto; gap: 10px; align-items: center;
   border: 1px solid var(--border); border-radius: 8px; background: var(--surface); padding: 10px 12px;
   font-size: 12px; color: var(--text-muted);
 }
 .tl-candidate-row strong { color: var(--text); }
+.tl-candidate-actions { display: inline-flex; align-items: center; gap: 10px; flex-wrap: wrap; justify-content: flex-end; }
+.batch-result-sym { display: inline-flex; align-items: center; gap: 6px; flex-wrap: wrap; }
 
 .sys-page { max-width: 1040px; margin: 0 auto; padding: 16px; }
 .sys-page-header { margin-bottom: 18px; }

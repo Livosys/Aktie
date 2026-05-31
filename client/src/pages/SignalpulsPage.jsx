@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
 import { enrichWithDecisions, getBestSignal, getTopN, isAvoidSignal } from '../decisionEngine.js';
+import { SignalAge, SignalStaleNotice, TradingViewLink } from '../shared.jsx';
 import { AdvancedModeToggle, ConfigScopeBadge, PlatformEmptyState, PlatformSafetyBar, useAdvancedMode } from '../components/PlatformControls.jsx';
 import TradeReplayPanel from '../components/TradeReplayPanel.jsx';
 import { useUnifiedConfig } from '../hooks/useUnifiedConfig.js';
@@ -175,6 +176,9 @@ function useAllSignals() {
   const [signals, setSignals] = useState([]);
   const [loading, setLoading] = useState(true);
   const [lastFetch, setLastFetch] = useState(null);
+  // Rå svarsmetadata per marknad (lastScan, feedStatus, scanning) — bevaras så att UI kan visa
+  // datakällans VERKLIGA ålder, inte bara klientens refresh-klocka.
+  const [meta, setMeta] = useState({ stocks: null, crypto: null, nasdaq: null });
 
   const fetchAll = useCallback(async () => {
     try {
@@ -189,6 +193,7 @@ function useAllSignals() {
         ...(n?.results || []),
       ];
       setSignals(all);
+      setMeta({ stocks: s, crypto: c, nasdaq: n });
       setLastFetch(new Date());
     } finally {
       setLoading(false);
@@ -201,7 +206,7 @@ function useAllSignals() {
     return () => clearInterval(t);
   }, [fetchAll]);
 
-  return { signals, loading, lastFetch, refresh: fetchAll };
+  return { signals, loading, lastFetch, meta, refresh: fetchAll };
 }
 
 function useLearningSummary() {
@@ -574,6 +579,11 @@ function HeroSignal({ signal, score, ls, coverage }) {
             <div className="sp-hero-symbol">{signal.symbol}</div>
             <div className="sp-hero-direction">{direction}</div>
             <div className="sp-hero-why">{explanation}</div>
+            <div className="sp-hero-meta-row">
+              <SignalAge timestamp={signal.lastUpdate} />
+              <TradingViewLink symbol={signal.symbol} marketType={signal.marketType} size="sm" showHint />
+            </div>
+            <SignalStaleNotice timestamp={signal.lastUpdate} marketClosed={signal.marketType !== 'crypto'} />
           </div>
           <PulseGauge score={score} />
         </div>
@@ -631,6 +641,9 @@ function SignalRow({ rank, signal, score, ls, regimeSummary, coverage }) {
               <span className="sp-row-why">Strategy priority {signal.strategy_priority_score}</span>
             </>
           )}
+          <span className="sp-row-sep">·</span>
+          <SignalAge timestamp={signal.lastUpdate} />
+          <TradingViewLink symbol={signal.symbol} marketType={signal.marketType} label="TradingView" size="sm" />
         </div>
         {priorityReasons && (
           <div className="sp-row-priority-reasons">
@@ -860,6 +873,10 @@ function PriorityCard({ item, rank, tone = 'focus' }) {
           <div className="sp-priority-rank">{rank}</div>
           <div className="sp-priority-symbol">{item.symbol}</div>
           <div className="sp-priority-strategy">{item.strategyLabel || item.signalFamily || 'Signal'}</div>
+          <div className="sp-priority-meta-row">
+            {(item.lastUpdate || item.timestamp) && <SignalAge timestamp={item.lastUpdate || item.timestamp} />}
+            <TradingViewLink symbol={item.symbol} marketType={item.marketType} label="TradingView" size="sm" />
+          </div>
         </div>
         <div className="sp-priority-score">
           <strong>{score}</strong>
@@ -936,10 +953,115 @@ function PrioritySections({ priority }) {
   );
 }
 
+// ── Crypto 24/7-status: ärlig färskhet + senaste crypto-kandidat ──────────────
+function agoLabel(iso) {
+  if (!iso) return null;
+  const t = new Date(iso).getTime();
+  if (!Number.isFinite(t)) return null;
+  const sec = Math.max(0, Math.round((Date.now() - t) / 1000));
+  if (sec < 90) return `${sec}s sedan`;
+  const min = Math.round(sec / 60);
+  if (min < 90) return `${min} min sedan`;
+  const h = Math.round(min / 60);
+  if (h < 48) return `${h}h sedan`;
+  return `${Math.round(h / 24)} dygn sedan`;
+}
+
+// Datakällans VERKLIGA ålder per marknad (inte klientens refresh-klocka)
+function feedAgeInfo(resp) {
+  const fs = resp?.feedStatus || {};
+  const iso = fs.latestTimestamp || fs.lastUpdated || resp?.lastScan || null;
+  const ageMin = Number(fs.ageMinutes);
+  const stale = fs.stale === true || (Number.isFinite(ageMin) && ageMin > 30);
+  return { label: agoLabel(iso) || '–', stale };
+}
+
+const CRYPTO_TRIGGERED = /TRIGGERED/;
+
+function pickCryptoCandidate(cryptoResp) {
+  const rows = (cryptoResp?.results || []).filter(r => {
+    const s = String(r?.symbol || '').toUpperCase();
+    return r?.marketType === 'crypto' || s.endsWith('USDT') || s.endsWith('BTC');
+  });
+  if (!rows.length) return { best: null, hasStrong: false, count: 0 };
+  const triggered = rows
+    .filter(r => CRYPTO_TRIGGERED.test(String(r.signal || '')))
+    .sort((a, b) => (b.tradeScore ?? 0) - (a.tradeScore ?? 0));
+  const byScore = [...rows].sort((a, b) => (b.tradeScore ?? 0) - (a.tradeScore ?? 0));
+  const strong = triggered.find(r =>
+    (r.tradeScore ?? 0) >= 60 && r.scoreLabel !== 'Avoid' && r.daytradeStatus !== 'Undvik'
+  ) || null;
+  return { best: strong || triggered[0] || byScore[0] || null, hasStrong: !!strong, count: rows.length };
+}
+
+function cryptoDecisionLabel(r) {
+  const sig = String(r?.signal || '');
+  if (sig.startsWith('LONG_TRIGGERED')) return { text: 'Köp-läge (long triggad)', cls: 'sp-buy' };
+  if (sig.startsWith('SHORT_TRIGGERED')) return { text: 'Sälj-läge (short triggad)', cls: 'sp-sell' };
+  if (sig === 'NO_TRADE' || r?.scoreLabel === 'Avoid') return { text: 'Undvik', cls: 'sp-warning' };
+  if (sig.startsWith('LONG')) return { text: 'Bevakar long', cls: 'sp-bullish' };
+  if (sig.startsWith('SHORT')) return { text: 'Bevakar short', cls: 'sp-bearish' };
+  return { text: 'Väntar på setup', cls: 'sp-wait' };
+}
+
+function Crypto247Status({ cryptoResp }) {
+  const status = cryptoResp || {};
+  const { best, hasStrong, count } = pickCryptoCandidate(status);
+  const scanAge = agoLabel(status.lastScan);
+  const scanning = status.scanning;
+  const dec = best ? cryptoDecisionLabel(best) : null;
+  const stopReason = best ? (best.daytradeWarnings?.[0] || best.reasonSv?.[0] || best.actionSv || null) : null;
+  const sig = String(best?.signal || '');
+  const nextLevel = best
+    ? (sig.startsWith('SHORT') && best.shortTrigger != null
+        ? `Short under ${best.shortTrigger}`
+        : best.longTrigger != null ? `Long över ${best.longTrigger}` : null)
+    : null;
+
+  return (
+    <div className="sp-crypto247">
+      <div className="sp-crypto247-head">
+        <span className="sp-crypto247-title">₿ Krypto 24/7-status</span>
+        <span className={`sp-crypto247-livedot${scanning ? ' scanning' : ''}`}>
+          {scanning ? 'Skannar nu…' : `Senaste scan ${scanAge || '–'}`}
+        </span>
+      </div>
+
+      {best ? (
+        <>
+          <div className="sp-crypto247-row">
+            <div className="sp-crypto247-sym">
+              <strong>{best.symbol}</strong>
+              <span>{count} symboler skannas dygnet runt</span>
+            </div>
+            <span className={`sp-crypto247-decision ${dec.cls}`}>{dec.text}</span>
+            <div className="sp-crypto247-score"><strong>{best.tradeScore ?? '–'}</strong><span>Score</span></div>
+          </div>
+
+          {!hasStrong && (
+            <div className="sp-crypto247-note">Krypto scannas, men inga starka kandidater hittades just nu.</div>
+          )}
+
+          <div className="sp-crypto247-meta">
+            <div><span>Senaste signal</span><strong>{best.signal || '–'}</strong></div>
+            <div><span>Senaste crypto-tid</span><strong>{agoLabel(best.lastUpdate) || '–'}</strong></div>
+            {stopReason && <div className="wide"><span>Stopporsak / varning</span><strong>{stopReason}</strong></div>}
+            {nextLevel && <div className="wide"><span>Nästa krav</span><strong>{nextLevel} · score ≥ 60 för bekräftad</strong></div>}
+          </div>
+        </>
+      ) : (
+        <div className="sp-crypto247-note">
+          {count === 0 ? 'Ingen crypto-data ännu — väntar på första scan.' : 'Krypto scannas, men inga starka kandidater hittades just nu.'}
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ── Main page ─────────────────────────────────────────────────────────────────
 export default function SignalpulsPage() {
   const [params, setParams] = useSearchParams();
-  const { signals, loading, lastFetch } = useAllSignals();
+  const { signals, loading, lastFetch, meta } = useAllSignals();
   const ls = useLearningSummary();
   const setupData = useSetupPerformance();
   const regimeSummary = useMarketRegime();
@@ -1065,9 +1187,23 @@ export default function SignalpulsPage() {
               Uppdaterad {lastFetch.toLocaleTimeString('sv-SE', { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
             </span>
           )}
+          {/* Ärlig datakälle-ålder per marknad (skiljer på fryst aktie-helg vs färsk crypto) */}
+          {(meta.stocks || meta.crypto) && (
+            <span className="sp-feed-ages">
+              {meta.stocks && (() => { const a = feedAgeInfo(meta.stocks); return (
+                <span className={`sp-feed-chip${a.stale ? ' stale' : ''}`} title="Aktiernas datakälla">Aktier: {a.label}</span>
+              ); })()}
+              {meta.crypto && (() => { const a = feedAgeInfo(meta.crypto); return (
+                <span className={`sp-feed-chip${a.stale ? ' stale' : ''}`} title="Kryptons datakälla">Krypto: {a.label}</span>
+              ); })()}
+            </span>
+          )}
           <LiveDot />
         </div>
       </div>
+
+      {/* Krypto 24/7-status: visar att crypto lever även när aktiemarknaden är stängd */}
+      <Crypto247Status cryptoResp={meta.crypto} />
 
       {/* Market Bias Panel */}
       <MarketBiasPanel
