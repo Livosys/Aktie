@@ -27,6 +27,13 @@ const ENDPOINTS = [
   { key: 'recommendation', url: '/api/daytrading/recommendation', label: 'Daytrading recommendation' },
 ];
 
+const ADVISOR_WINDOWS = [
+  { key: '1h', label: 'Senaste timmen', short: '1h' },
+  { key: '1d', label: 'Idag', short: '1d' },
+  { key: '7d', label: '7 dagar', short: '7d' },
+  { key: '30d', label: '30 dagar', short: '30d' },
+];
+
 function isObject(value) {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
 }
@@ -90,6 +97,37 @@ function firstText(values, fallback = 'Ej konfigurerad') {
     if (text) return text;
   }
   return fallback;
+}
+
+function advisorToneClass(tone) {
+  if (tone === 'green' || tone === 'ok') return 'good';
+  if (tone === 'red' || tone === 'danger') return 'bad';
+  if (tone === 'yellow' || tone === 'warn') return 'missing';
+  return 'missing';
+}
+
+function buildAdvisorPrompt(advisor) {
+  if (!advisor) return '';
+  const summary = advisor.summary || {};
+  const crypto = advisor.crypto_status || {};
+  const highlights = advisor.strategy_highlights || {};
+  const topWorking = normalizeArray(highlights.working).slice(0, 2).map((row) => `${row.name} (${row.win_rate ?? 0}% WR, ${row.closed ?? 0} trades)`).join(', ');
+  const topBlocked = normalizeArray(highlights.blocked).slice(0, 2).map((row) => `${row.name} (${row.status || row.note || 'blockerad'})`).join(', ');
+  const topFindings = normalizeArray(advisor.findings).slice(0, 4).map((item) => `${item.label}: ${item.text}`).join('\n');
+
+  return [
+    'Du är AI Operations Advisor i Trading OS Supervisor.',
+    `Fönster: ${advisor.window_label_sv || advisor.window}`,
+    `Kort slutsats: ${summary.conclusion_sv || 'saknas'}`,
+    `Vad systemet såg: ${topFindings || summary.short_sv || 'saknas'}`,
+    `Vad stoppades: ${advisor.blockers?.[0] ? `${advisor.blockers[0].label} (${advisor.blockers[0].count})` : 'inga tydliga blockerare'}`,
+    `Bäst fungerande strategi: ${topWorking || 'ingen tydlig vinnare'}`,
+    `Blockerade/partial: ${topBlocked || 'inga tydliga blockeringar'}`,
+    `Crypto-status: signaler ${crypto.crypto_signals ?? 0}, runtime-active ${crypto.runtime_active ?? 0}, gate-blockade ${crypto.gate_blocked ?? 0}, VWAP ${crypto.vwap_routing_status || 'samlar data'}.`,
+    `Rekommenderad nästa åtgärd: ${summary.next_action_sv || 'vänta och samla data'}.`,
+    '',
+    'Förklara kort varför inga eller få paper trades skapas och vad användaren bör testa eller bevaka härnäst.',
+  ].join('\n');
 }
 
 function toNumber(value) {
@@ -852,6 +890,10 @@ export default function SupervisorV2Page() {
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState('');
   const [lastUpdated, setLastUpdated] = useState(null);
+  const [advisorWindow, setAdvisorWindow] = useState('1d');
+  const [advisorResources, setAdvisorResources] = useState({});
+  const [advisorLoading, setAdvisorLoading] = useState(true);
+  const [advisorError, setAdvisorError] = useState('');
 
   useEffect(() => {
     let cancelled = false;
@@ -876,19 +918,71 @@ export default function SupervisorV2Page() {
     };
   }, []);
 
+  useEffect(() => {
+    let cancelled = false;
+
+    async function loadAdvisor() {
+      setAdvisorLoading(true);
+      setAdvisorError('');
+      try {
+        const entries = await Promise.all(
+          ADVISOR_WINDOWS.map(async (spec) => [spec.key, await fetchJson(`/api/supervisor/operations-advisor?window=${spec.key}`)]),
+        );
+        if (cancelled) return;
+        setAdvisorResources(Object.fromEntries(entries));
+      } catch (err) {
+        if (cancelled) return;
+        setAdvisorError(err?.message || 'Kunde inte läsa AI Operations Advisor.');
+      } finally {
+        if (!cancelled) setAdvisorLoading(false);
+      }
+    }
+
+    loadAdvisor();
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
   async function refresh() {
     setRefreshing(true);
-    const entries = await Promise.all(
-      ENDPOINTS.map(async (spec) => [spec.key, await fetchJson(spec.url)]),
-    );
-    setResources(Object.fromEntries(entries));
-    setLastUpdated(new Date().toISOString());
-    setRefreshing(false);
+    try {
+      const entries = await Promise.all(
+        ENDPOINTS.map(async (spec) => [spec.key, await fetchJson(spec.url)]),
+      );
+      setResources(Object.fromEntries(entries));
+      setLastUpdated(new Date().toISOString());
+      setAdvisorLoading(true);
+      setAdvisorError('');
+      const advisorEntries = await Promise.all(
+        ADVISOR_WINDOWS.map(async (spec) => [spec.key, await fetchJson(`/api/supervisor/operations-advisor?window=${spec.key}`)]),
+      );
+      setAdvisorResources(Object.fromEntries(advisorEntries));
+    } catch (err) {
+      setAdvisorError(err?.message || 'Kunde inte uppdatera AI Operations Advisor.');
+    } finally {
+      setRefreshing(false);
+      setAdvisorLoading(false);
+    }
   }
 
   const model = useMemo(() => buildDecisionModel(resources), [resources]);
   const endpointRows = useMemo(() => buildEndpointRows(resources), [resources]);
   const technicalCards = useMemo(() => buildTechnicalCards(resources, model), [resources, model]);
+  const advisorRows = useMemo(() => ADVISOR_WINDOWS.map((spec) => {
+    const entry = advisorResources[spec.key];
+    const state = endpointState(entry);
+    return {
+      ...spec,
+      state,
+      ok: !!entry?.ok,
+      missing: !!entry?.missing,
+      error: entry?.error || '',
+      data: entry?.data || null,
+    };
+  }), [advisorResources]);
+  const selectedAdvisor = advisorResources[advisorWindow]?.data || null;
 
   const moduleCoverageText = `${technicalCards.length}/8 källor svarar`;
   const summaryTone = model.systemStatus === 'Stabilt' ? 'good' : 'bad';
@@ -908,13 +1002,170 @@ export default function SupervisorV2Page() {
             Supervisor är read-only. Den visar beslut och rekommendationer, men ändrar inte strategier.
           </div>
         </div>
-        <div className="sup-hero-actions">
-          <button type="button" className="btn sup-refresh" onClick={refresh} disabled={refreshing}>
-            {refreshing ? 'Uppdaterar...' : 'Uppdatera'}
-          </button>
-          <div className="sup-last-updated">Senast uppdaterad: {formatDateTime(lastUpdated)}</div>
-        </div>
+      <div className="sup-hero-actions">
+        <button type="button" className="btn sup-refresh" onClick={refresh} disabled={refreshing}>
+          {refreshing ? 'Uppdaterar...' : 'Uppdatera'}
+        </button>
+        <div className="sup-last-updated">Senast uppdaterad: {formatDateTime(lastUpdated)}</div>
       </div>
+    </div>
+
+      <section className="sup-section sup-advisor-section">
+        <div className="sup-section-head">
+          <div>
+            <h2>🧠 AI Operations Advisor</h2>
+            <p>Read-only läsning av senaste timmen, idag, 7 dagar eller 30 dagar. Ingen trading, inga ordrar.</p>
+          </div>
+          <div className="sup-advisor-safety">
+            <span>actions_allowed=false</span>
+            <span>can_place_orders=false</span>
+            <span>live_trading_enabled=false</span>
+          </div>
+        </div>
+
+        <div className="sup-advisor-window-strip">
+          {advisorRows.map((row) => {
+            const summary = row.data?.summary || {};
+            const lead = summary.conclusion_sv || summary.short_sv || row.state.label;
+            return (
+              <button
+                key={row.key}
+                type="button"
+                className={`sup-advisor-window-btn sup-advisor-window-${row.state.tone}${advisorWindow === row.key ? ' sup-advisor-window-active' : ''}`}
+                onClick={() => setAdvisorWindow(row.key)}
+              >
+                <span>{row.label}</span>
+                <small>{lead}</small>
+              </button>
+            );
+          })}
+        </div>
+
+        {advisorLoading && <div className="sup-loading">Laddar AI Operations Advisor...</div>}
+        {advisorError && <div className="sup-error">{advisorError}</div>}
+
+        {!advisorLoading && selectedAdvisor && (
+          <>
+            <div className="sup-v2-report-lead sup-advisor-lead">
+              <div className="sup-advisor-lead-copy">
+                <div className="sup-kicker">Fönster: {selectedAdvisor.window_label_sv}</div>
+                <h3>{selectedAdvisor.summary.conclusion_sv}</h3>
+                <p>{selectedAdvisor.summary.short_sv}</p>
+              </div>
+              <div className="sup-advisor-lead-meta">
+                <span>Uppdaterad: {formatDateTime(selectedAdvisor.generated_at)}</span>
+                <span>Signaler: {formatInt(selectedAdvisor.window_metrics.signals_seen, '0')}</span>
+                <span>Paper trades: {formatInt(selectedAdvisor.window_metrics.paper_trades_created, '0')}</span>
+                <span>VWAP: {selectedAdvisor.crypto_status.vwap_routing_status}</span>
+              </div>
+            </div>
+
+            <div className="sup-v2-answer-grid sup-advisor-grid">
+              <DecisionCard
+                item={{
+                  index: '1',
+                  title: 'Kort slutsats',
+                  tone: 'ok',
+                  badgeTone: 'green',
+                  badge: selectedAdvisor.summary.next_action_sv || 'Analys',
+                  summary: selectedAdvisor.summary.conclusion_sv,
+                  points: uniqueText([
+                    `Top strategy: ${selectedAdvisor.summary.top_strategy_sv || 'saknas'}`,
+                    `Top blocker: ${selectedAdvisor.summary.top_blocker_sv || 'saknas'}`,
+                  ]),
+                }}
+              />
+              <DecisionCard
+                item={{
+                  index: '2',
+                  title: 'Vad systemet såg',
+                  tone: 'neutral',
+                  badgeTone: 'blue',
+                  badge: `${formatInt(selectedAdvisor.window_metrics.signals_seen, '0')} signaler`,
+                  summary: selectedAdvisor.summary.short_sv,
+                  points: uniqueText([
+                    `Paper trades: ${formatInt(selectedAdvisor.window_metrics.paper_trades_created, '0')}`,
+                    `Skippade signaler: ${formatInt(selectedAdvisor.window_metrics.learning_skipped, '0')}`,
+                    `Öppna trades: ${formatInt(selectedAdvisor.window_metrics.open_trades, '0')}`,
+                    selectedAdvisor.findings?.[0]?.text || '',
+                  ]),
+                }}
+              />
+              <DecisionCard
+                item={{
+                  index: '3',
+                  title: 'Vad stoppades',
+                  tone: 'warn',
+                  badgeTone: selectedAdvisor.blockers?.length ? 'yellow' : 'green',
+                  badge: selectedAdvisor.blockers?.length ? `${selectedAdvisor.blockers.length} blockerare` : 'Inga tydliga stopp',
+                  summary: selectedAdvisor.findings?.find((item) => item.label === 'Vad stoppades')?.text || 'Inga tydliga stopp i detta fönster.',
+                  points: normalizeArray(selectedAdvisor.blockers).length
+                    ? selectedAdvisor.blockers.slice(0, 4).map((item) => `${item.label} (${item.count})`)
+                    : ['Inga tydliga blockerare just nu.'],
+                }}
+              />
+              <DecisionCard
+                item={{
+                  index: '4',
+                  title: 'Strategier som fungerar',
+                  tone: 'ok',
+                  badgeTone: selectedAdvisor.strategy_highlights?.working?.length ? 'green' : 'gray',
+                  badge: selectedAdvisor.strategy_highlights?.working?.length ? `${selectedAdvisor.strategy_highlights.working.length} fungerar` : 'Behöver mer data',
+                  summary: selectedAdvisor.findings?.find((item) => item.label === 'Strategier som fungerar')?.text || 'Ingen strategi har tillräckligt med positiv historik ännu.',
+                  points: selectedAdvisor.strategy_highlights?.working?.length
+                    ? selectedAdvisor.strategy_highlights.working.slice(0, 4).map((item) => `${item.name} · ${item.win_rate}% WR · ${item.closed} trades`)
+                    : ['Kör mer paper/replay för att få en stabil vinnare.'],
+                }}
+              />
+              <DecisionCard
+                item={{
+                  index: '5',
+                  title: 'Blockerade / partial',
+                  tone: 'warn',
+                  badgeTone: (selectedAdvisor.strategy_highlights?.blocked?.length || selectedAdvisor.strategy_highlights?.partial?.length) ? 'yellow' : 'gray',
+                  badge: `${(selectedAdvisor.strategy_highlights?.blocked?.length || 0) + (selectedAdvisor.strategy_highlights?.partial?.length || 0)} strategier`,
+                  summary: selectedAdvisor.summary.blocked_strategy_sv,
+                  points: uniqueText([
+                    ...(selectedAdvisor.strategy_highlights?.blocked || []).slice(0, 3).map((item) => `${item.name} · ${item.status}`),
+                    ...(selectedAdvisor.strategy_highlights?.partial || []).slice(0, 3).map((item) => `${item.name} · ${item.status}`),
+                  ]).slice(0, 4),
+                }}
+              />
+              <DecisionCard
+                item={{
+                  index: '6',
+                  title: 'Crypto-status och nästa steg',
+                  tone: selectedAdvisor.crypto_status?.vwap_routing_fungerar ? 'ok' : 'warn',
+                  badgeTone: selectedAdvisor.crypto_status?.vwap_routing_fungerar ? 'green' : selectedAdvisor.crypto_status?.vwap_routing_status === 'observe-only' ? 'yellow' : 'blue',
+                  badge: `VWAP ${selectedAdvisor.crypto_status?.vwap_routing_status || 'samlar data'}`,
+                  summary: selectedAdvisor.summary.next_action_sv,
+                  points: uniqueText([
+                    `Crypto-signaler ${selectedAdvisor.crypto_status?.crypto_signals ?? 0}`,
+                    `Runtime-active ${selectedAdvisor.crypto_status?.runtime_active ?? 0}`,
+                    `Gate-blockade ${selectedAdvisor.crypto_status?.gate_blocked ?? 0}`,
+                    `VWAP-papper ${selectedAdvisor.crypto_status?.vwap_paper_trades ?? 0}`,
+                  ]),
+                }}
+              />
+            </div>
+
+            <div className="sup-advisor-actions">
+              <button
+                type="button"
+                className="btn sup-ai-submit sup-advisor-ai-btn"
+                onClick={() => {
+                  const prompt = buildAdvisorPrompt(selectedAdvisor);
+                  window.dispatchEvent(new CustomEvent('ai-copilot:open', {
+                    detail: { question: prompt, autoAsk: true, source: 'supervisor-advisor' },
+                  }));
+                }}
+              >
+                Fråga AI om detta
+              </button>
+            </div>
+          </>
+        )}
+      </section>
 
       <section className="sup-section">
         <div className="sup-section-head">
