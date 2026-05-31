@@ -78,6 +78,7 @@ const historicalDataCenter = require('../services/historicalDataCenterService');
 const dataCoverageExpansion = require('../services/dataCoverageExpansionService');
 const daytradingControl = require('../services/daytradingControlService');
 const daytradingLearning = require('../services/daytradingLearningEngineService');
+const supervisorOperationsAdvisorService = require('../services/supervisorOperationsAdvisorService');
 const TEST_LIVE_SEND_COOLDOWN_MS = 5 * 60 * 1000;
 let testLiveSendLastAt = 0;
 const auditScanLastAt = new Map();
@@ -2047,6 +2048,22 @@ router.post('/learning/rebuild', (req, res) => {
     res.json({ ok: true, summary, rebuilt_at: new Date().toISOString() });
   } catch (err) {
     res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+// ── Supervisor Operations Advisor ─────────────────────────────────────────────
+// Read-only summary over existing learning, runtime, paper and gate histories.
+
+router.get('/supervisor/operations-advisor', (req, res) => {
+  try {
+    const window = req.query.window || '1d';
+    res.json(supervisorOperationsAdvisorService.getOperationsAdvisor(window));
+  } catch (err) {
+    res.status(500).json({
+      ok: false,
+      error: err.message,
+      ...supervisorOperationsAdvisorService.SAFETY,
+    });
   }
 });
 
