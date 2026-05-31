@@ -1,17 +1,26 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { PlatformEmptyState } from '../components/PlatformControls.jsx';
 
 // ─── Data hook ────────────────────────────────────────────────────────────────
 
 function useDaytradingData(tradeLimit = 200) {
+  const requestSeq = useRef(0);
   const [state, setState] = useState({
     status: null, strategies: null, pipeline: null,
     liveTrades: null, recommendation: null, impact: null, symbols: null, runtime: null,
     marketControls: null, learning: null, paperStatus: null,
-    loading: true, error: false,
+    loading: true, refreshing: false, refreshError: null, error: false,
   });
 
   const fetchAll = useCallback(async () => {
+    const requestId = ++requestSeq.current;
+    const isValidResponse = (value) => Boolean(value) && typeof value === 'object' && value.ok !== false;
+    setState((prev) => ({
+      ...prev,
+      loading: prev.loading && !prev.status && !prev.liveTrades,
+      refreshing: !prev.loading,
+      refreshError: null,
+    }));
     const get = url => fetch(url).then(r => r.json()).catch(() => null);
     const [statusD, strD, pipeD, tradesD, recD, impD, symD, runtimeD, marketControlsD, learningD, paperStatusD] = await Promise.all([
       get('/api/daytrading/status'), get('/api/daytrading/strategies'),
@@ -22,11 +31,53 @@ function useDaytradingData(tradeLimit = 200) {
       get('/api/daytrading/learning-summary?hours=48&limit=200'),
       get('/api/paper-trading/status'),
     ]);
-    setState({
-      status: statusD, strategies: strD, pipeline: pipeD, liveTrades: tradesD,
-      recommendation: recD, impact: impD, symbols: symD, runtime: runtimeD,
-      marketControls: marketControlsD, learning: learningD, paperStatus: paperStatusD,
-      loading: false, error: !statusD?.ok,
+    if (requestId !== requestSeq.current) return;
+    const validStatus = isValidResponse(statusD);
+    const validStrategies = isValidResponse(strD);
+    const validPipeline = isValidResponse(pipeD);
+    const validTrades = isValidResponse(tradesD);
+    const validRecommendation = isValidResponse(recD);
+    const validImpact = isValidResponse(impD);
+    const validSymbols = isValidResponse(symD);
+    const validRuntime = isValidResponse(runtimeD);
+    const validMarketControls = isValidResponse(marketControlsD);
+    const validLearning = isValidResponse(learningD);
+    const validPaperStatus = isValidResponse(paperStatusD);
+    const anyValid = [
+      validStatus,
+      validStrategies,
+      validPipeline,
+      validTrades,
+      validRecommendation,
+      validImpact,
+      validSymbols,
+      validRuntime,
+      validMarketControls,
+      validLearning,
+      validPaperStatus,
+    ].some(Boolean);
+    const refreshFailed = !validStatus || !validTrades;
+    setState((prev) => {
+      if (requestId !== requestSeq.current) return prev;
+      return {
+        ...prev,
+        status: validStatus ? statusD : prev.status,
+        strategies: validStrategies ? strD : prev.strategies,
+        pipeline: validPipeline ? pipeD : prev.pipeline,
+        liveTrades: validTrades ? tradesD : prev.liveTrades,
+        recommendation: validRecommendation ? recD : prev.recommendation,
+        impact: validImpact ? impD : prev.impact,
+        symbols: validSymbols ? symD : prev.symbols,
+        runtime: validRuntime ? runtimeD : prev.runtime,
+        marketControls: validMarketControls ? marketControlsD : prev.marketControls,
+        learning: validLearning ? learningD : prev.learning,
+        paperStatus: validPaperStatus ? paperStatusD : prev.paperStatus,
+        loading: false,
+        refreshing: false,
+        refreshError: refreshFailed ? 'Senaste uppdatering misslyckades – visar senaste data' : null,
+        error: prev.status ? false : !validStatus,
+        lastRefreshAt: anyValid ? new Date().toISOString() : prev.lastRefreshAt || null,
+      };
     });
   }, [tradeLimit]);
 
@@ -1333,9 +1384,10 @@ function TradeModal({ trade, onClose }) {
 
 const TRADE_LIMITS = [50, 100, 200];
 
-function LiveTradesSection({ liveTrades, tradeLimit, onTradeLimitChange }) {
+function LiveTradesSection({ liveTrades, tradeLimit, onTradeLimitChange, refreshing, refreshError }) {
   const [selected, setSelected] = useState(null);
-  const trades = liveTrades?.trades || [];
+  const hasLiveTrades = Boolean(liveTrades) && typeof liveTrades === 'object' && Array.isArray(liveTrades.trades);
+  const trades = hasLiveTrades ? liveTrades.trades : [];
   const summaryStats = liveTrades?.summary || localTradeSummary(trades);
   const summary = liveTrades?.summary_48h || {};
   const stoppage = liveTrades?.stoppage_summary_48h || {};
@@ -1365,6 +1417,12 @@ function LiveTradesSection({ liveTrades, tradeLimit, onTradeLimitChange }) {
       </div>
       <div className="dt-paper-note"><strong>Paper-only.</strong> Detta är test-/paper trades. Inga riktiga ordrar skickas.</div>
       <div className="dt-paper-note"><strong>Historik.</strong> Listan nedan visar trades som redan skapats eller stängts. Öppna trades visas i live-bannern ovan.</div>
+      {refreshing && (
+        <div className="dt-paper-note"><strong>Uppdaterar.</strong> Visar senaste data medan nya svar hämtas.</div>
+      )}
+      {refreshError && !refreshing && (
+        <div className="dt-paper-note"><strong>Senaste uppdatering misslyckades.</strong> Visar senaste data.</div>
+      )}
       <TradeStats summary={summaryStats} />
       <div className="dt-paper-analysis">
         <div className="dt-paper-summary">
@@ -1431,7 +1489,9 @@ function LiveTradesSection({ liveTrades, tradeLimit, onTradeLimitChange }) {
           </div>
         </div>
       </div>
-      {!trades.length ? (
+      {!hasLiveTrades ? (
+        <PlatformEmptyState title="Kunde inte läsa paper trades" text="Visar senaste data när backend svarar igen." />
+      ) : !trades.length ? (
         <PlatformEmptyState title="Inga paper trades att visa" text={`Det finns inga trades inom senaste ${tradeLimit}. Kör ny scan eller välj ett lägre antal.`} />
       ) : (
         <div className="dt-table-wrap">
@@ -1644,7 +1704,7 @@ function LearningEngineSection({ learning }) {
 
 export default function DaytradingPage() {
   const [tradeLimit, setTradeLimit] = useState(200);
-  const { status, strategies, pipeline, liveTrades, recommendation, impact, symbols, runtime, marketControls, learning, paperStatus, loading, error, refresh } = useDaytradingData(tradeLimit);
+  const { status, strategies, pipeline, liveTrades, recommendation, impact, symbols, runtime, marketControls, learning, paperStatus, loading, refreshing, refreshError, error, refresh } = useDaytradingData(tradeLimit);
   const [filters, setFilters] = useState(DEFAULT_FILTERS);
   const [scanning, setScanning] = useState(false);
   const [scanResult, setScanResult] = useState(null);
@@ -1791,7 +1851,13 @@ export default function DaytradingPage() {
       )}
 
       {/* H) Kandidater & paper trades */}
-      <LiveTradesSection liveTrades={liveTrades} tradeLimit={tradeLimit} onTradeLimitChange={setTradeLimit} />
+      <LiveTradesSection
+        liveTrades={liveTrades}
+        tradeLimit={tradeLimit}
+        onTradeLimitChange={setTradeLimit}
+        refreshing={refreshing}
+        refreshError={refreshError}
+      />
 
       {/* I) Learning Engine v1 */}
       <LearningEngineSection learning={learning} />
