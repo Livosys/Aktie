@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { useLocation } from 'react-router-dom';
 
 const EXAMPLES = [
@@ -32,9 +32,34 @@ export default function AiCopilot() {
   const [answer, setAnswer] = useState('');
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
+  const [queuedQuestion, setQueuedQuestion] = useState('');
 
   const page = useMemo(() => pageFromPath(location.pathname), [location.pathname]);
   const symbol = useMemo(() => symbolFromSearch(location.search), [location.search]);
+
+  useEffect(() => {
+    function handleOpen(event) {
+      const detail = event?.detail || {};
+      const nextQuestion = String(detail.question || detail.prompt || '').trim();
+      setOpen(true);
+      if (nextQuestion) {
+        setQuestion(nextQuestion);
+        if (detail.autoAsk === true) {
+          setQueuedQuestion(nextQuestion);
+        }
+      }
+    }
+
+    window.addEventListener('ai-copilot:open', handleOpen);
+    return () => window.removeEventListener('ai-copilot:open', handleOpen);
+  }, []);
+
+  useEffect(() => {
+    if (!queuedQuestion) return;
+    const next = queuedQuestion;
+    setQueuedQuestion('');
+    ask(next);
+  }, [queuedQuestion]);
 
   async function ask(nextQuestion = question) {
     const q = String(nextQuestion || '').trim();
