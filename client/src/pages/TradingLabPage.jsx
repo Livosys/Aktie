@@ -23,7 +23,7 @@ const TOGGLE_META = [
   { key: 'momentum',          label: 'Stark rörelse',           group: 'signal', desc: 'Stark fart i en riktning bekräftar rörelsen' },
   { key: 'mean_reversion',    label: 'Rekyl/medelvärde',   group: 'signal', desc: 'Priset är för långt ifrån snittet och kan studsa' },
   { key: 'volume_spike',      label: 'Volymtopp',          group: 'signal', desc: 'Ovanligt hög volym — bekräftar signalen' },
-  { key: 'ai_agent',          label: 'AI-analys',          group: 'ai',    desc: 'AI-motorn analyserar signalens kontext och styrka' },
+  { key: 'ai_agent',          label: 'Analys',              group: 'ai',    desc: 'Analysmotorn granskar signalens kontext och styrka' },
   { key: 'trading_agents',    label: 'Tradingagenter',     group: 'ai',    desc: 'Specialiserade agenter med rollbaserad analys' },
   { key: 'historical_memory', label: 'Historiskt minne',   group: 'ai',    desc: 'Systemet minns vad som fungerat historiskt' },
   { key: 'market_gate',       label: 'Marknadsgrind',      group: 'protection', desc: 'Blockerar signaler om marknaden är för stökig' },
@@ -37,7 +37,7 @@ const EXIT_TYPES = [
   { key: 'ema_exit',        label: 'EMA-exit',        desc: 'Stäng om priset faller under EMA',               defaultOn: false },
   { key: 'vwap_exit',       label: 'VWAP-exit',       desc: 'Stäng om priset tappar VWAP',                    defaultOn: false },
   { key: 'profit_target',   label: 'Vinstmål',        desc: 'Stäng när vinstmål nås',                         defaultOn: true },
-  { key: 'dynamic_exit',    label: 'Dynamisk exit',   desc: 'AI-styrd exit baserat på marknadsläget',         defaultOn: false },
+  { key: 'dynamic_exit',    label: 'Dynamisk exit',   desc: 'Dynamisk exit baserat på marknadsläget',          defaultOn: false },
   { key: 'volatility_exit', label: 'Volatilitetsxit', desc: 'Stäng om volatiliteten ökar kraftigt',           defaultOn: false },
 ];
 
@@ -46,7 +46,7 @@ const COMBOS = [
   { label: 'Narrow + AI',          keys: ['narrow_state', 'ai_agent'],              hint: 'AI analyserar narrow state-mönster' },
   { key: 'ema_pullback',
     label: 'EMA + Rekyl',          keys: ['ema_trend', 'ema_pullback'],             hint: 'Trend plus rekyl mot EMA' },
-  { label: 'VWAP + Trend + AI',    keys: ['vwap_reclaim', 'ema_trend', 'ai_agent'], hint: 'Kombinerat tekniskt + AI-stöd' },
+  { label: 'VWAP + Trend + Analys', keys: ['vwap_reclaim', 'ema_trend', 'ai_agent'], hint: 'Kombinerat tekniskt stöd' },
   { label: 'Breakout + Volym',     keys: ['breakout', 'volume_spike'],              hint: 'Utbrott bekräftat av volym' },
   { label: 'Narrow + Stark rörelse',    keys: ['narrow_state', 'momentum'],              hint: 'Ihoptryckt pris + fart' },
 ];
@@ -694,7 +694,7 @@ function SafetyNote() {
   );
 }
 
-// ── AI Optimization Panel components ─────────────────────────────────────────
+// ── Optimization Panel components ────────────────────────────────────────────
 
 function useOptimizationSummary() {
   const [data, setData] = React.useState(null);
@@ -891,7 +891,7 @@ function ApplyPanel({ toggles, params, exits, onApplyParams, onApplyToggles, onA
     }
   }, [data]);
 
-  if (loading) return <div className="opt-apply-loading">Hämtar AI-konfiguration...</div>;
+  if (loading) return <div className="opt-apply-loading">Hämtar konfiguration...</div>;
   if (error) return <div className="opt-error">Fel: {error}</div>;
   if (!data?.changes?.length) return <div className="opt-empty">Inga rekommendationer tillgängliga ännu — kör mer paper trading.</div>;
 
@@ -948,7 +948,7 @@ function ApplyPanel({ toggles, params, exits, onApplyParams, onApplyToggles, onA
     <div className="opt-apply-panel">
       <div className="opt-apply-header">
         <div>
-          <div className="opt-apply-title">Auto-apply AI-konfiguration</div>
+          <div className="opt-apply-title">Auto-apply rekommenderad konfiguration</div>
           <div className="opt-apply-sub">
             {tradeCount} trades analyserade · {hasEnoughData ? 'Tillräcklig data' : 'Begränsad data'}
           </div>
@@ -1278,7 +1278,7 @@ function AiOptimizationTab({ toggles, params, exits, onApplyParams, onApplyToggl
   if (loading) return (
     <div className="opt-loading">
       <div className="opt-loading-dot" />
-      <span>AI-agenten analyserar historiska trades...</span>
+      <span>Analysmotorn analyserar historiska trades...</span>
     </div>
   );
 
@@ -1295,7 +1295,7 @@ function AiOptimizationTab({ toggles, params, exits, onApplyParams, onApplyToggl
       {/* Header */}
       <div className="opt-header">
         <div className="opt-header-left">
-          <div className="opt-title">🤖 AI Optimization Agent</div>
+          <div className="opt-title">🤖 Optimeringsagent</div>
           <div className="opt-subtitle">
             Analyserar {tradeCount} historiska trades — rekommendering only, inga ändringar automatiskt
           </div>
@@ -1546,7 +1546,7 @@ function AiOptimizationTab({ toggles, params, exits, onApplyParams, onApplyToggl
               )}
             </>
           ) : (
-            <div className="opt-empty">Inga batch-resultat ännu. Kör Batch-test i Trading Lab för att få AI-rekommendationer.</div>
+            <div className="opt-empty">Inga batch-resultat ännu. Kör Batch-test i Trading Lab för att få rekommendationer.</div>
           )}
         </div>
       )}
@@ -1554,7 +1554,7 @@ function AiOptimizationTab({ toggles, params, exits, onApplyParams, onApplyToggl
       {/* Recommendations */}
       {section === 'recs' && (
         <div className="opt-section-content">
-          <div className="opt-subsection">Auto-apply — Applicera AI-rekommendationer</div>
+          <div className="opt-subsection">Auto-apply — Applicera rekommendationer</div>
           <ApplyPanel
             toggles={toggles}
             params={params}
@@ -1563,7 +1563,7 @@ function AiOptimizationTab({ toggles, params, exits, onApplyParams, onApplyToggl
             onApplyToggles={onApplyToggles}
             onApplyExits={onApplyExits}
           />
-          <div className="opt-subsection" style={{ marginTop: '1.5rem' }}>AI-agentens rekommendationer</div>
+          <div className="opt-subsection" style={{ marginTop: '1.5rem' }}>Rekommendationer</div>
           <RecommendationsList recs={recommendations} />
         </div>
       )}
@@ -3189,7 +3189,7 @@ function AgentDebateTab() {
 
   return (
     <div className="tl-tab-content">
-      <GroupHeader icon="AI" title="AI Beslutsråd" />
+      <GroupHeader icon="💡" title="Beslutsråd" />
       <div className="ad-safety">
         <span>analysis_only={String((result || status)?.analysis_only === true)}</span>
         <span>paper_only={String((result || status)?.paper_only === true)}</span>
@@ -3200,9 +3200,9 @@ function AgentDebateTab() {
         <span>can_modify_system=false</span>
       </div>
       <div className="ad-advisory">
-        <strong>AI Beslutsråd förklarar en signal.</strong> Det optimerar inte strategier och lägger inga order.
+        <strong>Beslutsrådet förklarar en signal.</strong> Det optimerar inte strategier och lägger inga order.
       </div>
-      <div className="ad-difference">Skillnad: AI Optimization Agent analyserar historiska trades. AI Beslutsråd analyserar en enskild signal.</div>
+      <div className="ad-difference">Skillnad: Optimeringsagenten analyserar historiska trades. Beslutsrådet analyserar en enskild signal.</div>
       <div className="agent-debate-safety-row">Rådgivande analys. Ingen riktig order kan läggas.</div>
 
       <div className="ad-panel">
@@ -3315,7 +3315,7 @@ const TABS = [
   { key: 'exits',         label: 'Exits',         icon: '↘️' },
   { key: 'replay',        label: 'Spela upp historiska signaler',        icon: '▶️' },
   { key: 'ai_agent',      label: 'Föreslå testplan',      icon: '🤖' },
-  { key: 'agent_debate',  label: 'AI Beslutsråd', icon: 'AI' },
+  { key: 'agent_debate',  label: 'Beslutsråd', icon: '💡' },
   { key: 'adaptive',      label: 'Visa lärande från tester', icon: '🧠' },
   { key: 'review',        label: 'Graf',          icon: '⌁' },
   { key: 'candidates',    label: 'Kandidater',    icon: '◎' },
@@ -3382,7 +3382,7 @@ export default function TradingLabPage() {
           </div>
         </div>
         <p className="tl-page-sub">
-          Lab påverkar inte vilka strategier som kör paper trades. Här kör du bara test, replay, batch, AI-agent, parametrar och analys.
+          Lab påverkar inte vilka strategier som kör paper trades. Här kör du bara test, replay, batch, parametrar och analys.
         </p>
       </div>
 
@@ -3553,9 +3553,9 @@ export default function TradingLabPage() {
           <div className="tl-ai-opt-banner">
             <div className="tl-ai-opt-icon">🤖</div>
             <div>
-              <div className="tl-ai-opt-title">AI-optimering — kommer snart</div>
+              <div className="tl-ai-opt-title">Optimering — kommer snart</div>
               <div className="tl-ai-opt-sub">
-                Optimization Agent kommer analysera bästa kombinationer baserat på historisk data.
+                Optimeringsmotorn kommer analysera bästa kombinationer baserat på historisk data.
                 Konfigurationen du bygger här är grunden för det.
               </div>
             </div>
