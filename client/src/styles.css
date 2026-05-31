@@ -13070,6 +13070,57 @@ body {
 .batch-summary-actions button { border: 1px solid rgba(34,197,94,.36); background: rgba(34,197,94,.12); color: #22c55e; border-radius: 7px; padding: 8px 11px; font-size: 12px; font-weight: 900; cursor: pointer; }
 .batch-summary-actions button:disabled { opacity: .48; cursor: not-allowed; }
 .batch-summary-actions span { color: var(--text-muted); font-size: 12px; }
+
+/* Tone-baserade statusfärger (delas av aktiv batch-panel och summary-chip) */
+.batch-summary-status-done,
+.batch-active-badge-done { color: #22c55e; border-color: rgba(34,197,94,.4); background: rgba(34,197,94,.1); }
+.batch-summary-status-running,
+.batch-active-badge-running { color: #38bdf8; border-color: rgba(56,189,248,.4); background: rgba(56,189,248,.1); }
+.batch-summary-status-thinking,
+.batch-active-badge-thinking { color: #818cf8; border-color: rgba(129,140,248,.4); background: rgba(129,140,248,.1); }
+.batch-summary-status-partial,
+.batch-active-badge-partial { color: #f59e0b; border-color: rgba(245,158,11,.4); background: rgba(245,158,11,.1); }
+.batch-summary-status-stopped,
+.batch-active-badge-stopped,
+.batch-summary-status-waiting,
+.batch-active-badge-waiting { color: var(--text-muted); border-color: var(--border); background: var(--surface-2); }
+.batch-summary-status-failed,
+.batch-active-badge-failed { color: #fb7185; border-color: rgba(239,68,68,.4); background: rgba(239,68,68,.1); }
+
+/* Aktiv batch-panel högst upp */
+.batch-active-panel { border: 1px solid var(--border); background: var(--surface); border-radius: 10px; padding: 14px; margin-bottom: 12px; border-left-width: 4px; }
+.batch-active-done { border-left-color: #22c55e; }
+.batch-active-running { border-left-color: #38bdf8; }
+.batch-active-thinking { border-left-color: #818cf8; }
+.batch-active-partial { border-left-color: #f59e0b; }
+.batch-active-stopped, .batch-active-waiting, .batch-active-none { border-left-color: var(--border); }
+.batch-active-failed { border-left-color: #ef4444; }
+.batch-active-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; margin-bottom: 8px; }
+.batch-active-eyebrow { display: block; color: var(--text-muted); font-size: 10px; font-weight: 900; text-transform: uppercase; letter-spacing: .04em; margin-bottom: 2px; }
+.batch-active-name { color: var(--text); font-size: 16px; line-height: 1.2; overflow-wrap: anywhere; }
+.batch-active-badge { flex: 0 0 auto; display: inline-flex; align-items: center; gap: 6px; border: 1px solid var(--border); border-radius: 999px; padding: 6px 11px; font-size: 12px; font-weight: 900; background: var(--surface-2); color: var(--text); }
+.batch-active-emoji { font-size: 13px; }
+.batch-active-sentence { color: var(--text); font-size: 13px; line-height: 1.5; margin-bottom: 10px; }
+.batch-active-meta { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 8px; }
+.batch-active-meta div { border: 1px solid var(--border); background: var(--surface-2); border-radius: 8px; padding: 8px 10px; min-width: 0; }
+.batch-active-meta span { display: block; color: var(--text-muted); font-size: 10px; font-weight: 900; text-transform: uppercase; margin-bottom: 3px; }
+.batch-active-meta strong { display: block; color: var(--text); font-size: 13px; overflow-wrap: anywhere; }
+.batch-active-warn { margin-top: 10px; border: 1px solid rgba(245,158,11,.4); background: rgba(245,158,11,.1); color: #f59e0b; border-radius: 8px; padding: 9px 11px; font-size: 12px; font-weight: 700; line-height: 1.45; }
+.batch-active-error { margin-top: 10px; border: 1px solid rgba(239,68,68,.4); background: rgba(239,68,68,.08); border-radius: 8px; padding: 10px 12px; }
+.batch-active-error strong { display: block; color: #fb7185; font-size: 13px; margin-bottom: 4px; }
+.batch-active-error p { margin: 0 0 4px; color: var(--text); font-size: 12px; line-height: 1.45; }
+.batch-active-error-meta { color: var(--text-muted) !important; }
+
+/* Vald batch tydligt i historiken */
+.batch-history button { position: relative; }
+.batch-history-selected { position: absolute; top: 6px; right: 6px; font-size: 9px; font-weight: 900; text-transform: uppercase; color: #38bdf8; background: rgba(56,189,248,.14); border-radius: 999px; padding: 2px 6px; }
+
+/* Vald batch-banner ovanför topplistan */
+.batch-selected-banner { border: 1px solid rgba(56,189,248,.3); background: rgba(56,189,248,.07); border-radius: 8px; padding: 10px 12px; margin-bottom: 10px; }
+.batch-selected-banner > div { color: var(--text-muted); font-size: 12px; line-height: 1.5; }
+.batch-selected-banner strong { color: var(--text); }
+.batch-selected-note { color: var(--text-muted); font-style: italic; }
+.batch-selected-warn { margin-top: 6px; color: #f59e0b !important; font-weight: 700; font-style: normal; }
 .batch-pipeline-flow { display: grid; grid-template-columns: repeat(17, auto); gap: 6px; align-items: stretch; overflow-x: auto; padding-bottom: 2px; }
 .batch-pipeline-step { min-width: 118px; border: 1px solid var(--border); background: var(--surface-2); border-radius: 8px; padding: 9px; display: flex; flex-direction: column; gap: 5px; }
 .batch-pipeline-step strong { color: var(--text); font-size: 12px; line-height: 1.25; }
@@ -15058,6 +15109,134 @@ body {
   font-size: .62rem;
   font-weight: 700;
 }
+
+/* ── Current decision card ───────────────────────────────────────────────── */
+.dt-now-panel {
+  margin-bottom: 12px;
+  border-left: 4px solid var(--blue);
+  background:
+    linear-gradient(135deg, rgba(96,165,250,0.10), rgba(96,165,250,0.02) 34%, transparent 70%),
+    var(--surface);
+}
+.dt-now-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 14px;
+}
+.dt-now-title { font-size: 1rem; font-weight: 700; color: var(--text); }
+.dt-now-sub {
+  margin-top: 4px;
+  color: var(--text-muted);
+  font-size: .82rem;
+  line-height: 1.5;
+}
+.dt-now-head-badges {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 6px;
+}
+.dt-now-summary-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+  gap: 10px;
+  margin-bottom: 12px;
+}
+.dt-now-summary-card {
+  border: 1px solid var(--border);
+  border-radius: var(--r);
+  padding: 12px;
+  background: var(--surface-2);
+  min-height: 92px;
+}
+.dt-now-summary-card-green { border-color: var(--green-border); background: var(--green-dim); }
+.dt-now-summary-card-yellow { border-color: var(--yellow-border); background: var(--yellow-dim); }
+.dt-now-summary-card-red { border-color: var(--red-border); background: var(--red-dim); }
+.dt-now-summary-card-blue { border-color: var(--blue-border); background: var(--blue-dim); }
+.dt-now-summary-card-gray { border-color: var(--border); background: var(--surface-2); }
+.dt-now-summary-lbl {
+  font-size: .66rem;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+  font-weight: 700;
+}
+.dt-now-summary-val {
+  margin-top: 6px;
+  font-size: .92rem;
+  font-weight: 700;
+  color: var(--text);
+  line-height: 1.45;
+  word-break: break-word;
+}
+.dt-now-summary-sub {
+  margin-top: 4px;
+  color: var(--text-muted);
+  font-size: .78rem;
+  line-height: 1.5;
+}
+.dt-now-pipeline {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+  gap: 8px;
+}
+.dt-now-step {
+  border: 1px solid var(--border);
+  border-radius: var(--r);
+  padding: 10px;
+  background: var(--surface-2);
+  min-height: 102px;
+}
+.dt-now-step-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 8px;
+}
+.dt-now-step-title {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  font-size: .74rem;
+  font-weight: 700;
+  color: var(--text);
+}
+.dt-now-step-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+.dt-now-step-text {
+  margin-top: 8px;
+  color: var(--text-muted);
+  font-size: .76rem;
+  line-height: 1.5;
+}
+.dt-now-step-green { border-color: var(--green-border); background: var(--green-dim); }
+.dt-now-step-green .dt-now-step-dot { background: var(--success); box-shadow: 0 0 8px rgba(34,197,94,0.45); }
+.dt-now-step-blue { border-color: var(--blue-border); background: var(--blue-dim); }
+.dt-now-step-blue .dt-now-step-dot { background: var(--blue); box-shadow: 0 0 8px rgba(96,165,250,0.45); }
+.dt-now-step-yellow { border-color: var(--yellow-border); background: var(--yellow-dim); }
+.dt-now-step-yellow .dt-now-step-dot { background: var(--warning); box-shadow: 0 0 8px rgba(245,158,11,0.45); }
+.dt-now-step-red { border-color: var(--red-border); background: var(--red-dim); }
+.dt-now-step-red .dt-now-step-dot { background: var(--danger); box-shadow: 0 0 8px rgba(239,68,68,0.45); }
+.dt-now-step-gray { border-color: var(--border); background: var(--surface-2); }
+.dt-now-step-gray .dt-now-step-dot { background: var(--text-muted); }
+.dt-now-note {
+  margin-top: 12px;
+  padding: 10px 12px;
+  border-radius: var(--r-sm);
+  border: 1px solid var(--border);
+  background: var(--surface-2);
+  color: var(--text-muted);
+  font-size: .82rem;
+  line-height: 1.55;
+}
+.dt-now-note strong { color: var(--text); }
 
 /* ── Process Card ─────────────────────────────────────────────────────────── */
 .dt-process-card {

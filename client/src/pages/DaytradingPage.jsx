@@ -171,6 +171,315 @@ function sanitizePipeText(text) {
   return text;
 }
 
+function stepTone(status) {
+  const s = String(status || '').toLowerCase();
+  if (['klar', 'allow', 'allowed', 'active', 'aktiv', 'ok', 'godkänd'].includes(s)) return 'green';
+  if (['kor', 'running', 'scanning', 'analyzing', 'processing', 'partial'].includes(s)) return 'blue';
+  if (['vantar', 'waiting', 'observe_only', 'watch', 'caution', 'observe'].includes(s)) return 'yellow';
+  if (['blockerad', 'blocked', 'error', 'fel', 'stoppad'].includes(s)) return 'red';
+  return 'gray';
+}
+
+function stepLabel(status) {
+  const s = String(status || '').toLowerCase();
+  if (s === 'green') return 'Godkänd';
+  if (s === 'blue') return 'Analyserar';
+  if (s === 'yellow') return 'Väntar';
+  if (s === 'red') return 'Stoppad';
+  return 'Okänd';
+}
+
+function extractStepSymbol(text) {
+  const match = String(text || '').match(/^(\S+)\s/);
+  return match?.[1] || null;
+}
+
+function extractStepStrategy(text) {
+  const clean = String(text || '').trim();
+  if (!clean || clean.includes('Ingen strategi')) return null;
+  const match = clean.match(/^(.+?)\s+matchade/);
+  return (match?.[1] || clean.replace(/\.$/, '') || '').trim() || null;
+}
+
+function formatTopReason(item) {
+  if (!item) return null;
+  const raw = typeof item === 'string' ? item : (item.reason || item.key || item.label || '');
+  const text = friendlySkipReason(raw);
+  return text || null;
+}
+
+function classifyStopStage(text, latestTrade = null) {
+  const t = String(text || '').toLowerCase();
+  const status = String(latestTrade?.runtime_status || '').toLowerCase();
+  if (status === 'partial' || status === 'paused' || status === 'disabled' || status === 'not_connected') return 'runtime';
+  if (t.includes('runtime partial') || t.includes('delvis koppl') || t.includes('saknar entry') || t.includes('no entry')) return 'runtime';
+  if (t.includes('cooldown')) return 'cooldown';
+  if (t.includes('duplicate')) return 'duplicate';
+  if (t.includes('max trades')) return 'max_trades';
+  if (t.includes('market closed') || t.includes('vänta') || t.includes('jaga inte') || t.includes('status=wait') || t.includes('status=avoid')) return 'entry';
+  if (t.includes('conservative') || t.includes('gate') || t.includes('volym') || t.includes('score') || t.includes('observe-only') || t.includes('safety')) return 'gate';
+  return null;
+}
+
+function requirementTextForStage(stage, { latestTrade, marketControls, status, runtime, paperStatus, liveTrades }) {
+  const filters = marketControls?.filters || {};
+  const minScore = filters.min_score ?? filters.minScore;
+  const minConfidence = filters.min_confidence ?? filters.minConfidence;
+  const cooldownMinutes = filters.cooldown_minutes ?? filters.cooldownMinutes;
+  const maxTradesPerHour = filters.max_trades_per_hour ?? filters.maxTradesPerHour;
+  const runtimeActiveCount = runtime?.summary?.can_create_paper_trade_count ?? 0;
+  const parts = [];
+
+  if (stage === 'runtime') {
+    parts.push('Strategin måste bli runtime active.');
+    parts.push('can_create_paper_trade måste vara true.');
+  } else if (stage === 'entry') {
+    const candidateStatus = String(latestTrade?.status || '').toLowerCase();
+    if (candidateStatus === 'wait' || candidateStatus === 'avoid') {
+      parts.push('Signal måste gå från wait till watch/caution.');
+    } else {
+      parts.push('Entry-regeln måste godkänna signalen.');
+    }
+    if (latestTrade?.volumeState && String(latestTrade.volumeState).toLowerCase() !== 'strong') {
+      parts.push('Volym behöver bli strong.');
+    }
+  } else if (stage === 'cooldown') {
+    parts.push(`Cooldown ${cooldownMinutes ?? 5} min måste löpa ut.`);
+    parts.push('Samma symbol får inte vara i cooldown.');
+  } else if (stage === 'duplicate') {
+    parts.push('SignalId måste vara unik.');
+  } else if (stage === 'max_trades') {
+    parts.push(`Max trades/h ${maxTradesPerHour ?? 10} får inte vara nådd.`);
+    parts.push('En ledig trade-plats måste finnas.');
+  } else if (stage === 'gate') {
+    if (paperStatus?.conservativeMode || paperStatus?.safetyAlert?.conservativeModeActive || liveTrades?.summary_48h?.conservativeModeActive) {
+      parts.push('Conservative mode kräver högre score.');
+    }
+    if (minScore != null) parts.push(`Score måste över ${minScore}.`);
+    if (minConfidence != null) parts.push(`Confidence måste över ${minConfidence}.`);
+    if (latestTrade?.volumeState && String(latestTrade.volumeState).toLowerCase() !== 'strong') {
+      parts.push('Volym behöver bli strong.');
+    }
+    parts.push('Market gate måste ge allow.');
+  } else if (stage === 'safety') {
+    parts.push('Safety låser riktig order.');
+  } else {
+    if (runtimeActiveCount > 0) {
+      parts.push('Market gate måste ge allow.');
+    } else {
+      parts.push('Systemet behöver en aktiv strategi med entry-regel.');
+    }
+  }
+
+  if (parts.length === 0) parts.push('Market gate måste ge allow.');
+  return parts.slice(0, 3);
+}
+
+function buildCurrentDecisionState({ status, pipeline, liveTrades, runtime, marketControls, learning, paperStatus, refreshing, refreshError }) {
+  const steps = pipeline?.pipeline || [];
+  const latestTrade = Array.isArray(liveTrades?.trades) && liveTrades.trades.length > 0 ? liveTrades.trades[0] : null;
+  const dataStep = steps.find((step) => step.id === 'data') || null;
+  const scannerStep = steps.find((step) => step.id === 'scanner') || null;
+  const symbolStep = steps.find((step) => step.id === 'symbol') || null;
+  const strategyStep = steps.find((step) => step.id === 'strategy') || null;
+  const paperStep = steps.find((step) => step.id === 'paper') || null;
+  const runtimeSummary = runtime?.summary || {};
+  const openCount = paperStatus?.openCount ?? paperStatus?.openTrades?.length ?? liveTrades?.summary?.open ?? 0;
+  const topStopReason = liveTrades?.stoppage_summary_48h?.top_reasons?.[0] || learning?.data?.skip_reasons?.[0] || null;
+  const topStopText = formatTopReason(topStopReason);
+  const candidateSymbol = latestTrade?.symbol || extractStepSymbol(symbolStep?.text) || null;
+  const candidateRawSignal = latestTrade?.raw_signal || latestTrade?.raw_strategy || latestTrade?.signal_subtype || latestTrade?.signalFamily || null;
+  const candidateStrategy = latestTrade?.strategy_name || latestTrade?.strategy || extractStepStrategy(strategyStep?.text) || null;
+  const candidateDecision = latestTrade?.status || sanitizePipeText(paperStep?.text) || null;
+  const hasFreshCandidate = Boolean(candidateSymbol || candidateRawSignal || candidateStrategy || candidateDecision);
+  const candidateLine = hasFreshCandidate
+    ? [candidateSymbol, candidateRawSignal, candidateStrategy].filter(Boolean).join(' · ')
+    : 'Systemet söker. Ingen färsk kandidat ännu.';
+
+  const stopStage = classifyStopStage(
+    topStopText || latestTrade?.block_reason || latestTrade?.risk_reason || latestTrade?.reason || paperStep?.text || '',
+    latestTrade,
+  );
+  const stopStageLabel = {
+    runtime: 'Runtime',
+    entry: 'Entry-regel',
+    gate: 'Market Gate',
+    cooldown: 'Cooldown',
+    duplicate: 'Duplicate',
+    max_trades: 'Max trades',
+    safety: 'Safety',
+  }[stopStage] || (openCount > 0 ? 'Paper trade' : 'Market Gate');
+  const stopReasonText = topStopText
+    || (openCount > 0 ? 'En paper trade är redan öppen och följs.' : null)
+    || latestTrade?.block_reason
+    || latestTrade?.risk_reason
+    || latestTrade?.reason
+    || 'Ingen färsk kandidat ännu.';
+  const latestStageStatus = {
+    data: stepTone(dataStep?.status || (status?.backend_connected ? 'klar' : 'fel')),
+    scanner: stepTone(scannerStep?.status || (status?.scanner_active ? 'kor' : 'vantar')),
+    signal: hasFreshCandidate ? 'green' : 'yellow',
+    strategy: candidateStrategy ? 'green' : 'yellow',
+    runtime: stepTone(latestTrade?.runtime_status || runtimeSummary.runtime_status || (runtimeSummary.can_create_paper_trade_count > 0 ? 'active' : 'partial')),
+    entry: stepTone(stopStage === 'entry' ? 'blockerad' : stopStage === 'runtime' ? 'vantar' : (candidateDecision ? 'klar' : 'vantar')),
+    gate: stepTone(stopStage === 'gate' ? 'blockerad' : (openCount > 0 ? 'klar' : 'vantar')),
+    paper: stepTone(openCount > 0 ? 'klar' : (candidateDecision && !stopStage ? 'vantar' : 'blockerad')),
+  };
+  const requirements = requirementTextForStage(stopStage || (openCount > 0 ? 'paper' : 'gate'), {
+    latestTrade,
+    marketControls,
+    status,
+    runtime,
+    paperStatus,
+    liveTrades,
+  });
+
+  const pipelineState = [
+    {
+      id: 'data',
+      label: 'Data hämtad',
+      text: status?.latest_scan ? `Senaste scan: ${timeSince(status.latest_scan)}` : 'Data väntar på nästa scan.',
+      tone: latestStageStatus.data,
+    },
+    {
+      id: 'scanner',
+      label: 'Scanner kör',
+      text: status?.scanner_active ? 'Scanner analyserar senaste data.' : 'Scanner väntar på nästa körning.',
+      tone: latestStageStatus.scanner,
+    },
+    {
+      id: 'signal',
+      label: 'Signal hittad',
+      text: candidateSymbol ? candidateLine : 'Systemet söker. Ingen färsk kandidat ännu.',
+      tone: latestStageStatus.signal,
+    },
+    {
+      id: 'strategy',
+      label: 'Strategi matchad',
+      text: candidateStrategy ? `${candidateStrategy} matchade.` : 'Ingen strategi matchad ännu.',
+      tone: latestStageStatus.strategy,
+    },
+    {
+      id: 'runtime',
+      label: 'Runtime',
+      text: latestTrade?.runtime_comment_sv || latestTrade?.catalog_mapping_note || runtime?.strategies?.find((s) => s.runtime_status === 'active')?.runtime_comment_sv || 'Runtime kontrolleras mot aktiva strategier.',
+      tone: latestStageStatus.runtime,
+    },
+    {
+      id: 'entry',
+      label: 'Entry-regel',
+      text: latestTrade?.reason || latestTrade?.catalog_mapping_note || topStopText || 'Entry-regeln bedöms mot status, volym och riktning.',
+      tone: latestStageStatus.entry,
+    },
+    {
+      id: 'gate',
+      label: 'Market Gate',
+      text: candidateDecision && stopStage !== 'gate'
+        ? candidateDecision
+        : stopReasonText,
+      tone: latestStageStatus.gate,
+    },
+    {
+      id: 'paper',
+      label: 'Paper trade',
+      text: openCount > 0
+        ? `${openCount} paper trade${openCount === 1 ? '' : 's'} öppen${openCount === 1 ? '' : 'a'}`
+        : 'Ingen paper trade skapades.',
+      tone: latestStageStatus.paper,
+    },
+  ];
+
+  return {
+    latestTrade,
+    candidateSymbol,
+    candidateRawSignal,
+    candidateStrategy,
+    candidateDecision,
+    candidateLine,
+    hasFreshCandidate,
+    stopStage,
+    stopStageLabel,
+    stopReasonText,
+    requirements,
+    openCount,
+    runtimeSummary,
+    topStopReason,
+    topStopText,
+    pipelineState,
+    refreshing,
+    refreshError,
+  };
+}
+
+function CurrentDecisionCard({ status, pipeline, liveTrades, runtime, marketControls, learning, paperStatus, refreshing, refreshError }) {
+  const current = buildCurrentDecisionState({ status, pipeline, liveTrades, runtime, marketControls, learning, paperStatus, refreshing, refreshError });
+  const activeCount = current.runtimeSummary.can_create_paper_trade_count ?? 0;
+  const partialCount = current.runtimeSummary.runtime_partial ?? 0;
+  const selectedCount = current.runtimeSummary.enabled_by_user ?? 0;
+
+  return (
+    <div className="dt-panel dt-now-panel">
+      <div className="dt-now-head">
+        <div>
+          <h2 className="dt-now-title">Vad händer just nu?</h2>
+          <p className="dt-now-sub">Systemet kan analysera och paper-trada, men inte lägga riktiga ordrar.</p>
+        </div>
+        <div className="dt-now-head-badges">
+          {refreshing && <span className="dt-badge dt-badge-blue">Uppdaterar</span>}
+          {refreshError && <span className="dt-badge dt-badge-yellow">Senaste uppdatering misslyckades</span>}
+          <span className="dt-badge dt-badge-gray">Safety låst</span>
+        </div>
+      </div>
+
+      <div className="dt-now-summary-grid">
+        <div className={`dt-now-summary-card dt-now-summary-card-${current.hasFreshCandidate ? 'blue' : 'yellow'}`}>
+          <div className="dt-now-summary-lbl">Söker just nu</div>
+          <div className="dt-now-summary-val">{current.candidateLine}</div>
+          <div className="dt-now-summary-sub">
+            {current.candidateRawSignal ? `Raw signal: ${current.candidateRawSignal}` : 'Ingen färsk raw signal ännu.'}
+          </div>
+        </div>
+        <div className={`dt-now-summary-card dt-now-summary-card-${current.stopStage === 'runtime' ? 'blue' : current.stopStage === 'gate' || current.stopStage === 'safety' ? 'red' : 'yellow'}`}>
+          <div className="dt-now-summary-lbl">Stopporsak</div>
+          <div className="dt-now-summary-val">{current.stopStageLabel}</div>
+          <div className="dt-now-summary-sub">{current.stopReasonText}</div>
+        </div>
+        <div className="dt-now-summary-card dt-now-summary-card-green">
+          <div className="dt-now-summary-lbl">Nästa krav</div>
+          <div className="dt-now-summary-val">{current.requirements[0]}</div>
+          <div className="dt-now-summary-sub">{current.requirements.slice(1).join(' ')}</div>
+        </div>
+        <div className="dt-now-summary-card dt-now-summary-card-gray">
+          <div className="dt-now-summary-lbl">Lägesbild</div>
+          <div className="dt-now-summary-val">{status?.scanner_active ? 'Scanner kör' : 'Scanner pausad'}</div>
+          <div className="dt-now-summary-sub">
+            {`Runtime active: ${activeCount} · selected: ${selectedCount} · partial: ${partialCount} · öppna paper: ${current.openCount}`}
+          </div>
+        </div>
+      </div>
+
+      <div className="dt-now-pipeline">
+        {current.pipelineState.map((step) => (
+          <div key={step.id} className={`dt-now-step dt-now-step-${step.tone}`}>
+            <div className="dt-now-step-head">
+              <div className="dt-now-step-title">
+                <span className="dt-now-step-dot" />
+                <span>{step.label}</span>
+              </div>
+              <span className={`dt-badge dt-badge-${step.tone}`}>{stepLabel(step.tone)}</span>
+            </div>
+            <div className="dt-now-step-text">{sanitizePipeText(step.text)}</div>
+          </div>
+        ))}
+      </div>
+
+      <div className="dt-now-note">
+        <strong>Vad det betyder:</strong> {current.stopReasonText} {current.requirements.length ? `För att öppna en trade krävs att ${current.requirements.join(' ')}` : ''}
+      </div>
+    </div>
+  );
+}
+
 function badgeColor(status) {
   const s = String(status || '').toLowerCase();
   if (s === 'aktiv') return 'dt-badge-green';
@@ -1791,6 +2100,19 @@ export default function DaytradingPage() {
 
       {/* A) Status */}
       <StatusBar status={status} />
+
+      {/* Ny: Vad händer just nu */}
+      <CurrentDecisionCard
+        status={status}
+        pipeline={pipeline}
+        liveTrades={liveTrades}
+        runtime={runtime}
+        marketControls={marketControls}
+        learning={learning}
+        paperStatus={paperStatus}
+        refreshing={refreshing}
+        refreshError={refreshError}
+      />
 
       {/* B) Safety */}
       <SafetyBanner status={status} />
