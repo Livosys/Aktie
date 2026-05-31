@@ -121,38 +121,37 @@ export function SignalImportanceTimes({
   const primaryInfo = signalAgeInfo(primary);
   const stale = primaryInfo.status === 'stale' || signalAgeInfo(lastUpdate).status === 'stale';
 
-  // Krav 5: saknas primär tid → visa förklaring, inte tomt.
-  if (primaryInfo.status === 'unknown') {
-    return (
-      <div className="sig-times sig-times-unknown">
-        <div className="sig-times-missing">⚪ Tid saknas – kan inte avgöra hur färsk signalen är.</div>
-        {clockOf(lastUpdate) && (
-          <div className="sig-times-rows">
-            <span><b>{mode === 'good' ? 'Senaste signal' : 'Senast uppdaterad'}:</b> {clockOf(lastUpdate)}</span>
-          </div>
-        )}
-      </div>
-    );
-  }
+  // Alla obligatoriska rader (krav 1/2) renderas ALLTID. Saknas en tid visas
+  // "Tid saknas" istället för tom rad (krav 5), aldrig en bortgömd rad.
+  const NA = 'Tid saknas';
+  const clk = (ts) => clockOf(ts) || NA;
+  const durOrNA = (ts) => formatAgeShort(ts) || NA;
+  const primaryText = primaryInfo.status === 'unknown'
+    ? `${primaryInfo.dot} ${NA}`
+    : `${primaryInfo.dot} ${primaryInfo.timeText}`;
 
   return (
     <div className={`sig-times sig-times-${primaryInfo.status}`}>
       <div className="sig-times-rows">
         {mode === 'top' ? (
           <>
-            {clockOf(created) && <span><b>Signal skapad:</b> {clockOf(created)}</span>}
-            <span className="sig-times-key"><b>Dök upp som topp:</b> {primaryInfo.dot} {primaryInfo.timeText}</span>
-            {formatAgeShort(becameTop) && <span><b>Legat i topp:</b> {formatAgeShort(becameTop)}</span>}
-            {clockOf(lastUpdate) && <span><b>Senast uppdaterad:</b> {clockOf(lastUpdate)}</span>}
+            <span><b>Signal skapad:</b> {clk(created)}</span>
+            <span className="sig-times-key"><b>Dök upp som topp:</b> {primaryText}</span>
+            <span><b>Legat i topp:</b> {durOrNA(becameTop)}</span>
+            <span><b>Senast uppdaterad:</b> {clk(lastUpdate)}</span>
           </>
         ) : (
           <>
-            <span className="sig-times-key"><b>Bra läge sedan:</b> {primaryInfo.dot} {primaryInfo.timeText}</span>
-            {formatAgeShort(becameGood) && <span><b>Ålder:</b> {formatAgeShort(becameGood)}</span>}
-            {clockOf(lastUpdate) && <span><b>Senaste signal:</b> {clockOf(lastUpdate)}</span>}
+            <span className="sig-times-key"><b>Bra läge sedan:</b> {primaryText}</span>
+            <span><b>Ålder:</b> {durOrNA(becameGood)}</span>
+            <span><b>Senaste signal:</b> {clk(lastUpdate)}</span>
           </>
         )}
       </div>
+      {/* Krav 5: kan inte avgöra färskhet (primär tid saknas) → tydlig förklaring. */}
+      {primaryInfo.status === 'unknown' && (
+        <div className="sig-times-missing">⚪ Tid saknas – kan inte avgöra hur färsk signalen är.</div>
+      )}
       {stale && (
         <div className="sig-times-warn">
           <span>🔴 Den här signalen är gammal.</span>
