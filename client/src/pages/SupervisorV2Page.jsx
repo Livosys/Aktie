@@ -343,6 +343,53 @@ function recommendationPillTone(status) {
   return 'missing';
 }
 
+// Översätter batchstatus till enkel svensk UI-text för read-only analys.
+function getBatchUiStatus(batch) {
+  if (!batch || !batch.id) {
+    return { key: 'none', emoji: '', label: 'Ingen batch', tone: 'none', sentence: 'Ingen batch finns ännu.', busy: false };
+  }
+  const status = String(batch.status || '').toLowerCase();
+  const total = Number(batch.progress?.total || 0);
+  const completed = Number(batch.progress?.completed || 0);
+  const done = total > 0 && completed >= total;
+  const hasError = !!batch.error || status === 'failed' || status === 'error';
+
+  if (hasError) {
+    return { key: 'failed', emoji: '🔴', label: 'Misslyckades', tone: 'failed', busy: false,
+      sentence: 'Batch misslyckades. Något gick fel — se orsak och rekommenderad åtgärd nedan.' };
+  }
+  if (['preparing', 'planning', 'thinking', 'queued'].includes(status)) {
+    return { key: 'thinking', emoji: '🔵', label: 'Förbereder', tone: 'thinking', busy: true,
+      sentence: 'Systemet förbereder testet. Vänta några sekunder innan du gör något.' };
+  }
+  if (status === 'running' && !done) {
+    return { key: 'running', emoji: '🟡', label: 'Körs', tone: 'running', busy: true,
+      sentence: 'Batch körs just nu. Systemet testar strategier.' };
+  }
+  if (status === 'paused') {
+    return { key: 'paused', emoji: '🟠', label: 'Pausad', tone: 'partial', busy: false,
+      sentence: `Batchen är pausad efter ${completed}/${total} tester.` };
+  }
+  if (done && status === 'stopped') {
+    return { key: 'done_stopped', emoji: '⚪', label: 'Stoppad efter färdig körning', tone: 'stopped', busy: false,
+      sentence: 'Batch stoppad efter att alla tester redan var klara.' };
+  }
+  if (done) {
+    return { key: 'done', emoji: '🟢', label: 'Klar', tone: 'done', busy: false,
+      sentence: 'Batch klar. Alla tester är färdiga.' };
+  }
+  if (status === 'stopped') {
+    return { key: 'stopped', emoji: '⚪', label: 'Stoppad – ej klar', tone: 'partial', busy: false,
+      sentence: `Batchen stoppades efter ${completed}/${total} tester.` };
+  }
+  if (completed > 0 && completed < total) {
+    return { key: 'partial', emoji: '🟠', label: 'Halvklar', tone: 'partial', busy: false,
+      sentence: `Batchen hann bara köra ${completed}/${total} tester.` };
+  }
+  return { key: 'waiting', emoji: '⚪', label: 'Väntar', tone: 'waiting', busy: false,
+    sentence: 'Batch väntar på att startas.' };
+}
+
 function ModuleCard({ card }) {
   return (
     <article className={`sup-v2-card sup-v2-card-${card.tone}`}>
@@ -385,6 +432,548 @@ function DecisionCard({ item }) {
         </ul>
       )}
     </article>
+  );
+}
+
+function OptScoreBadge({ score }) {
+  const color = score >= 60 ? '#22c55e' : score >= 40 ? '#f59e0b' : '#ef4444';
+  return (
+    <span className="opt-score-badge" style={{ background: `${color}18`, color, borderColor: `${color}50` }}>
+      {score}/100
+    </span>
+  );
+}
+
+function StatRow({ label, value, highlight }) {
+  return (
+    <div className="opt-stat-row">
+      <span className="opt-stat-label">{label}</span>
+      <span className={`opt-stat-value${highlight ? ' opt-stat-hi' : ''}`}>{value ?? '–'}</span>
+    </div>
+  );
+}
+
+function MiniBar({ pct, color }) {
+  return (
+    <div className="opt-minibar-track">
+      <div className="opt-minibar-fill" style={{ width: `${Math.max(0, Math.min(100, pct))}%`, background: color }} />
+    </div>
+  );
+}
+
+function ConfigCard({ config, rank }) {
+  const [open, setOpen] = React.useState(false);
+  if (!config?.stats) return null;
+  const { winRatePct, timeoutRatePct, avgPnl, n } = config.stats;
+  const isTop = rank <= 2;
+  return (
+    <div className={`opt-config-card ${isTop ? 'opt-config-top' : ''}`}>
+      <div className="opt-config-header">
+        <div className="opt-config-rank">#{rank}</div>
+        <div className="opt-config-info">
+          <div className="opt-config-label">{config.label}</div>
+          <div className="opt-config-n">{n} trades</div>
+        </div>
+        <OptScoreBadge score={config.score || 0} />
+      </div>
+      <div className="opt-config-bars">
+        <div className="opt-config-bar-row">
+          <span>Win rate</span>
+          <MiniBar pct={winRatePct || 0} color={(winRatePct || 0) >= 50 ? '#22c55e' : (winRatePct || 0) >= 35 ? '#f59e0b' : '#ef4444'} />
+          <span className="opt-bar-val">{winRatePct}%</span>
+        </div>
+        <div className="opt-config-bar-row">
+          <span>Timeout</span>
+          <MiniBar pct={timeoutRatePct || 0} color={(timeoutRatePct || 0) > 50 ? '#ef4444' : (timeoutRatePct || 0) > 30 ? '#f59e0b' : '#22c55e'} />
+          <span className="opt-bar-val">{timeoutRatePct}%</span>
+        </div>
+      </div>
+      <div className={`opt-config-pnl ${avgPnl >= 0 ? 'opt-pnl-pos' : 'opt-pnl-neg'}`}>
+        {avgPnl >= 0 ? '+' : ''}{(avgPnl * 100).toFixed(3)}% snitt P/L
+      </div>
+      <button className="opt-expand-btn" onClick={() => setOpen((v) => !v)} type="button">
+        {open ? '▲ Dölj' : '▼ Parametrar'}
+      </button>
+      {open && (
+        <div className="opt-config-params">
+          {Object.entries(config.params || {}).map(([k, v]) => (
+            <span key={k} className="opt-param-chip"><span>{k}</span>{v}</span>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function WeakConfigCard({ config }) {
+  if (!config?.stats) return null;
+  const { winRatePct, timeoutRatePct, n } = config.stats;
+  return (
+    <div className="opt-weak-card">
+      <div className="opt-weak-header">
+        <span className="opt-weak-icon">⚠️</span>
+        <div>
+          <div className="opt-weak-label">{config.label}</div>
+          <div className="opt-weak-n">{n} trades</div>
+        </div>
+        <OptScoreBadge score={config.score || 0} />
+      </div>
+      {config.warning && <div className="opt-weak-warning">{config.warning}</div>}
+      <div className="opt-weak-stats">
+        <span>WR: {winRatePct}%</span>
+        <span>Timeout: {timeoutRatePct}%</span>
+      </div>
+    </div>
+  );
+}
+
+function BucketBar({ items, scoreKey = 'score', labelKey = 'label', metricKey = 'stats', metricField = 'winRatePct' }) {
+  if (!items?.length) return <div className="opt-empty">Ingen data</div>;
+  const maxScore = Math.max(...items.map((item) => item?.[scoreKey] || 0));
+  return (
+    <div className="opt-bucket-list">
+      {items.map((item, i) => {
+        const st = item?.[metricKey];
+        if (!st) return null;
+        const val = st[metricField] ?? 0;
+        const color = val >= 50 ? '#22c55e' : val >= 35 ? '#f59e0b' : '#ef4444';
+        const isBest = i === 0 || (item?.[scoreKey] || 0) === maxScore;
+        return (
+          <div key={`${item?.[labelKey] || i}`} className={`opt-bucket-row ${isBest ? 'opt-bucket-best' : ''}`}>
+            <div className="opt-bucket-label">{item?.[labelKey]}</div>
+            <div className="opt-bucket-bar-wrap">
+              <MiniBar pct={val} color={color} />
+            </div>
+            <div className="opt-bucket-vals">
+              <span style={{ color, fontWeight: 600 }}>{val}%</span>
+              <span className="opt-bucket-n">n={st.n}</span>
+              {isBest && <span className="opt-bucket-best-badge">✓ Bäst</span>}
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+function RecommendationsList({ recs }) {
+  if (!recs) return null;
+  const green = normalizeArray(recs.green);
+  const yellow = normalizeArray(recs.yellow);
+  const red = normalizeArray(recs.red);
+  return (
+    <div className="opt-recs">
+      {green.length > 0 && (
+        <div className="opt-rec-group">
+          <div className="opt-rec-group-label opt-green-label">🟢 Rekommenderat</div>
+          {green.map((r, i) => <div key={i} className="opt-rec-item opt-rec-green">{r}</div>)}
+        </div>
+      )}
+      {yellow.length > 0 && (
+        <div className="opt-rec-group">
+          <div className="opt-rec-group-label opt-yellow-label">🟡 Behöver mer data / Justera</div>
+          {yellow.map((r, i) => <div key={i} className="opt-rec-item opt-rec-yellow">{r}</div>)}
+        </div>
+      )}
+      {red.length > 0 && (
+        <div className="opt-rec-group">
+          <div className="opt-rec-group-label opt-red-label">🔴 Undvik</div>
+          {red.map((r, i) => <div key={i} className="opt-rec-item opt-rec-red">{r}</div>)}
+        </div>
+      )}
+      {!green.length && !yellow.length && !red.length && (
+        <div className="opt-empty">Inga rekommendationer ännu — kör mer paper trading.</div>
+      )}
+    </div>
+  );
+}
+
+const OPTIMIZATION_SECTIONS = [
+  { key: 'overview', label: 'Översikt', icon: '📊' },
+  { key: 'configs', label: 'Konfigurationer', icon: '🏆' },
+  { key: 'params', label: 'Parametrar', icon: '⚙️' },
+  { key: 'exits_a', label: 'Exit-analys', icon: '↘️' },
+  { key: 'markets', label: 'Marknader', icon: '🌍' },
+  { key: 'batch', label: 'Batch', icon: '🧪' },
+  { key: 'recs', label: 'Råd', icon: '💡' },
+];
+
+function buildOptimizationPrompt(optimization, sectionKey) {
+  if (!optimization) return '';
+  const overallStats = optimization.overallStats || optimization.overall_stats || {};
+  const topConfigs = normalizeArray(optimization.topConfigs);
+  const weakConfigs = normalizeArray(optimization.weakConfigs);
+  const bestStrategy = optimization.daytradingStrategies?.bestStrategy || null;
+  const pauseCandidates = normalizeArray(optimization.daytradingStrategies?.pauseCandidates || []);
+  const batch = optimization.strategyBatchTesting || {};
+  const sectionLabel = OPTIMIZATION_SECTIONS.find((section) => section.key === sectionKey)?.label || 'Översikt';
+
+  const sectionHints = {
+    overview: [
+      `Trades analyserade: ${formatInt(optimization.tradeCount, 'Ingen data ännu')}`,
+      `Score: ${formatInt(optimization.overallScore, 'Ingen data ännu')}/100`,
+      `Bäst hittills: ${bestStrategy?.strategy_name || 'Ingen tydlig vinnare ännu'}`,
+      `Top configar: ${topConfigs.slice(0, 3).map((item) => item.label || item.strategy_name || item.name).filter(Boolean).join(', ') || 'saknas'}`,
+      `Weak configs: ${weakConfigs.slice(0, 3).map((item) => item.label || item.strategy_name || item.name).filter(Boolean).join(', ') || 'saknas'}`,
+    ],
+    configs: [
+      `Top configar: ${topConfigs.slice(0, 5).map((item) => `${item.label || item.strategy_name || item.name} (${item.score ?? 0}/100)`).join(' | ') || 'saknas'}`,
+      `Svaga configar: ${weakConfigs.slice(0, 5).map((item) => `${item.label || item.strategy_name || item.name} (${item.score ?? 0}/100)`).join(' | ') || 'saknas'}`,
+    ],
+    params: [
+      `Stop loss: ${normalizeArray(optimization.stopLoss?.buckets).slice(0, 3).map((item) => `${item.label} ${item.stats?.winRatePct ?? 0}% WR`).join(' | ') || 'saknas'}`,
+      `Hålltid: ${normalizeArray(optimization.holdingTime?.buckets).slice(0, 3).map((item) => `${item.label} ${item.stats?.winRatePct ?? 0}% WR`).join(' | ') || 'saknas'}`,
+      `Confidence: ${normalizeArray(optimization.confidence?.buckets).slice(0, 3).map((item) => `${item.label} ${item.stats?.winRatePct ?? 0}% WR`).join(' | ') || 'saknas'}`,
+    ],
+    exits_a: [
+      `Exit-analys: ${normalizeArray(optimization.exits?.byReason).slice(0, 4).map((item) => `${item.reasonSv || item.reason} ${item.stats?.winRatePct ?? 0}% WR`).join(' | ') || 'saknas'}`,
+      `Timeout-rate: ${optimization.exits?.timeoutPct ?? 0}%`,
+      `Exit-rekommendationer: ${normalizeArray(optimization.exits?.recommendations).join(' | ') || 'saknas'}`,
+    ],
+    markets: [
+      `Marknader: ${normalizeArray(optimization.markets?.markets).slice(0, 4).map((item) => `${item.marketSv} (${item.stats?.winRatePct ?? 0}% WR)`).join(' | ') || 'saknas'}`,
+      `Bästa kombinationer: ${normalizeArray(optimization.combinations?.bestCombinations).slice(0, 4).map((item) => `${item.label} (${item.stats?.winRatePct ?? 0}% WR)`).join(' | ') || 'saknas'}`,
+      `Marknadsråd: ${normalizeArray(optimization.markets?.recommendations).join(' | ') || 'saknas'}`,
+    ],
+    batch: [
+      `Senaste batch: ${batch.latestBatch?.name || 'Ingen batch ännu'}`,
+      `Bästa strategi: ${batch.bestStrategy?.strategy_name || 'Ingen data ännu'}`,
+      `Bästa SL / TP / confidence: ${batch.bestStopLoss?.key ?? '–'} / ${batch.bestTakeProfit?.key ?? '–'} / ${batch.bestConfidence?.key ?? '–'}`,
+      `Pause candidates: ${pauseCandidates.slice(0, 5).map((item) => item.strategy_name || item.strategy_id || item.name).join(', ') || 'saknas'}`,
+    ],
+    recs: [
+      `Rekommendationer: ${normalizeArray(optimization.recommendations?.green).slice(0, 3).join(' | ') || 'saknas'}`,
+      `Behöver mer data: ${normalizeArray(optimization.recommendations?.yellow).slice(0, 3).join(' | ') || 'saknas'}`,
+      `Undvik: ${normalizeArray(optimization.recommendations?.red).slice(0, 3).join(' | ') || 'saknas'}`,
+    ],
+  };
+
+  return [
+    'Du är AI Optimization Center i Supervisor.',
+    `Flik: ${sectionLabel}`,
+    'Uppgiften är read-only analys. Förklara vad siffrorna betyder, vad som fungerar, vad som stoppar, och vad nästa steg bör vara.',
+    `actions_allowed=false`,
+    `can_place_orders=false`,
+    `live_trading_enabled=false`,
+    ...(sectionHints[sectionKey] || sectionHints.overview),
+    '',
+    'Svara på enkel svenska. Ge kort slutsats, konkreta datapunkter och nästa åtgärd.',
+  ].join('\n');
+}
+
+function OptimizationCenter({ optimization }) {
+  const [section, setSection] = React.useState('overview');
+  const tradeCount = optimization?.tradeCount ?? 0;
+  const overallStats = optimization?.overallStats || optimization?.overall_stats || {};
+  const overallScore = optimization?.overallScore ?? 0;
+  const topConfigs = normalizeArray(optimization?.topConfigs);
+  const weakConfigs = normalizeArray(optimization?.weakConfigs);
+  const stopLoss = optimization?.stopLoss || {};
+  const holdingTime = optimization?.holdingTime || {};
+  const exitsData = optimization?.exits || {};
+  const combinations = optimization?.combinations || {};
+  const markets = optimization?.markets || {};
+  const confidence = optimization?.confidence || {};
+  const recommendations = optimization?.recommendations || {};
+  const strategyBatchTesting = optimization?.strategyBatchTesting || {};
+  const bestStrategy = optimization?.daytradingStrategies?.bestStrategy || null;
+  const pauseCandidates = normalizeArray(optimization?.daytradingStrategies?.pauseCandidates || []);
+  const activeSection = OPTIMIZATION_SECTIONS.find((item) => item.key === section) || OPTIMIZATION_SECTIONS[0];
+
+  function askAi() {
+    const prompt = buildOptimizationPrompt(optimization, section);
+    if (!prompt) return;
+    window.dispatchEvent(new CustomEvent('ai-copilot:open', {
+      detail: {
+        question: prompt,
+        autoAsk: true,
+        source: 'supervisor-optimization-center',
+      },
+    }));
+  }
+
+  if (!optimization) {
+    return (
+      <section className="sup-section">
+        <div className="sup-section-head">
+          <div>
+            <h2>🧠 AI Optimization Center</h2>
+            <p>Read-only analys av historiska trades. Ingen livehandel, inga ordrar och inga apply-knappar.</p>
+          </div>
+        </div>
+        <div className="opt-empty">Ingen data tillgänglig ännu.</div>
+      </section>
+    );
+  }
+
+  return (
+    <section className="sup-section">
+      <div className="sup-section-head">
+        <div>
+          <h2>🧠 AI Optimization Center</h2>
+          <p>Samma analysmotor som i Lab, men visad i Supervisor-format och låst till read-only.</p>
+        </div>
+      </div>
+
+      <div className="opt-panel">
+        <div className="opt-header">
+          <div className="opt-header-left">
+            <div className="opt-title">🤖 AI Optimization Agent</div>
+            <div className="opt-subtitle">
+              Analyserar {tradeCount} historiska trades och förklarar vad som fungerar, vad som blockeras och vad nästa steg är.
+            </div>
+          </div>
+          <div className="opt-header-right">
+            <button className="opt-rebuild-btn" onClick={askAi} type="button" title="Öppna AiCopilot med aktuell flik">
+              Fråga AI om detta
+            </button>
+          </div>
+        </div>
+
+        <div className="opt-safety-note">
+          🔒 actions_allowed=false · can_place_orders=false · live_trading_enabled=false — Bara analys
+        </div>
+
+        <div className="opt-section-nav">
+          {OPTIMIZATION_SECTIONS.map((item) => (
+            <button
+              key={item.key}
+              className={`opt-section-btn${section === item.key ? ' opt-section-active' : ''}`}
+              onClick={() => setSection(item.key)}
+              type="button"
+            >
+              <span>{item.icon}</span>
+              <span>{item.label}</span>
+            </button>
+          ))}
+        </div>
+
+        <div className="opt-rec-note" style={{ marginTop: 14 }}>
+          Aktiv flik: {activeSection.label}. AiCopilot får sammanhang från just denna vy när du frågar.
+        </div>
+
+        {section === 'overview' && (
+          <div className="opt-section-content">
+            {overallStats && (
+              <div className="opt-overview-grid">
+                <div className="opt-overview-card">
+                  <div className="opt-ov-val" style={{ color: (overallStats.winRatePct || 0) >= 50 ? '#22c55e' : '#f59e0b' }}>
+                    {overallStats.winRatePct}%
+                  </div>
+                  <div className="opt-ov-label">Total win rate</div>
+                </div>
+                <div className="opt-overview-card">
+                  <div className="opt-ov-val" style={{ color: (overallStats.timeoutRatePct || 0) > 40 ? '#ef4444' : '#22c55e' }}>
+                    {overallStats.timeoutRatePct}%
+                  </div>
+                  <div className="opt-ov-label">Timeout-rate</div>
+                </div>
+                <div className="opt-overview-card">
+                  <div className="opt-ov-val" style={{ color: (overallStats.avgPnl || 0) >= 0 ? '#22c55e' : '#ef4444' }}>
+                    {(overallStats.avgPnl || 0) >= 0 ? '+' : ''}{((overallStats.avgPnl || 0) * 100).toFixed(3)}%
+                  </div>
+                  <div className="opt-ov-label">Snitt P/L</div>
+                </div>
+                <div className="opt-overview-card">
+                  <div className="opt-ov-val">{tradeCount}</div>
+                  <div className="opt-ov-label">Trades analyserade</div>
+                </div>
+              </div>
+            )}
+            <div className="opt-subsection">Snabba insikter</div>
+            <RecommendationsList recs={recommendations} />
+            <div className="opt-rec-note">Bästa strategi: {bestStrategy?.strategy_name || 'Ingen tydlig vinnare ännu'}.</div>
+          </div>
+        )}
+
+        {section === 'configs' && (
+          <div className="opt-section-content">
+            <div className="opt-subsection">🏆 Bästa konfigurationer</div>
+            {topConfigs?.length > 0
+              ? topConfigs.slice(0, 5).map((c, i) => <ConfigCard key={c.id || c.key || i} config={c} rank={i + 1} />)
+              : <div className="opt-empty">Inte tillräcklig data för konfigurationsranking.</div>
+            }
+            {weakConfigs?.length > 0 && (
+              <>
+                <div className="opt-subsection opt-weak-sub">⚠️ Svaga konfigurationer</div>
+                {weakConfigs.map((c, i) => <WeakConfigCard key={c.id || c.key || i} config={c} />)}
+              </>
+            )}
+          </div>
+        )}
+
+        {section === 'params' && (
+          <div className="opt-section-content">
+            <div className="opt-subsection">Stop Loss</div>
+            {stopLoss?.buckets?.length > 0
+              ? <BucketBar items={stopLoss.buckets} />
+              : <div className="opt-empty">Ingen SL-data.</div>
+            }
+            {stopLoss?.recommendation && (
+              <div className="opt-rec-note">💡 {stopLoss.recommendation}</div>
+            )}
+
+            <div className="opt-subsection">Hålltid (Holding Time)</div>
+            {holdingTime?.buckets?.length > 0
+              ? <BucketBar items={holdingTime.buckets} />
+              : <div className="opt-empty">Ingen hålltid-data.</div>
+            }
+            {normalizeArray(holdingTime?.recommendations).map((r, i) => (
+              <div key={`ht-${i}`} className="opt-rec-note">💡 {r}</div>
+            ))}
+
+            <div className="opt-subsection">Styrketröskell (Confidence)</div>
+            {confidence?.buckets?.length > 0
+              ? <BucketBar items={confidence.buckets} />
+              : <div className="opt-empty">Ingen styrka-data.</div>
+            }
+            {normalizeArray(confidence?.recommendations).map((r, i) => (
+              <div key={`cf-${i}`} className="opt-rec-note">💡 {r}</div>
+            ))}
+          </div>
+        )}
+
+        {section === 'exits_a' && (
+          <div className="opt-section-content">
+            <div className="opt-subsection">Exit-typer</div>
+            {exitsData?.byReason?.length > 0
+              ? <BucketBar items={exitsData.byReason} labelKey="reasonSv" />
+              : <div className="opt-empty">Ingen exit-data.</div>
+            }
+            <div className="opt-exit-meta">
+              <div className="opt-exit-stat">
+                <span>Timeouts:</span>
+                <strong style={{ color: (exitsData?.timeoutPct || 0) > 40 ? '#ef4444' : '#22c55e' }}>
+                  {exitsData?.timeoutCount ?? 0} ({exitsData?.timeoutPct ?? 0}%)
+                </strong>
+              </div>
+              {exitsData?.motorExitStats && (
+                <div className="opt-exit-stat">
+                  <span>Exitmotor:</span>
+                  <strong>{exitsData.motorExitStats.winRatePct}% WR ({exitsData.motorExitStats.n} trades)</strong>
+                </div>
+              )}
+              {exitsData?.manualExitStats && (
+                <div className="opt-exit-stat">
+                  <span>Manuell exit:</span>
+                  <strong>{exitsData.manualExitStats.winRatePct}% WR ({exitsData.manualExitStats.n} trades)</strong>
+                </div>
+              )}
+            </div>
+            {normalizeArray(exitsData?.recommendations).map((r, i) => (
+              <div key={`ex-${i}`} className="opt-rec-note">💡 {r}</div>
+            ))}
+          </div>
+        )}
+
+        {section === 'markets' && (
+          <div className="opt-section-content">
+            <div className="opt-subsection">Marknadstyper</div>
+            {markets?.markets?.length > 0 ? (
+              <div className="opt-market-list">
+                {markets.markets.map((m, i) => (
+                  <div key={i} className="opt-market-card">
+                    <div className="opt-market-header">
+                      <span className="opt-market-name">{m.marketSv}</span>
+                      <OptScoreBadge score={m.score || 0} />
+                    </div>
+                    {m.stats && (
+                      <div className="opt-market-stats">
+                        <StatRow label="Win rate" value={`${m.stats.winRatePct}%`} highlight={m.stats.winRatePct >= 50} />
+                        <StatRow label="Timeout" value={`${m.stats.timeoutRatePct}%`} />
+                        <StatRow label="Trades" value={m.stats.n} />
+                        {m.avgHoldMin != null && <StatRow label="Snitt hålltid" value={`${m.avgHoldMin} min`} />}
+                      </div>
+                    )}
+                  </div>
+                ))}
+              </div>
+            ) : <div className="opt-empty">Ingen marknadsdata.</div>}
+            {normalizeArray(markets?.recommendations).map((r, i) => (
+              <div key={`m-${i}`} className="opt-rec-note">💡 {r}</div>
+            ))}
+            <div className="opt-subsection">Bästa signalkombinationer</div>
+            {combinations?.bestCombinations?.length > 0 ? (
+              <div className="opt-combo-list">
+                {combinations.bestCombinations.map((c, i) => (
+                  <div key={i} className="opt-combo-card">
+                    <div className="opt-combo-header">
+                      <span className="opt-combo-label">{c.label}</span>
+                      <OptScoreBadge score={c.score || 0} />
+                    </div>
+                    {c.stats && <div className="opt-combo-wr">{c.stats.winRatePct}% WR · {c.stats.n} trades</div>}
+                  </div>
+                ))}
+              </div>
+            ) : <div className="opt-empty">Behöver fler trades för kombinations-analys.</div>}
+          </div>
+        )}
+
+        {section === 'batch' && (
+          <div className="opt-section-content">
+            <div className="opt-subsection">Batch-resultat</div>
+            {strategyBatchTesting?.latestBatch?.id ? (
+              <>
+                <div className="opt-overview-grid">
+                  <div className="opt-overview-card">
+                    <div className="opt-ov-val">{strategyBatchTesting.bestStrategy?.strategy_name || '–'}</div>
+                    <div className="opt-ov-label">Bästa strategi</div>
+                  </div>
+                  <div className="opt-overview-card">
+                    <div className="opt-ov-val">{strategyBatchTesting.bestStopLoss?.key ?? '–'}</div>
+                    <div className="opt-ov-label">Bästa SL</div>
+                  </div>
+                  <div className="opt-overview-card">
+                    <div className="opt-ov-val">{strategyBatchTesting.bestTakeProfit?.key ?? '–'}</div>
+                    <div className="opt-ov-label">Bästa TP</div>
+                  </div>
+                  <div className="opt-overview-card">
+                    <div className="opt-ov-val">{strategyBatchTesting.bestConfidence?.key ?? '–'}</div>
+                    <div className="opt-ov-label">Bästa confidence</div>
+                  </div>
+                </div>
+                <div className="opt-rec-note">
+                  Batch {strategyBatchTesting.latestBatch.name} · {getBatchUiStatus(strategyBatchTesting.latestBatch).emoji} {getBatchUiStatus(strategyBatchTesting.latestBatch).label} · {strategyBatchTesting.latestBatch.progress?.completed || 0}/{strategyBatchTesting.latestBatch.progress?.total || 0}
+                </div>
+                <RecommendationsList recs={strategyBatchTesting.recommendations} />
+                {pauseCandidates?.length > 0 && (
+                  <>
+                    <div className="opt-subsection opt-weak-sub">Strategier att pausa/testa om</div>
+                    <div className="opt-market-list">
+                      {pauseCandidates.slice(0, 6).map((s, i) => (
+                        <div key={`${s.strategy_id}-${i}`} className="opt-market-card">
+                          <div className="opt-market-header">
+                            <span className="opt-market-name">{s.strategy_name || s.strategy_id}</span>
+                            <OptScoreBadge score={s.score || 0} />
+                          </div>
+                          <div className="opt-market-stats">
+                            <StatRow label="Win rate" value={`${s.win_rate || 0}%`} />
+                            <StatRow label="Trades" value={s.trades || 0} />
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </>
+                )}
+                <div className="opt-rec-note">Körning sker i Lab. Här visas bara resultat och tolkning.</div>
+              </>
+            ) : (
+              <div className="opt-empty">Inga batch-resultat ännu. Kör Batch-test i Trading Lab för att få AI-rekommendationer.</div>
+            )}
+          </div>
+        )}
+
+        {section === 'recs' && (
+          <div className="opt-section-content">
+            <div className="opt-subsection">Snabba råd</div>
+            <RecommendationsList recs={recommendations} />
+            <div className="opt-rec-note">
+              Supervisor visar råd och tolkning. Själva appliceringen och batch-körningarna görs i Lab.
+            </div>
+          </div>
+        )}
+      </div>
+    </section>
   );
 }
 
@@ -963,6 +1552,7 @@ export default function SupervisorV2Page() {
   const model = useMemo(() => buildDecisionModel(resources), [resources]);
   const endpointRows = useMemo(() => buildEndpointRows(resources), [resources]);
   const technicalCards = useMemo(() => buildTechnicalCards(resources, model), [resources, model]);
+  const optimization = unwrap(resources.optimization);
   const advisorRows = useMemo(() => ADVISOR_WINDOWS.map((spec) => {
     const entry = advisorResources[spec.key];
     const state = endpointState(entry);
@@ -1159,6 +1749,8 @@ export default function SupervisorV2Page() {
           </>
         )}
       </section>
+
+      <OptimizationCenter optimization={optimization} />
 
       <section className="sup-section">
         <div className="sup-section-head">
