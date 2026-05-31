@@ -723,18 +723,25 @@ function strategyIdFromSignal(signal = {}) {
 }
 
 function strategyIdFromKeywords(signal = {}) {
-  const raw = [
-    rawSignalOf(signal),
-    String(signal.signalFamily || ''),
-    String(signal.signalSubtype || ''),
-    String(signal.eventType || ''),
-  ].join(' ').toUpperCase();
+  const rawSignal = upper(rawSignalOf(signal));
+  const signalSubtype = upper(signal.signalSubtype || signal.signal_subtype || '');
+  const signalFamily = upper(signal.signalFamily || '');
+  const eventType = upper(signal.eventType || '');
   const direction = directionOf(signal);
   const market = marketOf(signal);
   const symbol = String(signal.symbol || '').toUpperCase();
+  const raw = (market === 'crypto' || symbol.endsWith('USDT'))
+    ? [rawSignal, signalSubtype, eventType].filter(Boolean).join(' ')
+    : [rawSignal, signalFamily, signalSubtype, eventType].filter(Boolean).join(' ');
 
   if (raw.includes('VWAP')) {
     if (market === 'crypto' || symbol.endsWith('USDT')) {
+      if (rawSignal === 'VWAP_REJECTION_DOWN' || signalSubtype === 'VWAP_REJECTION_DOWN') {
+        return 'vwap_failed_breakout_short';
+      }
+      if (rawSignal === 'VWAP_RECLAIM_UP' || signalSubtype === 'VWAP_RECLAIM_UP') {
+        return 'vwap_volume_breakout_long';
+      }
       if (raw.includes('RECLAIM') || raw.includes('BREAKOUT') || raw.includes('MOMENTUM')) {
         return 'vwap_volume_breakout_long';
       }

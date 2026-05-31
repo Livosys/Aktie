@@ -191,14 +191,44 @@ const expectedActive = new Set([
   assertSafety('T5: cryptoReclaimDecision', cryptoReclaimDecision);
 
   const cryptoRejectDecision = canCreatePaperTradeForSignal({
-    symbol: 'ADAUSDT',
+    symbol: 'BTCUSDT',
     raw_strategy: 'VWAP_REJECTION_DOWN',
+    signalSubtype: 'VWAP_REJECTION_DOWN',
+    signalFamily: 'VWAP_RECLAIM_REJECTION',
+    signal: 'SHORT_TRIGGERED',
+    marketType: 'crypto',
   });
   assert('T5: crypto VWAP_REJECTION_DOWN allowed', cryptoRejectDecision.allowed === true, cryptoRejectDecision);
   assert('T5: crypto VWAP_REJECTION_DOWN runtime_status=active', cryptoRejectDecision.strategy?.runtime_status === 'active', cryptoRejectDecision.strategy?.runtime_status);
   assert('T5: crypto VWAP_REJECTION_DOWN strategy_id=vwap_failed_breakout_short', cryptoRejectDecision.strategy?.strategy_id === 'vwap_failed_breakout_short', cryptoRejectDecision.strategy?.strategy_id);
   assert('T5: crypto VWAP_REJECTION_DOWN can_create_paper_trade=true', cryptoRejectDecision.strategy?.can_create_paper_trade === true, cryptoRejectDecision.strategy?.can_create_paper_trade);
   assertSafety('T5: cryptoRejectDecision', cryptoRejectDecision);
+
+  const cryptoRejectFamilyConflictDecision = canCreatePaperTradeForSignal({
+    symbol: 'BTCUSDT',
+    marketType: 'crypto',
+    signalSubtype: 'VWAP_REJECTION_DOWN',
+    signalFamily: 'VWAP_RECLAIM_REJECTION',
+    signal: 'SHORT_TRIGGERED',
+  });
+  assert('T5: family conflict rejection routes short', cryptoRejectFamilyConflictDecision.allowed === true, cryptoRejectFamilyConflictDecision);
+  assert('T5: family conflict rejection strategy_id=vwap_failed_breakout_short', cryptoRejectFamilyConflictDecision.strategy?.strategy_id === 'vwap_failed_breakout_short', cryptoRejectFamilyConflictDecision.strategy?.strategy_id);
+  assert('T5: family conflict rejection runtime_status=active', cryptoRejectFamilyConflictDecision.strategy?.runtime_status === 'active', cryptoRejectFamilyConflictDecision.strategy?.runtime_status);
+  assert('T5: family conflict rejection can_create_paper_trade=true', cryptoRejectFamilyConflictDecision.strategy?.can_create_paper_trade === true, cryptoRejectFamilyConflictDecision.strategy?.can_create_paper_trade);
+  assertSafety('T5: cryptoRejectFamilyConflictDecision', cryptoRejectFamilyConflictDecision);
+
+  const cryptoReclaimFamilyConflictDecision = canCreatePaperTradeForSignal({
+    symbol: 'BTCUSDT',
+    marketType: 'crypto',
+    signalSubtype: 'VWAP_RECLAIM_UP',
+    signalFamily: 'VWAP_RECLAIM_REJECTION',
+    signal: 'LONG_TRIGGERED',
+  });
+  assert('T5: family conflict reclaim routes long', cryptoReclaimFamilyConflictDecision.allowed === true, cryptoReclaimFamilyConflictDecision);
+  assert('T5: family conflict reclaim strategy_id=vwap_volume_breakout_long', cryptoReclaimFamilyConflictDecision.strategy?.strategy_id === 'vwap_volume_breakout_long', cryptoReclaimFamilyConflictDecision.strategy?.strategy_id);
+  assert('T5: family conflict reclaim runtime_status=active', cryptoReclaimFamilyConflictDecision.strategy?.runtime_status === 'active', cryptoReclaimFamilyConflictDecision.strategy?.runtime_status);
+  assert('T5: family conflict reclaim can_create_paper_trade=true', cryptoReclaimFamilyConflictDecision.strategy?.can_create_paper_trade === true, cryptoReclaimFamilyConflictDecision.strategy?.can_create_paper_trade);
+  assertSafety('T5: cryptoReclaimFamilyConflictDecision', cryptoReclaimFamilyConflictDecision);
 
   const cryptoMomentumDecision = canCreatePaperTradeForSignal({
     symbol: 'BTCUSDT',
@@ -209,6 +239,17 @@ const expectedActive = new Set([
   assert('T5: generic crypto momentum strategy_id=crypto_momentum_scalper', cryptoMomentumDecision.strategy?.strategy_id === 'crypto_momentum_scalper', cryptoMomentumDecision.strategy?.strategy_id);
   assert('T5: generic crypto momentum can_create_paper_trade=false', cryptoMomentumDecision.strategy?.can_create_paper_trade === false, cryptoMomentumDecision.strategy?.can_create_paper_trade);
   assertSafety('T5: cryptoMomentumDecision', cryptoMomentumDecision);
+
+  const genericCryptoMomentumDecision = canCreatePaperTradeForSignal({
+    symbol: 'ETHUSDT',
+    marketType: 'crypto',
+    signal: 'MOMENTUM_SPIKE',
+  });
+  assert('T5: generic crypto momentum without VWAP subtype blocked', genericCryptoMomentumDecision.allowed === false, genericCryptoMomentumDecision);
+  assert('T5: generic crypto momentum without VWAP subtype strategy partial', genericCryptoMomentumDecision.strategy?.runtime_status === 'partial', genericCryptoMomentumDecision.strategy?.runtime_status);
+  assert('T5: generic crypto momentum without VWAP subtype strategy_id=crypto_momentum_scalper', genericCryptoMomentumDecision.strategy?.strategy_id === 'crypto_momentum_scalper', genericCryptoMomentumDecision.strategy?.strategy_id);
+  assert('T5: generic crypto momentum without VWAP subtype can_create_paper_trade=false', genericCryptoMomentumDecision.strategy?.can_create_paper_trade === false, genericCryptoMomentumDecision.strategy?.can_create_paper_trade);
+  assertSafety('T5: genericCryptoMomentumDecision', genericCryptoMomentumDecision);
 }
 
 // ── Summary ───────────────────────────────────────────────────────────────────
