@@ -207,6 +207,31 @@ function meaningfulText(value) {
   return value && value !== 'saknas' ? value : '';
 }
 
+function buildOperationalStatusText(view) {
+  const latestSignalLabel = view.latestSignal
+    ? `${view.latestSignal.symbol || view.latestSignal.name || 'okänd'} · ${summarizeSignal(view.latestSignal)}`
+    : 'Systemet söker. Ingen färsk kandidat ännu.';
+  const latestDecision = view.latestSignal
+    ? pickText(view.latestSignal, [
+      ['status'],
+      ['decision'],
+      ['result'],
+      ['conclusion_sv'],
+      ['message'],
+    ], 'väntar på nytt beslut')
+    : 'väntar på nytt beslut';
+
+  return [
+    'Aktiemarknaden är stängd just nu.',
+    'Krypto scannas fortfarande 24/7.',
+    `Systemet kör ${view.paperEnabled ? 'paper/testläge' : 'testläge'}.`,
+    'Riktiga ordrar är låsta.',
+    'Det kontrollerar scanner, strategi, entry, market gate och safety.',
+    `Senaste kandidat: ${latestSignalLabel}.`,
+    `Senaste beslut: ${latestDecision}.`,
+  ].join(' ');
+}
+
 function buildFallbackAiAnswer(question, view) {
   const q = String(question || '').toLowerCase();
   const top = view.topFocus[0];
@@ -259,7 +284,7 @@ function buildFallbackAiAnswer(question, view) {
   }
 
   if (q.includes('säker') || q.includes('saker')) {
-    return `Ja. ${safety || 'Systemet är i testläge och ingen riktig order kan läggas.'}`.trim();
+    return safety || buildOperationalStatusText(view);
   }
 
   if (q.includes('regime') || q.includes('marknad')) {
@@ -330,7 +355,7 @@ function buildAssistantAnswer(question, view) {
   }
 
   if ((/säker|saker/i).test(normalized)) {
-    return safety || 'Systemet är i testläge och ingen riktig order kan läggas.';
+    return safety || buildOperationalStatusText(view);
   }
 
   if (/regime|marknad/i.test(normalized) && regime) {
@@ -494,12 +519,21 @@ export default function SupervisorPage() {
         ['summarySv'],
         ['overallStatus'],
       ], ''),
-    ].filter(Boolean).join(' · ') || 'Systemet är i testläge och ingen riktig order kan läggas.';
+    ].filter(Boolean).join(' · ') || buildOperationalStatusText({
+      ...view,
+      paperEnabled: paperStatus?.enabled === true,
+      latestSignal,
+    });
     const regimeText = [
       pickText(regime, [['regimeLabelSv'], ['regime'], ['volatilityLabelSv']], ''),
       pickText(regime, [['riskEnvLabelSv'], ['trendLabelSv']], ''),
     ].filter(Boolean).join(' · ') || 'saknas';
+    const operationalStatusText = buildOperationalStatusText({
+      paperEnabled: paperStatus?.enabled === true,
+      latestSignal,
+    });
     const systemHealthAnswer = [
+      operationalStatusText,
       `Backend ${status?.ok || health?.ok ? 'ok' : 'saknas'}`,
       `Scanner ${status?.running || status?.scannerActive ? 'på' : 'oklart'}`,
       `Paper ${paperStatus?.enabled ? 'på' : 'av'}`,
@@ -532,7 +566,8 @@ export default function SupervisorPage() {
     const riskAnswer = [
       safetyText,
       regimeText !== 'saknas' ? `Regim: ${regimeText}.` : 'Regim saknas.',
-      'Ingen riktig order kan läggas.',
+      'Systemet kontrollerar scanner, strategi, entry, market gate och safety.',
+      'Riktiga ordrar är låsta.',
     ].join(' ');
     const supervisorAnswers = [
       { q: '1. Hur mår systemet?', a: systemHealthAnswer, tone: view.safetySafe ? 'ok' : 'neutral' },
@@ -552,7 +587,8 @@ export default function SupervisorPage() {
     } else {
       actionItems.push('Vänta');
     }
-    actionItems.push('Systemet är i testläge');
+    actionItems.push('Aktiemarknaden är stängd just nu och krypto scannas fortfarande 24/7');
+    actionItems.push('Systemet kör paper/testläge och riktiga ordrar är låsta');
     actionItems.push('Kör replay/pipeline om du vill uppdatera analysen');
 
     return {
@@ -863,8 +899,8 @@ export default function SupervisorPage() {
                 <p>
                   {index === 0 && !view.latestSignal ? 'Systemet har ingen tydlig signal just nu.' : ''}
                   {index === 0 && view.latestSignal ? 'Följ den signal som ligger högst i prioriteringen.' : ''}
-                  {index === 1 ? 'Det här är ett testläge, inte live trading.' : ''}
-                  {index === 2 ? 'Ingen riktig order kan läggas från denna sida.' : ''}
+                  {index === 1 ? 'Aktiemarknaden är stängd just nu. Krypto scannas fortfarande 24/7.' : ''}
+                  {index === 2 ? 'Systemet kör paper/testläge och riktiga ordrar är låsta.' : ''}
                   {index === 3 ? 'Kör en ny replay eller pipeline om du vill fräscha upp analysen.' : ''}
                 </p>
               </div>
@@ -917,7 +953,7 @@ export default function SupervisorPage() {
         )}
 
         <div className="sup-ai-foot">
-          AI-vyn är read-only. Den kan bara läsa status och sammanfatta data.
+          AI-vyn är read-only. Om ett svar är otydligt visar sidan en frontend-fallback med konkret systemstatus.
         </div>
       </section>
 

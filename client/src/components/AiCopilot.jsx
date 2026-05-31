@@ -120,7 +120,7 @@ export default function AiCopilot() {
             {answer && <div className="ai-answer">{answer}</div>}
 
             <div className="ai-risk">
-              Detta är inte finansiell rådgivning. Bevaka risk, likviditet och bekräftelse innan beslut.
+              Read-only: inga trades, inga ordrar och ingen livehandel. Här visas bara data och sammanfattning.
             </div>
           </aside>
         </div>
