@@ -35,6 +35,7 @@ const { getMarketGroup }                          = require('../markets/marketPr
 const { computeAndSaveCompass }                   = require('../markets/marketCompass');
 const redisService                                = require('../services/redisService');
 const marketUniverse                              = require('../services/marketUniverseService');
+const eventLogService                             = require('../services/eventLogService');
 
 const GROUPS = {
   stocks:        ['NVDA', 'AMD', 'TSLA', 'AAPL', 'MSFT', 'AMZN', 'META', 'NFLX', 'GOOGL'],
@@ -45,11 +46,14 @@ const GROUPS = {
   leveragedEtfs: ['TQQQ', 'SQQQ', 'SOXL', 'SOXS', 'TNA', 'TZA'],
   crypto:        ['BTCUSDT', 'ETHUSDT', 'SOLUSDT'],
 };
+// Nasdaq-focused watchlist: the 9 large-cap stocks + QQQ + SPY.
+// QQQ and SPY are kept ONLY as market-compass references (observe-only) — they
+// drive the RISK_ON/RISK_OFF gate logic in marketCompass.js. IWM/DIA and the
+// leveraged ETFs are disconnected. Crypto runs in its own (now disabled) scheduler.
 const WATCHLIST = [
   ...GROUPS.stocks,
-  ...GROUPS.nasdaq,
-  ...GROUPS.indexEtfs,
-  ...GROUPS.leveragedEtfs,
+  ...GROUPS.nasdaq, // QQQ — Nasdaq-100 proxy + compass
+  'SPY',            // S&P 500 — compass reference only
 ];
 const SCAN_INTERVAL_MS = 30_000;
 
@@ -262,6 +266,7 @@ async function runScan() {
   scanStatus.lastScan = new Date().toISOString();
   scanStatus.scanning = false;
   scanStatus.marketWarning = anyMarketWarning;
+  emitScannerEvents(latestResults, scanStatus);
 
   processScanResults(latestResults.filter((r) => GROUPS.stocks.includes(r.symbol)), {
     group: 'stocks',
@@ -422,6 +427,71 @@ function cacheScanState(group, results, status) {
       price: r.price ?? null,
     })),
   }, 300);
+}
+
+function emitScannerEvents(results, status) {
+  try {
+    const timestamp = status?.lastScan || new Date().toISOString();
+    for (const row of results || []) {
+      if (!row?.symbol) continue;
+      const signal = String(row.signal || '').toUpperCase();
+      if (!signal || signal === 'NO_TRADE') continue;
+
+      const direction = row.daytradeDirection === 'up'
+        ? 'UP'
+        : row.daytradeDirection === 'down'
+          ? 'DOWN'
+          : 'NONE';
+      const baseEvent = {
+        source: 'scanner',
+        timestamp,
+        symbol: row.symbol,
+        market: row.marketGroup || row.marketType || 'unknown',
+        timeframe: row.timeframe || '2m',
+        raw_signal: row.signalSubtype || row.signalFamily || signal,
+        direction,
+        strategy: row.strategy_id || row.strategy_name || null,
+        score: row.tradeScore ?? row.daytradeScore ?? row.confidenceScore ?? null,
+        decision: 'observe_only',
+        reason: row.daytradeStatus || row.signal || null,
+        threshold: row.confidenceThreshold ?? row.scoreThreshold ?? null,
+        paper: true,
+        metadata: {
+          signal: row.signal || null,
+          signal_family: row.signalFamily || null,
+          signal_subtype: row.signalSubtype || null,
+          strategy_id: row.strategy_id || null,
+          strategy_name: row.strategy_name || null,
+          daytrade_score: row.daytradeScore ?? null,
+          daytrade_status: row.daytradeStatus || null,
+          daytrade_direction: row.daytradeDirection || null,
+          market_group: row.marketGroup || null,
+          market_type: row.marketType || null,
+          market_regime: row.marketRegime || null,
+          market_regime_v2: row.marketRegimeV2 || null,
+          score_label: row.scoreLabel || null,
+        },
+      };
+
+      eventLogService.appendEvent({
+        ...baseEvent,
+        event_type: 'signal.detected',
+      });
+
+      if (row.strategy_id || row.strategy_name) {
+        eventLogService.appendEvent({
+          ...baseEvent,
+          event_type: 'strategy.matched',
+          metadata: {
+            ...baseEvent.metadata,
+            matched: true,
+          },
+        });
+      }
+    }
+  } catch (err) {
+    console.warn('[event-log] scanner mirror failed:', err.message);
+  }
 }
 
 module.exports = { startScheduler, stopScheduler, getLatestResults, getScanStatus, getWatchlist, getGroups, getStockFeedStatus, getLiveCandlesDebug };

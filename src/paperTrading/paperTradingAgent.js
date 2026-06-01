@@ -41,6 +41,7 @@ const riskEngineService                         = require('../services/riskEngin
 const exitEngineService                         = require('../services/exitEngineService');
 const executionSafetyService                    = require('../services/executionSafetyService');
 const auditTrail                                = require('../services/auditTrailService');
+const eventLogService                           = require('../services/eventLogService');
 const notificationEngineV2                      = require('../alerts/notificationEngineV2');
 const strategyRuntimeConnector                  = require('../services/strategyRuntimeConnectorService');
 const marketUniverse                            = require('../services/marketUniverseService');
@@ -224,6 +225,79 @@ function eventFromCandidate(type, c, reasonSv, decision = 'skipped') {
   };
 }
 
+function tradingLogDecisionForEvent(type, decision) {
+  const upper = String(type || '').toUpperCase();
+  if (upper === 'TRADE_OPENED') return 'paper_opened';
+  if (upper === 'TRADE_CLOSED') return 'paper_closed';
+  if (upper === 'GATE_ALLOWED') return 'allowed';
+  if (upper === 'GATE_BLOCKED') return 'blocked';
+  if (upper === 'GATE_OBSERVE_ONLY') return 'observe_only';
+  if (decision && ['allowed', 'blocked', 'observe_only', 'paper_opened', 'paper_closed', 'no_trade'].includes(String(decision))) {
+    return String(decision);
+  }
+  return 'no_trade';
+}
+
+function mapPaperEventToTradingLog(input = {}) {
+  const type = String(input.type || '').toUpperCase();
+  const source = ['GATE_ALLOWED', 'GATE_BLOCKED', 'GATE_OBSERVE_ONLY'].includes(type)
+    ? 'market_gate'
+    : 'paper_trading';
+  const decision = tradingLogDecisionForEvent(type, input.decision);
+  const eventType = {
+    TRADE_OPENED: 'paper_trade.opened',
+    TRADE_CLOSED: 'paper_trade.closed',
+    GATE_ALLOWED: 'market_gate.allowed',
+    GATE_BLOCKED: 'market_gate.blocked',
+    GATE_OBSERVE_ONLY: 'market_gate.observe_only',
+  }[type] || 'paper_trade.skipped';
+
+  return {
+    event_type: eventType,
+    source,
+    timestamp: input.timestamp || new Date().toISOString(),
+    symbol: input.symbol || null,
+    market: eventMarketType(input),
+    timeframe: input.timeframe || '2m',
+    raw_signal: input.signalSubtype || input.signalFamily || input.status || input.exitReasonCode || type || null,
+    direction: input.nextMoveBias === 'UP'
+      ? 'UP'
+      : input.nextMoveBias === 'DOWN'
+        ? 'DOWN'
+        : 'NONE',
+    strategy: input.strategyId || input.strategyName || input.signalSubtype || input.signalFamily || null,
+    score: input.confidenceScore ?? input.gateScore ?? null,
+    decision,
+    reason: input.reasonSv || input.reason || input.exitReasonCode || input.exitSource || null,
+    threshold: input.gateThreshold ?? input.gateScore ?? input.threshold ?? input.confidenceThreshold ?? null,
+    paper: true,
+    metadata: {
+      paper_event_type: type || null,
+      signal_family: input.signalFamily || null,
+      signal_subtype: input.signalSubtype || null,
+      status: input.status || null,
+      next_move_bias: input.nextMoveBias || null,
+      data_freshness: input.dataFreshness || null,
+      confidence_score: input.confidenceScore ?? null,
+      volume_state: input.volumeState || null,
+      ai_confidence_adjustment: input.aiConfidenceAdjustment ?? null,
+      ai_should_block_trade: input.aiShouldBlockTrade === true || input.aiAgentAnalysis?.should_block_trade === true,
+      runtime_status: input.runtimeStatus || null,
+      strategy_id: input.strategyId || null,
+      strategy_name: input.strategyName || null,
+      gate_score: input.gateScore ?? null,
+      gate_threshold: input.gateThreshold ?? null,
+      gate_mode: input.gateMode || null,
+      risk_block_reasons: input.riskBlockReasons || [],
+      safety_block_reasons: input.safetyBlockReasons || [],
+      risk_evaluation: safeEventValue(input.riskEvaluation || null),
+      execution_safety: safeEventValue(input.executionSafety || null),
+      exit_reason_code: input.exitReasonCode || null,
+      exit_source: input.exitSource || null,
+    },
+  };
+}
+
 function shouldRecordEvent(event) {
   const latest = recentEvents.find(e =>
     e.type === event.type &&
@@ -246,11 +320,17 @@ function appendEvent(input) {
     reasonSv:        input.reasonSv      || null,
     signalFamily:    input.signalFamily  || null,
     signalSubtype:   input.signalSubtype || null,
+    strategyId:      input.strategyId    || null,
+    strategyName:    input.strategyName  || null,
+    runtimeStatus:   input.runtimeStatus  || null,
     status:          input.status        || null,
     nextMoveBias:    input.nextMoveBias  || null,
     dataFreshness:   input.dataFreshness || null,
     confidenceScore: input.confidenceScore ?? null,
     volumeState:     input.volumeState   || null,
+    gateScore:       input.gateScore     ?? null,
+    gateThreshold:   input.gateThreshold ?? null,
+    gateMode:        input.gateMode      || null,
     aiConfidenceAdjustment: input.aiConfidenceAdjustment ?? null,
     aiShouldBlockTrade: input.aiAgentAnalysis?.should_block_trade === true || input.aiShouldBlockTrade === true,
     riskEvaluation: safeEventValue(input.riskEvaluation || null),
@@ -271,6 +351,11 @@ function appendEvent(input) {
   if (!event.type || !shouldRecordEvent(event)) return null;
 
   fs.appendFileSync(EVENTS_FILE, JSON.stringify(event) + '\n', 'utf8');
+  try {
+    eventLogService.appendEvent(mapPaperEventToTradingLog(event));
+  } catch (err) {
+    console.warn('[event-log] paper mirror failed:', err.message);
+  }
 
   // Daytrading Learning Engine v1 — logga skippade/blockerade signaler.
   // Helt fail-safe: får aldrig störa paper-loopen och lägger aldrig order.
@@ -1747,6 +1832,12 @@ async function runTick() {
           continue;
         }
         _bump('gateAllowed', 'gateAllowed');
+        appendEvent({
+          ...eventFromCandidate('GATE_ALLOWED', c, gateDecision.reasons?.[0] || gateDecision.warnings?.[0] || 'Gate godkänd.', 'allowed'),
+          gateScore: gateDecision.gateScore,
+          gateThreshold: gateDecision.threshold,
+          gateMode: gateDecision.mode,
+        });
 
         let agentAnalysis = null;
         let aiAdjustment = 0;

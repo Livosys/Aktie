@@ -6,6 +6,7 @@ const crypto = require('crypto');
 const daytradingCatalog = require('./daytradingStrategyCatalogService');
 const strategyPerformance = require('./strategyPerformanceService');
 const auditTrail = require('./auditTrailService');
+const eventLogService = require('./eventLogService');
 const marketUniverse = require('./marketUniverseService');
 const dataCoverage = require('./dataCoverageExpansionService');
 const learningConnector = require('./learningConnectorService');
@@ -638,6 +639,28 @@ function runBatchTest(batchId) {
     message: 'Batch-test startat',
     details: { batch_id: batch.id, name: batch.name, progress: batch.progress },
   });
+  eventLogService.appendEvent({
+    event_type: 'batch.started',
+    source: 'batch',
+    timestamp: startedAt,
+    symbol: null,
+    market: 'unknown',
+    timeframe: null,
+    raw_signal: 'BATCH_TEST',
+    direction: 'NONE',
+    strategy: null,
+    score: batch.progress?.pct ?? null,
+    decision: 'no_trade',
+    reason: 'batch started',
+    threshold: null,
+    paper: true,
+    metadata: {
+      batch_id: batch.id,
+      name: batch.name,
+      progress: batch.progress,
+      config: batch.config,
+    },
+  });
 
   setImmediate(() => processRunner(batchId));
   return cleanValue({ ok: true, batch, started: true, ...SAFETY });
@@ -728,6 +751,32 @@ function processRunner(batchId) {
       duration_label: batch.duration_label || durationLabel(durationSeconds(batch.batch_started_at || batch.started_at, batch.updated_at)),
     },
   });
+  if (batch.status === 'completed') {
+    eventLogService.appendEvent({
+      event_type: 'batch.completed',
+      source: 'batch',
+      timestamp: batch.updated_at,
+      symbol: null,
+      market: 'unknown',
+      timeframe: null,
+      raw_signal: 'BATCH_TEST',
+      direction: 'NONE',
+      strategy: null,
+      score: batch.progress?.pct ?? null,
+      decision: 'no_trade',
+      reason: 'batch completed',
+      threshold: null,
+      paper: true,
+      metadata: {
+        batch_id: batch.id,
+        name: batch.name,
+        progress: batch.progress,
+        duration_seconds: batch.duration_seconds || durationSeconds(batch.batch_started_at || batch.started_at, batch.updated_at),
+        duration_label: batch.duration_label || durationLabel(durationSeconds(batch.batch_started_at || batch.started_at, batch.updated_at)),
+        result_count: results.length,
+      },
+    });
+  }
   if (batch.status === 'running') setTimeout(() => processRunner(batchId), 10);
 }
 

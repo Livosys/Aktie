@@ -26,6 +26,7 @@
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
+const eventLogService = require('./eventLogService');
 
 // ── Paths ─────────────────────────────────────────────────────────────────────
 const DATA_DIR = path.resolve(__dirname, '../../data/learning-connector');
@@ -633,6 +634,28 @@ function buildLearningSummary() {
     };
 
     writeJson(SUMMARY_FILE, summary);
+    eventLogService.appendEvent({
+      event_type: 'learning.summary_created',
+      source: 'learning',
+      timestamp: nowIso(),
+      symbol: null,
+      market: 'unknown',
+      timeframe: null,
+      raw_signal: 'LEARNING_SUMMARY',
+      direction: 'NONE',
+      strategy: null,
+      score: summary.connector?.win_rate ?? null,
+      decision: 'no_trade',
+      reason: 'learning summary created',
+      threshold: null,
+      paper: true,
+      metadata: {
+        total_events: events.length,
+        connector: summary.connector,
+        strategies_count: summary.strategies_count,
+        core_learning_present: summary.core_learning_present,
+      },
+    });
     return summary;
   } catch (err) {
     recordError(`buildLearningSummary failed: ${err.message}`);

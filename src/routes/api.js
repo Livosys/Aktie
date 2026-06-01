@@ -70,6 +70,7 @@ const learningConnector = require('../services/learningConnectorService');
 const topStrategyGrid = require('../services/topStrategyGridService');
 const candidateLog      = require('../services/candidateLogService');
 const auditTrail        = require('../services/auditTrailService');
+const eventLogService   = require('../services/eventLogService');
 const tradeOutcomeReplay = require('../services/tradeOutcomeReplayService');
 const marketRegime      = require('../services/marketRegimeService');
 const priorityEngine    = require('../services/priorityEngineService');
@@ -1263,6 +1264,16 @@ router.get('/audit/batches/recent', (req, res) => {
 router.get('/audit/summary', (req, res) => {
   try { res.json(auditTrail.buildActivitySummary()); }
   catch (err) { res.status(500).json({ ok: false, error: err.message, ...auditTrail.SAFETY }); }
+});
+
+// ── Event Log v1 ─────────────────────────────────────────────────────────────
+// Read-only local JSONL mirror of scanner, gate, paper, batch and learning events.
+router.get('/events/recent', (req, res) => {
+  try {
+    res.json(eventLogService.readRecentEvents(req.query.limit || req.query.n || 100));
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message, actions_allowed: false, can_place_orders: false, live_trading_enabled: false });
+  }
 });
 
 // ── Trade Outcome Replay v1 ─────────────────────────────────────────────────
