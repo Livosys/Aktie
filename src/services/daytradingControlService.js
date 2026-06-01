@@ -766,6 +766,254 @@ function firstText(...values) {
   return Array.isArray(value) ? value.filter(Boolean).join(', ') : (value || null);
 }
 
+function toFiniteNumber(value) {
+  const n = Number(value);
+  return Number.isFinite(n) ? n : null;
+}
+
+function signalMarket(row = {}) {
+  const market = String(row.marketType || row.market || row.market_group || row.marketGroup || '').toLowerCase();
+  if (market) return market;
+  const sym = normalizeSymbol(row.symbol);
+  if (sym.endsWith('USDT')) return 'crypto';
+  return marketForSymbol(sym);
+}
+
+function signalSide(row = {}) {
+  const raw = String(
+    row.side ||
+    row.signalSide ||
+    row.direction ||
+    row.nextMoveBias ||
+    row.daytradeDirection ||
+    row.signal ||
+    '',
+  ).toUpperCase();
+  if (raw.includes('BUY') || raw.includes('LONG') || raw.includes('UP') || raw.includes('KÖP')) return 'Köp';
+  if (raw.includes('SELL') || raw.includes('SHORT') || raw.includes('DOWN') || raw.includes('SÄLJ')) return 'Sälj';
+  return 'Vänta';
+}
+
+function signalAction(status = '') {
+  if (status === 'Redo för paper trade') return 'Skapa paper';
+  if (status === 'Öppen paper trade') return 'Följ trade';
+  if (status === 'Stängd' || status === 'Timeout') return 'Visa resultat';
+  if (status === 'Blockerad') return 'Visa orsak';
+  if (status === 'Saknar data') return 'Kontrollera data';
+  return 'Väntar';
+}
+
+function normalizePaperSignalStatus(row = {}, runtime = {}, paperTrade = null, blocker = null) {
+  if (paperTrade?.result === 'OPEN') return 'Öppen paper trade';
+  if (paperTrade?.result === 'TIMEOUT') return 'Timeout';
+  if (paperTrade && paperTrade.result && paperTrade.result !== 'OPEN') return 'Stängd';
+  if (blocker?.blocked) return 'Blockerad';
+
+  const raw = String(row.status || row.daytradeStatus || row.blockerMode || '').toLowerCase();
+  if (raw.includes('timeout')) return 'Timeout';
+  if (raw.includes('block') || raw.includes('reject')) return 'Blockerad';
+  if (raw.includes('wait') || raw.includes('vänta')) return 'Väntar på entry';
+  if (raw.includes('missing') || raw.includes('saknar')) return 'Saknar data';
+
+  if (runtime?.runtime_status === 'disabled') return 'Blockerad';
+  if (runtime?.runtime_status === 'no_entry_rule') return 'Blockerad';
+  if (runtime?.runtime_status === 'partial') return 'Väntar på entry';
+
+  return blocker?.ready ? 'Redo för paper trade' : 'Väntar på entry';
+}
+
+function buildPaperSignalBlocker(row = {}, runtime = {}, config = {}) {
+  const filters = config.market_control_filters || {};
+  const minScore = Number(filters.min_score ?? 0) || 0;
+  const minConfidence = Number(filters.min_confidence ?? 0) || 0;
+  const score = toFiniteNumber(row.tradeScore ?? row.signalScore ?? row.priorityScore ?? row.score ?? row.daytradeScore ?? null);
+  const confidence = toFiniteNumber(row.confidenceScore ?? row.baseConfidenceScore ?? row.confidence ?? null);
+  const entry = toFiniteNumber(row.entry ?? row.entryPrice ?? row.price ?? row.currentPrice ?? null);
+  const stopLoss = toFiniteNumber(row.stopLoss ?? row.stop_loss ?? row.stopPct ?? row.riskEvaluation?.stop_loss ?? null);
+  const takeProfit = toFiniteNumber(row.takeProfit ?? row.take_profit ?? row.targetPct ?? row.riskEvaluation?.take_profit ?? null);
+  const riskReward = entry != null && stopLoss != null && takeProfit != null && stopLoss > 0
+    ? Math.round((takeProfit / stopLoss) * 100) / 100
+    : null;
+  const rawStatus = String(row.status || row.daytradeStatus || row.blockerMode || '').toLowerCase();
+  const reasons = [];
+  const fixes = [];
+
+  if (!row.symbol) {
+    reasons.push('data saknas');
+    fixes.push('symbol saknas i scannerdata');
+  }
+  if (runtime?.runtime_status === 'disabled' || row.strategy_paused === true) {
+    reasons.push('strategi pausad');
+    fixes.push('aktivera strategin i runtime');
+  } else if (runtime?.runtime_status === 'no_entry_rule' || runtime?.entry_rule_implemented === false) {
+    reasons.push('saknar entry');
+    fixes.push('koppla entry-regeln till runtime');
+  } else if (runtime?.runtime_status === 'partial') {
+    reasons.push('väntar');
+    fixes.push('entry-regeln behöver bekräftelse');
+  }
+  if (score != null && score < minScore) {
+    reasons.push('score för låg');
+    fixes.push(`kräver score ${minScore}+`);
+  }
+  if (confidence != null && confidence < minConfidence) {
+    reasons.push('confidence för låg');
+    fixes.push(`kräver confidence ${minConfidence}%+`);
+  }
+  if (entry == null) {
+    reasons.push('saknar entry');
+    fixes.push('vänta på bekräftad entry');
+  }
+  if (stopLoss == null) {
+    reasons.push('saknar stop loss');
+    fixes.push('riskprofilen behöver stop loss');
+  }
+  if (takeProfit == null) {
+    reasons.push('saknar take profit');
+    fixes.push('riskprofilen behöver take profit');
+  }
+  if (riskReward != null && riskReward < 1.25) {
+    reasons.push('risk/reward för svag');
+    fixes.push('kräver bättre risk/reward');
+  }
+  if (rawStatus.includes('timeout')) {
+    reasons.push('timeout');
+    fixes.push('signalen hann inte bli bekräftad i tid');
+  }
+  if (rawStatus.includes('missing') || rawStatus.includes('saknar')) {
+    reasons.push('data saknas');
+    fixes.push('vänta på komplett scannerdata');
+  }
+  if (row.marketWarning || row.market_regime === 'blocked' || ['choppy', 'panic', 'extreme'].includes(String(row.marketRegime || '').toLowerCase())) {
+    reasons.push('market regime blockerar');
+    fixes.push('vänta på lugnare market regime');
+  }
+  if (row.executionSafety?.blocked === true || row.executionSafety?.can_place_orders === false) {
+    reasons.push('safety blocker');
+    fixes.push('safety tillåter inte orderläggning');
+  }
+
+  const blocked = reasons.some((reason) => reason !== 'väntar');
+  const waiting = !blocked && (
+    rawStatus.includes('wait') ||
+    rawStatus.includes('vänta') ||
+    row.signal === 'VÄNTA' ||
+    row.signal === 'WAIT' ||
+    score == null ||
+    confidence == null ||
+    entry == null
+  );
+  const ready = !blocked && !waiting && (
+    runtime?.can_create_paper_trade === true ||
+    runtime?.runtime_status === 'active' ||
+    row.paperTradeCreated === true
+  );
+
+  return {
+    blocked,
+    waiting,
+    ready,
+    blockerReason: blocked ? reasons[0] : null,
+    requiredFix: fixes[0] || null,
+    score,
+    confidence,
+    entry,
+    stopLoss,
+    takeProfit,
+    riskReward,
+  };
+}
+
+function matchPaperTradeBySignal(row = {}, trades = []) {
+  const signalId = row.signalId || row.signal_id || null;
+  const symbol = normalizeSymbol(row.symbol);
+  const strategyId = row.strategy_id || row.strategyId || null;
+  const raw = String(row.signalSubtype || row.signal_subtype || row.signalFamily || row.signal || '').toUpperCase();
+  return trades.find((trade) => {
+    if (signalId && (trade.signalId || trade.signal_id) === signalId) return true;
+    if (normalizeSymbol(trade.symbol) !== symbol) return false;
+    if (strategyId && String(trade.strategy_id || trade.strategyId || '').toLowerCase() !== String(strategyId).toLowerCase()) return false;
+    if (!raw) return true;
+    const tradeRaw = String(trade.signalSubtype || trade.signal_subtype || trade.raw_strategy || trade.signalFamily || '').toUpperCase();
+    return !tradeRaw || tradeRaw === raw;
+  }) || null;
+}
+
+function formatPaperTrade(trade = {}) {
+  const result = String(trade.result || '').toUpperCase();
+  const status = result === 'OPEN'
+    ? 'Öppen paper trade'
+    : result === 'TIMEOUT'
+      ? 'Timeout'
+      : 'Stängd';
+  return {
+    symbol: trade.symbol || '–',
+    market: trade.marketType || trade.market || marketForSymbol(trade.symbol),
+    side: signalSide(trade),
+    strategy: trade.strategy_name || trade.strategy || trade.raw_strategy || 'Paper-strategi',
+    score: toFiniteNumber(trade.confidenceScore ?? trade.tradeScore ?? trade.signalScore ?? trade.priorityScore ?? null),
+    confidence: toFiniteNumber(trade.confidenceScore ?? trade.baseConfidenceScore ?? null),
+    entry: trade.entryPrice ?? trade.entry ?? null,
+    stopLoss: trade.stopPct ?? trade.stop_loss ?? null,
+    takeProfit: trade.targetPct ?? trade.take_profit ?? null,
+    riskReward: trade.stopPct && trade.targetPct ? Math.round((Number(trade.targetPct) / Number(trade.stopPct)) * 100) / 100 : null,
+    status,
+    reason: trade.reasonSv || trade.entryReasonSv || trade.exitReason || trade.observeOnlyReasonSv || 'Paper trade',
+    blockerReason: null,
+    createdAt: trade.opened_at || trade.entryTime || trade.createdAt || trade.timestamp || null,
+    openedAt: trade.opened_at || trade.entryTime || trade.createdAt || trade.timestamp || null,
+    closedAt: trade.closed_at || trade.exitTime || null,
+    pnl: trade.pnlPct ?? trade.unrealizedPct ?? null,
+    result,
+    tradeId: trade.tradeId || trade.trade_id || trade.id || null,
+  };
+}
+
+function formatPaperSignalRow(row = {}, runtime = {}, paperTrade = null, blocker = null) {
+  const status = normalizePaperSignalStatus(row, runtime, paperTrade, blocker);
+  const score = toFiniteNumber(row.tradeScore ?? row.signalScore ?? row.priorityScore ?? row.score ?? row.daytradeScore ?? null);
+  const confidence = toFiniteNumber(row.confidenceScore ?? row.baseConfidenceScore ?? row.confidence ?? null);
+  const entry = toFiniteNumber(row.entry ?? row.entryPrice ?? row.price ?? row.currentPrice ?? null);
+  const stopLoss = toFiniteNumber(row.stopLoss ?? row.stop_loss ?? row.stopPct ?? row.riskEvaluation?.stop_loss ?? null);
+  const takeProfit = toFiniteNumber(row.takeProfit ?? row.take_profit ?? row.targetPct ?? row.riskEvaluation?.take_profit ?? null);
+  const riskReward = entry != null && stopLoss != null && takeProfit != null && stopLoss > 0
+    ? Math.round((takeProfit / stopLoss) * 100) / 100
+    : null;
+  const reason = firstText(
+    row.reasonSv,
+    row.runtime_comment_sv,
+    row.actionSv,
+    row.daytradeStatus,
+    row.signal,
+    paperTrade?.reasonSv,
+    paperTrade?.entryReasonSv,
+    blocker?.blockerReason,
+  ) || 'Väntar på signal';
+  const createdAt = row.detected_at || row.evaluated_at || row.ts || row.timestamp || row.created_at || row.opened_at || null;
+  return {
+    symbol: row.symbol || '–',
+    market: signalMarket(row),
+    side: signalSide(row),
+    strategy: row.strategy_name || row.strategyName || row.strategyLabel || row.strategy_id || row.strategyId || row.setupId || 'Paper-strategi',
+    score,
+    confidence,
+    entry,
+    stopLoss,
+    takeProfit,
+    riskReward,
+    status,
+    reason,
+    blockerReason: blocker?.blockerReason || (status === 'Blockerad' ? firstText(row.wouldHaveBeenBlockedBy, row.reasons, row.warnings, row.blockReason) : null),
+    requiredFix: blocker?.requiredFix || null,
+    createdAt,
+    tradeId: paperTrade?.tradeId || paperTrade?.trade_id || null,
+    result: paperTrade?.result || null,
+    openAt: paperTrade?.opened_at || paperTrade?.entryTime || null,
+    closeAt: paperTrade?.closed_at || paperTrade?.exitTime || null,
+    pnl: paperTrade?.pnlPct ?? paperTrade?.unrealizedPct ?? null,
+  };
+}
+
 function getLiveTrades(options = {}) {
   const limit = normalizeTradeLimit(options.limit);
   const trades = paperTrading.getTrades().trades || [];
@@ -840,6 +1088,132 @@ function getLiveTrades(options = {}) {
   };
 }
 
+function getPaperSignals(options = {}) {
+  const limit = normalizeTradeLimit(options.limit);
+  const config = loadConfig();
+  const scan = getScanStatus();
+  const crypto = getCryptoStatus();
+  const allRows = currentScanRows();
+  const rows = filterScanRows(allRows, config);
+  const runtimeSummary = strategyRuntimeConnector.getStrategyRuntimeSummary();
+  const runtimeById = Object.fromEntries((runtimeSummary.strategies || []).map((strategy) => [strategy.id || strategy.strategy_id, strategy]));
+  const paperStatus = paperTrading.getStatus();
+  const tradesData = paperTrading.getTrades();
+  const trades = Array.isArray(tradesData.trades) ? tradesData.trades : [];
+  const openTrades = trades
+    .filter((trade) => String(trade.result || '').toUpperCase() === 'OPEN')
+    .slice(0, limit)
+    .map(formatPaperTrade);
+  const closedTrades = trades
+    .filter((trade) => String(trade.result || '').toUpperCase() !== 'OPEN')
+    .slice(0, limit)
+    .map(formatPaperTrade);
+  const recentCandidates = candidateLog.loadRecent(100);
+
+  const signals = rows
+    .map((row) => {
+      const runtime = runtimeById[row.strategy_id || row.strategyId] || strategyRuntimeConnector.inferStrategyForSignal(row) || {};
+      const paperTrade = matchPaperTradeBySignal(row, trades);
+      const blocker = buildPaperSignalBlocker(row, runtime, config, paperStatus);
+      return formatPaperSignalRow(row, runtime, paperTrade, blocker);
+    })
+    .sort((a, b) => {
+      const order = {
+        'Redo för paper trade': 0,
+        'Öppen paper trade': 1,
+        'Stängd': 2,
+        'Timeout': 3,
+        'Väntar på entry': 4,
+        'Blockerad': 5,
+        'Saknar data': 6,
+      };
+      const ao = order[a.status] ?? 9;
+      const bo = order[b.status] ?? 9;
+      if (ao !== bo) return ao - bo;
+      return (Number(b.score ?? 0) - Number(a.score ?? 0)) || String(b.createdAt || '').localeCompare(String(a.createdAt || ''));
+    });
+
+  const readySignals = signals.filter((signal) => signal.status === 'Redo för paper trade').length;
+  const blockedSignals = signals.filter((signal) => signal.status === 'Blockerad').length;
+  const waitingSignals = signals.filter((signal) => signal.status === 'Väntar på entry').length;
+  const openPaperTrades = openTrades.length;
+  const closedPaperTrades = closedTrades.length;
+
+  const blockedFromSignals = signals
+    .filter((signal) => signal.status === 'Blockerad')
+    .map((signal) => ({
+      symbol: signal.symbol,
+      strategy: signal.strategy,
+      score: signal.score,
+      reason: signal.blockerReason || signal.reason || 'Blockerad',
+      requiredFix: signal.requiredFix || signal.reason || 'Kontrollera signalen',
+    }))
+    .slice(0, 5);
+
+  const blockedFromCandidates = recentCandidates
+    .filter((candidate) => Array.isArray(candidate.wouldHaveBeenBlockedBy) || Array.isArray(candidate.reasons) || Array.isArray(candidate.warnings))
+    .map((candidate) => {
+      const reason = firstText(candidate.wouldHaveBeenBlockedBy, candidate.reasons, candidate.warnings, candidate.blockerMode, candidate.status) || 'Blockerad';
+      const score = toFiniteNumber(candidate.tradeScore ?? candidate.signalScore ?? candidate.priorityScore ?? candidate.score ?? candidate.confidenceScore ?? null);
+      return {
+        symbol: candidate.symbol || '–',
+        strategy: candidate.strategyName || candidate.strategy_name || candidate.setupId || 'Okänd strategi',
+        score,
+        reason,
+        requiredFix: firstText(candidate.blockerMode, candidate.exitProfile, candidate.discoveryMode, candidate.signal) || 'Kontrollera kandidatens regler',
+      };
+    })
+    .filter((row) => row.reason)
+    .slice(0, 5);
+
+  const blocked = blockedFromSignals.length > 0 ? blockedFromSignals : blockedFromCandidates;
+  const lastScanAt = scan.lastScan || crypto.lastScan || signals[0]?.createdAt || recentCandidates[0]?.created_at || recentCandidates[0]?.evaluated_at || null;
+  const candidatesChecked = rows.length;
+  const readyOrOpenCount = readySignals + openPaperTrades;
+  const paperTradingEnabled = paperStatus.enabled === true;
+
+  return {
+    ok: true,
+    safety: {
+      actions_allowed: false,
+      can_place_orders: false,
+      live_trading_enabled: false,
+    },
+    status: {
+      paperTradingEnabled,
+      actions_allowed: false,
+      can_place_orders: false,
+      live_trading_enabled: false,
+      lastScanAt,
+      candidatesChecked,
+      readySignals,
+      blockedSignals,
+      waitingSignals,
+      openPaperTrades,
+      closedPaperTrades,
+      totalSignals: signals.length,
+      readyOrOpenCount,
+    },
+    signals,
+    blocked,
+    openTrades,
+    closedTrades,
+    emptyState: {
+      lastScanAt,
+      candidatesChecked,
+      blockedSignals,
+      waitingSignals,
+      topBlockedCandidates: blocked.slice(0, 5),
+      waitingFor: paperTradingEnabled
+        ? (blocked.length > 0
+          ? 'Systemet väntar på att blockerade kandidater ska få bättre score, confidence eller entry-bekräftelse.'
+          : 'Systemet väntar på nya kandidater i scannerflödet.')
+        : 'Paper trading är avstängt. Slå på paper trading för att skapa öppna paper trades.',
+    },
+    ...SAFETY,
+  };
+}
+
 function getRuntimeStrategies() {
   const runtime = strategyRuntimeConnector.getStrategyRuntimeSummary();
   return {
@@ -898,6 +1272,7 @@ module.exports = {
   runScan,
   getPipeline,
   getLiveTrades,
+  getPaperSignals,
   getRuntimeStrategies,
   setAllRuntimeStrategies,
   toggleRuntimeStrategy,

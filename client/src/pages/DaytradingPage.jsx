@@ -172,6 +172,16 @@ function fmtRiskReward(v) {
   return n >= 10 ? n.toFixed(1) : n.toFixed(2);
 }
 
+function marketLabelSv(value) {
+  const market = String(value || '').toLowerCase();
+  if (market === 'crypto') return 'Krypto';
+  if (market === 'stocks' || market === 'stock') return 'Aktier';
+  if (market === 'nasdaq') return 'Nasdaq';
+  if (market === 'etf') return 'ETF';
+  if (market === 'index') return 'Index';
+  return value || '–';
+}
+
 function paperSignalStatusTone(status) {
   const s = String(status || '').toLowerCase();
   if (s.includes('redo') || s.includes('öppen')) return 'good';
@@ -190,7 +200,7 @@ function paperSignalStatusClass(status) {
   if (s.includes('block')) return 'dt-status-blocked';
   if (s.includes('timeout')) return 'dt-status-timeout';
   if (s.includes('saknar')) return 'dt-status-neutral';
-  if (s.includes('vänt')) return 'dt-status-neutral';
+  if (s.includes('vänt')) return 'dt-status-wait';
   if (s.includes('stäng')) return 'dt-status-neutral';
   return 'dt-status-neutral';
 }
@@ -199,9 +209,9 @@ function paperSignalRowClass(status) {
   const s = String(status || '').toLowerCase();
   if (s.includes('redo')) return 'dt-row-green';
   if (s.includes('öppen')) return 'dt-row-blue';
-  if (s.includes('block')) return 'dt-row-gray';
+  if (s.includes('block')) return 'dt-row-red';
   if (s.includes('timeout')) return 'dt-row-yellow';
-  if (s.includes('vänt')) return 'dt-row-blue';
+  if (s.includes('vänt')) return 'dt-row-yellow';
   if (s.includes('saknar')) return 'dt-row-gray';
   if (s.includes('stäng')) return 'dt-row-blue';
   return '';
@@ -215,6 +225,11 @@ function paperSignalAction(status) {
   if (s.includes('timeout')) return 'Visa resultat';
   if (s.includes('saknar')) return 'Kontrollera data';
   return 'Väntar';
+}
+
+function paperSignalHeadline(signal = {}) {
+  const reason = signal.blockerReason || signal.reason || 'Ingen tydlig orsak sparad';
+  return reason;
 }
 
 function textValue(value, fallback = '–') {
@@ -1754,6 +1769,7 @@ function PaperSignalsSection({ paperSignals, refreshing, refreshError, loading =
     ? emptyState.topBlockedCandidates
     : blocked.slice(0, 5);
   const paperEnabled = status.paperTradingEnabled !== false;
+  const featuredSignals = signals.slice(0, 5);
 
   return (
     <div className="dt-panel">
@@ -1786,6 +1802,54 @@ function PaperSignalsSection({ paperSignals, refreshing, refreshError, loading =
 
       {refreshing && <div className="dt-paper-note"><strong>Uppdaterar.</strong> Visar senaste kända paper-signaler medan nya svar hämtas.</div>}
       {refreshError && !refreshing && <div className="dt-paper-note"><strong>Senaste uppdatering misslyckades.</strong> Visar senaste data.</div>}
+      {signals.length > 0 && (
+        <div className="dt-paper-signal-cards">
+          {featuredSignals.map((signal, index) => (
+            <article key={`${signal.symbol || 'signal'}-${signal.createdAt || signal.openAt || signal.tradeId || index}`} className={`dt-paper-signal-card ${paperSignalRowClass(signal.status)}`}>
+              <div className="dt-paper-signal-card-head">
+                <div>
+                  <div className="dt-paper-signal-symbol">{signal.symbol || '–'}</div>
+                  <div className="dt-paper-signal-meta">
+                    {marketLabelSv(signal.market)} · {signal.strategy || '–'}
+                  </div>
+                </div>
+                <div className="dt-paper-signal-head-right">
+                  <span className={`dt-status-tag ${paperSignalStatusClass(signal.status)}`}>{signal.status || '–'}</span>
+                  <span className="dt-paper-signal-side">{signal.side || 'Vänta'}</span>
+                </div>
+              </div>
+
+              <div className="dt-paper-signal-primary">
+                {paperSignalHeadline(signal)}
+              </div>
+
+              <div className="dt-paper-signal-metrics">
+                <div className="dt-paper-signal-metric">
+                  <span>Score</span>
+                  <strong>{signal.score != null ? fmtScore(signal.score) : '–'}</strong>
+                </div>
+                <div className="dt-paper-signal-metric">
+                  <span>Confidence</span>
+                  <strong>{signal.confidence != null ? `${fmtScore(signal.confidence)}%` : '–'}</strong>
+                </div>
+                <div className="dt-paper-signal-metric">
+                  <span>Entry</span>
+                  <strong className="dt-mono-cell">{fmtPrice(signal.entry)}</strong>
+                </div>
+                <div className="dt-paper-signal-metric">
+                  <span>Risk/reward</span>
+                  <strong className="dt-mono-cell">{fmtRiskReward(signal.riskReward)}</strong>
+                </div>
+              </div>
+
+              <div className="dt-paper-signal-meta-row">
+                <span>{signal.createdAt ? fmtTradeTime(signal.createdAt) : '–'}</span>
+                <span>{paperSignalAction(signal.status)}</span>
+              </div>
+            </article>
+          ))}
+        </div>
+      )}
 
       {loading && !paperSignals ? (
         <div className="dt-paper-empty">
@@ -1796,6 +1860,9 @@ function PaperSignalsSection({ paperSignals, refreshing, refreshError, loading =
         </div>
       ) : signals.length > 0 ? (
         <div className="dt-table-wrap">
+          <div className="dt-paper-note" style={{ marginBottom: 10 }}>
+            <strong>Detaljvy.</strong> Korten ovan visar de viktigaste signalerna först. Tabellen nedan visar hela flödet med exakta blockeringsorsaker.
+          </div>
           <table className="dt-table dt-paper-signals-table">
             <thead>
               <tr>
@@ -1820,7 +1887,7 @@ function PaperSignalsSection({ paperSignals, refreshing, refreshError, loading =
                 <tr key={`${signal.symbol || 'signal'}-${signal.createdAt || signal.openAt || signal.tradeId || index}`} className={paperSignalRowClass(signal.status)}>
                   <td className="dt-td-time">{signal.createdAt ? fmtTradeTime(signal.createdAt) : '–'}</td>
                   <td className="dt-td-sym"><strong>{signal.symbol || '–'}</strong></td>
-                  <td>{signal.market || '–'}</td>
+                  <td>{marketLabelSv(signal.market)}</td>
                   <td>{signal.side || 'Vänta'}</td>
                   <td className="dt-td-strategy">{signal.strategy || '–'}</td>
                   <td>{signal.score != null ? fmtScore(signal.score) : '–'}</td>
@@ -1831,7 +1898,7 @@ function PaperSignalsSection({ paperSignals, refreshing, refreshError, loading =
                   <td className="dt-mono-cell">{fmtRiskReward(signal.riskReward)}</td>
                   <td><span className={`dt-status-tag ${paperSignalStatusClass(signal.status)}`}>{signal.status || '–'}</span></td>
                   <td className="dt-signal-reason">{signal.blockerReason || signal.reason || '–'}</td>
-                  <td><button type="button" className="dt-btn-xs" onClick={() => {}}> {paperSignalAction(signal.status)} </button></td>
+                  <td><span className="dt-paper-action">{paperSignalAction(signal.status)}</span></td>
                 </tr>
               ))}
             </tbody>
@@ -2318,7 +2385,7 @@ function DetailsBlock({ summary, children, defaultOpen = false }) {
   );
 }
 
-function OverviewTab({ status, pipeline, liveTrades, recommendation, impact, runtime, paperStatus, paperSignals, learning, candidates }) {
+function OverviewTab({ status, pipeline, liveTrades, recommendation, impact, runtime, paperStatus, paperSignals, learning, candidates, loading, refreshing, refreshError }) {
   const latestScan = status?.latest_scan || null;
   const paperEnabled = paperStatus?.enabled !== false && status?.paper_trading !== false;
   const summary = liveTrades?.summary_48h || {};
@@ -2339,7 +2406,7 @@ function OverviewTab({ status, pipeline, liveTrades, recommendation, impact, run
 
   return (
     <div className="dt-tab-panel">
-      <PaperSignalsSection paperSignals={paperSignals} refreshing={false} refreshError={null} loading={!paperSignals} />
+      <PaperSignalsSection paperSignals={paperSignals} refreshing={refreshing} refreshError={refreshError} loading={loading} />
       <StatusBar status={status} />
       <div className="dt-overview-grid">
         <SummaryTile label="Systemstatus" value={status?.scanner_active ? 'Scanner aktiv' : 'Scanner pausad'} note={status?.data_active ? 'Data flödar in' : 'Väntar på data'} tone={status?.scanner_active ? 'good' : 'warning'} />
@@ -2775,6 +2842,9 @@ export default function DaytradingPage() {
           paperSignals={paperSignals}
           learning={learning}
           candidates={candidates}
+          loading={loading}
+          refreshing={refreshing}
+          refreshError={refreshError}
         />
       )}
 
