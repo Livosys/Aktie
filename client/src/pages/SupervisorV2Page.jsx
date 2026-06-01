@@ -415,6 +415,93 @@ function signalStopSummary(eventsResource) {
   };
 }
 
+function buildEventsByMarketSummary(events) {
+  const rows = normalizeArray(events);
+  const markets = ['crypto', 'stocks', 'nasdaq', 'unknown'];
+  const normalizedMarket = (event) => {
+    const raw = textValue(event?.market, 'unknown').trim().toLowerCase();
+    return markets.includes(raw) ? raw : 'unknown';
+  };
+
+  const marketRows = markets.reduce((acc, market) => {
+    acc[market] = rows.filter((event) => normalizedMarket(event) === market);
+    return acc;
+  }, {});
+
+  const topMarket = markets
+    .map((market) => ({ market, count: marketRows[market].length }))
+    .sort((a, b) => b.count - a.count || a.market.localeCompare(b.market, 'sv'))[0] || { market: 'unknown', count: 0 };
+
+  const summaries = markets.map((market) => {
+    const eventsForMarket = marketRows[market];
+    const counts = eventsForMarket.reduce((acc, event) => {
+      const type = String(event?.event_type || '').toLowerCase();
+      if (!type) return acc;
+      acc[type] = (acc[type] || 0) + 1;
+      return acc;
+    }, {});
+    const detected = counts['signal.detected'] || 0;
+    const matched = counts['strategy.matched'] || 0;
+    const blocked = counts['market_gate.blocked'] || 0;
+    const observeOnly = counts['market_gate.observe_only'] || 0;
+    const opened = counts['paper_trade.opened'] || 0;
+    const skipped = counts['paper_trade.skipped'] || 0;
+    const topReason = commonEntry(eventsForMarket, 'reason') || commonEntry(eventsForMarket.map((event) => ({ reason: summarizeStopReason(event) })), 'reason');
+    const topSymbol = commonEntry(eventsForMarket, 'symbol');
+    const topStrategy = commonEntry(eventsForMarket, 'strategy');
+    const totalRelevant = detected + matched + blocked + observeOnly + opened + skipped;
+    const tone = opened > 0
+      ? 'green'
+      : blocked > Math.max(observeOnly, skipped, opened)
+        ? 'red'
+        : observeOnly > 0 || skipped > 0
+          ? 'yellow'
+          : totalRelevant > 0
+            ? 'blue'
+            : 'gray';
+
+    let interpretation = 'Inga events ännu för denna marknad.';
+    if (market === 'crypto' && (detected > 0 || matched > 0) && opened === 0) {
+      interpretation = 'Crypto scannas, men inga paper trades öppnades i detta eventfönster.';
+    } else if (market === 'stocks' && topMarket.market === 'stocks' && topMarket.count > 0) {
+      interpretation = 'Senaste eventen domineras av aktier/ETF.';
+    } else if (market === 'unknown' && topMarket.market === 'unknown' && topMarket.count > 0) {
+      interpretation = 'Vissa events saknar market-fält och bör förbättras senare.';
+    } else if (opened > 0) {
+      interpretation = 'Paper trades öppnas för denna marknad.';
+    } else if (blocked > observeOnly && blocked >= 2) {
+      interpretation = 'Flera signaler stoppas här innan paper trade.';
+    } else if (observeOnly > 0 || skipped > 0) {
+      interpretation = 'Marknaden observeras eller skippas oftare än den öppnas.';
+    } else if (totalRelevant > 0) {
+      interpretation = 'Det finns signaler, men få tydliga beslut ännu.';
+    }
+
+    return {
+      market,
+      count: eventsForMarket.length,
+      detected,
+      matched,
+      blocked,
+      observeOnly,
+      opened,
+      skipped,
+      topReason: topReason?.value || 'Ingen tydlig stopporsak sparad',
+      topReasonCount: topReason?.count || 0,
+      topSymbol: topSymbol?.value || 'Ingen data ännu',
+      topSymbolCount: topSymbol?.count || 0,
+      topStrategy: topStrategy?.value || 'Ingen data ännu',
+      topStrategyCount: topStrategy?.count || 0,
+      tone,
+      interpretation,
+      hasEvents: eventsForMarket.length > 0,
+      isTopMarket: topMarket.market === market && topMarket.count > 0,
+    };
+  });
+
+  return { summaries, topMarket };
+}
+
 function buildEventAiConclusion(events) {
   const rows = normalizeArray(events);
   if (rows.length === 0) {
@@ -829,6 +916,82 @@ function EventAiConclusion({ resource }) {
       <div className="sup-safety-copy" style={{ marginTop: 12 }}>
         Detta är en read-only AI-slutsats. Den påverkar inte tradingbeslut.
       </div>
+    </section>
+  );
+}
+
+function EventsByMarket({ resource }) {
+  const data = unwrap(resource);
+  const state = endpointState(resource);
+  const events = normalizeArray(data?.events).slice(0, 100);
+  const summary = buildEventsByMarketSummary(events);
+  const hasEvents = events.length > 0;
+
+  const toneClassFor = (tone) => {
+    if (tone === 'green') return 'sup-block-ok';
+    if (tone === 'red') return 'sup-block-danger';
+    if (tone === 'yellow') return 'sup-block-warning';
+    if (tone === 'blue') return 'sup-block-neutral';
+    return 'sup-block-neutral';
+  };
+
+  return (
+    <section className="sup-section">
+      <div className="sup-section-head">
+        <div>
+          <h2>Events per marknad</h2>
+          <p>Read-only sammanfattning per market baserad på de senaste 100 eventen.</p>
+        </div>
+        <div className="sup-advisor-safety">
+          <span>actions_allowed=false</span>
+          <span>can_place_orders=false</span>
+          <span>live_trading_enabled=false</span>
+        </div>
+      </div>
+
+      {!state.missing && state.label === 'Problem' && (
+        <div className="sup-warning">
+          Kunde inte läsa eventdata just nu. Market-sammanfattningen visar senaste kända läge när backend är tillgänglig.
+        </div>
+      )}
+
+      {!hasEvents ? (
+        <div className="opt-empty">Inga events ännu. Systemet väntar på nya signaler.</div>
+      ) : (
+        <>
+          <div className="sup-v2-report-lead" style={{ marginBottom: 12 }}>
+            <strong>Översikt:</strong> {summary.topMarket.count > 0 ? `Flest events kommer från ${summary.topMarket.market}.` : 'Inga tydliga marknadsmönster ännu.'}
+          </div>
+
+          <div className="sup-grid sup-grid-2">
+            {summary.summaries.map((item) => (
+              <article key={item.market} className={`sup-block ${toneClassFor(item.tone)}`}>
+                <span className="sup-block-title">{item.market}</span>
+                <strong className="sup-block-value">{item.count} events</strong>
+                <span className="sup-block-note">{item.interpretation}</span>
+                <div className="sup-v2-report-lead" style={{ marginTop: 10, marginBottom: 0 }}>
+                  <strong>Nyckeltal:</strong> signal.detected {item.detected} · strategy.matched {item.matched} · market_gate.blocked {item.blocked} · market_gate.observe_only {item.observeOnly} · paper_trade.opened {item.opened} · paper_trade.skipped {item.skipped}
+                </div>
+                <div className="sup-v2-report-lead" style={{ marginTop: 10, marginBottom: 0 }}>
+                  <strong>Vanligast:</strong> {item.topReason}
+                  <div>Symbol: {item.topSymbol} · strategi: {item.topStrategy}</div>
+                </div>
+                <div className="sup-v2-report-lead" style={{ marginTop: 10, marginBottom: 0 }}>
+                  <strong>Tolkning:</strong> {item.opened > 0
+                    ? 'Paper trades öppnas för denna marknad.'
+                    : item.market === 'crypto' && (item.detected > 0 || item.matched > 0)
+                      ? 'Crypto scannas, men inga paper trades öppnades i detta eventfönster.'
+                      : item.market === 'stocks' && item.count > 0
+                        ? 'Senaste eventen domineras av aktier/ETF.'
+                        : item.market === 'unknown' && item.count > 0
+                          ? 'Vissa events saknar market-fält och bör förbättras senare.'
+                          : item.interpretation}
+                </div>
+              </article>
+            ))}
+          </div>
+        </>
+      )}
     </section>
   );
 }
@@ -2350,6 +2513,7 @@ export default function SupervisorV2Page() {
       </section>
 
       <EventAiConclusion resource={resources.eventsRecent} />
+      <EventsByMarket resource={resources.eventsRecent} />
       <SignalStopSummary resource={resources.eventsRecent} />
       <RecentTradingEvents resource={resources.eventsRecent} />
       <EventSystemStatus resource={resources.eventsStatus} />
