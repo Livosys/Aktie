@@ -15271,6 +15271,183 @@ body {
   color: var(--text-muted);
 }
 .dt-strategy-explainer strong { color: var(--text); }
+.dt-crypto-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin-bottom: 10px;
+}
+.dt-crypto-panel.dt-crypto-green {
+  border-color: var(--green-border);
+  background: linear-gradient(135deg, var(--green-dim), var(--surface));
+}
+.dt-crypto-panel.dt-crypto-yellow {
+  border-color: var(--yellow-border);
+  background: linear-gradient(135deg, var(--yellow-dim), var(--surface));
+}
+.dt-crypto-panel.dt-crypto-red {
+  border-color: var(--red-border);
+  background: linear-gradient(135deg, var(--red-dim), var(--surface));
+}
+.dt-crypto-panel.dt-crypto-blue {
+  border-color: var(--blue-border);
+  background: linear-gradient(135deg, var(--blue-dim), var(--surface));
+}
+.dt-crypto-panel.dt-crypto-gray {
+  border-color: var(--border);
+  background: linear-gradient(135deg, var(--surface), var(--surface-2));
+}
+.dt-crypto-pill-green { background: var(--green-dim); border-color: var(--green-border); color: var(--success); }
+.dt-crypto-pill-yellow { background: var(--yellow-dim); border-color: var(--yellow-border); color: var(--warning); }
+.dt-crypto-pill-red { background: var(--red-dim); border-color: var(--red-border); color: var(--danger); }
+.dt-crypto-pill-blue { background: var(--blue-dim); border-color: var(--blue-border); color: var(--blue); }
+.dt-crypto-pill-gray { background: var(--surface-2); border-color: var(--border); color: var(--text-muted); }
+.dt-crypto-summary-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px;
+}
+.dt-crypto-stat {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 10px;
+  border-radius: var(--r-sm);
+  border: 1px solid var(--border);
+  background: var(--surface-2);
+}
+.dt-crypto-stat strong {
+  color: var(--text);
+  font-size: .96rem;
+  word-break: break-word;
+}
+.dt-crypto-stat span {
+  color: var(--text-muted);
+  font-size: .7rem;
+}
+.dt-crypto-note {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  color: var(--text-muted);
+  font-size: .78rem;
+}
+.dt-crypto-note span {
+  padding: 3px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: var(--surface-2);
+}
+.dt-crypto-block {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px 12px;
+  border-radius: var(--r-sm);
+  border: 1px solid var(--border);
+  background: var(--surface-2);
+}
+.dt-crypto-block strong {
+  color: var(--text);
+  font-size: .82rem;
+}
+.dt-crypto-symbols {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.dt-crypto-symbol-pill {
+  display: inline-flex;
+  align-items: center;
+  width: fit-content;
+  padding: 2px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text);
+  font-size: .7rem;
+  font-weight: 700;
+}
+.dt-crypto-empty {
+  color: var(--text-muted);
+  font-size: .78rem;
+}
+.dt-crypto-runtime-list {
+  display: grid;
+  gap: 8px;
+}
+.dt-crypto-runtime-row {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px 10px;
+  border-radius: var(--r-sm);
+  border: 1px solid var(--border);
+  background: var(--surface);
+}
+.dt-crypto-runtime-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+}
+.dt-crypto-runtime-head span:first-child {
+  color: var(--text);
+  font-size: .8rem;
+  font-weight: 700;
+}
+.dt-crypto-runtime-pill {
+  display: inline-flex;
+  align-items: center;
+  width: fit-content;
+  padding: 2px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  font-size: .68rem;
+  font-weight: 800;
+  text-transform: uppercase;
+  letter-spacing: .02em;
+}
+.dt-crypto-runtime-active { background: var(--green-dim); border-color: var(--green-border); color: var(--success); }
+.dt-crypto-runtime-partial { background: var(--yellow-dim); border-color: var(--yellow-border); color: var(--warning); }
+.dt-crypto-runtime-disabled { background: var(--red-dim); border-color: var(--red-border); color: var(--danger); }
+.dt-crypto-runtime-paused,
+.dt-crypto-runtime-not-connected,
+.dt-crypto-runtime-no-entry-rule,
+.dt-crypto-runtime-unknown {
+  background: var(--surface-2);
+  border-color: var(--border);
+  color: var(--text-muted);
+}
+.dt-crypto-runtime-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  font-size: .68rem;
+  color: var(--text-muted);
+}
+.dt-crypto-runtime-reason {
+  font-size: .72rem;
+  color: var(--text-muted);
+}
+.dt-crypto-conclusion {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 10px 12px;
+  border-radius: var(--r-sm);
+  border: 1px solid var(--blue-border);
+  background: var(--blue-dim);
+  color: var(--text-muted);
+  font-size: .8rem;
+}
+.dt-crypto-conclusion strong {
+  color: var(--text);
+}
+.dt-crypto-safety {
+  color: var(--text-muted);
+  font-size: .72rem;
+}
 .dt-strategy-bulk-actions {
   display: flex;
   flex-wrap: wrap;
@@ -15361,6 +15538,7 @@ body {
 }
 @media (max-width: 900px) {
   .dt-runtime-summary { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .dt-crypto-summary-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .dt-runtime-controls,
   .dt-runtime-why-grid { grid-template-columns: 1fr; }
   .dt-trade-stats { grid-template-columns: repeat(2, minmax(0, 1fr)); }

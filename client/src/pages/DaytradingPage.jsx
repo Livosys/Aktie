@@ -9,7 +9,7 @@ function useDaytradingData(tradeLimit = 200) {
   const [state, setState] = useState({
     status: null, strategies: null, pipeline: null,
     liveTrades: null, recommendation: null, impact: null, symbols: null, runtime: null,
-    marketControls: null, learning: null, paperStatus: null,
+    cryptoScan: null, cryptoScanError: false, marketControls: null, learning: null, paperStatus: null,
     loading: true, refreshing: false, refreshError: null, error: false,
   });
 
@@ -23,11 +23,12 @@ function useDaytradingData(tradeLimit = 200) {
       refreshError: null,
     }));
     const get = url => fetch(url).then(r => r.json()).catch(() => null);
-    const [statusD, strD, pipeD, tradesD, recD, impD, symD, runtimeD, marketControlsD, learningD, paperStatusD] = await Promise.all([
+    const [statusD, strD, pipeD, tradesD, recD, impD, symD, runtimeD, cryptoScanD, marketControlsD, learningD, paperStatusD] = await Promise.all([
       get('/api/daytrading/status'), get('/api/daytrading/strategies'),
       get('/api/daytrading/pipeline'), get(`/api/daytrading/live-trades?limit=${tradeLimit}`),
       get('/api/daytrading/recommendation'), get('/api/daytrading/impact-summary'),
       get('/api/daytrading/symbols'), get('/api/daytrading/runtime-strategies'),
+      get('/api/scan/crypto'),
       get('/api/daytrading/market-controls'),
       get('/api/daytrading/learning-summary?hours=48&limit=200'),
       get('/api/paper-trading/status'),
@@ -41,6 +42,7 @@ function useDaytradingData(tradeLimit = 200) {
     const validImpact = isValidResponse(impD);
     const validSymbols = isValidResponse(symD);
     const validRuntime = isValidResponse(runtimeD);
+    const validCryptoScan = isValidResponse(cryptoScanD);
     const validMarketControls = isValidResponse(marketControlsD);
     const validLearning = isValidResponse(learningD);
     const validPaperStatus = isValidResponse(paperStatusD);
@@ -53,6 +55,7 @@ function useDaytradingData(tradeLimit = 200) {
       validImpact,
       validSymbols,
       validRuntime,
+      validCryptoScan,
       validMarketControls,
       validLearning,
       validPaperStatus,
@@ -70,6 +73,8 @@ function useDaytradingData(tradeLimit = 200) {
         impact: validImpact ? impD : prev.impact,
         symbols: validSymbols ? symD : prev.symbols,
         runtime: validRuntime ? runtimeD : prev.runtime,
+        cryptoScan: validCryptoScan ? cryptoScanD : prev.cryptoScan,
+        cryptoScanError: !validCryptoScan,
         marketControls: validMarketControls ? marketControlsD : prev.marketControls,
         learning: validLearning ? learningD : prev.learning,
         paperStatus: validPaperStatus ? paperStatusD : prev.paperStatus,
@@ -142,6 +147,183 @@ function valueTone(v) {
 function fmtReason(value) {
   if (Array.isArray(value)) return value.filter(Boolean).join(', ');
   return value || '–';
+}
+
+const CRYPTO_RUNTIME_STRATEGY_IDS = [
+  'crypto_momentum_scalper',
+  'crypto_fast_momentum',
+  'vwap_volume_breakout_long',
+  'vwap_failed_breakout_short',
+  'ema_pullback_continuation',
+];
+
+function cryptoToneFromState(scanCrypto, runtimeRows, scanCryptoError) {
+  const feedStatus = String(scanCrypto?.feedStatus?.status || '').toUpperCase();
+  const count = Number(scanCrypto?.count ?? 0);
+  const scanning = scanCrypto?.scanning === true || scanCrypto?.feedStatus?.scannerRunning === true;
+  if (scanCryptoError) return 'gray';
+  if (feedStatus === 'BROKEN') return 'red';
+  if (scanning) return 'blue';
+  if (count > 0 && feedStatus !== 'BROKEN') return 'green';
+  if ((runtimeRows || []).some((row) => row?.runtime_status === 'partial' || row?.runtime_status === 'disabled')) return 'yellow';
+  if (count === 0) return 'yellow';
+  return 'gray';
+}
+
+function buildCryptoBackendStatus(scanCrypto, runtime, paperStatus, scanCryptoError = false) {
+  const feedStatus = String(scanCrypto?.feedStatus?.status || '').toUpperCase();
+  const results = Array.isArray(scanCrypto?.results) ? scanCrypto.results : [];
+  const symbols = [...new Set(results.map((row) => row?.symbol).filter(Boolean))];
+  const runtimeRows = (runtime?.strategies || [])
+    .filter((row) => CRYPTO_RUNTIME_STRATEGY_IDS.includes(row.strategy_id || row.id))
+    .map((row) => ({
+      strategy_id: row.strategy_id || row.id,
+      strategy_name: row.strategy_name || row.name || row.strategy_id || row.id,
+      runtime_status: row.runtime_status || 'okänd',
+      can_create_paper_trade: row.can_create_paper_trade,
+      entry_rule_implemented: row.entry_rule_implemented,
+      skip_reason_sv: row.skip_reason_sv || row.reason_sv || row.runtime_comment_sv || row.comment_sv || null,
+      paper_trades_48h: row.paper_trades_48h ?? 0,
+      last_paper_trade_at: row.last_paper_trade_at || null,
+      mapping_confidence: row.mapping_confidence || null,
+    }));
+  const count = Number(scanCrypto?.count ?? results.length ?? 0);
+  const lastScan = scanCrypto?.lastScan || null;
+  const stale = scanCrypto?.feedStatus?.stale;
+  const ageSeconds = scanCrypto?.feedStatus?.ageSeconds ?? null;
+  const scanning = scanCrypto?.scanning === true || scanCrypto?.feedStatus?.scannerRunning === true;
+  const hasError = scanCryptoError;
+  const tone = cryptoToneFromState(scanCrypto, runtimeRows, scanCryptoError);
+  const statusLabel = hasError
+    ? 'okänd'
+    : feedStatus === 'BROKEN'
+      ? 'broken'
+      : count > 0
+        ? 'aktiv'
+        : scanning
+          ? 'scannar'
+          : 'tom';
+  const feedMessage = scanCrypto?.feedStatus?.messageSv || null;
+  const infoLines = [];
+  if (hasError) {
+    infoLines.push('Crypto-status kunde inte hämtas.');
+  } else if (feedStatus === 'BROKEN') {
+    infoLines.push('Crypto-datakälla saknas eller är nere just nu.');
+  } else if (count === 0) {
+    infoLines.push('Crypto live-scan ger inga färska signaler just nu.');
+  }
+  if (runtimeRows.some((row) => row.runtime_status === 'partial' || row.runtime_status === 'disabled')) {
+    infoLines.push('Crypto-strategier finns, men vissa är partial/disabled.');
+  }
+  if (count === 0 && runtimeRows.length > 0) {
+    infoLines.push('Paper-engine kan hantera crypto historiskt, men får inget färskt crypto-flöde just nu.');
+    infoLines.push('Detta är troligen upstream: crypto-scanner/provider, inte paper-engine.');
+  }
+  if (paperStatus?.enabled === false) {
+    infoLines.push('Paper trading är avstängt.');
+  }
+
+  return {
+    tone,
+    statusLabel,
+    feedStatus,
+    feedMessage,
+    count,
+    lastScan,
+    stale,
+    ageSeconds,
+    scanning,
+    symbols,
+    runtimeRows,
+    conclusion: infoLines.length > 0 ? infoLines.join(' ') : 'Crypto backend ser levande ut just nu.',
+    hasError,
+  };
+}
+
+function CryptoBackendStatusPanel({ scanCrypto, scanCryptoError, runtime, paperStatus }) {
+  const model = buildCryptoBackendStatus(scanCrypto, runtime, paperStatus, scanCryptoError);
+  const statusClass = `dt-crypto-panel dt-crypto-${model.tone}`;
+  const lastScanLabel = model.lastScan ? fmtTradeTime(model.lastScan) : '–';
+
+  return (
+    <div className={statusClass}>
+      <div className="dt-panel-head">
+        <h3 className="dt-panel-title">Crypto backend-status</h3>
+        <span className={`dt-count-badge dt-crypto-pill-${model.tone}`}>{model.statusLabel}</span>
+      </div>
+
+      <div className="dt-crypto-summary-grid">
+        <div className="dt-crypto-stat">
+          <strong>{model.count}</strong>
+          <span>live-signal(er)</span>
+        </div>
+        <div className="dt-crypto-stat">
+          <strong>{lastScanLabel}</strong>
+          <span>lastScan</span>
+        </div>
+        <div className="dt-crypto-stat">
+          <strong>{model.feedStatus || 'okänd'}</strong>
+          <span>feedStatus</span>
+        </div>
+        <div className="dt-crypto-stat">
+          <strong>{model.scanning ? 'Ja' : 'Nej'}</strong>
+          <span>scannerRunning</span>
+        </div>
+      </div>
+
+      <div className="dt-crypto-note">
+        {model.feedMessage && <span>{model.feedMessage}</span>}
+        {model.stale != null && <span>stale: {String(model.stale)}</span>}
+        {model.ageSeconds != null && <span>ageSeconds: {model.ageSeconds}</span>}
+      </div>
+
+      <div className="dt-crypto-block">
+        <strong>Senaste crypto-symboler</strong>
+        {model.symbols.length > 0 ? (
+          <div className="dt-crypto-symbols">
+            {model.symbols.map((symbol) => (
+              <span key={symbol} className="dt-crypto-symbol-pill">{symbol}</span>
+            ))}
+          </div>
+        ) : (
+          <div className="dt-crypto-empty">Inga crypto-symboler från live scan just nu.</div>
+        )}
+      </div>
+
+      <div className="dt-crypto-block">
+        <strong>Crypto runtime</strong>
+        <div className="dt-crypto-runtime-list">
+          {model.runtimeRows.map((row) => (
+            <div key={row.strategy_id} className="dt-crypto-runtime-row">
+              <div className="dt-crypto-runtime-head">
+                <span>{row.strategy_name}</span>
+                <span className={`dt-crypto-runtime-pill dt-crypto-runtime-${String(row.runtime_status || '').toLowerCase().replace(/[^a-z0-9]+/g, '-') || 'unknown'}`}>
+                  {row.runtime_status}
+                </span>
+              </div>
+              <div className="dt-crypto-runtime-meta">
+                <span>can_create_paper_trade: {row.can_create_paper_trade === true ? 'true' : row.can_create_paper_trade === 'partial' ? 'partial' : 'false'}</span>
+                <span>entry_rule_implemented: {row.entry_rule_implemented === true ? 'true' : 'false'}</span>
+                <span>paper_trades_48h: {row.paper_trades_48h ?? 0}</span>
+                <span>mapping: {row.mapping_confidence || '–'}</span>
+              </div>
+              <div className="dt-crypto-runtime-reason">
+                {row.skip_reason_sv || 'Ingen skip reason'}
+              </div>
+            </div>
+          ))}
+          {!model.runtimeRows.length && <div className="dt-crypto-empty">Ingen crypto-runtime-data hittades.</div>}
+        </div>
+      </div>
+
+      <div className="dt-crypto-conclusion">
+        <strong>Slutsats</strong>
+        <span>{model.conclusion}</span>
+      </div>
+
+      <div className="dt-crypto-safety">Detta är read-only status. Ingen tradinglogik ändras.</div>
+    </div>
+  );
 }
 
 function friendlySkipReason(reason) {
@@ -1399,7 +1581,7 @@ function MarketControlsSection({ marketControls, onUpdate }) {
   );
 }
 
-function StrategiesSection({ strategies, total, runtime, liveTrades, onUpdate, onScan }) {
+function StrategiesSection({ strategies, total, runtime, liveTrades, paperStatus, cryptoScan, cryptoScanError, onUpdate, onScan }) {
   const [visibleCount, setVisibleCount] = useState(25);
   const [paperLimit, setPaperLimit] = useState(5);
   const [runtimeFilter, setRuntimeFilter] = useState('all');
@@ -1491,6 +1673,12 @@ function StrategiesSection({ strategies, total, runtime, liveTrades, onUpdate, o
       </div>
       {runtimeError && <div className="dt-inline-error">{runtimeError}</div>}
       <RuntimeSummary runtime={runtime} />
+      <CryptoBackendStatusPanel
+        scanCrypto={cryptoScan}
+        scanCryptoError={cryptoScanError}
+        runtime={runtime}
+        paperStatus={paperStatus}
+      />
       <div className="dt-strategy-explainer">
         <strong>Source of Truth för runtime och paper trading.</strong>
         <span><b>Vald för paper</b> = strategin är markerad i UI.</span>
@@ -2026,7 +2214,7 @@ function LearningEngineSection({ learning }) {
 
 export default function DaytradingPage() {
   const [tradeLimit, setTradeLimit] = useState(200);
-  const { status, strategies, pipeline, liveTrades, recommendation, impact, symbols, runtime, marketControls, learning, paperStatus, loading, refreshing, refreshError, error, refresh } = useDaytradingData(tradeLimit);
+  const { status, strategies, pipeline, liveTrades, recommendation, impact, symbols, runtime, cryptoScan, cryptoScanError, marketControls, learning, paperStatus, loading, refreshing, refreshError, error, refresh } = useDaytradingData(tradeLimit);
   const [filters, setFilters] = useState(DEFAULT_FILTERS);
   const [scanning, setScanning] = useState(false);
   const [scanResult, setScanResult] = useState(null);
@@ -2180,6 +2368,9 @@ export default function DaytradingPage() {
           total={allStrategies.length}
           runtime={runtime}
           liveTrades={liveTrades}
+          paperStatus={paperStatus}
+          cryptoScan={cryptoScan}
+          cryptoScanError={cryptoScanError}
           onUpdate={refresh}
           onScan={handleScan}
         />
