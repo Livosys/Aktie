@@ -234,6 +234,20 @@ function fmtPct(v) {
   return `${n > 0 ? '+' : ''}${n.toFixed(2)}%`;
 }
 
+function ageLabel(iso) {
+  if (!iso) return 'saknas';
+  const time = new Date(iso).getTime();
+  if (!Number.isFinite(time)) return 'saknas';
+  const diffMs = Math.max(0, Date.now() - time);
+  const mins = Math.round(diffMs / 60000);
+  if (mins < 1) return 'nyss';
+  if (mins < 60) return `${mins} min sedan`;
+  const hours = Math.round(mins / 60);
+  if (hours < 24) return `${hours} h sedan`;
+  const days = Math.round(hours / 24);
+  return `${days} d sedan`;
+}
+
 function daytradeTone(status) {
   if (status === 'Titta manuellt' || status === 'Bekräftad') return 'strong';
   if (status === 'Intressant') return 'watch';
@@ -496,6 +510,8 @@ function BestDecisionBox({ c, loading }) {
   const decisionText = DECISION_SV[c.priority] || 'Vänta';
   const isActive = c.priority === 'active';
   const isRisk   = c.priority === 'avoid';
+  const updatedAt = c.timestamp || c.lastUpdate || null;
+  const dt = r?.daytradeStatus ? r : null;
 
   const fmtPrice = (p) => {
     if (p == null) return null;
@@ -540,6 +556,18 @@ function BestDecisionBox({ c, loading }) {
         <div className="bdb-stat">
           <span>Tillstånd</span>
           <strong style={{ fontSize: 11 }}>{c.stateGraph?.state || '–'}</strong>
+        </div>
+        <div className="bdb-stat">
+          <span>Uppdaterad</span>
+          <strong style={{ fontSize: 11 }}>{updatedAt ? formatDateTime(updatedAt) : 'saknas'}</strong>
+        </div>
+        <div className="bdb-stat">
+          <span>Ålder</span>
+          <strong style={{ fontSize: 11 }}>{ageLabel(updatedAt)}</strong>
+        </div>
+        <div className="bdb-stat">
+          <span>Paper/test</span>
+          <strong style={{ fontSize: 11 }}>{dt ? `${dt.daytradeStatus || 'OKänt'} · ${dt.daytradeScore ?? 0}` : 'Ingen testsignal ännu'}</strong>
         </div>
       </div>
 
@@ -718,7 +746,7 @@ function CandidateGrid({ candidates, loading }) {
     return (
       <div className="cand-empty">
         <strong>Inga kandidater just nu</strong>
-        <span>Systemet bevakar marknaden. Kan inte bedöma just nu — vänta på nästa scan.</span>
+        <span>Systemet söker. Ingen färsk kandidat ännu.</span>
       </div>
     );
   }
@@ -732,7 +760,7 @@ function CandidateGrid({ candidates, loading }) {
       seen.add(c.symbol);
       return true;
     })
-    .slice(0, 6);
+    .slice(0, 20);
 
   return (
     <div className="cand-grid">
@@ -1557,31 +1585,58 @@ export default function LivePage() {
         <div className="empty"><span className="spinner" /> Hämtar live-data…</div>
       )}
 
-      {/* Quick Signal View — top of page */}
-      <QuickSignalSection candidates={candidates} loading={loading && !dmData} />
-
-      {/* Decision box — best candidate */}
+      {/* 1. Just nu */}
       <div className="dm-section-group">
-        <div className="dm-section-label">Bästa kandidat</div>
+        <div className="dm-section-label">1. Just nu</div>
+        <div className="live-command-section">
+          <div className="live-section-head">
+            <div>
+              <div className="live-section-title">Vad händer JUST NU?</div>
+              <div className="live-section-sub">Senaste toppsignalen med score, orsak, TradingView-länk och ålder.</div>
+            </div>
+          </div>
         <BestDecisionBox c={topCandidate} loading={loading && !dmData} />
+        </div>
       </div>
 
-      {/* Candidate grid */}
+      {/* 2. Signaler */}
       <div className="dm-section-group">
         <div className="dm-section-label-row">
-          <span className="dm-section-label">Alla kandidater</span>
+          <span className="dm-section-label">2. Signaler</span>
           {candidates.length > 0 && <span className="dm-section-count">{candidates.length} st</span>}
         </div>
-        <CandidateGrid candidates={candidates} loading={loading && !dmData} />
+        <QuickSignalSection candidates={candidates} loading={loading && !dmData} />
+        <div style={{ height: 12 }} />
+        <div className="live-command-section">
+          <div className="live-section-head">
+            <div>
+              <div className="live-section-title">Top 20 signaler just nu</div>
+              <div className="live-section-sub">De mest intressanta kandidaterna i aktuell scan.</div>
+            </div>
+          </div>
+          <CandidateGrid candidates={candidates} loading={loading && !dmData} />
+        </div>
       </div>
 
-      <TermGlossary />
+      {/* 3. Historik */}
+      <div className="dm-section-group">
+        <div className="dm-section-label">3. Historik</div>
+        <div className="live-command-section">
+          <div className="live-section-head">
+            <div>
+              <div className="live-section-title">Vad fungerar historiskt?</div>
+              <div className="live-section-sub">Här syns vad historiken faktiskt stödjer just nu.</div>
+            </div>
+          </div>
+          <BestLiveCard r={bestSignal} />
+        </div>
+      </div>
 
       {/* Advanced section — old UI preserved */}
       <div className="dm-advanced-section">
         <button className="dm-advanced-toggle" onClick={() => setShowAdvanced(v => !v)}>
-          {showAdvanced ? '▲' : '▼'} Avancerade vyer
-          <span className="dm-adv-sub">Marknadspuls · Signalöversikt · Beslutsstöd (gamla vyer)</span>
+          {showAdvanced ? '▲' : '▼'} 4. Marknadsläge
+          <span className="dm-adv-sub">Risk-Off · starkast/svagast · signalöversikt (gamla vyer)</span>
         </button>
         {showAdvanced && hasData && (
           <div className="dm-advanced-body">
@@ -1599,6 +1654,8 @@ export default function LivePage() {
           </div>
         )}
       </div>
+
+      <TermGlossary />
 
       {/* Intern read-only chart-panel */}
       <TradingViewSignalPanel signal={chartSignal} onClose={() => setChartSignal(null)} />
