@@ -208,12 +208,16 @@ function eventMarketType(input) {
 }
 
 function strategyMetadataOf(input = {}) {
+  const sourceStrategyId = input.sourceStrategyId || input.sourceStrategyID || null;
+  const strategyId = input.strategyId || input.strategy_id || input.setupId || sourceStrategyId || null;
   return {
-    sourceStrategyId: input.sourceStrategyId || null,
+    sourceStrategyId,
     sourceStrategyName: input.sourceStrategyName || null,
-    resolvedStrategyId: input.resolvedStrategyId || input.strategyId || input.strategy_id || input.setupId || null,
+    strategyId,
+    strategyName: input.strategyName || input.strategy_name || null,
+    resolvedStrategyId: input.resolvedStrategyId || strategyId || null,
     resolvedStrategyName: input.resolvedStrategyName || input.strategyName || input.strategy_name || null,
-    mappingSource: input.mappingSource || (input.sourceStrategyId ? 'explicit' : 'unknown'),
+    mappingSource: input.mappingSource || (strategyId ? 'explicit' : 'unknown'),
   };
 }
 
@@ -232,6 +236,8 @@ function eventFromCandidate(type, c, reasonSv, decision = 'skipped') {
     dataFreshness:  c?.dataFreshness || null,
     confidenceScore: c?.confidenceScore ?? null,
     volumeState:    c?.volumeState   || null,
+    strategyId: meta.strategyId || meta.resolvedStrategyId || meta.sourceStrategyId || null,
+    strategyName: meta.strategyName || meta.resolvedStrategyName || meta.sourceStrategyName || null,
     sourceStrategyId: meta.sourceStrategyId,
     sourceStrategyName: meta.sourceStrategyName,
     resolvedStrategyId: meta.resolvedStrategyId,
@@ -337,8 +343,8 @@ function appendEvent(input) {
     reasonSv:        input.reasonSv      || null,
     signalFamily:    input.signalFamily  || null,
     signalSubtype:   input.signalSubtype || null,
-    strategyId:      input.strategyId    || meta.resolvedStrategyId || meta.sourceStrategyId || null,
-    strategyName:    input.strategyName  || meta.resolvedStrategyName || meta.sourceStrategyName || null,
+    strategyId:      input.strategyId    || meta.strategyId || meta.resolvedStrategyId || meta.sourceStrategyId || null,
+    strategyName:    input.strategyName  || meta.strategyName || meta.resolvedStrategyName || meta.sourceStrategyName || null,
     runtimeStatus:   input.runtimeStatus  || null,
     status:          input.status        || null,
     nextMoveBias:    input.nextMoveBias  || null,
@@ -627,6 +633,8 @@ function buildOpenTrade(c, gateDecision = null) {
     paperOnly:        mpRisk?.paperOnly ?? false,
     session:          mpRisk?.session ?? null,
     direction:        c.nextMoveBias,
+    strategyId:       c.strategyId || c.strategy_id || c.resolvedStrategyId || c.sourceStrategyId || null,
+    strategyName:     c.strategyName || c.strategy_name || c.resolvedStrategyName || c.sourceStrategyName || null,
     entryTime:        openedAt,
     opened_at:        openedAt,
     closed_at:        null,
@@ -673,9 +681,9 @@ function buildOpenTrade(c, gateDecision = null) {
     gateDecision:            gateDecision               ?? null,
     sourceStrategyId:        c.sourceStrategyId || null,
     sourceStrategyName:      c.sourceStrategyName || null,
-    resolvedStrategyId:      c.resolvedStrategyId || c.strategyId || c.strategy_id || null,
+    resolvedStrategyId:      c.resolvedStrategyId || c.strategyId || c.strategy_id || c.setupId || null,
     resolvedStrategyName:    c.resolvedStrategyName || c.strategyName || c.strategy_name || null,
-    mappingSource:           c.mappingSource || (c.sourceStrategyId ? 'explicit' : 'unknown'),
+    mappingSource:           c.mappingSource || (c.strategyId || c.strategy_id || c.sourceStrategyId || c.setupId ? 'explicit' : 'unknown'),
     // intrabar tracking — updated every tick while trade is open
     maxFavorablePct:         null,
     maxAdversePct:           null,

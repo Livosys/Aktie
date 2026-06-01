@@ -25,6 +25,7 @@ function logCandidate(entry) {
     : null;
   const sourceStrategyId = entry.sourceStrategyId || null;
   const resolvedStrategyId = entry.resolvedStrategyId || entry.strategyId || entry.strategy_id || sourceStrategyId || null;
+  const strategyId = entry.strategyId || entry.strategy_id || sourceStrategyId || resolvedStrategyId || null;
   const mappingSource = entry.mappingSource || (sourceStrategyId ? 'explicit' : 'unknown');
   const line = JSON.stringify({
     ts: detectedAt,
@@ -48,6 +49,8 @@ function logCandidate(entry) {
     exitProfile:         entry.exitProfile,
     sourceStrategyId,
     sourceStrategyName:  entry.sourceStrategyName || entry.strategyName || entry.strategy_name || null,
+    strategyId,
+    strategy_id:         strategyId,
     resolvedStrategyId,
     resolvedStrategyName: entry.resolvedStrategyName || entry.strategyName || entry.strategy_name || null,
     mappingSource,
@@ -58,7 +61,7 @@ function logCandidate(entry) {
     source: 'candidate_log',
     timestamp: detectedAt,
     symbol: entry.symbol,
-    strategy_id: resolvedStrategyId || sourceStrategyId || null,
+    strategy_id: strategyId || null,
     message: entry.symbol ? `Kandidat hittad för ${entry.symbol}` : 'Kandidat hittad',
     details: {
       score: entry.score,
@@ -66,6 +69,7 @@ function logCandidate(entry) {
       marketGroup: entry.marketGroup,
       setupId: entry.setupId,
       sourceStrategyId,
+      strategyId,
       resolvedStrategyId,
       mappingSource,
     },
@@ -75,7 +79,7 @@ function logCandidate(entry) {
     source: 'candidate_log',
     timestamp: evaluatedAt,
     symbol: entry.symbol,
-    strategy_id: resolvedStrategyId || sourceStrategyId || null,
+    strategy_id: strategyId || null,
     message: entry.symbol ? `Kandidat utvärderad för ${entry.symbol}` : 'Kandidat utvärderad',
     details: {
       score: entry.score,
@@ -83,6 +87,7 @@ function logCandidate(entry) {
       warnings: entry.warnings || [],
       wouldHaveBeenBlockedBy: entry.wouldHaveBeenBlockedBy || [],
       sourceStrategyId,
+      strategyId,
       resolvedStrategyId,
       mappingSource,
     },

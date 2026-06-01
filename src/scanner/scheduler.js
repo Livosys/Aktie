@@ -36,6 +36,7 @@ const { computeAndSaveCompass }                   = require('../markets/marketCo
 const redisService                                = require('../services/redisService');
 const marketUniverse                              = require('../services/marketUniverseService');
 const eventLogService                             = require('../services/eventLogService');
+const strategyRuntimeConnector                    = require('../services/strategyRuntimeConnectorService');
 
 const GROUPS = {
   stocks:        ['NVDA', 'AMD', 'TSLA', 'AAPL', 'MSFT', 'AMZN', 'META', 'NFLX', 'GOOGL'],
@@ -248,6 +249,7 @@ async function runScan() {
     .map((r) => applyConfidenceDecay(r))
     .map((r) => applyWavePhase(r))
     .map((r) => applyMicroMove(r))
+    .map((r) => strategyRuntimeConnector.enrichSignalWithStrategy(r))
     .map((r) => enrichLiveIndicators(r))
     .map((r) => stripPrivateFields(r))
     .map((r) => ({ ...r, marketGroup: getMarketGroup(r.symbol) || 'UNKNOWN' }));
@@ -451,6 +453,14 @@ function emitScannerEvents(results, status) {
         raw_signal: row.signalSubtype || row.signalFamily || signal,
         direction,
         strategy: row.strategy_id || row.strategy_name || null,
+        strategyId: row.strategyId || row.strategy_id || row.setupId || row.sourceStrategyId || null,
+        strategyName: row.strategyName || row.strategy_name || null,
+        strategy_name: row.strategy_name || row.strategyName || null,
+        sourceStrategyId: row.sourceStrategyId || null,
+        resolvedStrategyId: row.resolvedStrategyId || row.strategyId || row.strategy_id || row.setupId || null,
+        sourceStrategyName: row.sourceStrategyName || null,
+        resolvedStrategyName: row.resolvedStrategyName || row.strategyName || row.strategy_name || null,
+        mappingSource: row.mappingSource || (row.sourceStrategyId || row.strategyId || row.strategy_id || row.setupId ? 'explicit' : 'unknown'),
         score: row.tradeScore ?? row.daytradeScore ?? row.confidenceScore ?? null,
         decision: 'observe_only',
         reason: row.daytradeStatus || row.signal || null,
@@ -460,6 +470,10 @@ function emitScannerEvents(results, status) {
           signal: row.signal || null,
           signal_family: row.signalFamily || null,
           signal_subtype: row.signalSubtype || null,
+          strategyId: row.strategyId || row.strategy_id || row.setupId || row.sourceStrategyId || null,
+          source_strategy_id: row.sourceStrategyId || null,
+          resolved_strategy_id: row.resolvedStrategyId || row.strategyId || row.strategy_id || row.setupId || null,
+          mapping_source: row.mappingSource || (row.sourceStrategyId || row.strategyId || row.strategy_id || row.setupId ? 'explicit' : 'unknown'),
           strategy_id: row.strategy_id || null,
           strategy_name: row.strategy_name || null,
           daytrade_score: row.daytradeScore ?? null,

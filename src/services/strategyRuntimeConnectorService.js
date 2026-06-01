@@ -141,6 +141,12 @@ function resolveStrategyMetadata(signal = {}, options = {}) {
   const sourceStrategyId = normalizeStrategyId(
     signal.sourceStrategyId ||
     signal.sourceStrategyID ||
+    null,
+  );
+  const explicitStrategyId = normalizeStrategyId(
+    sourceStrategyId ||
+    signal.strategyId ||
+    signal.strategy_id ||
     signal.setupId ||
     null,
   );
@@ -154,14 +160,18 @@ function resolveStrategyMetadata(signal = {}, options = {}) {
     sourceStrategyName,
     resolvedStrategyId: null,
     resolvedStrategyName: null,
+    strategyId: null,
+    strategyName: null,
     mappingSource: 'unknown',
     raw_strategy: raw,
     signal_subtype: raw,
   };
 
-  if (sourceStrategyId) {
-    metadata.resolvedStrategyId = sourceStrategyId;
-    metadata.resolvedStrategyName = sourceStrategyName || catalog.getStrategyById(sourceStrategyId)?.name || sourceStrategyId;
+  if (explicitStrategyId) {
+    metadata.resolvedStrategyId = explicitStrategyId;
+    metadata.resolvedStrategyName = sourceStrategyName || catalog.getStrategyById(explicitStrategyId)?.name || explicitStrategyId;
+    metadata.strategyId = metadata.resolvedStrategyId;
+    metadata.strategyName = metadata.resolvedStrategyName;
     metadata.mappingSource = 'explicit';
     return metadata;
   }
@@ -174,6 +184,8 @@ function resolveStrategyMetadata(signal = {}, options = {}) {
   if (runtimeStrategyId) {
     metadata.resolvedStrategyId = runtimeStrategyId;
     metadata.resolvedStrategyName = catalog.getStrategyById(runtimeStrategyId)?.name || runtimeStrategyId;
+    metadata.strategyId = metadata.resolvedStrategyId;
+    metadata.strategyName = metadata.resolvedStrategyName;
     metadata.mappingSource = 'runtime_inference';
     return metadata;
   }
@@ -183,6 +195,8 @@ function resolveStrategyMetadata(signal = {}, options = {}) {
     if (catalogStrategy?.id) {
       metadata.resolvedStrategyId = catalogStrategy.id;
       metadata.resolvedStrategyName = catalogStrategy.name || catalog.getStrategyById(catalogStrategy.id)?.name || catalogStrategy.id;
+      metadata.strategyId = metadata.resolvedStrategyId;
+      metadata.strategyName = metadata.resolvedStrategyName;
       metadata.mappingSource = 'legacy_fallback';
     }
   }
@@ -626,13 +640,13 @@ function enrichSignalWithStrategy(signal = {}) {
     ...signal,
     sourceStrategyId: signal.sourceStrategyId || metadata.sourceStrategyId || null,
     sourceStrategyName: signal.sourceStrategyName || metadata.sourceStrategyName || null,
-    resolvedStrategyId: signal.resolvedStrategyId || inferred.resolvedStrategyId || inferred.strategy_id || metadata.resolvedStrategyId || null,
-    resolvedStrategyName: signal.resolvedStrategyName || inferred.resolvedStrategyName || inferred.strategy_name || metadata.resolvedStrategyName || null,
-    mappingSource: signal.mappingSource || metadata.mappingSource || inferred.mappingSource || inferred.mapping_source || 'unknown',
-    strategy_id: signal.strategy_id || signal.strategyId || inferred.strategy_id || metadata.resolvedStrategyId || null,
-    strategyId: signal.strategyId || signal.strategy_id || inferred.strategy_id || metadata.resolvedStrategyId || null,
-    strategy_name: signal.strategy_name || signal.strategyName || inferred.strategy_name || metadata.resolvedStrategyName || null,
-    strategyName: signal.strategyName || signal.strategy_name || inferred.strategy_name || metadata.resolvedStrategyName || null,
+    resolvedStrategyId: signal.resolvedStrategyId || signal.strategyId || signal.strategy_id || metadata.resolvedStrategyId || inferred.resolvedStrategyId || inferred.strategy_id || null,
+    resolvedStrategyName: signal.resolvedStrategyName || signal.strategyName || signal.strategy_name || metadata.resolvedStrategyName || inferred.resolvedStrategyName || inferred.strategy_name || null,
+    mappingSource: signal.mappingSource || metadata.mappingSource || (signal.strategyId || signal.strategy_id || signal.setupId || signal.sourceStrategyId || metadata.resolvedStrategyId ? 'explicit' : null) || inferred.mappingSource || inferred.mapping_source || 'unknown',
+    strategy_id: signal.strategy_id || signal.strategyId || metadata.strategyId || inferred.strategy_id || metadata.resolvedStrategyId || null,
+    strategyId: signal.strategyId || signal.strategy_id || metadata.strategyId || inferred.strategy_id || metadata.resolvedStrategyId || null,
+    strategy_name: signal.strategy_name || signal.strategyName || metadata.strategyName || inferred.strategy_name || metadata.resolvedStrategyName || null,
+    strategyName: signal.strategyName || signal.strategy_name || metadata.strategyName || inferred.strategy_name || metadata.resolvedStrategyName || null,
     strategy_family: signal.strategy_family || inferred.strategy_family,
     raw_strategy: signal.raw_strategy || inferred.raw_strategy,
     signal_subtype: signal.signal_subtype || inferred.signal_subtype,
@@ -676,15 +690,15 @@ function enrichPaperTradeWithStrategy(trade = {}) {
     strategy: trade.strategy || raw || strategyName || 'Paper-strategi',
     raw_strategy: raw || null,
     signal_subtype: trade.signal_subtype || trade.signalSubtype || raw || null,
-    strategy_id: strategyId || null,
-    strategyId: strategyId || null,
+    strategy_id: trade.strategy_id || trade.strategyId || metadata.strategyId || strategyId || null,
+    strategyId: trade.strategyId || trade.strategy_id || metadata.strategyId || strategyId || null,
     strategy_name: strategyName || null,
     strategyName: strategyName || null,
     sourceStrategyId: trade.sourceStrategyId || metadata.sourceStrategyId || null,
     sourceStrategyName: trade.sourceStrategyName || metadata.sourceStrategyName || null,
-    resolvedStrategyId: trade.resolvedStrategyId || strategyId || metadata.resolvedStrategyId || null,
-    resolvedStrategyName: trade.resolvedStrategyName || strategyName || metadata.resolvedStrategyName || null,
-    mappingSource: trade.mappingSource || metadata.mappingSource || inferred.mappingSource || inferred.mapping_source || 'unknown',
+    resolvedStrategyId: trade.resolvedStrategyId || trade.strategyId || trade.strategy_id || metadata.resolvedStrategyId || strategyId || null,
+    resolvedStrategyName: trade.resolvedStrategyName || trade.strategyName || trade.strategy_name || metadata.resolvedStrategyName || strategyName || null,
+    mappingSource: trade.mappingSource || metadata.mappingSource || (trade.strategyId || trade.strategy_id || trade.setupId || trade.sourceStrategyId ? 'explicit' : null) || inferred.mappingSource || inferred.mapping_source || 'unknown',
     strategy_family: trade.strategy_family || inferred.strategy_family,
     mapping_confidence: trade.mapping_confidence || inferred.mapping_confidence,
   runtime_status: trade.runtime_status || inferred.runtime_status,

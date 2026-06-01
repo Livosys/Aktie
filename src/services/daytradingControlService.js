@@ -217,13 +217,16 @@ function tradeSourceLabel(trade = {}) {
 
 function strategyMetadataOf(row = {}) {
   const sourceStrategyId = row.sourceStrategyId || null;
-  const resolvedStrategyId = row.resolvedStrategyId || row.strategyId || row.strategy_id || sourceStrategyId || null;
+  const strategyId = row.strategyId || row.strategy_id || row.setupId || sourceStrategyId || null;
+  const resolvedStrategyId = row.resolvedStrategyId || strategyId || null;
   return {
     sourceStrategyId,
     sourceStrategyName: row.sourceStrategyName || null,
+    strategyId,
+    strategyName: row.strategyName || row.strategy_name || null,
     resolvedStrategyId,
     resolvedStrategyName: row.resolvedStrategyName || row.strategyName || row.strategy_name || null,
-    mappingSource: row.mappingSource || (sourceStrategyId ? 'explicit' : 'unknown'),
+    mappingSource: row.mappingSource || (strategyId ? 'explicit' : 'unknown'),
   };
 }
 
@@ -1191,7 +1194,7 @@ function formatPaperSignalRow(row = {}, runtime = {}, paperTrade = null, blocker
     market: signalMarket(row),
     side: signalSide(row),
     strategy: row.resolvedStrategyName || row.sourceStrategyName || row.strategy_name || row.strategyName || row.strategyLabel || row.strategy_id || row.strategyId || row.setupId || 'Paper-strategi',
-    strategyId: row.resolvedStrategyId || row.strategyId || row.strategy_id || row.setupId || null,
+    strategyId: row.strategyId || row.strategy_id || row.setupId || row.resolvedStrategyId || null,
     score,
     confidence,
     entry,
@@ -1210,6 +1213,7 @@ function formatPaperSignalRow(row = {}, runtime = {}, paperTrade = null, blocker
     pnl: paperTrade?.pnlPct ?? paperTrade?.unrealizedPct ?? null,
     sourceStrategyId: meta.sourceStrategyId,
     sourceStrategyName: meta.sourceStrategyName,
+    strategyId: meta.strategyId || meta.resolvedStrategyId || null,
     resolvedStrategyId: meta.resolvedStrategyId,
     resolvedStrategyName: meta.resolvedStrategyName,
     mappingSource: meta.mappingSource,
@@ -1357,13 +1361,15 @@ function getPaperSignals(options = {}) {
 
   const scanSignals = rows
     .map((row) => {
-      const metadata = strategyRuntimeConnector.resolveStrategyMetadata(row, { allowLegacyFallback: false }) || {};
-      const resolvedStrategyId = metadata.resolvedStrategyId || row.strategy_id || row.strategyId || null;
+      const enrichedRow = strategyRuntimeConnector.enrichSignalWithStrategy(row);
+      const metadata = strategyRuntimeConnector.resolveStrategyMetadata(enrichedRow, { allowLegacyFallback: false }) || {};
+      const resolvedStrategyId = metadata.resolvedStrategyId || enrichedRow.strategy_id || enrichedRow.strategyId || null;
       const runtime = runtimeById[resolvedStrategyId] || (resolvedStrategyId ? strategyRuntimeConnector.getRuntimeStatusForStrategy(resolvedStrategyId) : {}) || {};
-      const paperTrade = matchPaperTradeBySignal(row, trades);
-      const blocker = buildPaperSignalBlocker(row, runtime, config, paperStatus);
+      const paperTrade = matchPaperTradeBySignal(enrichedRow, trades);
+      const blocker = buildPaperSignalBlocker(enrichedRow, runtime, config, paperStatus);
       const signal = formatPaperSignalRow({
         ...row,
+        ...enrichedRow,
         sourceStrategyId: metadata.sourceStrategyId,
         sourceStrategyName: metadata.sourceStrategyName,
         resolvedStrategyId,
@@ -1909,9 +1915,9 @@ function categorizeFlowDropReason(rawReason, row = {}, runtime = {}) {
 function normalizeFlowRow(row = {}, source = 'unknown', catalogIndex = null, runtimeIndex = null) {
   const metadata = strategyRuntimeConnector.resolveStrategyMetadata(row, { allowLegacyFallback: source !== 'paper_event' }) || {};
   const resolved = resolveStrategyRow(row, catalogIndex || {}, { allowInference: false }) || resolveStrategyRow(row, runtimeIndex || {}, { allowInference: false }) || null;
-  const sourceStrategyId = metadata.sourceStrategyId || row.strategyId || row.strategy_id || row.setupId || null;
+  const sourceStrategyId = metadata.sourceStrategyId || null;
   const sourceStrategyName = metadata.sourceStrategyName || row.strategyName || row.strategy_name || null;
-  const strategyId = metadata.resolvedStrategyId || sourceStrategyId || resolved?.id || null;
+  const strategyId = metadata.strategyId || metadata.resolvedStrategyId || row.strategyId || row.strategy_id || row.setupId || resolved?.id || null;
   const strategyName = metadata.resolvedStrategyName || sourceStrategyName || resolved?.name || strategyId || 'Okänd strategi';
   const signalType = flowSignalTypeOf(row);
   const ts = flowTimestampOf(row);
