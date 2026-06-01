@@ -1,5 +1,7 @@
 'use strict';
 
+const { buildCryptoSignalContext } = require('../services/strategyRuntimeConnectorService');
+
 const TARGET_MIN_PCT = 1;
 const TARGET_MAX_PCT = 2;
 const MIN_RELVOL_FOR_INTEREST = 1.3;
@@ -288,6 +290,24 @@ function buildDaytradeSignal(input) {
   if (stale) daytradeStatus = 'Undvik';
   if (isTooLate && daytradeStatus === 'Bekräftad') daytradeStatus = 'Intressant';
 
+  const cryptoSignalContext = buildCryptoSignalContext({
+    ...r,
+    marketType: r.marketType || r.market || (String(r.symbol || '').endsWith('USDT') ? 'crypto' : null),
+    market: r.market || (String(r.symbol || '').endsWith('USDT') ? 'crypto' : null),
+    daytradeStatus,
+    daytradeDirection: direction,
+    daytradeRisk: riskLabel(r, risk),
+    volumeState: r.volumeState || null,
+    rvol: r.rvol ?? r.relVol20 ?? null,
+    signalScore: r.signalScore ?? null,
+    tradeScore: daytradeScore,
+    marketScore: r.marketScore ?? null,
+    marketScoreV2: r.marketScoreV2 ?? null,
+    marketContext: r.marketContext || null,
+    momentumContinuationContext: r.momentumContinuationContext || null,
+    stateGraph: r.stateGraph || null,
+  });
+
   return {
     daytradeScore,
     daytradeStatus,
@@ -299,6 +319,8 @@ function buildDaytradeSignal(input) {
     daytradeReasons: [...new Set(reasons)].slice(0, 6),
     daytradeWarnings: [...new Set(warnings)].slice(0, 6),
     components,
+    crypto_signal_context: cryptoSignalContext,
+    crypto_context: cryptoSignalContext,
   };
 }
 

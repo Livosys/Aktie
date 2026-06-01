@@ -105,6 +105,46 @@ function directionOf(input = {}) {
   return 'UNKNOWN';
 }
 
+function cryptoSignalContextOf(signal = {}) {
+  return signal.crypto_signal_context || signal.crypto_context || null;
+}
+
+function buildCryptoSignalContext(signal = {}) {
+  if (marketOf(signal) !== 'crypto') return null;
+
+  const signalSubtypeRaw = upper(signal.signalSubtype || signal.signal_subtype || signal.eventType || '');
+  const signalSubtype = signal.signalSubtype || signal.signal_subtype
+    || (signalSubtypeRaw === 'REGULAR_PULLBACK' ? 'REGULAR_PULLBACK' : 'UNKNOWN');
+  const signalFamily = signal.signalFamily || signal.signal_family || null;
+
+  return {
+    symbol: upper(signal.symbol) || null,
+    market: 'crypto',
+    marketType: signal.marketType || signal.market || 'crypto',
+    marketGroup: signal.marketGroup || signal.market_group || signal.market || 'crypto',
+    signal: signal.signal || signal.status || null,
+    eventType: signal.eventType || null,
+    signalFamily,
+    signalSubtype,
+    marketRegime: signal.marketRegime || signal.marketRegimeV2 || null,
+    daytradeStatus: signal.daytradeStatus || null,
+    daytradeDirection: signal.daytradeDirection || null,
+    daytradeRisk: signal.daytradeRisk || null,
+    volumeState: signal.volumeState || null,
+    rvol: signal.rvol ?? signal.relVol20 ?? null,
+    signalScore: signal.signalScore ?? null,
+    tradeScore: signal.tradeScore ?? null,
+    marketScore: signal.marketScore ?? null,
+    marketScoreV2: signal.marketScoreV2 ?? null,
+    marketContext: signal.marketContext || null,
+    momentumContinuationContext: signal.momentumContinuationContext || null,
+    stateGraph: signal.stateGraph || null,
+    strategy_id: signal.strategy_id || signal.strategyId || null,
+    strategy_name: signal.strategy_name || signal.strategyName || null,
+    nextMoveBias: signal.nextMoveBias || signal.direction || null,
+  };
+}
+
 function strategyMeta(strategyId) {
   const strategy = catalog.getStrategyById(strategyId);
   return {
@@ -313,8 +353,39 @@ function inferStrategyForSignal(signal = {}) {
   } catch (_) {
     strategyId = null;
   }
+  const cryptoContext = cryptoSignalContextOf(signal);
+  const cryptoMomentumEligible =
+    strategyId === 'crypto_momentum_scalper' &&
+    !!cryptoContext &&
+    (raw === 'REGULAR_PULLBACK' || upper(signal.signalSubtype || signal.signal_subtype || signal.eventType || '') === 'REGULAR_PULLBACK');
+
   if (strategyId) {
     const runtime = baseRuntimeForStrategy(strategyId, readControlConfig().strategies?.[strategyId] || {});
+    if (cryptoMomentumEligible) {
+      return {
+        strategy_id: strategyId,
+        strategy_name: catalog.getStrategyById(strategyId)?.name || runtime.strategy_name || strategyId,
+        strategy_family: catalog.getStrategyById(strategyId)?.engines_used?.[0] || runtime.strategy_family || catalog.getStrategyById(strategyId)?.market_label || catalog.getStrategyById(strategyId)?.market_group || 'UNKNOWN',
+        ...runtime,
+        runtime_status: 'active',
+        runtime_label: statusLabel('active'),
+        can_create_paper_trade: true,
+        can_create_paper_trade_label: canCreateLabel(true),
+        entry_rule_implemented: true,
+        connected: true,
+        missing_data: [],
+        reason_sv: 'Ready: crypto context present for paper/replay/batch only.',
+        skip_reason_sv: null,
+        runtime_comment_sv: 'Crypto-context finns i signalen. Strategin kan nu utvärderas i paper/replay/batch.',
+        comment_sv: 'Crypto-context finns i signalen. Strategin kan nu utvärderas i paper/replay/batch.',
+        raw_strategy: raw,
+        signal_subtype: raw,
+        source: 'strategy_runtime_connector_v2',
+        crypto_signal_context: cryptoContext,
+        crypto_context: cryptoContext,
+        ...SAFETY,
+      };
+    }
     const strategy = catalog.getStrategyById(strategyId);
     return {
       strategy_id: strategyId,
@@ -325,6 +396,8 @@ function inferStrategyForSignal(signal = {}) {
       signal_subtype: raw,
       runtime_comment_sv: runtime.runtime_comment_sv || runtime.comment_sv,
       comment_sv: runtime.runtime_comment_sv || runtime.comment_sv,
+      crypto_signal_context: cryptoContext,
+      crypto_context: cryptoContext,
       source: 'strategy_runtime_connector_v2',
       ...SAFETY,
     };
@@ -337,6 +410,29 @@ function inferStrategyForSignal(signal = {}) {
   }
   if (entry) {
     const runtime = baseRuntimeForStrategy(entry.strategy_id, readControlConfig().strategies?.[entry.strategy_id] || {});
+    if (entry.strategy_id === 'crypto_momentum_scalper' && cryptoMomentumEligible) {
+      return {
+        ...entry,
+        ...runtime,
+        runtime_status: 'active',
+        runtime_label: statusLabel('active'),
+        can_create_paper_trade: true,
+        can_create_paper_trade_label: canCreateLabel(true),
+        entry_rule_implemented: true,
+        connected: true,
+        missing_data: [],
+        reason_sv: 'Ready: crypto context present for paper/replay/batch only.',
+        skip_reason_sv: null,
+        runtime_comment_sv: 'Crypto-context finns i signalen. Strategin kan nu utvärderas i paper/replay/batch.',
+        comment_sv: 'Crypto-context finns i signalen. Strategin kan nu utvärderas i paper/replay/batch.',
+        raw_strategy: raw,
+        signal_subtype: raw,
+        crypto_signal_context: cryptoContext,
+        crypto_context: cryptoContext,
+        source: 'strategy_runtime_connector_v2',
+        ...SAFETY,
+      };
+    }
     return {
       ...entry,
       ...runtime,
@@ -344,6 +440,8 @@ function inferStrategyForSignal(signal = {}) {
       signal_subtype: raw,
       runtime_comment_sv: runtime.runtime_comment_sv || runtime.comment_sv || entry.comment_sv,
       comment_sv: runtime.runtime_comment_sv || runtime.comment_sv || entry.comment_sv,
+      crypto_signal_context: cryptoContext,
+      crypto_context: cryptoContext,
       source: 'strategy_runtime_connector_v2',
       ...SAFETY,
     };
@@ -364,6 +462,8 @@ function inferStrategyForSignal(signal = {}) {
     enabled_by_user: false,
     runtime_comment_sv: 'Ingen säker runtime-mapping finns. Strategin markeras som ej kopplad.',
     comment_sv: 'Ingen säker runtime-mapping finns. Strategin markeras som ej kopplad.',
+    crypto_signal_context: cryptoContext,
+    crypto_context: cryptoContext,
     source: 'strategy_runtime_connector_v2',
     ...SAFETY,
   };
@@ -385,6 +485,8 @@ function enrichSignalWithStrategy(signal = {}) {
     runtime_label: signal.runtime_label || inferred.runtime_label,
     runtime_comment_sv: signal.runtime_comment_sv || inferred.runtime_comment_sv,
     can_create_paper_trade: signal.can_create_paper_trade ?? inferred.can_create_paper_trade,
+    crypto_signal_context: signal.crypto_signal_context || inferred.crypto_signal_context || null,
+    crypto_context: signal.crypto_context || inferred.crypto_context || null,
   };
 }
 
@@ -423,13 +525,15 @@ function enrichPaperTradeWithStrategy(trade = {}) {
     strategyName: strategyName || null,
     strategy_family: trade.strategy_family || inferred.strategy_family,
     mapping_confidence: trade.mapping_confidence || inferred.mapping_confidence,
-    runtime_status: trade.runtime_status || inferred.runtime_status,
-    runtime_label: trade.runtime_label || inferred.runtime_label,
-    runtime_comment_sv: trade.runtime_comment_sv || inferred.runtime_comment_sv,
-    can_create_paper_trade: trade.can_create_paper_trade ?? inferred.can_create_paper_trade,
-    connected: trade.connected ?? inferred.connected ?? false,
-    enabled_by_user: trade.enabled_by_user ?? inferred.enabled_by_user ?? false,
-    entry_rule_implemented: trade.entry_rule_implemented ?? inferred.entry_rule_implemented ?? false,
+  runtime_status: trade.runtime_status || inferred.runtime_status,
+  runtime_label: trade.runtime_label || inferred.runtime_label,
+  runtime_comment_sv: trade.runtime_comment_sv || inferred.runtime_comment_sv,
+  can_create_paper_trade: trade.can_create_paper_trade ?? inferred.can_create_paper_trade,
+  crypto_signal_context: trade.crypto_signal_context || inferred.crypto_signal_context || null,
+  crypto_context: trade.crypto_context || inferred.crypto_context || null,
+  connected: trade.connected ?? inferred.connected ?? false,
+  enabled_by_user: trade.enabled_by_user ?? inferred.enabled_by_user ?? false,
+  entry_rule_implemented: trade.entry_rule_implemented ?? inferred.entry_rule_implemented ?? false,
   };
 }
 
@@ -911,4 +1015,5 @@ module.exports = {
   getRuntimeStatusForStrategy,
   getStrategyRuntimeSummary,
   canCreatePaperTradeForSignal,
+  buildCryptoSignalContext,
 };

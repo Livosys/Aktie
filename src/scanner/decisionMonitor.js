@@ -1,6 +1,7 @@
 'use strict';
 
 const { buildSignalFamilyDebug, classifySignalFamily } = require('./signalFamilyClassifier');
+const { buildCryptoSignalContext } = require('../services/strategyRuntimeConnectorService');
 const {
   signalFamilyDebugSummarySv,
   signalFamilyLabel,
@@ -1006,6 +1007,8 @@ function buildCandidate(result, options = {}) {
     extensionMeta,
     preMoveContext: result.preMoveContext || null,
     fatigueContext: result.fatigueContext || null,
+    crypto_signal_context: result.crypto_signal_context || null,
+    crypto_context: result.crypto_context || null,
     explanationSv,
     simpleExplanationSv: explanationSv,
     simpleExplanationTextSv: twoMinuteConflictMeta.twoMinuteConflict
@@ -1027,7 +1030,16 @@ function buildCandidate(result, options = {}) {
 const CRYPTO_SUFFIX = /USDT$|BUSD$|USD$|BTC$|ETH$/i;
 
 function tagMarket(results, market) {
-  return (results || []).map(r => ({ ...r, _market: market }));
+  return (results || []).map((r) => {
+    const tagged = { ...r, _market: market };
+    const cryptoContext = buildCryptoSignalContext(tagged);
+    if (!cryptoContext) return tagged;
+    return {
+      ...tagged,
+      crypto_signal_context: cryptoContext,
+      crypto_context: cryptoContext,
+    };
+  });
 }
 
 function buildDecisionMonitor({ stockResults, cryptoResults, liveCandleDebugBySymbol = {}, familyDebug = false, stockFeedStatus = null }) {

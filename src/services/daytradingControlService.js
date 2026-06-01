@@ -14,6 +14,7 @@ const auditTrail = require('./auditTrailService');
 const paperTrading = require('../paperTrading/paperTradingAgent');
 const executionSafety = require('./executionSafetyService');
 const strategyRuntimeConnector = require('./strategyRuntimeConnectorService');
+const { buildCryptoSignalContext } = strategyRuntimeConnector;
 
 const SAFETY = Object.freeze({
   actions_allowed: false,
@@ -242,7 +243,16 @@ function groupMatches(filter, group, symbol) {
 
 function currentScanRows() {
   const stocks = (getLatestResults() || []).map((row) => ({ ...row, market_group: row.marketGroup || row.marketType || 'stocks' }));
-  const crypto = (getCryptoResults() || []).map((row) => ({ ...row, market_group: 'crypto', marketType: 'crypto' }));
+  const crypto = (getCryptoResults() || []).map((row) => {
+    const cryptoContext = buildCryptoSignalContext({ ...row, market_group: 'crypto', marketType: 'crypto' });
+    return {
+      ...row,
+      market_group: 'crypto',
+      marketType: 'crypto',
+      crypto_signal_context: cryptoContext,
+      crypto_context: cryptoContext,
+    };
+  });
   return [...stocks, ...crypto];
 }
 
