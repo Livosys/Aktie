@@ -513,7 +513,7 @@ function BestDecisionBox({ c, loading }) {
   const isActive = c.priority === 'active';
   const isRisk   = c.priority === 'avoid';
   const updatedAt = c.timestamp || c.lastUpdate || null;
-  const dt = r?.daytradeStatus ? r : null;
+  const dt = c?.daytradeStatus ? c : null;
 
   const fmtPrice = (p) => {
     if (p == null) return null;
@@ -873,30 +873,30 @@ function BestLiveCard({ r }) {
 
   const score = scoreOf(r);
   const status = simpleStatus(r);
-  const isConfirmed = score >= 60 && status !== 'RISK';
-  const action = isConfirmed && status === 'STARK' ? 'Bevaka' : 'Vänta';
   const hist = r?.momentumBacktestApplied
     ? 'Historiken stödjer fart ihop med flera tidsramar.'
     : 'Historiken ger inget extra stöd just nu.';
-  const riskText = isConfirmed ? riskSv(r) : 'Inte bekräftad signal. Vänta på tydligare styrka över 60 poäng.';
+  const riskText = riskSv(r);
   const dt = r?.daytradeStatus ? r : null;
+  const updatedAt = r?.timestamp || r?.lastUpdate || null;
 
   return (
     <div className={`live-best-card live-best-${statusClass(status)}`}>
       <div className="live-best-main">
         <div>
-          <div className="live-kicker">Mest intressant just nu (avancerad vy)</div>
+          <div className="live-kicker">Historisk styrka</div>
           <div className="live-best-symbol">{r.symbol}</div>
           <div className="live-best-dir">{directionSv(r)} · {score} poäng</div>
         </div>
-        <div className="live-best-action">{action}</div>
-      </div>
-      {!isConfirmed && (
-        <div className="live-best-confirmation">
-          <strong>Inte bekräftad signal</strong>
-          <span>Vänta. Poängen är under 60 och risken är högre tills nästa tydliga scan.</span>
+        <div className="live-best-action">
+          <span>Senaste</span>
+          <strong>{updatedAt ? ageLabel(updatedAt) : 'saknas'}</strong>
         </div>
-      )}
+      </div>
+      <div className="live-best-confirmation">
+        <strong>{hist}</strong>
+        <span>{riskText}</span>
+      </div>
       {dt && (
         <div className={`daytrade-panel daytrade-${daytradeTone(dt.daytradeStatus)}`}>
           <div className="daytrade-panel-head">
@@ -921,20 +921,20 @@ function BestLiveCard({ r }) {
       )}
       <div className="live-best-grid">
         <div>
-          <span>Varför systemet tittar</span>
-          <strong>{whyNow(r)}</strong>
-        </div>
-        <div>
-          <span>Risk</span>
-          <strong>{riskText}</strong>
+          <span>Paper/test</span>
+          <strong>{dt ? `${dt.daytradeStatus || 'OKänt'} · ${dt.daytradeScore ?? 0}` : 'Ingen testsignal ännu'}</strong>
         </div>
         <div>
           <span>Vad historiken säger</span>
           <strong>{hist}</strong>
         </div>
         <div>
-          <span>Vad du bör göra</span>
-          <strong>{action}</strong>
+          <span>Varför den är intressant</span>
+          <strong>{whyNow(r)}</strong>
+        </div>
+        <div>
+          <span>Åtgärd</span>
+          <strong>{status === 'RISK' ? 'Avvakta' : 'Bevaka'}</strong>
         </div>
       </div>
       <div className="live-best-actions">
@@ -1782,8 +1782,8 @@ export default function LivePage() {
         <div className="live-command-section">
           <div className="live-section-head">
             <div>
-              <div className="live-section-title">Vad fungerar historiskt?</div>
-              <div className="live-section-sub">Här syns vad historiken faktiskt stödjer just nu.</div>
+              <div className="live-section-title">Historisk styrka</div>
+              <div className="live-section-sub">Kort historisk läsning av samma kandidat, utan att upprepa huvudbeslutet.</div>
             </div>
           </div>
           <BestLiveCard r={bestSignal} />
