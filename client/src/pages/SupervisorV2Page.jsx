@@ -415,6 +415,135 @@ function signalStopSummary(eventsResource) {
   };
 }
 
+function buildEventAiConclusion(events) {
+  const rows = normalizeArray(events);
+  if (rows.length === 0) {
+    return {
+      tone: 'gray',
+      headline: 'Inga events ännu',
+      conclusion: 'Inga events ännu. Systemet väntar på nya signaler.',
+      interpretation: [
+        'Det finns inget underlag ännu för att dra en slutsats.',
+      ],
+      nextStep: 'Ingen åtgärd behövs just nu. Vänta på nya signaler.',
+      metrics: {
+        detected: 0,
+        matched: 0,
+        blocked: 0,
+        observeOnly: 0,
+        opened: 0,
+        skipped: 0,
+        topReason: 'Ingen data ännu',
+        topSymbol: 'Ingen data ännu',
+        topStrategy: 'Ingen data ännu',
+        topMarket: 'Ingen data ännu',
+      },
+    };
+  }
+
+  const counts = rows.reduce((acc, event) => {
+    const type = String(event?.event_type || '').toLowerCase();
+    if (!type) return acc;
+    acc[type] = (acc[type] || 0) + 1;
+    return acc;
+  }, {});
+
+  const topReason = commonEntry(rows, 'reason') || commonEntry(rows.map((event) => ({ reason: summarizeStopReason(event) })), 'reason');
+  const topSymbol = commonEntry(rows, 'symbol');
+  const topStrategy = commonEntry(rows, 'strategy');
+  const topMarket = commonEntry(rows, 'market');
+
+  const detected = counts['signal.detected'] || 0;
+  const matched = counts['strategy.matched'] || 0;
+  const blocked = counts['market_gate.blocked'] || 0;
+  const observeOnly = counts['market_gate.observe_only'] || 0;
+  const opened = counts['paper_trade.opened'] || 0;
+  const skipped = counts['paper_trade.skipped'] || 0;
+  const allowed = counts['market_gate.allowed'] || 0;
+
+  const totalRelevant = detected + matched + blocked + observeOnly + opened + skipped + allowed;
+  const blockedDominant = blocked >= Math.max(3, observeOnly + opened);
+  const observeDominant = observeOnly > blocked && observeOnly >= skipped;
+  const paperDominant = opened > 0 && opened >= skipped;
+  const skippedDominant = skipped > opened && skipped >= 2;
+  const matchWithoutPaper = matched > 0 && opened === 0;
+  const topReasonText = topReason?.value || 'Ingen tydlig stopporsak sparad';
+  const topReasonLower = topReasonText.toLowerCase();
+
+  let headline = 'Systemet hittar signaler.';
+  if (blockedDominant) headline = 'Många signaler stoppas i Market Gate.';
+  else if (observeDominant) headline = 'Systemet ser lägen men väljer att bara observera.';
+  else if (paperDominant) headline = 'Systemet öppnar paper trades när reglerna godkänner.';
+  else if (skippedDominant) headline = 'Paper trades skippas ofta efter beslutskedjan.';
+  else if (matchWithoutPaper) headline = 'Strategier matchar, men inget når paper trade ännu.';
+  else if (totalRelevant > 0) headline = 'Systemet hittar signaler, men flödet är fortfarande försiktigt.';
+
+  const interpretation = [];
+  if (blocked > 0) {
+    interpretation.push('Många signaler stoppas i Market Gate.');
+  }
+  if (topReasonLower.includes('score_below_threshold')) {
+    interpretation.push('Vanligaste orsaken är att score är under tröskeln.');
+  } else if (topReasonLower.includes('threshold')) {
+    interpretation.push(`Vanligaste orsaken verkar vara ${topReasonText}.`);
+  }
+  if (observeOnly > 0) {
+    interpretation.push('Systemet ser lägen men väljer att bara observera.');
+  }
+  if (opened > 0) {
+    interpretation.push('Systemet öppnar paper trades, men bara när reglerna godkänner.');
+  }
+  if (skipped > 0) {
+    interpretation.push('Paper trades skippas ofta efter beslutskedjan.');
+  }
+  if (!interpretation.length) {
+    interpretation.push('Flödet är aktivt men ännu inte tillräckligt tydligt för starka slutsatser.');
+  }
+
+  let nextStep = 'Fortsätt observera om signalerna är weak/uncertain.';
+  if (blocked > observeOnly && blocked >= Math.max(2, opened + skipped)) {
+    nextStep = 'Kontrollera Market Gate-threshold om många stoppas på score.';
+  } else if (observeOnly > blocked && observeOnly >= Math.max(2, opened)) {
+    nextStep = 'Kontrollera conservativeMode om nästan allt blockeras.';
+  } else if (matched > 0 && opened === 0) {
+    nextStep = 'Kontrollera runtime/entry-regler om strategier matchar men ingen paper trade öppnas.';
+  } else if (opened > 0 && opened >= skipped && opened >= blocked) {
+    nextStep = 'Ingen åtgärd behövs om paper trades öppnas normalt.';
+  } else if (skipped > opened && skipped >= 2) {
+    nextStep = 'Kontrollera varför paper trades skippas efter gate och riskbedömning.';
+  }
+
+  const tone = opened > 0
+    ? 'green'
+    : blocked > observeOnly
+      ? 'red'
+      : observeOnly > 0 || skipped > 0
+        ? 'yellow'
+        : totalRelevant > 0
+          ? 'blue'
+          : 'gray';
+
+  return {
+    tone,
+    headline,
+    conclusion: headline,
+    interpretation,
+    nextStep,
+    metrics: {
+      detected,
+      matched,
+      blocked,
+      observeOnly,
+      opened,
+      skipped,
+      topReason: topReasonText,
+      topSymbol: topSymbol?.value || 'Ingen data ännu',
+      topStrategy: topStrategy?.value || 'Ingen data ännu',
+      topMarket: topMarket?.value || 'Ingen data ännu',
+    },
+  };
+}
+
 async function fetchJson(url) {
   try {
     const res = await fetch(url, { credentials: 'same-origin' });
@@ -605,6 +734,101 @@ function RecentTradingEvents({ resource }) {
       ) : (
         <div className="opt-empty">Inga events ännu. Systemet väntar på nya signaler.</div>
       )}
+    </section>
+  );
+}
+
+function EventAiConclusion({ resource }) {
+  const data = unwrap(resource);
+  const state = endpointState(resource);
+  const events = normalizeArray(data?.events).slice(0, 100);
+  const ai = buildEventAiConclusion(events);
+  const toneClass = ai.tone === 'green'
+    ? 'sup-block-ok'
+    : ai.tone === 'red'
+      ? 'sup-block-danger'
+      : ai.tone === 'yellow'
+        ? 'sup-block-warning'
+        : ai.tone === 'blue'
+          ? 'sup-block-neutral'
+          : 'sup-block-neutral';
+
+  return (
+    <section className="sup-section">
+      <div className="sup-section-head">
+        <div>
+          <h2>AI-slutsats från events</h2>
+          <p>Detta är en deterministisk read-only tolkning av de senaste 100 eventen.</p>
+        </div>
+        <div className="sup-advisor-safety">
+          <span>actions_allowed=false</span>
+          <span>can_place_orders=false</span>
+          <span>live_trading_enabled=false</span>
+        </div>
+      </div>
+
+      {!state.missing && state.label === 'Problem' && (
+        <div className="sup-warning">
+          Kunde inte läsa eventdata just nu. Slutsatsen visar senaste kända läge när backend är tillgänglig.
+        </div>
+      )}
+
+      <article className={`sup-block ${toneClass}`}>
+        <span className="sup-block-title">Kort slutsats</span>
+        <strong className="sup-block-value">{ai.conclusion}</strong>
+        <span className="sup-block-note">{ai.interpretation[0] || 'Ingen tydlig slutsats ännu.'}</span>
+      </article>
+
+      <div className="sup-grid sup-grid-2" style={{ marginTop: 12 }}>
+        <article className="sup-block sup-block-neutral">
+          <span className="sup-block-title">Viktigaste datapunkter</span>
+          <strong className="sup-block-value">{ai.metrics.detected} signal.detected</strong>
+          <span className="sup-block-note">
+            strategy.matched {ai.metrics.matched} · market_gate.blocked {ai.metrics.blocked} · market_gate.observe_only {ai.metrics.observeOnly} · paper_trade.opened {ai.metrics.opened} · paper_trade.skipped {ai.metrics.skipped}
+          </span>
+        </article>
+
+        <article className="sup-block sup-block-neutral">
+          <span className="sup-block-title">Dominerande mönster</span>
+          <strong className="sup-block-value">{ai.metrics.topReason}</strong>
+          <span className="sup-block-note">
+            Symbol {ai.metrics.topSymbol} · strategi {ai.metrics.topStrategy} · market {ai.metrics.topMarket}
+          </span>
+        </article>
+
+        <article className="sup-block sup-block-neutral">
+          <span className="sup-block-title">Enkel tolkning</span>
+          <strong className="sup-block-value">{ai.interpretation[0] || 'Flödet är aktivt men ännu inte tydligt.'}</strong>
+          <span className="sup-block-note">{ai.interpretation.slice(1).join(' · ') || 'Ingen extra tolkning ännu.'}</span>
+        </article>
+
+        <article className="sup-block sup-block-neutral">
+          <span className="sup-block-title">Nästa säkra steg</span>
+          <strong className="sup-block-value">{ai.nextStep}</strong>
+          <span className="sup-block-note">
+            {ai.metrics.opened > 0
+              ? 'Systemet fungerar och öppnar paper trades när reglerna godkänner.'
+              : 'Fortsätt bara observera eller kontrollera gate/risk om allt blockeras.'}
+          </span>
+        </article>
+      </div>
+
+      <div className="sup-v2-report-lead" style={{ marginTop: 12, marginBottom: 0 }}>
+        <strong>AI-läsning:</strong> {ai.conclusion}
+        <div style={{ marginTop: 6 }}>
+          {ai.interpretation.map((line) => (
+            <div key={line}>{line}</div>
+          ))}
+        </div>
+      </div>
+
+      <div className="sup-v2-report-lead" style={{ marginTop: 12, marginBottom: 0 }}>
+        <strong>Nästa säkra steg:</strong> {ai.nextStep}
+      </div>
+
+      <div className="sup-safety-copy" style={{ marginTop: 12 }}>
+        Detta är en read-only AI-slutsats. Den påverkar inte tradingbeslut.
+      </div>
     </section>
   );
 }
@@ -2125,6 +2349,7 @@ export default function SupervisorV2Page() {
         )}
       </section>
 
+      <EventAiConclusion resource={resources.eventsRecent} />
       <SignalStopSummary resource={resources.eventsRecent} />
       <RecentTradingEvents resource={resources.eventsRecent} />
       <EventSystemStatus resource={resources.eventsStatus} />
