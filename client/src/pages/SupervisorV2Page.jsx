@@ -615,6 +615,9 @@ function EventSystemStatus({ resource }) {
   const jsonlEnabled = data?.jsonl_enabled !== false;
   const kafkaEnabled = data?.kafka_enabled === true;
   const kafkaConfigured = data?.kafka_configured === true;
+  const kafkaTopic = textValue(data?.kafka_topic, 'trading.events');
+  const kafkaClientId = textValue(data?.kafka_client_id, 'trading-os-v2');
+  const kafkaBrokers = Array.isArray(data?.kafka_brokers) ? data.kafka_brokers.filter(Boolean) : [];
   const kafkaError = textValue(data?.kafka_last_error, '');
   const kafkaLastPublishAt = data?.kafka_last_publish_at || null;
   const kafkaLastAttemptAt = data?.kafka_last_attempt_at || null;
@@ -664,7 +667,7 @@ function EventSystemStatus({ resource }) {
 
         <article className={`sup-block ${kafkaEnabled && kafkaError ? 'sup-block-danger' : kafkaEnabled ? 'sup-block-ok' : 'sup-block-neutral'}`}>
           <span className="sup-block-title">Kafka</span>
-          <strong className="sup-block-value">{kafkaEnabled ? 'på' : 'av'}</strong>
+          <strong className="sup-block-value">{kafkaEnabled && !kafkaError ? 'aktiv' : kafkaEnabled ? 'på med fel' : 'av'}</strong>
           <span className="sup-block-note">{statusMessage}</span>
         </article>
 
@@ -673,6 +676,14 @@ function EventSystemStatus({ resource }) {
           <strong className="sup-block-value">{kafkaConfigured ? 'ja' : 'nej'}</strong>
           <span className="sup-block-note">
             Brokers: {Array.isArray(data?.kafka_brokers) && data.kafka_brokers.length ? data.kafka_brokers.join(', ') : 'ej konfigurerade'}.
+          </span>
+        </article>
+
+        <article className={`sup-block ${kafkaEnabled && !kafkaError ? 'sup-block-ok' : 'sup-block-neutral'}`}>
+          <span className="sup-block-title">Redpanda transport</span>
+          <strong className="sup-block-value">{kafkaEnabled && !kafkaError ? 'aktiv' : 'avvaktar'}</strong>
+          <span className="sup-block-note">
+            Kafka/Redpanda är {kafkaEnabled && !kafkaError ? 'aktivt som extra event-transport. JSONL är fortfarande primär.' : 'förberett men inte i aktiv drift.'}
           </span>
         </article>
 
@@ -688,6 +699,14 @@ function EventSystemStatus({ resource }) {
           <span className="sup-block-title">Senaste Kafka-fel</span>
           <strong className="sup-block-value">{kafkaError || 'Inga fel'}</strong>
           <span className="sup-block-note">{kafkaError ? 'Kafka-adaptern rapporterar fel, men tradingflödet fortsätter.' : 'Inga aktuella Kafka-fel.'}</span>
+        </article>
+
+        <article className={`sup-block ${kafkaEnabled && !kafkaError ? 'sup-block-ok' : 'sup-block-neutral'}`}>
+          <span className="sup-block-title">Transportdetaljer</span>
+          <strong className="sup-block-value">topic {kafkaTopic}</strong>
+          <span className="sup-block-note">
+            brokers: {kafkaBrokers.length ? kafkaBrokers.join(', ') : 'ej konfigurerade'} · client_id: {kafkaClientId}
+          </span>
         </article>
 
         <article className="sup-block sup-block-ok">
