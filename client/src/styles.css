@@ -6631,6 +6631,26 @@ tbody td {
   font-size: 0.78rem;
   line-height: 1.45;
 }
+.ai-context {
+  margin-top: 12px;
+  padding: 10px 12px;
+  border-radius: 10px;
+  border: 1px solid rgba(34,197,94,.2);
+  background: rgba(34,197,94,.06);
+}
+.ai-context-label {
+  font-size: 0.66rem;
+  text-transform: uppercase;
+  letter-spacing: .08em;
+  color: var(--green);
+  font-weight: 850;
+}
+.ai-context-value {
+  margin-top: 4px;
+  font-size: 0.82rem;
+  color: var(--text);
+  font-weight: 700;
+}
 .ai-examples {
   display: flex;
   flex-wrap: wrap;

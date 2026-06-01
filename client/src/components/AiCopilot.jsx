@@ -29,10 +29,12 @@ export default function AiCopilot() {
   const location = useLocation();
   const [open, setOpen] = useState(false);
   const [question, setQuestion] = useState('');
+  const [context, setContext] = useState(null);
+  const [contextLabel, setContextLabel] = useState('');
   const [answer, setAnswer] = useState('');
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
-  const [queuedQuestion, setQueuedQuestion] = useState('');
+  const [queuedRequest, setQueuedRequest] = useState(null);
 
   const page = useMemo(() => pageFromPath(location.pathname), [location.pathname]);
   const symbol = useMemo(() => symbolFromSearch(location.search), [location.search]);
@@ -41,12 +43,18 @@ export default function AiCopilot() {
     function handleOpen(event) {
       const detail = event?.detail || {};
       const nextQuestion = String(detail.question || detail.prompt || '').trim();
+      const nextContext = detail.context && typeof detail.context === 'object' ? detail.context : null;
       setOpen(true);
       if (nextQuestion) {
         setQuestion(nextQuestion);
-        if (detail.autoAsk === true) {
-          setQueuedQuestion(nextQuestion);
-        }
+      }
+      setContext(nextContext);
+      setContextLabel(String(detail.label || detail.title || detail.sourceLabel || detail.sectionLabel || nextContext?.sectionLabel || nextContext?.moduleLabel || '').trim());
+      if (nextQuestion && detail.autoAsk === true) {
+        setQueuedRequest({ question: nextQuestion, context: nextContext });
+      }
+      if (!nextQuestion && nextContext && detail.autoAsk === true) {
+        setQueuedRequest({ question: String(detail.fallbackQuestion || 'Förklara detta sammanhang.').trim(), context: nextContext });
       }
     }
 
@@ -55,17 +63,18 @@ export default function AiCopilot() {
   }, []);
 
   useEffect(() => {
-    if (!queuedQuestion) return;
-    const next = queuedQuestion;
-    setQueuedQuestion('');
-    ask(next);
-  }, [queuedQuestion]);
+    if (!queuedRequest) return;
+    const next = queuedRequest;
+    setQueuedRequest(null);
+    ask(next.question, next.context);
+  }, [queuedRequest]);
 
-  async function ask(nextQuestion = question) {
+  async function ask(nextQuestion = question, nextContext = context) {
     const q = String(nextQuestion || '').trim();
     if (!q || loading) return;
 
     setQuestion(q);
+    setContext(nextContext && typeof nextContext === 'object' ? nextContext : null);
     setLoading(true);
     setError('');
     setAnswer('');
@@ -75,7 +84,7 @@ export default function AiCopilot() {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         credentials: 'same-origin',
-        body: JSON.stringify({ question: q, page, symbol: symbol || undefined }),
+        body: JSON.stringify({ question: q, page, symbol: symbol || undefined, context: nextContext || undefined }),
       });
       const json = await res.json().catch(() => null);
 
@@ -119,6 +128,15 @@ export default function AiCopilot() {
             <p className="ai-intro">
               Fråga om marknad, signaler, larm, historik eller systemhälsa. AI:n kan bara läsa data och utför inga trades.
             </p>
+
+            {context && (
+              <div className="ai-context">
+                <div className="ai-context-label">Aktiv kontext</div>
+                <div className="ai-context-value">
+                  {contextLabel || context.sectionLabel || context.moduleLabel || context.module || 'Anpassad vy'}
+                </div>
+              </div>
+            )}
 
             <div className="ai-examples">
               {EXAMPLES.map((ex) => (
