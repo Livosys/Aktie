@@ -149,15 +149,17 @@ function paperEventTone(event) {
   return '#94a3b8';
 }
 
-function PaperTradingEventMini({ data }) {
+function PaperTradingEventMini({ data, hideHeader = false }) {
   const events = (data?.events || []).slice(0, 3);
   if (!events.length) return null;
   return (
     <div className="paper-event-mini">
-      <div className="paper-event-mini-head">
-        <span>Senaste testbeslut</span>
-        <a href="/paper-trading">Paper trading</a>
-      </div>
+      {!hideHeader && (
+        <div className="paper-event-mini-head">
+          <span>Senaste aktivitet</span>
+          <a href="/paper-trading">Paper trading</a>
+        </div>
+      )}
       <div className="paper-event-mini-list">
         {events.map((event, i) => (
           <div key={event.eventId || `${event.timestamp}-${i}`} className="paper-event-mini-row">
@@ -1512,6 +1514,153 @@ function QuickSignalSection({ candidates, loading }) {
   );
 }
 
+function FocusCard({ c, variant = 'focus' }) {
+  const openReviewChart = useOpenReviewChart();
+  const openChartSignal = useOpenChartSignal();
+  const updatedAt = c.timestamp || c.lastUpdate || null;
+  const score = signalBoardCandidateScore(c);
+  const decisionText = DECISION_SV[c.priority] || 'Vänta';
+  const bias = BIAS_SV[c.nextMoveBias] || BIAS_SV.UNCERTAIN;
+  const isAvoid = variant === 'avoid';
+  const moreDataNeeded = c.price == null || c.dataFreshness === 'STALE' || (!isAvoid && c.priority === 'watch');
+  const paperStatus = c.daytradeStatus ? `${c.daytradeStatus} · ${c.daytradeScore ?? 0}` : 'Ingen testsignal ännu';
+  const conclusion = cardConclusion(c);
+
+  return (
+    <article className={`live-focus-card ${isAvoid ? 'live-focus-avoid' : `live-focus-${c.priority || 'watch'}`}`}>
+      <div className="live-focus-head">
+        <div className="live-focus-left">
+          <div className="live-focus-symbol-row">
+            <span className="live-focus-symbol">{c.symbol}</span>
+            <span className={`live-focus-market ${c.market === 'crypto' ? 'is-crypto' : 'is-stock'}`}>
+              {c.market === 'crypto' ? '₿ Krypto' : '📈 Aktie'}
+            </span>
+          </div>
+          <div className="live-focus-meta">
+            <span>{bias.icon} {bias.text}</span>
+            <span>·</span>
+            <span>{ageLabel(updatedAt)}</span>
+          </div>
+        </div>
+        <div className="live-focus-right">
+          <span className={`live-focus-badge badge-${isAvoid ? 'avoid' : c.priority}`}>
+            {isAvoid ? 'Undvik' : decisionText}
+          </span>
+          <strong>{score}</strong>
+        </div>
+      </div>
+
+      <div className="live-focus-block">
+        <span>Varför</span>
+        <strong>{primaryCardReason(c)}</strong>
+      </div>
+
+      <div className="live-focus-block">
+        <span>Slutsats</span>
+        <strong>{conclusion || (moreDataNeeded ? 'Mer data behövs.' : 'Tillräckligt för bevakning.')}</strong>
+      </div>
+
+      <div className="live-focus-meta-grid">
+        <div>
+          <span>Paper/test</span>
+          <strong>{paperStatus}</strong>
+        </div>
+        <div>
+          <span>Mer data</span>
+          <strong>{moreDataNeeded ? 'Ja' : 'Nej'}</strong>
+        </div>
+      </div>
+
+      <div className="live-focus-actions">
+        <button className="btn btn-sm btn-chart" onClick={() => openChartSignal(c)}>
+          📊 Öppna chart
+        </button>
+        <button className="btn btn-sm btn-tv" onClick={() => openReviewChart(c)}>
+          📈 TradingView
+        </button>
+      </div>
+    </article>
+  );
+}
+
+function FocusNowSection({ candidates, loading }) {
+  const focusCandidates = [...candidates]
+    .filter(c => c.priority === 'active' || c.priority === 'caution' || c.priority === 'watch')
+    .slice(0, 5);
+  const avoidCandidates = [...candidates]
+    .filter(c => c.priority === 'avoid')
+    .slice(0, 5);
+  const hasAny = focusCandidates.length > 0 || avoidCandidates.length > 0;
+
+  return (
+    <section className="live-command-section live-focus-section">
+      <div className="live-section-head live-focus-head-row">
+        <div>
+          <div className="live-section-title">Fokus just nu</div>
+          <div className="live-section-sub">Top 3-5 kandidater att titta på och vad som ska undvikas just nu.</div>
+        </div>
+      </div>
+
+      {loading && !hasAny ? (
+        <div className="live-calm-state">
+          <span className="spinner" />
+          <span>Hämtar fokusläge…</span>
+        </div>
+      ) : !hasAny ? (
+        <div className="live-calm-state">
+          <strong>Systemet söker. Ingen färsk kandidat ännu.</strong>
+          <span>Det finns inget nytt fokusläge att visa just nu.</span>
+        </div>
+      ) : (
+        <div className="live-focus-grid">
+          <div className="live-focus-column">
+            <div className="live-focus-column-title">Fokus just nu</div>
+            {focusCandidates.length === 0 ? (
+              <div className="live-focus-empty">Inga tydliga fokuslägen just nu.</div>
+            ) : (
+              <div className="live-focus-list">
+                {focusCandidates.map((c, i) => <FocusCard key={`${c.symbol}-${i}`} c={c} />)}
+              </div>
+            )}
+          </div>
+          <div className="live-focus-column live-focus-column-avoid">
+            <div className="live-focus-column-title">Undvik just nu</div>
+            {avoidCandidates.length === 0 ? (
+              <div className="live-focus-empty">Inga tydliga undvik-lägen just nu.</div>
+            ) : (
+              <div className="live-focus-list">
+                {avoidCandidates.map((c, i) => <FocusCard key={`${c.symbol}-${i}`} c={c} variant="avoid" />)}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+    </section>
+  );
+}
+
+function LatestActivitySection({ paperEvents }) {
+  const events = (paperEvents?.events || []).slice(0, 3);
+  return (
+    <section className="live-command-section live-activity-section">
+      <div className="live-section-head">
+        <div>
+          <div className="live-section-title">Senaste aktivitet</div>
+          <div className="live-section-sub">Senaste testbesluten och systemaktiviteten från paper-flödet.</div>
+        </div>
+      </div>
+      {events.length > 0 ? (
+        <PaperTradingEventMini data={paperEvents} hideHeader />
+      ) : (
+        <div className="live-calm-state">
+          <strong>Ingen senaste aktivitet ännu.</strong>
+          <span>Paper-flödet har inget nytt att visa just nu.</span>
+        </div>
+      )}
+    </section>
+  );
+}
+
 /* ── Main LivePage ────────────────────────────────────────────────────────────── */
 
 export default function LivePage() {
@@ -1574,7 +1723,6 @@ export default function LivePage() {
       />
 
       <SystemHealthMini health={snapshot.health} lastFetch={lastFetch} />
-      <PaperTradingEventMini data={paperEvents} />
 
       {dmData?.summary?.strictnessMessageSv && (
         <div className="dm-strictness-note">{dmData.summary.strictnessMessageSv}</div>
@@ -1595,18 +1743,28 @@ export default function LivePage() {
               <div className="live-section-sub">Senaste toppsignalen med score, orsak, TradingView-länk och ålder.</div>
             </div>
           </div>
-        <BestDecisionBox c={topCandidate} loading={loading && !dmData} />
+          <BestDecisionBox c={topCandidate} loading={loading && !dmData} />
         </div>
       </div>
 
-      {/* 2. Signaler */}
+      {/* 2. Fokus */}
+      <div className="dm-section-group">
+        <div className="dm-section-label">2. Fokus</div>
+        <FocusNowSection candidates={candidates} loading={loading && !dmData} />
+      </div>
+
+      {/* 3. Senaste aktivitet */}
+      <div className="dm-section-group">
+        <div className="dm-section-label">3. Senaste aktivitet</div>
+        <LatestActivitySection paperEvents={paperEvents} />
+      </div>
+
+      {/* 4. Signaler */}
       <div className="dm-section-group">
         <div className="dm-section-label-row">
-          <span className="dm-section-label">2. Signaler</span>
+          <span className="dm-section-label">4. Signaler</span>
           {candidates.length > 0 && <span className="dm-section-count">{candidates.length} st</span>}
         </div>
-        <QuickSignalSection candidates={candidates} loading={loading && !dmData} />
-        <div style={{ height: 12 }} />
         <div className="live-command-section">
           <div className="live-section-head">
             <div>
@@ -1618,9 +1776,9 @@ export default function LivePage() {
         </div>
       </div>
 
-      {/* 3. Historik */}
+      {/* 5. Historik */}
       <div className="dm-section-group">
-        <div className="dm-section-label">3. Historik</div>
+        <div className="dm-section-label">5. Historik</div>
         <div className="live-command-section">
           <div className="live-section-head">
             <div>
@@ -1635,16 +1793,13 @@ export default function LivePage() {
       {/* Advanced section — old UI preserved */}
       <div className="dm-advanced-section">
         <button className="dm-advanced-toggle" onClick={() => setShowAdvanced(v => !v)}>
-          {showAdvanced ? '▲' : '▼'} 4. Marknadsläge
+          {showAdvanced ? '▲' : '▼'} 6. Marknadsläge
           <span className="dm-adv-sub">Risk-Off · starkast/svagast · signalöversikt (gamla vyer)</span>
         </button>
         {showAdvanced && hasData && (
           <div className="dm-advanced-body">
             <DecisionMonitorSection dmData={dmData} />
             <MarketPulse rows={allEnriched} />
-            <div className="live-command-section">
-              <BestLiveCard r={bestSignal} />
-            </div>
             <SignalBoard allResults={allEnriched} />
           </div>
         )}
