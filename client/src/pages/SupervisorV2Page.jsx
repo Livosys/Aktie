@@ -1,4 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
+import { Link } from 'react-router-dom';
 
 const SAFETY_FLAGS = Object.freeze({
   actions_allowed: false,
@@ -1361,7 +1362,7 @@ const OPTIMIZATION_SECTIONS = [
 ];
 
 function buildOptimizationPrompt(optimization, sectionKey) {
-  if (!optimization) return '';
+  if (!optimization) return null;
   const overallStats = optimization.overallStats || optimization.overall_stats || {};
   const topConfigs = normalizeArray(optimization.topConfigs);
   const weakConfigs = normalizeArray(optimization.weakConfigs);
@@ -1370,57 +1371,121 @@ function buildOptimizationPrompt(optimization, sectionKey) {
   const batch = optimization.strategyBatchTesting || {};
   const sectionLabel = OPTIMIZATION_SECTIONS.find((section) => section.key === sectionKey)?.label || 'Översikt';
 
-  const sectionHints = {
-    overview: [
-      `Trades analyserade: ${formatInt(optimization.tradeCount, 'Ingen data ännu')}`,
-      `Score: ${formatInt(optimization.overallScore, 'Ingen data ännu')}/100`,
-      `Bäst hittills: ${bestStrategy?.strategy_name || 'Ingen tydlig vinnare ännu'}`,
-      `Top configar: ${topConfigs.slice(0, 3).map((item) => item.label || item.strategy_name || item.name).filter(Boolean).join(', ') || 'saknas'}`,
-      `Weak configs: ${weakConfigs.slice(0, 3).map((item) => item.label || item.strategy_name || item.name).filter(Boolean).join(', ') || 'saknas'}`,
-    ],
-    configs: [
-      `Top configar: ${topConfigs.slice(0, 5).map((item) => `${item.label || item.strategy_name || item.name} (${item.score ?? 0}/100)`).join(' | ') || 'saknas'}`,
-      `Svaga configar: ${weakConfigs.slice(0, 5).map((item) => `${item.label || item.strategy_name || item.name} (${item.score ?? 0}/100)`).join(' | ') || 'saknas'}`,
-    ],
-    params: [
-      `Stop loss: ${normalizeArray(optimization.stopLoss?.buckets).slice(0, 3).map((item) => `${item.label} ${item.stats?.winRatePct ?? 0}% WR`).join(' | ') || 'saknas'}`,
-      `Hålltid: ${normalizeArray(optimization.holdingTime?.buckets).slice(0, 3).map((item) => `${item.label} ${item.stats?.winRatePct ?? 0}% WR`).join(' | ') || 'saknas'}`,
-      `Confidence: ${normalizeArray(optimization.confidence?.buckets).slice(0, 3).map((item) => `${item.label} ${item.stats?.winRatePct ?? 0}% WR`).join(' | ') || 'saknas'}`,
-    ],
-    exits_a: [
-      `Exit-analys: ${normalizeArray(optimization.exits?.byReason).slice(0, 4).map((item) => `${item.reasonSv || item.reason} ${item.stats?.winRatePct ?? 0}% WR`).join(' | ') || 'saknas'}`,
-      `Timeout-rate: ${optimization.exits?.timeoutPct ?? 0}%`,
-      `Exit-rekommendationer: ${normalizeArray(optimization.exits?.recommendations).join(' | ') || 'saknas'}`,
-    ],
-    markets: [
-      `Marknader: ${normalizeArray(optimization.markets?.markets).slice(0, 4).map((item) => `${item.marketSv} (${item.stats?.winRatePct ?? 0}% WR)`).join(' | ') || 'saknas'}`,
-      `Bästa kombinationer: ${normalizeArray(optimization.combinations?.bestCombinations).slice(0, 4).map((item) => `${item.label} (${item.stats?.winRatePct ?? 0}% WR)`).join(' | ') || 'saknas'}`,
-      `Marknadsråd: ${normalizeArray(optimization.markets?.recommendations).join(' | ') || 'saknas'}`,
-    ],
-    batch: [
-      `Senaste batch: ${batch.latestBatch?.name || 'Ingen batch ännu'}`,
-      `Bästa strategi: ${batch.bestStrategy?.strategy_name || 'Ingen data ännu'}`,
-      `Bästa SL / TP / confidence: ${batch.bestStopLoss?.key ?? '–'} / ${batch.bestTakeProfit?.key ?? '–'} / ${batch.bestConfidence?.key ?? '–'}`,
-      `Pause candidates: ${pauseCandidates.slice(0, 5).map((item) => item.strategy_name || item.strategy_id || item.name).join(', ') || 'saknas'}`,
-    ],
-    recs: [
-      `Rekommendationer: ${normalizeArray(optimization.recommendations?.green).slice(0, 3).join(' | ') || 'saknas'}`,
-      `Behöver mer data: ${normalizeArray(optimization.recommendations?.yellow).slice(0, 3).join(' | ') || 'saknas'}`,
-      `Undvik: ${normalizeArray(optimization.recommendations?.red).slice(0, 3).join(' | ') || 'saknas'}`,
-    ],
+  const sectionData = {
+    overview: {
+      tradeCount: optimization.tradeCount,
+      overallScore: optimization.overallScore,
+      overallStats,
+      bestStrategy: bestStrategy ? {
+        strategy_name: bestStrategy.strategy_name,
+        strategy_id: bestStrategy.strategy_id,
+        label: bestStrategy.label,
+        win_rate: bestStrategy.win_rate,
+        trades: bestStrategy.trades,
+        count: bestStrategy.count,
+      } : null,
+      topConfigs: topConfigs.slice(0, 4).map((item) => ({
+        label: item.label || item.strategy_name || item.name,
+        score: item.score,
+        stats: item.stats,
+      })),
+      weakConfigs: weakConfigs.slice(0, 4).map((item) => ({
+        label: item.label || item.strategy_name || item.name,
+        score: item.score,
+        stats: item.stats,
+      })),
+      recommendations: optimization.recommendations || {},
+    },
+    configs: {
+      topConfigs: topConfigs.slice(0, 5).map((item) => ({
+        label: item.label || item.strategy_name || item.name,
+        score: item.score,
+        stats: item.stats,
+        params: item.params,
+      })),
+      weakConfigs: weakConfigs.slice(0, 5).map((item) => ({
+        label: item.label || item.strategy_name || item.name,
+        score: item.score,
+        warning: item.warning,
+        stats: item.stats,
+      })),
+    },
+    params: {
+      stopLoss: normalizeArray(optimization.stopLoss?.buckets).slice(0, 4),
+      holdingTime: normalizeArray(optimization.holdingTime?.buckets).slice(0, 4),
+      confidence: normalizeArray(optimization.confidence?.buckets).slice(0, 4),
+      recommendations: {
+        stopLoss: optimization.stopLoss?.recommendation || '',
+        holdingTime: normalizeArray(optimization.holdingTime?.recommendations || []),
+        confidence: normalizeArray(optimization.confidence?.recommendations || []),
+      },
+    },
+    exits_a: {
+      exitReasons: normalizeArray(optimization.exits?.byReason).slice(0, 5),
+      timeoutCount: optimization.exits?.timeoutCount ?? 0,
+      timeoutPct: optimization.exits?.timeoutPct ?? 0,
+      motorExitStats: optimization.exits?.motorExitStats || null,
+      manualExitStats: optimization.exits?.manualExitStats || null,
+      recommendations: normalizeArray(optimization.exits?.recommendations || []),
+    },
+    markets: {
+      markets: normalizeArray(optimization.markets?.markets).slice(0, 5),
+      combinations: normalizeArray(optimization.combinations?.bestCombinations).slice(0, 5),
+      recommendations: normalizeArray(optimization.markets?.recommendations || []),
+    },
+    batch: {
+      latestBatch: batch.latestBatch || null,
+      bestStrategy: batch.bestStrategy || null,
+      bestStopLoss: batch.bestStopLoss || null,
+      bestTakeProfit: batch.bestTakeProfit || null,
+      bestConfidence: batch.bestConfidence || null,
+      pauseCandidates: pauseCandidates.slice(0, 6).map((item) => ({
+        strategy_name: item.strategy_name,
+        strategy_id: item.strategy_id,
+        name: item.name,
+        score: item.score,
+        win_rate: item.win_rate,
+        trades: item.trades,
+      })),
+      recommendations: batch.recommendations || optimization.recommendations || {},
+    },
+    recs: {
+      recommendations: optimization.recommendations || {},
+    },
   };
 
-  return [
-    'Du är AI Optimization Center i Supervisor.',
-    `Flik: ${sectionLabel}`,
-    'Uppgiften är read-only analys. Förklara vad siffrorna betyder, vad som fungerar, vad som stoppar, och vad nästa steg bör vara.',
-    `actions_allowed=false`,
-    `can_place_orders=false`,
-    `live_trading_enabled=false`,
-    ...(sectionHints[sectionKey] || sectionHints.overview),
-    '',
-    'Svara på enkel svenska. Ge kort slutsats, konkreta datapunkter och nästa åtgärd.',
-  ].join('\n');
+  return {
+    question: `Förklara AI Optimization Center - ${sectionLabel}. Vad betyder siffrorna och vilket nästa steg är rimligt?`,
+    context: {
+      module: 'ai_optimization_center',
+      moduleLabel: 'AI Optimization Center',
+      sectionKey,
+      sectionLabel,
+      safety: {
+        actions_allowed: false,
+        can_place_orders: false,
+        live_trading_enabled: false,
+      },
+      tradeCount: optimization.tradeCount,
+      overallScore: optimization.overallScore,
+      overallStats,
+      sectionData: sectionData[sectionKey] || sectionData.overview,
+    },
+  };
+}
+
+function optimizationSectionTitle(title, sectionKey, onAsk, description) {
+  return (
+    <div className="opt-section-head">
+      <div>
+        <div className="opt-subsection">{title}</div>
+        {description && <div className="opt-rec-note" style={{ marginTop: 8, marginBottom: 0 }}>{description}</div>}
+      </div>
+      <button className="opt-rebuild-btn" onClick={() => onAsk(sectionKey)} type="button">
+        Fråga AI om detta
+      </button>
+    </div>
+  );
 }
 
 function OptimizationCenter({ optimization }) {
@@ -1442,12 +1507,14 @@ function OptimizationCenter({ optimization }) {
   const pauseCandidates = normalizeArray(optimization?.daytradingStrategies?.pauseCandidates || []);
   const activeSection = OPTIMIZATION_SECTIONS.find((item) => item.key === section) || OPTIMIZATION_SECTIONS[0];
 
-  function askAi() {
-    const prompt = buildOptimizationPrompt(optimization, section);
+  function askAi(sectionKey = section) {
+    const prompt = buildOptimizationPrompt(optimization, sectionKey);
     if (!prompt) return;
     window.dispatchEvent(new CustomEvent('ai-copilot:open', {
       detail: {
-        question: prompt,
+        question: prompt.question,
+        context: prompt.context,
+        label: `AI Optimization Center · ${OPTIMIZATION_SECTIONS.find((item) => item.key === sectionKey)?.label || 'Översikt'}`,
         autoAsk: true,
         source: 'supervisor-optimization-center',
       },
@@ -1492,9 +1559,9 @@ function OptimizationCenter({ optimization }) {
           </div>
         </div>
 
-        <div className="opt-safety-note">
-          🔒 actions_allowed=false · can_place_orders=false · live_trading_enabled=false — Bara analys
-        </div>
+      <div className="opt-safety-note">
+        🔒 actions_allowed=false · can_place_orders=false · live_trading_enabled=false — Bara analys
+      </div>
 
         <div className="opt-section-nav">
           {OPTIMIZATION_SECTIONS.map((item) => (
@@ -1516,6 +1583,7 @@ function OptimizationCenter({ optimization }) {
 
         {section === 'overview' && (
           <div className="opt-section-content">
+            {optimizationSectionTitle('Översikt', 'overview', askAi, 'Sammantagen läsning av historiska trades och bästa nuvarande riktning.')}
             {overallStats && (
               <div className="opt-overview-grid">
                 <div className="opt-overview-card">
@@ -1550,7 +1618,7 @@ function OptimizationCenter({ optimization }) {
 
         {section === 'configs' && (
           <div className="opt-section-content">
-            <div className="opt-subsection">🏆 Bästa konfigurationer</div>
+            {optimizationSectionTitle('Konfigurationer', 'configs', askAi, 'Jämför starkaste och svagaste konfigurationer.')}
             {topConfigs?.length > 0
               ? topConfigs.slice(0, 5).map((c, i) => <ConfigCard key={c.id || c.key || i} config={c} rank={i + 1} />)
               : <div className="opt-empty">Inte tillräcklig data för konfigurationsranking.</div>
@@ -1566,6 +1634,7 @@ function OptimizationCenter({ optimization }) {
 
         {section === 'params' && (
           <div className="opt-section-content">
+            {optimizationSectionTitle('Parametrar', 'params', askAi, 'Här visas vilka parametrar som ger bäst win rate, timeout och balans.')}
             <div className="opt-subsection">Stop Loss</div>
             {stopLoss?.buckets?.length > 0
               ? <BucketBar items={stopLoss.buckets} />
@@ -1597,6 +1666,7 @@ function OptimizationCenter({ optimization }) {
 
         {section === 'exits_a' && (
           <div className="opt-section-content">
+            {optimizationSectionTitle('Exit-analys', 'exits_a', askAi, 'Jämför exit-orsaker, timeout-rate och exitmotor mot manuell exit.')}
             <div className="opt-subsection">Exit-typer</div>
             {exitsData?.byReason?.length > 0
               ? <BucketBar items={exitsData.byReason} labelKey="reasonSv" />
@@ -1630,6 +1700,7 @@ function OptimizationCenter({ optimization }) {
 
         {section === 'markets' && (
           <div className="opt-section-content">
+            {optimizationSectionTitle('Marknader', 'markets', askAi, 'Titta på vilka marknader och kombinationer som fungerar bäst.')}
             <div className="opt-subsection">Marknadstyper</div>
             {markets?.markets?.length > 0 ? (
               <div className="opt-market-list">
@@ -1673,7 +1744,7 @@ function OptimizationCenter({ optimization }) {
 
         {section === 'batch' && (
           <div className="opt-section-content">
-            <div className="opt-subsection">Batch-resultat</div>
+            {optimizationSectionTitle('Batch', 'batch', askAi, 'Läs batchresultat och se vilka strategier eller parametrar som sticker ut.')}
             {strategyBatchTesting?.latestBatch?.id ? (
               <>
                 <div className="opt-overview-grid">
@@ -1717,17 +1788,23 @@ function OptimizationCenter({ optimization }) {
                     </div>
                   </>
                 )}
-                <div className="opt-rec-note">Körning sker i Lab. Här visas bara resultat och tolkning.</div>
+                <div className="opt-rec-note">
+                  Körning sker i Lab. Här visas bara resultat och tolkning.{' '}
+                  <Link to="/lab?tab=batch">Öppna Lab för att köra eller jämföra batcher.</Link>
+                </div>
               </>
             ) : (
-              <div className="opt-empty">Inga batch-resultat ännu. Kör Batch-test i Trading Lab för att få AI-rekommendationer.</div>
+              <div className="opt-empty">
+                Inga batch-resultat ännu.{' '}
+                <Link to="/lab?tab=batch">Öppna Lab för att köra Batch-test.</Link>
+              </div>
             )}
           </div>
         )}
 
         {section === 'recs' && (
           <div className="opt-section-content">
-            <div className="opt-subsection">Snabba råd</div>
+            {optimizationSectionTitle('Råd', 'recs', askAi, 'Sammanfattade rekommendationer baserade på optimeringsläget just nu.')}
             <RecommendationsList recs={recommendations} />
             <div className="opt-rec-note">
               Supervisor visar råd och tolkning. Själva appliceringen och batch-körningarna görs i Lab.
