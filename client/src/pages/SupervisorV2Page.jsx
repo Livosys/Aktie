@@ -25,7 +25,7 @@ const ENDPOINTS = [
   { key: 'paperPerformance', url: '/api/paper-trading/performance', label: 'Paper Trading performance' },
   { key: 'runtimeStrategies', url: '/api/daytrading/runtime-strategies', label: 'Daytrading runtime strategies' },
   { key: 'recommendation', url: '/api/daytrading/recommendation', label: 'Daytrading recommendation' },
-  { key: 'eventsRecent', url: '/api/events/recent?n=20', label: 'Recent trading events' },
+  { key: 'eventsRecent', url: '/api/events/recent?n=100', label: 'Recent trading events' },
   { key: 'eventsStatus', url: '/api/events/status', label: 'Event system status' },
 ];
 
