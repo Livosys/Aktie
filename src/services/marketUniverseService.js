@@ -12,6 +12,7 @@ const SAFETY = Object.freeze({
 });
 
 const DATA_FILE = path.resolve(__dirname, '../../data/config/market-universe.json');
+const CRYPTO_SCANNER_SYMBOLS = new Set(['BTCUSDT', 'ETHUSDT', 'SOLUSDT']);
 
 const GROUP_SAFETY = Object.freeze({
   live_enabled: false,
@@ -156,9 +157,9 @@ const DEFAULT_GROUPS = {
 };
 
 const DEFAULT_SYMBOLS = [
-  { symbol: 'BTCUSDT', marketGroup: 'crypto',        enabled: true,  paused: false, priority: 1, testMode: 'paper',   maxDailyCandidates: 50, maxDailyPaperTrades: 5 },
-  { symbol: 'ETHUSDT', marketGroup: 'crypto',        enabled: true,  paused: false, priority: 2, testMode: 'paper',   maxDailyCandidates: 40, maxDailyPaperTrades: 5 },
-  { symbol: 'SOLUSDT', marketGroup: 'crypto',        enabled: true,  paused: false, priority: 3, testMode: 'paper',   maxDailyCandidates: 30, maxDailyPaperTrades: 3 },
+  { symbol: 'BTCUSDT', marketGroup: 'crypto',        enabled: true,  paused: false, priority: 1, testMode: 'paper',   maxDailyCandidates: 20, maxDailyPaperTrades: 5 },
+  { symbol: 'ETHUSDT', marketGroup: 'crypto',        enabled: true,  paused: false, priority: 2, testMode: 'paper',   maxDailyCandidates: 15, maxDailyPaperTrades: 4 },
+  { symbol: 'SOLUSDT', marketGroup: 'crypto',        enabled: true,  paused: false, priority: 3, testMode: 'paper',   maxDailyCandidates: 10, maxDailyPaperTrades: 3 },
   { symbol: 'NVDA',    marketGroup: 'stocks',        enabled: true,  paused: false, priority: 1, testMode: 'paper',   maxDailyCandidates: 30, maxDailyPaperTrades: 3 },
   { symbol: 'AMD',     marketGroup: 'stocks',        enabled: true,  paused: false, priority: 2, testMode: 'paper',   maxDailyCandidates: 30, maxDailyPaperTrades: 3 },
   { symbol: 'TSLA',    marketGroup: 'stocks',        enabled: true,  paused: false, priority: 3, testMode: 'paper',   maxDailyCandidates: 30, maxDailyPaperTrades: 3 },
@@ -322,6 +323,13 @@ function groupEnabledFor(groupId, scope) {
 
 function symbolEnabledFor(symbol, scope, fallbackGroup) {
   const groupId = getGroupForSymbol(symbol, fallbackGroup);
+  if (scope === 'scanner' && groupId === 'crypto') {
+    const sym = String(symbol || '').toUpperCase();
+    if (!CRYPTO_SCANNER_SYMBOLS.has(sym)) return false;
+    const data = load();
+    const row = data.symbols.find((entry) => String(entry.symbol || '').toUpperCase() === sym);
+    if (row && (row.enabled === false || row.paused === true)) return false;
+  }
   return groupEnabledFor(groupId, scope);
 }
 
@@ -469,6 +477,49 @@ function normalizeUniverse(data = {}) {
   return { groups, symbols, updatedAt: data.updatedAt || null };
 }
 
+function cryptoScannerEnabled() {
+  return process.env.ENABLE_CRYPTO_SCANNER !== 'false';
+}
+
+function applyCryptoScannerOverrides(data = {}) {
+  if (!cryptoScannerEnabled()) return data;
+
+  const groups = { ...(data.groups || {}) };
+  groups.crypto = normalizeGroup('crypto', {
+    ...(groups.crypto || DEFAULT_GROUPS.crypto || {}),
+    enabled: true,
+    paperEnabled: true,
+    paper_enabled: true,
+    batch_enabled: true,
+    replay_enabled: true,
+    observeOnly: false,
+    mode: 'paper',
+    data_status: 'active',
+  });
+
+  const cryptoSymbolConfig = {
+    BTCUSDT: { priority: 1, maxDailyCandidates: 20, maxDailyPaperTrades: 5 },
+    ETHUSDT: { priority: 2, maxDailyCandidates: 15, maxDailyPaperTrades: 4 },
+    SOLUSDT: { priority: 3, maxDailyCandidates: 10, maxDailyPaperTrades: 3 },
+  };
+  const symbols = (data.symbols || []).map((sym) => {
+    const key = String(sym?.symbol || '').toUpperCase();
+    const cryptoCfg = cryptoSymbolConfig[key];
+    if (!cryptoCfg) return sym;
+    return normalizeSymbol({
+      ...sym,
+      enabled: true,
+      paused: false,
+      priority: cryptoCfg.priority,
+      testMode: 'paper',
+      maxDailyCandidates: cryptoCfg.maxDailyCandidates,
+      maxDailyPaperTrades: cryptoCfg.maxDailyPaperTrades,
+    });
+  });
+
+  return { ...data, groups, symbols };
+}
+
 function hasBlockedLiveRequestForGroup(key, patch = {}) {
   return hasLiveOrderRequest(patch);
 }
@@ -476,9 +527,9 @@ function hasBlockedLiveRequestForGroup(key, patch = {}) {
 function load() {
   try {
     const raw = fs.readFileSync(DATA_FILE, 'utf8');
-    return normalizeUniverse(JSON.parse(raw));
+    return applyCryptoScannerOverrides(normalizeUniverse(JSON.parse(raw)));
   } catch (_) {
-    return normalizeUniverse({ groups: { ...DEFAULT_GROUPS }, symbols: [...DEFAULT_SYMBOLS], updatedAt: null });
+    return applyCryptoScannerOverrides(normalizeUniverse({ groups: { ...DEFAULT_GROUPS }, symbols: [...DEFAULT_SYMBOLS], updatedAt: null }));
   }
 }
 

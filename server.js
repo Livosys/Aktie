@@ -16,6 +16,7 @@ const dailyIntelligencePipeline = require('./src/services/dailyIntelligencePipel
 
 const app = express();
 const PORT = process.env.PORT || 3001;
+const ENABLE_CRYPTO_SCANNER = process.env.ENABLE_CRYPTO_SCANNER !== 'false';
 app.set('trust proxy', 'loopback');
 
 // ── Basic Auth middleware ─────────────────────────────────────────────────────
@@ -136,7 +137,12 @@ app.listen(PORT, '127.0.0.1', () => {
     console.log(`[Memory] heap=${Math.round(m.heapUsed / 1024 / 1024)}MB rss=${Math.round(m.rss / 1024 / 1024)}MB ext=${Math.round(m.external / 1024 / 1024)}MB`);
   }, 5 * 60 * 1000);
   startScheduler();
-  startCryptoScheduler();
+  if (ENABLE_CRYPTO_SCANNER) {
+    console.log('[Server] Crypto scanner enabled for paper/test mode only');
+    startCryptoScheduler();
+  } else {
+    console.log('[Server] Crypto scanner disabled via ENABLE_CRYPTO_SCANNER=false');
+  }
   startAutoMachineScheduler();
   dailyIntelligencePipeline.startScheduler();
   initPaperTrading();
