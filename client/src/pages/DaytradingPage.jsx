@@ -9,7 +9,8 @@ function useDaytradingData(tradeLimit = 200) {
   const [state, setState] = useState({
     status: null, strategies: null, pipeline: null,
     liveTrades: null, recommendation: null, impact: null, symbols: null, runtime: null,
-    cryptoScan: null, cryptoScanError: false, marketControls: null, learning: null, paperStatus: null,
+    cryptoScan: null, cryptoScanError: false, marketControls: null, learning: null, paperStatus: null, paperSignals: null,
+    autopilotStatus: null, autopilotConfig: null, candidates: null,
     loading: true, refreshing: false, refreshError: null, error: false,
   });
 
@@ -23,7 +24,7 @@ function useDaytradingData(tradeLimit = 200) {
       refreshError: null,
     }));
     const get = url => fetch(url).then(r => r.json()).catch(() => null);
-    const [statusD, strD, pipeD, tradesD, recD, impD, symD, runtimeD, cryptoScanD, marketControlsD, learningD, paperStatusD] = await Promise.all([
+    const [statusD, strD, pipeD, tradesD, recD, impD, symD, runtimeD, cryptoScanD, marketControlsD, learningD, paperStatusD, paperSignalsD, autopilotStatusD, autopilotConfigD, candidatesD] = await Promise.all([
       get('/api/daytrading/status'), get('/api/daytrading/strategies'),
       get('/api/daytrading/pipeline'), get(`/api/daytrading/live-trades?limit=${tradeLimit}`),
       get('/api/daytrading/recommendation'), get('/api/daytrading/impact-summary'),
@@ -32,6 +33,10 @@ function useDaytradingData(tradeLimit = 200) {
       get('/api/daytrading/market-controls'),
       get('/api/daytrading/learning-summary?hours=48&limit=200'),
       get('/api/paper-trading/status'),
+      get('/api/daytrading/paper-signals?limit=200'),
+      get('/api/strategy-test-autopilot/status'),
+      get('/api/strategy-test-autopilot/config'),
+      get('/api/candidates/recent?n=50'),
     ]);
     if (requestId !== requestSeq.current) return;
     const validStatus = isValidResponse(statusD);
@@ -46,6 +51,10 @@ function useDaytradingData(tradeLimit = 200) {
     const validMarketControls = isValidResponse(marketControlsD);
     const validLearning = isValidResponse(learningD);
     const validPaperStatus = isValidResponse(paperStatusD);
+    const validPaperSignals = isValidResponse(paperSignalsD);
+    const validAutopilotStatus = isValidResponse(autopilotStatusD);
+    const validAutopilotConfig = isValidResponse(autopilotConfigD);
+    const validCandidates = isValidResponse(candidatesD);
     const anyValid = [
       validStatus,
       validStrategies,
@@ -59,6 +68,10 @@ function useDaytradingData(tradeLimit = 200) {
       validMarketControls,
       validLearning,
       validPaperStatus,
+      validPaperSignals,
+      validAutopilotStatus,
+      validAutopilotConfig,
+      validCandidates,
     ].some(Boolean);
     const refreshFailed = !validStatus || !validTrades;
     setState((prev) => {
@@ -78,6 +91,10 @@ function useDaytradingData(tradeLimit = 200) {
         marketControls: validMarketControls ? marketControlsD : prev.marketControls,
         learning: validLearning ? learningD : prev.learning,
         paperStatus: validPaperStatus ? paperStatusD : prev.paperStatus,
+        paperSignals: validPaperSignals ? paperSignalsD : prev.paperSignals,
+        autopilotStatus: validAutopilotStatus ? autopilotStatusD : prev.autopilotStatus,
+        autopilotConfig: validAutopilotConfig ? autopilotConfigD : prev.autopilotConfig,
+        candidates: validCandidates ? candidatesD : prev.candidates,
         loading: false,
         refreshing: false,
         refreshError: refreshFailed ? 'Senaste uppdatering misslyckades – visar senaste data' : null,
@@ -148,6 +165,132 @@ function fmtReason(value) {
   if (Array.isArray(value)) return value.filter(Boolean).join(', ');
   return value || '–';
 }
+
+function fmtRiskReward(v) {
+  if (v == null || Number.isNaN(Number(v))) return '–';
+  const n = Number(v);
+  return n >= 10 ? n.toFixed(1) : n.toFixed(2);
+}
+
+function paperSignalStatusTone(status) {
+  const s = String(status || '').toLowerCase();
+  if (s.includes('redo') || s.includes('öppen')) return 'good';
+  if (s.includes('vänt')) return 'warning';
+  if (s.includes('block')) return 'danger';
+  if (s.includes('saknar')) return 'warning';
+  if (s.includes('timeout')) return 'warning';
+  if (s.includes('stäng')) return 'neutral';
+  return 'neutral';
+}
+
+function paperSignalStatusClass(status) {
+  const s = String(status || '').toLowerCase();
+  if (s.includes('redo')) return 'dt-status-win';
+  if (s.includes('öppen')) return 'dt-status-open';
+  if (s.includes('block')) return 'dt-status-blocked';
+  if (s.includes('timeout')) return 'dt-status-timeout';
+  if (s.includes('saknar')) return 'dt-status-neutral';
+  if (s.includes('vänt')) return 'dt-status-neutral';
+  if (s.includes('stäng')) return 'dt-status-neutral';
+  return 'dt-status-neutral';
+}
+
+function paperSignalRowClass(status) {
+  const s = String(status || '').toLowerCase();
+  if (s.includes('redo')) return 'dt-row-green';
+  if (s.includes('öppen')) return 'dt-row-blue';
+  if (s.includes('block')) return 'dt-row-gray';
+  if (s.includes('timeout')) return 'dt-row-yellow';
+  if (s.includes('vänt')) return 'dt-row-blue';
+  if (s.includes('saknar')) return 'dt-row-gray';
+  if (s.includes('stäng')) return 'dt-row-blue';
+  return '';
+}
+
+function paperSignalAction(status) {
+  const s = String(status || '').toLowerCase();
+  if (s.includes('redo')) return 'Skapa paper';
+  if (s.includes('öppen')) return 'Följ trade';
+  if (s.includes('block')) return 'Visa orsak';
+  if (s.includes('timeout')) return 'Visa resultat';
+  if (s.includes('saknar')) return 'Kontrollera data';
+  return 'Väntar';
+}
+
+function textValue(value, fallback = '–') {
+  if (value == null || value === '') return fallback;
+  if (Array.isArray(value)) {
+    const parts = value.map((item) => textValue(item, '')).filter(Boolean);
+    return parts.length ? parts.join(' · ') : fallback;
+  }
+  if (typeof value === 'object') {
+    return textValue(
+      value.label ?? value.name ?? value.title ?? value.text ?? value.reasonSv ?? value.reason ?? value.value,
+      fallback,
+    );
+  }
+  return String(value).trim() || fallback;
+}
+
+function candidateDirection(candidate = {}) {
+  const raw = String(candidate.nextMoveBias || candidate.indexBias || candidate.direction || candidate.signal || '').toUpperCase();
+  if (raw.includes('SHORT') || raw.includes('DOWN') || raw.includes('BEAR')) return 'Short';
+  if (raw.includes('LONG') || raw.includes('UP') || raw.includes('BULL')) return 'Long';
+  return 'Neutral';
+}
+
+function candidateStatus(candidate = {}) {
+  const raw = String(candidate.status || candidate.daytradeStatus || candidate.blockerMode || candidate.signal || '').toLowerCase();
+  if (candidate.paperTradeCreated === true) return 'paper trade';
+  if (raw.includes('timeout')) return 'timeout';
+  if (raw.includes('reject') || raw.includes('block') || (Array.isArray(candidate.wouldHaveBeenBlockedBy) && candidate.wouldHaveBeenBlockedBy.length > 0)) return 'rejected';
+  if (raw.includes('active') || raw.includes('open') || raw.includes('klar') || candidate.discoveryMode === true) return 'active';
+  return textValue(candidate.status || candidate.daytradeStatus || candidate.blockerMode || 'active', 'active');
+}
+
+function candidateWhy(candidate = {}) {
+  const reasons = [
+    ...((Array.isArray(candidate.reasons) ? candidate.reasons : [])),
+    ...((Array.isArray(candidate.warnings) ? candidate.warnings : [])),
+    ...((Array.isArray(candidate.wouldHaveBeenBlockedBy) ? candidate.wouldHaveBeenBlockedBy : [])),
+  ].map((item) => textValue(item, '')).filter(Boolean);
+  return reasons.length ? reasons.slice(0, 3).join(' · ') : 'Ingen tydlig orsak sparad';
+}
+
+function candidateSignal(candidate = {}) {
+  return textValue(candidate.signalFamily || candidate.signalSubtype || candidate.signal || candidate.setupId || candidate.strategyName || candidate.strategy_name, '–');
+}
+
+function candidateEntry(candidate = {}) {
+  return textValue(candidate.strategyName || candidate.strategy_name || candidate.setupId || candidate.marketGroup || candidate.market_group, '–');
+}
+
+function candidateExit(candidate = {}) {
+  return textValue(candidate.exitProfile || candidate.blockerMode || candidate.discoveryMode || candidate.wouldHaveBeenBlockedBy?.[0], '–');
+}
+
+function candidateScore(candidate = {}) {
+  const value = candidate.tradeScore ?? candidate.signalScore ?? candidate.priorityScore ?? candidate.score ?? candidate.confidenceScore ?? null;
+  return value == null ? '–' : Math.round(Number(value));
+}
+
+function candidateTime(candidate = {}) {
+  return candidate.detected_at || candidate.evaluated_at || candidate.ts || candidate.timestamp || candidate.created_at || null;
+}
+
+function tabLabel(tabKey) {
+  return DAYTRADING_TABS.find((tab) => tab.key === tabKey)?.label || 'Översikt';
+}
+
+const DAYTRADING_TABS = [
+  { key: 'overview', label: 'Översikt' },
+  { key: 'signals', label: 'Signaler' },
+  { key: 'strategies', label: 'Strategier' },
+  { key: 'paper', label: 'Paper Trading' },
+  { key: 'tests', label: 'Tester' },
+  { key: 'learning', label: 'Learning' },
+  { key: 'safety', label: 'Risk & Safety' },
+];
 
 const CRYPTO_RUNTIME_STRATEGY_IDS = [
   'crypto_momentum_scalper',
@@ -1019,73 +1162,9 @@ function RecommendationBar({ rec }) {
   );
 }
 
-// ─── F) Filter bar ───────────────────────────────────────────────────────────
+// ─── F) Marknadskonstanter (för strategi-modal) ──────────────────────────────
 
 const MARKETS   = [{ id:'all',label:'Alla'},{id:'stocks',label:'Aktier'},{id:'nasdaq',label:'Nasdaq'},{id:'crypto',label:'Krypto'},{id:'etf',label:'ETF'}];
-const DIRECTIONS= [{ id:'all',label:'Alla'},{id:'long',label:'Long'},{id:'short',label:'Short'}];
-const SCORES    = [{ id:0,label:'Alla'},{id:50,label:'50+'},{id:60,label:'60+'},{id:70,label:'70+'},{id:80,label:'80+'}];
-
-function Pills({ options, value, onChange }) {
-  return (
-    <div className="dt-pills">
-      {options.map(o => (
-        <button key={o.id} type="button"
-          className={`dt-pill${value === o.id ? ' dt-pill-active' : ''}`}
-          onClick={() => onChange(o.id)}>{o.label}</button>
-      ))}
-    </div>
-  );
-}
-
-function FilterBar({ filters, onChange, onScan, scanning, symbols }) {
-  const symRows = (symbols?.symbols || []).filter(s => s.enabled && !s.paused);
-  const selectedSym = symRows.find(s => s.symbol === filters.symbol);
-
-  return (
-    <div className="dt-filter-bar-wrap">
-      <div className="dt-filter-bar">
-        <div className="dt-filter-bar-group">
-          <span className="dt-filter-bar-lbl">Marknad</span>
-          <Pills options={MARKETS} value={filters.market}    onChange={v => onChange({...filters, market: v, _dirty: true})} />
-        </div>
-        <div className="dt-filter-bar-sep" />
-        <div className="dt-filter-bar-group">
-          <span className="dt-filter-bar-lbl">Riktning</span>
-          <Pills options={DIRECTIONS} value={filters.direction} onChange={v => onChange({...filters, direction: v, _dirty: true})} />
-        </div>
-        <div className="dt-filter-bar-sep" />
-        <div className="dt-filter-bar-group">
-          <span className="dt-filter-bar-lbl">Score</span>
-          <Pills options={SCORES} value={filters.minScore}   onChange={v => onChange({...filters, minScore: v, _dirty: true})} />
-        </div>
-        {symRows.length > 0 && (
-          <>
-            <div className="dt-filter-bar-sep" />
-            <div className="dt-filter-bar-group">
-              <span className="dt-filter-bar-lbl">Symbol</span>
-              <select className="dt-filter-select dt-filter-select-sm" value={filters.symbol || ''}
-                onChange={e => onChange({...filters, symbol: e.target.value, _dirty: true})}>
-                <option value="">Alla</option>
-                {symRows.map(s => <option key={s.symbol} value={s.symbol}>{s.symbol}</option>)}
-              </select>
-              {selectedSym?.data_status_sv && (
-                <span className={`dt-sym-inline ${selectedSym.has_data ? 'dt-sym-ok' : 'dt-sym-warn'}`}>
-                  {selectedSym.data_status_sv}
-                </span>
-              )}
-            </div>
-          </>
-        )}
-        <button type="button"
-          className={`dt-scan-btn dt-scan-btn-sm${scanning ? ' dt-scan-btn-loading' : ''}`}
-          onClick={onScan} disabled={scanning}>
-          {scanning ? 'Söker...' : 'Kör ny scan'}
-        </button>
-      </div>
-      {filters._dirty && <div className="dt-filter-hint">Filter ändrat – kör ny scan för att uppdatera resultat</div>}
-    </div>
-  );
-}
 
 // ─── G) Strategikontroll ─────────────────────────────────────────────────────
 
@@ -1387,200 +1466,6 @@ function RuntimeSummary({ runtime }) {
   );
 }
 
-const MARKET_RISK_LABELS = {
-  normal: 'Normal',
-  high: 'Hög',
-  extreme: 'Mycket hög',
-};
-
-const MARKET_SCOPE_FIELDS = [
-  ['enabled_for_paper', 'Paper-runtime'],
-  ['enabled_for_scanner', 'Scanner'],
-  ['enabled_for_replay', 'Replay'],
-  ['enabled_for_batch', 'Batch'],
-];
-
-function MarketToggle({ value, label, disabled, onClick }) {
-  return (
-    <button
-      type="button"
-      className={`dt-market-toggle${value ? ' dt-market-toggle-on' : ''}`}
-      disabled={disabled}
-      onClick={onClick}
-    >
-      <span>{label}</span>
-      <strong>{value ? 'Aktiv' : 'Av'}</strong>
-    </button>
-  );
-}
-
-function MarketControlCard({ control, busy, onToggle }) {
-  const risk = control.risk_class || 'normal';
-  return (
-    <div className={`dt-market-card dt-market-risk-${risk}`}>
-      <div className="dt-market-card-head">
-        <div>
-          <h4>{control.group_name || control.group_id}</h4>
-          <div className="dt-market-meta">
-            <span>Connected: {control.connected === false ? 'Nej' : 'Ja'}</span>
-            <span>{control.symbol_count ?? 0} symboler</span>
-            {(control.unverified_symbol_count ?? 0) > 0 && <span>{control.unverified_symbol_count} ej verifierade</span>}
-          </div>
-        </div>
-        <span className={`dt-market-risk-badge dt-market-risk-badge-${risk}`}>{MARKET_RISK_LABELS[risk] || risk}</span>
-      </div>
-      <div className="dt-market-toggle-grid">
-        {MARKET_SCOPE_FIELDS.map(([field, label]) => (
-          <MarketToggle
-            key={field}
-            label={label}
-            value={control[field] !== false}
-            disabled={busy}
-            onClick={() => onToggle(control.group_id, field, control[field] === false)}
-          />
-        ))}
-        <div className="dt-market-live-lock">
-          <span>Live</span>
-          <strong>Låst Av</strong>
-        </div>
-      </div>
-      <p className="dt-market-reason">{control.restricted_reason || control.warning_sv || 'Endast paper/test. Riktig handel är låst.'}</p>
-      {(control.unverified_symbol_count ?? 0) > 0 && (
-        <p className="dt-market-unverified">Symbol ej verifierad - kan endast observeras tills datakälla finns.</p>
-      )}
-    </div>
-  );
-}
-
-function MarketSlider({ label, value, min, max, step = 1, suffix = '', onChange }) {
-  return (
-    <label className="dt-market-slider">
-      <span>{label}: <strong>{value}{suffix}</strong></span>
-      <input className="dt-slider" type="range" min={min} max={max} step={step} value={value} onChange={e => onChange(Number(e.target.value))} />
-    </label>
-  );
-}
-
-function MarketControlsSection({ marketControls, onUpdate }) {
-  const controls = marketControls?.controls || [];
-  const [localControls, setLocalControls] = useState(controls);
-  const [filters, setFilters] = useState(marketControls?.filters || {
-    min_score: 60,
-    min_confidence: 70,
-    max_risk_class: 'extreme',
-    max_trades_per_hour: 10,
-    cooldown_minutes: 5,
-    max_spread_percent: 0.5,
-    max_leverage: 10,
-  });
-  const [busy, setBusy] = useState(null);
-  const [error, setError] = useState(null);
-  const [message, setMessage] = useState(null);
-
-  useEffect(() => {
-    setLocalControls(controls);
-    if (marketControls?.filters) setFilters(marketControls.filters);
-  }, [marketControls]); // eslint-disable-line react-hooks/exhaustive-deps
-
-  function applyResponse(res) {
-    if (Array.isArray(res?.controls)) setLocalControls(res.controls);
-    if (res?.filters) setFilters(res.filters);
-    if (res?.message_sv) setMessage(res.message_sv);
-    onUpdate?.();
-  }
-
-  async function post(path, body, busyKey) {
-    setBusy(busyKey);
-    setError(null);
-    setMessage(null);
-    try {
-      const res = await fetch(path, {
-        method: 'POST',
-        headers: body ? { 'Content-Type': 'application/json' } : undefined,
-        body: body ? JSON.stringify(body) : undefined,
-      }).then(r => r.json()).catch(() => null);
-      if (res?.ok === false) setError(res.error || 'Kunde inte uppdatera marknadskontroll.');
-      else applyResponse(res || {});
-    } finally {
-      setBusy(null);
-    }
-  }
-
-  function toggle(groupId, field, value) {
-    post(`/api/daytrading/market-controls/${encodeURIComponent(groupId)}/toggle`, { [field]: value }, `${groupId}:${field}`);
-  }
-
-  function saveFilters() {
-    post('/api/daytrading/market-controls/sliders', filters, 'filters');
-  }
-
-  return (
-    <div className="dt-panel dt-market-controls-panel">
-      <div className="dt-panel-head">
-        <div>
-          <h3 className="dt-panel-title">Marknader &amp; riskinstrument</h3>
-          <p className="dt-market-note">Riskinstrument kan aktiveras för scanner, paper, replay och batch. Riktig handel är fortfarande låst.</p>
-        </div>
-        <span className="dt-count-badge">{localControls.length} grupper</span>
-      </div>
-
-      <div className="dt-market-warning">
-        Certifikat och mini futures kan ge missvisande testresultat om spread, hävstång eller knock-out saknas i datan.
-      </div>
-
-      <div className="dt-market-bulk-actions">
-        <button type="button" className="dt-btn dt-btn-ok" disabled={!!busy} onClick={() => post('/api/daytrading/market-controls/enable-all-risk', null, 'risk-on')}>Slå på alla riskinstrument i paper test</button>
-        <button type="button" className="dt-btn dt-btn-warn" disabled={!!busy} onClick={() => post('/api/daytrading/market-controls/disable-all-risk', null, 'risk-off')}>Pausa alla riskinstrument</button>
-        <button type="button" className="dt-btn dt-btn-sec" disabled={!!busy} onClick={() => post('/api/daytrading/market-controls/enable-all', null, 'all-on')}>Slå på alla marknader</button>
-        <button type="button" className="dt-btn dt-btn-sec" disabled={!!busy} onClick={() => post('/api/daytrading/market-controls/disable-all', null, 'all-off')}>Pausa alla marknader</button>
-      </div>
-
-      {error && <div className="dt-inline-error">{error}</div>}
-      {message && <div className="dt-inline-ok">{message}</div>}
-
-      {!localControls.length ? (
-        <PlatformEmptyState title="Inga marknadskontroller kunde läsas" text="Daytrading fortsätter i säkert paperläge. Försök uppdatera sidan." />
-      ) : (
-        <div className="dt-market-grid">
-          {localControls.map((control) => (
-            <MarketControlCard
-              key={control.group_id}
-              control={control}
-              busy={!!busy}
-              onToggle={toggle}
-            />
-          ))}
-        </div>
-      )}
-
-      <div className="dt-market-filter-panel">
-        <div className="dt-market-filter-head">
-          <h4>Paper/scanner-filter</h4>
-          <button type="button" className="dt-btn dt-btn-pri" disabled={!!busy} onClick={saveFilters}>
-            {busy === 'filters' ? 'Sparar...' : 'Spara filter'}
-          </button>
-        </div>
-        <div className="dt-market-sliders">
-          <MarketSlider label="Min score" value={filters.min_score ?? 60} min={0} max={100} onChange={v => setFilters(f => ({ ...f, min_score: v }))} />
-          <MarketSlider label="Min confidence" value={filters.min_confidence ?? 70} min={0} max={100} suffix="%" onChange={v => setFilters(f => ({ ...f, min_confidence: v }))} />
-          <label className="dt-market-slider">
-            <span>Max riskklass: <strong>{MARKET_RISK_LABELS[filters.max_risk_class] || 'Mycket hög'}</strong></span>
-            <select className="dt-filter-select" value={filters.max_risk_class || 'extreme'} onChange={e => setFilters(f => ({ ...f, max_risk_class: e.target.value }))}>
-              <option value="normal">Normal</option>
-              <option value="high">Hög</option>
-              <option value="extreme">Mycket hög</option>
-            </select>
-          </label>
-          <MarketSlider label="Max trades per timme" value={filters.max_trades_per_hour ?? 10} min={0} max={50} onChange={v => setFilters(f => ({ ...f, max_trades_per_hour: v }))} />
-          <MarketSlider label="Cooldown minuter" value={filters.cooldown_minutes ?? 5} min={0} max={120} onChange={v => setFilters(f => ({ ...f, cooldown_minutes: v }))} />
-          <MarketSlider label="Max spread" value={filters.max_spread_percent ?? 0.5} min={0} max={5} step={0.1} suffix="%" onChange={v => setFilters(f => ({ ...f, max_spread_percent: v }))} />
-          <MarketSlider label="Max hävstång" value={filters.max_leverage ?? 10} min={1} max={100} onChange={v => setFilters(f => ({ ...f, max_leverage: v }))} />
-        </div>
-      </div>
-    </div>
-  );
-}
-
 function StrategiesSection({ strategies, total, runtime, liveTrades, paperStatus, cryptoScan, cryptoScanError, onUpdate, onScan }) {
   const [visibleCount, setVisibleCount] = useState(25);
   const [paperLimit, setPaperLimit] = useState(5);
@@ -1853,6 +1738,189 @@ function TradeStats({ summary }) {
       <StatCard label="Sämsta trade" value={fmtPct(s.worst_pl)} tone="negative" />
       <StatCard label="Long/up" value={s.long_up ?? 0} tone="info" />
       <StatCard label="Short/down" value={s.short_down ?? 0} tone="neutral" />
+    </div>
+  );
+}
+
+function PaperSignalsSection({ paperSignals, refreshing, refreshError, loading = false }) {
+  const status = paperSignals?.status || {};
+  const safety = paperSignals?.safety || {};
+  const signals = Array.isArray(paperSignals?.signals) ? paperSignals.signals : [];
+  const blocked = Array.isArray(paperSignals?.blocked) ? paperSignals.blocked : [];
+  const openTrades = Array.isArray(paperSignals?.openTrades) ? paperSignals.openTrades : [];
+  const closedTrades = Array.isArray(paperSignals?.closedTrades) ? paperSignals.closedTrades : [];
+  const emptyState = paperSignals?.emptyState || {};
+  const topBlocked = Array.isArray(emptyState.topBlockedCandidates) && emptyState.topBlockedCandidates.length > 0
+    ? emptyState.topBlockedCandidates
+    : blocked.slice(0, 5);
+  const paperEnabled = status.paperTradingEnabled !== false;
+
+  return (
+    <div className="dt-panel">
+      <div className="dt-panel-head">
+        <div>
+          <h3 className="dt-panel-title">Paper Trading Köpsignaler</h3>
+          <p className="dt-paper-panel-sub">
+            Tydlig vy över vilka kandidater som är redo, väntar, blockerats och vilka paper trades som redan är öppna eller stängda.
+          </p>
+        </div>
+        <div className="dt-paper-status-pills">
+          <span className={`dt-paper-pill ${paperEnabled ? 'dt-paper-pill-on' : 'dt-paper-pill-off'}`}>
+            Paper Trading: {paperEnabled ? 'På' : 'Av'}
+          </span>
+          <span className="dt-paper-pill dt-paper-pill-off">Live Trading: AV</span>
+          <span className="dt-paper-pill dt-paper-pill-off">Riktiga ordrar: Blockerade</span>
+        </div>
+      </div>
+
+      <div className="dt-overview-grid dt-paper-status-grid">
+        <SummaryTile label="Paper Trading" value={paperEnabled ? 'På' : 'Av'} note={paperEnabled ? 'Paper-läge är aktivt' : 'Paper trade-flödet är avstängt'} tone={paperEnabled ? 'good' : 'warning'} />
+        <SummaryTile label="Live Trading" value="AV" note="actions_allowed=false · can_place_orders=false · live_trading_enabled=false" tone="danger" />
+        <SummaryTile label="Riktiga ordrar" value="Blockerade" note="Broker används inte" tone="danger" />
+        <SummaryTile label="Senaste scan" value={status.lastScanAt ? timeSince(status.lastScanAt) : '–'} note={status.lastScanAt ? fmtTradeTime(status.lastScanAt) : 'Ingen scan-tid hittad'} />
+        <SummaryTile label="Köpsignaler just nu" value={status.totalSignals ?? signals.length ?? 0} note="Kandidater i senaste scannerflödet" />
+        <SummaryTile label="Redo för paper trade" value={status.readySignals ?? signals.filter((signal) => signal.status === 'Redo för paper trade').length} note="Kan gå vidare direkt" tone="good" />
+        <SummaryTile label="Blockerade signaler" value={status.blockedSignals ?? blocked.length} note="Exakt blockeringsorsak visas i listan" tone="danger" />
+        <SummaryTile label="Öppna paper trades" value={status.openPaperTrades ?? openTrades.length} note="Simulerade positioner som fortfarande följs" tone="neutral" />
+      </div>
+
+      {refreshing && <div className="dt-paper-note"><strong>Uppdaterar.</strong> Visar senaste kända paper-signaler medan nya svar hämtas.</div>}
+      {refreshError && !refreshing && <div className="dt-paper-note"><strong>Senaste uppdatering misslyckades.</strong> Visar senaste data.</div>}
+
+      {loading && !paperSignals ? (
+        <div className="dt-paper-empty">
+          <div className="dt-loading-inline">
+            <span className="spinner" style={{ width: 16, height: 16 }} />
+            <span>Hämtar paper trading-signaler…</span>
+          </div>
+        </div>
+      ) : signals.length > 0 ? (
+        <div className="dt-table-wrap">
+          <table className="dt-table dt-paper-signals-table">
+            <thead>
+              <tr>
+                <th>Tid</th>
+                <th>Symbol</th>
+                <th>Marknad</th>
+                <th>Signal</th>
+                <th>Strategi</th>
+                <th>Score</th>
+                <th>Confidence</th>
+                <th>Entry</th>
+                <th>Stop loss</th>
+                <th>Take profit</th>
+                <th>Risk/reward</th>
+                <th>Status</th>
+                <th>Orsak</th>
+                <th>Åtgärd</th>
+              </tr>
+            </thead>
+            <tbody>
+              {signals.map((signal, index) => (
+                <tr key={`${signal.symbol || 'signal'}-${signal.createdAt || signal.openAt || signal.tradeId || index}`} className={paperSignalRowClass(signal.status)}>
+                  <td className="dt-td-time">{signal.createdAt ? fmtTradeTime(signal.createdAt) : '–'}</td>
+                  <td className="dt-td-sym"><strong>{signal.symbol || '–'}</strong></td>
+                  <td>{signal.market || '–'}</td>
+                  <td>{signal.side || 'Vänta'}</td>
+                  <td className="dt-td-strategy">{signal.strategy || '–'}</td>
+                  <td>{signal.score != null ? fmtScore(signal.score) : '–'}</td>
+                  <td>{signal.confidence != null ? `${fmtScore(signal.confidence)}%` : '–'}</td>
+                  <td className="dt-mono-cell">{fmtPrice(signal.entry)}</td>
+                  <td className="dt-mono-cell">{fmtPrice(signal.stopLoss)}</td>
+                  <td className="dt-mono-cell">{fmtPrice(signal.takeProfit)}</td>
+                  <td className="dt-mono-cell">{fmtRiskReward(signal.riskReward)}</td>
+                  <td><span className={`dt-status-tag ${paperSignalStatusClass(signal.status)}`}>{signal.status || '–'}</span></td>
+                  <td className="dt-signal-reason">{signal.blockerReason || signal.reason || '–'}</td>
+                  <td><button type="button" className="dt-btn-xs" onClick={() => {}}> {paperSignalAction(signal.status)} </button></td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      ) : (
+        <div className="dt-paper-empty">
+          <h4>Inga paper trading-köpsignaler just nu</h4>
+          <p>{emptyState.waitingFor || 'Systemet väntar på nästa scan.'}</p>
+          <div className="dt-paper-empty-meta">
+            <span>Senaste scan: {status.lastScanAt ? fmtTradeTime(status.lastScanAt) : '–'}</span>
+            <span>Kandidater kontrollerade: {status.candidatesChecked ?? 0}</span>
+            <span>Blockerade: {status.blockedSignals ?? blocked.length ?? 0}</span>
+          </div>
+          <div className="dt-paper-empty-blocks">
+            {topBlocked.length > 0 ? topBlocked.map((candidate, index) => (
+              <div key={`${candidate.symbol || 'blocked'}-${candidate.strategy || index}`} className="dt-paper-empty-block">
+                <strong>{candidate.symbol || '–'} — blockerad</strong>
+                <span>{candidate.reason || 'Blockerad'}</span>
+                <small>{candidate.score != null ? `score ${candidate.score}` : 'score saknas'}{candidate.requiredFix ? ` · ${candidate.requiredFix}` : ''}</small>
+              </div>
+            )) : (
+              <div className="dt-paper-empty-block">
+                <strong>Inga blockerade kandidater sparade</strong>
+                <span>Systemet väntar på ny scannerdata eller nästa bekräftade entry.</span>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      <div className="dt-paper-rail-grid">
+        <div className="dt-paper-rail">
+          <div className="dt-paper-rail-head">
+            <h4>Blockerade signaler</h4>
+            <span>{blocked.length}</span>
+          </div>
+          {blocked.length > 0 ? blocked.slice(0, 5).map((row) => (
+            <div key={`${row.symbol}-${row.strategy}-${row.reason}`} className="dt-paper-mini-row">
+              <strong>{row.symbol || '–'}</strong>
+              <span>{row.reason || 'Blockerad'}</span>
+              <small>{row.requiredFix || 'Kontrollera blockeringsorsaken'}</small>
+            </div>
+          )) : (
+            <div className="dt-paper-mini-empty">Inga blockerade signaler just nu.</div>
+          )}
+        </div>
+
+        <div className="dt-paper-rail">
+          <div className="dt-paper-rail-head">
+            <h4>Öppna paper trades</h4>
+            <span>{openTrades.length}</span>
+          </div>
+          {openTrades.length > 0 ? openTrades.slice(0, 5).map((trade) => (
+            <div key={trade.tradeId || `${trade.symbol}-${trade.createdAt}`} className="dt-paper-mini-row">
+              <strong>{trade.symbol || '–'}</strong>
+              <span>{trade.strategy || 'Paper-strategi'}</span>
+              <small>{trade.reason || 'Öppen position'}</small>
+            </div>
+          )) : (
+            <div className="dt-paper-mini-empty">Inga öppna paper trades just nu.</div>
+          )}
+        </div>
+
+        <div className="dt-paper-rail">
+          <div className="dt-paper-rail-head">
+            <h4>Nyligen stängda</h4>
+            <span>{closedTrades.length}</span>
+          </div>
+          {closedTrades.length > 0 ? closedTrades.slice(0, 5).map((trade) => (
+            <div key={trade.tradeId || `${trade.symbol}-${trade.closedAt || trade.createdAt}`} className="dt-paper-mini-row">
+              <strong>{trade.symbol || '–'}</strong>
+              <span>{trade.status || 'Stängd'}</span>
+              <small>{trade.reason || trade.result || 'Stängd paper trade'}</small>
+            </div>
+          )) : (
+            <div className="dt-paper-mini-empty">Inga nyligen stängda paper trades.</div>
+          )}
+        </div>
+      </div>
+
+      <DetailsBlock summary="Visa mer om tekniska detaljer">
+        <div className="dt-overview-grid">
+          <SummaryTile label="Kandidater kontrollerade" value={status.candidatesChecked ?? 0} note="Senaste scannerflödet" />
+          <SummaryTile label="Väntar" value={status.waitingSignals ?? 0} note="Saknar bekräftad entry eller kompletterande data" />
+          <SummaryTile label="Stängda paper trades" value={status.closedPaperTrades ?? closedTrades.length} note="Historik från paper-trading" />
+          <SummaryTile label="Systemets väntan" value={emptyState.waitingFor || '–'} note="Vad flödet väntar på just nu" wide text />
+        </div>
+      </DetailsBlock>
     </div>
   );
 }
@@ -2212,12 +2280,416 @@ function LearningEngineSection({ learning }) {
   );
 }
 
+function SummaryTile({ label, value, note, tone = 'neutral', wide = false, text = false }) {
+  return (
+    <div className={`dt-summary-tile dt-summary-${tone}${wide ? ' dt-summary-tile-wide' : ''}`}>
+      <span className="dt-summary-label">{label}</span>
+      <strong className={`dt-summary-value${text ? ' dt-summary-value-text' : ''}`}>{value}</strong>
+      {note && <span className="dt-summary-note">{note}</span>}
+    </div>
+  );
+}
+
+function TabStrip({ activeTab, onChange }) {
+  return (
+    <div className="dt-tab-strip" role="tablist" aria-label="Daytrading tabs">
+      {DAYTRADING_TABS.map((tab) => (
+        <button
+          key={tab.key}
+          type="button"
+          className={`dt-tab-btn${activeTab === tab.key ? ' dt-tab-btn-active' : ''}`}
+          onClick={() => onChange(tab.key)}
+          role="tab"
+          aria-selected={activeTab === tab.key}
+        >
+          {tab.label}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+function DetailsBlock({ summary, children, defaultOpen = false }) {
+  return (
+    <details className="dt-details" open={defaultOpen}>
+      <summary>{summary}</summary>
+      <div className="dt-details-body">{children}</div>
+    </details>
+  );
+}
+
+function OverviewTab({ status, pipeline, liveTrades, recommendation, impact, runtime, paperStatus, paperSignals, learning, candidates }) {
+  const latestScan = status?.latest_scan || null;
+  const paperEnabled = paperStatus?.enabled !== false && status?.paper_trading !== false;
+  const summary = liveTrades?.summary_48h || {};
+  const candidateRows = Array.isArray(candidates?.candidates) ? candidates.candidates : Array.isArray(candidates) ? candidates : [];
+  const bestSignal = candidateRows
+    .slice()
+    .sort((a, b) => Number(candidateScore(b) || 0) - Number(candidateScore(a) || 0))[0]
+    || recommendation?.best_strategy
+    || liveTrades?.runtime_strategies?.[0]
+    || null;
+  const bestStrategy = recommendation?.best_strategy || liveTrades?.runtime_strategies?.find((row) => (row.paper_trades_48h ?? 0) > 0) || runtime?.strategies?.find((row) => row.can_create_paper_trade) || null;
+  const riskLabel = paperStatus?.conservativeMode || liveTrades?.summary_48h?.conservativeModeActive
+    ? 'Försiktigt'
+    : status?.safety?.active === false
+      ? 'Okänt'
+      : 'Normal';
+  const aiRecommendation = recommendation?.recommendation_sv || impact?.summary_sv || 'Fortsätt observera dagens läge och kör en ny scan när filter eller marknad ändras.';
+
+  return (
+    <div className="dt-tab-panel">
+      <PaperSignalsSection paperSignals={paperSignals} refreshing={false} refreshError={null} loading={!paperSignals} />
+      <StatusBar status={status} />
+      <div className="dt-overview-grid">
+        <SummaryTile label="Systemstatus" value={status?.scanner_active ? 'Scanner aktiv' : 'Scanner pausad'} note={status?.data_active ? 'Data flödar in' : 'Väntar på data'} tone={status?.scanner_active ? 'good' : 'warning'} />
+        <SummaryTile label="Senaste scan" value={latestScan ? timeSince(latestScan) : 'Ingen ännu'} note={status?.paper_trading ? 'Scan kan användas i paper/test' : 'Paper trading avstängt'} />
+        <SummaryTile label="Paper trading status" value={paperEnabled ? 'På' : 'Av'} note={paperEnabled ? `Öppna: ${paperStatus?.openCount ?? liveTrades?.summary?.open ?? 0}` : 'Endast analys'} tone={paperEnabled ? 'good' : 'neutral'} />
+        <SummaryTile label="Live trading" value="AV" note="actions_allowed=false · can_place_orders=false" tone="danger" />
+        <SummaryTile label="Dagens bästa signal" value={textValue(bestSignal?.strategy_name || bestSignal?.strategyName || bestSignal?.strategy || bestSignal?.signalFamily, 'Ingen ännu')} note={bestSignal?.symbol ? `${bestSignal.symbol} · ${candidateDirection(bestSignal)}` : 'Väntar på kandidat'} />
+        <SummaryTile label="Dagens bästa strategi" value={textValue(bestStrategy?.strategy_name || bestStrategy?.name || bestStrategy?.strategy_id, 'Ingen ännu')} note={bestStrategy?.paper_trades_48h != null ? `${bestStrategy.paper_trades_48h} paper trades` : 'Kräver mer data'} />
+        <SummaryTile label="Dagens riskläge" value={riskLabel} note={status?.safety?.message_sv || 'Säkerhetslager är aktivt'} tone={riskLabel === 'Försiktigt' ? 'warning' : 'neutral'} />
+        <SummaryTile label="AI:s korta rekommendation" value={aiRecommendation} note={impact?.generated_at ? `Senast uppdaterad ${timeSince(impact.generated_at)}` : 'AI-förklaring från senaste läget'} tone="good" wide text />
+      </div>
+
+      <div className="dt-overview-secondary">
+        <div className="dt-overview-block">
+          <div className="dt-overview-block-title">Snabb status</div>
+          <div className="dt-overview-block-text">
+            {status?.safety?.message_sv || 'Systemet kan analysera och paper-trada men aldrig lägga riktiga ordrar.'}
+          </div>
+        </div>
+        <div className="dt-overview-block">
+          <div className="dt-overview-block-title">Senaste 48h</div>
+          <div className="dt-overview-block-text">
+            Paper trades: {summary.total ?? 0} · öppna: {summary.open ?? 0} · win rate: {summary.win_rate != null ? `${Number(summary.win_rate).toFixed(1)}%` : '–'} · total P/L: {fmtPct(summary.total_pl)}
+          </div>
+        </div>
+      </div>
+
+      <DetailsBlock summary="Visa mer om process och pipeline">
+        <CurrentDecisionCard
+          status={status}
+          pipeline={pipeline}
+          liveTrades={liveTrades}
+          runtime={runtime}
+          marketControls={null}
+          learning={learning}
+          paperStatus={paperStatus}
+          refreshing={false}
+          refreshError={null}
+        />
+      </DetailsBlock>
+
+      <DetailsBlock summary="Visa mer om dagens paper trades" defaultOpen={false}>
+        <LivePaperBanner paperStatus={paperStatus} />
+      </DetailsBlock>
+
+      <DetailsBlock summary="Visa mer om rekommendationer" defaultOpen={false}>
+        <RecommendationBar rec={recommendation} />
+      </DetailsBlock>
+    </div>
+  );
+}
+
+function SignalsTab({ pipeline, scanResult, status, candidates }) {
+  const recent = Array.isArray(candidates?.candidates) ? candidates.candidates : Array.isArray(candidates) ? candidates : [];
+  const activeCandidateCount = recent.filter((row) => candidateStatus(row) === 'active').length;
+  const rejectedCount = recent.filter((row) => candidateStatus(row) === 'rejected').length;
+  const paperTradeCount = recent.filter((row) => candidateStatus(row) === 'paper trade').length;
+
+  return (
+    <div className="dt-tab-panel">
+      <div className="dt-tab-topline">
+        <div>
+          <h2 className="dt-tab-title">Signaler</h2>
+          <p className="dt-tab-sub">Kandidater, status och varför signalerna blev aktiva, avvisade eller gick vidare till paper trade.</p>
+        </div>
+        <div className="dt-tab-meta">
+          <span>{activeCandidateCount} aktiva</span>
+          <span>{rejectedCount} avvisade</span>
+          <span>{paperTradeCount} paper trades</span>
+        </div>
+      </div>
+
+      <CurrentDecisionCard
+        status={status}
+        pipeline={pipeline}
+        liveTrades={null}
+        runtime={null}
+        marketControls={null}
+        learning={null}
+        paperStatus={null}
+        refreshing={false}
+        refreshError={null}
+      />
+
+      <div className="dt-panel">
+        <div className="dt-panel-head">
+          <h3 className="dt-panel-title">Signal-tabell</h3>
+          <span className="dt-count-badge">{recent.length} kandidater</span>
+        </div>
+        {!recent.length ? (
+          <PlatformEmptyState title="Inga kandidater ännu" text="Kandidatloggen fylls när scanner hittar nya lägen." />
+        ) : (
+          <div className="dt-table-wrap">
+            <table className="dt-table dt-signal-table">
+              <thead>
+                <tr>
+                  <th>Tid</th>
+                  <th>Symbol</th>
+                  <th>Signal</th>
+                  <th>Long/short</th>
+                  <th>Score/conf.</th>
+                  <th>Entry/exit</th>
+                  <th>Varför</th>
+                  <th>Status</th>
+                </tr>
+              </thead>
+              <tbody>
+                {recent.map((candidate, index) => {
+                  const statusLabel = candidateStatus(candidate);
+                  return (
+                    <tr key={`${candidate.symbol || 'candidate'}-${candidateTime(candidate) || index}`}>
+                      <td>{candidateTime(candidate) ? fmtTradeTime(candidateTime(candidate)) : '–'}</td>
+                      <td><strong>{candidate.symbol || '–'}</strong></td>
+                      <td>{candidateSignal(candidate)}</td>
+                      <td>{candidateDirection(candidate)}</td>
+                      <td>{candidateScore(candidate)}</td>
+                      <td>{candidateEntry(candidate)} · {candidateExit(candidate)}</td>
+                      <td className="dt-signal-reason">{candidateWhy(candidate)}</td>
+                      <td><span className={`dt-status-tag ${statusLabel === 'paper trade' ? 'dt-status-win' : statusLabel === 'rejected' ? 'dt-status-blocked' : statusLabel === 'timeout' ? 'dt-status-timeout' : 'dt-status-open'}`}>{statusLabel}</span></td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+
+      <DetailsBlock summary="Visa mer om pipeline och senaste scan">
+        <PipelineSection pipeline={pipeline} />
+        {scanResult && (
+          <div className={`dt-scan-result ${scanResult.ok ? 'dt-scan-ok' : 'dt-scan-err'}`}>
+            <span>{scanResult.message_sv}</span>
+            {scanResult.candidates?.length > 0 && <span> · {scanResult.candidates.length} kandidater hittades</span>}
+          </div>
+        )}
+      </DetailsBlock>
+    </div>
+  );
+}
+
+function StrategiesTab({ strategies, runtime, liveTrades, paperStatus, cryptoScan, cryptoScanError, onUpdate, onScan }) {
+  return (
+    <div className="dt-tab-panel">
+      <div className="dt-tab-topline">
+        <div>
+          <h2 className="dt-tab-title">Strategier</h2>
+          <p className="dt-tab-sub">Här styrs vilka strategier som kan bli paper-ready. Själva handlingslogiken är fortfarande låst till test/paper.</p>
+        </div>
+      </div>
+      <StrategiesSection
+        strategies={strategies}
+        total={strategies.length}
+        runtime={runtime}
+        liveTrades={liveTrades}
+        paperStatus={paperStatus}
+        cryptoScan={cryptoScan}
+        cryptoScanError={cryptoScanError}
+        onUpdate={onUpdate}
+        onScan={onScan}
+      />
+    </div>
+  );
+}
+
+function PaperTradingTab({ liveTrades, tradeLimit, onTradeLimitChange, refreshing, refreshError, paperStatus, paperSignals, loading }) {
+  const summary = liveTrades?.summary_48h || {};
+  return (
+    <div className="dt-tab-panel">
+      <div className="dt-tab-topline">
+        <div>
+          <h2 className="dt-tab-title">Paper Trading</h2>
+          <p className="dt-tab-sub">Öppna och stängda paper trades, win rate och P/L. Inga riktiga ordrar skickas.</p>
+        </div>
+        <div className="dt-tab-meta">
+          <span>Win rate: {summary.win_rate != null ? `${Number(summary.win_rate).toFixed(1)}%` : '–'}</span>
+          <span>Total P/L: {fmtPct(summary.total_pl)}</span>
+          <span>Öppna: {summary.open ?? paperStatus?.openCount ?? 0}</span>
+        </div>
+      </div>
+      <PaperSignalsSection paperSignals={paperSignals} refreshing={refreshing} refreshError={refreshError} loading={loading} />
+      <DetailsBlock summary="Visa mer om paper trade-historik">
+        <LivePaperBanner paperStatus={paperStatus} />
+        <LiveTradesSection
+          liveTrades={liveTrades}
+          tradeLimit={tradeLimit}
+          onTradeLimitChange={onTradeLimitChange}
+          refreshing={refreshing}
+          refreshError={refreshError}
+        />
+      </DetailsBlock>
+    </div>
+  );
+}
+
+function TestsTab({ status, pipeline, recommendation, impact, autopilotStatus, autopilotConfig, scanResult, onScan }) {
+  const recentRuns = Array.isArray(autopilotStatus?.recent_runs) ? autopilotStatus.recent_runs : [];
+  const latestRun = recentRuns[recentRuns.length - 1] || null;
+  return (
+    <div className="dt-tab-panel">
+      <div className="dt-tab-topline">
+        <div>
+          <h2 className="dt-tab-title">Tester</h2>
+          <p className="dt-tab-sub">Replay, batch och autopilot samlas här. Detta är fortsatt test- och analysläge, aldrig live trading.</p>
+        </div>
+        <div className="dt-tab-meta">
+          <span>Autopilot: {autopilotStatus?.enabled ? 'På' : 'Av'}</span>
+          <span>Mode: {textValue(autopilotConfig?.mode, 'paper/replay/batch-only')}</span>
+        </div>
+      </div>
+
+      <div className="dt-overview-grid">
+        <SummaryTile label="Senaste test" value={latestRun?.summary_sv || latestRun?.message_sv || (status?.latest_scan ? timeSince(status.latest_scan) : 'Ingen ännu')} note="Senaste autopilot- eller scan-händelse" />
+        <SummaryTile label="Nästa rekommenderade test" value={recommendation?.recommendation_sv || impact?.summary_sv || 'Ingen tydlig rekommendation'} note="Bygger på senaste data" tone="good" wide text />
+        <SummaryTile label="Replay tester" value="Visa i LAB" note="Öppna `/lab?tab=replay` för replay" />
+        <SummaryTile label="Batch tester" value="Visa i LAB" note="Öppna `/lab?tab=batch` för batch" />
+      </div>
+
+      <DetailsBlock summary="Visa mer om testflödet">
+        <ProcessCard status={status} pipeline={pipeline} paperStatus={{ openCount: 0, openTrades: [] }} />
+        <PipelineSection pipeline={pipeline} />
+      </DetailsBlock>
+
+      <DetailsBlock summary="Visa mer om autopilot och testresultat">
+        <div className="dt-panel">
+          <div className="dt-panel-head">
+            <h3 className="dt-panel-title">Autopilot</h3>
+            <span className="dt-count-badge">{autopilotStatus?.enabled ? 'Aktiv' : 'Av'}</span>
+          </div>
+          <div className="dt-test-grid">
+            <div className="dt-test-block">
+              <strong>Senaste körning</strong>
+              <span>{latestRun?.summary_sv || latestRun?.message_sv || 'Ingen ännu'}</span>
+            </div>
+            <div className="dt-test-block">
+              <strong>Senaste testresultat</strong>
+              <span>{impact?.summary_sv || 'Ingen ändring analyserad ännu'}</span>
+            </div>
+          </div>
+        </div>
+        <ImpactPanel impact={impact} onScan={onScan} />
+      </DetailsBlock>
+
+      {scanResult && (
+        <div className={`dt-scan-result ${scanResult.ok ? 'dt-scan-ok' : 'dt-scan-err'}`}>
+          <span>{scanResult.message_sv}</span>
+          {scanResult.candidates?.length > 0 && <span> · {scanResult.candidates.length} kandidater hittades</span>}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function LearningTab({ learning }) {
+  const data = learning?.data || null;
+  const s = data?.summary || {};
+  const bestStrategy = s.best_strategy || null;
+  const worstStrategy = s.worst_strategy || null;
+  const bestMarketGroup = s.best_market_group || null;
+  return (
+    <div className="dt-tab-panel">
+      <div className="dt-tab-topline">
+        <div>
+          <h2 className="dt-tab-title">Learning</h2>
+          <p className="dt-tab-sub">Vad systemet lärde sig idag, vilka strategier som fungerade bäst och vad som ska förbättras nästa.</p>
+        </div>
+      </div>
+      <div className="dt-overview-grid">
+        <SummaryTile label="Vad systemet lärde sig idag" value={s.conclusion_sv || 'Ingen tydlig slutsats ännu'} note={s.next_action_sv || 'Vänta på mer data'} tone="good" wide text />
+        <SummaryTile label="Bästa strategier" value={bestStrategy?.label || '–'} note={bestStrategy ? `${bestStrategy.win_rate}% · ${fmtPl(bestStrategy.avg_pl)} · ${bestStrategy.closed} trades` : 'Behöver mer data'} />
+        <SummaryTile label="Sämsta strategier" value={worstStrategy?.label || '–'} note={worstStrategy ? `${worstStrategy.win_rate}% · ${fmtPl(worstStrategy.avg_pl)} · ${worstStrategy.closed} trades` : 'Behöver mer data'} tone="warning" />
+        <SummaryTile label="Market regime" value={data?.summary?.best_market_group?.label || data?.summary?.market_regime || '–'} note={data?.summary?.market_context || 'Senaste läge'} />
+      </div>
+      <LearningEngineSection learning={learning} />
+    </div>
+  );
+}
+
+function SafetyTab({ status, paperStatus, marketControls, runtime, onUpdate }) {
+  const safetyFlags = [
+    ['actions_allowed', status?.actions_allowed],
+    ['can_place_orders', status?.can_place_orders],
+    ['live_trading_enabled', status?.live_trading_enabled],
+  ];
+  const controls = Array.isArray(marketControls?.controls) ? marketControls.controls : [];
+  const blockedActions = [
+    'Riktiga ordrar',
+    'Broker live execution',
+    'Live trading',
+    'Automatisk orderläggning',
+  ];
+  const safetyWarnings = [
+    status?.safety?.message_sv,
+    paperStatus?.conservativeMode ? 'Paper trading kör i försiktigt läge.' : '',
+    runtime?.summary?.runtime_no_entry_rule > 0 ? 'Vissa strategier saknar entry-regel.' : '',
+  ].filter(Boolean);
+
+  return (
+    <div className="dt-tab-panel">
+      <div className="dt-tab-topline">
+        <div>
+          <h2 className="dt-tab-title">Risk &amp; Safety</h2>
+          <p className="dt-tab-sub">All analys sker i test/paper-only. Systemet kan aldrig lägga riktiga ordrar.</p>
+        </div>
+      </div>
+      <div className="dt-overview-grid">
+        {safetyFlags.map(([label, value]) => (
+          <SummaryTile key={label} label={label} value={String(value === undefined ? false : value)} note="Ska vara false" tone="danger" />
+        ))}
+        <SummaryTile label="Broker status" value="Ej aktiv" note="Ingen broker används i live-läge" tone="warning" />
+        <SummaryTile label="Blockerade actions" value={blockedActions.length} note={blockedActions.join(' · ')} />
+        <SummaryTile label="Riskvarningar" value={safetyWarnings.length} note={safetyWarnings.join(' · ') || 'Inga aktuella varningar'} />
+      </div>
+      <div className="dt-panel">
+        <div className="dt-panel-head">
+          <h3 className="dt-panel-title">Safety-banner</h3>
+        </div>
+        <SafetyBanner status={status} />
+      </div>
+      <DetailsBlock summary="Visa mer om marknads- och riskkontroller">
+        <div className="dt-overview-grid">
+          {controls.slice(0, 6).map((control) => (
+            <div key={control.group_id || control.group_name} className="dt-summary-tile">
+              <span className="dt-summary-label">{control.group_name || control.group_id}</span>
+              <strong className="dt-summary-value">{control.connected === false ? 'Frånkopplad' : 'Aktiv'}</strong>
+              <span className="dt-summary-note">
+                Paper {control.enabled_for_paper === false ? 'av' : 'på'} · Scanner {control.enabled_for_scanner === false ? 'av' : 'på'} · Replay {control.enabled_for_replay === false ? 'av' : 'på'}
+              </span>
+              <span className="dt-summary-note">{control.restricted_reason || control.warning_sv || 'Endast paper/test. Riktig handel är låst.'}</span>
+            </div>
+          ))}
+          {controls.length === 0 && (
+            <PlatformEmptyState title="Inga marknadskontroller kunde läsas" text="Daytrading fortsätter i säkert paperläge. Försök uppdatera sidan." />
+          )}
+        </div>
+      </DetailsBlock>
+      <div className="dt-safety-note">
+        Systemet kan analysera och paper-trada men aldrig lägga riktiga ordrar.
+      </div>
+    </div>
+  );
+}
+
 export default function DaytradingPage() {
   const [tradeLimit, setTradeLimit] = useState(200);
-  const { status, strategies, pipeline, liveTrades, recommendation, impact, symbols, runtime, cryptoScan, cryptoScanError, marketControls, learning, paperStatus, loading, refreshing, refreshError, error, refresh } = useDaytradingData(tradeLimit);
+  const { status, strategies, pipeline, liveTrades, recommendation, impact, symbols, runtime, cryptoScan, cryptoScanError, marketControls, learning, paperStatus, paperSignals, autopilotStatus, autopilotConfig, candidates, loading, refreshing, refreshError, error, refresh } = useDaytradingData(tradeLimit);
   const [filters, setFilters] = useState(DEFAULT_FILTERS);
   const [scanning, setScanning] = useState(false);
   const [scanResult, setScanResult] = useState(null);
+  const [activeTab, setActiveTab] = useState('overview');
 
   // Hide floating AI fab on this page — in-pipeline button provides same function
   useEffect(() => {
@@ -2227,14 +2699,6 @@ export default function DaytradingPage() {
     fab.style.display = 'none';
     return () => { fab.style.display = prev; };
   }, []);
-
-  function handleFilterChange(next) {
-    setFilters(next);
-    fetch('/api/daytrading/filters', {
-      method:'POST', headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({market:next.market, symbols:next.symbol?[next.symbol]:[]}),
-    }).catch(()=>{});
-  }
 
   async function handleScan(strategyId) {
     setScanning(true);
@@ -2289,83 +2753,43 @@ export default function DaytradingPage() {
 
   return (
     <div className="dt-page">
-
-      {/* A) Header */}
       <div className="dt-page-head">
         <div>
           <h1 className="dt-page-title">Daytrading Control Center</h1>
-          <p className="dt-page-sub">Operativ sida och source of truth för runtime, paper trading, skipped signals och öppna paper trades. Historik visas separat.</p>
+          <p className="dt-page-sub">Operativ sida för analys, paper trading, replay, batch, learning och safety. Live trading är alltid avstängt.</p>
         </div>
         <button type="button" className="dt-btn dt-btn-sec" onClick={refresh}>Uppdatera</button>
       </div>
 
-      {/* A) Status */}
-      <StatusBar status={status} />
+      <TabStrip activeTab={activeTab} onChange={setActiveTab} />
 
-      {/* Ny: Vad händer just nu */}
-      <CurrentDecisionCard
-        status={status}
-        pipeline={pipeline}
-        liveTrades={liveTrades}
-        runtime={runtime}
-        marketControls={marketControls}
-        learning={learning}
-        paperStatus={paperStatus}
-        refreshing={refreshing}
-        refreshError={refreshError}
-      />
-
-      {/* B) Safety */}
-      <SafetyBanner status={status} />
-      <LivePaperBanner paperStatus={paperStatus} />
-
-      <div className="dt-page-runtime-summary">
-        <div className="dt-panel-head">
-          <h3 className="dt-panel-title">Runtime-sammanfattning</h3>
-          <span className="dt-count-badge">{runtime?.summary?.total_catalog_strategies ?? 0} strategier</span>
-        </div>
-        <RuntimeSummary runtime={runtime} />
-      </div>
-
-      {/* Scan result */}
-      {scanResult && (
-        <div className={`dt-scan-result ${scanResult.ok?'dt-scan-ok':'dt-scan-err'}`}>
-          <span>{scanResult.message_sv}</span>
-          {scanResult.candidates?.length>0 && <span> · {scanResult.candidates.length} kandidater hittades</span>}
-          <button type="button" className="dt-scan-close" onClick={()=>setScanResult(null)}>✕</button>
-        </div>
+      {activeTab === 'overview' && (
+        <OverviewTab
+          status={status}
+          pipeline={pipeline}
+          liveTrades={liveTrades}
+          recommendation={recommendation}
+          impact={impact}
+          runtime={runtime}
+          paperStatus={paperStatus}
+          paperSignals={paperSignals}
+          learning={learning}
+          candidates={candidates}
+        />
       )}
 
-      {/* C) Process just nu */}
-      <ProcessCard status={status} pipeline={pipeline} paperStatus={paperStatus} />
+      {activeTab === 'signals' && (
+        <SignalsTab
+          pipeline={pipeline}
+          scanResult={scanResult}
+          status={status}
+          candidates={candidates}
+        />
+      )}
 
-      {/* Market & risk controls */}
-      <MarketControlsSection marketControls={marketControls} onUpdate={refresh} />
-
-      {/* D) Pipeline — fullbredd, prominent */}
-      <PipelineSection pipeline={pipeline} />
-
-      {/* E) Rekommendation */}
-      <RecommendationBar rec={recommendation} />
-
-      {/* F) Filter bar */}
-      <FilterBar
-        filters={filters}
-        onChange={handleFilterChange}
-        onScan={()=>handleScan()}
-        scanning={scanning}
-        symbols={symbols}
-      />
-
-      {/* G) Strategikontroll — collapsible groups */}
-      {!visibleStrategies.length ? (
-        <div className="dt-panel">
-          <PlatformEmptyState title="Inga strategier matchar filter" text="Ändra filter för att se fler strategier." />
-        </div>
-      ) : (
-        <StrategiesSection
+      {activeTab === 'strategies' && (
+        <StrategiesTab
           strategies={visibleStrategies}
-          total={allStrategies.length}
           runtime={runtime}
           liveTrades={liveTrades}
           paperStatus={paperStatus}
@@ -2376,20 +2800,43 @@ export default function DaytradingPage() {
         />
       )}
 
-      {/* H) Kandidater & paper trades */}
-      <LiveTradesSection
-        liveTrades={liveTrades}
-        tradeLimit={tradeLimit}
-        onTradeLimitChange={setTradeLimit}
-        refreshing={refreshing}
-        refreshError={refreshError}
-      />
+      {activeTab === 'paper' && (
+        <PaperTradingTab
+          liveTrades={liveTrades}
+          tradeLimit={tradeLimit}
+          onTradeLimitChange={setTradeLimit}
+          refreshing={refreshing}
+          refreshError={refreshError}
+          paperStatus={paperStatus}
+          paperSignals={paperSignals}
+          loading={loading}
+        />
+      )}
 
-      {/* I) Learning Engine v1 */}
-      <LearningEngineSection learning={learning} />
+      {activeTab === 'tests' && (
+        <TestsTab
+          status={status}
+          pipeline={pipeline}
+          recommendation={recommendation}
+          impact={impact}
+          autopilotStatus={autopilotStatus}
+          autopilotConfig={autopilotConfig}
+          scanResult={scanResult}
+          onScan={() => handleScan()}
+        />
+      )}
 
-      {/* J) Effekt av senaste ändring */}
-      <ImpactPanel impact={impact} onScan={()=>handleScan()} />
+      {activeTab === 'learning' && <LearningTab learning={learning} />}
+
+      {activeTab === 'safety' && (
+        <SafetyTab
+          status={status}
+          paperStatus={paperStatus}
+          marketControls={marketControls}
+          runtime={runtime}
+          onUpdate={refresh}
+        />
+      )}
 
     </div>
   );

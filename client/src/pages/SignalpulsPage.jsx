@@ -629,13 +629,15 @@ function SignalRow({ rank, signal, score, ls, regimeSummary, coverage }) {
           {regimeBadge && (
             <span className={`ami-row-badge ${regimeBadge.cls}`}>{regimeBadge.label}</span>
           )}
-          {warnings.map(w => (
+          {warnings.slice(0, 2).map(w => (
             <span key={w} className="sp-row-warning">{w}</span>
           ))}
+          {warnings.length > 2 && (
+            <span className="sp-row-warning sp-row-warning-more" title={warnings.slice(2).join(' · ')}>+{warnings.length - 2}</span>
+          )}
           {strategyBadge && (
             <span className={`sp-strategy-badge sp-strategy-${strategyBadge.tone}`}>{strategyBadge.label}</span>
           )}
-          <span className="sp-paper-badge sp-paper-sm">Paper</span>
         </div>
         <div className="sp-row-sub">
           <span className="sp-row-method">{method}</span>
@@ -1222,6 +1224,8 @@ export default function SignalpulsPage() {
 
   const bestSignal = filtered[0] || null;
   const top20 = filtered.slice(0, 20);
+  // Hero-signalen ÄR top20[0] — exkludera den ur listan så samma signal inte visas två gånger.
+  const listSignals = top20.slice(1);
 
   // Tidslinje: vilka är topp ("topp/fokus") resp. bra läge ("watchlist") just nu.
   const topSymbols = useMemo(
@@ -1294,27 +1298,13 @@ export default function SignalpulsPage() {
         </div>
       </div>
 
-      {/* Krypto 24/7-status: visar att crypto lever även när aktiemarknaden är stängd */}
-      <Crypto247Status cryptoResp={meta.crypto} />
-
-      {/* Market Bias Panel */}
-      <MarketBiasPanel
-        regimeSummary={regimeSummary}
-        adaptiveMode={adaptiveMode}
-        onToggleAdaptive={toggleAdaptive}
-        advancedMode={advancedMode}
-      />
-
-      <PrioritySections priority={prioritySummary} timeline={timeline} lastUpdateBySymbol={lastUpdateBySymbol} />
-      <AuditActivityPanel summary={auditSummary} />
-
-      {/* DEL 1: Vad händer just nu */}
+      {/* DEL 1: Vad händer just nu — signalerna ligger nu överst på sidan */}
       <div className="sp-section-label">
         <span>DEL 1</span>
         <span className="sp-section-title">Vad händer JUST NU?</span>
       </div>
 
-      {/* Hero signal */}
+      {/* Hero signal (= toppsignalen, visas inte igen i listan nedan) */}
       {loading ? (
         <div className="sp-loading">
           <div className="sp-loading-dot" />
@@ -1324,15 +1314,10 @@ export default function SignalpulsPage() {
         <HeroSignal signal={bestSignal} score={bestScore} ls={ls} coverage={dataCoverageMap[String(bestSignal?.symbol || '').toUpperCase()]} timeline={timeline} />
       )}
 
-      <QuickInsights regimeSummary={regimeSummary} topSetups={topSetups} poorSetups={poorSetups} />
-      <MarketSnapshot regimeSummary={regimeSummary} signals={sorted} />
-      <QuickWarnings signals={sorted} regimeSummary={regimeSummary} />
-      <QuickActions onFilter={setMarketFilter} topSetups={topSetups} />
-
-      {/* Market filter */}
+      {/* Market filter (styr listan nedan) */}
       <MarketFilterBar filter={marketFilter} onChange={setMarketFilter} />
 
-      {/* Top 20 */}
+      {/* Top 20 — listan startar på #2 eftersom #1 visas som Hero ovan */}
       <div className="sp-top20-header">
         <h2 className="sp-section-h2">
           {marketFilter === 'all' ? 'Top 20 signaler just nu' : `Top 20 — ${MARKET_FILTERS.find(f => f.key === marketFilter)?.label}`}
@@ -1344,10 +1329,10 @@ export default function SignalpulsPage() {
         <PlatformEmptyState title="Inga starka signaler just nu" text="Systemet bevakar marknaden och visar kandidater när styrka, volym och marknadsläge räcker." />
       ) : (
         <div className="sp-signal-list">
-          {top20.map((s, i) => (
+          {listSignals.map((s, i) => (
             <SignalRow
               key={s.symbol + (s.timestamp || i)}
-              rank={i + 1}
+              rank={i + 2}
               signal={s}
               score={s._priorityScore ?? s._pulseScore}
               ls={ls}
@@ -1357,6 +1342,24 @@ export default function SignalpulsPage() {
           ))}
         </div>
       )}
+
+      {/* ── Kontext & panyler (flyttade ned under signalerna) ── */}
+      <Crypto247Status cryptoResp={meta.crypto} />
+
+      {advancedMode && <QuickInsights regimeSummary={regimeSummary} topSetups={topSetups} poorSetups={poorSetups} />}
+      <MarketSnapshot regimeSummary={regimeSummary} signals={sorted} />
+      <QuickWarnings signals={sorted} regimeSummary={regimeSummary} />
+      {advancedMode && <QuickActions onFilter={setMarketFilter} topSetups={topSetups} />}
+
+      <MarketBiasPanel
+        regimeSummary={regimeSummary}
+        adaptiveMode={adaptiveMode}
+        onToggleAdaptive={toggleAdaptive}
+        advancedMode={advancedMode}
+      />
+
+      <PrioritySections priority={prioritySummary} timeline={timeline} lastUpdateBySymbol={lastUpdateBySymbol} />
+      <AuditActivityPanel summary={auditSummary} />
 
       {/* DEL 2: Historisk performance */}
       <div className="sp-divider" />
