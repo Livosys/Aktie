@@ -25,6 +25,7 @@ const ENDPOINTS = [
   { key: 'paperPerformance', url: '/api/paper-trading/performance', label: 'Paper Trading performance' },
   { key: 'runtimeStrategies', url: '/api/daytrading/runtime-strategies', label: 'Daytrading runtime strategies' },
   { key: 'recommendation', url: '/api/daytrading/recommendation', label: 'Daytrading recommendation' },
+  { key: 'eventsRecent', url: '/api/events/recent?n=20', label: 'Recent trading events' },
 ];
 
 const ADVISOR_WINDOWS = [
@@ -303,6 +304,41 @@ function bestText(...segments) {
   return firstText(segments.filter(Boolean), 'Ingen data ännu');
 }
 
+function eventTone(eventType) {
+  const type = String(eventType || '').toLowerCase();
+  if (type === 'signal.detected') return 'blue';
+  if (type === 'strategy.matched') return 'blue';
+  if (type === 'market_gate.allowed') return 'green';
+  if (type === 'market_gate.blocked') return 'red';
+  if (type === 'market_gate.observe_only') return 'yellow';
+  if (type === 'paper_trade.opened') return 'green';
+  if (type === 'paper_trade.closed') return 'gray';
+  if (type === 'paper_trade.skipped') return 'yellow';
+  if (type === 'batch.started') return 'purple';
+  if (type === 'batch.completed') return 'blue';
+  if (type === 'learning.summary_created') return 'purple';
+  return 'gray';
+}
+
+function eventDecisionTone(decision) {
+  const value = String(decision || '').toLowerCase();
+  if (value === 'allowed' || value === 'paper_opened') return 'green';
+  if (value === 'blocked') return 'red';
+  if (value === 'observe_only') return 'yellow';
+  if (value === 'paper_closed') return 'gray';
+  if (value === 'no_trade') return 'gray';
+  return 'gray';
+}
+
+function eventSummary(event) {
+  const pieces = [];
+  if (event.reason) pieces.push(event.reason);
+  if (event.score != null && event.threshold != null) pieces.push(`Score ${event.score}/${event.threshold}`);
+  else if (event.score != null) pieces.push(`Score ${event.score}`);
+  if (event.market) pieces.push(`Market ${event.market}`);
+  return pieces.length ? pieces.join(' · ') : 'Ingen extra information sparad.';
+}
+
 async function fetchJson(url) {
   try {
     const res = await fetch(url, { credentials: 'same-origin' });
@@ -432,6 +468,68 @@ function DecisionCard({ item }) {
         </ul>
       )}
     </article>
+  );
+}
+
+function RecentTradingEvents({ resource }) {
+  const data = unwrap(resource);
+  const state = endpointState(resource);
+  const events = normalizeArray(data?.events).slice(0, 20);
+  const hasEvents = events.length > 0;
+
+  return (
+    <section className="sup-section">
+      <div className="sup-section-head">
+        <div>
+          <h2>Senaste händelser</h2>
+          <p>Detta är en read-only tidslinje. Den påverkar inte tradingbeslut.</p>
+        </div>
+        <div className="sup-advisor-safety">
+          <span>actions_allowed=false</span>
+          <span>can_place_orders=false</span>
+          <span>live_trading_enabled=false</span>
+        </div>
+      </div>
+
+      {!state.missing && state.label === 'Problem' && (
+        <div className="sup-warning">
+          Kunde inte läsa event-loggen just nu. Tidslinjen visar senaste data när backend är tillgänglig.
+        </div>
+      )}
+
+      {hasEvents ? (
+        <div className="sup-event-list">
+          {events.map((event, index) => {
+            const tone = eventTone(event.event_type);
+            const decisionTone = eventDecisionTone(event.decision);
+            return (
+              <article key={event.event_id || `${event.timestamp || 'event'}-${index}`} className={`sup-event-row sup-event-tone-${tone}`}>
+                <div className="sup-event-left">
+                  <div className="sup-event-time">{formatDateTime(event.timestamp)}</div>
+                  <div className="sup-event-symbol">{event.symbol || 'SYSTEM'}</div>
+                  <div className="sup-event-market">{event.market || 'unknown'}</div>
+                </div>
+                <div className="sup-event-right">
+                  <div className="sup-event-topline">
+                    <span className={`badge badge-${tone}`}>{event.event_type}</span>
+                    <span className={`badge badge-${decisionTone}`}>{event.decision || 'no_trade'}</span>
+                    {event.strategy ? <span className="sup-v2-chip">{event.strategy}</span> : null}
+                  </div>
+                  <div className="sup-event-summary">{eventSummary(event)}</div>
+                  <div className="sup-event-meta">
+                    {event.score != null && <span className="sup-v2-chip">Score {event.score}</span>}
+                    {event.threshold != null && <span className="sup-v2-chip">Threshold {event.threshold}</span>}
+                    {event.timeframe ? <span className="sup-v2-chip">{event.timeframe}</span> : null}
+                  </div>
+                </div>
+              </article>
+            );
+          })}
+        </div>
+      ) : (
+        <div className="opt-empty">Inga events ännu. Systemet väntar på nya signaler.</div>
+      )}
+    </section>
   );
 }
 
@@ -1749,6 +1847,8 @@ export default function SupervisorV2Page() {
           </>
         )}
       </section>
+
+      <RecentTradingEvents resource={resources.eventsRecent} />
 
       <OptimizationCenter optimization={optimization} />
 
