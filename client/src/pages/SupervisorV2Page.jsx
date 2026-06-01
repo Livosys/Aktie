@@ -26,6 +26,7 @@ const ENDPOINTS = [
   { key: 'runtimeStrategies', url: '/api/daytrading/runtime-strategies', label: 'Daytrading runtime strategies' },
   { key: 'recommendation', url: '/api/daytrading/recommendation', label: 'Daytrading recommendation' },
   { key: 'eventsRecent', url: '/api/events/recent?n=20', label: 'Recent trading events' },
+  { key: 'eventsStatus', url: '/api/events/status', label: 'Event system status' },
 ];
 
 const ADVISOR_WINDOWS = [
@@ -604,6 +605,99 @@ function RecentTradingEvents({ resource }) {
       ) : (
         <div className="opt-empty">Inga events ännu. Systemet väntar på nya signaler.</div>
       )}
+    </section>
+  );
+}
+
+function EventSystemStatus({ resource }) {
+  const data = unwrap(resource);
+  const state = endpointState(resource);
+  const jsonlEnabled = data?.jsonl_enabled !== false;
+  const kafkaEnabled = data?.kafka_enabled === true;
+  const kafkaConfigured = data?.kafka_configured === true;
+  const kafkaError = textValue(data?.kafka_last_error, '');
+  const kafkaLastPublishAt = data?.kafka_last_publish_at || null;
+  const kafkaLastAttemptAt = data?.kafka_last_attempt_at || null;
+  const safetyItems = [
+    ['actions_allowed', data?.actions_allowed],
+    ['can_place_orders', data?.can_place_orders],
+    ['live_trading_enabled', data?.live_trading_enabled],
+  ];
+
+  let statusMessage = 'Kafka är förberett men avstängt. Events sparas lokalt i JSONL.';
+  if (kafkaEnabled && kafkaError) {
+    statusMessage = 'Kafka har fel, men tradingflödet påverkas inte.';
+  } else if (kafkaEnabled) {
+    statusMessage = 'Kafka är aktivt som extra transportlager. JSONL är fortfarande primär.';
+  }
+
+  return (
+    <section className="sup-section">
+      <div className="sup-section-head">
+        <div>
+          <h2>Event system status</h2>
+          <p>Read-only översikt av JSONL-loggen och den optionala Kafka-adaptern.</p>
+        </div>
+        <div className="sup-advisor-safety">
+          <span>actions_allowed=false</span>
+          <span>can_place_orders=false</span>
+          <span>live_trading_enabled=false</span>
+        </div>
+      </div>
+
+      {!state.missing && state.label === 'Problem' && (
+        <div className="sup-warning">
+          Kunde inte läsa eventsystemets status just nu. Sidan visar senaste kända läge när backend är tillgänglig.
+        </div>
+      )}
+
+      <div className="sup-v2-report-lead">
+        <strong>Event system status:</strong> {statusMessage}
+      </div>
+
+      <div className="sup-grid sup-grid-2">
+        <article className={`sup-block ${jsonlEnabled ? 'sup-block-ok' : 'sup-block-neutral'}`}>
+          <span className="sup-block-title">JSONL-logg</span>
+          <strong className="sup-block-value">{jsonlEnabled ? 'aktiv' : 'inaktiv'}</strong>
+          <span className="sup-block-note">Primär lagring i data/events/trading-events.jsonl.</span>
+        </article>
+
+        <article className={`sup-block ${kafkaEnabled && kafkaError ? 'sup-block-danger' : kafkaEnabled ? 'sup-block-ok' : 'sup-block-neutral'}`}>
+          <span className="sup-block-title">Kafka</span>
+          <strong className="sup-block-value">{kafkaEnabled ? 'på' : 'av'}</strong>
+          <span className="sup-block-note">{statusMessage}</span>
+        </article>
+
+        <article className={`sup-block ${kafkaConfigured ? 'sup-block-ok' : 'sup-block-neutral'}`}>
+          <span className="sup-block-title">Kafka konfigurerad</span>
+          <strong className="sup-block-value">{kafkaConfigured ? 'ja' : 'nej'}</strong>
+          <span className="sup-block-note">
+            Brokers: {Array.isArray(data?.kafka_brokers) && data.kafka_brokers.length ? data.kafka_brokers.join(', ') : 'ej konfigurerade'}.
+          </span>
+        </article>
+
+        <article className="sup-block sup-block-neutral">
+          <span className="sup-block-title">Senaste Kafka publish</span>
+          <strong className="sup-block-value">{kafkaLastPublishAt ? formatDateTime(kafkaLastPublishAt) : 'Ingen publicering ännu'}</strong>
+          <span className="sup-block-note">
+            {kafkaLastAttemptAt ? `Senaste försök: ${formatDateTime(kafkaLastAttemptAt)}` : 'Inget publish-försök ännu.'}
+          </span>
+        </article>
+
+        <article className={`sup-block ${kafkaError ? 'sup-block-danger' : 'sup-block-neutral'}`}>
+          <span className="sup-block-title">Senaste Kafka-fel</span>
+          <strong className="sup-block-value">{kafkaError || 'Inga fel'}</strong>
+          <span className="sup-block-note">{kafkaError ? 'Kafka-adaptern rapporterar fel, men tradingflödet fortsätter.' : 'Inga aktuella Kafka-fel.'}</span>
+        </article>
+
+        <article className="sup-block sup-block-ok">
+          <span className="sup-block-title">Safety</span>
+          <strong className="sup-block-value">låst</strong>
+          <span className="sup-block-note">
+            {safetyItems.map(([key, value]) => `${key}=${String(value)}`).join(' · ')}
+          </span>
+        </article>
+      </div>
     </section>
   );
 }
@@ -2014,6 +2108,7 @@ export default function SupervisorV2Page() {
 
       <SignalStopSummary resource={resources.eventsRecent} />
       <RecentTradingEvents resource={resources.eventsRecent} />
+      <EventSystemStatus resource={resources.eventsStatus} />
 
       <OptimizationCenter optimization={optimization} />
 
