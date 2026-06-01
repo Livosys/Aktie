@@ -339,6 +339,81 @@ function eventSummary(event) {
   return pieces.length ? pieces.join(' · ') : 'Ingen extra information sparad.';
 }
 
+function commonEntry(rows, key) {
+  const counts = new Map();
+  for (const row of normalizeArray(rows)) {
+    const value = textValue(row?.[key], '').trim();
+    if (!value) continue;
+    counts.set(value, (counts.get(value) || 0) + 1);
+  }
+  return [...counts.entries()]
+    .map(([value, count]) => ({ value, count }))
+    .sort((a, b) => b.count - a.count || a.value.localeCompare(b.value, 'sv'))[0] || null;
+}
+
+function summarizeStopReason(event) {
+  const reason = textValue(event?.reason, '').trim();
+  if (reason) return reason;
+  const metaReason = textValue(event?.metadata?.reason_sv || event?.metadata?.reason || event?.metadata?.exit_reason_code || event?.metadata?.exit_source, '').trim();
+  if (metaReason) return metaReason;
+  const type = String(event?.event_type || '').toLowerCase();
+  if (type === 'market_gate.blocked') return 'Market Gate blockerade signalen';
+  if (type === 'market_gate.observe_only') return 'Market Gate satte observe_only';
+  if (type === 'paper_trade.skipped') return 'Paper trade skippades';
+  return 'Ingen tydlig stopporsak sparad';
+}
+
+function signalStopSummary(eventsResource) {
+  const data = unwrap(eventsResource);
+  const events = normalizeArray(data?.events);
+  const counts = events.reduce((acc, event) => {
+    const type = String(event?.event_type || '').toLowerCase();
+    if (!type) return acc;
+    acc[type] = (acc[type] || 0) + 1;
+    return acc;
+  }, {});
+  const sortedEvents = [...events].sort((a, b) => String(b.timestamp || '').localeCompare(String(a.timestamp || '')));
+  const lastBlocked = sortedEvents.find((event) => String(event?.event_type || '').toLowerCase() === 'market_gate.blocked') || null;
+  const topReason = commonEntry(events, 'reason') || commonEntry(events.map((event) => ({ reason: summarizeStopReason(event) })), 'reason');
+  const topSymbol = commonEntry(events, 'symbol');
+  const topStrategy = commonEntry(events, 'strategy');
+  const detected = counts['signal.detected'] || 0;
+  const matched = counts['strategy.matched'] || 0;
+  const allowed = counts['market_gate.allowed'] || 0;
+  const blocked = counts['market_gate.blocked'] || 0;
+  const observeOnly = counts['market_gate.observe_only'] || 0;
+  const opened = counts['paper_trade.opened'] || 0;
+  const skipped = counts['paper_trade.skipped'] || 0;
+  const totalRelevant = detected + matched + allowed + blocked + observeOnly + opened + skipped;
+  const strongestStop = blocked > 0
+    ? 'Systemet hittar signaler, men flest stoppas i Market Gate på grund av blockerande regler.'
+    : observeOnly > 0 || skipped > 0
+      ? 'Systemet hittar signaler, men många hamnar i observe_only eller skippas innan paper trade.'
+      : opened > 0
+        ? 'Systemet hittar signaler och flera leder till paper trades.'
+        : 'Systemet samlar signaler men har ännu inte visat tydliga stoppmönster.';
+
+  return {
+    hasEvents: events.length > 0,
+    totalRelevant,
+    detected,
+    matched,
+    allowed,
+    blocked,
+    observeOnly,
+    opened,
+    skipped,
+    topReason: topReason?.value || 'Ingen tydlig stopporsak sparad',
+    topReasonCount: topReason?.count || 0,
+    topSymbol: topSymbol?.value || 'Ingen data ännu',
+    topSymbolCount: topSymbol?.count || 0,
+    topStrategy: topStrategy?.value || 'Ingen data ännu',
+    topStrategyCount: topStrategy?.count || 0,
+    latestBlocked: lastBlocked,
+    conclusion: strongestStop,
+  };
+}
+
 async function fetchJson(url) {
   try {
     const res = await fetch(url, { credentials: 'same-origin' });
@@ -528,6 +603,95 @@ function RecentTradingEvents({ resource }) {
         </div>
       ) : (
         <div className="opt-empty">Inga events ännu. Systemet väntar på nya signaler.</div>
+      )}
+    </section>
+  );
+}
+
+function SignalStopSummary({ resource }) {
+  const summary = signalStopSummary(resource);
+  const latestBlocked = summary.latestBlocked;
+
+  return (
+    <section className="sup-section">
+      <div className="sup-section-head">
+        <div>
+          <h2>Var stoppades signalerna?</h2>
+          <p>Read-only sammanfattning av de senaste 100 eventen från event-loggen.</p>
+        </div>
+        <div className="sup-advisor-safety">
+          <span>actions_allowed=false</span>
+          <span>can_place_orders=false</span>
+          <span>live_trading_enabled=false</span>
+        </div>
+      </div>
+
+      {!summary.hasEvents ? (
+        <div className="opt-empty">Inga events ännu. Systemet väntar på nya signaler.</div>
+      ) : (
+        <>
+          <div className="sup-pill-grid">
+            <div className="sup-pill sup-pill-missing">
+              <span>signal.detected</span>
+              <strong>{summary.detected}</strong>
+            </div>
+            <div className="sup-pill sup-pill-missing">
+              <span>strategy.matched</span>
+              <strong>{summary.matched}</strong>
+            </div>
+            <div className="sup-pill sup-pill-good">
+              <span>market_gate.allowed</span>
+              <strong>{summary.allowed}</strong>
+            </div>
+            <div className="sup-pill sup-pill-bad">
+              <span>market_gate.blocked</span>
+              <strong>{summary.blocked}</strong>
+            </div>
+            <div className="sup-pill sup-pill-missing">
+              <span>market_gate.observe_only</span>
+              <strong>{summary.observeOnly}</strong>
+            </div>
+            <div className="sup-pill sup-pill-good">
+              <span>paper_trade.opened</span>
+              <strong>{summary.opened}</strong>
+            </div>
+            <div className="sup-pill sup-pill-missing">
+              <span>paper_trade.skipped</span>
+              <strong>{summary.skipped}</strong>
+            </div>
+          </div>
+
+          <div className="sup-grid sup-grid-2">
+            <article className="sup-block sup-block-neutral">
+              <span className="sup-block-title">Vanligaste stopporsak</span>
+              <strong className="sup-block-value">{summary.topReason}</strong>
+              <span className="sup-block-note">{summary.topReasonCount ? `${summary.topReasonCount} händelser` : 'Ingen tydlig stopporsak ännu.'}</span>
+            </article>
+            <article className="sup-block sup-block-neutral">
+              <span className="sup-block-title">Vanligaste symbol</span>
+              <strong className="sup-block-value">{summary.topSymbol}</strong>
+              <span className="sup-block-note">{summary.topSymbolCount ? `${summary.topSymbolCount} händelser` : 'Ingen tydlig symbol ännu.'}</span>
+            </article>
+            <article className="sup-block sup-block-neutral">
+              <span className="sup-block-title">Vanligaste strategi</span>
+              <strong className="sup-block-value">{summary.topStrategy}</strong>
+              <span className="sup-block-note">{summary.topStrategyCount ? `${summary.topStrategyCount} händelser` : 'Ingen tydlig strategi ännu.'}</span>
+            </article>
+            <article className="sup-block sup-block-neutral">
+              <span className="sup-block-title">Senaste blockerade signal</span>
+              <strong className="sup-block-value">{latestBlocked?.symbol || 'Ingen blockering ännu'}</strong>
+              <span className="sup-block-note">
+                {latestBlocked
+                  ? `${formatDateTime(latestBlocked.timestamp)} · ${summarizeStopReason(latestBlocked)}`
+                  : 'Systemet har inte blockerat någon signal ännu.'}
+              </span>
+            </article>
+          </div>
+
+          <div className="sup-v2-report-lead" style={{ marginTop: 12, marginBottom: 0 }}>
+            <strong>Slutsats:</strong> {summary.conclusion}
+          </div>
+        </>
       )}
     </section>
   );
@@ -1848,6 +2012,7 @@ export default function SupervisorV2Page() {
         )}
       </section>
 
+      <SignalStopSummary resource={resources.eventsRecent} />
       <RecentTradingEvents resource={resources.eventsRecent} />
 
       <OptimizationCenter optimization={optimization} />
