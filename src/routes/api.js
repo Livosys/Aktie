@@ -501,6 +501,7 @@ router.post('/ai/ask', async (req, res) => {
     const question = String(req.body?.question || '').trim();
     const page = String(req.body?.page || 'live').trim();
     const symbol = req.body?.symbol ? String(req.body.symbol).trim().toUpperCase() : null;
+    const requestContext = req.body?.context;
 
     if (!question) {
       return res.status(400).json({ ok: false, error: 'question is required' });
@@ -512,7 +513,10 @@ router.post('/ai/ask', async (req, res) => {
       return res.status(503).json({ ok: false, error: 'AI is not configured' });
     }
 
-    const context = buildAiContext({ page, symbol });
+    const baseContext = buildAiContext({ page, symbol });
+    const context = requestContext && typeof requestContext === 'object'
+      ? { ...baseContext, ...requestContext }
+      : baseContext;
     const answer = await askAi({ question, page, symbol, context });
 
     res.json({
