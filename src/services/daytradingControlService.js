@@ -105,6 +105,193 @@ function isWithinHours(iso, hours) {
   return Number.isFinite(time) && Date.now() - time <= hours * 60 * 60 * 1000;
 }
 
+function toIsoIfValid(value) {
+  if (!value) return null;
+  const time = new Date(value).getTime();
+  return Number.isFinite(time) ? new Date(time).toISOString() : null;
+}
+
+function minutesSince(iso, referenceMs = Date.now()) {
+  if (!iso) return null;
+  const time = new Date(iso).getTime();
+  if (!Number.isFinite(time)) return null;
+  return Math.max(0, Math.round((referenceMs - time) / 60000));
+}
+
+function paperSignalTimeOf(row = {}) {
+  return toIsoIfValid(
+    row.detected_at ||
+    row.evaluated_at ||
+    row.ts ||
+    row.timestamp ||
+    row.created_at ||
+    row.opened_at ||
+    row.lastUpdate ||
+    null,
+  );
+}
+
+function paperTradeTimeOf(row = {}) {
+  return toIsoIfValid(
+    row.opened_at ||
+    row.entryTime ||
+    row.timestamp ||
+    row.createdAt ||
+    row.created_at ||
+    row.exitTime ||
+    row.closed_at ||
+    null,
+  );
+}
+
+function sortNewestFirstByTime(a, b) {
+  const aTime = new Date(a || 0).getTime() || 0;
+  const bTime = new Date(b || 0).getTime() || 0;
+  return bTime - aTime;
+}
+
+function isoDateOnly(value) {
+  const iso = toIsoIfValid(value);
+  return iso ? iso.slice(0, 10) : null;
+}
+
+function tradeTimestampOf(trade = {}) {
+  return toIsoIfValid(
+    trade.closed_at ||
+    trade.exitTime ||
+    trade.exit_time ||
+    trade.entryTime ||
+    trade.opened_at ||
+    trade.createdAt ||
+    trade.timestamp ||
+    trade.last_update_at ||
+    null,
+  );
+}
+
+function tradeOpenTimestampOf(trade = {}) {
+  return toIsoIfValid(
+    trade.opened_at ||
+    trade.entryTime ||
+    trade.createdAt ||
+    trade.timestamp ||
+    null,
+  );
+}
+
+function tradeExitTimestampOf(trade = {}) {
+  return toIsoIfValid(
+    trade.closed_at ||
+    trade.exitTime ||
+    trade.exit_time ||
+    trade.last_update_at ||
+    null,
+  );
+}
+
+function tradeSideLabel(trade = {}) {
+  const raw = String(trade.direction || trade.nextMoveBias || trade.side || trade.type || '').toUpperCase();
+  if (raw.includes('DOWN') || raw.includes('SHORT') || raw.includes('SELL')) return 'Short';
+  if (raw.includes('UP') || raw.includes('LONG') || raw.includes('BUY')) return 'Long';
+  return '–';
+}
+
+function tradeStatusLabel(trade = {}) {
+  const result = String(trade.result || '').toUpperCase();
+  const exitReason = String(trade.exitReason || trade.exit_reason || trade.exit_reason_code || trade.exitReasonCode || '').toUpperCase();
+  if (result === 'OPEN') return 'Öppen';
+  if (result === 'TIMEOUT') return 'Timeout';
+  if (exitReason.includes('STOP')) return 'SL';
+  if (exitReason.includes('TARGET') || exitReason.includes('TP')) return 'TP';
+  return 'Stängd';
+}
+
+function tradeSourceLabel(trade = {}) {
+  const source = String(trade.source || '').toLowerCase();
+  if (source === 'open_trade') return 'Öppen';
+  if (source === 'recent_closed') return 'Stängd idag';
+  if (source === 'history') return 'Historik';
+  if (source === 'latest_scan') return 'Aktuell';
+  return '–';
+}
+
+function strategyMetadataOf(row = {}) {
+  const sourceStrategyId = row.sourceStrategyId || null;
+  const resolvedStrategyId = row.resolvedStrategyId || row.strategyId || row.strategy_id || sourceStrategyId || null;
+  return {
+    sourceStrategyId,
+    sourceStrategyName: row.sourceStrategyName || null,
+    resolvedStrategyId,
+    resolvedStrategyName: row.resolvedStrategyName || row.strategyName || row.strategy_name || null,
+    mappingSource: row.mappingSource || (sourceStrategyId ? 'explicit' : 'unknown'),
+  };
+}
+
+function tradeAgeMinutesOf(trade = {}, nowMs = Date.now()) {
+  const ts = trade.openedAt || trade.opened_at || trade.entryTime || trade.createdAt || trade.tradeTimestamp || trade.time || null;
+  if (!ts) return null;
+  const time = new Date(ts).getTime();
+  if (!Number.isFinite(time)) return null;
+  return Math.max(0, Math.round((nowMs - time) / 60000));
+}
+
+function tradePnlKr(trade = {}) {
+  const riskSek = Number(trade.riskPositionSizeSek ?? trade.position_size_sek ?? trade.riskPositionSize ?? trade.positionSizeSek ?? null);
+  const pnlPct = Number(trade.pnlPct ?? trade.unrealizedPct ?? trade.pnl ?? null);
+  if (!Number.isFinite(riskSek) || !Number.isFinite(pnlPct)) return null;
+  return Math.round((riskSek * pnlPct / 100) * 100) / 100;
+}
+
+function normalizeStrategyKey(value) {
+  return String(value || '').trim().toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '');
+}
+
+function buildStrategyIndex(rows = []) {
+  const byId = new Map();
+  const byName = new Map();
+  for (const row of rows) {
+    if (row?.id) byId.set(String(row.id), row);
+    if (row?.name) byName.set(normalizeStrategyKey(row.name), row);
+    if (row?.strategy_name) byName.set(normalizeStrategyKey(row.strategy_name), row);
+  }
+  return { byId, byName };
+}
+
+function resolveStrategyRow(input = {}, index = {}, options = {}) {
+  const allowInference = options.allowInference !== false;
+  const directId = input.strategy_id || input.strategyId || input.setupId || null;
+  if (directId && index.byId?.has(String(directId))) return index.byId.get(String(directId));
+  const directName = input.strategy_name || input.strategyName || input.strategy || null;
+  if (directName && index.byName?.has(normalizeStrategyKey(directName))) return index.byName.get(normalizeStrategyKey(directName));
+  if (!allowInference) return null;
+  const inferred = strategyRuntimeConnector.inferStrategyForSignal(input);
+  if (inferred?.strategy_id && index.byId?.has(String(inferred.strategy_id))) return index.byId.get(String(inferred.strategy_id));
+  return inferred?.strategy_id ? { id: inferred.strategy_id, name: inferred.strategy_name || inferred.strategy_id } : null;
+}
+
+function strategyDiagnosticLabel(strategy = {}) {
+  return strategy.name || strategy.strategy_name || strategy.id || '–';
+}
+
+function strategyHasEntryRule(strategy = {}, runtime = {}) {
+  if (runtime?.entry_rule_implemented === true) return true;
+  return Array.isArray(strategy.signal_rules) && strategy.signal_rules.length > 0;
+}
+
+function strategyHasExitRule(strategy = {}) {
+  return strategy.default_stop_loss_pct != null || strategy.default_stop_loss_r != null || strategy.default_take_profit_r != null || strategy.default_timeout_min != null || strategy.default_holding_time_min != null;
+}
+
+function countBy(arr = [], keyFn) {
+  const map = new Map();
+  for (const item of arr) {
+    const key = keyFn(item);
+    if (!key) continue;
+    map.set(key, (map.get(key) || 0) + 1);
+  }
+  return map;
+}
+
 function getPaperTradeSummary48h() {
   const rows = readJsonl(PAPER_TRADES_FILE, []);
   const recent = rows.filter((row) => isWithinHours(paperTimeOf(row), 48));
@@ -927,12 +1114,13 @@ function buildPaperSignalBlocker(row = {}, runtime = {}, config = {}) {
 function matchPaperTradeBySignal(row = {}, trades = []) {
   const signalId = row.signalId || row.signal_id || null;
   const symbol = normalizeSymbol(row.symbol);
-  const strategyId = row.strategy_id || row.strategyId || null;
+  const strategyId = row.resolvedStrategyId || row.sourceStrategyId || row.strategy_id || row.strategyId || null;
   const raw = String(row.signalSubtype || row.signal_subtype || row.signalFamily || row.signal || '').toUpperCase();
   return trades.find((trade) => {
     if (signalId && (trade.signalId || trade.signal_id) === signalId) return true;
     if (normalizeSymbol(trade.symbol) !== symbol) return false;
-    if (strategyId && String(trade.strategy_id || trade.strategyId || '').toLowerCase() !== String(strategyId).toLowerCase()) return false;
+    const tradeStrategyId = trade.resolvedStrategyId || trade.sourceStrategyId || trade.strategy_id || trade.strategyId || null;
+    if (strategyId && String(tradeStrategyId || '').toLowerCase() !== String(strategyId).toLowerCase()) return false;
     if (!raw) return true;
     const tradeRaw = String(trade.signalSubtype || trade.signal_subtype || trade.raw_strategy || trade.signalFamily || '').toUpperCase();
     return !tradeRaw || tradeRaw === raw;
@@ -941,6 +1129,7 @@ function matchPaperTradeBySignal(row = {}, trades = []) {
 
 function formatPaperTrade(trade = {}) {
   const result = String(trade.result || '').toUpperCase();
+  const meta = strategyMetadataOf(trade);
   const status = result === 'OPEN'
     ? 'Öppen paper trade'
     : result === 'TIMEOUT'
@@ -950,7 +1139,7 @@ function formatPaperTrade(trade = {}) {
     symbol: trade.symbol || '–',
     market: trade.marketType || trade.market || marketForSymbol(trade.symbol),
     side: signalSide(trade),
-    strategy: trade.strategy_name || trade.strategy || trade.raw_strategy || 'Paper-strategi',
+    strategy: trade.resolvedStrategyName || trade.strategy_name || trade.strategyName || trade.strategy || trade.raw_strategy || 'Paper-strategi',
     score: toFiniteNumber(trade.confidenceScore ?? trade.tradeScore ?? trade.signalScore ?? trade.priorityScore ?? null),
     confidence: toFiniteNumber(trade.confidenceScore ?? trade.baseConfidenceScore ?? null),
     entry: trade.entryPrice ?? trade.entry ?? null,
@@ -966,10 +1155,17 @@ function formatPaperTrade(trade = {}) {
     pnl: trade.pnlPct ?? trade.unrealizedPct ?? null,
     result,
     tradeId: trade.tradeId || trade.trade_id || trade.id || null,
+    sourceStrategyId: meta.sourceStrategyId,
+    sourceStrategyName: meta.sourceStrategyName,
+    resolvedStrategyId: meta.resolvedStrategyId,
+    resolvedStrategyName: meta.resolvedStrategyName,
+    mappingSource: meta.mappingSource,
+    strategyId: meta.resolvedStrategyId,
   };
 }
 
 function formatPaperSignalRow(row = {}, runtime = {}, paperTrade = null, blocker = null) {
+  const meta = strategyMetadataOf(row);
   const status = normalizePaperSignalStatus(row, runtime, paperTrade, blocker);
   const score = toFiniteNumber(row.tradeScore ?? row.signalScore ?? row.priorityScore ?? row.score ?? row.daytradeScore ?? null);
   const confidence = toFiniteNumber(row.confidenceScore ?? row.baseConfidenceScore ?? row.confidence ?? null);
@@ -994,7 +1190,8 @@ function formatPaperSignalRow(row = {}, runtime = {}, paperTrade = null, blocker
     symbol: row.symbol || '–',
     market: signalMarket(row),
     side: signalSide(row),
-    strategy: row.strategy_name || row.strategyName || row.strategyLabel || row.strategy_id || row.strategyId || row.setupId || 'Paper-strategi',
+    strategy: row.resolvedStrategyName || row.sourceStrategyName || row.strategy_name || row.strategyName || row.strategyLabel || row.strategy_id || row.strategyId || row.setupId || 'Paper-strategi',
+    strategyId: row.resolvedStrategyId || row.strategyId || row.strategy_id || row.setupId || null,
     score,
     confidence,
     entry,
@@ -1011,73 +1208,125 @@ function formatPaperSignalRow(row = {}, runtime = {}, paperTrade = null, blocker
     openAt: paperTrade?.opened_at || paperTrade?.entryTime || null,
     closeAt: paperTrade?.closed_at || paperTrade?.exitTime || null,
     pnl: paperTrade?.pnlPct ?? paperTrade?.unrealizedPct ?? null,
+    sourceStrategyId: meta.sourceStrategyId,
+    sourceStrategyName: meta.sourceStrategyName,
+    resolvedStrategyId: meta.resolvedStrategyId,
+    resolvedStrategyName: meta.resolvedStrategyName,
+    mappingSource: meta.mappingSource,
   };
 }
 
 function getLiveTrades(options = {}) {
   const limit = normalizeTradeLimit(options.limit);
-  const trades = paperTrading.getTrades().trades || [];
-  const rows = trades.slice(0, limit).map((trade) => {
-    const enriched = strategyRuntimeConnector.enrichPaperTradeWithStrategy(trade);
-    const market = enriched.marketType || enriched.market || marketForSymbol(enriched.symbol);
-    const status = trade.result === 'OPEN'
-      ? 'Pågående'
-      : trade.result === 'WIN'
-        ? 'Stängd vinst'
-        : trade.result === 'LOSS'
-          ? 'Stängd förlust'
-          : trade.result === 'TIMEOUT'
-            ? 'Timeout'
-            : 'Paper trade öppnad';
-    return {
-      time: enriched.opened_at || enriched.entryTime || enriched.timestamp || null,
-      symbol: enriched.symbol,
-      market,
-      strategy: enriched.strategy || enriched.raw_strategy || enriched.signalSubtype || enriched.signalFamily || 'Paper-strategi',
-      raw_signal: enriched.raw_strategy || enriched.signal_subtype || enriched.signalSubtype || '–',
-      raw_strategy: enriched.raw_strategy || enriched.signal_subtype || enriched.signalSubtype || null,
-      signal_subtype: enriched.signal_subtype || enriched.signalSubtype || null,
-      strategy_id: enriched.strategy_id || null,
-      strategy_name: enriched.strategy_name || null,
-      strategy_family: enriched.strategy_family || null,
-      catalog_strategy: enriched.strategy_name || 'Ej kopplad',
-      catalog_mapping_confidence: enriched.mapping_confidence || 'low',
-      catalog_mapping_note: enriched.runtime_comment_sv || null,
-      runtime_status: enriched.runtime_status || 'not_connected',
-      runtime_label: enriched.runtime_label || null,
-      direction: enriched.direction || enriched.type || '–',
-      entry: enriched.entryPrice ?? enriched.entry ?? null,
-      exit: enriched.exitPrice ?? enriched.exit ?? null,
-      current_price: enriched.currentPrice ?? enriched.exitPrice ?? null,
-      stop_loss: enriched.stopPct ?? enriched.stop_loss ?? null,
-      take_profit: enriched.targetPct ?? enriched.take_profit ?? null,
-      pnl: enriched.pnlPct ?? enriched.unrealizedPct ?? null,
-      result: enriched.result || null,
-      status,
-      confidence: enriched.confidenceScore ?? enriched.baseConfidenceScore ?? null,
-      risk_reason: firstText(enriched.riskBlockReasons, enriched.riskWarnings, enriched.riskEvaluation?.block_reasons, enriched.riskEvaluation?.warnings),
-      block_reason: firstText(enriched.safetyBlockReasons, enriched.executionSafety?.paper_block_reasons, enriched.executionSafety?.block_reasons, enriched.observeOnlyReasonSv),
-      exit_reason: enriched.exitReason || enriched.exitReasonCode || null,
-      duration: enriched.duration_label || null,
-      reason: enriched.reasonSv || enriched.exitReason || enriched.signal || enriched.entryReasonSv || 'Paper/test',
-      trade_id: enriched.tradeId || enriched.trade_id || enriched.id || '',
-      ...SAFETY,
-    };
-  });
+  const allTrades = paperTrading.getTrades().trades || [];
+  const today = new Date().toISOString().slice(0, 10);
+  const nowMs = Date.now();
+  const rows = allTrades
+    .map((trade) => {
+      const enriched = strategyRuntimeConnector.enrichPaperTradeWithStrategy(trade);
+      const market = enriched.marketType || enriched.market || marketForSymbol(enriched.symbol);
+      const time = tradeTimestampOf(enriched);
+      const openTime = tradeOpenTimestampOf(enriched);
+      const exitTime = tradeExitTimestampOf(enriched);
+      const result = String(enriched.result || '').toUpperCase();
+      const status = tradeStatusLabel(enriched);
+      const currentPrice = result === 'OPEN'
+        ? (enriched.currentPrice ?? enriched.exitPrice ?? null)
+        : (enriched.exitPrice ?? enriched.currentPrice ?? null);
+      const pnlPct = enriched.pnlPct ?? enriched.unrealizedPct ?? null;
+      const pnlKr = tradePnlKr(enriched);
+      const source = result === 'OPEN'
+        ? 'open_trade'
+        : isoDateOnly(exitTime) === today
+          ? 'recent_closed'
+          : 'history';
+      return {
+        time: openTime || time || null,
+        symbol: enriched.symbol,
+        market,
+        strategy: enriched.strategy || enriched.raw_strategy || enriched.signalSubtype || enriched.signalFamily || 'Paper-strategi',
+        raw_signal: enriched.raw_strategy || enriched.signal_subtype || enriched.signalSubtype || '–',
+        raw_strategy: enriched.raw_strategy || enriched.signal_subtype || enriched.signalSubtype || null,
+        signal_subtype: enriched.signal_subtype || enriched.signalSubtype || null,
+        strategy_id: enriched.strategy_id || null,
+        strategy_name: enriched.strategy_name || null,
+        strategy_family: enriched.strategy_family || null,
+        catalog_strategy: enriched.strategy_name || 'Ej kopplad',
+        catalog_mapping_confidence: enriched.mapping_confidence || 'low',
+        catalog_mapping_note: enriched.runtime_comment_sv || null,
+        runtime_status: enriched.runtime_status || 'not_connected',
+        runtime_label: enriched.runtime_label || null,
+        direction: tradeSideLabel(enriched),
+        entry: enriched.entryPrice ?? enriched.entry ?? null,
+        exit: currentPrice,
+        current_price: currentPrice,
+        stop_loss: enriched.stopPct ?? enriched.stop_loss ?? null,
+        take_profit: enriched.targetPct ?? enriched.take_profit ?? null,
+        pnl: pnlPct,
+        pnlKr,
+        result,
+        status,
+        confidence: enriched.confidenceScore ?? enriched.baseConfidenceScore ?? null,
+        riskPositionSizeSek: enriched.riskPositionSizeSek ?? enriched.riskEvaluation?.position_size_sek ?? null,
+        riskPositionUnits: enriched.riskPositionUnits ?? enriched.riskEvaluation?.position_size_units ?? null,
+        risk_reason: firstText(enriched.riskBlockReasons, enriched.riskWarnings, enriched.riskEvaluation?.block_reasons, enriched.riskEvaluation?.warnings),
+        block_reason: firstText(enriched.safetyBlockReasons, enriched.executionSafety?.paper_block_reasons, enriched.executionSafety?.block_reasons, enriched.observeOnlyReasonSv),
+        exit_reason: enriched.exitReason || enriched.exitReasonCode || null,
+        duration: enriched.duration_label || null,
+        reason: enriched.reasonSv || enriched.exitReason || enriched.signal || enriched.entryReasonSv || 'Paper/test',
+        trade_id: enriched.tradeId || enriched.trade_id || enriched.id || '',
+        age_minutes: tradeAgeMinutesOf(enriched, nowMs),
+        sentToLearning: true,
+        source,
+        isToday: source !== 'history',
+        todayDate: today,
+        ...SAFETY,
+      };
+    })
+    .sort((a, b) => sortNewestFirstByTime(a.time || a.trade_id, b.time || b.trade_id));
+
+  const todayOpenTrades = rows.filter((row) => row.result === 'OPEN');
+  const todayClosedTrades = rows.filter((row) => row.result !== 'OPEN' && isoDateOnly(row.time || row.closed_at || row.exitTime || row.createdAt) === today);
+  const todayTrades = [...todayOpenTrades, ...todayClosedTrades]
+    .sort((a, b) => sortNewestFirstByTime(a.time || a.trade_id, b.time || b.trade_id));
+  const todayWins = todayClosedTrades.filter((row) => row.result === 'WIN').length;
+  const todayLosses = todayClosedTrades.filter((row) => row.result === 'LOSS').length;
+  const todayTimeouts = todayClosedTrades.filter((row) => row.result === 'TIMEOUT').length;
+  const todayPnLPct = Math.round((todayClosedTrades.reduce((sum, trade) => sum + (Number(trade.pnl) || 0), 0)) * 100) / 100;
+  const todayStats = {
+    date: today,
+    totalTrades: todayTrades.length,
+    openTrades: todayOpenTrades.length,
+    closedTrades: todayClosedTrades.length,
+    wins: todayWins,
+    losses: todayLosses,
+    timeouts: todayTimeouts,
+    winRate: todayClosedTrades.length ? Math.round((todayWins / todayClosedTrades.length) * 100) : null,
+    pnlPercent: todayPnLPct,
+    latestTradeAt: todayTrades[0]?.time || null,
+    latestClosedTradeAt: todayClosedTrades[0]?.time || null,
+  };
+  const historicalTrades = rows.filter((row) => row.result !== 'OPEN' && isoDateOnly(row.time || row.closed_at || row.exitTime || row.createdAt) !== today);
   const runtimeSummary = strategyRuntimeConnector.getStrategyRuntimeSummary();
   const paperSummary = getPaperTradeSummary48h();
   const summary = tradeSummary(rows);
   return {
     ok: true,
     limit,
-    total_available: trades.length,
+    total_available: allTrades.length,
     trades: rows,
+    todayTrades,
+    todayOpenTrades,
+    todayClosedTrades,
+    todayStats,
+    historicalTrades,
     count: rows.length,
     summary,
     summary_48h: { ...paperSummary, runtime: runtimeSummary.summary },
     runtime_summary: runtimeSummary.summary,
     runtime_strategies: runtimeSummary.strategies,
     stoppage_summary_48h: getPaperStoppageSummary48h(),
+    latestTradeAt: rows[0]?.time || null,
     source_of_truth: {
       strategy_control: 'Strategikontroll = katalog + teststatistik + historik',
       candidates_paper: 'Kandidater & paper trades = faktiska paper trades från scanner',
@@ -1100,46 +1349,110 @@ function getPaperSignals(options = {}) {
   const paperStatus = paperTrading.getStatus();
   const tradesData = paperTrading.getTrades();
   const trades = Array.isArray(tradesData.trades) ? tradesData.trades : [];
-  const openTrades = trades
-    .filter((trade) => String(trade.result || '').toUpperCase() === 'OPEN')
-    .slice(0, limit)
-    .map(formatPaperTrade);
-  const closedTrades = trades
-    .filter((trade) => String(trade.result || '').toUpperCase() !== 'OPEN')
-    .slice(0, limit)
-    .map(formatPaperTrade);
+  const latestScanAt = scan.lastScan || crypto.lastScan || null;
+  const freshnessWindowMinutes = 24 * 60;
+  const freshnessWindowHours = 24;
+  const nowMs = Date.now();
   const recentCandidates = candidateLog.loadRecent(100);
 
-  const signals = rows
+  const scanSignals = rows
     .map((row) => {
-      const runtime = runtimeById[row.strategy_id || row.strategyId] || strategyRuntimeConnector.inferStrategyForSignal(row) || {};
+      const metadata = strategyRuntimeConnector.resolveStrategyMetadata(row, { allowLegacyFallback: false }) || {};
+      const resolvedStrategyId = metadata.resolvedStrategyId || row.strategy_id || row.strategyId || null;
+      const runtime = runtimeById[resolvedStrategyId] || (resolvedStrategyId ? strategyRuntimeConnector.getRuntimeStatusForStrategy(resolvedStrategyId) : {}) || {};
       const paperTrade = matchPaperTradeBySignal(row, trades);
       const blocker = buildPaperSignalBlocker(row, runtime, config, paperStatus);
-      return formatPaperSignalRow(row, runtime, paperTrade, blocker);
+      const signal = formatPaperSignalRow({
+        ...row,
+        sourceStrategyId: metadata.sourceStrategyId,
+        sourceStrategyName: metadata.sourceStrategyName,
+        resolvedStrategyId,
+        resolvedStrategyName: metadata.resolvedStrategyName || runtime?.strategy_name || null,
+        mappingSource: metadata.mappingSource,
+      }, runtime, paperTrade, blocker);
+      const signalTimestamp = paperSignalTimeOf(row) || paperSignalTimeOf(signal) || latestScanAt;
+      const signalAgeMinutes = minutesSince(signalTimestamp, nowMs);
+      const isFresh = signalAgeMinutes != null && signalAgeMinutes <= freshnessWindowMinutes;
+      return {
+        ...signal,
+        createdAt: signalTimestamp,
+        signalTimestamp,
+        signalAgeMinutes,
+        freshnessWindow: freshnessWindowMinutes,
+        isFresh,
+        source: isFresh ? 'latest_scan' : 'history',
+        status: isFresh ? signal.status : 'Inaktuell',
+      };
     })
     .sort((a, b) => {
-      const order = {
-        'Redo för paper trade': 0,
-        'Öppen paper trade': 1,
-        'Stängd': 2,
-        'Timeout': 3,
-        'Väntar på entry': 4,
-        'Blockerad': 5,
-        'Saknar data': 6,
-      };
-      const ao = order[a.status] ?? 9;
-      const bo = order[b.status] ?? 9;
-      if (ao !== bo) return ao - bo;
-      return (Number(b.score ?? 0) - Number(a.score ?? 0)) || String(b.createdAt || '').localeCompare(String(a.createdAt || ''));
+      const aTime = new Date(a.signalTimestamp || a.createdAt || 0).getTime() || 0;
+      const bTime = new Date(b.signalTimestamp || b.createdAt || 0).getTime() || 0;
+      if (aTime !== bTime) return bTime - aTime;
+      return Number(b.score ?? 0) - Number(a.score ?? 0);
     });
 
-  const readySignals = signals.filter((signal) => signal.status === 'Redo för paper trade').length;
-  const blockedSignals = signals.filter((signal) => signal.status === 'Blockerad').length;
-  const waitingSignals = signals.filter((signal) => signal.status === 'Väntar på entry').length;
+  const currentSignals = scanSignals.filter((signal) => signal.isFresh === true).slice(0, limit);
+  const historySignals = scanSignals
+    .filter((signal) => signal.isFresh !== true)
+    .map((signal) => ({ ...signal, status: 'Inaktuell', source: 'history' }))
+    .slice(0, limit);
+
+  const openTrades = trades
+    .filter((trade) => String(trade.result || '').toUpperCase() === 'OPEN')
+    .map((trade) => {
+      const formatted = formatPaperTrade(trade);
+      const tradeTimestamp = paperTradeTimeOf(trade) || formatted.createdAt || formatted.openedAt || null;
+      const signalAgeMinutes = minutesSince(tradeTimestamp, nowMs);
+      return {
+        ...formatted,
+        createdAt: tradeTimestamp,
+        tradeTimestamp,
+        signalAgeMinutes,
+        freshnessWindow: freshnessWindowMinutes,
+        isFresh: true,
+        source: 'open_trade',
+      };
+    })
+    .sort((a, b) => sortNewestFirstByTime(a.createdAt || a.tradeTimestamp, b.createdAt || b.tradeTimestamp));
+
+  const closedTrades = trades
+    .filter((trade) => String(trade.result || '').toUpperCase() !== 'OPEN')
+    .map((trade) => {
+      const formatted = formatPaperTrade(trade);
+      const tradeTimestamp = paperTradeTimeOf(trade) || formatted.closeAt || formatted.createdAt || null;
+      const signalAgeMinutes = minutesSince(tradeTimestamp, nowMs);
+      const isFresh = signalAgeMinutes != null && signalAgeMinutes <= freshnessWindowMinutes;
+      return {
+        ...formatted,
+        createdAt: tradeTimestamp,
+        tradeTimestamp,
+        signalAgeMinutes,
+        freshnessWindow: freshnessWindowMinutes,
+        isFresh,
+        source: isFresh ? 'recent_closed' : 'history',
+        status: 'Historik',
+      };
+    })
+    .sort((a, b) => sortNewestFirstByTime(a.createdAt || a.tradeTimestamp, b.createdAt || b.tradeTimestamp));
+
+  const recentClosedTrades = closedTrades.filter((trade) => trade.source === 'recent_closed').slice(0, limit);
+  const historicClosedTrades = closedTrades.filter((trade) => trade.source === 'history').slice(0, limit);
+  const history = [
+    ...historySignals,
+    ...recentClosedTrades,
+    ...historicClosedTrades,
+  ].sort((a, b) => sortNewestFirstByTime(
+    a.signalTimestamp || a.tradeTimestamp || a.createdAt,
+    b.signalTimestamp || b.tradeTimestamp || b.createdAt,
+  )).slice(0, limit);
+
+  const readySignals = currentSignals.filter((signal) => signal.status === 'Redo för paper trade').length;
+  const blockedSignals = currentSignals.filter((signal) => signal.status === 'Blockerad').length;
+  const waitingSignals = currentSignals.filter((signal) => signal.status === 'Väntar på entry').length;
   const openPaperTrades = openTrades.length;
   const closedPaperTrades = closedTrades.length;
 
-  const blockedFromSignals = signals
+  const blockedFromSignals = currentSignals
     .filter((signal) => signal.status === 'Blockerad')
     .map((signal) => ({
       symbol: signal.symbol,
@@ -1155,25 +1468,38 @@ function getPaperSignals(options = {}) {
     .map((candidate) => {
       const reason = firstText(candidate.wouldHaveBeenBlockedBy, candidate.reasons, candidate.warnings, candidate.blockerMode, candidate.status) || 'Blockerad';
       const score = toFiniteNumber(candidate.tradeScore ?? candidate.signalScore ?? candidate.priorityScore ?? candidate.score ?? candidate.confidenceScore ?? null);
+      const meta = strategyMetadataOf(candidate);
       return {
         symbol: candidate.symbol || '–',
-        strategy: candidate.strategyName || candidate.strategy_name || candidate.setupId || 'Okänd strategi',
+        strategy: candidate.resolvedStrategyName || candidate.strategyName || candidate.strategy_name || candidate.setupId || 'Okänd strategi',
         score,
         reason,
         requiredFix: firstText(candidate.blockerMode, candidate.exitProfile, candidate.discoveryMode, candidate.signal) || 'Kontrollera kandidatens regler',
+        sourceStrategyId: meta.sourceStrategyId,
+        resolvedStrategyId: meta.resolvedStrategyId,
+        mappingSource: meta.mappingSource,
       };
     })
     .filter((row) => row.reason)
     .slice(0, 5);
 
   const blocked = blockedFromSignals.length > 0 ? blockedFromSignals : blockedFromCandidates;
-  const lastScanAt = scan.lastScan || crypto.lastScan || signals[0]?.createdAt || recentCandidates[0]?.created_at || recentCandidates[0]?.evaluated_at || null;
+  const lastScanAt = latestScanAt || currentSignals[0]?.createdAt || recentCandidates[0]?.created_at || recentCandidates[0]?.evaluated_at || null;
   const candidatesChecked = rows.length;
   const readyOrOpenCount = readySignals + openPaperTrades;
   const paperTradingEnabled = paperStatus.enabled === true;
+  const generatedAt = nowIso();
+  const freshnessWindow = {
+    minutes: freshnessWindowMinutes,
+    hours: freshnessWindowHours,
+    label: '24h',
+  };
 
   return {
     ok: true,
+    generatedAt,
+    freshnessWindow,
+    latestScanAt,
     safety: {
       actions_allowed: false,
       can_place_orders: false,
@@ -1191,23 +1517,27 @@ function getPaperSignals(options = {}) {
       waitingSignals,
       openPaperTrades,
       closedPaperTrades,
-      totalSignals: signals.length,
+      totalSignals: currentSignals.length,
+      freshSignals: currentSignals.length,
+      historySignals: history.length,
       readyOrOpenCount,
     },
-    signals,
+    signals: currentSignals,
+    history,
     blocked,
     openTrades,
-    closedTrades,
+    closedTrades: recentClosedTrades,
     emptyState: {
       lastScanAt,
       candidatesChecked,
       blockedSignals,
       waitingSignals,
       topBlockedCandidates: blocked.slice(0, 5),
+      hasFreshSignals: currentSignals.length > 0,
       waitingFor: paperTradingEnabled
-        ? (blocked.length > 0
-          ? 'Systemet väntar på att blockerade kandidater ska få bättre score, confidence eller entry-bekräftelse.'
-          : 'Systemet väntar på nya kandidater i scannerflödet.')
+        ? (currentSignals.length > 0
+          ? 'Systemet har färska paper trading-köpsignaler.'
+          : 'Inga färska paper trading-köpsignaler just nu. Väntar på nästa scan eller nya kandidater inom 24h.')
         : 'Paper trading är avstängt. Slå på paper trading för att skapa öppna paper trades.',
     },
     ...SAFETY,
@@ -1222,6 +1552,650 @@ function getRuntimeStrategies() {
       ...strategy,
       config: strategyConfigFor(strategy.id || strategy.strategy_id, strategy),
     })),
+    ...SAFETY,
+  };
+}
+
+function getPaperStrategyDiagnostics() {
+  const generatedAt = nowIso();
+  const today = generatedAt.slice(0, 10);
+  const catalog = daytradingCatalog.getCatalog();
+  const runtimeSummary = strategyRuntimeConnector.getStrategyRuntimeSummary();
+  const runtimeRows = Array.isArray(runtimeSummary.strategies) ? runtimeSummary.strategies : [];
+  const runtimeById = Object.fromEntries(runtimeRows.map((row) => [String(row.id || row.strategy_id || ''), row]));
+  const runtimeIndex = buildStrategyIndex(runtimeRows);
+  const catalogIndex = buildStrategyIndex(catalog.strategies || []);
+  const paperSignals = getPaperSignals({ limit: 200 });
+  const tradesData = paperTrading.getTrades();
+  const allTrades = Array.isArray(tradesData.trades) ? tradesData.trades : [];
+  const recentCandidates = candidateLog.loadRecent(100);
+  const normalizedRecentCandidates = recentCandidates.map((candidate) => {
+    const resolved = resolveStrategyRow(candidate, catalogIndex) || resolveStrategyRow(candidate, runtimeIndex) || null;
+    const strategyId = resolved?.id || candidate.strategyId || candidate.strategy_id || candidate.setupId || null;
+    const strategyName = resolved?.name || candidate.strategyName || candidate.strategy_name || strategyId || 'Okänd strategi';
+    const blocked = Array.isArray(candidate.wouldHaveBeenBlockedBy) || Array.isArray(candidate.reasons) || Array.isArray(candidate.warnings)
+      ? (candidate.paperTradeCreated !== true)
+      : candidate.paperTradeCreated !== true && String(candidate.signal || candidate.blockerMode || '').trim() !== '';
+    return {
+      ts: candidate.ts || candidate.detected_at || candidate.evaluated_at || null,
+      strategy_id: strategyId,
+      strategy_name: strategyName,
+      market_group: candidate.marketGroup || candidate.market_group || null,
+      signal: candidate.signal || null,
+      blockerMode: candidate.blockerMode || null,
+      discoveryMode: candidate.discoveryMode || null,
+      score: candidate.score ?? null,
+      paperTradeCreated: candidate.paperTradeCreated === true,
+      blocked,
+      reasons: Array.isArray(candidate.reasons) ? candidate.reasons : [],
+      warnings: Array.isArray(candidate.warnings) ? candidate.warnings : [],
+      wouldHaveBeenBlockedBy: Array.isArray(candidate.wouldHaveBeenBlockedBy) ? candidate.wouldHaveBeenBlockedBy : [],
+      setupId: candidate.setupId || null,
+      inferred_strategy_id: strategyId,
+      inferred_strategy_name: strategyName,
+    };
+  });
+
+  const strategyRows = (catalog.strategies || []).map((strategy) => {
+    const runtime = runtimeById[strategy.id] || strategyRuntimeConnector.getRuntimeStatusForStrategy(strategy.id);
+    const id = strategy.id;
+    const normalizedId = String(id);
+    const strategyTrades = allTrades
+      .map((trade) => {
+        const resolved = trade.strategy_id || trade.strategyId || resolveStrategyRow(trade, catalogIndex)?.id || resolveStrategyRow(trade, runtimeIndex)?.id || null;
+        return resolved ? { ...trade, strategy_id: resolved } : trade;
+      })
+      .filter((trade) => String(trade.strategy_id || '') === normalizedId);
+    const strategyCandidates = normalizedRecentCandidates.filter((candidate) => String(candidate.strategy_id || '') === normalizedId);
+    const blockedCandidates = strategyCandidates.filter((candidate) => candidate.blocked === true);
+    const todayTrades = strategyTrades.filter((trade) => String(trade.result || '').toUpperCase() === 'OPEN' || isoDateOnly(tradeTimestampOf(trade)) === today);
+    const wins = strategyTrades.filter((trade) => String(trade.result || '').toUpperCase() === 'WIN').length;
+    const losses = strategyTrades.filter((trade) => String(trade.result || '').toUpperCase() === 'LOSS').length;
+    const timeouts = strategyTrades.filter((trade) => String(trade.result || '').toUpperCase() === 'TIMEOUT').length;
+    const firstTradeAt = strategyTrades.map((trade) => tradeTimestampOf(trade)).filter(Boolean).sort()[0] || null;
+    const lastTradeAt = strategyTrades.map((trade) => tradeTimestampOf(trade)).filter(Boolean).sort().slice(-1)[0] || null;
+    const firstCandidateAt = strategyCandidates.map((candidate) => candidate.ts).filter(Boolean).sort()[0] || null;
+    const lastCandidateAt = strategyCandidates.map((candidate) => candidate.ts).filter(Boolean).sort().slice(-1)[0] || null;
+    const blockerCounts = countBy(blockedCandidates.flatMap((candidate) => [...candidate.wouldHaveBeenBlockedBy, ...candidate.reasons, ...candidate.warnings]), (reason) => String(reason || '').trim());
+    const blockerTop = [...blockerCounts.entries()].map(([reason, count]) => ({ reason, count })).sort((a, b) => b.count - a.count).slice(0, 3);
+    return {
+      id,
+      name: strategyDiagnosticLabel(strategy),
+      market_group: strategy.market_group || strategy.market || null,
+      enabled_by_user: runtime?.enabled_by_user === true,
+      active: strategy.active !== false,
+      runtime_status: runtime?.runtime_status || 'not_connected',
+      runtime_label: runtime?.runtime_label || null,
+      connected: runtime?.connected === true,
+      entry_rule_implemented: strategyHasEntryRule(strategy, runtime),
+      exit_rule_implemented: strategyHasExitRule(strategy),
+      missing_market_group: !(strategy.market_group || strategy.market),
+      missing_entry_rule: strategyHasEntryRule(strategy, runtime) !== true,
+      missing_exit_rule: strategyHasExitRule(strategy) !== true,
+      can_create_paper_trade: runtime?.can_create_paper_trade === true,
+      paper_trades_total: strategyTrades.length,
+      paper_trades_today: todayTrades.length,
+      wins,
+      losses,
+      timeouts,
+      first_trade_at: firstTradeAt,
+      last_trade_at: lastTradeAt,
+      first_candidate_at: firstCandidateAt,
+      last_candidate_at: lastCandidateAt,
+      signals_seen: strategyCandidates.length,
+      blocked_candidates: blockedCandidates.length,
+      blocker_reasons: blockerTop,
+      raw_signals: Array.from(new Set([
+        ...(runtime?.runtime_raw_signals || []),
+        ...strategyCandidates.map((candidate) => candidate.signal).filter(Boolean),
+      ])),
+      ...SAFETY,
+    };
+  });
+
+  const tradedStrategies = strategyRows
+    .filter((row) => row.paper_trades_total > 0)
+    .map((row) => ({
+      id: row.id,
+      name: row.name,
+      paper_trades_today: row.paper_trades_today,
+      paper_trades_total: row.paper_trades_total,
+      wins: row.wins,
+      losses: row.losses,
+      timeouts: row.timeouts,
+      first_trade_at: row.first_trade_at,
+      last_trade_at: row.last_trade_at,
+      runtime_status: row.runtime_status,
+      enabled_by_user: row.enabled_by_user,
+      can_create_paper_trade: row.can_create_paper_trade,
+      ...SAFETY,
+    }))
+    .sort((a, b) => (b.paper_trades_total || 0) - (a.paper_trades_total || 0));
+
+  const blockedStrategyMap = new Map();
+  for (const candidate of normalizedRecentCandidates) {
+    if (!candidate.blocked || !candidate.strategy_id) continue;
+    const key = candidate.strategy_id;
+    const existing = blockedStrategyMap.get(key) || {
+      id: candidate.strategy_id,
+      name: candidate.strategy_name,
+      blocked_count: 0,
+      first_blocked_at: null,
+      last_blocked_at: null,
+      top_reasons: new Map(),
+      recent_candidates: [],
+    };
+    existing.blocked_count += 1;
+    if (!existing.first_blocked_at || String(candidate.ts || '') < String(existing.first_blocked_at || '')) existing.first_blocked_at = candidate.ts || null;
+    if (!existing.last_blocked_at || String(candidate.ts || '') > String(existing.last_blocked_at || '')) existing.last_blocked_at = candidate.ts || null;
+    const reasons = [...candidate.wouldHaveBeenBlockedBy, ...candidate.reasons, ...candidate.warnings].map((reason) => String(reason || '').trim()).filter(Boolean);
+    for (const reason of reasons) existing.top_reasons.set(reason, (existing.top_reasons.get(reason) || 0) + 1);
+    existing.recent_candidates.push(candidate);
+    blockedStrategyMap.set(key, existing);
+  }
+
+  const blockedStrategies = [...blockedStrategyMap.values()]
+    .map((row) => ({
+      id: row.id,
+      name: row.name,
+      blocked_count: row.blocked_count,
+      first_blocked_at: row.first_blocked_at,
+      last_blocked_at: row.last_blocked_at,
+      top_reasons: [...row.top_reasons.entries()].map(([reason, count]) => ({ reason, count })).sort((a, b) => b.count - a.count).slice(0, 5),
+      ...SAFETY,
+    }))
+    .sort((a, b) => (b.blocked_count || 0) - (a.blocked_count || 0));
+
+  const strategySignalSet = new Set([
+    ...strategyRows.filter((row) => row.signals_seen > 0 || row.paper_trades_total > 0).map((row) => row.id),
+  ]);
+  const strategyTradeSet = new Set(tradedStrategies.map((row) => row.id));
+  const strategyBlockedSet = new Set(blockedStrategies.map((row) => row.id));
+  const enabledStrategies = strategyRows.filter((row) => row.enabled_by_user === true);
+  const neverTriggeredStrategies = enabledStrategies
+    .filter((row) => !strategySignalSet.has(row.id) && !strategyTradeSet.has(row.id))
+    .map((row) => ({
+      id: row.id,
+      name: row.name,
+      market_group: row.market_group,
+      runtime_status: row.runtime_status,
+      enabled_by_user: row.enabled_by_user,
+      ...SAFETY,
+    }))
+    .sort((a, b) => String(a.name).localeCompare(String(b.name)));
+
+  const blockerReasonMap = new Map();
+  for (const candidate of normalizedRecentCandidates) {
+    const reasons = [...candidate.wouldHaveBeenBlockedBy, ...candidate.reasons, ...candidate.warnings]
+      .map((reason) => String(reason || '').trim())
+      .filter(Boolean);
+    for (const reason of reasons) {
+      const key = reason;
+      const row = blockerReasonMap.get(key) || { reason, count: 0, strategies: new Set() };
+      row.count += 1;
+      if (candidate.strategy_id) row.strategies.add(candidate.strategy_id);
+      blockerReasonMap.set(key, row);
+    }
+  }
+
+  const blockerReasons = [...blockerReasonMap.values()]
+    .map((row) => ({
+      reason: row.reason,
+      count: row.count,
+      strategies: Array.from(row.strategies),
+      ...SAFETY,
+    }))
+    .sort((a, b) => (b.count || 0) - (a.count || 0))
+    .slice(0, 20);
+
+  const allStrategies = strategyRows.map((row) => ({
+    id: row.id,
+    name: row.name,
+    market_group: row.market_group,
+    active: row.active !== false,
+    enabled_by_user: row.enabled_by_user === true,
+    runtime_status: row.runtime_status,
+    runtime_label: row.runtime_label,
+    connected: row.connected === true,
+    entry_rule_implemented: row.entry_rule_implemented === true,
+    exit_rule_implemented: row.exit_rule_implemented === true,
+    missing_market_group: row.missing_market_group === true,
+    missing_entry_rule: row.missing_entry_rule === true,
+    missing_exit_rule: row.missing_exit_rule === true,
+    paper_trades_total: row.paper_trades_total,
+    paper_trades_today: row.paper_trades_today,
+    signals_seen: row.signals_seen,
+    blocked_candidates: row.blocked_candidates,
+    can_create_paper_trade: row.can_create_paper_trade === true,
+    ...SAFETY,
+  }));
+
+  return {
+    ok: true,
+    generatedAt,
+    safety: SAFETY,
+    summary: {
+      totalStrategies: allStrategies.length,
+      enabledStrategies: enabledStrategies.length,
+      strategiesWithPaperTrades: tradedStrategies.length,
+      strategiesWithSignals: strategyRows.filter((row) => row.signals_seen > 0 || row.paper_trades_total > 0).length,
+      strategiesBlocked: blockedStrategies.length,
+      strategiesNeverTriggered: neverTriggeredStrategies.length,
+    },
+    strategies: allStrategies,
+    tradedStrategies,
+    blockedStrategies,
+    neverTriggeredStrategies,
+    blockerReasons,
+    recentCandidates: normalizedRecentCandidates,
+    paperSignals: {
+      latestScanAt: paperSignals.latestScanAt || null,
+      currentSignals: Array.isArray(paperSignals.signals) ? paperSignals.signals.length : 0,
+      historySignals: Array.isArray(paperSignals.history) ? paperSignals.history.length : 0,
+    },
+    paperTradesToday: {
+      today: today,
+      total: (paperTrading.getTrades().trades || []).filter((trade) => isoDateOnly(tradeTimestampOf(trade)) === today).length,
+    },
+    ...SAFETY,
+  };
+}
+
+const FLOW_ELIGIBILITY_EVENT_TYPES = new Set([
+  'GATE_ALLOWED',
+  'GATE_BLOCKED',
+  'GATE_OBSERVE_ONLY',
+  'TRADE_OPENED',
+  'TRADE_SKIPPED',
+]);
+
+function flowTimestampOf(row = {}) {
+  return toIsoIfValid(
+    row.timestamp ||
+    row.ts ||
+    row.detected_at ||
+    row.evaluated_at ||
+    row.created_at ||
+    row.createdAt ||
+    row.entryTime ||
+    row.opened_at ||
+    row.closed_at ||
+    row.last_update_at ||
+    null,
+  );
+}
+
+function flowSignalTypeOf(row = {}) {
+  return row.signalSubtype ||
+    row.signal_subtype ||
+    row.raw_strategy ||
+    row.signalFamily ||
+    row.signal_family ||
+    row.signal ||
+    row.eventType ||
+    row.type ||
+    null;
+}
+
+function flowScoreOf(row = {}) {
+  return toFiniteNumber(
+    row.score ??
+    row.tradeScore ??
+    row.signalScore ??
+    row.priorityScore ??
+    row.daytradeScore ??
+    row.gateScore ??
+    row.confidenceScore ??
+    null,
+  );
+}
+
+function flowConfidenceOf(row = {}) {
+  return toFiniteNumber(row.confidenceScore ?? row.baseConfidenceScore ?? row.confidence ?? null);
+}
+
+function flowReasonOf(row = {}) {
+  return firstText(
+    row.reasonSv,
+    row.reason,
+    row.blockerMode,
+    row.discoveryMode,
+    row.observeOnlyReasonSv,
+    row.skip_reason_sv,
+    row.runtime_comment_sv,
+    row.comment_sv,
+  ) || null;
+}
+
+function flowExamples(rows = [], limit = 3) {
+  return rows
+    .slice(0, limit)
+    .map((row) => ({
+      ts: row.ts || row.timestamp || null,
+      source: row.source || null,
+      symbol: row.symbol || null,
+      signalType: row.signalType || null,
+      score: row.score ?? null,
+      confidence: row.confidence ?? null,
+      status: row.status || null,
+      reason: row.reason || null,
+      strategyIdMissing: row.sourceStrategyId == null,
+      sourceStrategyId: row.sourceStrategyId || null,
+      resolvedStrategyId: row.resolvedStrategyId || null,
+      resolvedStrategyName: row.resolvedStrategyName || null,
+      mappingSource: row.mappingSource || 'unknown',
+    }));
+}
+
+function categorizeFlowDropReason(rawReason, row = {}, runtime = {}) {
+  const reason = String(rawReason || '').toLowerCase();
+  const status = String(row.status || row.runtimeStatus || runtime.runtime_status || '').toLowerCase();
+
+  if (!reason && !status) return 'other';
+  if (/duplicate signalid|duplicate/i.test(reason) || /duplicate/i.test(status) || /cooldown/i.test(reason)) return 'duplicate/cooldown';
+  if (/cooldown/i.test(reason) || /already open for symbol/i.test(reason)) return 'duplicate/cooldown';
+  if (/market group|market closed|marketcontrol|market control|market.*disabled/.test(reason) || /market/.test(status) && /closed|disabled/.test(status)) return 'market group';
+  if (/missing entry|saknar entry|entry.*saknas|no entry/.test(reason)) return 'missing entry';
+  if (/missing stop|saknar stop|stop loss/.test(reason)) return 'missing stop loss';
+  if (/missing take profit|saknar take profit|take profit/.test(reason)) return 'missing take profit';
+  if (/score|min score/.test(reason)) return 'score';
+  if (/confidence/.test(reason)) return 'confidence';
+  if (/runtime|paused|disabled|no_entry_rule|partial|missing_data|not_connected/.test(reason) || /disabled|partial|paused|no_entry_rule/.test(status)) return 'runtime';
+  if (/risk|safety/.test(reason) || /risk|safety/.test(status)) return 'risk/safety';
+  if (/entry|waiting|wait|vänta/.test(reason) || /wait|vänta/.test(status)) return 'waiting';
+  return 'other';
+}
+
+function normalizeFlowRow(row = {}, source = 'unknown', catalogIndex = null, runtimeIndex = null) {
+  const metadata = strategyRuntimeConnector.resolveStrategyMetadata(row, { allowLegacyFallback: source !== 'paper_event' }) || {};
+  const resolved = resolveStrategyRow(row, catalogIndex || {}, { allowInference: false }) || resolveStrategyRow(row, runtimeIndex || {}, { allowInference: false }) || null;
+  const sourceStrategyId = metadata.sourceStrategyId || row.strategyId || row.strategy_id || row.setupId || null;
+  const sourceStrategyName = metadata.sourceStrategyName || row.strategyName || row.strategy_name || null;
+  const strategyId = metadata.resolvedStrategyId || sourceStrategyId || resolved?.id || null;
+  const strategyName = metadata.resolvedStrategyName || sourceStrategyName || resolved?.name || strategyId || 'Okänd strategi';
+  const signalType = flowSignalTypeOf(row);
+  const ts = flowTimestampOf(row);
+  const score = flowScoreOf(row);
+  const confidence = flowConfidenceOf(row);
+  const reason = flowReasonOf(row);
+  const status = row.status || row.decision || row.blockerMode || row.discoveryMode || row.runtimeStatus || row.type || null;
+  const eligible = source === 'paper_event' && FLOW_ELIGIBILITY_EVENT_TYPES.has(String(row.type || '').toUpperCase());
+  const blocked = Boolean(
+    row.blocked === true ||
+    row.paperTradeCreated === false && Array.isArray(row.reasons) && row.reasons.length > 0 ||
+    Array.isArray(row.wouldHaveBeenBlockedBy) && row.wouldHaveBeenBlockedBy.length > 0 ||
+    String(status || '').toLowerCase().includes('skip') ||
+    String(status || '').toLowerCase().includes('block'),
+  );
+
+  return {
+    source,
+    ts,
+    symbol: row.symbol || null,
+    marketType: row.marketType || row.market || row.marketGroup || row.market_group || null,
+    signalType,
+    score,
+    confidence,
+    status,
+    reason,
+    blocked,
+    eligible,
+    strategyId,
+    strategyName,
+    sourceStrategyId,
+    sourceStrategyName,
+    resolvedStrategyId: metadata.resolvedStrategyId || resolved?.id || null,
+    resolvedStrategyName: metadata.resolvedStrategyName || resolved?.name || null,
+    mappingSource: metadata.mappingSource || 'unknown',
+    raw: row,
+  };
+}
+
+function buildStrategyFlowDiagnostics() {
+  const generatedAt = nowIso();
+  const catalog = daytradingCatalog.getCatalog();
+  const runtimeSummary = strategyRuntimeConnector.getStrategyRuntimeSummary();
+  const runtimeRows = Array.isArray(runtimeSummary.strategies) ? runtimeSummary.strategies : [];
+  const runtimeById = Object.fromEntries(runtimeRows.map((row) => [String(row.id || row.strategy_id || ''), row]));
+  const runtimeIndex = buildStrategyIndex(runtimeRows);
+  const catalogIndex = buildStrategyIndex(catalog.strategies || []);
+
+  const candidateRows = candidateLog.loadRecent(100).map((row) => normalizeFlowRow(row, 'candidate_log', catalogIndex, runtimeIndex));
+  const paperEvents = (paperTrading.getEvents().events || []).slice(0, 100).map((row) => normalizeFlowRow(row, 'paper_event', catalogIndex, runtimeIndex));
+  const trades = (paperTrading.getTrades().trades || []).map((trade) => {
+    const enriched = strategyRuntimeConnector.enrichPaperTradeWithStrategy(trade);
+    return normalizeFlowRow({
+      ...trade,
+      strategyId: enriched.strategy_id || null,
+      strategyName: enriched.strategy_name || null,
+      signalSubtype: trade.signalSubtype || trade.signal_subtype || trade.raw_strategy || trade.strategy || null,
+      signalFamily: trade.signalFamily || null,
+      score: trade.tradeScore ?? trade.signalScore ?? trade.priorityScore ?? null,
+      confidenceScore: trade.confidenceScore ?? trade.baseConfidenceScore ?? null,
+      timestamp: tradeTimestampOf(trade),
+      reasonSv: trade.reasonSv || trade.entryReasonSv || trade.exitReason || null,
+      status: trade.result || trade.status || null,
+    }, 'paper_trade', catalogIndex, runtimeIndex);
+  });
+
+  const candidateLikePaperEvents = paperEvents.filter((row) => {
+    const rawType = String(row.raw?.type || row.raw?.decision || row.raw?.status || row.status || '').toUpperCase();
+    return !['MARKET_CLOSED', 'AGENT_STARTED'].includes(rawType);
+  });
+
+  const recentFlowRows = [
+    ...candidateRows,
+    ...candidateLikePaperEvents,
+  ];
+
+  const perStrategy = new Map();
+  const ensureRow = (strategyId, name, runtime) => {
+    const key = String(strategyId);
+    const existing = perStrategy.get(key) || {
+      strategyId: key,
+      name: name || key,
+      enabled: runtime?.enabled_by_user === true,
+      scanned: false,
+      candidateCount: 0,
+      reachedPaperEligibility: 0,
+      paperTradeCount: 0,
+      explicitCount: 0,
+      fallbackCount: 0,
+      unknownCount: 0,
+      lastCandidateAt: null,
+      lastPaperTradeAt: null,
+      mainDropReason: null,
+      examples: [],
+      _reasonCounts: new Map(),
+      _recentRows: [],
+      _marketGroups: new Set(),
+    };
+    if (name && (!existing.name || existing.name === key)) existing.name = name;
+    if (runtime) {
+      existing.enabled = runtime.enabled_by_user === true;
+      existing.runtimeStatus = runtime.runtime_status || null;
+      existing.runtimeLabel = runtime.runtime_label || null;
+      existing.connected = runtime.connected === true;
+      existing.rawSignals = runtime.runtime_raw_signals || [];
+    }
+    perStrategy.set(key, existing);
+    return existing;
+  };
+
+  for (const strategy of catalog.strategies || []) {
+    ensureRow(strategy.id, strategy.name, runtimeById[strategy.id] || strategyRuntimeConnector.getRuntimeStatusForStrategy(strategy.id));
+  }
+
+  const addFlowRow = (row) => {
+    const effectiveStrategyId = row.resolvedStrategyId || row.sourceStrategyId || row.strategyId || null;
+    if (!effectiveStrategyId) return;
+    const runtime = runtimeById[effectiveStrategyId] || strategyRuntimeConnector.getRuntimeStatusForStrategy(effectiveStrategyId);
+    const existing = ensureRow(effectiveStrategyId, row.strategyName, runtime);
+    existing.scanned = true;
+    existing._recentRows.push(row);
+    if (row.mappingSource === 'explicit') existing.explicitCount += 1;
+    else if (row.mappingSource === 'runtime_inference' || row.mappingSource === 'legacy_fallback') existing.fallbackCount += 1;
+    else existing.unknownCount += 1;
+    if (row.source === 'candidate_log' || row.source === 'paper_event') {
+      existing.candidateCount += 1;
+      if (row.ts && (!existing.lastCandidateAt || String(row.ts) > String(existing.lastCandidateAt))) existing.lastCandidateAt = row.ts;
+    }
+    if (row.source === 'paper_event' && row.eligible) {
+      existing.reachedPaperEligibility += 1;
+      if (row.ts && (!existing.lastCandidateAt || String(row.ts) > String(existing.lastCandidateAt))) existing.lastCandidateAt = row.ts;
+    }
+    if (row.source === 'paper_trade') {
+      existing.paperTradeCount += 1;
+      if (row.ts && (!existing.lastPaperTradeAt || String(row.ts) > String(existing.lastPaperTradeAt))) existing.lastPaperTradeAt = row.ts;
+    }
+    if (row.marketType) existing._marketGroups.add(String(row.marketType).toLowerCase());
+    const dropReason = categorizeFlowDropReason(row.reason, row, runtime);
+    const reasonKey = row.source === 'paper_trade' ? null : dropReason;
+    if (!reasonKey) return;
+    existing._reasonCounts.set(reasonKey, (existing._reasonCounts.get(reasonKey) || 0) + 1);
+  };
+
+  for (const row of recentFlowRows) addFlowRow(row);
+  for (const row of trades) addFlowRow(row);
+
+  const missingStrategyIdCandidates = recentFlowRows
+    .filter((row) => row.sourceStrategyId == null)
+    .map((row) => ({
+      ts: row.ts,
+      source: row.source,
+      symbol: row.symbol,
+      signalType: row.signalType,
+      score: row.score,
+      confidence: row.confidence,
+      status: row.status,
+      reason: row.reason,
+      sourceStrategyId: row.sourceStrategyId || null,
+      resolvedStrategyId: row.resolvedStrategyId || null,
+      resolvedStrategyName: row.resolvedStrategyName || null,
+      mappingSource: row.mappingSource || 'unknown',
+    }))
+    .slice(0, 50);
+
+  const fallbackMap = new Map();
+  for (const row of recentFlowRows) {
+    if (row.sourceStrategyId != null) continue;
+    if (!row.resolvedStrategyId) continue;
+    const key = `${row.signalType || 'UNKNOWN'}::${row.resolvedStrategyId}`;
+    const existing = fallbackMap.get(key) || {
+      signalType: row.signalType || 'UNKNOWN',
+      inferredStrategyId: row.resolvedStrategyId,
+      inferredStrategyName: row.resolvedStrategyName || row.resolvedStrategyId,
+      mappingSource: row.mappingSource || 'unknown',
+      count: 0,
+      sources: new Set(),
+      examples: [],
+    };
+    existing.count += 1;
+    existing.sources.add(row.source);
+    existing.examples.push({
+      ts: row.ts,
+      symbol: row.symbol,
+      confidence: row.confidence,
+      score: row.score,
+      reason: row.reason,
+      mappingSource: row.mappingSource || 'unknown',
+    });
+    fallbackMap.set(key, existing);
+  }
+
+  const blockerReasonMap = new Map();
+  for (const row of [...candidateRows, ...paperEvents]) {
+    const reason = row.reason || (row.blocked ? row.status : null);
+    if (!reason) continue;
+    const key = String(reason).trim();
+    const item = blockerReasonMap.get(key) || { reason: key, count: 0, strategies: new Set() };
+    item.count += 1;
+    if (row.strategyId) item.strategies.add(row.strategyId);
+    blockerReasonMap.set(key, item);
+  }
+
+  const byStrategy = [...perStrategy.values()]
+    .map((row) => {
+      const recentRows = row._recentRows
+        .sort((a, b) => String(b.ts || '').localeCompare(String(a.ts || '')));
+      const reasons = [...row._reasonCounts.entries()]
+        .map(([reason, count]) => ({ reason, count }))
+        .sort((a, b) => b.count - a.count);
+      const mainDropReason = reasons[0]?.reason || (
+        row.enabled === false
+          ? 'disabled'
+          : row.candidateCount === 0
+            ? 'no recent candidate'
+            : row.reachedPaperEligibility === 0 && row.paperTradeCount === 0
+              ? 'did not reach paper eligibility'
+              : null
+      );
+      return {
+        strategyId: row.strategyId,
+        name: row.name,
+        enabled: row.enabled === true,
+        scanned: row.scanned === true || (row.rawSignals || []).length > 0,
+        candidateCount: row.candidateCount,
+        reachedPaperEligibility: row.reachedPaperEligibility,
+        paperTradeCount: row.paperTradeCount,
+        explicitCount: row.explicitCount || 0,
+        fallbackCount: row.fallbackCount || 0,
+        unknownCount: row.unknownCount || 0,
+        lastCandidateAt: row.lastCandidateAt || null,
+        lastPaperTradeAt: row.lastPaperTradeAt || null,
+        mainDropReason,
+        examples: flowExamples(recentRows),
+      };
+    })
+    .sort((a, b) => {
+      if ((b.paperTradeCount || 0) !== (a.paperTradeCount || 0)) return (b.paperTradeCount || 0) - (a.paperTradeCount || 0);
+      if ((b.candidateCount || 0) !== (a.candidateCount || 0)) return (b.candidateCount || 0) - (a.candidateCount || 0);
+      return String(a.name).localeCompare(String(b.name));
+    });
+
+  const summary = {
+    totalStrategies: byStrategy.length,
+    enabledStrategies: byStrategy.filter((row) => row.enabled === true).length,
+    strategiesScanned: byStrategy.filter((row) => row.scanned === true).length,
+    strategiesWithCandidates: byStrategy.filter((row) => row.candidateCount > 0).length,
+    strategiesReachedPaperEligibility: byStrategy.filter((row) => row.reachedPaperEligibility > 0).length,
+    strategiesWithPaperTrades: byStrategy.filter((row) => row.paperTradeCount > 0).length,
+    strategiesDroppedBeforeCandidate: byStrategy.filter((row) => row.scanned === true && row.candidateCount === 0 && row.paperTradeCount === 0).length,
+    strategiesDroppedBeforePaper: byStrategy.filter((row) => row.candidateCount > 0 && row.reachedPaperEligibility === 0 && row.paperTradeCount === 0).length,
+  };
+
+  const fallbackMappings = [...fallbackMap.values()]
+    .map((row) => ({
+      signalType: row.signalType,
+      inferredStrategyId: row.inferredStrategyId,
+      inferredStrategyName: row.inferredStrategyName,
+      count: row.count,
+      sources: [...row.sources],
+      examples: row.examples.slice(0, 3),
+      ...SAFETY,
+    }))
+    .sort((a, b) => (b.count || 0) - (a.count || 0));
+
+  const blockerReasons = [...blockerReasonMap.values()]
+    .map((row) => ({
+      reason: row.reason,
+      count: row.count,
+      strategies: [...row.strategies],
+      ...SAFETY,
+    }))
+    .sort((a, b) => (b.count || 0) - (a.count || 0));
+
+  return {
+    ok: true,
+    generatedAt,
+    safety: SAFETY,
+    summary,
+    byStrategy,
+    missingStrategyIdCandidates,
+    fallbackMappings,
+    blockerReasons,
+    recentCandidates: recentFlowRows.slice(0, 100),
+    paperTrades: trades.slice(0, 100),
     ...SAFETY,
   };
 }
@@ -1273,6 +2247,8 @@ module.exports = {
   getPipeline,
   getLiveTrades,
   getPaperSignals,
+  getPaperStrategyDiagnostics,
+  getStrategyFlowDiagnostics: buildStrategyFlowDiagnostics,
   getRuntimeStrategies,
   setAllRuntimeStrategies,
   toggleRuntimeStrategy,

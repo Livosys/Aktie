@@ -207,7 +207,18 @@ function eventMarketType(input) {
   return input?.marketType || input?.market || (String(input?.symbol || '').endsWith('USDT') ? 'crypto' : 'stocks');
 }
 
+function strategyMetadataOf(input = {}) {
+  return {
+    sourceStrategyId: input.sourceStrategyId || null,
+    sourceStrategyName: input.sourceStrategyName || null,
+    resolvedStrategyId: input.resolvedStrategyId || input.strategyId || input.strategy_id || input.setupId || null,
+    resolvedStrategyName: input.resolvedStrategyName || input.strategyName || input.strategy_name || null,
+    mappingSource: input.mappingSource || (input.sourceStrategyId ? 'explicit' : 'unknown'),
+  };
+}
+
 function eventFromCandidate(type, c, reasonSv, decision = 'skipped') {
+  const meta = strategyMetadataOf(c);
   return {
     type,
     symbol:         c?.symbol        || null,
@@ -221,6 +232,11 @@ function eventFromCandidate(type, c, reasonSv, decision = 'skipped') {
     dataFreshness:  c?.dataFreshness || null,
     confidenceScore: c?.confidenceScore ?? null,
     volumeState:    c?.volumeState   || null,
+    sourceStrategyId: meta.sourceStrategyId,
+    sourceStrategyName: meta.sourceStrategyName,
+    resolvedStrategyId: meta.resolvedStrategyId,
+    resolvedStrategyName: meta.resolvedStrategyName,
+    mappingSource: meta.mappingSource,
     mode: 'paper',
   };
 }
@@ -310,6 +326,7 @@ function shouldRecordEvent(event) {
 
 function appendEvent(input) {
   ensureDir();
+  const meta = strategyMetadataOf(input);
   const event = {
     eventId:         input.eventId   || makeEventId(),
     timestamp:       input.timestamp || new Date().toISOString(),
@@ -320,14 +337,19 @@ function appendEvent(input) {
     reasonSv:        input.reasonSv      || null,
     signalFamily:    input.signalFamily  || null,
     signalSubtype:   input.signalSubtype || null,
-    strategyId:      input.strategyId    || null,
-    strategyName:    input.strategyName  || null,
+    strategyId:      input.strategyId    || meta.resolvedStrategyId || meta.sourceStrategyId || null,
+    strategyName:    input.strategyName  || meta.resolvedStrategyName || meta.sourceStrategyName || null,
     runtimeStatus:   input.runtimeStatus  || null,
     status:          input.status        || null,
     nextMoveBias:    input.nextMoveBias  || null,
     dataFreshness:   input.dataFreshness || null,
     confidenceScore: input.confidenceScore ?? null,
     volumeState:     input.volumeState   || null,
+    sourceStrategyId: meta.sourceStrategyId,
+    sourceStrategyName: meta.sourceStrategyName,
+    resolvedStrategyId: meta.resolvedStrategyId,
+    resolvedStrategyName: meta.resolvedStrategyName,
+    mappingSource:   meta.mappingSource,
     gateScore:       input.gateScore     ?? null,
     gateThreshold:   input.gateThreshold ?? null,
     gateMode:        input.gateMode      || null,
@@ -374,8 +396,11 @@ function appendEvent(input) {
         confidence: event.confidenceScore,
         skip_reason: blockReasons.length ? blockReasons.join(', ') : event.reasonSv,
         runtime_status: event.runtimeStatus || null,
-        strategy_id: event.strategyId || null,
-        strategy_name: event.strategyName || null,
+        strategy_id: event.resolvedStrategyId || event.strategyId || event.sourceStrategyId || null,
+        strategy_name: event.resolvedStrategyName || event.strategyName || event.sourceStrategyName || null,
+        source_strategy_id: event.sourceStrategyId || null,
+        resolved_strategy_id: event.resolvedStrategyId || event.strategyId || null,
+        mapping_source: event.mappingSource || null,
         source: 'paper_agent',
       });
     } catch (err) {
@@ -398,7 +423,7 @@ function appendEvent(input) {
       source: 'paper_trading',
       timestamp: event.timestamp,
       symbol: event.symbol,
-      strategy_id: event.signalSubtype || event.signalFamily || null,
+      strategy_id: event.resolvedStrategyId || event.strategyId || event.sourceStrategyId || event.signalSubtype || event.signalFamily || null,
       message: event.symbol ? `${label} för ${event.symbol}` : label,
       details: {
         paper_event_id: event.eventId,
@@ -407,6 +432,9 @@ function appendEvent(input) {
         status: event.status,
         signalFamily: event.signalFamily,
         signalSubtype: event.signalSubtype,
+        sourceStrategyId: event.sourceStrategyId || null,
+        resolvedStrategyId: event.resolvedStrategyId || null,
+        mappingSource: event.mappingSource || null,
         riskBlockReasons: event.riskBlockReasons,
         safetyBlockReasons: event.safetyBlockReasons,
         exitReasonCode: event.exitReasonCode,
@@ -643,6 +671,11 @@ function buildOpenTrade(c, gateDecision = null) {
     gateThreshold:           gateDecision?.threshold    ?? null,
     gateMode:                gateDecision?.mode         ?? null,
     gateDecision:            gateDecision               ?? null,
+    sourceStrategyId:        c.sourceStrategyId || null,
+    sourceStrategyName:      c.sourceStrategyName || null,
+    resolvedStrategyId:      c.resolvedStrategyId || c.strategyId || c.strategy_id || null,
+    resolvedStrategyName:    c.resolvedStrategyName || c.strategyName || c.strategy_name || null,
+    mappingSource:           c.mappingSource || (c.sourceStrategyId ? 'explicit' : 'unknown'),
     // intrabar tracking — updated every tick while trade is open
     maxFavorablePct:         null,
     maxAdversePct:           null,
@@ -834,14 +867,19 @@ async function saveClosedTradeMemory(closedTrade) {
 function recordPaperTradeToLearning(eventType, trade, exit = null) {
   try {
     if (!trade) return;
-    let strategyId = trade.strategy_id || trade.strategyId || null;
+    let strategyId = trade.resolvedStrategyId || trade.strategy_id || trade.strategyId || trade.sourceStrategyId || null;
     if (!strategyId) {
       try { strategyId = strategyRuntimeConnector.inferStrategyForSignal(trade)?.strategy_id || null; } catch { strategyId = null; }
     }
     learningConnector.recordPaperTradeEvent({
       event_type: eventType,
       strategy_id: strategyId,
-      strategy_name: trade.strategy_name || trade.strategyName || null,
+      strategy_name: trade.resolvedStrategyName || trade.strategy_name || trade.strategyName || trade.sourceStrategyName || null,
+      source_strategy_id: trade.sourceStrategyId || null,
+      source_strategy_name: trade.sourceStrategyName || null,
+      resolved_strategy_id: trade.resolvedStrategyId || trade.strategy_id || trade.strategyId || null,
+      resolved_strategy_name: trade.resolvedStrategyName || trade.strategy_name || trade.strategyName || null,
+      mapping_source: trade.mappingSource || null,
       symbol: trade.symbol,
       market: trade.marketGroup || trade.marketType || null,
       timeframe: trade.timeframe || '2m',
@@ -889,7 +927,7 @@ function recordPaperTradeToLearning(eventType, trade, exit = null) {
 function recordAgentAnalysisToLearning(agentAnalysis, candidate) {
   try {
     if (!agentAnalysis) return;
-    let strategyId = candidate?.strategy_id || candidate?.strategyId || null;
+    let strategyId = candidate?.resolvedStrategyId || candidate?.strategy_id || candidate?.strategyId || candidate?.sourceStrategyId || null;
     if (!strategyId) {
       try { strategyId = strategyRuntimeConnector.inferStrategyForSignal(candidate)?.strategy_id || null; } catch { strategyId = null; }
     }
@@ -900,6 +938,9 @@ function recordAgentAnalysisToLearning(agentAnalysis, candidate) {
       confidence: candidate?.confidenceScore ?? null,
       recommendation: agentAnalysis.recommendation || null,
       affected_strategy: strategyId,
+      source_strategy_id: candidate?.sourceStrategyId || null,
+      resolved_strategy_id: candidate?.resolvedStrategyId || candidate?.strategy_id || candidate?.strategyId || null,
+      mapping_source: candidate?.mappingSource || null,
       affected_symbol: candidate?.symbol || null,
       evidence: agentAnalysis.risk_notes || agentAnalysis.final_commentary || null,
       output_used: true,

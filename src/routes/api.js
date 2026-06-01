@@ -952,6 +952,21 @@ router.get('/daytrading/paper-trades', (req, res) => {
   catch (err) { res.status(500).json({ ok: false, error: err.message, ...daytradingControl.SAFETY }); }
 });
 
+router.get('/daytrading/paper-signals', (req, res) => {
+  try { res.json(daytradingControl.getPaperSignals({ limit: req.query.limit || req.query.n })); }
+  catch (err) { res.status(500).json({ ok: false, error: err.message, ...daytradingControl.SAFETY }); }
+});
+
+router.get('/daytrading/paper-strategy-diagnostics', (req, res) => {
+  try { res.json(daytradingControl.getPaperStrategyDiagnostics()); }
+  catch (err) { res.status(500).json({ ok: false, error: err.message, ...daytradingControl.SAFETY }); }
+});
+
+router.get('/daytrading/strategy-flow-diagnostics', (req, res) => {
+  try { res.json(daytradingControl.getStrategyFlowDiagnostics()); }
+  catch (err) { res.status(500).json({ ok: false, error: err.message, ...daytradingControl.SAFETY }); }
+});
+
 router.get('/daytrading/recommendation', (req, res) => {
   try { res.json(daytradingControl.getRecommendation()); }
   catch (err) { res.status(500).json({ ok: false, error: err.message, ...daytradingControl.SAFETY }); }

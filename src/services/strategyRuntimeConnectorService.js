@@ -90,6 +90,106 @@ function rawSignalOf(input = {}) {
   );
 }
 
+function firstTextValue(...values) {
+  for (const value of values) {
+    if (value == null) continue;
+    const text = String(value).trim();
+    if (text) return text;
+  }
+  return null;
+}
+
+function normalizeStrategyId(value) {
+  const text = firstTextValue(value);
+  return text || null;
+}
+
+function isSystemInfoSignal(signal = {}) {
+  const raw = upper(rawSignalOf(signal));
+  const status = upper(signal.status || signal.decision || signal.blockerMode || signal.discoveryMode || '');
+  const eventType = upper(signal.eventType || signal.type || '');
+  const reason = upper(signal.reasonSv || signal.reason || signal.comment_sv || signal.runtime_comment_sv || '');
+  return (
+    ['MARKET_CLOSED', 'AGENT_STARTED', 'AGENT_READY', 'HEARTBEAT', 'SYSTEM_INFO', 'INFO'].includes(raw) ||
+    ['MARKET_CLOSED', 'AGENT_STARTED', 'AGENT_READY', 'HEARTBEAT'].includes(eventType) ||
+    status === 'VÄNTA' ||
+    status === 'WAIT' ||
+    status === 'WÄNTA' ||
+    status === 'Vänta'.toUpperCase() ||
+    reason.includes('MARKET CLOSED') ||
+    reason.includes('AGENT STARTED') ||
+    reason.includes('VÄNTA')
+  );
+}
+
+function isRealTradeCandidateSignal(signal = {}) {
+  if (isSystemInfoSignal(signal)) return false;
+  const raw = rawSignalOf(signal);
+  return Boolean(
+    raw &&
+    raw !== 'UNKNOWN' &&
+    raw !== 'VÄNTA' &&
+    raw !== 'WAIT' &&
+    raw !== 'MARKET_CLOSED' &&
+    raw !== 'AGENT_STARTED'
+  );
+}
+
+function resolveStrategyMetadata(signal = {}, options = {}) {
+  const allowLegacyFallback = options.allowLegacyFallback !== false;
+  const raw = rawSignalOf(signal);
+  const sourceStrategyId = normalizeStrategyId(
+    signal.sourceStrategyId ||
+    signal.sourceStrategyID ||
+    signal.setupId ||
+    null,
+  );
+  const sourceStrategyName = firstTextValue(
+    signal.sourceStrategyName,
+    signal.strategyLabel,
+    null,
+  );
+  const metadata = {
+    sourceStrategyId,
+    sourceStrategyName,
+    resolvedStrategyId: null,
+    resolvedStrategyName: null,
+    mappingSource: 'unknown',
+    raw_strategy: raw,
+    signal_subtype: raw,
+  };
+
+  if (sourceStrategyId) {
+    metadata.resolvedStrategyId = sourceStrategyId;
+    metadata.resolvedStrategyName = sourceStrategyName || catalog.getStrategyById(sourceStrategyId)?.name || sourceStrategyId;
+    metadata.mappingSource = 'explicit';
+    return metadata;
+  }
+
+  if (isSystemInfoSignal(signal)) {
+    return metadata;
+  }
+
+  const runtimeStrategyId = strategyIdFromSignal(signal) || strategyIdFromKeywords(signal);
+  if (runtimeStrategyId) {
+    metadata.resolvedStrategyId = runtimeStrategyId;
+    metadata.resolvedStrategyName = catalog.getStrategyById(runtimeStrategyId)?.name || runtimeStrategyId;
+    metadata.mappingSource = 'runtime_inference';
+    return metadata;
+  }
+
+  if (allowLegacyFallback && isRealTradeCandidateSignal(signal)) {
+    const catalogStrategy = catalog.inferStrategyForSignal(signal);
+    if (catalogStrategy?.id) {
+      metadata.resolvedStrategyId = catalogStrategy.id;
+      metadata.resolvedStrategyName = catalogStrategy.name || catalog.getStrategyById(catalogStrategy.id)?.name || catalogStrategy.id;
+      metadata.mappingSource = 'legacy_fallback';
+    }
+  }
+
+  return metadata;
+}
+
 function marketOf(input = {}) {
   const symbol = upper(input.symbol);
   const market = String(input.marketType || input.market || input.marketGroup || input.market_group || '').toLowerCase();
@@ -345,15 +445,42 @@ function inferStrategyForSignal(signal = {}) {
   let strategyId = null;
   try {
     raw = rawSignalOf(signal);
-    strategyId = strategyIdFromSignal(signal) || strategyIdFromKeywords(signal);
+    const metadata = resolveStrategyMetadata(signal, { allowLegacyFallback: true });
+    strategyId = metadata.resolvedStrategyId;
     if (!strategyId) {
-      const catalogStrategy = catalog.inferStrategyForSignal(signal);
-      if (catalogStrategy?.id) strategyId = catalogStrategy.id;
+      return {
+        raw_strategy: raw,
+        signal_subtype: raw,
+        strategy_id: null,
+        strategy_name: null,
+        strategy_family: upper(signal.signalFamily) || 'UNKNOWN',
+        mapping_source: metadata.mappingSource,
+        sourceStrategyId: metadata.sourceStrategyId,
+        sourceStrategyName: metadata.sourceStrategyName,
+        resolvedStrategyId: metadata.resolvedStrategyId,
+        resolvedStrategyName: metadata.resolvedStrategyName,
+        mappingSource: metadata.mappingSource,
+        runtime_status: 'not_connected',
+        runtime_label: statusLabel('not_connected'),
+        mapping_confidence: 'low',
+        can_create_paper_trade: false,
+        can_create_paper_trade_label: 'nej',
+        connected: false,
+        entry_rule_implemented: false,
+        enabled_by_user: false,
+        runtime_comment_sv: 'Ingen säker runtime-mapping finns. Strategin markeras som ej kopplad.',
+        comment_sv: 'Ingen säker runtime-mapping finns. Strategin markeras som ej kopplad.',
+        crypto_signal_context: cryptoSignalContextOf(signal),
+        crypto_context: cryptoSignalContextOf(signal),
+        source: 'strategy_runtime_connector_v2',
+        ...SAFETY,
+      };
     }
   } catch (_) {
     strategyId = null;
   }
   const cryptoContext = cryptoSignalContextOf(signal);
+  const metadata = resolveStrategyMetadata(signal, { allowLegacyFallback: true });
   const cryptoMomentumEligible =
     strategyId === 'crypto_momentum_scalper' &&
     !!cryptoContext &&
@@ -364,8 +491,15 @@ function inferStrategyForSignal(signal = {}) {
     if (cryptoMomentumEligible) {
       return {
         strategy_id: strategyId,
+        strategyId: strategyId,
         strategy_name: catalog.getStrategyById(strategyId)?.name || runtime.strategy_name || strategyId,
+        strategyName: catalog.getStrategyById(strategyId)?.name || runtime.strategy_name || strategyId,
         strategy_family: catalog.getStrategyById(strategyId)?.engines_used?.[0] || runtime.strategy_family || catalog.getStrategyById(strategyId)?.market_label || catalog.getStrategyById(strategyId)?.market_group || 'UNKNOWN',
+        sourceStrategyId: metadata.sourceStrategyId,
+        sourceStrategyName: metadata.sourceStrategyName,
+        resolvedStrategyId: metadata.resolvedStrategyId || strategyId,
+        resolvedStrategyName: metadata.resolvedStrategyName || catalog.getStrategyById(strategyId)?.name || runtime.strategy_name || strategyId,
+        mappingSource: metadata.mappingSource,
         ...runtime,
         runtime_status: 'active',
         runtime_label: statusLabel('active'),
@@ -380,6 +514,7 @@ function inferStrategyForSignal(signal = {}) {
         comment_sv: 'Crypto-context finns i signalen. Strategin kan nu utvärderas i paper/replay/batch.',
         raw_strategy: raw,
         signal_subtype: raw,
+        mapping_source: metadata.mappingSource,
         source: 'strategy_runtime_connector_v2',
         crypto_signal_context: cryptoContext,
         crypto_context: cryptoContext,
@@ -389,11 +524,19 @@ function inferStrategyForSignal(signal = {}) {
     const strategy = catalog.getStrategyById(strategyId);
     return {
       strategy_id: strategyId,
+      strategyId: strategyId,
       strategy_name: strategy?.name || runtime.strategy_name || strategyId,
+      strategyName: strategy?.name || runtime.strategy_name || strategyId,
       strategy_family: strategy?.engines_used?.[0] || runtime.strategy_family || strategy?.market_label || strategy?.market_group || 'UNKNOWN',
+      sourceStrategyId: metadata.sourceStrategyId,
+      sourceStrategyName: metadata.sourceStrategyName,
+      resolvedStrategyId: metadata.resolvedStrategyId || strategyId,
+      resolvedStrategyName: metadata.resolvedStrategyName || strategy?.name || runtime.strategy_name || strategyId,
+      mappingSource: metadata.mappingSource,
       ...runtime,
       raw_strategy: raw,
       signal_subtype: raw,
+      mapping_source: metadata.mappingSource,
       runtime_comment_sv: runtime.runtime_comment_sv || runtime.comment_sv,
       comment_sv: runtime.runtime_comment_sv || runtime.comment_sv,
       crypto_signal_context: cryptoContext,
@@ -450,8 +593,15 @@ function inferStrategyForSignal(signal = {}) {
     raw_strategy: raw,
     signal_subtype: raw,
     strategy_id: null,
+    strategyId: null,
     strategy_name: null,
+    strategyName: null,
     strategy_family: upper(signal.signalFamily) || 'UNKNOWN',
+    sourceStrategyId: metadata.sourceStrategyId,
+    sourceStrategyName: metadata.sourceStrategyName,
+    resolvedStrategyId: null,
+    resolvedStrategyName: null,
+    mappingSource: metadata.mappingSource,
     runtime_status: 'not_connected',
     runtime_label: statusLabel('not_connected'),
     mapping_confidence: 'low',
@@ -470,13 +620,19 @@ function inferStrategyForSignal(signal = {}) {
 }
 
 function enrichSignalWithStrategy(signal = {}) {
+  const metadata = resolveStrategyMetadata(signal, { allowLegacyFallback: true });
   const inferred = inferStrategyForSignal(signal);
   return {
     ...signal,
-    strategy_id: signal.strategy_id || signal.strategyId || inferred.strategy_id,
-    strategyId: signal.strategyId || signal.strategy_id || inferred.strategy_id,
-    strategy_name: signal.strategy_name || signal.strategyName || inferred.strategy_name,
-    strategyName: signal.strategyName || signal.strategy_name || inferred.strategy_name,
+    sourceStrategyId: signal.sourceStrategyId || metadata.sourceStrategyId || null,
+    sourceStrategyName: signal.sourceStrategyName || metadata.sourceStrategyName || null,
+    resolvedStrategyId: signal.resolvedStrategyId || inferred.resolvedStrategyId || inferred.strategy_id || metadata.resolvedStrategyId || null,
+    resolvedStrategyName: signal.resolvedStrategyName || inferred.resolvedStrategyName || inferred.strategy_name || metadata.resolvedStrategyName || null,
+    mappingSource: signal.mappingSource || metadata.mappingSource || inferred.mappingSource || inferred.mapping_source || 'unknown',
+    strategy_id: signal.strategy_id || signal.strategyId || inferred.strategy_id || metadata.resolvedStrategyId || null,
+    strategyId: signal.strategyId || signal.strategy_id || inferred.strategy_id || metadata.resolvedStrategyId || null,
+    strategy_name: signal.strategy_name || signal.strategyName || inferred.strategy_name || metadata.resolvedStrategyName || null,
+    strategyName: signal.strategyName || signal.strategy_name || inferred.strategy_name || metadata.resolvedStrategyName || null,
     strategy_family: signal.strategy_family || inferred.strategy_family,
     raw_strategy: signal.raw_strategy || inferred.raw_strategy,
     signal_subtype: signal.signal_subtype || inferred.signal_subtype,
@@ -491,6 +647,7 @@ function enrichSignalWithStrategy(signal = {}) {
 }
 
 function enrichPaperTradeWithStrategy(trade = {}) {
+  const metadata = resolveStrategyMetadata(trade, { allowLegacyFallback: true });
   let inferred = null;
   try {
     inferred = inferStrategyForSignal(trade);
@@ -511,8 +668,8 @@ function enrichPaperTradeWithStrategy(trade = {}) {
       ...SAFETY,
     };
   }
-  const strategyId = trade.strategy_id || trade.strategyId || inferred.strategy_id;
-  const strategyName = trade.strategy_name || trade.strategyName || inferred.strategy_name;
+  const strategyId = trade.resolvedStrategyId || trade.strategy_id || trade.strategyId || metadata.resolvedStrategyId || inferred.strategy_id;
+  const strategyName = trade.resolvedStrategyName || trade.strategy_name || trade.strategyName || metadata.resolvedStrategyName || inferred.strategy_name;
   const raw = trade.raw_strategy || trade.signal_subtype || trade.signalSubtype || trade.strategy || inferred.raw_strategy;
   return {
     ...trade,
@@ -523,6 +680,11 @@ function enrichPaperTradeWithStrategy(trade = {}) {
     strategyId: strategyId || null,
     strategy_name: strategyName || null,
     strategyName: strategyName || null,
+    sourceStrategyId: trade.sourceStrategyId || metadata.sourceStrategyId || null,
+    sourceStrategyName: trade.sourceStrategyName || metadata.sourceStrategyName || null,
+    resolvedStrategyId: trade.resolvedStrategyId || strategyId || metadata.resolvedStrategyId || null,
+    resolvedStrategyName: trade.resolvedStrategyName || strategyName || metadata.resolvedStrategyName || null,
+    mappingSource: trade.mappingSource || metadata.mappingSource || inferred.mappingSource || inferred.mapping_source || 'unknown',
     strategy_family: trade.strategy_family || inferred.strategy_family,
     mapping_confidence: trade.mapping_confidence || inferred.mapping_confidence,
   runtime_status: trade.runtime_status || inferred.runtime_status,
@@ -1009,6 +1171,7 @@ function getStrategyRuntimeSummary() {
 module.exports = {
   SAFETY,
   getRuntimeStrategyMap,
+  resolveStrategyMetadata,
   inferStrategyForSignal,
   enrichSignalWithStrategy,
   enrichPaperTradeWithStrategy,

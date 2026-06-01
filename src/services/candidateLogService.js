@@ -23,6 +23,9 @@ function logCandidate(entry) {
   const paperTradeCreatedAt = entry.paperTradeCreated || entry.paper_trade_created_at || entry.paperTradeCreatedAt
     ? (entry.paper_trade_created_at || entry.paperTradeCreatedAt || evaluatedAt)
     : null;
+  const sourceStrategyId = entry.sourceStrategyId || null;
+  const resolvedStrategyId = entry.resolvedStrategyId || entry.strategyId || entry.strategy_id || sourceStrategyId || null;
+  const mappingSource = entry.mappingSource || (sourceStrategyId ? 'explicit' : 'unknown');
   const line = JSON.stringify({
     ts: detectedAt,
     detected_at: detectedAt,
@@ -43,6 +46,11 @@ function logCandidate(entry) {
     indexBias:           entry.indexBias,
     volumeState:         entry.volumeState,
     exitProfile:         entry.exitProfile,
+    sourceStrategyId,
+    sourceStrategyName:  entry.sourceStrategyName || entry.strategyName || entry.strategy_name || null,
+    resolvedStrategyId,
+    resolvedStrategyName: entry.resolvedStrategyName || entry.strategyName || entry.strategy_name || null,
+    mappingSource,
   });
   fs.appendFileSync(LOG_FILE, line + '\n', 'utf8');
   auditTrail.logAuditEvent({
@@ -50,18 +58,34 @@ function logCandidate(entry) {
     source: 'candidate_log',
     timestamp: detectedAt,
     symbol: entry.symbol,
-    strategy_id: entry.strategyId || entry.setupId || null,
+    strategy_id: resolvedStrategyId || sourceStrategyId || null,
     message: entry.symbol ? `Kandidat hittad för ${entry.symbol}` : 'Kandidat hittad',
-    details: { score: entry.score, signal: entry.signal, marketGroup: entry.marketGroup, setupId: entry.setupId },
+    details: {
+      score: entry.score,
+      signal: entry.signal,
+      marketGroup: entry.marketGroup,
+      setupId: entry.setupId,
+      sourceStrategyId,
+      resolvedStrategyId,
+      mappingSource,
+    },
   });
   auditTrail.logAuditEvent({
     type: 'CANDIDATE_EVALUATED',
     source: 'candidate_log',
     timestamp: evaluatedAt,
     symbol: entry.symbol,
-    strategy_id: entry.strategyId || entry.setupId || null,
+    strategy_id: resolvedStrategyId || sourceStrategyId || null,
     message: entry.symbol ? `Kandidat utvärderad för ${entry.symbol}` : 'Kandidat utvärderad',
-    details: { score: entry.score, blockerMode: entry.blockerMode, warnings: entry.warnings || [], wouldHaveBeenBlockedBy: entry.wouldHaveBeenBlockedBy || [] },
+    details: {
+      score: entry.score,
+      blockerMode: entry.blockerMode,
+      warnings: entry.warnings || [],
+      wouldHaveBeenBlockedBy: entry.wouldHaveBeenBlockedBy || [],
+      sourceStrategyId,
+      resolvedStrategyId,
+      mappingSource,
+    },
   });
 }
 
