@@ -3,6 +3,7 @@
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
+const kafkaEventProducer = require('./kafkaEventProducerService');
 
 const SAFETY = Object.freeze({
   actions_allowed: false,
@@ -174,6 +175,13 @@ function appendEvent(input = {}) {
     ensureDir();
     const event = normalizeEvent(input);
     fs.appendFileSync(EVENTS_FILE, `${JSON.stringify(event)}\n`, 'utf8');
+    try {
+      Promise.resolve(kafkaEventProducer.publishEvent(event)).catch((err) => {
+        console.warn('[event-log] kafka publish failed:', err?.message || err);
+      });
+    } catch (err) {
+      console.warn('[event-log] kafka publish failed:', err.message);
+    }
     return { ok: true, event, ...SAFETY };
   } catch (err) {
     console.warn('[event-log] append failed:', err.message);
@@ -204,10 +212,19 @@ function readRecentEvents(limit = MAX_RECENT_EVENTS) {
   }
 }
 
+function getStatus() {
+  return {
+    jsonl_enabled: true,
+    ...kafkaEventProducer.getStatus(),
+    ...SAFETY,
+  };
+}
+
 module.exports = {
   SAFETY,
   EVENTS_FILE,
   appendEvent,
+  getStatus,
   readRecentEvents,
   normalizeEvent,
 };

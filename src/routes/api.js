@@ -1276,6 +1276,14 @@ router.get('/events/recent', (req, res) => {
   }
 });
 
+router.get('/events/status', (req, res) => {
+  try {
+    res.json(eventLogService.getStatus());
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message, actions_allowed: false, can_place_orders: false, live_trading_enabled: false });
+  }
+});
+
 // ── Trade Outcome Replay v1 ─────────────────────────────────────────────────
 // Read-only paper/replay analysis. It never creates trades, places orders or changes live config.
 
