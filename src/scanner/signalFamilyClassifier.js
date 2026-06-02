@@ -1,5 +1,10 @@
 'use strict';
 
+const {
+  getRuntimeStrategyMap,
+  resolveStrategyMetadata,
+} = require('../services/strategyRuntimeConnectorService');
+
 const SIGNAL_FAMILIES = new Set([
   'EMA_TREND_PULLBACK',
   'VWAP_RECLAIM_REJECTION',
@@ -178,17 +183,44 @@ function evaluateEmaTrendPullback(sig, direction) {
   };
 }
 
+function strategyMetadataFromExplicitMapping(strategyId, sourceStrategyName = null) {
+  if (!strategyId) return null;
+  return {
+    sourceStrategyId: strategyId,
+    sourceStrategyName,
+    strategyId,
+    strategyName: sourceStrategyName,
+    resolvedStrategyId: strategyId,
+    resolvedStrategyName: sourceStrategyName,
+    mappingSource: 'explicit',
+  };
+}
+
 function classifyEmaTrendPullback(sig, direction) {
   const attempt = evaluateEmaTrendPullback(sig, direction);
   if (!attempt.matched) return null;
 
+  const subtype = direction === 'UP' ? 'EMA_PULLBACK_UP' : 'EMA_PULLBACK_DOWN';
+  const inferred = resolveStrategyMetadata(
+    {
+      ...sig,
+      signalFamily: 'EMA_TREND_PULLBACK',
+      signalSubtype: subtype,
+      eventType: subtype,
+    },
+    { allowLegacyFallback: true },
+  );
+  const strategyId = inferred?.resolvedStrategyId || inferred?.strategyId || null;
+  const metadata = strategyMetadataFromExplicitMapping(strategyId, inferred?.resolvedStrategyName || inferred?.strategyName || null);
+
   return {
     signalFamily: 'EMA_TREND_PULLBACK',
-    signalSubtype: direction === 'UP' ? 'EMA_PULLBACK_UP' : 'EMA_PULLBACK_DOWN',
+    signalSubtype: subtype,
     direction,
     reasonSv: direction === 'UP'
       ? 'Trend-rekyl upptäckt. Riktningen lutar uppåt, men vänta på tydlig 2m-bekräftelse.'
       : 'Trend-rekyl upptäckt. Riktningen lutar nedåt, men vänta på tydlig 2m-bekräftelse.',
+    ...metadata,
   };
 }
 
@@ -268,6 +300,20 @@ function classifySignalFamily(sig = {}) {
 
   const ema = classifyEmaTrendPullback(sig, direction);
   if (ema) return ema;
+
+  const signalType = String(sig.signalSubtype || sig.eventType || '').toUpperCase();
+  if (signalType === 'REGULAR_PULLBACK') {
+    const runtimeEntry = getRuntimeStrategyMap().find((entry) => entry.raw_signal === 'REGULAR_PULLBACK');
+    const strategyId = runtimeEntry?.strategy_id || 'trend_continuation';
+    const strategyName = runtimeEntry?.strategy_name || null;
+    return {
+      signalFamily: 'REGULAR_PULLBACK',
+      signalSubtype: 'REGULAR_PULLBACK',
+      direction,
+      reasonSv: 'Vanlig rekyl identifierad som stabil familj.',
+      ...strategyMetadataFromExplicitMapping(strategyId, strategyName),
+    };
+  }
 
   if (SIGNAL_FAMILIES.has(sig.signalFamily) && sig.signalFamily !== 'UNKNOWN') {
     return {

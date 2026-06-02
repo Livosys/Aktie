@@ -885,6 +885,41 @@ function buildCandidate(result, options = {}) {
   const familyDebug = options.familyDebug ? buildSignalFamilyDebug(familyInput) : null;
   const signalFamily = familyClassification.signalFamily;
   const signalSubtype = result.signalSubtype || familyClassification.signalSubtype || 'UNKNOWN';
+  const explicitStrategyId =
+    result.strategyId ||
+    result.strategy_id ||
+    result.setupId ||
+    familyClassification.sourceStrategyId ||
+    familyClassification.strategyId ||
+    null;
+  const explicitResolvedStrategyId =
+    result.resolvedStrategyId ||
+    familyClassification.resolvedStrategyId ||
+    explicitStrategyId ||
+    null;
+  const explicitSourceStrategyId =
+    result.sourceStrategyId ||
+    familyClassification.sourceStrategyId ||
+    null;
+  const explicitStrategyName =
+    result.strategyName ||
+    result.strategy_name ||
+    familyClassification.strategyName ||
+    familyClassification.resolvedStrategyName ||
+    null;
+  const explicitSourceStrategyName =
+    result.sourceStrategyName ||
+    familyClassification.sourceStrategyName ||
+    null;
+  const explicitResolvedStrategyName =
+    result.resolvedStrategyName ||
+    familyClassification.resolvedStrategyName ||
+    explicitStrategyName ||
+    null;
+  const explicitMappingSource =
+    result.mappingSource ||
+    familyClassification.mappingSource ||
+    (explicitSourceStrategyId || explicitStrategyId ? 'explicit' : 'unknown');
   const priorityBeforeFamilyCalibration = priority;
   const decisionTextBeforeFamilyCalibration = decisionTextSv;
   const familyCalibrationHints = buildFamilyCalibrationHints({
@@ -940,15 +975,16 @@ function buildCandidate(result, options = {}) {
     symbol: result.symbol,
     market: marketType,
     price: result.price,
-    strategyId: result.strategyId || result.strategy_id || result.setupId || result.sourceStrategyId || null,
-    strategy_id: result.strategy_id || result.strategyId || result.setupId || result.sourceStrategyId || null,
-    strategyName: result.strategyName || result.strategy_name || null,
-    strategy_name: result.strategy_name || result.strategyName || null,
-    sourceStrategyId: result.sourceStrategyId || null,
-    sourceStrategyName: result.sourceStrategyName || null,
-    resolvedStrategyId: result.resolvedStrategyId || result.strategyId || result.strategy_id || result.setupId || null,
-    resolvedStrategyName: result.resolvedStrategyName || result.strategyName || result.strategy_name || null,
-    mappingSource: result.mappingSource || (result.sourceStrategyId || result.strategyId || result.strategy_id || result.setupId ? 'explicit' : 'unknown'),
+    strategyId: explicitStrategyId,
+    strategy_id: explicitStrategyId,
+    strategyName: explicitStrategyName,
+    strategy_name: explicitStrategyName,
+    name: explicitStrategyName,
+    sourceStrategyId: explicitSourceStrategyId,
+    sourceStrategyName: explicitSourceStrategyName,
+    resolvedStrategyId: explicitResolvedStrategyId,
+    resolvedStrategyName: explicitResolvedStrategyName,
+    mappingSource: explicitMappingSource,
     ema9: result.ema9 ?? null,
     ema21: result.ema21 ?? null,
     ema50: result.ema50 ?? null,
