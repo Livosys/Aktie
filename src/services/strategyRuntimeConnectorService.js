@@ -167,6 +167,16 @@ function resolveStrategyMetadata(signal = {}, options = {}) {
     signal_subtype: raw,
   };
 
+  const exactRuntimeEntry = findMapEntry(signal);
+  if (exactRuntimeEntry?.strategy_id) {
+    metadata.resolvedStrategyId = exactRuntimeEntry.strategy_id;
+    metadata.resolvedStrategyName = catalog.getStrategyById(exactRuntimeEntry.strategy_id)?.name || exactRuntimeEntry.strategy_id;
+    metadata.strategyId = metadata.resolvedStrategyId;
+    metadata.strategyName = metadata.resolvedStrategyName;
+    metadata.mappingSource = 'runtime_map';
+    return metadata;
+  }
+
   if (explicitStrategyId) {
     metadata.resolvedStrategyId = explicitStrategyId;
     metadata.resolvedStrategyName = sourceStrategyName || catalog.getStrategyById(explicitStrategyId)?.name || explicitStrategyId;
@@ -180,7 +190,10 @@ function resolveStrategyMetadata(signal = {}, options = {}) {
     return metadata;
   }
 
-  const runtimeStrategyId = strategyIdFromSignal(signal) || strategyIdFromKeywords(signal);
+  const runtimeStrategyId =
+    exactRuntimeEntry?.strategy_id ||
+    strategyIdFromSignal(signal) ||
+    strategyIdFromKeywords(signal);
   if (runtimeStrategyId) {
     metadata.resolvedStrategyId = runtimeStrategyId;
     metadata.resolvedStrategyName = catalog.getStrategyById(runtimeStrategyId)?.name || runtimeStrategyId;
