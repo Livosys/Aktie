@@ -1873,6 +1873,27 @@ function flowReasonOf(row = {}) {
   ) || null;
 }
 
+function isMissingStrategyIdNoise(row = {}) {
+  const signalType = String(row.signalType || '').toUpperCase();
+  const signalSubtype = String(row.signalSubtype || row.signal_subtype || '').toUpperCase();
+  const reason = String(row.reason || '').toLowerCase();
+  const source = String(row.source || '').toLowerCase();
+  const hasResolvedExplicit = row.resolvedStrategyId != null && row.mappingSource === 'explicit';
+  const isSystemWait =
+    signalType === 'NO_TRADE' ||
+    signalSubtype === 'NO_TRADE' ||
+    signalType === 'NARROW_WAIT' ||
+    signalSubtype === 'NARROW_WAIT';
+  const isPaperEventWait =
+    source === 'paper_event' &&
+    String(row.status || '').toLowerCase() === 'wait' &&
+    reason.includes('skippad') &&
+    row.strategyId == null &&
+    row.resolvedStrategyId == null;
+
+  return hasResolvedExplicit || isSystemWait || isPaperEventWait;
+}
+
 function flowExamples(rows = [], limit = 3) {
   return rows
     .slice(0, limit)
@@ -2066,11 +2087,14 @@ function buildStrategyFlowDiagnostics() {
 
   const missingStrategyIdCandidates = recentFlowRows
     .filter((row) => row.sourceStrategyId == null)
+    .filter((row) => !isMissingStrategyIdNoise(row))
     .map((row) => ({
       ts: row.ts,
       source: row.source,
       symbol: row.symbol,
       signalType: row.signalType,
+      signalFamily: row.signalFamily || null,
+      signalSubtype: row.signalSubtype || row.signal_subtype || null,
       score: row.score,
       confidence: row.confidence,
       status: row.status,
