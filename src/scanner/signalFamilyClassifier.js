@@ -135,10 +135,25 @@ function volumeIsUsable(sig) {
 function evaluateEmaTrendPullback(sig, direction) {
   const missing = [];
   const failedReasons = [];
+  const state = String(sig.state || sig.narrowState || '').toUpperCase();
+  const narrowType = String(sig.narrowType || '').toLowerCase();
+  const eventType = String(sig.eventType || sig.signalSubtype || '').toUpperCase();
+  const narrowContext =
+    state === 'HIGH_QUALITY_NARROW' ||
+    state === 'MEDIUM_NARROW' ||
+    narrowType === 'coil_flat' ||
+    narrowType === 'attack_200' ||
+    eventType === 'NARROW_WAIT' ||
+    eventType === 'BULLISH_COLOR_CHANGE' ||
+    eventType === 'BEARISH_COLOR_CHANGE' ||
+    eventType === 'BULLISH_ELEPHANT_BREAKOUT' ||
+    eventType === 'BEARISH_ELEPHANT_BREAKDOWN';
+
   if (direction !== 'UP' && direction !== 'DOWN') failedReasons.push('Riktningen är inte tydlig.');
   if (!hasFreshData(sig)) failedReasons.push('Data är gammal.');
   if (isExtreme(sig)) failedReasons.push('Rörelsen är markerad som extrem.');
   if (hardBlockerCount(sig) > 1) failedReasons.push('Fler än en hård blockerare finns.');
+  if (narrowContext) failedReasons.push('Narrow-kontext ska klassas som NARROW_COMPRESSION, inte EMA-rekyl.');
 
   ['ema21', 'ema50'].forEach((key) => {
     if (num(sig[key]) == null) missing.push(key);
@@ -295,11 +310,9 @@ function buildSignalFamilyDebug(sig = {}) {
 
 function classifySignalFamily(sig = {}) {
   const direction = deriveDirection(sig);
-  const vwap = classifyVwapReclaimRejection(sig, direction);
-  if (vwap) return vwap;
-
-  const ema = classifyEmaTrendPullback(sig, direction);
-  if (ema) return ema;
+  const state = String(sig.state || sig.narrowState || '').toUpperCase();
+  const eventType = String(sig.eventType || sig.signalSubtype || '').toUpperCase();
+  const narrowType = String(sig.narrowType || '').toLowerCase();
 
   const signalType = String(sig.signalSubtype || sig.eventType || '').toUpperCase();
   if (signalType === 'REGULAR_PULLBACK') {
@@ -312,6 +325,74 @@ function classifySignalFamily(sig = {}) {
       direction,
       reasonSv: 'Vanlig rekyl identifierad som stabil familj.',
       ...strategyMetadataFromExplicitMapping(strategyId, strategyName),
+    };
+  }
+
+  const isNarrowContext =
+    state === 'HIGH_QUALITY_NARROW' ||
+    state === 'MEDIUM_NARROW' ||
+    narrowType === 'coil_flat' ||
+    narrowType === 'attack_200' ||
+    eventType === 'NARROW_WAIT' ||
+    eventType === 'BULLISH_COLOR_CHANGE' ||
+    eventType === 'BEARISH_COLOR_CHANGE' ||
+    eventType === 'BULLISH_ELEPHANT_BREAKOUT' ||
+    eventType === 'BEARISH_ELEPHANT_BREAKDOWN';
+
+  if (isNarrowContext) {
+    const subtype =
+      eventType === 'NARROW_WAIT'
+        ? 'NARROW_WAIT'
+        : direction === 'UP'
+          ? 'NARROW_BULL_ENTRY'
+          : direction === 'DOWN'
+            ? 'NARROW_BEAR_ENTRY'
+            : 'NARROW_WAIT';
+
+    const inferred = resolveStrategyMetadata(
+      {
+        ...sig,
+        signalFamily: 'NARROW_COMPRESSION',
+        signalSubtype: subtype,
+        eventType: subtype,
+      },
+      { allowLegacyFallback: true },
+    );
+    const strategyId = inferred?.resolvedStrategyId || inferred?.strategyId || null;
+    const metadata = strategyMetadataFromExplicitMapping(strategyId, inferred?.resolvedStrategyName || inferred?.strategyName || null);
+
+    return {
+      signalFamily: 'NARROW_COMPRESSION',
+      signalSubtype: subtype,
+      direction,
+      reasonSv: direction === 'UP'
+        ? 'Ihoptryckt pris upptäckt. Riktningen lutar uppåt, men vänta på tydlig 2m-bekräftelse.'
+        : direction === 'DOWN'
+          ? 'Ihoptryckt pris upptäckt. Riktningen lutar nedåt, men vänta på tydlig 2m-bekräftelse.'
+          : 'Ihoptryckt pris upptäckt. Vänta på tydlig 2m-bekräftelse.',
+      ...metadata,
+    };
+  }
+
+  const vwap = classifyVwapReclaimRejection(sig, direction);
+  if (vwap) return vwap;
+
+  const ema = classifyEmaTrendPullback(sig, direction);
+  if (ema) return ema;
+
+  if (
+    state === 'WIDE_AVOID' ||
+    state === 'THREE_FINGER_SPREAD_AVOID' ||
+    eventType === 'WIDE_REVERSAL_WATCH' ||
+    eventType === 'THREE_FINGER_SPREAD_AVOID'
+  ) {
+    return {
+      signalFamily: 'LATE_MOVE_BLOCK',
+      signalSubtype: eventType === 'WIDE_REVERSAL_WATCH' ? 'WIDE_REVERSAL_WATCH' : 'THREE_FINGER_SPREAD_AVOID',
+      direction,
+      reasonSv: eventType === 'WIDE_REVERSAL_WATCH'
+        ? 'Rörelsen är sen och en möjlig vändning kan vara på gång.'
+        : 'Priset är för långt ifrån. Jaga inte.',
     };
   }
 

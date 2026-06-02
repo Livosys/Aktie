@@ -309,7 +309,10 @@ function deriveEventType({ state, signal, position, threeFingerSpread, elephantB
   if (state === 'REGULAR_TREND') {
     if (elephantBar.active && elephantBar.direction === 'bullish') return 'BULLISH_ELEPHANT_BREAKOUT';
     if (elephantBar.active && elephantBar.direction === 'bearish') return 'BEARISH_ELEPHANT_BREAKDOWN';
-    return 'REGULAR_PULLBACK';
+    if (signal === 'LONG_TRIGGERED' || signal === 'SHORT_TRIGGERED' || signal === 'WAIT_PULLBACK') {
+      return 'REGULAR_PULLBACK';
+    }
+    return 'NO_TRADE';
   }
 
   if (state === 'WIDE_AVOID' || state === 'THREE_FINGER_SPREAD_AVOID') return 'THREE_FINGER_SPREAD_AVOID';
