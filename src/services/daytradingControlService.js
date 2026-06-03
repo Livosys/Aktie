@@ -217,16 +217,39 @@ function tradeSourceLabel(trade = {}) {
 
 function strategyMetadataOf(row = {}) {
   const sourceStrategyId = row.sourceStrategyId || null;
-  const strategyId = row.strategyId || row.strategy_id || row.setupId || sourceStrategyId || null;
-  const resolvedStrategyId = row.resolvedStrategyId || strategyId || null;
+  const explicitStrategyId = row.strategyId || row.strategy_id || row.setupId || sourceStrategyId || row.resolvedStrategyId || null;
+  const signalSubtype = String(row.signalSubtype || row.signal_subtype || '').toUpperCase();
+  const signalFamily = String(row.signalFamily || row.signal_family || '').toUpperCase();
+  let strategyId = explicitStrategyId;
+  let resolvedStrategyId = row.resolvedStrategyId || explicitStrategyId || null;
+  let strategyName = row.strategyName || row.strategy_name || null;
+  let resolvedStrategyName = row.resolvedStrategyName || strategyName || null;
+  let mappingSource = row.mappingSource || (explicitStrategyId ? 'explicit' : 'unknown');
+
+  if (!strategyId) {
+    if (signalSubtype === 'VWAP_RECLAIM_UP' || signalFamily === 'VWAP_RECLAIM_UP') {
+      strategyId = 'vwap_volume_breakout_long';
+      resolvedStrategyId = strategyId;
+      strategyName = strategyName || 'VWAP Volume Breakout Long';
+      resolvedStrategyName = resolvedStrategyName || strategyName;
+      mappingSource = 'metadata_recovery';
+    } else if (signalSubtype === 'VWAP_REJECTION_DOWN' || signalFamily === 'VWAP_REJECTION_DOWN') {
+      strategyId = 'vwap_failed_breakout_short';
+      resolvedStrategyId = strategyId;
+      strategyName = strategyName || 'VWAP Failed Breakout Short';
+      resolvedStrategyName = resolvedStrategyName || strategyName;
+      mappingSource = 'metadata_recovery';
+    }
+  }
+
   return {
     sourceStrategyId,
     sourceStrategyName: row.sourceStrategyName || null,
     strategyId,
-    strategyName: row.strategyName || row.strategy_name || null,
+    strategyName,
     resolvedStrategyId,
-    resolvedStrategyName: row.resolvedStrategyName || row.strategyName || row.strategy_name || null,
-    mappingSource: row.mappingSource || (strategyId ? 'explicit' : 'unknown'),
+    resolvedStrategyName,
+    mappingSource,
   };
 }
 
