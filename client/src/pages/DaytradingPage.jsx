@@ -9,7 +9,7 @@ function useDaytradingData(tradeLimit = 200) {
   const [state, setState] = useState({
     status: null, strategies: null, pipeline: null,
     liveTrades: null, recommendation: null, impact: null, symbols: null, runtime: null,
-    cryptoScan: null, cryptoScanError: false, marketControls: null, learning: null, paperStatus: null, paperSignals: null, paperTrades: null,
+    cryptoScan: null, cryptoScanError: false, marketControls: null, learning: null, paperStatus: null, paperSignals: null, paperTrades: null, paperStrategyDiagnostics: null,
     autopilotStatus: null, autopilotConfig: null, candidates: null,
     loading: true, refreshing: false, refreshError: null, error: false,
   });
@@ -24,7 +24,7 @@ function useDaytradingData(tradeLimit = 200) {
       refreshError: null,
     }));
     const get = url => fetch(url).then(r => r.json()).catch(() => null);
-    const [statusD, strD, pipeD, tradesD, recD, impD, symD, runtimeD, cryptoScanD, marketControlsD, learningD, paperStatusD, paperSignalsD, paperTradesD, autopilotStatusD, autopilotConfigD, candidatesD] = await Promise.all([
+    const [statusD, strD, pipeD, tradesD, recD, impD, symD, runtimeD, cryptoScanD, marketControlsD, learningD, paperStatusD, paperSignalsD, paperTradesD, paperStrategyDiagnosticsD, autopilotStatusD, autopilotConfigD, candidatesD] = await Promise.all([
       get('/api/daytrading/status'), get('/api/daytrading/strategies'),
       get('/api/daytrading/pipeline'), get(`/api/daytrading/live-trades?limit=${tradeLimit}`),
       get('/api/daytrading/recommendation'), get('/api/daytrading/impact-summary'),
@@ -35,6 +35,7 @@ function useDaytradingData(tradeLimit = 200) {
       get('/api/paper-trading/status'),
       get('/api/daytrading/paper-signals?limit=200'),
       get('/api/daytrading/paper-trades?limit=200'),
+      get('/api/daytrading/paper-strategy-diagnostics'),
       get('/api/strategy-test-autopilot/status'),
       get('/api/strategy-test-autopilot/config'),
       get('/api/candidates/recent?n=50'),
@@ -54,6 +55,7 @@ function useDaytradingData(tradeLimit = 200) {
     const validPaperStatus = isValidResponse(paperStatusD);
     const validPaperSignals = isValidResponse(paperSignalsD);
     const validPaperTrades = isValidResponse(paperTradesD);
+    const validPaperStrategyDiagnostics = isValidResponse(paperStrategyDiagnosticsD);
     const validAutopilotStatus = isValidResponse(autopilotStatusD);
     const validAutopilotConfig = isValidResponse(autopilotConfigD);
     const validCandidates = isValidResponse(candidatesD);
@@ -72,6 +74,7 @@ function useDaytradingData(tradeLimit = 200) {
       validPaperStatus,
       validPaperSignals,
       validPaperTrades,
+      validPaperStrategyDiagnostics,
       validAutopilotStatus,
       validAutopilotConfig,
       validCandidates,
@@ -96,6 +99,7 @@ function useDaytradingData(tradeLimit = 200) {
         paperStatus: validPaperStatus ? paperStatusD : prev.paperStatus,
         paperSignals: validPaperSignals ? paperSignalsD : prev.paperSignals,
         paperTrades: validPaperTrades ? paperTradesD : prev.paperTrades,
+        paperStrategyDiagnostics: validPaperStrategyDiagnostics ? paperStrategyDiagnosticsD : prev.paperStrategyDiagnostics,
         autopilotStatus: validAutopilotStatus ? autopilotStatusD : prev.autopilotStatus,
         autopilotConfig: validAutopilotConfig ? autopilotConfigD : prev.autopilotConfig,
         candidates: validCandidates ? candidatesD : prev.candidates,
@@ -2219,6 +2223,157 @@ function TodayPaperTradesSection({ paperTrades, paperStatus, paperSignals, loadi
   );
 }
 
+function StrategyDiagnosticsSection({ paperStrategyDiagnostics, loading = false }) {
+  const summary = paperStrategyDiagnostics?.summary || {};
+  const allStrategies = Array.isArray(paperStrategyDiagnostics?.strategies) ? paperStrategyDiagnostics.strategies : [];
+  const tradedStrategies = Array.isArray(paperStrategyDiagnostics?.tradedStrategies) ? paperStrategyDiagnostics.tradedStrategies : [];
+  const blockedStrategies = Array.isArray(paperStrategyDiagnostics?.blockedStrategies) ? paperStrategyDiagnostics.blockedStrategies : [];
+  const neverTriggeredStrategies = Array.isArray(paperStrategyDiagnostics?.neverTriggeredStrategies) ? paperStrategyDiagnostics.neverTriggeredStrategies : [];
+  const blockerReasons = Array.isArray(paperStrategyDiagnostics?.blockerReasons) ? paperStrategyDiagnostics.blockerReasons : [];
+  const activeStrategies = allStrategies.filter((row) => row.enabled_by_user === true).sort((a, b) => String(a.name || '').localeCompare(String(b.name || '')));
+
+  return (
+    <div className="dt-panel">
+      <div className="dt-panel-head">
+        <div>
+          <h3 className="dt-panel-title">Strategier i Paper Trading</h3>
+          <p className="dt-paper-panel-sub">
+            Read-only diagnostik som visar vilka strategier som är aktiva, vilka som faktiskt har tradat, vilka som blockeras och vilka som aldrig triggas.
+          </p>
+        </div>
+        <div className="dt-paper-status-pills">
+          <span className="dt-paper-pill dt-paper-pill-off">Live Trading: AV</span>
+          <span className="dt-paper-pill dt-paper-pill-off">actions_allowed=false</span>
+          <span className="dt-paper-pill dt-paper-pill-off">can_place_orders=false</span>
+        </div>
+      </div>
+
+      <div className="dt-overview-grid dt-paper-status-grid">
+        <SummaryTile label="Totalt strategier" value={summary.totalStrategies ?? allStrategies.length ?? 0} note="Alla registrerade i katalogen" />
+        <SummaryTile label="Aktiva strategier" value={summary.enabledStrategies ?? activeStrategies.length ?? 0} note="enabled_by_user=true" tone="good" />
+        <SummaryTile label="Strategier med paper trades" value={summary.strategiesWithPaperTrades ?? tradedStrategies.length ?? 0} note="Har minst en trade i historiken" />
+        <SummaryTile label="Strategier med signaler" value={summary.strategiesWithSignals ?? 0} note="Har fått kandidater eller trades" />
+        <SummaryTile label="Strategier blockerade" value={summary.strategiesBlocked ?? blockedStrategies.length ?? 0} note="Har kandidater som stoppats" tone="warning" />
+        <SummaryTile label="Aldrig triggat" value={summary.strategiesNeverTriggered ?? neverTriggeredStrategies.length ?? 0} note="Aktiva men utan signal/trade" tone="danger" />
+      </div>
+
+      {loading && !paperStrategyDiagnostics ? (
+        <div className="dt-paper-empty">
+          <div className="dt-loading-inline">
+            <span className="spinner" style={{ width: 16, height: 16 }} />
+            <span>Hämtar strategi-diagnostik…</span>
+          </div>
+        </div>
+      ) : (
+        <>
+          <div className="dt-paper-rail-grid">
+            <div className="dt-paper-rail">
+              <div className="dt-paper-rail-head">
+                <h4>Aktiva strategier</h4>
+                <span>{activeStrategies.length}</span>
+              </div>
+              {activeStrategies.length > 0 ? activeStrategies.slice(0, 8).map((row) => (
+                <div key={row.id} className="dt-paper-mini-row">
+                  <strong>{row.name || row.id}</strong>
+                  <span>{row.market_group || '–'} · {row.runtime_status || '–'} · {row.enabled_by_user ? 'på' : 'av'}</span>
+                  <small>{row.entry_rule_implemented ? 'entry OK' : 'saknar entry'} · {row.exit_rule_implemented ? 'exit OK' : 'saknar exit'} · trades {row.paper_trades_total ?? 0}</small>
+                </div>
+              )) : (
+                <div className="dt-paper-mini-empty">Inga aktiva strategier hittades.</div>
+              )}
+            </div>
+
+            <div className="dt-paper-rail">
+              <div className="dt-paper-rail-head">
+                <h4>Traded idag</h4>
+                <span>{tradedStrategies.filter((row) => (row.paper_trades_today ?? 0) > 0).length}</span>
+              </div>
+              {tradedStrategies.length > 0 ? tradedStrategies.filter((row) => (row.paper_trades_today ?? 0) > 0).slice(0, 8).map((row) => (
+                <div key={row.id} className="dt-paper-mini-row">
+                  <strong>{row.name}</strong>
+                  <span>{row.paper_trades_today ?? 0} idag · {row.paper_trades_total ?? 0} totalt</span>
+                  <small>W/L/T: {row.wins ?? 0}/{row.losses ?? 0}/{row.timeouts ?? 0} · {row.runtime_status || '–'}</small>
+                </div>
+              )) : (
+                <div className="dt-paper-mini-empty">Inga strategier har skapat trades idag.</div>
+              )}
+            </div>
+
+            <div className="dt-paper-rail">
+              <div className="dt-paper-rail-head">
+                <h4>Strategier blockerade</h4>
+                <span>{blockedStrategies.length}</span>
+              </div>
+              {blockedStrategies.length > 0 ? blockedStrategies.slice(0, 8).map((row) => (
+                <div key={row.id} className="dt-paper-mini-row">
+                  <strong>{row.name}</strong>
+                  <span>{row.blocked_count ?? 0} blockerade kandidater</span>
+                  <small>{row.top_reasons?.[0]?.reason || 'Ingen blockeringsorsak sparad'}</small>
+                </div>
+              )) : (
+                <div className="dt-paper-mini-empty">Inga blockerade strategier i senaste kandidatlogg.</div>
+              )}
+            </div>
+          </div>
+
+          <DetailsBlock summary="Visa strategier som aldrig triggas" defaultOpen={false}>
+            {neverTriggeredStrategies.length > 0 ? (
+              <div className="dt-table-wrap">
+                <table className="dt-table dt-paper-signals-table">
+                  <thead>
+                    <tr>
+                      <th>Strategi</th>
+                      <th>Market</th>
+                      <th>Status</th>
+                      <th>Entry</th>
+                      <th>Exit</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {neverTriggeredStrategies.slice(0, 20).map((row) => (
+                      <tr key={row.id}>
+                        <td><strong>{row.name}</strong><div className="dt-table-sub">{row.id}</div></td>
+                        <td>{row.market_group || '–'}</td>
+                        <td>{row.runtime_status || '–'}</td>
+                        <td>{row.entry_rule_implemented ? 'Ja' : 'Nej'}</td>
+                        <td>{row.exit_rule_implemented ? 'Ja' : 'Nej'}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            ) : (
+              <PlatformEmptyState title="Inga strategier i never-triggered-listan" text="Alla aktiva strategier har åtminstone fått en signal eller trade i senaste datan." />
+            )}
+          </DetailsBlock>
+
+          <DetailsBlock summary="Visa top blockeringsorsaker" defaultOpen={false}>
+            {blockerReasons.length > 0 ? (
+              <div className="dt-paper-rail-grid">
+                <div className="dt-paper-rail">
+                  <div className="dt-paper-rail-head">
+                    <h4>Orsaker</h4>
+                    <span>{blockerReasons.length}</span>
+                  </div>
+                  {blockerReasons.slice(0, 10).map((row) => (
+                    <div key={row.reason} className="dt-paper-mini-row">
+                      <strong>{row.reason}</strong>
+                      <span>{row.count} gånger</span>
+                      <small>{row.strategies?.length ? `${row.strategies.length} strategier` : 'Ingen strategikoppling'}</small>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            ) : (
+              <PlatformEmptyState title="Inga blockeringsorsaker funna" text="Kandidatloggen gav inga blockerade strategier i senaste fönstret." />
+            )}
+          </DetailsBlock>
+        </>
+      )}
+    </div>
+  );
+}
+
 function TradeModal({ trade, onClose }) {
   return (
     <div className="dt-modal-overlay" onClick={onClose}>
@@ -2799,7 +2954,7 @@ function StrategiesTab({ strategies, runtime, liveTrades, paperStatus, cryptoSca
   );
 }
 
-function PaperTradingTab({ liveTrades, tradeLimit, onTradeLimitChange, refreshing, refreshError, paperStatus, paperSignals, paperTrades, loading }) {
+function PaperTradingTab({ liveTrades, tradeLimit, onTradeLimitChange, refreshing, refreshError, paperStatus, paperSignals, paperTrades, paperStrategyDiagnostics, loading }) {
   const summary = liveTrades?.summary_48h || {};
   return (
     <div className="dt-tab-panel">
@@ -2816,6 +2971,7 @@ function PaperTradingTab({ liveTrades, tradeLimit, onTradeLimitChange, refreshin
       </div>
       <PaperSignalsSection paperSignals={paperSignals} refreshing={refreshing} refreshError={refreshError} loading={loading} />
       <TodayPaperTradesSection paperTrades={paperTrades} paperStatus={paperStatus} paperSignals={paperSignals} loading={loading} />
+      <StrategyDiagnosticsSection paperStrategyDiagnostics={paperStrategyDiagnostics} loading={loading} />
       <DetailsBlock summary="Visa mer om paper trade-historik">
         <LivePaperBanner paperStatus={paperStatus} />
         <LiveTradesSection
@@ -2980,7 +3136,7 @@ function SafetyTab({ status, paperStatus, marketControls, runtime, onUpdate }) {
 
 export default function DaytradingPage() {
   const [tradeLimit, setTradeLimit] = useState(200);
-  const { status, strategies, pipeline, liveTrades, recommendation, impact, symbols, runtime, cryptoScan, cryptoScanError, marketControls, learning, paperStatus, paperSignals, paperTrades, autopilotStatus, autopilotConfig, candidates, loading, refreshing, refreshError, error, refresh } = useDaytradingData(tradeLimit);
+  const { status, strategies, pipeline, liveTrades, recommendation, impact, symbols, runtime, cryptoScan, cryptoScanError, marketControls, learning, paperStatus, paperSignals, paperTrades, paperStrategyDiagnostics, autopilotStatus, autopilotConfig, candidates, loading, refreshing, refreshError, error, refresh } = useDaytradingData(tradeLimit);
   const [filters, setFilters] = useState(DEFAULT_FILTERS);
   const [scanning, setScanning] = useState(false);
   const [scanResult, setScanResult] = useState(null);
@@ -3108,6 +3264,7 @@ export default function DaytradingPage() {
           paperStatus={paperStatus}
           paperSignals={paperSignals}
           paperTrades={paperTrades}
+          paperStrategyDiagnostics={paperStrategyDiagnostics}
           loading={loading}
         />
       )}
