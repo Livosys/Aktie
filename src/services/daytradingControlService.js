@@ -1841,6 +1841,15 @@ const FLOW_ELIGIBILITY_EVENT_TYPES = new Set([
   'TRADE_SKIPPED',
 ]);
 
+const TRADE_ENTRY_BLOCK_REASON_KEYS = Object.freeze([
+  'signaltype_not_allowed',
+  'market_closed',
+  'unclear_direction',
+  'wait_status',
+  'gate_blocked',
+  'other',
+]);
+
 function flowTimestampOf(row = {}) {
   return toIsoIfValid(
     row.timestamp ||
@@ -1897,6 +1906,103 @@ function flowReasonOf(row = {}) {
     row.runtime_comment_sv,
     row.comment_sv,
   ) || null;
+}
+
+function flowEventTypeOf(row = {}) {
+  return String(
+    row.eventType ||
+    row.type ||
+    row.decision ||
+    row.status ||
+    row.raw?.type ||
+    row.raw?.decision ||
+    row.raw?.status ||
+    '',
+  ).toUpperCase();
+}
+
+function tradeEntryBlockReasonOf(row = {}, runtime = {}) {
+  if (String(row.source || '').toLowerCase() !== 'paper_event') return null;
+
+  const reason = String(flowReasonOf(row) || '').toLowerCase();
+  const status = String(row.status || row.runtimeStatus || runtime.runtime_status || row.raw?.status || '').toLowerCase();
+  const eventType = flowEventTypeOf(row);
+  const nextMoveBias = String(row.raw?.nextMoveBias || row.nextMoveBias || '').toUpperCase();
+
+  if (
+    eventType === 'GATE_BLOCKED' ||
+    reason.includes('gate blockerad') ||
+    reason.includes('market gate blockerade')
+  ) {
+    return 'gate_blocked';
+  }
+
+  if (
+    eventType === 'MARKET_CLOSED' ||
+    reason.includes('marknaden är stängd') ||
+    reason.includes('market closed') ||
+    String(row.dataFreshness || row.raw?.dataFreshness || '').toUpperCase() === 'MARKET_CLOSED'
+  ) {
+    return 'market_closed';
+  }
+
+  if (
+    reason.includes('riktningen var oklar') ||
+    reason.includes('direction unclear') ||
+    nextMoveBias === 'UNCERTAIN'
+  ) {
+    return 'unclear_direction';
+  }
+
+  if (
+    status === 'wait' ||
+    (reason.includes('status var') && reason.includes('vänta')) ||
+    reason.includes('wait')
+  ) {
+    return 'wait_status';
+  }
+
+  if (
+    reason.includes('signaltypen är inte godkänd') ||
+    reason.includes('signalfamily=') ||
+    reason.includes('subtype not allowed') ||
+    reason.includes('saknar entry-regel') ||
+    reason.includes('runtime-mapping kunde inte läsas') ||
+    reason.includes('signalen är inte kopplad till katalogstrategi') ||
+    reason.includes('strategin är avstängd av användaren') ||
+    reason.includes('strategin är pausad i paper-runtime')
+  ) {
+    return 'signaltype_not_allowed';
+  }
+
+  if (
+    eventType === 'TRADE_SKIPPED' ||
+    eventType === 'MAX_TRADES_REACHED' ||
+    eventType === 'MARKET_CLOSED' ||
+    eventType === 'GATE_BLOCKED' ||
+    /skippad|blocked|blockerad|market closed|wait|vänta|uncertain|oklar/.test(reason) ||
+    /skip|block|wait|closed/.test(status)
+  ) {
+    return 'other';
+  }
+
+  return null;
+}
+
+function createTradeEntryReasonBreakdown() {
+  return TRADE_ENTRY_BLOCK_REASON_KEYS.reduce((acc, key) => {
+    acc[key] = 0;
+    return acc;
+  }, {});
+}
+
+function tradeEntryReasonBreakdownFromMap(counts = new Map()) {
+  const breakdown = createTradeEntryReasonBreakdown();
+  for (const [reason, count] of counts.entries()) {
+    if (Object.prototype.hasOwnProperty.call(breakdown, reason)) breakdown[reason] += count;
+    else breakdown.other += count;
+  }
+  return breakdown;
 }
 
 function isMissingStrategyIdNoise(row = {}) {
@@ -2089,6 +2195,7 @@ function normalizeFlowRow(row = {}, source = 'unknown', catalogIndex = null, run
     resolvedStrategyId: metadata.resolvedStrategyId || resolved?.id || null,
     resolvedStrategyName: metadata.resolvedStrategyName || resolved?.name || null,
     mappingSource: metadata.mappingSource || 'unknown',
+    eventType: row.type || row.decision || row.status || null,
     raw: row,
   };
 }
@@ -2103,7 +2210,11 @@ function buildStrategyFlowDiagnostics() {
   const catalogIndex = buildStrategyIndex(catalog.strategies || []);
 
   const candidateRows = candidateLog.loadRecent(100).map((row) => normalizeFlowRow(row, 'candidate_log', catalogIndex, runtimeIndex));
-  const paperEvents = (paperTrading.getEvents().events || []).slice(0, 100).map((row) => normalizeFlowRow(row, 'paper_event', catalogIndex, runtimeIndex));
+  const allPaperEvents = (paperTrading.getEvents().events || []).slice(0, 100).map((row) => normalizeFlowRow(row, 'paper_event', catalogIndex, runtimeIndex));
+  const paperEvents = allPaperEvents.filter((row) => {
+    const rawType = String(row.eventType || row.raw?.type || row.raw?.decision || row.raw?.status || '').toUpperCase();
+    return !['MARKET_CLOSED', 'AGENT_STARTED'].includes(rawType);
+  });
   const trades = (paperTrading.getTrades().trades || []).map((trade) => {
     const enriched = strategyRuntimeConnector.enrichPaperTradeWithStrategy(trade);
     return normalizeFlowRow({
@@ -2140,6 +2251,9 @@ function buildStrategyFlowDiagnostics() {
       scanned: false,
       candidateCount: 0,
       reachedPaperEligibility: 0,
+      reachedPaperEventStage: 0,
+      tradeEntryEligible: 0,
+      tradeEntryBlockedCount: 0,
       paperTradeCount: 0,
       explicitCount: 0,
       fallbackCount: 0,
@@ -2149,6 +2263,7 @@ function buildStrategyFlowDiagnostics() {
       mainDropReason: null,
       examples: [],
       _reasonCounts: new Map(),
+      _tradeEntryReasonCounts: new Map(),
       _recentRows: [],
       _marketGroups: new Set(),
     };
@@ -2202,6 +2317,24 @@ function buildStrategyFlowDiagnostics() {
 
   for (const row of recentFlowRows) addFlowRow(row);
   for (const row of trades) addFlowRow(row);
+
+  const addPaperEventStageRow = (row) => {
+    if (String(row.source || '').toLowerCase() !== 'paper_event') return;
+    const effectiveStrategyId = row.resolvedStrategyId || row.sourceStrategyId || row.strategyId || null;
+    if (!effectiveStrategyId) return;
+    const runtime = runtimeById[effectiveStrategyId] || strategyRuntimeConnector.getRuntimeStatusForStrategy(effectiveStrategyId);
+    const existing = ensureRow(effectiveStrategyId, row.strategyName, runtime);
+    existing.reachedPaperEventStage += 1;
+    const tradeEntryReason = tradeEntryBlockReasonOf(row, runtime);
+    if (tradeEntryReason) {
+      existing.tradeEntryBlockedCount += 1;
+      existing._tradeEntryReasonCounts.set(tradeEntryReason, (existing._tradeEntryReasonCounts.get(tradeEntryReason) || 0) + 1);
+      return;
+    }
+    existing.tradeEntryEligible += 1;
+  };
+
+  for (const row of allPaperEvents) addPaperEventStageRow(row);
 
   const missingStrategyIdCandidates = recentFlowRows
     .filter((row) => row.sourceStrategyId == null)
@@ -2286,6 +2419,10 @@ function buildStrategyFlowDiagnostics() {
         scanned: row.scanned === true || (row.rawSignals || []).length > 0,
         candidateCount: row.candidateCount,
         reachedPaperEligibility: row.reachedPaperEligibility,
+        reachedPaperEventStage: row.reachedPaperEventStage,
+        tradeEntryEligible: row.tradeEntryEligible,
+        tradeEntryBlockedCount: row.tradeEntryBlockedCount,
+        tradeEntryBlockedReasons: tradeEntryReasonBreakdownFromMap(row._tradeEntryReasonCounts),
         paperTradeCount: row.paperTradeCount,
         explicitCount: row.explicitCount || 0,
         fallbackCount: row.fallbackCount || 0,
@@ -2313,9 +2450,20 @@ function buildStrategyFlowDiagnostics() {
     strategiesScanned: byStrategy.filter((row) => row.scanned === true).length,
     strategiesWithCandidates: byStrategy.filter((row) => row.candidateCount > 0).length,
     strategiesReachedPaperEligibility: byStrategy.filter((row) => row.reachedPaperEligibility > 0).length,
+    strategiesReachedPaperEventStage: byStrategy.filter((row) => row.reachedPaperEventStage > 0).length,
+    strategiesTradeEntryEligible: byStrategy.filter((row) => row.tradeEntryEligible > 0).length,
+    strategiesTradeEntryBlocked: byStrategy.filter((row) => row.tradeEntryBlockedCount > 0).length,
     strategiesWithPaperTrades: byStrategy.filter((row) => row.paperTradeCount > 0).length,
     strategiesDroppedBeforeCandidate: byStrategy.filter((row) => row.scanned === true && row.candidateCount === 0 && row.paperTradeCount === 0).length,
     strategiesDroppedBeforePaper: byStrategy.filter((row) => row.candidateCount > 0 && row.reachedPaperEligibility === 0 && row.paperTradeCount === 0).length,
+    tradeEntryBlockedReasons: tradeEntryReasonBreakdownFromMap(
+      byStrategy.reduce((acc, row) => {
+        for (const [reason, count] of Object.entries(row.tradeEntryBlockedReasons || {})) {
+          acc.set(reason, (acc.get(reason) || 0) + Number(count || 0));
+        }
+        return acc;
+      }, new Map()),
+    ),
   };
 
   const fallbackMappings = [...fallbackMap.values()]
