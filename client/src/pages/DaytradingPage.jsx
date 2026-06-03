@@ -2788,8 +2788,6 @@ function OverviewTab({ status, pipeline, liveTrades, recommendation, impact, run
 
   return (
     <div className="dt-tab-panel">
-      <PaperSignalsSection paperSignals={paperSignals} refreshing={refreshing} refreshError={refreshError} loading={loading} />
-      <StatusBar status={status} />
       <div className="dt-overview-grid">
         <SummaryTile label="Systemstatus" value={status?.scanner_active ? 'Scanner aktiv' : 'Scanner pausad'} note={status?.data_active ? 'Data flödar in' : 'Väntar på data'} tone={status?.scanner_active ? 'good' : 'warning'} />
         <SummaryTile label="Senaste scan" value={latestScan ? timeSince(latestScan) : 'Ingen ännu'} note={status?.paper_trading ? 'Scan kan användas i paper/test' : 'Paper trading avstängt'} />
@@ -2800,43 +2798,6 @@ function OverviewTab({ status, pipeline, liveTrades, recommendation, impact, run
         <SummaryTile label="Dagens riskläge" value={riskLabel} note={status?.safety?.message_sv || 'Säkerhetslager är aktivt'} tone={riskLabel === 'Försiktigt' ? 'warning' : 'neutral'} />
         <SummaryTile label="AI:s korta rekommendation" value={aiRecommendation} note={impact?.generated_at ? `Senast uppdaterad ${timeSince(impact.generated_at)}` : 'AI-förklaring från senaste läget'} tone="good" wide text />
       </div>
-
-      <div className="dt-overview-secondary">
-        <div className="dt-overview-block">
-          <div className="dt-overview-block-title">Snabb status</div>
-          <div className="dt-overview-block-text">
-            {status?.safety?.message_sv || 'Systemet kan analysera och paper-trada men aldrig lägga riktiga ordrar.'}
-          </div>
-        </div>
-        <div className="dt-overview-block">
-          <div className="dt-overview-block-title">Senaste 48h</div>
-          <div className="dt-overview-block-text">
-            Paper trades: {summary.total ?? 0} · öppna: {summary.open ?? 0} · win rate: {summary.win_rate != null ? `${Number(summary.win_rate).toFixed(1)}%` : '–'} · total P/L: {fmtPct(summary.total_pl)}
-          </div>
-        </div>
-      </div>
-
-      <DetailsBlock summary="Visa mer om process och pipeline">
-        <CurrentDecisionCard
-          status={status}
-          pipeline={pipeline}
-          liveTrades={liveTrades}
-          runtime={runtime}
-          marketControls={null}
-          learning={learning}
-          paperStatus={paperStatus}
-          refreshing={false}
-          refreshError={null}
-        />
-      </DetailsBlock>
-
-      <DetailsBlock summary="Visa mer om dagens paper trades" defaultOpen={false}>
-        <LivePaperBanner paperStatus={paperStatus} />
-      </DetailsBlock>
-
-      <DetailsBlock summary="Visa mer om rekommendationer" defaultOpen={false}>
-        <RecommendationBar rec={recommendation} />
-      </DetailsBlock>
     </div>
   );
 }
