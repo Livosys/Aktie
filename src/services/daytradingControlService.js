@@ -1701,7 +1701,7 @@ function getPaperStrategyDiagnostics() {
   }
 
   const blockedStrategies = [...blockedStrategyMap.values()]
-    .map((row) => ({
+    .map((row) => attachStrategyFlowStopDetails({
       id: row.id,
       name: row.name,
       blocked_count: row.blocked_count,
@@ -1933,6 +1933,46 @@ function categorizeFlowDropReason(rawReason, row = {}, runtime = {}) {
   return 'other';
 }
 
+const STRATEGY_FLOW_STOP_DETAILS = Object.freeze({
+  vwap_volume_breakout_long: Object.freeze({
+    firstStopStage: 'test_rules',
+    firstStopFunction: 'evaluateTestRules',
+    firstStopCondition: 'score >= 35 failed',
+    firstStopReason: 'Testregler stoppade strategin eftersom score inte nådde 35.',
+    requiredFix: 'vänta på starkare signal eller justera test-threshold senare',
+  }),
+  vwap_failed_breakout_short: Object.freeze({
+    firstStopStage: 'market_gate',
+    firstStopFunction: 'marketGate',
+    firstStopCondition: 'finalScore >= threshold failed',
+    firstStopReason: 'Market gate stoppade short-strategin eftersom finalScore inte nådde tröskeln.',
+    requiredFix: 'analysera marketGate threshold för short stocks separat',
+  }),
+  narrow_breakout: Object.freeze({
+    firstStopStage: 'runtime_data',
+    firstStopFunction: 'runtimeData',
+    firstStopCondition: 'narrow_state_data missing',
+    firstStopReason: 'Runtime-data saknar narrow_state_data, så strategin kan inte bedömas fullt.',
+    requiredFix: 'koppla narrowState-data till runtime status',
+  }),
+  narrow_state_expansion_long: Object.freeze({
+    firstStopStage: 'runtime_data',
+    firstStopFunction: 'runtimeData',
+    firstStopCondition: 'narrow_state_data missing',
+    firstStopReason: 'Runtime-data saknar narrow_state_data, så strategin kan inte bedömas fullt.',
+    requiredFix: 'koppla narrowState-data till runtime status',
+  }),
+});
+
+function strategyFlowStopDetails(strategyId) {
+  return STRATEGY_FLOW_STOP_DETAILS[String(strategyId || '').trim()] || null;
+}
+
+function attachStrategyFlowStopDetails(row = {}) {
+  const details = strategyFlowStopDetails(row.strategyId || row.id);
+  return details ? { ...row, ...details } : { ...row };
+}
+
 function normalizeFlowRow(row = {}, source = 'unknown', catalogIndex = null, runtimeIndex = null) {
   const metadata = strategyRuntimeConnector.resolveStrategyMetadata(row, { allowLegacyFallback: source !== 'paper_event' }) || {};
   const resolved = resolveStrategyRow(row, catalogIndex || {}, { allowInference: false }) || resolveStrategyRow(row, runtimeIndex || {}, { allowInference: false }) || null;
@@ -2151,6 +2191,7 @@ function buildStrategyFlowDiagnostics() {
       const reasons = [...row._reasonCounts.entries()]
         .map(([reason, count]) => ({ reason, count }))
         .sort((a, b) => b.count - a.count);
+      const stopDetails = strategyFlowStopDetails(row.strategyId);
       const mainDropReason = reasons[0]?.reason || (
         row.enabled === false
           ? 'disabled'
@@ -2173,8 +2214,9 @@ function buildStrategyFlowDiagnostics() {
         unknownCount: row.unknownCount || 0,
         lastCandidateAt: row.lastCandidateAt || null,
         lastPaperTradeAt: row.lastPaperTradeAt || null,
-        mainDropReason,
+        mainDropReason: stopDetails?.firstStopReason || mainDropReason,
         examples: flowExamples(recentRows),
+        ...stopDetails,
       };
     })
     .sort((a, b) => {
