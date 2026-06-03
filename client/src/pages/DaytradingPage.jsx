@@ -9,7 +9,7 @@ function useDaytradingData(tradeLimit = 200) {
   const [state, setState] = useState({
     status: null, strategies: null, pipeline: null,
     liveTrades: null, recommendation: null, impact: null, symbols: null, runtime: null,
-    cryptoScan: null, cryptoScanError: false, marketControls: null, learning: null, paperStatus: null, paperSignals: null,
+    cryptoScan: null, cryptoScanError: false, marketControls: null, learning: null, paperStatus: null, paperSignals: null, paperTrades: null,
     autopilotStatus: null, autopilotConfig: null, candidates: null,
     loading: true, refreshing: false, refreshError: null, error: false,
   });
@@ -24,7 +24,7 @@ function useDaytradingData(tradeLimit = 200) {
       refreshError: null,
     }));
     const get = url => fetch(url).then(r => r.json()).catch(() => null);
-    const [statusD, strD, pipeD, tradesD, recD, impD, symD, runtimeD, cryptoScanD, marketControlsD, learningD, paperStatusD, paperSignalsD, autopilotStatusD, autopilotConfigD, candidatesD] = await Promise.all([
+    const [statusD, strD, pipeD, tradesD, recD, impD, symD, runtimeD, cryptoScanD, marketControlsD, learningD, paperStatusD, paperSignalsD, paperTradesD, autopilotStatusD, autopilotConfigD, candidatesD] = await Promise.all([
       get('/api/daytrading/status'), get('/api/daytrading/strategies'),
       get('/api/daytrading/pipeline'), get(`/api/daytrading/live-trades?limit=${tradeLimit}`),
       get('/api/daytrading/recommendation'), get('/api/daytrading/impact-summary'),
@@ -34,6 +34,7 @@ function useDaytradingData(tradeLimit = 200) {
       get('/api/daytrading/learning-summary?hours=48&limit=200'),
       get('/api/paper-trading/status'),
       get('/api/daytrading/paper-signals?limit=200'),
+      get('/api/daytrading/paper-trades?limit=200'),
       get('/api/strategy-test-autopilot/status'),
       get('/api/strategy-test-autopilot/config'),
       get('/api/candidates/recent?n=50'),
@@ -52,6 +53,7 @@ function useDaytradingData(tradeLimit = 200) {
     const validLearning = isValidResponse(learningD);
     const validPaperStatus = isValidResponse(paperStatusD);
     const validPaperSignals = isValidResponse(paperSignalsD);
+    const validPaperTrades = isValidResponse(paperTradesD);
     const validAutopilotStatus = isValidResponse(autopilotStatusD);
     const validAutopilotConfig = isValidResponse(autopilotConfigD);
     const validCandidates = isValidResponse(candidatesD);
@@ -69,6 +71,7 @@ function useDaytradingData(tradeLimit = 200) {
       validLearning,
       validPaperStatus,
       validPaperSignals,
+      validPaperTrades,
       validAutopilotStatus,
       validAutopilotConfig,
       validCandidates,
@@ -92,6 +95,7 @@ function useDaytradingData(tradeLimit = 200) {
         learning: validLearning ? learningD : prev.learning,
         paperStatus: validPaperStatus ? paperStatusD : prev.paperStatus,
         paperSignals: validPaperSignals ? paperSignalsD : prev.paperSignals,
+        paperTrades: validPaperTrades ? paperTradesD : prev.paperTrades,
         autopilotStatus: validAutopilotStatus ? autopilotStatusD : prev.autopilotStatus,
         autopilotConfig: validAutopilotConfig ? autopilotConfigD : prev.autopilotConfig,
         candidates: validCandidates ? candidatesD : prev.candidates,
@@ -189,7 +193,7 @@ function paperSignalStatusTone(status) {
   if (s.includes('block')) return 'danger';
   if (s.includes('saknar')) return 'warning';
   if (s.includes('timeout')) return 'warning';
-  if (s.includes('stäng')) return 'neutral';
+  if (s.includes('stäng') || s.includes('historik') || s.includes('inaktuell')) return 'neutral';
   return 'neutral';
 }
 
@@ -201,7 +205,7 @@ function paperSignalStatusClass(status) {
   if (s.includes('timeout')) return 'dt-status-timeout';
   if (s.includes('saknar')) return 'dt-status-neutral';
   if (s.includes('vänt')) return 'dt-status-wait';
-  if (s.includes('stäng')) return 'dt-status-neutral';
+  if (s.includes('stäng') || s.includes('historik') || s.includes('inaktuell')) return 'dt-status-neutral';
   return 'dt-status-neutral';
 }
 
@@ -212,7 +216,7 @@ function paperSignalRowClass(status) {
   if (s.includes('block')) return 'dt-row-red';
   if (s.includes('timeout')) return 'dt-row-yellow';
   if (s.includes('vänt')) return 'dt-row-yellow';
-  if (s.includes('saknar')) return 'dt-row-gray';
+  if (s.includes('saknar') || s.includes('historik') || s.includes('inaktuell')) return 'dt-row-gray';
   if (s.includes('stäng')) return 'dt-row-blue';
   return '';
 }
@@ -224,12 +228,58 @@ function paperSignalAction(status) {
   if (s.includes('block')) return 'Visa orsak';
   if (s.includes('timeout')) return 'Visa resultat';
   if (s.includes('saknar')) return 'Kontrollera data';
+  if (s.includes('historik') || s.includes('inaktuell')) return 'Visa historik';
   return 'Väntar';
 }
 
 function paperSignalHeadline(signal = {}) {
   const reason = signal.blockerReason || signal.reason || 'Ingen tydlig orsak sparad';
   return reason;
+}
+
+function paperSignalSourceLabel(source) {
+  const s = String(source || '').toLowerCase();
+  if (s === 'latest_scan') return 'Aktuell';
+  if (s === 'open_trade') return 'Öppen trade';
+  if (s === 'recent_closed') return 'Senast stängd';
+  if (s === 'history') return 'Historik';
+  return '–';
+}
+
+function paperSignalAgeLabel(signal = {}) {
+  if (signal.signalAgeMinutes == null) return '–';
+  return fmtPaperAge(signal.signalAgeMinutes);
+}
+
+function paperTradeStatusClass(status) {
+  const s = String(status || '').toLowerCase();
+  if (s.includes('öppen')) return 'dt-status-open';
+  if (s.includes('tp')) return 'dt-status-win';
+  if (s.includes('sl')) return 'dt-status-blocked';
+  if (s.includes('timeout')) return 'dt-status-timeout';
+  if (s.includes('stäng')) return 'dt-status-neutral';
+  return 'dt-status-neutral';
+}
+
+function paperTradeStatusTone(status) {
+  const s = String(status || '').toLowerCase();
+  if (s.includes('öppen')) return 'good';
+  if (s.includes('tp')) return 'good';
+  if (s.includes('sl')) return 'danger';
+  if (s.includes('timeout')) return 'warning';
+  return 'neutral';
+}
+
+function paperTradeStatusLabel(trade = {}) {
+  return trade.status || trade.result || '–';
+}
+
+function paperTradeExitLabel(trade = {}) {
+  return trade.exit_reason || trade.exitReason || trade.reason || '–';
+}
+
+function paperTradeLearningLabel(trade = {}) {
+  return trade.sentToLearning === true ? 'Ja' : trade.sentToLearning === false ? 'Nej' : '–';
 }
 
 function textValue(value, fallback = '–') {
@@ -1761,6 +1811,7 @@ function PaperSignalsSection({ paperSignals, refreshing, refreshError, loading =
   const status = paperSignals?.status || {};
   const safety = paperSignals?.safety || {};
   const signals = Array.isArray(paperSignals?.signals) ? paperSignals.signals : [];
+  const history = Array.isArray(paperSignals?.history) ? paperSignals.history : [];
   const blocked = Array.isArray(paperSignals?.blocked) ? paperSignals.blocked : [];
   const openTrades = Array.isArray(paperSignals?.openTrades) ? paperSignals.openTrades : [];
   const closedTrades = Array.isArray(paperSignals?.closedTrades) ? paperSignals.closedTrades : [];
@@ -1769,7 +1820,11 @@ function PaperSignalsSection({ paperSignals, refreshing, refreshError, loading =
     ? emptyState.topBlockedCandidates
     : blocked.slice(0, 5);
   const paperEnabled = status.paperTradingEnabled !== false;
+  const latestScanAt = paperSignals?.latestScanAt || status.lastScanAt || null;
+  const freshnessWindow = paperSignals?.freshnessWindow?.label || '24h';
   const featuredSignals = signals.slice(0, 5);
+  const newestSignal = signals[0] || null;
+  const hasFreshSignals = signals.length > 0;
 
   return (
     <div className="dt-panel">
@@ -1777,7 +1832,7 @@ function PaperSignalsSection({ paperSignals, refreshing, refreshError, loading =
         <div>
           <h3 className="dt-panel-title">Paper Trading Köpsignaler</h3>
           <p className="dt-paper-panel-sub">
-            Tydlig vy över vilka kandidater som är redo, väntar, blockerats och vilka paper trades som redan är öppna eller stängda.
+            Endast aktuella signaler från senaste scan, eller max 24h, visas i huvudlistan. Gamla signaler och stängda trades hamnar i historik.
           </p>
         </div>
         <div className="dt-paper-status-pills">
@@ -1793,63 +1848,65 @@ function PaperSignalsSection({ paperSignals, refreshing, refreshError, loading =
         <SummaryTile label="Paper Trading" value={paperEnabled ? 'På' : 'Av'} note={paperEnabled ? 'Paper-läge är aktivt' : 'Paper trade-flödet är avstängt'} tone={paperEnabled ? 'good' : 'warning'} />
         <SummaryTile label="Live Trading" value="AV" note="actions_allowed=false · can_place_orders=false · live_trading_enabled=false" tone="danger" />
         <SummaryTile label="Riktiga ordrar" value="Blockerade" note="Broker används inte" tone="danger" />
-        <SummaryTile label="Senaste scan" value={status.lastScanAt ? timeSince(status.lastScanAt) : '–'} note={status.lastScanAt ? fmtTradeTime(status.lastScanAt) : 'Ingen scan-tid hittad'} />
-        <SummaryTile label="Köpsignaler just nu" value={status.totalSignals ?? signals.length ?? 0} note="Kandidater i senaste scannerflödet" />
+        <SummaryTile label="Senaste scan" value={latestScanAt ? timeSince(latestScanAt) : '–'} note={latestScanAt ? fmtTradeTime(latestScanAt) : 'Ingen scan-tid hittad'} />
+        <SummaryTile label="Signalens ålder" value={newestSignal ? paperSignalAgeLabel(newestSignal) : '–'} note={newestSignal ? `${fmtTradeTime(newestSignal.signalTimestamp || newestSignal.createdAt)} · ${paperSignalSourceLabel(newestSignal.source)}` : `Fönster: ${freshnessWindow}`} />
+        <SummaryTile label="Köpsignaler just nu" value={status.totalSignals ?? signals.length ?? 0} note="Färska kandidater i senaste scannerflödet" />
         <SummaryTile label="Redo för paper trade" value={status.readySignals ?? signals.filter((signal) => signal.status === 'Redo för paper trade').length} note="Kan gå vidare direkt" tone="good" />
-        <SummaryTile label="Blockerade signaler" value={status.blockedSignals ?? blocked.length} note="Exakt blockeringsorsak visas i listan" tone="danger" />
         <SummaryTile label="Öppna paper trades" value={status.openPaperTrades ?? openTrades.length} note="Simulerade positioner som fortfarande följs" tone="neutral" />
       </div>
 
       {refreshing && <div className="dt-paper-note"><strong>Uppdaterar.</strong> Visar senaste kända paper-signaler medan nya svar hämtas.</div>}
       {refreshError && !refreshing && <div className="dt-paper-note"><strong>Senaste uppdatering misslyckades.</strong> Visar senaste data.</div>}
-      {signals.length > 0 && (
-        <div className="dt-paper-signal-cards">
-          {featuredSignals.map((signal, index) => (
-            <article key={`${signal.symbol || 'signal'}-${signal.createdAt || signal.openAt || signal.tradeId || index}`} className={`dt-paper-signal-card ${paperSignalRowClass(signal.status)}`}>
-              <div className="dt-paper-signal-card-head">
-                <div>
-                  <div className="dt-paper-signal-symbol">{signal.symbol || '–'}</div>
-                  <div className="dt-paper-signal-meta">
-                    {marketLabelSv(signal.market)} · {signal.strategy || '–'}
-                  </div>
-                </div>
-                <div className="dt-paper-signal-head-right">
-                  <span className={`dt-status-tag ${paperSignalStatusClass(signal.status)}`}>{signal.status || '–'}</span>
-                  <span className="dt-paper-signal-side">{signal.side || 'Vänta'}</span>
-                </div>
-              </div>
 
-              <div className="dt-paper-signal-primary">
-                {paperSignalHeadline(signal)}
-              </div>
-
-              <div className="dt-paper-signal-metrics">
-                <div className="dt-paper-signal-metric">
-                  <span>Score</span>
-                  <strong>{signal.score != null ? fmtScore(signal.score) : '–'}</strong>
-                </div>
-                <div className="dt-paper-signal-metric">
-                  <span>Confidence</span>
-                  <strong>{signal.confidence != null ? `${fmtScore(signal.confidence)}%` : '–'}</strong>
-                </div>
-                <div className="dt-paper-signal-metric">
-                  <span>Entry</span>
-                  <strong className="dt-mono-cell">{fmtPrice(signal.entry)}</strong>
-                </div>
-                <div className="dt-paper-signal-metric">
-                  <span>Risk/reward</span>
-                  <strong className="dt-mono-cell">{fmtRiskReward(signal.riskReward)}</strong>
-                </div>
-              </div>
-
-              <div className="dt-paper-signal-meta-row">
-                <span>{signal.createdAt ? fmtTradeTime(signal.createdAt) : '–'}</span>
-                <span>{paperSignalAction(signal.status)}</span>
-              </div>
-            </article>
-          ))}
+      <div className="dt-paper-rail-grid">
+        <div className="dt-paper-rail">
+          <div className="dt-paper-rail-head">
+            <h4>Öppna paper trades</h4>
+            <span>{openTrades.length}</span>
+          </div>
+          {openTrades.length > 0 ? openTrades.slice(0, 5).map((trade) => (
+            <div key={trade.tradeId || `${trade.symbol}-${trade.createdAt}`} className="dt-paper-mini-row">
+              <strong>{trade.symbol || '–'}</strong>
+              <span>{trade.strategy || 'Paper-strategi'}</span>
+              <small>{fmtTradeTime(trade.createdAt || trade.tradeTimestamp)} · {paperSignalAgeLabel(trade)} · {paperSignalSourceLabel(trade.source)}</small>
+            </div>
+          )) : (
+            <div className="dt-paper-mini-empty">Inga öppna paper trades just nu.</div>
+          )}
         </div>
-      )}
+
+        <div className="dt-paper-rail">
+          <div className="dt-paper-rail-head">
+            <h4>Historik</h4>
+            <span>{history.length}</span>
+          </div>
+          {history.length > 0 ? history.slice(0, 5).map((item) => (
+            <div key={item.tradeId || `${item.symbol}-${item.signalTimestamp || item.tradeTimestamp || item.createdAt || item.status}`} className="dt-paper-mini-row">
+              <strong>{item.symbol || '–'}</strong>
+              <span>{paperSignalSourceLabel(item.source)} · {item.status || 'Historik'}</span>
+              <small>{fmtTradeTime(item.signalTimestamp || item.tradeTimestamp || item.createdAt)} · {paperSignalAgeLabel(item)}</small>
+            </div>
+          )) : (
+            <div className="dt-paper-mini-empty">Ingen historik att visa ännu.</div>
+          )}
+        </div>
+
+        <div className="dt-paper-rail">
+          <div className="dt-paper-rail-head">
+            <h4>Blockerade signaler</h4>
+            <span>{blocked.length}</span>
+          </div>
+          {blocked.length > 0 ? blocked.slice(0, 5).map((row) => (
+            <div key={`${row.symbol}-${row.strategy}-${row.reason}`} className="dt-paper-mini-row">
+              <strong>{row.symbol || '–'}</strong>
+              <span>{row.reason || 'Blockerad'}</span>
+              <small>{row.requiredFix || 'Kontrollera blockeringsorsaken'}</small>
+            </div>
+          )) : (
+            <div className="dt-paper-mini-empty">Inga blockerade signaler just nu.</div>
+          )}
+        </div>
+      </div>
 
       {loading && !paperSignals ? (
         <div className="dt-paper-empty">
@@ -1858,58 +1915,111 @@ function PaperSignalsSection({ paperSignals, refreshing, refreshError, loading =
             <span>Hämtar paper trading-signaler…</span>
           </div>
         </div>
-      ) : signals.length > 0 ? (
-        <div className="dt-table-wrap">
-          <div className="dt-paper-note" style={{ marginBottom: 10 }}>
-            <strong>Detaljvy.</strong> Korten ovan visar de viktigaste signalerna först. Tabellen nedan visar hela flödet med exakta blockeringsorsaker.
+      ) : hasFreshSignals ? (
+        <>
+          <div className="dt-paper-signal-cards">
+            {featuredSignals.map((signal, index) => (
+              <article key={`${signal.symbol || 'signal'}-${signal.signalTimestamp || signal.createdAt || signal.tradeId || index}`} className={`dt-paper-signal-card ${paperSignalRowClass(signal.status)}`}>
+                <div className="dt-paper-signal-card-head">
+                  <div>
+                    <div className="dt-paper-signal-symbol">{signal.symbol || '–'}</div>
+                    <div className="dt-paper-signal-meta">
+                      {marketLabelSv(signal.market)} · {signal.strategy || '–'}
+                    </div>
+                  </div>
+                  <div className="dt-paper-signal-head-right">
+                    <span className={`dt-status-tag ${paperSignalStatusClass(signal.status)}`}>{signal.status || '–'}</span>
+                    <span className="dt-paper-signal-side">{signal.side || 'Vänta'}</span>
+                  </div>
+                </div>
+
+                <div className="dt-paper-signal-primary">
+                  {paperSignalHeadline(signal)}
+                </div>
+
+                <div className="dt-paper-signal-metrics">
+                  <div className="dt-paper-signal-metric">
+                    <span>Score</span>
+                    <strong>{signal.score != null ? fmtScore(signal.score) : '–'}</strong>
+                  </div>
+                  <div className="dt-paper-signal-metric">
+                    <span>Confidence</span>
+                    <strong>{signal.confidence != null ? `${fmtScore(signal.confidence)}%` : '–'}</strong>
+                  </div>
+                  <div className="dt-paper-signal-metric">
+                    <span>Entry</span>
+                    <strong className="dt-mono-cell">{fmtPrice(signal.entry)}</strong>
+                  </div>
+                  <div className="dt-paper-signal-metric">
+                    <span>Risk/reward</span>
+                    <strong className="dt-mono-cell">{fmtRiskReward(signal.riskReward)}</strong>
+                  </div>
+                </div>
+
+                <div className="dt-paper-signal-meta-row">
+                  <span>{fmtTradeTime(signal.signalTimestamp || signal.createdAt)} · {paperSignalAgeLabel(signal)} · {paperSignalSourceLabel(signal.source)}</span>
+                  <span>{paperSignalAction(signal.status)}</span>
+                </div>
+              </article>
+            ))}
           </div>
-          <table className="dt-table dt-paper-signals-table">
-            <thead>
-              <tr>
-                <th>Tid</th>
-                <th>Symbol</th>
-                <th>Marknad</th>
-                <th>Signal</th>
-                <th>Strategi</th>
-                <th>Score</th>
-                <th>Confidence</th>
-                <th>Entry</th>
-                <th>Stop loss</th>
-                <th>Take profit</th>
-                <th>Risk/reward</th>
-                <th>Status</th>
-                <th>Orsak</th>
-                <th>Åtgärd</th>
-              </tr>
-            </thead>
-            <tbody>
-              {signals.map((signal, index) => (
-                <tr key={`${signal.symbol || 'signal'}-${signal.createdAt || signal.openAt || signal.tradeId || index}`} className={paperSignalRowClass(signal.status)}>
-                  <td className="dt-td-time">{signal.createdAt ? fmtTradeTime(signal.createdAt) : '–'}</td>
-                  <td className="dt-td-sym"><strong>{signal.symbol || '–'}</strong></td>
-                  <td>{marketLabelSv(signal.market)}</td>
-                  <td>{signal.side || 'Vänta'}</td>
-                  <td className="dt-td-strategy">{signal.strategy || '–'}</td>
-                  <td>{signal.score != null ? fmtScore(signal.score) : '–'}</td>
-                  <td>{signal.confidence != null ? `${fmtScore(signal.confidence)}%` : '–'}</td>
-                  <td className="dt-mono-cell">{fmtPrice(signal.entry)}</td>
-                  <td className="dt-mono-cell">{fmtPrice(signal.stopLoss)}</td>
-                  <td className="dt-mono-cell">{fmtPrice(signal.takeProfit)}</td>
-                  <td className="dt-mono-cell">{fmtRiskReward(signal.riskReward)}</td>
-                  <td><span className={`dt-status-tag ${paperSignalStatusClass(signal.status)}`}>{signal.status || '–'}</span></td>
-                  <td className="dt-signal-reason">{signal.blockerReason || signal.reason || '–'}</td>
-                  <td><span className="dt-paper-action">{paperSignalAction(signal.status)}</span></td>
+
+          <div className="dt-table-wrap">
+            <div className="dt-paper-note" style={{ marginBottom: 10 }}>
+              <strong>Detaljvy.</strong> Tabellen visar bara färska signaler. Gamla signaler finns i historiken längre ned.
+            </div>
+            <table className="dt-table dt-paper-signals-table">
+              <thead>
+                <tr>
+                  <th>Tid</th>
+                  <th>Ålder</th>
+                  <th>Symbol</th>
+                  <th>Marknad</th>
+                  <th>Signal</th>
+                  <th>Strategi</th>
+                  <th>Score</th>
+                  <th>Confidence</th>
+                  <th>Entry</th>
+                  <th>Stop loss</th>
+                  <th>Take profit</th>
+                  <th>Risk/reward</th>
+                  <th>Status</th>
+                  <th>Källa</th>
+                  <th>Orsak</th>
+                  <th>Åtgärd</th>
                 </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
+              </thead>
+              <tbody>
+                {signals.map((signal, index) => (
+                  <tr key={`${signal.symbol || 'signal'}-${signal.signalTimestamp || signal.createdAt || signal.tradeId || index}`} className={paperSignalRowClass(signal.status)}>
+                    <td className="dt-td-time">{signal.signalTimestamp || signal.createdAt ? fmtTradeTime(signal.signalTimestamp || signal.createdAt) : '–'}</td>
+                    <td>{paperSignalAgeLabel(signal)}</td>
+                    <td className="dt-td-sym"><strong>{signal.symbol || '–'}</strong></td>
+                    <td>{marketLabelSv(signal.market)}</td>
+                    <td>{signal.side || 'Vänta'}</td>
+                    <td className="dt-td-strategy">{signal.strategy || '–'}</td>
+                    <td>{signal.score != null ? fmtScore(signal.score) : '–'}</td>
+                    <td>{signal.confidence != null ? `${fmtScore(signal.confidence)}%` : '–'}</td>
+                    <td className="dt-mono-cell">{fmtPrice(signal.entry)}</td>
+                    <td className="dt-mono-cell">{fmtPrice(signal.stopLoss)}</td>
+                    <td className="dt-mono-cell">{fmtPrice(signal.takeProfit)}</td>
+                    <td className="dt-mono-cell">{fmtRiskReward(signal.riskReward)}</td>
+                    <td><span className={`dt-status-tag ${paperSignalStatusClass(signal.status)}`}>{signal.status || '–'}</span></td>
+                    <td>{paperSignalSourceLabel(signal.source)}</td>
+                    <td className="dt-signal-reason">{signal.blockerReason || signal.reason || '–'}</td>
+                    <td><span className="dt-paper-action">{paperSignalAction(signal.status)}</span></td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </>
       ) : (
         <div className="dt-paper-empty">
-          <h4>Inga paper trading-köpsignaler just nu</h4>
-          <p>{emptyState.waitingFor || 'Systemet väntar på nästa scan.'}</p>
+          <h4>Inga färska paper trading-köpsignaler just nu</h4>
+          <p>{emptyState.waitingFor || 'Väntar på nästa scan eller nya kandidater inom 24h.'}</p>
           <div className="dt-paper-empty-meta">
-            <span>Senaste scan: {status.lastScanAt ? fmtTradeTime(status.lastScanAt) : '–'}</span>
+            <span>Senaste scan: {latestScanAt ? fmtTradeTime(latestScanAt) : '–'}</span>
             <span>Kandidater kontrollerade: {status.candidatesChecked ?? 0}</span>
             <span>Blockerade: {status.blockedSignals ?? blocked.length ?? 0}</span>
           </div>
@@ -1930,56 +2040,6 @@ function PaperSignalsSection({ paperSignals, refreshing, refreshError, loading =
         </div>
       )}
 
-      <div className="dt-paper-rail-grid">
-        <div className="dt-paper-rail">
-          <div className="dt-paper-rail-head">
-            <h4>Blockerade signaler</h4>
-            <span>{blocked.length}</span>
-          </div>
-          {blocked.length > 0 ? blocked.slice(0, 5).map((row) => (
-            <div key={`${row.symbol}-${row.strategy}-${row.reason}`} className="dt-paper-mini-row">
-              <strong>{row.symbol || '–'}</strong>
-              <span>{row.reason || 'Blockerad'}</span>
-              <small>{row.requiredFix || 'Kontrollera blockeringsorsaken'}</small>
-            </div>
-          )) : (
-            <div className="dt-paper-mini-empty">Inga blockerade signaler just nu.</div>
-          )}
-        </div>
-
-        <div className="dt-paper-rail">
-          <div className="dt-paper-rail-head">
-            <h4>Öppna paper trades</h4>
-            <span>{openTrades.length}</span>
-          </div>
-          {openTrades.length > 0 ? openTrades.slice(0, 5).map((trade) => (
-            <div key={trade.tradeId || `${trade.symbol}-${trade.createdAt}`} className="dt-paper-mini-row">
-              <strong>{trade.symbol || '–'}</strong>
-              <span>{trade.strategy || 'Paper-strategi'}</span>
-              <small>{trade.reason || 'Öppen position'}</small>
-            </div>
-          )) : (
-            <div className="dt-paper-mini-empty">Inga öppna paper trades just nu.</div>
-          )}
-        </div>
-
-        <div className="dt-paper-rail">
-          <div className="dt-paper-rail-head">
-            <h4>Nyligen stängda</h4>
-            <span>{closedTrades.length}</span>
-          </div>
-          {closedTrades.length > 0 ? closedTrades.slice(0, 5).map((trade) => (
-            <div key={trade.tradeId || `${trade.symbol}-${trade.closedAt || trade.createdAt}`} className="dt-paper-mini-row">
-              <strong>{trade.symbol || '–'}</strong>
-              <span>{trade.status || 'Stängd'}</span>
-              <small>{trade.reason || trade.result || 'Stängd paper trade'}</small>
-            </div>
-          )) : (
-            <div className="dt-paper-mini-empty">Inga nyligen stängda paper trades.</div>
-          )}
-        </div>
-      </div>
-
       <DetailsBlock summary="Visa mer om tekniska detaljer">
         <div className="dt-overview-grid">
           <SummaryTile label="Kandidater kontrollerade" value={status.candidatesChecked ?? 0} note="Senaste scannerflödet" />
@@ -1987,6 +2047,173 @@ function PaperSignalsSection({ paperSignals, refreshing, refreshError, loading =
           <SummaryTile label="Stängda paper trades" value={status.closedPaperTrades ?? closedTrades.length} note="Historik från paper-trading" />
           <SummaryTile label="Systemets väntan" value={emptyState.waitingFor || '–'} note="Vad flödet väntar på just nu" wide text />
         </div>
+      </DetailsBlock>
+    </div>
+  );
+}
+
+function TodayPaperTradesSection({ paperTrades, paperStatus, paperSignals, loading = false }) {
+  const todayTrades = Array.isArray(paperTrades?.todayTrades) ? paperTrades.todayTrades : [];
+  const todayOpenTrades = Array.isArray(paperTrades?.todayOpenTrades) ? paperTrades.todayOpenTrades : [];
+  const todayClosedTrades = Array.isArray(paperTrades?.todayClosedTrades) ? paperTrades.todayClosedTrades : [];
+  const historicalTrades = Array.isArray(paperTrades?.historicalTrades) ? paperTrades.historicalTrades : [];
+  const todayStats = paperTrades?.todayStats || {};
+  const paperEnabled = paperStatus?.enabled !== false;
+  const latestScanAt = paperSignals?.status?.lastScanAt || paperSignals?.latestScanAt || null;
+  const todayDate = new Date().toISOString().slice(0, 10);
+  const latestScanIsToday = latestScanAt ? String(latestScanAt).slice(0, 10) === todayDate : false;
+  const checkedToday = latestScanIsToday ? (paperSignals?.status?.candidatesChecked ?? 0) : 0;
+  const blockedToday = latestScanIsToday ? (paperSignals?.status?.blockedSignals ?? 0) : 0;
+  const whyNone = paperSignals?.emptyState?.waitingFor
+    || paperSignals?.emptyState?.topBlockedCandidates?.[0]?.reason
+    || (paperEnabled ? 'Paper-tradingreglerna skapade inga nya trades idag.' : 'Paper Trading är avstängt.');
+  const newestTrade = todayTrades[0] || null;
+  const sortedTodayTrades = [...todayTrades].sort((a, b) => {
+    const aTime = new Date(a.time || a.opened_at || a.entryTime || a.createdAt || 0).getTime() || 0;
+    const bTime = new Date(b.time || b.opened_at || b.entryTime || b.createdAt || 0).getTime() || 0;
+    return bTime - aTime;
+  });
+  const sortedHistory = [...historicalTrades].sort((a, b) => {
+    const aTime = new Date(a.time || a.opened_at || a.entryTime || a.closed_at || a.exitTime || a.createdAt || 0).getTime() || 0;
+    const bTime = new Date(b.time || b.opened_at || b.entryTime || b.closed_at || b.exitTime || b.createdAt || 0).getTime() || 0;
+    return bTime - aTime;
+  });
+  const hasTodayTrades = sortedTodayTrades.length > 0;
+
+  return (
+    <div className="dt-panel">
+      <div className="dt-panel-head">
+        <div>
+          <h3 className="dt-panel-title">Dagens Paper Trades</h3>
+          <p className="dt-paper-panel-sub">
+            Visar bara trades som hör till idag. Öppna trades ligger kvar här, stängda trades från andra dagar flyttas till historik.
+          </p>
+        </div>
+        <div className="dt-paper-status-pills">
+          <span className={`dt-paper-pill ${paperEnabled ? 'dt-paper-pill-on' : 'dt-paper-pill-off'}`}>
+            Paper Trading: {paperEnabled ? 'På' : 'Av'}
+          </span>
+          <span className="dt-paper-pill dt-paper-pill-off">Live Trading: AV</span>
+          <span className="dt-paper-pill dt-paper-pill-off">Riktiga ordrar: Blockerade</span>
+        </div>
+      </div>
+
+      <div className="dt-overview-grid dt-paper-status-grid">
+        <SummaryTile label="Antal trades idag" value={todayStats.totalTrades ?? sortedTodayTrades.length ?? 0} note={`Datum: ${todayStats.date || new Date().toISOString().slice(0, 10)}`} />
+        <SummaryTile label="Öppna trades idag" value={todayStats.openTrades ?? todayOpenTrades.length ?? 0} note="Öppna paper trades som fortfarande följs" tone="good" />
+        <SummaryTile label="Stängda trades idag" value={todayStats.closedTrades ?? todayClosedTrades.length ?? 0} note="Trades som avslutats under dagens datum" />
+        <SummaryTile label="Vinst/förlust idag" value={todayStats.pnlPercent != null ? fmtPct(todayStats.pnlPercent) : '–'} note={`Wins: ${todayStats.wins ?? 0} · Losses: ${todayStats.losses ?? 0}`} tone={Number(todayStats.pnlPercent) > 0 ? 'good' : Number(todayStats.pnlPercent) < 0 ? 'danger' : 'neutral'} />
+        <SummaryTile label="Win rate idag" value={todayStats.winRate != null ? `${Number(todayStats.winRate).toFixed(1)}%` : '–'} note="Bara stängda trades används i win rate" tone={Number(todayStats.winRate) >= 50 ? 'good' : 'neutral'} />
+        <SummaryTile label="Senaste paper trade" value={todayStats.latestTradeAt ? timeSince(todayStats.latestTradeAt) : '–'} note={todayStats.latestTradeAt ? fmtTradeTime(todayStats.latestTradeAt) : 'Ingen trade ännu'} />
+        <SummaryTile label="Senaste stängda trade" value={todayStats.latestClosedTradeAt ? timeSince(todayStats.latestClosedTradeAt) : '–'} note={todayStats.latestClosedTradeAt ? fmtTradeTime(todayStats.latestClosedTradeAt) : 'Ingen stängd trade idag'} />
+        <SummaryTile label="Senaste scan" value={latestScanAt ? timeSince(latestScanAt) : '–'} note={latestScanAt ? fmtTradeTime(latestScanAt) : 'Ingen scan-tid hittad'} />
+      </div>
+
+      {loading && !paperTrades ? (
+        <div className="dt-paper-empty">
+          <div className="dt-loading-inline">
+            <span className="spinner" style={{ width: 16, height: 16 }} />
+            <span>Hämtar dagens paper trades…</span>
+          </div>
+        </div>
+      ) : hasTodayTrades ? (
+        <div className="dt-table-wrap">
+          <div className="dt-paper-note" style={{ marginBottom: 10 }}>
+            <strong>Dagens trades.</strong> Öppna trades visas alltid. Stängda trades från idag visas tillsammans med dem, och äldre trades hamnar i historik.
+          </div>
+          <table className="dt-table dt-paper-signals-table">
+            <thead>
+              <tr>
+                <th>Tid</th>
+                <th>Symbol</th>
+                <th>Strategi</th>
+                <th>Long/Short</th>
+                <th>Entry</th>
+                <th>Nuvarande pris / exit</th>
+                <th>P/L %</th>
+                <th>P/L kr</th>
+                <th>Status</th>
+                <th>Exit reason</th>
+                <th>Trade age</th>
+                <th>Learning</th>
+              </tr>
+            </thead>
+            <tbody>
+              {sortedTodayTrades.map((trade, index) => (
+                <tr key={trade.trade_id || `${trade.symbol}-${trade.time || trade.opened_at || trade.entryTime || index}`} className={paperTradeStatusClass(trade.status)}>
+                  <td className="dt-td-time">{fmtTradeTime(trade.time || trade.opened_at || trade.entryTime || trade.createdAt)}</td>
+                  <td className="dt-td-sym"><strong>{trade.symbol || '–'}</strong></td>
+                  <td className="dt-td-strategy">{trade.strategy || 'Paper-strategi'}</td>
+                  <td>{trade.direction || '–'}</td>
+                  <td className="dt-mono-cell">{fmtPrice(trade.entry)}</td>
+                  <td className="dt-mono-cell">{fmtPrice(trade.current_price ?? trade.exit)}</td>
+                  <td className={valueTone(trade.pnl) === 'positive' ? 'dt-positive' : valueTone(trade.pnl) === 'negative' ? 'dt-negative' : ''}>{fmtPct(trade.pnl)}</td>
+                  <td className={trade.pnlKr != null ? (trade.pnlKr >= 0 ? 'dt-positive' : 'dt-negative') : ''}>{trade.pnlKr != null ? `${trade.pnlKr >= 0 ? '+' : ''}${trade.pnlKr.toFixed(2)} kr` : '–'}</td>
+                  <td><span className={`dt-status-tag ${paperTradeStatusClass(trade.status)}`}>{trade.status || '–'}</span></td>
+                  <td>{paperTradeExitLabel(trade)}</td>
+                  <td>{trade.age_minutes != null ? fmtPaperAge(trade.age_minutes) : '–'}</td>
+                  <td>{paperTradeLearningLabel(trade)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      ) : (
+        <div className="dt-paper-empty">
+          <h4>Inga paper trades idag ännu</h4>
+          <p>{whyNone}</p>
+          <div className="dt-paper-empty-meta">
+            <span>Paper Trading: {paperEnabled ? 'På' : 'Av'}</span>
+            <span>Senaste scan: {latestScanAt ? fmtTradeTime(latestScanAt) : '–'}</span>
+            <span>Antal signaler kontrollerade idag: {checkedToday}</span>
+            <span>Antal blockerade idag: {blockedToday}</span>
+          </div>
+          <div className="dt-paper-empty-blocks">
+            <div className="dt-paper-empty-block">
+              <strong>Varför inga paper trades skapades</strong>
+              <span>{whyNone}</span>
+              <small>{newestTrade ? `Senaste möjliga trade: ${newestTrade.symbol || '–'} · ${paperTradeStatusLabel(newestTrade)}` : 'Ingen trade skapades idag.'}</small>
+            </div>
+          </div>
+        </div>
+      )}
+
+      <DetailsBlock summary="Visa historik" defaultOpen={false}>
+        <div className="dt-paper-note" style={{ marginBottom: 10 }}>
+          <strong>Historik.</strong> Gamla trades visas här för referens, inte som dagens trades.
+        </div>
+        {sortedHistory.length > 0 ? (
+          <div className="dt-table-wrap">
+            <table className="dt-table dt-paper-signals-table">
+              <thead>
+                <tr>
+                  <th>Tid</th>
+                  <th>Symbol</th>
+                  <th>Strategi</th>
+                  <th>Status</th>
+                  <th>Exit reason</th>
+                  <th>P/L %</th>
+                  <th>Learning</th>
+                </tr>
+              </thead>
+              <tbody>
+                {sortedHistory.slice(0, 25).map((trade, index) => (
+                  <tr key={trade.trade_id || `${trade.symbol}-${trade.time || trade.opened_at || trade.closed_at || index}`} className={paperTradeStatusClass(trade.status)}>
+                    <td className="dt-td-time">{fmtTradeTime(trade.time || trade.opened_at || trade.entryTime || trade.closed_at || trade.exitTime)}</td>
+                    <td className="dt-td-sym"><strong>{trade.symbol || '–'}</strong></td>
+                    <td className="dt-td-strategy">{trade.strategy || 'Paper-strategi'}</td>
+                    <td><span className={`dt-status-tag ${paperTradeStatusClass(trade.status)}`}>{trade.status || '–'}</span></td>
+                    <td>{paperTradeExitLabel(trade)}</td>
+                    <td>{fmtPct(trade.pnl)}</td>
+                    <td>{paperTradeLearningLabel(trade)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        ) : (
+          <PlatformEmptyState title="Ingen historik ännu" text="När trades från tidigare dagar finns, visas de här utan att blandas in i dagens lista." />
+        )}
       </DetailsBlock>
     </div>
   );
@@ -2572,7 +2799,7 @@ function StrategiesTab({ strategies, runtime, liveTrades, paperStatus, cryptoSca
   );
 }
 
-function PaperTradingTab({ liveTrades, tradeLimit, onTradeLimitChange, refreshing, refreshError, paperStatus, paperSignals, loading }) {
+function PaperTradingTab({ liveTrades, tradeLimit, onTradeLimitChange, refreshing, refreshError, paperStatus, paperSignals, paperTrades, loading }) {
   const summary = liveTrades?.summary_48h || {};
   return (
     <div className="dt-tab-panel">
@@ -2588,6 +2815,7 @@ function PaperTradingTab({ liveTrades, tradeLimit, onTradeLimitChange, refreshin
         </div>
       </div>
       <PaperSignalsSection paperSignals={paperSignals} refreshing={refreshing} refreshError={refreshError} loading={loading} />
+      <TodayPaperTradesSection paperTrades={paperTrades} paperStatus={paperStatus} paperSignals={paperSignals} loading={loading} />
       <DetailsBlock summary="Visa mer om paper trade-historik">
         <LivePaperBanner paperStatus={paperStatus} />
         <LiveTradesSection
@@ -2752,7 +2980,7 @@ function SafetyTab({ status, paperStatus, marketControls, runtime, onUpdate }) {
 
 export default function DaytradingPage() {
   const [tradeLimit, setTradeLimit] = useState(200);
-  const { status, strategies, pipeline, liveTrades, recommendation, impact, symbols, runtime, cryptoScan, cryptoScanError, marketControls, learning, paperStatus, paperSignals, autopilotStatus, autopilotConfig, candidates, loading, refreshing, refreshError, error, refresh } = useDaytradingData(tradeLimit);
+  const { status, strategies, pipeline, liveTrades, recommendation, impact, symbols, runtime, cryptoScan, cryptoScanError, marketControls, learning, paperStatus, paperSignals, paperTrades, autopilotStatus, autopilotConfig, candidates, loading, refreshing, refreshError, error, refresh } = useDaytradingData(tradeLimit);
   const [filters, setFilters] = useState(DEFAULT_FILTERS);
   const [scanning, setScanning] = useState(false);
   const [scanResult, setScanResult] = useState(null);
@@ -2879,6 +3107,7 @@ export default function DaytradingPage() {
           refreshError={refreshError}
           paperStatus={paperStatus}
           paperSignals={paperSignals}
+          paperTrades={paperTrades}
           loading={loading}
         />
       )}
