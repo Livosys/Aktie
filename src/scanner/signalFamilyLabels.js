@@ -15,6 +15,10 @@ const SIGNAL_SUBTYPE_LABELS = {
   VWAP_RECLAIM_UP: 'VWAP återtaget uppåt',
   VWAP_REJECTION_DOWN: 'VWAP avvisning nedåt',
   REGULAR_PULLBACK: 'Vanlig rekyl',
+  NARROW_WAIT: 'Narrow vänteläge',
+  NARROW_BULL_ENTRY: 'Narrow utbrott uppåt',
+  NARROW_BEAR_ENTRY: 'Narrow utbrott nedåt',
+  WIDE_REVERSAL_WATCH: 'Vändningsläge i sen rörelse',
   THREE_FINGER_SPREAD_AVOID: 'För utsträckt rörelse',
   UNKNOWN: 'Oklassad',
 };
