@@ -1630,6 +1630,9 @@ function getPaperStrategyDiagnostics() {
       market_group: strategy.market_group || strategy.market || null,
       enabled_by_user: runtime?.enabled_by_user === true,
       active: strategy.active !== false,
+      narrow_state_data_present: runtime?.narrow_state_data_present === true,
+      runtime_status_before: runtime?.runtime_status_before || runtime?.runtime_status || 'not_connected',
+      runtime_status_after: runtime?.runtime_status_after || runtime?.runtime_status || 'not_connected',
       runtime_status: runtime?.runtime_status || 'not_connected',
       runtime_label: runtime?.runtime_label || null,
       connected: runtime?.connected === true,
@@ -2080,8 +2083,11 @@ function buildStrategyFlowDiagnostics() {
     if (name && (!existing.name || existing.name === key)) existing.name = name;
     if (runtime) {
       existing.enabled = runtime.enabled_by_user === true;
+      existing.runtimeStatusBefore = runtime.runtime_status_before || runtime.runtime_status || null;
+      existing.runtimeStatusAfter = runtime.runtime_status_after || runtime.runtime_status || null;
       existing.runtimeStatus = runtime.runtime_status || null;
       existing.runtimeLabel = runtime.runtime_label || null;
+      existing.narrowStateDataPresent = runtime.narrow_state_data_present === true;
       existing.connected = runtime.connected === true;
       existing.rawSignals = runtime.runtime_raw_signals || [];
     }
@@ -2214,6 +2220,10 @@ function buildStrategyFlowDiagnostics() {
         unknownCount: row.unknownCount || 0,
         lastCandidateAt: row.lastCandidateAt || null,
         lastPaperTradeAt: row.lastPaperTradeAt || null,
+        narrow_state_data_present: row.narrowStateDataPresent === true,
+        runtime_status_before: row.runtimeStatusBefore || row.runtimeStatus || null,
+        runtime_status_after: row.runtimeStatusAfter || row.runtimeStatus || null,
+        runtime_status: row.runtimeStatus || null,
         mainDropReason: stopDetails?.firstStopReason || mainDropReason,
         examples: flowExamples(recentRows),
         ...stopDetails,

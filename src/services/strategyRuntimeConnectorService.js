@@ -17,6 +17,7 @@ const TRADES_FILE = path.resolve(__dirname, '../../data/paper-trading/trades.jso
 const EVENTS_FILE = path.resolve(__dirname, '../../data/paper-trading/events.jsonl');
 const STATE_FILE = path.resolve(__dirname, '../../data/paper-trading/state.json');
 const CONTROL_CONFIG_FILE = path.resolve(__dirname, '../../data/config/daytrading-control.json');
+const NARROW_STATE_GRAPH_DIR = path.resolve(__dirname, '../../data/signals/state-graph');
 const WINDOW_HOURS = 48;
 
 function allowEmaPaperTrades() {
@@ -266,10 +267,67 @@ function buildCryptoSignalContext(signal = {}) {
     marketContext: signal.marketContext || null,
     momentumContinuationContext: signal.momentumContinuationContext || null,
     stateGraph: signal.stateGraph || null,
+    narrow_state_data: signal.narrow_state_data || signal.stateGraph || null,
     strategy_id: signal.strategy_id || signal.strategyId || null,
     strategy_name: signal.strategy_name || signal.strategyName || null,
     nextMoveBias: signal.nextMoveBias || signal.direction || null,
   };
+}
+
+function getCurrentScannerRows() {
+  try {
+    const scheduler = require('../scanner/scheduler');
+    const cryptoScheduler = require('../scanner/cryptoScheduler');
+    return [
+      ...(typeof scheduler.getLatestResults === 'function' ? scheduler.getLatestResults() || [] : []),
+      ...(typeof cryptoScheduler.getCryptoResults === 'function' ? cryptoScheduler.getCryptoResults() || [] : []),
+    ];
+  } catch (_) {
+    return [];
+  }
+}
+
+function normalizedStrategyIdFromRow(row = {}) {
+  return row.resolvedStrategyId || row.strategyId || row.strategy_id || row.sourceStrategyId || row.setupId || null;
+}
+
+function rowHasNarrowStateData(row = {}) {
+  return row.narrow_state_data != null || row.stateGraph != null || row.narrowState != null;
+}
+
+const NARROW_STATE_CACHE_TTL_MS = 60 * 1000;
+let narrowStatePresenceCache = { loadedAt: 0, present: false };
+
+function hasPersistedNarrowStateData() {
+  const now = Date.now();
+  if (now - narrowStatePresenceCache.loadedAt < NARROW_STATE_CACHE_TTL_MS) return narrowStatePresenceCache.present;
+  let present = false;
+  try {
+    if (fs.existsSync(NARROW_STATE_GRAPH_DIR)) {
+      const entries = fs.readdirSync(NARROW_STATE_GRAPH_DIR).filter((file) => file.endsWith('.json'));
+      for (const file of entries) {
+        const fullPath = path.join(NARROW_STATE_GRAPH_DIR, file);
+        const stat = fs.statSync(fullPath);
+        if (stat.size > 0) {
+          present = true;
+          break;
+        }
+      }
+    }
+  } catch (_) {
+    present = false;
+  }
+  narrowStatePresenceCache = { loadedAt: now, present };
+  return present;
+}
+
+function narrowStateDataPresentForStrategy(strategyId, rows = null) {
+  const target = String(strategyId || '').toLowerCase();
+  if (!target) return false;
+  const sourceRows = rows || getCurrentScannerRows();
+  if (sourceRows.some((row) => String(normalizedStrategyIdFromRow(row) || '').toLowerCase() === target && rowHasNarrowStateData(row))) return true;
+  if (!missingDataForStrategy({ id: target }).includes('narrow_state_data')) return false;
+  return hasPersistedNarrowStateData();
 }
 
 function strategyMeta(strategyId) {
@@ -323,6 +381,7 @@ function runtimeEntry({
     entry_rule_implemented: can_create_paper_trade === true || can_create_paper_trade === 'partial',
     connected: true,
     market,
+    narrow_state_data: null,
     comment_sv,
     ...SAFETY,
   };
@@ -670,6 +729,7 @@ function enrichSignalWithStrategy(signal = {}) {
     can_create_paper_trade: signal.can_create_paper_trade ?? inferred.can_create_paper_trade,
     crypto_signal_context: signal.crypto_signal_context || inferred.crypto_signal_context || null,
     crypto_context: signal.crypto_context || inferred.crypto_context || null,
+    narrow_state_data: signal.narrow_state_data || signal.stateGraph || inferred.narrow_state_data || inferred.stateGraph || null,
   };
 }
 
@@ -932,8 +992,11 @@ function runtimeProfileForStrategy(strategyId, savedConfig = {}) {
       strategy_family: 'UNKNOWN',
       market: 'all',
       direction: 'UNKNOWN',
+      runtime_status_before: 'not_connected',
+      runtime_status_after: 'not_connected',
       runtime_status: 'not_connected',
       runtime_label: statusLabel('not_connected'),
+      narrow_state_data_present: false,
       runtime_raw_signals: [],
       required_data: [],
       missing_data: ['strategy_catalog'],
@@ -952,20 +1015,22 @@ function runtimeProfileForStrategy(strategyId, savedConfig = {}) {
   }
 
   const enabledByUser = savedConfig.enabled_by_user ?? savedConfig.active ?? strategy.active ?? true;
-  const runtimeStatus = enabledByUser === false
+  const runtimeStatusBefore = enabledByUser === false
     ? 'disabled'
     : DISABLED_RUNTIME_STRATEGY_IDS.has(strategyId)
       ? 'disabled'
       : PARTIAL_RUNTIME_STRATEGY_IDS.has(strategyId)
         ? 'partial'
         : 'active';
-  const canCreate = runtimeStatus === 'active';
+  const narrowStateDataPresent = narrowStateDataPresentForStrategy(strategyId);
+  const runtimeStatusAfter = runtimeStatusBefore === 'partial' && narrowStateDataPresent ? 'active' : runtimeStatusBefore;
+  const canCreate = runtimeStatusAfter === 'active';
   const rawSignals = runtimeRawSignalsForStrategy(strategyId);
   const requiredData = requiredDataForStrategy(strategy);
-  const missingData = runtimeStatus === 'partial' ? missingDataForStrategy(strategy) : [];
-  const reasonSv = reasonForStrategy(strategy, runtimeStatus);
+  const missingData = runtimeStatusAfter === 'partial' ? missingDataForStrategy(strategy) : [];
+  const reasonSv = reasonForStrategy(strategy, runtimeStatusAfter);
   const strategyFamily = strategy.engines_used?.[0] || strategy.market_label || strategy.market_group || 'UNKNOWN';
-  const mappingConfidence = runtimeStatus === 'active' ? 'high' : runtimeStatus === 'partial' ? 'medium' : 'low';
+  const mappingConfidence = runtimeStatusAfter === 'active' ? 'high' : runtimeStatusAfter === 'partial' ? 'medium' : 'low';
 
   return {
     strategy_id: strategy.id,
@@ -973,19 +1038,22 @@ function runtimeProfileForStrategy(strategyId, savedConfig = {}) {
     strategy_family: strategyFamily,
     market: strategy.market_group || strategy.market || 'all',
     direction: strategy.direction || 'UNKNOWN',
-    runtime_status: runtimeStatus,
-    runtime_label: statusLabel(runtimeStatus),
+    runtime_status_before: runtimeStatusBefore,
+    runtime_status_after: runtimeStatusAfter,
+    runtime_status: runtimeStatusAfter,
+    runtime_label: statusLabel(runtimeStatusAfter),
+    narrow_state_data_present: narrowStateDataPresent,
     runtime_raw_signals: rawSignals,
     required_data: requiredData,
     missing_data: missingData,
     reason_sv: reasonSv,
-    skip_reason_sv: runtimeStatus === 'partial' ? reasonSv : null,
+    skip_reason_sv: runtimeStatusAfter === 'partial' ? reasonSv : null,
     runtime_comment_sv: reasonSv,
     comment_sv: reasonSv,
     mapping_confidence: mappingConfidence,
     can_create_paper_trade: canCreate,
     can_create_paper_trade_label: canCreateLabel(canCreate),
-    entry_rule_implemented: runtimeStatus !== 'disabled',
+    entry_rule_implemented: runtimeStatusAfter !== 'disabled',
     connected: true,
     enabled_by_user: enabledByUser === true,
     profile_source: 'strategy_runtime_connector_v2',

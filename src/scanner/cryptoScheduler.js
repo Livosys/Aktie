@@ -215,6 +215,7 @@ async function runCryptoScan() {
     .map((r) => applyConfidenceDecay(r))
     .map((r) => applyWavePhase(r))
     .map((r) => applyMicroMove(r))
+    .map((r) => ({ ...r, narrow_state_data: r.narrow_state_data || r.stateGraph || null }))
     .map((r) => enrichLiveIndicators(r))
     .map((r) => stripPrivateFields(r))
     .map((r) => ({ ...r, marketGroup: getMarketGroup(r.symbol) || 'CRYPTO_MAJOR' }));
