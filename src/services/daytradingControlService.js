@@ -1967,8 +1967,57 @@ const STRATEGY_FLOW_STOP_DETAILS = Object.freeze({
   }),
 });
 
+const NARROW_DYNAMIC_STOP_STRATEGY_IDS = new Set([
+  'narrow_breakout',
+  'narrow_state_expansion_long',
+  'narrow_state_fakeout_reversal',
+]);
+
 function strategyFlowStopDetails(strategyId) {
   return STRATEGY_FLOW_STOP_DETAILS[String(strategyId || '').trim()] || null;
+}
+
+function dynamicNarrowFlowStopDetails(row = {}) {
+  const strategyId = String(row.strategyId || row.id || '').trim();
+  if (!NARROW_DYNAMIC_STOP_STRATEGY_IDS.has(strategyId)) return null;
+
+  const runtimeStatusAfter = row.runtimeStatusAfter || row.runtimeStatus || null;
+  const narrowStateDataPresent = row.narrowStateDataPresent === true;
+
+  if (runtimeStatusAfter !== 'active' || narrowStateDataPresent !== true) {
+    return {
+      firstStopStage: 'runtime_data',
+      firstStopFunction: 'runtimeData',
+      firstStopCondition: 'narrow_state_data missing',
+      firstStopReason: 'Runtime-data saknar narrow_state_data, så strategin kan inte bedömas fullt.',
+      requiredFix: 'koppla narrowState-data till runtime status',
+    };
+  }
+
+  const candidateCount = Number(row.candidateCount || 0);
+  const reachedPaperEligibility = Number(row.reachedPaperEligibility || 0);
+
+  if (candidateCount === 0) {
+    return {
+      firstStopStage: 'signal_window',
+      firstStopFunction: 'signalWindow',
+      firstStopCondition: 'candidateCount === 0',
+      firstStopReason: 'Ingen färsk narrow-kandidat i aktuellt fönster.',
+      requiredFix: 'Vänta på ny narrow-signal eller bredda scannerfönstret.',
+    };
+  }
+
+  if (reachedPaperEligibility === 0) {
+    return {
+      firstStopStage: 'paper_eligibility',
+      firstStopFunction: 'paperEligibility',
+      firstStopCondition: 'reachedPaperEligibility === 0',
+      firstStopReason: 'Narrow-kandidat finns men når inte paper eligibility i aktuellt fönster.',
+      requiredFix: 'Analysera gate/test-regler för narrow-signaler.',
+    };
+  }
+
+  return null;
 }
 
 function attachStrategyFlowStopDetails(row = {}) {
@@ -2197,7 +2246,7 @@ function buildStrategyFlowDiagnostics() {
       const reasons = [...row._reasonCounts.entries()]
         .map(([reason, count]) => ({ reason, count }))
         .sort((a, b) => b.count - a.count);
-      const stopDetails = strategyFlowStopDetails(row.strategyId);
+      const stopDetails = dynamicNarrowFlowStopDetails(row) || strategyFlowStopDetails(row.strategyId);
       const mainDropReason = reasons[0]?.reason || (
         row.enabled === false
           ? 'disabled'
