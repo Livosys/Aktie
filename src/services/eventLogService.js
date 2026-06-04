@@ -46,7 +46,7 @@ function isIsoDate(value) {
 
 function normalizeSource(value) {
   const source = String(value || 'scanner').toLowerCase();
-  if (['scanner', 'market_gate', 'paper_trading', 'batch', 'learning'].includes(source)) return source;
+  if (['scanner', 'market_gate', 'paper_trading', 'batch', 'learning', 'tradingview'].includes(source)) return source;
   return 'scanner';
 }
 
@@ -189,10 +189,36 @@ function appendEvent(input = {}) {
   }
 }
 
+// The append-only events log can grow to hundreds of MB. Parsing the whole file
+// on every call (only to return the last MAX_RECENT_EVENTS lines) blocks the event
+// loop for seconds and spikes memory — fatal when callers fan out per strategy.
+// We only ever return the tail, so read just the tail bytes of the file.
+const RECENT_EVENTS_TAIL_BYTES = 512 * 1024;
+
 function readRecentEvents(limit = MAX_RECENT_EVENTS) {
   try {
     if (!fs.existsSync(EVENTS_FILE)) return { ok: true, count: 0, events: [], ...SAFETY };
-    const parsed = fs.readFileSync(EVENTS_FILE, 'utf8')
+    const cap = Math.max(1, Math.min(MAX_RECENT_EVENTS, Number(limit) || MAX_RECENT_EVENTS));
+
+    const { size } = fs.statSync(EVENTS_FILE);
+    const start = Math.max(0, size - RECENT_EVENTS_TAIL_BYTES);
+    let raw;
+    const fd = fs.openSync(EVENTS_FILE, 'r');
+    try {
+      const length = size - start;
+      const buffer = Buffer.allocUnsafe(length);
+      fs.readSync(fd, buffer, 0, length, start);
+      raw = buffer.toString('utf8');
+    } finally {
+      fs.closeSync(fd);
+    }
+    // If we started mid-file, drop the leading partial line.
+    if (start > 0) {
+      const nl = raw.indexOf('\n');
+      raw = nl >= 0 ? raw.slice(nl + 1) : '';
+    }
+
+    const parsed = raw
       .split('\n')
       .map((line) => line.trim())
       .filter(Boolean)
@@ -204,9 +230,8 @@ function readRecentEvents(limit = MAX_RECENT_EVENTS) {
         }
       })
       .filter(Boolean);
-    const count = parsed.length;
-    const capped = parsed.slice(-Math.max(1, Math.min(MAX_RECENT_EVENTS, Number(limit) || MAX_RECENT_EVENTS))).reverse();
-    return { ok: true, count, events: capped, ...SAFETY };
+    const capped = parsed.slice(-cap).reverse();
+    return { ok: true, count: parsed.length, events: capped, ...SAFETY };
   } catch (err) {
     return { ok: false, error: err.message, count: 0, events: [], ...SAFETY };
   }

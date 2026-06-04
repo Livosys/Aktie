@@ -9,8 +9,10 @@ module.exports = {
       instances: 1,
       exec_mode: 'fork',
 
-      // Restart if heap grows beyond 1.5 GB
-      max_memory_restart: '1500M',
+      // Restart if RSS grows beyond 2.5 GB. The HistoricalEdge cache rebuild
+      // at startup transiently spikes RSS to ~1.6-1.95 GB; a 1.5 GB ceiling
+      // killed the process mid-startup and caused a max-memory-restart loop.
+      max_memory_restart: '2560M',
 
       // Restart policy
       restart_delay: 4000,
