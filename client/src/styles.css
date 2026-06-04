@@ -17837,3 +17837,43 @@ body {
   gap: 8px;
   color: var(--muted);
 }
+
+/* ── Narrow State Lab ──────────────────────────────────────────────────────── */
+.narrow-state-lab .page-sub { opacity: 0.75; margin-top: 4px; }
+.ns-safety-banner {
+  margin: 12px 0; padding: 8px 14px; border-radius: 8px;
+  background: rgba(34,197,94,0.12); border: 1px solid rgba(34,197,94,0.35);
+  color: #16a34a; font-size: 12px; font-weight: 600; letter-spacing: 0.2px;
+}
+.ns-error { margin: 10px 0; padding: 10px 14px; border-radius: 8px; background: rgba(239,68,68,0.12); color: #ef4444; }
+.ns-loading { padding: 16px; opacity: 0.7; }
+.ns-columns { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 14px; margin-top: 16px; }
+.ns-panel { padding: 14px 16px; border-radius: 12px; background: var(--card-bg, rgba(255,255,255,0.03)); border: 1px solid rgba(148,163,184,0.18); margin-top: 14px; }
+.ns-panel h2 { font-size: 15px; margin: 0 0 10px; }
+.ns-empty { opacity: 0.55; font-size: 13px; }
+.ns-row { display: flex; align-items: center; gap: 10px; padding: 6px 0; border-bottom: 1px solid rgba(148,163,184,0.10); font-size: 13px; }
+.ns-row:last-child { border-bottom: none; }
+.ns-row-sym { font-weight: 700; min-width: 64px; }
+.ns-row-score { font-variant-numeric: tabular-nums; font-weight: 600; min-width: 32px; text-align: right; }
+.ns-row-band { opacity: 0.65; font-size: 12px; }
+.ns-badge { font-size: 11px; padding: 2px 8px; border-radius: 999px; font-weight: 600; }
+.ns-badge-green { background: rgba(34,197,94,0.15); color: #16a34a; }
+.ns-badge-amber { background: rgba(245,158,11,0.15); color: #d97706; }
+.ns-badge-blue { background: rgba(59,130,246,0.15); color: #3b82f6; }
+.ns-strats { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 10px; }
+.ns-strat { display: flex; flex-direction: column; gap: 3px; padding: 10px 12px; border-radius: 10px; background: rgba(148,163,184,0.06); }
+.ns-strat-meta { font-size: 11px; opacity: 0.6; }
+.ns-strat-tags { font-size: 11px; opacity: 0.8; }
+.ns-learn-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 18px; }
+.ns-learn-grid h4 { margin: 12px 0 4px; font-size: 13px; }
+.ns-learn-grid p { margin: 0; font-size: 13px; opacity: 0.85; }
+.ns-learn-grid ul { margin: 4px 0 0; padding-left: 18px; font-size: 13px; }
+
+/* ── Narrow State Lab — Goal 2 additions ──────────────────────────────────── */
+.ns-explainer p { font-size: 14px; line-height: 1.55; opacity: 0.9; margin: 0 0 10px; }
+.ns-badge-row { display: flex; flex-wrap: wrap; gap: 8px; }
+.ns-empty-wide { margin: 14px 0; padding: 14px 16px; border-radius: 10px; background: rgba(148,163,184,0.06); }
+.ns-strat-top { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.ns-strat-desc { font-size: 12px; opacity: 0.8; margin: 2px 0 4px; line-height: 1.45; }
+.ns-learn-questions { margin: 4px 0 14px; padding-left: 18px; font-size: 13px; opacity: 0.9; }
+.ns-learn-questions li { margin: 3px 0; }

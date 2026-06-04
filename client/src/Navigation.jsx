@@ -86,6 +86,7 @@ export default function Navigation() {
   const { pathname } = useLocation();
 
   const isSupervisor = pathname.startsWith('/supervisor') || pathname.startsWith('/oversikt');
+  const isNarrow     = pathname.startsWith('/narrow');
   const isPuls       = pathname === '/' || pathname.startsWith('/live') || pathname.startsWith('/signalpuls');
   const isLab        = pathname.startsWith('/lab') || pathname.startsWith('/trading-lab');
   const isResultat   = pathname.startsWith('/insikter') || pathname.startsWith('/resultat');
@@ -101,6 +102,9 @@ export default function Navigation() {
       <div className="nav-links nav-links-desktop">
         <Link to="/supervisor" className={`nav-link${isSupervisor ? ' active' : ''}`}>
           <span>🧭</span><span>TRADING OS</span>
+        </Link>
+        <Link to="/narrow"     className={`nav-link${isNarrow ? ' active' : ''}`}>
+          <span>📉</span><span>NARROW STATE</span>
         </Link>
         <Link to="/live"       className={`nav-link nav-live${isPuls ? ' active' : ''}`}>
           <span>❤️</span><span>LIVE / SIGNALER</span>
