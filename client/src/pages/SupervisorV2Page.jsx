@@ -789,7 +789,7 @@ function DecisionCard({ item }) {
       <p className="sup-v2-answer-main">{item.summary}</p>
       {item.points.length > 0 && (
         <ul className="sup-v2-answer-list">
-          {item.points.map((point) => (
+          {item.points.slice(0, 5).map((point) => (
             <li key={`${item.index}-${point}`}>{point}</li>
           ))}
         </ul>
@@ -927,11 +927,7 @@ function StrategyPlannerPanel({ planner, onSelectRecommendation }) {
           <h2>Recommended Next Tests</h2>
           <p>Read-only planner. Rekommendationerna startar inga tester automatiskt.</p>
         </div>
-        <div className="sup-advisor-safety">
-          <span>actions_allowed={String(safety.actions_allowed === true ? 'true' : 'false')}</span>
-          <span>can_place_orders={String(safety.can_place_orders === true ? 'true' : 'false')}</span>
-          <span>live_trading_enabled={String(safety.live_trading_enabled === true ? 'true' : 'false')}</span>
-        </div>
+        <SafetyTag />
       </div>
 
       <div className="sup-v2-chip-row" style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginBottom: 12 }}>
@@ -979,11 +975,7 @@ function StrategyHistoryDetail({ history, loading, error, onClear, plannerContex
           <h2>Strategy History Drilldown</h2>
           <p>Kompakt read-only detaljvy för vald strategi. Inga tester startas och inga statusar ändras här.</p>
         </div>
-        <div className="sup-advisor-safety">
-          <span>actions_allowed=false</span>
-          <span>can_place_orders=false</span>
-          <span>live_trading_enabled=false</span>
-        </div>
+        <SafetyTag />
       </div>
 
       {loading ? (
@@ -1118,11 +1110,7 @@ function RecentTradingEvents({ resource }) {
           <h2>Senaste händelser</h2>
           <p>Detta är en read-only tidslinje. Den påverkar inte tradingbeslut.</p>
         </div>
-        <div className="sup-advisor-safety">
-          <span>actions_allowed=false</span>
-          <span>can_place_orders=false</span>
-          <span>live_trading_enabled=false</span>
-        </div>
+        <SafetyTag />
       </div>
 
       {!state.missing && state.label === 'Problem' && (
@@ -1189,11 +1177,7 @@ function EventAiConclusion({ resource }) {
           <h2>AI-slutsats från events</h2>
           <p>Detta är en deterministisk read-only tolkning av de senaste 100 eventen.</p>
         </div>
-        <div className="sup-advisor-safety">
-          <span>actions_allowed=false</span>
-          <span>can_place_orders=false</span>
-          <span>live_trading_enabled=false</span>
-        </div>
+        <SafetyTag />
       </div>
 
       {!state.missing && state.label === 'Problem' && (
@@ -1284,11 +1268,7 @@ function EventsByMarket({ resource }) {
           <h2>Events per marknad</h2>
           <p>Read-only sammanfattning per market baserad på de senaste 100 eventen.</p>
         </div>
-        <div className="sup-advisor-safety">
-          <span>actions_allowed=false</span>
-          <span>can_place_orders=false</span>
-          <span>live_trading_enabled=false</span>
-        </div>
+        <SafetyTag />
       </div>
 
       {!state.missing && state.label === 'Problem' && (
@@ -1370,11 +1350,7 @@ function EventSystemStatus({ resource }) {
           <h2>Event system status</h2>
           <p>Read-only översikt av JSONL-loggen och den optionala Kafka-adaptern.</p>
         </div>
-        <div className="sup-advisor-safety">
-          <span>actions_allowed=false</span>
-          <span>can_place_orders=false</span>
-          <span>live_trading_enabled=false</span>
-        </div>
+        <SafetyTag />
       </div>
 
       {!state.missing && state.label === 'Problem' && (
@@ -1461,11 +1437,7 @@ function SignalStopSummary({ resource }) {
           <h2>Var stoppades signalerna?</h2>
           <p>Read-only sammanfattning av de senaste 100 eventen från event-loggen.</p>
         </div>
-        <div className="sup-advisor-safety">
-          <span>actions_allowed=false</span>
-          <span>can_place_orders=false</span>
-          <span>live_trading_enabled=false</span>
-        </div>
+        <SafetyTag />
       </div>
 
       {!summary.hasEvents ? (
@@ -2626,7 +2598,7 @@ function buildDecisionModel(resources) {
     `live_trading_enabled=${SAFETY_FLAGS.live_trading_enabled}`,
     'Supervisor är read-only. Den visar beslut och rekommendationer, men ändrar inte strategier.',
     marketMode === 'Risk-Off' ? 'Var försiktig med long-signaler. Prioritera test och riskkontroll.' : '',
-  ]);
+  ]).slice(0, 5);
 
   const glossary = [
     ['Risk-Off', 'Marknaden är försiktig. Då är det klokt att ta färre trades och skydda kapitalet.'],
@@ -2721,6 +2693,18 @@ function buildEndpointRows(resources) {
       error: entry?.error || '',
     };
   });
+}
+
+function SafetyTag() {
+  return (
+    <span
+      className="badge badge-gray"
+      title="actions_allowed=false · can_place_orders=false · live_trading_enabled=false"
+      style={{ whiteSpace: 'nowrap' }}
+    >
+      🔒 Read-only · paper_only
+    </span>
+  );
 }
 
 function SupGroupDivider({ index, title, question }) {
@@ -3103,11 +3087,7 @@ export default function SupervisorV2Page() {
             <h2>🧠 AI Operations Advisor</h2>
             <p>Read-only läsning av senaste timmen, idag, 7 dagar eller 30 dagar. Ingen trading, inga ordrar.</p>
           </div>
-          <div className="sup-advisor-safety">
-            <span>actions_allowed=false</span>
-            <span>can_place_orders=false</span>
-            <span>live_trading_enabled=false</span>
-          </div>
+          <SafetyTag />
         </div>
 
         <div className="sup-advisor-window-strip">
@@ -3261,11 +3241,7 @@ export default function SupervisorV2Page() {
             <h2>Strategy Registry och Score</h2>
             <p>Read-only översikt av interna och TradingView-strategier samt första versionen av Strategy Score.</p>
           </div>
-          <div className="sup-advisor-safety">
-            <span>actions_allowed=false</span>
-            <span>can_place_orders=false</span>
-            <span>live_trading_enabled=false</span>
-          </div>
+          <SafetyTag />
         </div>
 
         <div className="sup-v2-answer-grid">
@@ -3327,11 +3303,7 @@ export default function SupervisorV2Page() {
             <h2>Strategy Drilldown</h2>
             <p>Read-only listor över de starkaste, svagaste och mest osäkra strategierna samt vilka tester som bör köras härnäst.</p>
           </div>
-          <div className="sup-advisor-safety">
-            <span>actions_allowed=false</span>
-            <span>can_place_orders=false</span>
-            <span>live_trading_enabled=false</span>
-          </div>
+          <SafetyTag />
         </div>
 
         <div className="sup-v2-answer-grid">
