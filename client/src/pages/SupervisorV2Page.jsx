@@ -2723,6 +2723,35 @@ function buildEndpointRows(resources) {
   });
 }
 
+function SupGroupDivider({ index, title, question }) {
+  return (
+    <div style={{ display: 'flex', alignItems: 'center', gap: 14, margin: '36px 0 8px' }}>
+      <div
+        style={{
+          flex: '0 0 auto',
+          width: 40,
+          height: 40,
+          borderRadius: 12,
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          fontWeight: 900,
+          fontSize: 17,
+          background: 'rgba(37,99,235,0.16)',
+          color: '#60a5fa',
+          border: '1px solid rgba(37,99,235,0.32)',
+        }}
+      >
+        {index}
+      </div>
+      <div>
+        <h2 style={{ margin: 0, fontSize: 19, fontWeight: 900 }}>{title}</h2>
+        {question ? <p style={{ margin: '2px 0 0', opacity: 0.7, fontSize: 13 }}>{question}</p> : null}
+      </div>
+    </div>
+  );
+}
+
 export default function SupervisorV2Page() {
   const [resources, setResources] = useState({});
   const [loading, setLoading] = useState(true);
@@ -2884,6 +2913,190 @@ export default function SupervisorV2Page() {
       </div>
     </div>
 
+      <SupGroupDivider index="1" title="Beslutsläge" question="Vad händer just nu — och vad ska jag göra?" />
+      <section className="sup-section">
+        <div className="sup-section-head">
+          <div>
+            <h2>Översikt</h2>
+            <p>Högst upp visas en enkel läsning av läget just nu.</p>
+          </div>
+        </div>
+
+        <div className="sup-pill-grid sup-v2-pill-grid">
+          <div className={`sup-pill sup-pill-${summaryTone}`}>
+            <span>Systemstatus</span>
+            <strong>{model.systemStatus}</strong>
+          </div>
+          <div className="sup-pill sup-pill-missing">
+            <span>Tradingläge</span>
+            <strong>{model.tradingMode}</strong>
+          </div>
+          <div className="sup-pill sup-pill-good">
+            <span>Marknadsläge</span>
+            <strong>{model.marketMode}</strong>
+          </div>
+          <div className={`sup-pill sup-pill-${recommendationTone}`}>
+            <span>Rekommendation</span>
+            <strong>{model.recommendationLabel}</strong>
+          </div>
+        </div>
+
+        <div className="sup-grid sup-grid-5 sup-v2-metrics">
+          <article className="sup-block sup-block-neutral">
+            <span className="sup-block-title">Kan köra paper trades</span>
+            <strong className="sup-block-value">{formatInt(model.paperTradeCount, 'Ingen data ännu')}</strong>
+            <span className="sup-block-note">Strategier som faktiskt kan skapa paper trades.</span>
+          </article>
+          <article className="sup-block sup-block-neutral">
+            <span className="sup-block-title">Valda men inte körbara</span>
+            <strong className="sup-block-value">{formatInt(model.selectedButNotRunnableCount, 'Ingen data ännu')}</strong>
+            <span className="sup-block-note">Valda strategier som inte kan skapa paper trades ännu.</span>
+          </article>
+          <article className="sup-block sup-block-neutral">
+            <span className="sup-block-title">Saknar entry-regel</span>
+            <strong className="sup-block-value">{formatInt(model.noEntryRuleCount, 'Ingen data ännu')}</strong>
+            <span className="sup-block-note">På men saknar den regel som behövs för att bli körbar.</span>
+          </article>
+          <article className="sup-block sup-block-neutral">
+            <span className="sup-block-title">Saknar mapping</span>
+            <strong className="sup-block-value">{formatInt(model.noMappingCount, 'Ingen data ännu')}</strong>
+            <span className="sup-block-note">Finns i katalogen men är inte kopplade till runtime.</span>
+          </article>
+          <article className="sup-block sup-block-neutral">
+            <span className="sup-block-title">Read-only</span>
+            <strong className="sup-block-value">På</strong>
+            <span className="sup-block-note">actions_allowed=false, can_place_orders=false, live_trading_enabled=false.</span>
+          </article>
+        </div>
+        <details className="sup-advanced" style={{ marginTop: 12 }}>
+          <summary>Visa katalogstatus</summary>
+          <div className="sup-v2-chip-row" style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginTop: 12 }}>
+            <span className="sup-v2-chip">ACTIVE {model.catalogStatusCounts?.active || 0}</span>
+            <span className="sup-v2-chip">TESTING {model.catalogStatusCounts?.testing || 0}</span>
+            <span className="sup-v2-chip">PAUSED {model.catalogStatusCounts?.paused || 0}</span>
+            <span className="sup-v2-chip">ROADMAP {model.catalogStatusCounts?.roadmap || 0}</span>
+            <span className="sup-v2-chip">LEGACY {model.catalogStatusCounts?.legacy || 0}</span>
+          </div>
+          <div className="sup-v2-card-source" style={{ marginTop: 8 }}>
+            Katalogstatus kommer från Strategy Catalog. Runtime-koppling, paper-körbarhet och learning-stöd visas separat i Daytrading och Lab.
+          </div>
+          {model.catalogStatusRows?.length > 0 && (
+            <div className="sup-v2-card-source" style={{ marginTop: 8 }}>
+              Exempel: {model.catalogStatusRows.slice(0, 5).map((row) => `${row.name} · ${row.statusLabel} · Scanner:${row.supportsScanner ? 'Ja' : 'Nej'} Replay:${row.supportsReplay ? 'Ja' : 'Nej'}`).join(' | ')}
+            </div>
+          )}
+        </details>
+      </section>
+
+      <section className="sup-section">
+        <div className="sup-section-head">
+          <div>
+            <h2>AI Supervisor — Beslutsrapport</h2>
+            <p>En enkel sammanfattning av vad systemet tycker att du ska göra just nu.</p>
+          </div>
+        </div>
+        <div className="sup-v2-answer-grid">
+          <DecisionCard
+            item={{
+              index: 'A',
+              title: 'Systemets slutsats just nu',
+              tone: model.systemProblems.length > 0 ? 'warn' : 'ok',
+              badgeTone: model.systemProblems.length > 0 ? 'yellow' : 'green',
+              badge: model.systemStatus,
+              summary: model.systemConclusion,
+              points: uniqueText([
+                `Kan skapa paper trades: ${formatInt(model.paperTradeCount, 'Ingen data ännu')}`,
+                model.selectedButNotRunnableLabel,
+                model.entryRuleLabel,
+                model.mappingLabel,
+              ]),
+            }}
+          />
+          <DecisionCard
+            item={{
+              index: 'B',
+              title: 'Bäst att testa just nu',
+              tone: 'ok',
+              badgeTone: 'green',
+              badge: model.mixedBest ? 'Blandad signal' : model.recommendationLabel === 'Testa' ? 'Testa' : 'Bevaka',
+              summary: model.bestCardSummary,
+              points: model.bestPoints.length > 0 ? model.bestPoints : ['Ingen tydlig bästa strategi ännu.'],
+            }}
+          />
+          <DecisionCard
+            item={{
+              index: 'C',
+              title: 'Undvik just nu',
+              tone: model.recommendationLabel === 'Undvik' ? 'danger' : 'warn',
+              badgeTone: model.recommendationLabel === 'Undvik' ? 'red' : 'yellow',
+              badge: model.mixedAvoid ? 'Blandad signal' : 'Undvik',
+              summary: model.avoidCardSummary,
+              points: model.avoidPoints.length > 0 ? model.avoidPoints : ['Ingen tydlig avoid-signal ännu.'],
+            }}
+          />
+          <DecisionCard
+            item={{
+              index: 'D',
+              title: 'Största problem',
+              tone: model.systemProblems.length > 0 ? 'danger' : 'warn',
+              badgeTone: model.systemProblems.length > 0 ? 'red' : 'yellow',
+              badge: model.systemProblems.length > 0 ? 'Problem' : 'Bevaka',
+              summary: model.systemProblems.length > 0
+                ? bestText(model.systemProblems[0], model.systemProblems[1])
+                : 'Inga stora blockerare syns just nu.',
+              points: model.problemPoints,
+            }}
+          />
+          <DecisionCard
+            item={{
+              index: 'E',
+              title: 'Nästa rekommenderade åtgärd',
+              tone: model.recommendationLabel === 'Undvik' ? 'warn' : 'ok',
+              badgeTone: statusBadgeTone(model.recommendationLabel),
+              badge: model.recommendationLabel,
+              summary: bestText(model.actionItems[0], 'Ingen tydlig åtgärd ännu.'),
+              points: model.actionItems,
+            }}
+          />
+          <DecisionCard
+            item={{
+              index: 'F',
+              title: 'Risk och safety',
+              tone: model.marketMode === 'Risk-Off' ? 'danger' : 'warn',
+              badgeTone: model.marketMode === 'Risk-Off' ? 'red' : 'yellow',
+              badge: model.marketMode,
+              summary: model.marketMode === 'Risk-Off'
+                ? 'Var försiktig med long-signaler. Prioritera test och riskkontroll.'
+                : bestText(model.marketMode, model.volatilityText),
+              points: model.riskSafetyPoints,
+            }}
+          />
+        </div>
+        {model.hasConflict && (
+          <div className="sup-safety-copy" style={{ marginTop: 12, borderColor: 'rgba(239,68,68,.32)', background: 'rgba(239,68,68,.08)', color: 'var(--red)' }}>
+            {model.conflictMessage}
+          </div>
+        )}
+      </section>
+
+      <section className="sup-section">
+        <div className="sup-section-head">
+          <div>
+            <h2>Vad ska jag göra nu?</h2>
+            <p>1-3 enkla rekommendationer baserade på dagens läge.</p>
+          </div>
+        </div>
+        <div className="sup-focus-box">
+          <div className="sup-focus-title">Nästa steg</div>
+          {model.actionItems.map((item, index) => (
+            <div className="sup-focus-item" key={`${index}-${item}`}>
+              <strong>{index + 1}</strong>
+              <span>{item}</span>
+            </div>
+          ))}
+        </div>
+      </section>
+
       <section className="sup-section sup-advisor-section">
         <div className="sup-section-head">
           <div>
@@ -3041,6 +3254,7 @@ export default function SupervisorV2Page() {
         )}
       </section>
 
+      <SupGroupDivider index="2" title="Strategiöversikt" question="Vilka strategier finns och hur presterar de?" />
       <section className="sup-section">
         <div className="sup-section-head">
           <div>
@@ -3190,6 +3404,15 @@ export default function SupervisorV2Page() {
         </div>
       </section>
 
+      <StrategyHistoryDetail
+        history={selectedStrategyHistory}
+        loading={strategyHistoryLoading}
+        error={strategyHistoryError}
+        onClear={clearStrategyHistory}
+        plannerContext={selectedStrategyPlannerContext}
+      />
+
+      <SupGroupDivider index="3" title="Testrekommendationer" question="Vad bör testas härnäst?" />
       <StrategyPlannerPanel
         planner={{
           ok: testPlannerStatus?.ok !== false,
@@ -3200,219 +3423,22 @@ export default function SupervisorV2Page() {
         onSelectRecommendation={loadStrategyHistory}
       />
 
-      <StrategyHistoryDetail
-        history={selectedStrategyHistory}
-        loading={strategyHistoryLoading}
-        error={strategyHistoryError}
-        onClear={clearStrategyHistory}
-        plannerContext={selectedStrategyPlannerContext}
-      />
+      <SupGroupDivider index="4" title="Signaldiagnostik" question="Var stoppades signalerna och varför?" />
+      <SignalStopSummary resource={resources.eventsRecent} />
 
       <EventAiConclusion resource={resources.eventsRecent} />
+
       <EventsByMarket resource={resources.eventsRecent} />
-      <SignalStopSummary resource={resources.eventsRecent} />
+
+      <SupGroupDivider index="5" title="Teknisk diagnostik" question="Loggar, event-system och optimering. Öppnas vid behov." />
+      <details className="sup-advanced">
+        <summary>Visa teknisk diagnostik</summary>
+        <p className="sup-muted" style={{ marginTop: 10 }}>
+          Tekniska detaljer och rådata. Behövs inte för det dagliga beslutet.
+        </p>
       <RecentTradingEvents resource={resources.eventsRecent} />
       <EventSystemStatus resource={resources.eventsStatus} />
-
       <OptimizationCenter optimization={optimization} />
-
-      <section className="sup-section">
-        <div className="sup-section-head">
-          <div>
-            <h2>Översikt</h2>
-            <p>Högst upp visas en enkel läsning av läget just nu.</p>
-          </div>
-        </div>
-
-        <div className="sup-pill-grid sup-v2-pill-grid">
-          <div className={`sup-pill sup-pill-${summaryTone}`}>
-            <span>Systemstatus</span>
-            <strong>{model.systemStatus}</strong>
-          </div>
-          <div className="sup-pill sup-pill-missing">
-            <span>Tradingläge</span>
-            <strong>{model.tradingMode}</strong>
-          </div>
-          <div className="sup-pill sup-pill-good">
-            <span>Marknadsläge</span>
-            <strong>{model.marketMode}</strong>
-          </div>
-          <div className={`sup-pill sup-pill-${recommendationTone}`}>
-            <span>Rekommendation</span>
-            <strong>{model.recommendationLabel}</strong>
-          </div>
-        </div>
-
-        <div className="sup-grid sup-grid-5 sup-v2-metrics">
-          <article className="sup-block sup-block-neutral">
-            <span className="sup-block-title">Kan köra paper trades</span>
-            <strong className="sup-block-value">{formatInt(model.paperTradeCount, 'Ingen data ännu')}</strong>
-            <span className="sup-block-note">Strategier som faktiskt kan skapa paper trades.</span>
-          </article>
-          <article className="sup-block sup-block-neutral">
-            <span className="sup-block-title">Valda men inte körbara</span>
-            <strong className="sup-block-value">{formatInt(model.selectedButNotRunnableCount, 'Ingen data ännu')}</strong>
-            <span className="sup-block-note">Valda strategier som inte kan skapa paper trades ännu.</span>
-          </article>
-          <article className="sup-block sup-block-neutral">
-            <span className="sup-block-title">Saknar entry-regel</span>
-            <strong className="sup-block-value">{formatInt(model.noEntryRuleCount, 'Ingen data ännu')}</strong>
-            <span className="sup-block-note">På men saknar den regel som behövs för att bli körbar.</span>
-          </article>
-          <article className="sup-block sup-block-neutral">
-            <span className="sup-block-title">Saknar mapping</span>
-            <strong className="sup-block-value">{formatInt(model.noMappingCount, 'Ingen data ännu')}</strong>
-            <span className="sup-block-note">Finns i katalogen men är inte kopplade till runtime.</span>
-          </article>
-          <article className="sup-block sup-block-neutral">
-            <span className="sup-block-title">Read-only</span>
-            <strong className="sup-block-value">På</strong>
-            <span className="sup-block-note">actions_allowed=false, can_place_orders=false, live_trading_enabled=false.</span>
-          </article>
-        </div>
-        <div className="sup-v2-chip-row" style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginTop: 12 }}>
-          <span className="sup-v2-chip">ACTIVE {model.catalogStatusCounts?.active || 0}</span>
-          <span className="sup-v2-chip">TESTING {model.catalogStatusCounts?.testing || 0}</span>
-          <span className="sup-v2-chip">PAUSED {model.catalogStatusCounts?.paused || 0}</span>
-          <span className="sup-v2-chip">ROADMAP {model.catalogStatusCounts?.roadmap || 0}</span>
-          <span className="sup-v2-chip">LEGACY {model.catalogStatusCounts?.legacy || 0}</span>
-        </div>
-        <div className="sup-v2-card-source" style={{ marginTop: 8 }}>
-          Katalogstatus kommer från Strategy Catalog. Runtime-koppling, paper-körbarhet och learning-stöd visas separat i Daytrading och Lab.
-        </div>
-        {model.catalogStatusRows?.length > 0 && (
-          <div className="sup-v2-card-source" style={{ marginTop: 8 }}>
-            Exempel: {model.catalogStatusRows.slice(0, 5).map((row) => `${row.name} · ${row.statusLabel} · Scanner:${row.supportsScanner ? 'Ja' : 'Nej'} Replay:${row.supportsReplay ? 'Ja' : 'Nej'}`).join(' | ')}
-          </div>
-        )}
-      </section>
-
-      <section className="sup-section">
-        <div className="sup-section-head">
-          <div>
-            <h2>AI Supervisor — Beslutsrapport</h2>
-            <p>En enkel sammanfattning av vad systemet tycker att du ska göra just nu.</p>
-          </div>
-        </div>
-        <div className="sup-v2-answer-grid">
-          <DecisionCard
-            item={{
-              index: 'A',
-              title: 'Systemets slutsats just nu',
-              tone: model.systemProblems.length > 0 ? 'warn' : 'ok',
-              badgeTone: model.systemProblems.length > 0 ? 'yellow' : 'green',
-              badge: model.systemStatus,
-              summary: model.systemConclusion,
-              points: uniqueText([
-                `Kan skapa paper trades: ${formatInt(model.paperTradeCount, 'Ingen data ännu')}`,
-                model.selectedButNotRunnableLabel,
-                model.entryRuleLabel,
-                model.mappingLabel,
-              ]),
-            }}
-          />
-          <DecisionCard
-            item={{
-              index: 'B',
-              title: 'Bäst att testa just nu',
-              tone: 'ok',
-              badgeTone: 'green',
-              badge: model.mixedBest ? 'Blandad signal' : model.recommendationLabel === 'Testa' ? 'Testa' : 'Bevaka',
-              summary: model.bestCardSummary,
-              points: model.bestPoints.length > 0 ? model.bestPoints : ['Ingen tydlig bästa strategi ännu.'],
-            }}
-          />
-          <DecisionCard
-            item={{
-              index: 'C',
-              title: 'Undvik just nu',
-              tone: model.recommendationLabel === 'Undvik' ? 'danger' : 'warn',
-              badgeTone: model.recommendationLabel === 'Undvik' ? 'red' : 'yellow',
-              badge: model.mixedAvoid ? 'Blandad signal' : 'Undvik',
-              summary: model.avoidCardSummary,
-              points: model.avoidPoints.length > 0 ? model.avoidPoints : ['Ingen tydlig avoid-signal ännu.'],
-            }}
-          />
-          <DecisionCard
-            item={{
-              index: 'D',
-              title: 'Största problem',
-              tone: model.systemProblems.length > 0 ? 'danger' : 'warn',
-              badgeTone: model.systemProblems.length > 0 ? 'red' : 'yellow',
-              badge: model.systemProblems.length > 0 ? 'Problem' : 'Bevaka',
-              summary: model.systemProblems.length > 0
-                ? bestText(model.systemProblems[0], model.systemProblems[1])
-                : 'Inga stora blockerare syns just nu.',
-              points: model.problemPoints,
-            }}
-          />
-          <DecisionCard
-            item={{
-              index: 'E',
-              title: 'Nästa rekommenderade åtgärd',
-              tone: model.recommendationLabel === 'Undvik' ? 'warn' : 'ok',
-              badgeTone: statusBadgeTone(model.recommendationLabel),
-              badge: model.recommendationLabel,
-              summary: bestText(model.actionItems[0], 'Ingen tydlig åtgärd ännu.'),
-              points: model.actionItems,
-            }}
-          />
-          <DecisionCard
-            item={{
-              index: 'F',
-              title: 'Risk och safety',
-              tone: model.marketMode === 'Risk-Off' ? 'danger' : 'warn',
-              badgeTone: model.marketMode === 'Risk-Off' ? 'red' : 'yellow',
-              badge: model.marketMode,
-              summary: model.marketMode === 'Risk-Off'
-                ? 'Var försiktig med long-signaler. Prioritera test och riskkontroll.'
-                : bestText(model.marketMode, model.volatilityText),
-              points: model.riskSafetyPoints,
-            }}
-          />
-        </div>
-        {model.hasConflict && (
-          <div className="sup-safety-copy" style={{ marginTop: 12, borderColor: 'rgba(239,68,68,.32)', background: 'rgba(239,68,68,.08)', color: 'var(--red)' }}>
-            {model.conflictMessage}
-          </div>
-        )}
-      </section>
-
-      <section className="sup-section">
-        <div className="sup-section-head">
-          <div>
-            <h2>Vad ska jag göra nu?</h2>
-            <p>1-3 enkla rekommendationer baserade på dagens läge.</p>
-          </div>
-        </div>
-        <div className="sup-focus-box">
-          <div className="sup-focus-title">Nästa steg</div>
-          {model.actionItems.map((item, index) => (
-            <div className="sup-focus-item" key={`${index}-${item}`}>
-              <strong>{index + 1}</strong>
-              <span>{item}</span>
-            </div>
-          ))}
-        </div>
-      </section>
-
-      <section className="sup-section">
-        <div className="sup-section-head">
-          <div>
-            <h2>Begrepp för nybörjare</h2>
-            <p>De svåra orden förklarade med enkel svensk text.</p>
-          </div>
-        </div>
-        <div className="sup-focus-box">
-          {model.glossary.map(([term, explanation]) => (
-            <div className="sup-focus-item" key={term}>
-              <strong>{term}</strong>
-              <span>{explanation}</span>
-            </div>
-          ))}
-        </div>
-      </section>
-
       <details className="sup-advanced">
         <summary>Tekniska källor</summary>
         <p className="sup-muted" style={{ marginTop: 10 }}>
@@ -3460,6 +3486,24 @@ export default function SupervisorV2Page() {
           }, null, 2)}</pre>
         </details>
       </details>
+      <section className="sup-section">
+        <div className="sup-section-head">
+          <div>
+            <h2>Begrepp för nybörjare</h2>
+            <p>De svåra orden förklarade med enkel svensk text.</p>
+          </div>
+        </div>
+        <div className="sup-focus-box">
+          {model.glossary.map(([term, explanation]) => (
+            <div className="sup-focus-item" key={term}>
+              <strong>{term}</strong>
+              <span>{explanation}</span>
+            </div>
+          ))}
+        </div>
+      </section>
+      </details>
+
 
       {!loading && error && <div className="sup-error">{error}</div>}
       {loading && <div className="sup-loading">{model.loadingMessage}</div>}
