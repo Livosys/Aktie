@@ -4,17 +4,17 @@ import { useAlerts } from '../alertContext.jsx';
 import { applyTheme, getTheme } from './ThemeToggle.jsx';
 
 const NAV_GROUPS = [
-  {
-    id: 'main',
-    label: null,
-    items: [
-      { path: '/supervisor', label: 'Trading OS', icon: '🧭', match: ['/supervisor', '/oversikt'], accent: 'blue' },
-      { path: '/live',       label: 'LIVE',       icon: '♥', match: ['/', '/live', '/signalpuls', '/scanner', '/signaler', '/aktier', '/krypto', '/nasdaq'], accent: 'blue' },
-      { path: '/lab',        label: 'LAB',        icon: 'L', match: ['/lab', '/trading-lab', '/strategy-lab', '/replay', '/review-chart', '/intelligence', '/machine'], accent: 'orange' },
-      { path: '/insikter',   label: 'INSIKTER',   icon: 'I', match: ['/insikter', '/resultat', '/setup-performance', '/historik', '/paper-trading'], accent: 'green' },
-      { path: '/system',     label: 'SYSTEM',     icon: 'S', match: ['/system', '/system-health', '/alerts', '/sakerhet', '/risk', '/risk-engine', '/safety', '/execution-safety'], accent: 'purple' },
-    ],
-  },
+      {
+        id: 'main',
+        label: null,
+        items: [
+          { path: '/supervisor', label: 'Trading OS', icon: '🧭', match: ['/supervisor', '/oversikt'], accent: 'blue' },
+          { path: '/live',       label: 'Live / Signaler', icon: '♥', match: ['/', '/live', '/signalpuls', '/scanner', '/signaler', '/aktier', '/krypto', '/nasdaq'], accent: 'blue' },
+          { path: '/lab',        label: 'Lärdomar',        icon: 'L', match: ['/lab', '/trading-lab', '/strategy-lab', '/replay', '/review-chart', '/intelligence', '/machine'], accent: 'orange' },
+          { path: '/insikter',   label: 'Historik',        icon: 'I', match: ['/insikter', '/resultat', '/setup-performance', '/historik', '/paper-trading'], accent: 'green' },
+          { path: '/system',     label: 'Teknik',          icon: 'S', match: ['/system', '/system-health', '/alerts', '/sakerhet', '/risk', '/risk-engine', '/safety', '/execution-safety'], accent: 'purple' },
+        ],
+      },
 ];
 
 const ACCENT_CLASS = {
@@ -95,7 +95,7 @@ export default function Sidebar({ open, onClose }) {
           <img src="/evin.png" alt="" className="sb-brand-logo" />
           <div className="sb-brand-text">
             <strong>Trading OS</strong>
-            <small>Kör bilen · Översikt · Test</small>
+            <small>Översikt · test · läsning</small>
           </div>
         </Link>
 
@@ -124,7 +124,7 @@ export default function Sidebar({ open, onClose }) {
           <ThemeToggle />
           <div className="sb-footer-meta">
             <span>Trading OS</span>
-            <span>Ingen handel utförs</span>
+            <span>Inga affärer utförs</span>
           </div>
         </div>
 

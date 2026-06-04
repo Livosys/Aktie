@@ -48,6 +48,10 @@ export default function TopBar({ onMenu, status }) {
     setQuery('');
   }
 
+  function openHelp() {
+    window.dispatchEvent(new CustomEvent('trading-os-help:open'));
+  }
+
   return (
     <header className="premium-topbar">
       <div className="premium-topbar-main">
@@ -68,6 +72,9 @@ export default function TopBar({ onMenu, status }) {
         </form>
 
         <SystemStatusStrip status={status} />
+        <button type="button" className="premium-help-button" onClick={openHelp}>
+          Ny här?
+        </button>
         <ThemeToggle />
       </div>
       <AiSummaryBar />

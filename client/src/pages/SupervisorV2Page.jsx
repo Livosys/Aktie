@@ -1,5 +1,10 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
+import BeginnerInfoCard from '../components/tradingos/BeginnerInfoCard.jsx';
+import EmptyLearningState from '../components/tradingos/EmptyLearningState.jsx';
+import GlossaryTooltip from '../components/tradingos/GlossaryTooltip.jsx';
+import QuickHelpModal from '../components/tradingos/QuickHelpModal.jsx';
+import SimpleStatusCard from '../components/tradingos/SimpleStatusCard.jsx';
 
 const SAFETY_FLAGS = Object.freeze({
   actions_allowed: false,
@@ -18,19 +23,19 @@ const ENDPOINTS = [
   { key: 'pipelineRecent', url: '/api/pipeline/daily/recent?n=5', label: 'Daily pipeline recent' },
   { key: 'dailyResults', url: '/api/results/daily-intelligence', label: 'Daily intelligence' },
   { key: 'learningConnectorStatus', url: '/api/learning/connector/status', label: 'Learning Connector' },
-  { key: 'daytradingLearningSummary', url: '/api/daytrading/learning-summary?hours=48&limit=200', label: 'Daytrading learning summary' },
+  { key: 'daytradingLearningSummary', url: '/api/daytrading/learning-summary?hours=48&limit=200', label: 'Lärandesammanfattning' },
   { key: 'priority', url: '/api/priority/summary', label: 'Priority Engine' },
   { key: 'optimization', url: '/api/optimization/summary', label: 'AI Optimization Agent' },
   { key: 'tradingviewStatus', url: '/api/tradingview/status', label: 'TradingView status' },
   { key: 'marketRegime', url: '/api/market-regime/status', label: 'Market Regime' },
   { key: 'paperStatus', url: '/api/paper-trading/status', label: 'Paper Trading status' },
   { key: 'paperPerformance', url: '/api/paper-trading/performance', label: 'Paper Trading performance' },
-  { key: 'runtimeStrategies', url: '/api/daytrading/runtime-strategies', label: 'Daytrading runtime strategies' },
+  { key: 'runtimeStrategies', url: '/api/daytrading/runtime-strategies', label: 'Runtime-strategier' },
   { key: 'registryStatus', url: '/api/strategies/registry/status', label: 'Strategy Registry status' },
   { key: 'strategyScoreStatus', url: '/api/strategies/score/status', label: 'Strategy Score v1' },
   { key: 'testPlannerStatus', url: '/api/strategies/test-planner/status', label: 'Strategy Test Planner v1' },
   { key: 'testQueueStatus', url: '/api/strategies/test-queue/status', label: 'Manual Test Queue' },
-  { key: 'recommendation', url: '/api/daytrading/recommendation', label: 'Daytrading recommendation' },
+  { key: 'recommendation', url: '/api/daytrading/recommendation', label: 'Rekommendation' },
   { key: 'eventsRecent', url: '/api/events/recent?n=100', label: 'Recent trading events' },
   { key: 'eventsStatus', url: '/api/events/status', label: 'Event system status' },
 ];
@@ -2748,7 +2753,7 @@ function buildTechnicalCards(resources, decision) {
     },
     {
       key: 'runtime',
-      title: 'Daytrading Runtime',
+      title: 'Runtime-översikt',
       kicker: 'Teknisk källa 8',
       tone: 'neutral',
       badgeTone: 'blue',
@@ -2835,7 +2840,7 @@ function buildDecisionModel(resources) {
     ...normalizeArray(health?.issues),
     ...normalizeArray(health?.warnings),
     ...(paperPerformance?.timeout_rate != null && toNumber(paperPerformance.timeout_rate) >= 30 ? [`Paper trading timeout-rate ${formatPct(paperPerformance.timeout_rate, 0)}.`] : []),
-    ...(learningSummary?.trades_total != null ? [] : ['Daytrading learning summary saknar underlag.']),
+    ...(learningSummary?.trades_total != null ? [] : ['Lärandesammanfattningen saknar underlag.']),
     ...(learningConnectorStatus?.errors?.length ? [`Learning Connector har ${formatInt(learningConnectorStatus.errors.length)} fel i kö.`] : []),
     ...(pipelineStatus?.warnings?.length ? [`Pipeline har ${formatInt(pipelineStatus.warnings.length)} varningar.`] : []),
     ...(registryStatus?.ok === false ? ['Strategy Registry-data är inte tillgänglig.'] : []),
@@ -2843,7 +2848,7 @@ function buildDecisionModel(resources) {
     ...(tradingViewStatus?.webhook_auth_configured === false ? ['TradingView-webhook auth är inte konfigurerad.'] : []),
     ...(status?.ok === false ? ['Backend svarar inte.'] : []),
     ...(health?.ok === false ? ['Systemhälsa är inte tillgänglig.'] : []),
-    ...(runtime?.ok === false ? ['Daytrading runtime-data är inte tillgänglig.'] : []),
+    ...(runtime?.ok === false ? ['Runtime-data är inte tillgänglig.'] : []),
   ]);
 
   const marketMode = marketRiskLabel(marketRegime);
@@ -3198,6 +3203,7 @@ export default function SupervisorV2Page() {
   const [queueMessage, setQueueMessage] = useState('');
   const [queueBusyId, setQueueBusyId] = useState('');
   const [queueView, setQueueView] = useState('pending');
+  const [helpOpen, setHelpOpen] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -3220,6 +3226,15 @@ export default function SupervisorV2Page() {
     return () => {
       cancelled = true;
     };
+  }, []);
+
+  useEffect(() => {
+    function openHelp() {
+      setHelpOpen(true);
+    }
+
+    window.addEventListener('trading-os-help:open', openHelp);
+    return () => window.removeEventListener('trading-os-help:open', openHelp);
   }, []);
 
   useEffect(() => {
@@ -3416,6 +3431,83 @@ export default function SupervisorV2Page() {
     : model.recommendationLabel;
   const nextPlannerReason = nextPlannerRecommendation?.reason || model.bestCardSummary;
   const keyRisk = model.systemProblems[0] || model.riskSafetyPoints[0] || 'Ingen tydlig risk just nu.';
+  const beginnerCards = [
+    {
+      icon: '🤖',
+      title: 'Vad systemet gör',
+      description: 'Det letar efter mönster och föreslår vad som är värt att testa vidare.',
+      tone: 'info',
+    },
+    {
+      icon: '🧪',
+      title: 'Vad som händer just nu',
+      description: 'Det finns rekommenderade tester, en manuell kö och en tydlig säkerhetsgräns.',
+      tone: 'good',
+    },
+    {
+      icon: '🔎',
+      title: 'Vad du ska titta på',
+      description: 'Börja med nästa test, öppna testkön och läs varför signaler stoppas.',
+      tone: 'warning',
+    },
+  ];
+
+  const systemStatusCards = [
+    {
+      icon: '🟢',
+      title: 'Systemstatus',
+      value: model.systemStatus,
+      summary: bestText(model.systemConclusion, 'Systemet är igång.'),
+      detail: 'En enkel läsning av helhetsläget.',
+      tone: summaryTone === 'good' ? 'good' : 'warning',
+      progress: model.systemProblems.length > 0 ? 45 : 82,
+    },
+    {
+      icon: '🔒',
+      title: 'Säkerhetsläge',
+      value: 'paper_only',
+      summary: 'Inga riktiga affärer körs.',
+      detail: 'actions_allowed=false · live_trading_enabled=false',
+      tone: 'good',
+      progress: 100,
+    },
+    {
+      icon: '📡',
+      title: 'TradingView',
+      value: tvEnabled ? 'Aktiv' : 'Av',
+      summary: tvEnabled ? 'Signalflödet finns på plats.' : 'TradingView är avstängt just nu.',
+      detail: `Mode ${tvMode} · auth ${tvWebhookAuth ? 'på' : 'av'}`,
+      tone: tvEnabled ? 'good' : 'muted',
+      progress: tvEnabled ? 76 : 18,
+    },
+    {
+      icon: '🧩',
+      title: 'Strategier',
+      value: formatInt(activeStrategies, 'Ingen data ännu'),
+      summary: `${formatInt(totalStrategies, 'Ingen data ännu')} totalt · ${formatInt(pausedStrategies, 'Ingen data ännu')} pausade`,
+      detail: 'Hur många arbetssätt som just nu följs.',
+      tone: 'info',
+      progress: totalStrategies ? Math.round((activeStrategies / Math.max(totalStrategies, 1)) * 100) : 0,
+    },
+    {
+      icon: '📝',
+      title: 'Nästa test',
+      value: nextPlannerAction,
+      summary: bestText(nextPlannerReason, 'Ingen rekommendation ännu.'),
+      detail: 'Det här är bara ett förslag, inte en körning.',
+      tone: 'info',
+      progress: plannerRecommendations.length ? 68 : 20,
+    },
+    {
+      icon: '⚠️',
+      title: 'Risk',
+      value: keyRisk,
+      summary: 'Sidan är läsbar och avsedd för test.',
+      detail: 'Ingen livehandel härifrån.',
+      tone: model.systemProblems.length > 0 ? 'warning' : 'good',
+      progress: model.systemProblems.length > 0 ? 38 : 72,
+    },
+  ];
 
   if (loading && !resources.status) {
     return (
@@ -3427,7 +3519,7 @@ export default function SupervisorV2Page() {
             <p>En enkel vy för strategier, TradingView-signaler, AI-lärdomar och nästa test.</p>
           </div>
         </div>
-        <div className="sup-loading">Laddar sammanfogad Daytrading- och Supervisor-vy...</div>
+        <div className="sup-loading">Laddar Trading OS...</div>
       </div>
     );
   }
@@ -3438,8 +3530,8 @@ export default function SupervisorV2Page() {
         <div className="sup-hero-copy">
           <div className="sup-kicker">Trading OS</div>
           <h1>Trading OS</h1>
-          <p>En enkel vy för strategier, TradingView-signaler, AI-lärdomar och nästa test.</p>
-          <div className="sup-safety-copy">Systemet kör endast paper/test. Live trading är avstängt.</div>
+          <p>En enkel vy för test, lärande och signaler. Allt körs i säkert testläge.</p>
+          <div className="sup-safety-copy">Systemet är i testläge. Inga riktiga köp eller sälj görs.</div>
         </div>
         <div className="sup-hero-actions">
           <button type="button" className="btn sup-refresh" onClick={refresh} disabled={refreshing}>
@@ -3449,49 +3541,42 @@ export default function SupervisorV2Page() {
         </div>
       </div>
 
+      <section className="sup-section sup-intro-section">
+        <div className="sup-section-head">
+          <div>
+            <h2>Vad systemet gör</h2>
+            <p>En enkel introduktion för dig som inte kan aktier eller trading.</p>
+          </div>
+        </div>
+        <div className="sup-intro-grid">
+          {beginnerCards.map((card) => (
+            <BeginnerInfoCard key={card.title} {...card} />
+          ))}
+        </div>
+        <div className="sup-glossary-row" aria-label="Snabb förklaring av viktiga ord">
+          <GlossaryTooltip term="Signal" help="Ett tecken på att systemet hittat något intressant." />
+          <GlossaryTooltip term="Strategi" help="Ett sätt som systemet testar för att se om något fungerar bättre." />
+          <GlossaryTooltip term="Replay" help="Ett test på gammal data för att se hur något hade fungerat tidigare." />
+          <GlossaryTooltip term="Batch" help="Många tester i grupp." />
+          <GlossaryTooltip term="Score" help="En enkel bedömning av hur lovande något verkar just nu." />
+          <GlossaryTooltip term="Paper only" help="Bara testläge, inga riktiga köp eller sälj görs." />
+          <GlossaryTooltip term="Testkö" help="En lista med tester som kan granskas manuellt." />
+        </div>
+      </section>
+
       <section className="sup-section">
         <div className="sup-section-head">
           <div>
             <h2>Läget just nu</h2>
-            <p>Kort läsning av system, safety och nästa steg.</p>
+            <p>Här ser du det viktigaste först: läget, säkerheten och nästa steg.</p>
           </div>
           <SafetyTag />
         </div>
 
-        <div
-          className="sup-grid sup-grid-5"
-          style={{ display: 'grid', gap: 12, gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))' }}
-        >
-          <article className={`sup-block ${summaryTone === 'good' ? 'sup-block-ok' : 'sup-block-warning'}`}>
-            <span className="sup-block-title">Systemstatus</span>
-            <strong className="sup-block-value">{model.systemStatus}</strong>
-            <span className="sup-block-note">{bestText(model.systemConclusion, 'Systemet är igång.')}</span>
-          </article>
-          <article className="sup-block sup-block-ok">
-            <span className="sup-block-title">Safety</span>
-            <strong className="sup-block-value">paper_only</strong>
-            <span className="sup-block-note">Paper/test aktivt.</span>
-          </article>
-          <article className={`sup-block ${tvEnabled ? 'sup-block-ok' : 'sup-block-neutral'}`}>
-            <span className="sup-block-title">TradingView</span>
-            <strong className="sup-block-value">{tvEnabled ? 'Aktiv' : 'Av'}</strong>
-            <span className="sup-block-note">Mode {tvMode} · auth {tvWebhookAuth ? 'på' : 'av'}</span>
-          </article>
-          <article className="sup-block sup-block-neutral">
-            <span className="sup-block-title">Strategier</span>
-            <strong className="sup-block-value">{formatInt(activeStrategies, 'Ingen data ännu')}</strong>
-            <span className="sup-block-note">{formatInt(totalStrategies, 'Ingen data ännu')} totalt · {formatInt(pausedStrategies, 'Ingen data ännu')} pausade</span>
-          </article>
-          <article className="sup-block sup-block-neutral">
-            <span className="sup-block-title">Nästa test</span>
-            <strong className="sup-block-value">{nextPlannerAction}</strong>
-            <span className="sup-block-note">{bestText(nextPlannerReason, 'Ingen rekommendation ännu.')}</span>
-          </article>
-          <article className={`sup-block ${model.systemProblems.length > 0 ? 'sup-block-danger' : 'sup-block-warning'}`}>
-            <span className="sup-block-title">Risk</span>
-            <strong className="sup-block-value">{keyRisk}</strong>
-            <span className="sup-block-note">Ingen livehandel härifrån.</span>
-          </article>
+        <div className="sup-status-grid">
+          {systemStatusCards.map((card) => (
+            <SimpleStatusCard key={card.title} {...card} />
+          ))}
         </div>
       </section>
 
@@ -3499,15 +3584,28 @@ export default function SupervisorV2Page() {
         <div className="sup-section-head">
           <div>
             <h2>Vad ska jag göra nu?</h2>
-            <p>Max 3 punkter. Detta startar inget automatiskt.</p>
+            <p>Tre enkla förslag. Inget körs automatiskt.</p>
           </div>
         </div>
         <div className="sup-focus-box">
           <div className="sup-focus-title">Nästa steg</div>
-          {model.actionItems.slice(0, 3).map((item, index) => (
-            <div className="sup-focus-item" key={`${index}-${item}`}>
-              <strong>{index + 1}</strong>
-              <span>{item}</span>
+          {[
+            {
+              title: 'Granska testkön',
+              text: 'Se vilka tester som väntar, är avbrutna eller behöver en manuell plan.',
+            },
+            {
+              title: 'Läs varför signaler stoppas',
+              text: 'Se den vanligaste orsaken när systemet säger nej.',
+            },
+            {
+              title: 'Öppna historik',
+              text: 'Jämför vad systemet har lärt sig om en vald strategi.',
+            },
+          ].map((item, index) => (
+            <div className="sup-focus-item" key={item.title}>
+              <strong>{index + 1}. {item.title}</strong>
+              <span>{item.text}</span>
             </div>
           ))}
         </div>
@@ -3517,7 +3615,7 @@ export default function SupervisorV2Page() {
         <div className="sup-section-head">
           <div>
             <h2>Strategier</h2>
-            <p>Starkast, svagast, osäkrast och TradingView.</p>
+            <p>Här ser du vilka arbetssätt systemet följer just nu.</p>
           </div>
         </div>
 
@@ -3553,45 +3651,45 @@ export default function SupervisorV2Page() {
 
         <div style={{ display: 'grid', gap: 12, marginTop: 12, gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))' }}>
           <StrategyDrilldownCard
-            title="Top 5 starkaste"
-            kicker="Score"
+            title="Starkast just nu"
+            kicker="Bedömning"
             badge="Starkast"
             badgeTone="green"
-            summary="Bäst score just nu."
+            summary="De strategier som ser mest lovande ut just nu."
             items={topStrategies}
-            emptyText="Inga starka strategier ännu."
+            emptyText="Inga tydligt starka strategier ännu."
             onSelectStrategy={loadStrategyHistory}
             selectedStrategyId={selectedStrategyId}
           />
           <StrategyDrilldownCard
-            title="Top 5 svagaste"
-            kicker="Score"
+            title="Behöver mer data"
+            kicker="Bedömning"
             badge="Svagast"
             badgeTone="red"
-            summary="Lägst score just nu."
+            summary="Strategier som ännu inte ser tillräckligt starka ut."
             items={weakStrategies}
-            emptyText="Inga svaga strategier ännu."
+            emptyText="Inga tydligt svaga strategier ännu."
             onSelectStrategy={loadStrategyHistory}
             selectedStrategyId={selectedStrategyId}
           />
           <StrategyDrilldownCard
-            title="Top 5 mest osäkra"
+            title="Behöver mer data"
             kicker="Datatrygghet"
             badge="Osäkra"
             badgeTone="yellow"
-            summary="Behöver mer data eller har låg confidence."
+            summary="Strategier som behöver mer underlag innan de går att bedöma tydligt."
             items={uncertainStrategies}
             emptyText="Inga osäkra strategier ännu."
             onSelectStrategy={loadStrategyHistory}
             selectedStrategyId={selectedStrategyId}
           />
           <StrategyDrilldownCard
-            title="TradingView-strategier"
+            title="Från TradingView"
             kicker="Källa"
             badge={tradingViewStrategies.length ? `${tradingViewStrategies.length} TV` : '0 TV'}
             badgeTone="yellow"
             summary={tradingViewStrategies.length > 0
-              ? `${tradingViewStrategies.length} TradingView-strategier. ${latestBlockedReason ? `Senaste blockering: ${latestBlockedReason}.` : 'Ingen senaste blockering.'}`
+              ? `${tradingViewStrategies.length} signaler eller strategier kommer från TradingView. ${latestBlockedReason ? `Senaste blockering: ${latestBlockedReason}.` : 'Ingen senaste blockering.'}`
               : 'Inga TradingView-strategier ännu.'}
             items={tradingViewStrategies}
             emptyText="Inga TradingView-strategier ännu."
@@ -3617,17 +3715,17 @@ export default function SupervisorV2Page() {
           <article className={`sup-block ${tvEnabled ? 'sup-block-ok' : 'sup-block-neutral'}`}>
             <span className="sup-block-title">TradingView</span>
             <strong className="sup-block-value">{tvEnabled ? 'Aktiv' : 'Av'}</strong>
-            <span className="sup-block-note">Signal-läge för TradingView.</span>
+            <span className="sup-block-note">Extern källa för signaler och tester.</span>
           </article>
           <article className="sup-block sup-block-neutral">
             <span className="sup-block-title">Webhook auth</span>
             <strong className="sup-block-value">{tvWebhookAuth ? 'På' : 'Av'}</strong>
-            <span className="sup-block-note">Auth styr om signaler får komma in.</span>
+            <span className="sup-block-note">Avgör om signaler får komma in.</span>
           </article>
           <article className="sup-block sup-block-neutral">
             <span className="sup-block-title">Mode</span>
             <strong className="sup-block-value">{tvMode}</strong>
-            <span className="sup-block-note">TradingView körs i paper_only.</span>
+            <span className="sup-block-note">Allt hålls i testläge.</span>
           </article>
           <article className="sup-block sup-block-neutral">
             <span className="sup-block-title">Antal TV-strategier</span>
@@ -3650,44 +3748,54 @@ export default function SupervisorV2Page() {
         <div className="sup-section-head">
           <div>
             <h2>Vad AI har lärt sig</h2>
-            <p>Kort summering av det viktigaste lärandet just nu.</p>
+            <p>En enkel sammanfattning av vad systemet verkar lära sig just nu.</p>
           </div>
         </div>
 
-        <div
-          className="sup-grid sup-grid-2"
-          style={{ display: 'grid', gap: 12, gridTemplateColumns: 'repeat(auto-fit, minmax(260px, 1fr))' }}
-        >
-          <article className="sup-block sup-block-ok">
-            <span className="sup-block-title">Bästa strategi</span>
-            <strong className="sup-block-value">
-              {learningSummary?.best_strategy?.label || learningSummary?.best_strategy?.key || 'Samlar lärdomar'}
-            </strong>
-            <span className="sup-block-note">
-              {learningSummary?.win_rate != null
-                ? `Win rate ${formatPct(learningSummary.win_rate, 0)} · Snitt P/L ${formatSignedPct(learningSummary.avg_pl, 2)}`
-                : 'Ingen learning-summary ännu.'}
-            </span>
-          </article>
-          <article className="sup-block sup-block-neutral">
-            <span className="sup-block-title">Behöver mer data</span>
-            <strong className="sup-block-value">{formatInt(learningSummary?.needs_more_data_count, 'Ingen data ännu')}</strong>
-            <span className="sup-block-note">
-              {learningSummary?.worst_strategy?.label || learningSummary?.worst_strategy?.key || 'Ingen tydlig svag strategi ännu.'}
-            </span>
-          </article>
-          <article className="sup-block sup-block-neutral">
-            <span className="sup-block-title">Senaste lärdom</span>
-            <strong className="sup-block-value">
-              {learningSummary?.best_market_group?.label || learningSummary?.best_risk_class?.label || 'Ingen tydlig lärdom ännu'}
-            </strong>
-            <span className="sup-block-note">
-              {learningSummary?.best_market_group?.key
-                ? `Bäst marknadsgrupp: ${learningSummary.best_market_group.key}`
-                : 'Learning sammanfattar fortfarande för få trades.'}
-            </span>
-          </article>
-        </div>
+        {learningSummary ? (
+          <div className="sup-grid sup-grid-2" style={{ display: 'grid', gap: 12, gridTemplateColumns: 'repeat(auto-fit, minmax(260px, 1fr))' }}>
+            <article className="sup-block sup-block-ok">
+              <span className="sup-block-title">Bästa mönster just nu</span>
+              <strong className="sup-block-value">
+                {learningSummary?.best_strategy?.label || learningSummary?.best_strategy?.key || 'Samlar lärdomar'}
+              </strong>
+              <span className="sup-block-note">
+                {learningSummary?.win_rate != null
+                  ? `Win rate ${formatPct(learningSummary.win_rate, 0)} · Snitt P/L ${formatSignedPct(learningSummary.avg_pl, 2)}`
+                  : 'Ingen learning-summary ännu.'}
+              </span>
+            </article>
+            <article className="sup-block sup-block-neutral">
+              <span className="sup-block-title">Behöver mer data</span>
+              <strong className="sup-block-value">{formatInt(learningSummary?.needs_more_data_count, 'Ingen data ännu')}</strong>
+              <span className="sup-block-note">
+                {learningSummary?.worst_strategy?.label || learningSummary?.worst_strategy?.key || 'Ingen tydlig svag strategi ännu.'}
+              </span>
+            </article>
+            <article className="sup-block sup-block-neutral">
+              <span className="sup-block-title">Viktig lärdom</span>
+              <strong className="sup-block-value">
+                {learningSummary?.best_market_group?.label || learningSummary?.best_risk_class?.label || 'Ingen tydlig lärdom ännu'}
+              </strong>
+              <span className="sup-block-note">
+                {learningSummary?.best_market_group?.key
+                  ? `Bäst marknadsgrupp: ${learningSummary.best_market_group.key}`
+                  : 'Learning sammanfattar fortfarande för få trades.'}
+              </span>
+            </article>
+            <article className="sup-block sup-block-warning">
+              <span className="sup-block-title">Viktig varning</span>
+              <strong className="sup-block-value">
+                {learningSummary?.warning || 'Systemet behöver fortfarande mer underlag.'}
+              </strong>
+              <span className="sup-block-note">
+                {learningSummary?.warning_detail || 'Ingen tydlig varning ännu.'}
+              </span>
+            </article>
+          </div>
+        ) : (
+          <EmptyLearningState />
+        )}
 
         {learningNeedsMoreData.length > 0 && (
           <div className="sup-safety-copy" style={{ marginTop: 12 }}>
@@ -3809,6 +3917,7 @@ export default function SupervisorV2Page() {
           }, null, 2)}
         </pre>
       </details>
+      <QuickHelpModal open={helpOpen} onClose={() => setHelpOpen(false)} />
     </div>
   );
 
@@ -3899,7 +4008,7 @@ export default function SupervisorV2Page() {
             <span className="sup-v2-chip">LEGACY {model.catalogStatusCounts?.legacy || 0}</span>
           </div>
           <div className="sup-v2-card-source" style={{ marginTop: 8 }}>
-            Katalogstatus kommer från Strategy Catalog. Runtime-koppling, paper-körbarhet och learning-stöd visas separat i Daytrading och Lab.
+            Katalogstatus kommer från Strategy Catalog. Runtime-koppling, paper-körbarhet och learning-stöd visas separat i Lab och Teknik.
           </div>
           {model.catalogStatusRows?.length > 0 && (
             <div className="sup-v2-card-source" style={{ marginTop: 8 }}>

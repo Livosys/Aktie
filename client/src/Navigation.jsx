@@ -103,16 +103,16 @@ export default function Navigation() {
           <span>🧭</span><span>TRADING OS</span>
         </Link>
         <Link to="/live"       className={`nav-link nav-live${isPuls ? ' active' : ''}`}>
-          <span>❤️</span><span>LIVE</span>
+          <span>❤️</span><span>LIVE / SIGNALER</span>
         </Link>
         <Link to="/lab"        className={`nav-link${isLab ? ' active' : ''}`}>
-          <span>🧪</span><span>LAB</span>
+          <span>🧪</span><span>LÄRDOMAR</span>
         </Link>
         <Link to="/insikter"   className={`nav-link${isResultat ? ' active' : ''}`}>
-          <span>📊</span><span>INSIKTER</span>
+          <span>📊</span><span>HISTORIK</span>
         </Link>
         <Link to="/system"     className={`nav-link${isSystem ? ' active' : ''}`}>
-          <span>🛡️</span><span>SYSTEM</span>
+          <span>🛡️</span><span>TEKNIK</span>
         </Link>
         <ThemeToggle />
       </div>
