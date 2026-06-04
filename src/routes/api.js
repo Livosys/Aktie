@@ -67,6 +67,7 @@ const strategyScore      = require('../services/strategyScoreService');
 const strategyHistory    = require('../services/strategyHistoryService');
 const strategyTestPlanner = require('../services/strategyTestPlannerService');
 const manualTestQueue     = require('../services/manualTestQueueService');
+const manualTestPlanPreview = require('../services/manualTestPlanPreviewService');
 const strategyPerformance = require('../services/strategyPerformanceService');
 const strategyPerformanceRead = require('../services/strategyPerformanceReadService');
 const strategyBatchTest = require('../services/strategyBatchTestService');
@@ -3367,6 +3368,16 @@ router.post('/strategies/test-queue/:id/cancel', (req, res) => {
     res.status(status).json(result);
   } catch (err) {
     res.status(500).json({ ok: false, error: err.message, ...manualTestQueue.SAFETY });
+  }
+});
+
+router.get('/strategies/test-queue/:id/preview', (req, res) => {
+  try {
+    const result = manualTestPlanPreview.defaultManualTestPlanPreviewService.getTestPlanPreview(req.params.id);
+    const status = result.ok ? 200 : (result.error === 'queue_item_not_found' ? 404 : 400);
+    res.status(status).json(result);
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message, ...manualTestPlanPreview.SAFETY });
   }
 });
 

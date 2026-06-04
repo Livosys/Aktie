@@ -1073,7 +1073,7 @@ function StrategyPlannerPanel({ planner, onSelectRecommendation, onQueueRecommen
   );
 }
 
-function ManualTestQueuePanel({ queue, onCancelQueueItem, onViewHistory, queueMessage, queueBusyId, queueView, onChangeQueueView }) {
+function ManualTestQueuePanel({ queue, onCancelQueueItem, onViewHistory, onViewPlan, queueMessage, queueBusyId, queueView, onChangeQueueView }) {
   const items = normalizeArray(queue?.items);
   const sortedItems = [...items].sort((a, b) => {
     const aTime = new Date(a?.created_at || 0).getTime();
@@ -1168,6 +1168,15 @@ function ManualTestQueuePanel({ queue, onCancelQueueItem, onViewHistory, queueMe
                 <div style={{ marginTop: 10 }}>
                   <button
                     type="button"
+                    className="badge badge-gray"
+                    onClick={() => onViewPlan?.(item.id)}
+                    style={{ border: 'none', cursor: 'pointer', marginRight: 8 }}
+                    disabled={!item.id}
+                  >
+                    Visa plan
+                  </button>
+                  <button
+                    type="button"
                     className="badge badge-blue"
                     onClick={() => onViewHistory?.(item.strategy_id, item)}
                     style={{ border: 'none', cursor: 'pointer', marginRight: 8 }}
@@ -1194,6 +1203,147 @@ function ManualTestQueuePanel({ queue, onCancelQueueItem, onViewHistory, queueMe
           {queueView === 'pending' ? 'Inga väntande tester just nu.' : 'Inga köposter för valt filter.'}
         </div>
       )}
+    </section>
+  );
+}
+
+function TestPlanPreviewCard({ preview, loading, error, onClear }) {
+  const data = preview?.ok ? preview : null;
+  const queueItem = data?.queue_item || {};
+  const strategy = data?.strategy_context || {};
+  const plan = data?.plan_preview || {};
+  const dataStatus = data?.data_status || {};
+  const missingData = dataStatus?.missing_data || {};
+  const isTradingView = String(strategy?.source || queueItem?.source || '').toLowerCase() === 'tradingview'
+    || String(queueItem?.strategy_id || '').toUpperCase().startsWith('TV_');
+
+  if (loading) {
+    return (
+      <section className="sup-section">
+        <div className="sup-loading">Laddar testplan-preview...</div>
+      </section>
+    );
+  }
+
+  if (error) {
+    return (
+      <section className="sup-section">
+        <div className="sup-error">{error}</div>
+      </section>
+    );
+  }
+
+  if (!data) return null;
+
+  return (
+    <section className="sup-section">
+      <div className="sup-section-head">
+        <div>
+          <h2>{plan.title || 'Förhandsgranskning av testplan'}</h2>
+          <p>Detta är endast en förhandsgranskning. Inget replay- eller batchtest startas.</p>
+        </div>
+        <button type="button" className="badge badge-gray" onClick={onClear} style={{ border: 'none', cursor: 'pointer' }}>
+          Stäng
+        </button>
+      </div>
+
+      <article className="sup-v2-answer sup-v2-answer-neutral">
+        <div className="sup-v2-answer-head">
+          <div>
+            <div className="sup-v2-answer-kicker">{queueItem.strategy_id || 'Okänd strategi'}</div>
+            <h3>{plan.title || 'Förhandsgranskning av testplan'}</h3>
+          </div>
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, justifyContent: 'flex-end' }}>
+            {isTradingView ? <span className="badge badge-yellow">TradingView-strategi</span> : <span className="badge badge-blue">Intern strategi</span>}
+            <span className={`badge badge-${queueStatusBadgeTone(queueItem.status)}`}>{queueStatusLabel(queueItem.status)}</span>
+          </div>
+        </div>
+
+        <p className="sup-v2-answer-main">{plan.objective || 'Ingen målbeskrivning ännu.'}</p>
+        <div className="sup-safety-copy" style={{ marginTop: 8 }}>
+          {data.queue_status_message || 'Köstatus läses read-only.'}
+        </div>
+
+        <div className="sup-v2-card-meta" style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+          <span className="sup-v2-chip">Källa {textValue(strategy.source || queueItem.source, 'internal')}</span>
+          <span className="sup-v2-chip">Testtyp {textValue(plan.test_type || queueItem.test_type, '–')}</span>
+          <span className="sup-v2-chip">Prioritet {queueItem.priority != null ? textValue(queueItem.priority, '–') : '–'}</span>
+          <span className="sup-v2-chip">Score {strategy.score != null ? textValue(strategy.score, '–') : '–'}</span>
+          <span className="sup-v2-chip">Confidence {strategy.confidence != null ? `${textValue(strategy.confidence, '–')}%` : '–'}</span>
+          <span className="sup-v2-chip">Sample {textValue(strategy.sample_size, '0')}</span>
+        </div>
+
+        {isTradingView ? (
+          <div className="sup-safety-copy" style={{ marginTop: 12 }}>
+            TradingView-strategi. Signalen kommer från TradingView/webhook. TradingView används endast för signaler och test, inte order.
+          </div>
+        ) : null}
+
+        <div className="sup-grid sup-grid-2" style={{ marginTop: 12 }}>
+          <article className="sup-block sup-block-neutral">
+            <span className="sup-block-title">Varför testet föreslogs</span>
+            <strong className="sup-block-value">{plan.why_this_test || 'Ingen förklaring ännu.'}</strong>
+            <span className="sup-block-note">Föreslaget scope kommer från queue-posten och befintlig historik.</span>
+          </article>
+          <article className="sup-block sup-block-neutral">
+            <span className="sup-block-title">Föreslaget scope</span>
+            <strong className="sup-block-value">{plan.suggested_scope || 'Ej konfigurerad'}</strong>
+            <span className="sup-block-note">{plan.manual_next_step || 'Ingen nästa manuell åtgärd ännu.'}</span>
+          </article>
+          <article className="sup-block sup-block-neutral">
+            <span className="sup-block-title">Vad testet skulle mäta</span>
+            <strong className="sup-block-value">
+              {normalizeArray(plan.what_it_would_measure).length > 0
+                ? normalizeArray(plan.what_it_would_measure).slice(0, 3).join(' · ')
+                : 'Ingen mätbeskrivning ännu.'}
+            </strong>
+            <span className="sup-block-note">Fokuserar på lärande, inte execution.</span>
+          </article>
+          <article className="sup-block sup-block-neutral">
+            <span className="sup-block-title">Förväntat learning-värde</span>
+            <strong className="sup-block-value">{plan.expected_learning_value || 'Ej konfigurerad'}</strong>
+            <span className="sup-block-note">Preview bygger endast resonemang, inte körning.</span>
+          </article>
+        </div>
+
+        <div className="sup-v2-card-meta" style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginTop: 12 }}>
+          <span className="sup-v2-chip">Paper trades {textValue(dataStatus.paper_trades_count, '0')}</span>
+          <span className="sup-v2-chip">Replay {textValue(dataStatus.replay_tests_count, '0')}</span>
+          <span className="sup-v2-chip">Batch {textValue(dataStatus.batch_tests_count, '0')}</span>
+          <span className="sup-v2-chip">Learning {textValue(dataStatus.learning_events_count, '0')}</span>
+          <span className="sup-v2-chip">
+            Saknas {' '}
+            {Object.entries(missingData)
+              .filter(([, value]) => value === true)
+              .map(([key]) => key)
+              .slice(0, 4)
+              .join(' · ') || 'ingen tydlig lucka'}
+          </span>
+        </div>
+
+        <div className="sup-v2-answer-list" style={{ marginTop: 12 }}>
+          <div style={{ fontWeight: 800, marginBottom: 6 }}>Data som saknas</div>
+          {Object.entries(missingData).length > 0 ? (
+            <ul className="sup-v2-answer-list">
+              {Object.entries(missingData).map(([key, value]) => (
+                <li key={key}>{`${key}: ${value ? 'saknas' : 'finns'}`}</li>
+              ))}
+            </ul>
+          ) : (
+            <div className="sup-safety-copy">Ingen tydlig lucka i data enligt befintlig historik.</div>
+          )}
+        </div>
+
+        <div className="sup-safety-copy" style={{ marginTop: 12 }}>
+          {plan.limitations?.join(' ')}
+        </div>
+        <div className="sup-safety-copy" style={{ marginTop: 8 }}>
+          Safety: {plan.safety_notes?.join(' · ')}
+        </div>
+        <div className="sup-safety-copy" style={{ marginTop: 8 }}>
+          can_execute: {data.can_execute ? 'ja' : 'nej'} · execution_available: {data.execution_available ? 'ja' : 'nej'}
+        </div>
+      </article>
     </section>
   );
 }
@@ -2960,6 +3110,9 @@ export default function SupervisorV2Page() {
   const [selectedStrategyPlannerContext, setSelectedStrategyPlannerContext] = useState(null);
   const [strategyHistoryLoading, setStrategyHistoryLoading] = useState(false);
   const [strategyHistoryError, setStrategyHistoryError] = useState('');
+  const [selectedTestPlanPreview, setSelectedTestPlanPreview] = useState(null);
+  const [testPlanPreviewLoading, setTestPlanPreviewLoading] = useState(false);
+  const [testPlanPreviewError, setTestPlanPreviewError] = useState('');
   const [queueMessage, setQueueMessage] = useState('');
   const [queueBusyId, setQueueBusyId] = useState('');
   const [queueView, setQueueView] = useState('pending');
@@ -3051,6 +3204,25 @@ export default function SupervisorV2Page() {
       setStrategyHistoryError(err?.message || 'Kunde inte läsa strategi-historik.');
     } finally {
       setStrategyHistoryLoading(false);
+    }
+  }
+
+  async function loadTestPlanPreview(queueId) {
+    const id = String(queueId || '').trim();
+    if (!id) return;
+    setTestPlanPreviewLoading(true);
+    setTestPlanPreviewError('');
+    try {
+      const data = await fetchJson(`/api/strategies/test-queue/${encodeURIComponent(id)}/preview`);
+      if (!data?.ok) {
+        throw new Error(data?.error || 'Kunde inte bygga testplan-preview.');
+      }
+      setSelectedTestPlanPreview(data);
+    } catch (err) {
+      setSelectedTestPlanPreview(null);
+      setTestPlanPreviewError(err?.message || 'Kunde inte bygga testplan-preview.');
+    } finally {
+      setTestPlanPreviewLoading(false);
     }
   }
 
@@ -4075,8 +4247,19 @@ export default function SupervisorV2Page() {
         queueBusyId={queueBusyId}
         onCancelQueueItem={cancelQueueItem}
         onViewHistory={loadStrategyHistory}
+        onViewPlan={loadTestPlanPreview}
         queueView={queueView}
         onChangeQueueView={setQueueView}
+      />
+
+      <TestPlanPreviewCard
+        preview={selectedTestPlanPreview}
+        loading={testPlanPreviewLoading}
+        error={testPlanPreviewError}
+        onClear={() => {
+          setSelectedTestPlanPreview(null);
+          setTestPlanPreviewError('');
+        }}
       />
 
       <SupGroupDivider index="4" title="Signaldiagnostik" question="Var stoppades signalerna och varför?" />
