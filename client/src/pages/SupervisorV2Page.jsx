@@ -18,9 +18,10 @@ const ENDPOINTS = [
   { key: 'pipelineRecent', url: '/api/pipeline/daily/recent?n=5', label: 'Daily pipeline recent' },
   { key: 'dailyResults', url: '/api/results/daily-intelligence', label: 'Daily intelligence' },
   { key: 'learningConnectorStatus', url: '/api/learning/connector/status', label: 'Learning Connector' },
-  { key: 'learningSummary', url: '/api/learning/latest-summary', label: 'Learning summary' },
+  { key: 'daytradingLearningSummary', url: '/api/daytrading/learning-summary?hours=48&limit=200', label: 'Daytrading learning summary' },
   { key: 'priority', url: '/api/priority/summary', label: 'Priority Engine' },
   { key: 'optimization', url: '/api/optimization/summary', label: 'AI Optimization Agent' },
+  { key: 'tradingviewStatus', url: '/api/tradingview/status', label: 'TradingView status' },
   { key: 'marketRegime', url: '/api/market-regime/status', label: 'Market Regime' },
   { key: 'paperStatus', url: '/api/paper-trading/status', label: 'Paper Trading status' },
   { key: 'paperPerformance', url: '/api/paper-trading/performance', label: 'Paper Trading performance' },
@@ -2138,7 +2139,8 @@ function buildTechnicalCards(resources, decision) {
   const pipelineStatus = unwrap(resources.pipelineStatus);
   const dailyResults = unwrap(resources.dailyResults);
   const learningConnectorStatus = unwrap(resources.learningConnectorStatus);
-  const learningSummary = unwrapSummary(resources.learningSummary);
+  const daytradingLearning = unwrap(resources.daytradingLearningSummary)?.data || null;
+  const learningSummary = daytradingLearning?.summary || null;
   const priority = unwrap(resources.priority);
   const optimization = unwrap(resources.optimization);
   const marketRegime = unwrap(resources.marketRegime);
@@ -2151,8 +2153,6 @@ function buildTechnicalCards(resources, decision) {
   const allowedStrategies = normalizeArray(autopilotConfigData?.allowed_strategies);
   const allowedSymbols = normalizeArray(autopilotConfigData?.allowed_symbols);
   const allowedTimeframes = normalizeArray(autopilotConfigData?.allowed_timeframes);
-
-  const connectorSummary = learningSummary?.connector || {};
   const pipelineAi = dailyResults?.ai_summary || {};
   const optimizationStats = optimization?.overallStats || optimization?.overall_stats || {};
   const bestOptimizationStrategy = optimization?.daytradingStrategies?.bestStrategy || null;
@@ -2193,14 +2193,15 @@ function buildTechnicalCards(resources, decision) {
       badgeTone: learningConnectorStatus?.connector_active !== false ? 'green' : 'red',
       statusLabel: learningConnectorStatus?.connector_active !== false ? 'Aktiv' : 'Av',
       summary: bestText(
-        learningSummary?.connector?.win_rate != null ? `Samlar lärdomar med ${winRateText(learningSummary.connector.win_rate, learningSummary?.connector?.total_events)}.` : '',
-        connectorSummary?.by_source ? 'Samlar händelser från flera källor.' : '',
-        learningSummary?.connector?.avg_pnl_pct != null ? `Snitt-P/L ${formatSignedPct(learningSummary.connector.avg_pnl_pct, 2)}.` : '',
+        learningSummary?.win_rate != null ? `Samlar lärdomar med win rate ${formatPct(learningSummary.win_rate, 0)}.` : '',
+        learningSummary?.avg_pl != null ? `Snitt-P/L ${formatSignedPct(learningSummary.avg_pl, 2)}.` : '',
       ),
       points: [
-        `${formatInt(learningConnectorStatus?.total_events, 'Ingen data ännu')} events totalt`,
-        `${formatInt(connectorSummary?.total_events, 'Ingen data ännu')} i senaste summaryn`,
-        `${formatInt(learningSummary?.strategies_count, 'Ingen data ännu')} strategier med lärande`,
+        `${formatInt(learningSummary?.trades_total, 'Ingen data ännu')} trades totalt`,
+        `${formatInt(learningSummary?.closed_trades, 'Ingen data ännu')} stängda trades`,
+        `${formatInt(daytradingLearning?.by_strategy?.length, 'Ingen data ännu')} strategier med lärande`,
+        `${formatInt(learningSummary?.needs_more_data_count, 'Ingen data ännu')} behöver mer data`,
+        `${formatInt(daytradingLearning?.skip_reasons?.length, 'Ingen data ännu')} skip-orsaker`,
         `Paper ${learningConnectorStatus?.paper_connected ? 'på' : 'av'}`,
         `Replay ${learningConnectorStatus?.replay_connected ? 'på' : 'av'}`,
         `Batch ${learningConnectorStatus?.batch_connected ? 'på' : 'av'}`,
@@ -2345,7 +2346,8 @@ function buildDecisionModel(resources) {
   const pipelineStatus = unwrap(resources.pipelineStatus);
   const dailyResults = unwrap(resources.dailyResults);
   const learningConnectorStatus = unwrap(resources.learningConnectorStatus);
-  const learningSummary = unwrapSummary(resources.learningSummary);
+  const daytradingLearning = unwrap(resources.daytradingLearningSummary)?.data || null;
+  const learningSummary = daytradingLearning?.summary || null;
   const priority = unwrap(resources.priority);
   const optimization = unwrap(resources.optimization);
   const marketRegime = unwrap(resources.marketRegime);
@@ -2356,6 +2358,7 @@ function buildDecisionModel(resources) {
   const registryStatus = unwrap(resources.registryStatus);
   const strategyScoreStatus = unwrap(resources.strategyScoreStatus);
   const testPlannerStatus = unwrap(resources.testPlannerStatus);
+  const tradingViewStatus = unwrap(resources.tradingviewStatus);
 
   const runtimeSummary = runtime?.summary || {};
   const runtimeStrategies = normalizeArray(runtime?.strategies);
@@ -2399,11 +2402,12 @@ function buildDecisionModel(resources) {
     ...normalizeArray(health?.issues),
     ...normalizeArray(health?.warnings),
     ...(paperPerformance?.timeout_rate != null && toNumber(paperPerformance.timeout_rate) >= 30 ? [`Paper trading timeout-rate ${formatPct(paperPerformance.timeout_rate, 0)}.`] : []),
-    ...(learningSummary?.connector?.avg_pnl_pct != null ? [] : ['Learning summary saknar P/L-underlag.']),
+    ...(learningSummary?.trades_total != null ? [] : ['Daytrading learning summary saknar underlag.']),
     ...(learningConnectorStatus?.errors?.length ? [`Learning Connector har ${formatInt(learningConnectorStatus.errors.length)} fel i kö.`] : []),
     ...(pipelineStatus?.warnings?.length ? [`Pipeline har ${formatInt(pipelineStatus.warnings.length)} varningar.`] : []),
     ...(registryStatus?.ok === false ? ['Strategy Registry-data är inte tillgänglig.'] : []),
     ...(strategyScoreStatus?.ok === false ? ['Strategy Score-data är inte tillgänglig.'] : []),
+    ...(tradingViewStatus?.webhook_auth_configured === false ? ['TradingView-webhook auth är inte konfigurerad.'] : []),
     ...(status?.ok === false ? ['Backend svarar inte.'] : []),
     ...(health?.ok === false ? ['Systemhälsa är inte tillgänglig.'] : []),
     ...(runtime?.ok === false ? ['Daytrading runtime-data är inte tillgänglig.'] : []),
@@ -2457,6 +2461,7 @@ function buildDecisionModel(resources) {
     noEntryRuleCount > 0 ? `${noEntryRuleCount} strategier saknar entry-regel.` : '',
     noMappingCount > 0 ? `${noMappingCount} strategier saknar mapping till runtime.` : '',
     paperTradeCount > 0 ? `${paperTradeCount} strategier kan skapa paper trades.` : 'Ingen strategi kan skapa paper trades ännu.',
+    daytradingLearning?.summary?.best_strategy?.key ? `Bäst i learning: ${daytradingLearning.summary.best_strategy.key}.` : '',
   ]);
 
   const registrySummary = {
@@ -2662,6 +2667,9 @@ function buildDecisionModel(resources) {
     registrySummary,
     scoreSummary,
     testPlannerStatus,
+    daytradingLearning,
+    learningSummary,
+    tradingViewStatus,
     hasConflict,
     conflictKeys,
     conflictMessage: hasConflict
@@ -2874,6 +2882,448 @@ export default function SupervisorV2Page() {
   const moduleCoverageText = `${technicalCards.length}/8 källor svarar`;
   const summaryTone = model.systemStatus === 'Stabilt' ? 'good' : 'bad';
   const recommendationTone = recommendationPillTone(model.recommendationLabel);
+
+  const registryStatus = unwrap(resources.registryStatus) || {};
+  const strategyScoreStatus = unwrap(resources.strategyScoreStatus) || {};
+  const tradingViewStatus = model.tradingViewStatus || unwrap(resources.tradingviewStatus) || {};
+  const daytradingLearning = model.daytradingLearning || unwrap(resources.daytradingLearningSummary)?.data || null;
+  const learningSummary = model.learningSummary || daytradingLearning?.summary || null;
+  const selectedHistory = selectedStrategyHistory?.ok ? selectedStrategyHistory : null;
+  const selectedHistoryScore = selectedHistory?.score || {};
+  const selectedHistorySummary = selectedHistory?.history_summary || {};
+  const selectedHistoryLearningNotes = normalizeArray(selectedHistory?.learning_notes).slice(0, 5);
+  const selectedHistoryNextSteps = normalizeArray(selectedHistory?.recommended_next_steps).slice(0, 5);
+
+  const topStrategies = normalizeArray(model.scoreSummary?.topDrilldown);
+  const weakStrategies = normalizeArray(model.scoreSummary?.weakDrilldown);
+  const uncertainStrategies = normalizeArray(model.scoreSummary?.uncertainDrilldown);
+  const tradingViewStrategies = normalizeArray(model.scoreSummary?.tradingviewDrilldown);
+  const internalStrategies = normalizeArray(model.scoreSummary?.internalDrilldown);
+  const learningStrategies = normalizeArray(daytradingLearning?.by_strategy);
+  const learningNeedsMoreData = learningStrategies.filter((row) => String(row?.status || '').toLowerCase() === 'needs_more_data').slice(0, 5);
+  const learningSkipReasons = normalizeArray(daytradingLearning?.skip_reasons).slice(0, 3);
+
+  const tvEnabled = tradingViewStatus?.enabled !== false;
+  const tvWebhookAuth = tradingViewStatus?.webhook_auth_configured === true;
+  const tvMode = textValue(tradingViewStatus?.mode, 'paper_only');
+  const tvAccepted = toNumber(tradingViewStatus?.accepted_signals) ?? 0;
+  const tvRejected = toNumber(tradingViewStatus?.rejected_signals) ?? 0;
+  const tvForwardingState = tvRejected > 0 ? 'Delvis/blockeras' : tvAccepted > 0 ? 'Ja' : 'Okänt';
+  const latestTvStrategy = registryStatus?.latest_tradingview_strategy || null;
+  const latestBlockedReason = registryStatus?.latest_blocked_reason || null;
+  const latestBlockedStrategy = registryStatus?.latest_blocked_strategy || null;
+  const totalStrategies = toNumber(registryStatus?.total_strategies) ?? 0;
+  const activeStrategies = toNumber(registryStatus?.active_strategies) ?? 0;
+  const pausedStrategies = toNumber(registryStatus?.paused_strategies) ?? 0;
+  const tradingViewCount = toNumber(registryStatus?.tradingview_strategies) ?? tradingViewStrategies.length;
+  const uncertainStrategyCount = toNumber(model.scoreSummary?.uncertain) ?? uncertainStrategies.length;
+  const internalStrategyCount = internalStrategies.length;
+  const nextPlannerRecommendation = plannerRecommendations[0] || null;
+  const nextPlannerAction = nextPlannerRecommendation
+    ? `${nextPlannerRecommendation.strategy_id} · ${nextPlannerRecommendation.test_type}`
+    : model.recommendationLabel;
+  const nextPlannerReason = nextPlannerRecommendation?.reason || model.bestCardSummary;
+  const keyRisk = model.systemProblems[0] || model.riskSafetyPoints[0] || 'Ingen tydlig risk just nu.';
+
+  if (loading && !resources.status) {
+    return (
+      <div className="sup-page sup-v2-page">
+        <div className="sup-hero sup-v2-hero">
+          <div className="sup-hero-copy">
+            <div className="sup-kicker">Trading OS · Huvudvy</div>
+            <h1>Laddar Trading OS</h1>
+            <p>Systemet kör endast paper/test. Live trading är avstängt.</p>
+          </div>
+        </div>
+        <div className="sup-loading">Laddar sammanfogad Daytrading- och Supervisor-vy...</div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="sup-page sup-v2-page">
+      <div className="sup-hero sup-v2-hero">
+        <div className="sup-hero-copy">
+          <div className="sup-kicker">Trading OS · Huvudvy</div>
+          <h1>En enkel vy för strategi, learning och safety</h1>
+          <p>
+            Systemet kör endast paper/test. Live trading är avstängt. TradingView är kopplat för signaler och strategi-test.
+          </p>
+          <div className="sup-safety-copy">
+            Den här sidan samlar Daytrading och Supervisor i en enda huvudvy. Debug, rådata och tekniska paneler ligger bakom teknisk diagnostik.
+          </div>
+        </div>
+        <div className="sup-hero-actions">
+          <button type="button" className="btn sup-refresh" onClick={refresh} disabled={refreshing}>
+            {refreshing ? 'Uppdaterar...' : 'Uppdatera'}
+          </button>
+          <div className="sup-last-updated">Senast uppdaterad: {formatDateTime(lastUpdated)}</div>
+        </div>
+      </div>
+
+      <section className="sup-section">
+        <div className="sup-section-head">
+          <div>
+            <h2>Trading OS-status</h2>
+            <p>Fyra till sex kort som visar läget utan debug-brus.</p>
+          </div>
+          <SafetyTag />
+        </div>
+
+        <div
+          className="sup-grid sup-grid-5"
+          style={{ display: 'grid', gap: 12, gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))' }}
+        >
+          <article className={`sup-block ${summaryTone === 'good' ? 'sup-block-ok' : 'sup-block-warning'}`}>
+            <span className="sup-block-title">Systemstatus</span>
+            <strong className="sup-block-value">{model.systemStatus}</strong>
+            <span className="sup-block-note">{model.systemConclusion}</span>
+          </article>
+          <article className="sup-block sup-block-ok">
+            <span className="sup-block-title">Paper mode / Safety</span>
+            <strong className="sup-block-value">paper_only</strong>
+            <span className="sup-block-note">Systemet kör endast paper/test. Live trading är avstängt.</span>
+          </article>
+          <article className={`sup-block ${tvEnabled ? 'sup-block-ok' : 'sup-block-neutral'}`}>
+            <span className="sup-block-title">TradingView</span>
+            <strong className="sup-block-value">{tvEnabled ? 'Aktiv' : 'Avstängd'}</strong>
+            <span className="sup-block-note">Mode {tvMode} · webhook auth {tvWebhookAuth ? 'ja' : 'nej'} · {tvForwardingState}</span>
+          </article>
+          <article className="sup-block sup-block-neutral">
+            <span className="sup-block-title">Aktiva strategier</span>
+            <strong className="sup-block-value">{formatInt(activeStrategies, 'Ingen data ännu')}</strong>
+            <span className="sup-block-note">{formatInt(totalStrategies, 'Ingen data ännu')} totalt · {formatInt(pausedStrategies, 'Ingen data ännu')} pausade</span>
+          </article>
+          <article className="sup-block sup-block-neutral">
+            <span className="sup-block-title">Rekommenderat nästa test</span>
+            <strong className="sup-block-value">{nextPlannerAction}</strong>
+            <span className="sup-block-note">{nextPlannerReason || 'Ingen rekommendation ännu.'}</span>
+          </article>
+          <article className={`sup-block ${model.systemProblems.length > 0 ? 'sup-block-danger' : 'sup-block-warning'}`}>
+            <span className="sup-block-title">Viktigaste risk</span>
+            <strong className="sup-block-value">{keyRisk}</strong>
+            <span className="sup-block-note">Inga liveorder kan skickas härifrån.</span>
+          </article>
+        </div>
+      </section>
+
+      <section className="sup-section">
+        <div className="sup-section-head">
+          <div>
+            <h2>Vad ska jag göra nu?</h2>
+            <p>3-5 enkla punkter som hjälper beslut utan att starta något automatiskt.</p>
+          </div>
+        </div>
+        <div className="sup-focus-box">
+          <div className="sup-focus-title">Nästa steg</div>
+          {model.actionItems.slice(0, 5).map((item, index) => (
+            <div className="sup-focus-item" key={`${index}-${item}`}>
+              <strong>{index + 1}</strong>
+              <span>{item}</span>
+            </div>
+          ))}
+        </div>
+      </section>
+
+      <section className="sup-section">
+        <div className="sup-section-head">
+          <div>
+            <h2>Strategier</h2>
+            <p>Överblick över aktiva, pausade, osäkra och TradingView-baserade strategier.</p>
+          </div>
+        </div>
+
+        <div
+          className="sup-pill-grid sup-v2-pill-grid"
+          style={{ display: 'grid', gap: 12, gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))' }}
+        >
+          <div className="sup-pill sup-pill-good">
+            <span>Alla strategier</span>
+            <strong>{formatInt(totalStrategies, 'Ingen data ännu')}</strong>
+          </div>
+          <div className="sup-pill sup-pill-good">
+            <span>Aktiva</span>
+            <strong>{formatInt(activeStrategies, 'Ingen data ännu')}</strong>
+          </div>
+          <div className="sup-pill sup-pill-missing">
+            <span>Pausade</span>
+            <strong>{formatInt(pausedStrategies, 'Ingen data ännu')}</strong>
+          </div>
+          <div className="sup-pill sup-pill-warning">
+            <span>Osäkra</span>
+            <strong>{formatInt(uncertainStrategyCount, 'Ingen data ännu')}</strong>
+          </div>
+          <div className="sup-pill sup-pill-good">
+            <span>TradingView</span>
+            <strong>{formatInt(tradingViewCount, 'Ingen data ännu')}</strong>
+          </div>
+          <div className="sup-pill sup-pill-neutral">
+            <span>Interna</span>
+            <strong>{formatInt(internalStrategyCount, 'Ingen data ännu')}</strong>
+          </div>
+        </div>
+
+        <div style={{ display: 'grid', gap: 12, marginTop: 12, gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))' }}>
+          <StrategyDrilldownCard
+            title="Top 5 starkaste strategier"
+            kicker="Score"
+            badge="Starkast"
+            badgeTone="green"
+            summary="De strategier som ser bäst ut just nu."
+            items={topStrategies}
+            emptyText="Inga starka strategier ännu."
+            onSelectStrategy={loadStrategyHistory}
+            selectedStrategyId={selectedStrategyId}
+          />
+          <StrategyDrilldownCard
+            title="Top 5 svagaste strategier"
+            kicker="Score"
+            badge="Svagast"
+            badgeTone="red"
+            summary="Strategier med lägst styrka eller tydligast svaghet."
+            items={weakStrategies}
+            emptyText="Inga svaga strategier ännu."
+            onSelectStrategy={loadStrategyHistory}
+            selectedStrategyId={selectedStrategyId}
+          />
+          <StrategyDrilldownCard
+            title="Top 5 mest osäkra strategier"
+            kicker="Datatrygghet"
+            badge="Osäkra"
+            badgeTone="yellow"
+            summary="Strategier som behöver mer data eller har låg confidence."
+            items={uncertainStrategies}
+            emptyText="Inga osäkra strategier ännu."
+            onSelectStrategy={loadStrategyHistory}
+            selectedStrategyId={selectedStrategyId}
+          />
+          <StrategyDrilldownCard
+            title="TradingView-strategier"
+            kicker="Källa"
+            badge={tradingViewStrategies.length ? `${tradingViewStrategies.length} TV` : '0 TV'}
+            badgeTone="yellow"
+            summary={tradingViewStrategies.length > 0
+              ? `${tradingViewStrategies.length} TradingView-strategier hittade. ${latestBlockedReason ? `Senaste blockering: ${latestBlockedReason}.` : 'Ingen senaste blockering sparad.'}`
+              : 'Inga TradingView-strategier hittade ännu.'}
+            items={tradingViewStrategies}
+            emptyText="Inga TradingView-strategier ännu."
+            onSelectStrategy={loadStrategyHistory}
+            selectedStrategyId={selectedStrategyId}
+          />
+        </div>
+      </section>
+
+      <section className="sup-section">
+        <div className="sup-section-head">
+          <div>
+            <h2>Strategier från TradingView</h2>
+            <p>TradingView är kopplat för signaler och strategi-test, inte live trading.</p>
+          </div>
+          <SafetyTag />
+        </div>
+
+        <div
+          className="sup-grid sup-grid-2"
+          style={{ display: 'grid', gap: 12, gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))' }}
+        >
+          <article className={`sup-block ${tvEnabled ? 'sup-block-ok' : 'sup-block-neutral'}`}>
+            <span className="sup-block-title">TradingView status</span>
+            <strong className="sup-block-value">{tvEnabled ? 'Enabled' : 'Disabled'}</strong>
+            <span className="sup-block-note">webhook auth {tvWebhookAuth ? 'konfigurerad' : 'inte konfigurerad'} · mode {tvMode}</span>
+          </article>
+          <article className="sup-block sup-block-neutral">
+            <span className="sup-block-title">Forwardas eller blockeras</span>
+            <strong className="sup-block-value">{tvForwardingState}</strong>
+            <span className="sup-block-note">
+              {tvAccepted > 0 || tvRejected > 0
+                ? `Godkända ${formatInt(tvAccepted, '0')} · blockerade ${formatInt(tvRejected, '0')}`
+                : 'Inga TradingView-signaler har registrerats ännu.'}
+            </span>
+          </article>
+          <article className="sup-block sup-block-neutral">
+            <span className="sup-block-title">Antal TV-strategier</span>
+            <strong className="sup-block-value">{formatInt(tradingViewCount, 'Ingen data ännu')}</strong>
+            <span className="sup-block-note">Senaste TradingView-strategi: {latestTvStrategy ? strategyDescriptor(latestTvStrategy) : 'ingen ännu'}</span>
+          </article>
+          <article className={`sup-block ${latestBlockedReason ? 'sup-block-warning' : 'sup-block-neutral'}`}>
+            <span className="sup-block-title">Senaste blockeringsorsak</span>
+            <strong className="sup-block-value">{latestBlockedReason || 'Ingen blockering sparad'}</strong>
+            <span className="sup-block-note">{latestBlockedStrategy ? `Gällde ${strategyDescriptor(latestBlockedStrategy)}.` : 'Ingen senaste blockerade strategi sparad.'}</span>
+          </article>
+        </div>
+
+        <div className="sup-safety-copy" style={{ marginTop: 12 }}>
+          {tradingViewCount === 1
+            ? '1 TradingView-strategi hittad.'
+            : `${formatInt(tradingViewCount, '0')} TradingView-strategier hittade.`}
+        </div>
+      </section>
+
+      <section className="sup-section">
+        <div className="sup-section-head">
+          <div>
+            <h2>AI / learning</h2>
+            <p>En primär learning-sammanfattning visas här. Dubbla summaries hålls bakom debug.</p>
+          </div>
+        </div>
+
+        <div
+          className="sup-grid sup-grid-2"
+          style={{ display: 'grid', gap: 12, gridTemplateColumns: 'repeat(auto-fit, minmax(260px, 1fr))' }}
+        >
+          <article className="sup-block sup-block-ok">
+            <span className="sup-block-title">Vad AI verkar ha lärt sig</span>
+            <strong className="sup-block-value">
+              {learningSummary?.best_strategy?.label || learningSummary?.best_strategy?.key || 'Samlar lärdomar'}
+            </strong>
+            <span className="sup-block-note">
+              {learningSummary?.win_rate != null
+                ? `Win rate ${formatPct(learningSummary.win_rate, 0)} · Snitt P/L ${formatSignedPct(learningSummary.avg_pl, 2)}`
+                : 'Ingen learning-summary ännu.'}
+            </span>
+          </article>
+          <article className="sup-block sup-block-neutral">
+            <span className="sup-block-title">Behöver mer data</span>
+            <strong className="sup-block-value">{formatInt(learningSummary?.needs_more_data_count, 'Ingen data ännu')}</strong>
+            <span className="sup-block-note">
+              {learningSummary?.worst_strategy?.label || learningSummary?.worst_strategy?.key || 'Ingen tydlig svag strategi ännu.'}
+            </span>
+          </article>
+          <article className="sup-block sup-block-neutral">
+            <span className="sup-block-title">Senaste learning notes</span>
+            <strong className="sup-block-value">
+              {learningSummary?.best_market_group?.label || learningSummary?.best_risk_class?.label || 'Ingen tydlig lärdom ännu'}
+            </strong>
+            <span className="sup-block-note">
+              {learningSummary?.best_market_group?.key
+                ? `Bäst marknadsgrupp: ${learningSummary.best_market_group.key}`
+                : 'Learning sammanfattar fortfarande för få trades.'}
+            </span>
+          </article>
+          <article className="sup-block sup-block-neutral">
+            <span className="sup-block-title">Saknar underlag</span>
+            <strong className="sup-block-value">{formatInt(learningSummary?.skipped_total, 'Ingen data ännu')}</strong>
+            <span className="sup-block-note">{formatInt(learningSummary?.risk_blocks_total, 'Ingen data ännu')} risk-blockerade · {formatInt(learningSummary?.closed_trades, 'Ingen data ännu')} stängda trades</span>
+          </article>
+        </div>
+
+        {learningNeedsMoreData.length > 0 && (
+          <div className="sup-safety-copy" style={{ marginTop: 12 }}>
+            Strategier som behöver mer data: {learningNeedsMoreData.map((row) => strategyDescriptor(row)).join(' · ')}
+          </div>
+        )}
+
+        {learningSkipReasons.length > 0 && (
+          <div className="sup-v2-chip-row" style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginTop: 12 }}>
+            {learningSkipReasons.map((reason) => (
+              <span key={reason} className="sup-v2-chip">{reason}</span>
+            ))}
+          </div>
+        )}
+      </section>
+
+      <StrategyPlannerPanel
+        planner={testPlannerStatus}
+        onSelectRecommendation={(item) => loadStrategyHistory(item?.strategy_id, item)}
+      />
+
+      <SignalStopSummary resource={resources.eventsRecent} />
+
+      <section className="sup-section">
+        <div className="sup-section-head">
+          <div>
+            <h2>Strategy History Drilldown</h2>
+            <p>Klicka på en strategi eller rekommendation för att öppna historik och lärdomar.</p>
+          </div>
+        </div>
+        <StrategyHistoryDetail
+          history={selectedHistory}
+          loading={strategyHistoryLoading}
+          error={strategyHistoryError}
+          onClear={clearStrategyHistory}
+          plannerContext={selectedStrategyPlannerContext}
+        />
+        {selectedHistory ? (
+          <div className="sup-safety-copy" style={{ marginTop: 12 }}>
+            <strong>History details:</strong> Score {textValue(selectedHistoryScore.score, '–')} · Confidence {textValue(selectedHistoryScore.confidence, '–')}% · Sample {textValue(selectedHistoryScore.sample_size, '–')}
+            <br />
+            <strong>Summary:</strong> Paper {textValue(selectedHistorySummary.paper_trades_count, '0')} · Replay {textValue(selectedHistorySummary.replay_tests_count, '0')} · Batch {textValue(selectedHistorySummary.batch_tests_count, '0')} · Learning {textValue(selectedHistorySummary.learning_events_count, '0')}
+            {selectedHistoryLearningNotes.length > 0 ? (
+              <>
+                <br />
+                <strong>Learning notes:</strong> {selectedHistoryLearningNotes.join(' · ')}
+              </>
+            ) : null}
+            {selectedHistoryNextSteps.length > 0 ? (
+              <>
+                <br />
+                <strong>Next steps:</strong> {selectedHistoryNextSteps.join(' · ')}
+              </>
+            ) : null}
+          </div>
+        ) : null}
+      </section>
+
+      <details className="sup-advanced" style={{ marginTop: 16 }}>
+        <summary>Visa teknisk diagnostik</summary>
+        <div className="sup-safety-copy" style={{ marginTop: 12 }}>
+          Rådata, endpoints och debugpaneler. Dold i normalvy för att hålla sidan enkel.
+        </div>
+
+        <div style={{ display: 'grid', gap: 12, marginTop: 12, gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))' }}>
+          {technicalCards.map((card) => (
+            <ModuleCard key={card.key} card={card} />
+          ))}
+        </div>
+
+        <div className="sup-grid sup-grid-2" style={{ display: 'grid', gap: 12, marginTop: 12, gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))' }}>
+          <article className="sup-block sup-block-neutral">
+            <span className="sup-block-title">API-endpoints</span>
+            <strong className="sup-block-value">{endpointRows.filter((row) => row.ok).length}/{endpointRows.length}</strong>
+            <span className="sup-block-note">Status för alla lästa endpoints.</span>
+          </article>
+          <article className="sup-block sup-block-neutral">
+            <span className="sup-block-title">Debug JSON</span>
+            <strong className="sup-block-value">Sammanfattning</strong>
+            <span className="sup-block-note">Endast för teknisk felsökning.</span>
+          </article>
+        </div>
+
+        <div className="sup-v2-chip-row" style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginTop: 12 }}>
+          {endpointRows.slice(0, 12).map((row) => (
+            <span key={row.key} className={`sup-v2-chip`} title={row.url}>
+              {row.label} · {row.state.label}
+            </span>
+          ))}
+        </div>
+
+        <RecentTradingEvents resource={resources.eventsRecent} />
+        <EventSystemStatus resource={resources.eventsStatus} />
+        <OptimizationCenter optimization={optimization} />
+
+        <pre className="sup-safety-copy" style={{ marginTop: 12, whiteSpace: 'pre-wrap' }}>
+          {JSON.stringify({
+            system: {
+              status: model.systemStatus,
+              summary: model.systemSummary,
+              conclusion: model.systemConclusion,
+            },
+            safety: SAFETY_FLAGS,
+            registry: model.registrySummary,
+            score: model.scoreSummary,
+            planner: plannerSummary,
+            tradingview: {
+              enabled: tvEnabled,
+              webhook_auth_configured: tvWebhookAuth,
+              mode: tvMode,
+              accepted_signals: tvAccepted,
+              rejected_signals: tvRejected,
+            },
+          }, null, 2)}
+        </pre>
+      </details>
+    </div>
+  );
 
   return (
     <div className="sup-page sup-v2-page">
