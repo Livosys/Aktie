@@ -361,14 +361,6 @@ const DAYTRADING_TABS = [
   { key: 'safety', label: 'Risk & Safety' },
 ];
 
-const CRYPTO_RUNTIME_STRATEGY_IDS = [
-  'crypto_momentum_scalper',
-  'crypto_fast_momentum',
-  'vwap_volume_breakout_long',
-  'vwap_failed_breakout_short',
-  'ema_pullback_continuation',
-];
-
 function cryptoToneFromState(scanCrypto, runtimeRows, scanCryptoError) {
   const feedStatus = String(scanCrypto?.feedStatus?.status || '').toUpperCase();
   const count = Number(scanCrypto?.count ?? 0);
@@ -382,12 +374,37 @@ function cryptoToneFromState(scanCrypto, runtimeRows, scanCryptoError) {
   return 'gray';
 }
 
+function catalogStatusKey(strategy = {}) {
+  const status = String(strategy.status || strategy.catalog_status || strategy.config?.status || '').toLowerCase();
+  if (['active', 'testing', 'paused', 'roadmap', 'legacy'].includes(status)) return status;
+  if (strategy.enabled_by_user === false) return 'paused';
+  return 'roadmap';
+}
+
+function catalogStatusLabel(status) {
+  return {
+    active: 'ACTIVE',
+    testing: 'TESTING',
+    paused: 'PAUSED',
+    roadmap: 'ROADMAP',
+    legacy: 'LEGACY',
+  }[String(status || '').toLowerCase()] || 'ROADMAP';
+}
+
+function supportBadgeText(label, value) {
+  return `${label}: ${value === true ? 'Ja' : 'Nej'}`;
+}
+
 function buildCryptoBackendStatus(scanCrypto, runtime, paperStatus, scanCryptoError = false) {
   const feedStatus = String(scanCrypto?.feedStatus?.status || '').toUpperCase();
   const results = Array.isArray(scanCrypto?.results) ? scanCrypto.results : [];
   const symbols = [...new Set(results.map((row) => row?.symbol).filter(Boolean))];
   const runtimeRows = (runtime?.strategies || [])
-    .filter((row) => CRYPTO_RUNTIME_STRATEGY_IDS.includes(row.strategy_id || row.id))
+    .filter((row) => {
+      const market = String(row.market_group || row.market || row.market_label || '').toLowerCase();
+      const id = String(row.strategy_id || row.id || row.strategy_name || row.name || '').toLowerCase();
+      return market === 'crypto' || id.includes('crypto');
+    })
     .map((row) => ({
       strategy_id: row.strategy_id || row.id,
       strategy_name: row.strategy_name || row.name || row.strategy_id || row.id,
@@ -908,7 +925,7 @@ const RUNTIME_FILTERS = [
   { id: 'missing_entry', label: 'Saknar entry-regel' },
   { id: 'partial', label: 'Delvis kopplade' },
   { id: 'disabled', label: 'Av' },
-  { id: 'catalog_only', label: 'Lab-only' },
+  { id: 'catalog_only', label: 'Katalog utan runtime' },
 ];
 
 const LIST_LIMIT_OPTIONS = [
@@ -1327,12 +1344,20 @@ function StrategyCard({ strategy, onUpdate, onScan, paperLimit, activeRuntimeRea
   const enabledByUser = strategy.enabled_by_user ?? cfg.enabled_by_user ?? (cfg.active !== false);
   const runtime = strategy.runtime || {};
   const runtimeState = strategyRuntimeState(strategy);
+  const catalogStatus = catalogStatusKey(strategy);
   const runtimeStatus = strategy.runtime_status || runtime.runtime_status || runtimeState.runtimeStatus || 'not_connected';
   const runtimeSignals = runtimeState.rawSignals;
   const runtimeComment = runtimeReasonText(strategy, runtimeState);
   const paperTrades48h = strategy.paper_trades_48h ?? runtime.paper_trades_48h ?? 0;
   const lastPaperTradeAt = strategy.last_paper_trade_at || runtime.last_paper_trade_at || null;
-  const catalogBadges = strategy.catalog_badges || ['Katalog', runtimeStatusLabel(runtimeState.state)];
+  const catalogBadges = strategy.catalog_badges || [catalogStatusLabel(catalogStatus), runtimeStatusLabel(runtimeState.state)];
+  const capabilityBadges = [
+    supportBadgeText('Scanner', strategy.supportsScanner),
+    supportBadgeText('Replay', strategy.supportsReplay),
+    supportBadgeText('Batch', strategy.supportsBatch),
+    supportBadgeText('Paper', strategy.supportsPaper),
+    supportBadgeText('Learning', strategy.supportsLearning),
+  ];
   const connected = strategy.connected ?? runtime.connected ?? false;
   const entryRuleImplemented = strategy.entry_rule_implemented ?? runtime.entry_rule_implemented ?? false;
   const canCreatePaperTrade = strategy.can_create_paper_trade ?? runtime.can_create_paper_trade ?? false;
@@ -1421,6 +1446,24 @@ function StrategyCard({ strategy, onUpdate, onScan, paperLimit, activeRuntimeRea
         {catalogBadges.map((badge) => (
           <span key={badge} className="dt-catalog-badge">{badge}</span>
         ))}
+      </div>
+      <div className="dt-catalog-badges">
+        {capabilityBadges.map((badge) => {
+          const enabled = badge.endsWith(': Ja');
+          return (
+            <span
+              key={badge}
+              className="dt-catalog-badge"
+              style={{
+                borderColor: enabled ? 'rgba(34,197,94,.32)' : 'var(--border)',
+                background: enabled ? 'var(--green-dim)' : 'var(--surface-2)',
+                color: enabled ? 'var(--success)' : 'var(--text-muted)',
+              }}
+            >
+              {badge}
+            </span>
+          );
+        })}
       </div>
 
       <div className="dt-strategy-meta">
@@ -1520,8 +1563,13 @@ function CollapsibleGroup({ label, colorClass, items, defaultOpen, onUpdate, onS
   );
 }
 
-function RuntimeSummary({ runtime }) {
+function RuntimeSummary({ runtime, strategies = [] }) {
   const summary = runtime?.summary || {};
+  const catalogCounts = strategies.reduce((acc, strategy) => {
+    const key = catalogStatusKey(strategy);
+    acc[key] = (acc[key] || 0) + 1;
+    return acc;
+  }, {});
   return (
     <div className="dt-runtime-summary">
       <div><strong>{summary.total_catalog_strategies ?? 0}</strong><span>Strategier totalt</span></div>
@@ -1530,7 +1578,14 @@ function RuntimeSummary({ runtime }) {
       <div><strong>{summary.runtime_no_entry_rule ?? 0}</strong><span>Saknar entry-regel</span></div>
       <div><strong>{summary.runtime_partial ?? 0}</strong><span>Delvis kopplade</span></div>
       <div><strong>{summary.runtime_disabled ?? 0}</strong><span>Av</span></div>
-      <div><strong>{summary.runtime_not_connected ?? 0}</strong><span>Lab-only</span></div>
+      <div><strong>{summary.runtime_not_connected ?? 0}</strong><span>Katalog utan runtime</span></div>
+      <div className="dt-strategy-explainer-badges" style={{ gridColumn: '1 / -1' }}>
+        <span>ACTIVE {catalogCounts.active || 0}</span>
+        <span>TESTING {catalogCounts.testing || 0}</span>
+        <span>PAUSED {catalogCounts.paused || 0}</span>
+        <span>ROADMAP {catalogCounts.roadmap || 0}</span>
+        <span>LEGACY {catalogCounts.legacy || 0}</span>
+      </div>
     </div>
   );
 }
@@ -1558,6 +1613,11 @@ function StrategiesSection({ strategies, total, runtime, liveTrades, paperStatus
     ...strategy,
     runtimeView: strategyRuntimeState(strategy),
   }));
+  const catalogCounts = rows.reduce((acc, row) => {
+    const key = catalogStatusKey(row);
+    acc[key] = (acc[key] || 0) + 1;
+    return acc;
+  }, {});
 
   const summary = runtime?.summary || {};
   const activeRuntimeReadyCount = summary.can_create_paper_trade_count ?? rows.filter((row) => row.runtimeView.state === 'RUNTIME_READY' && row.runtimeView.enabled).length;
@@ -1626,13 +1686,24 @@ function StrategiesSection({ strategies, total, runtime, liveTrades, paperStatus
         </button>
       </div>
       {runtimeError && <div className="dt-inline-error">{runtimeError}</div>}
-      <RuntimeSummary runtime={runtime} />
+      <RuntimeSummary runtime={runtime} strategies={rows} />
       <CryptoBackendStatusPanel
         scanCrypto={cryptoScan}
         scanCryptoError={cryptoScanError}
         runtime={runtime}
         paperStatus={paperStatus}
       />
+      <div className="dt-strategy-explainer">
+        <strong>Strategikatalogens status</strong>
+        <span>Status kommer från katalogen. Runtime-koppling och paper-körbarhet visas separat så att de inte blandas ihop.</span>
+        <div className="dt-strategy-explainer-badges">
+          <span>ACTIVE {catalogCounts.active || 0}</span>
+          <span>TESTING {catalogCounts.testing || 0}</span>
+          <span>PAUSED {catalogCounts.paused || 0}</span>
+          <span>ROADMAP {catalogCounts.roadmap || 0}</span>
+          <span>LEGACY {catalogCounts.legacy || 0}</span>
+        </div>
+      </div>
       <div className="dt-strategy-explainer">
         <strong>Source of Truth för runtime och paper trading.</strong>
         <span><b>Vald för paper</b> = strategin är markerad i UI.</span>
@@ -1709,7 +1780,7 @@ function StrategiesSection({ strategies, total, runtime, liveTrades, paperStatus
       <CollapsibleGroup label="✅ Kan köra paper trades" colorClass="dt-group-green" items={activeReadyRows} defaultOpen={true} onUpdate={onUpdate} onScan={onScan} paperLimit={paperLimit} activeRuntimeReadyCount={activeRuntimeReadyCount} />
       <CollapsibleGroup label="🟡 Delvis kopplade" colorClass="dt-group-yellow" items={partialRows} defaultOpen={false} onUpdate={onUpdate} onScan={onScan} paperLimit={paperLimit} activeRuntimeReadyCount={activeRuntimeReadyCount} />
       <CollapsibleGroup label="🔴 Saknar entry-regel" colorClass="dt-group-red" items={missingEntryRows} defaultOpen={false} onUpdate={onUpdate} onScan={onScan} paperLimit={paperLimit} activeRuntimeReadyCount={activeRuntimeReadyCount} />
-      <CollapsibleGroup label="⚪ Lab-only" colorClass="dt-group-gray" items={catalogRows} defaultOpen={false} onUpdate={onUpdate} onScan={onScan} paperLimit={paperLimit} activeRuntimeReadyCount={activeRuntimeReadyCount} />
+      <CollapsibleGroup label="⚪ Katalog utan runtime" colorClass="dt-group-gray" items={catalogRows} defaultOpen={false} onUpdate={onUpdate} onScan={onScan} paperLimit={paperLimit} activeRuntimeReadyCount={activeRuntimeReadyCount} />
       <CollapsibleGroup label="Av" colorClass="dt-group-gray" items={disabledRows} defaultOpen={false} onUpdate={onUpdate} onScan={onScan} paperLimit={paperLimit} activeRuntimeReadyCount={activeRuntimeReadyCount} />
 
       {selectedBlockedRows.length > 0 && (

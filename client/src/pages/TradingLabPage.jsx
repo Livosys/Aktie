@@ -1770,6 +1770,47 @@ function pctText(v) {
   return `${Number(v).toFixed(1)}%`;
 }
 
+function catalogStatusKey(strategy = {}) {
+  const status = String(strategy.status || strategy.catalog_status || '').toLowerCase();
+  if (['active', 'testing', 'paused', 'roadmap', 'legacy'].includes(status)) return status;
+  if (strategy.enabled === false) return 'paused';
+  return 'roadmap';
+}
+
+function catalogStatusLabel(status) {
+  return {
+    active: 'ACTIVE',
+    testing: 'TESTING',
+    paused: 'PAUSED',
+    roadmap: 'ROADMAP',
+    legacy: 'LEGACY',
+  }[String(status || '').toLowerCase()] || 'ROADMAP';
+}
+
+function catalogStatusTone(status) {
+  return {
+    active: 'badge-green',
+    testing: 'badge-blue',
+    paused: 'badge-yellow',
+    roadmap: 'badge-gray',
+    legacy: 'badge-red',
+  }[String(status || '').toLowerCase()] || 'badge-gray';
+}
+
+function capabilityText(label, value) {
+  return `${label}: ${value === true ? 'Ja' : 'Nej'}`;
+}
+
+function defaultBatchStrategyIds(catalog = []) {
+  return catalog
+    .filter((strategy) => strategy.enabled !== false)
+    .filter((strategy) => ['active', 'testing'].includes(catalogStatusKey(strategy)))
+    .filter((strategy) => strategy.supportsBatch !== false)
+    .slice(0, 2)
+    .map((strategy) => strategy.id)
+    .filter(Boolean);
+}
+
 function defaultStrategySettings(strategy) {
   return {
     sl: strategy.default_stop_loss_pct ?? strategy.default_sl ?? 0.2,
@@ -1821,6 +1862,15 @@ function StrategyCard({ strategy, performance, settings, onSettingsChange, onTes
   const [lastResult, setLastResult] = React.useState(null);
   const perf = performance?.[strategy.id];
   const badge = perf?.performance_badge;
+  const statusKey = catalogStatusKey(strategy);
+  const statusLabel = catalogStatusLabel(statusKey);
+  const supportBadges = [
+    capabilityText('Scanner', strategy.supportsScanner),
+    capabilityText('Replay', strategy.supportsReplay),
+    capabilityText('Batch', strategy.supportsBatch),
+    capabilityText('Paper', strategy.supportsPaper),
+    capabilityText('Learning', strategy.supportsLearning),
+  ];
 
   async function testStrategy() {
     setTesting(true);
@@ -1838,7 +1888,7 @@ function StrategyCard({ strategy, performance, settings, onSettingsChange, onTes
         <div className="strat-info">
           <div className="strat-title-row">
             <div className="strat-label">{strategy.name}</div>
-            <span className="strat-paper-badge">Lab-only</span>
+            <span className={`badge ${catalogStatusTone(statusKey)}`}>{statusLabel}</span>
             {strategy.is_new && <span className="strat-new-badge">Ny strategi</span>}
           </div>
           <div className="strat-score-impact">
@@ -1854,7 +1904,9 @@ function StrategyCard({ strategy, performance, settings, onSettingsChange, onTes
         </div>
       </div>
       <div className="strat-desc">{strategy.simple_explanation_sv || strategy.description_sv || strategy.explanation}</div>
-      <div className="strat-runtime-note">Lab-only · Saknar paper-runtime · Kan testas historiskt men inte skapa paper trades</div>
+      <div className="strat-runtime-note">
+        Katalogstatus: {statusLabel} · {supportBadges.join(' · ')}
+      </div>
       <div className="strat-result-row">
         <span>Historisk vinstprocent: <strong>{perf ? pctText(perf.win_rate) : 'Ingen data ännu'}</strong></span>
         {badge && <span className={`strat-perf-badge strat-perf-${badge.tone}`}>{badge.label}</span>}
@@ -1962,6 +2014,11 @@ function StrategiesTab() {
 
   if (loading) return <div className="tl-tab-content"><div className="tl-loading">Laddar strategikatalog...</div></div>;
   const strategies = catalog?.strategies || [];
+  const statusCounts = strategies.reduce((acc, strategy) => {
+    const key = catalogStatusKey(strategy);
+    acc[key] = (acc[key] || 0) + 1;
+    return acc;
+  }, {});
 
   return (
     <div className="tl-tab-content">
@@ -1969,6 +2026,13 @@ function StrategiesTab() {
       <p className="tl-combo-intro">
         {strategies.length} katalogstrategier · Read-only strategiinfo · Lab påverkar inte paper-runtime
       </p>
+      <div className="sup-v2-chip-row" style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginBottom: 12 }}>
+        <span className={`badge ${catalogStatusTone('active')}`}>ACTIVE {statusCounts.active || 0}</span>
+        <span className={`badge ${catalogStatusTone('testing')}`}>TESTING {statusCounts.testing || 0}</span>
+        <span className={`badge ${catalogStatusTone('paused')}`}>PAUSED {statusCounts.paused || 0}</span>
+        <span className={`badge ${catalogStatusTone('roadmap')}`}>ROADMAP {statusCounts.roadmap || 0}</span>
+        <span className={`badge ${catalogStatusTone('legacy')}`}>LEGACY {statusCounts.legacy || 0}</span>
+      </div>
       <div className="batch-info">
         <div>
           <strong>Lab påverkar inte vilka strategier som kör paper trades.</strong>
@@ -2182,7 +2246,7 @@ function BatchTestTab() {
   const [loading, setLoading] = React.useState(true);
   const [form, setForm] = React.useState({
     name: '',
-    strategy_ids: ['vwap_momentum_long', 'opening_range_breakout'],
+    strategy_ids: [],
     markets: ['all'],
     symbols: 'BTCUSDT,ETHUSDT,NVDA',
     timeframes: ['2m'],
@@ -2213,6 +2277,15 @@ function BatchTestTab() {
   }, [activeBatch]);
 
   React.useEffect(() => { load(); }, [load]);
+
+  React.useEffect(() => {
+    if (catalog.length === 0) return;
+    setForm((prev) => {
+      if (prev.strategy_ids.length > 0) return prev;
+      const defaults = defaultBatchStrategyIds(catalog);
+      return defaults.length > 0 ? { ...prev, strategy_ids: defaults } : prev;
+    });
+  }, [catalog]);
 
   React.useEffect(() => {
     if (!activeBatch?.id) return undefined;
