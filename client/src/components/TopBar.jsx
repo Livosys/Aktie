@@ -3,7 +3,6 @@ import { useNavigate } from 'react-router-dom';
 import SystemStatusStrip from './SystemStatusStrip.jsx';
 import ThemeToggle from './ThemeToggle.jsx';
 import AiSummaryBar from './AiSummaryBar.jsx';
-import GlobalFilterBar from './GlobalFilterBar.jsx';
 
 const SEARCH_ROUTES = [
   { key: 'supervisor', to: '/supervisor' },
@@ -71,7 +70,6 @@ export default function TopBar({ onMenu, status }) {
         <SystemStatusStrip status={status} />
         <ThemeToggle />
       </div>
-      <GlobalFilterBar />
       <AiSummaryBar />
     </header>
   );
