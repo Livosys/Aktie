@@ -1200,7 +1200,14 @@ function ManualTestQueuePanel({ queue, onCancelQueueItem, onViewHistory, onViewP
         </div>
       ) : (
         <div className="sup-safety-copy">
-          {queueView === 'pending' ? 'Inga väntande tester just nu.' : 'Inga köposter för valt filter.'}
+          {queueView === 'pending' ? (
+            <>
+              <div>Inga väntande tester just nu.</div>
+              <div>Lägg ett test från Nästa rekommenderade tester för att granska planen.</div>
+            </>
+          ) : (
+            'Inga köposter för valt filter.'
+          )}
         </div>
       )}
     </section>
@@ -2925,7 +2932,7 @@ function buildDecisionModel(resources) {
     actionItems.push('Var försiktig med long-signaler. Prioritera test och riskkontroll.');
   }
   if (selectedButNotRunnableCount > 0) {
-    actionItems.push('Gå till Daytrading och kontrollera Runtime Ready-strategier.');
+    actionItems.push('Kontrollera Trading OS-vyn och granska rekommenderade tester.');
   }
   if (noEntryRuleCount > 0) {
     actionItems.push('Implementera entry-regler för strategier som är valda men inte körbara.');
@@ -2934,7 +2941,7 @@ function buildDecisionModel(resources) {
     actionItems.push('Koppla strategier som saknar mapping till runtime.');
   }
   if (hasConflict) {
-    actionItems.push('Kontrollera strategikonflikten i Insikter/Daytrading.');
+    actionItems.push('Kontrollera strategikonflikten i Trading OS och Insikter.');
   }
   if (actionItems.length === 0) {
     actionItems.push('Testa den bästa strategin i paper och följ upp win rate med fler trades.');
@@ -4220,14 +4227,6 @@ export default function SupervisorV2Page() {
         </div>
       </section>
 
-      <StrategyHistoryDetail
-        history={selectedStrategyHistory}
-        loading={strategyHistoryLoading}
-        error={strategyHistoryError}
-        onClear={clearStrategyHistory}
-        plannerContext={selectedStrategyPlannerContext}
-      />
-
       <SupGroupDivider index="3" title="Testrekommendationer" question="Vad bör testas härnäst?" />
       <StrategyPlannerPanel
         planner={{
@@ -4248,9 +4247,9 @@ export default function SupervisorV2Page() {
         onCancelQueueItem={cancelQueueItem}
         onViewHistory={loadStrategyHistory}
         onViewPlan={loadTestPlanPreview}
-        queueView={queueView}
-        onChangeQueueView={setQueueView}
-      />
+          queueView={queueView}
+          onChangeQueueView={setQueueView}
+        />
 
       <TestPlanPreviewCard
         preview={selectedTestPlanPreview}
@@ -4261,6 +4260,43 @@ export default function SupervisorV2Page() {
           setTestPlanPreviewError('');
         }}
       />
+
+      {(selectedStrategyId || selectedHistory || strategyHistoryLoading || strategyHistoryError) && (
+        <section className="sup-section">
+          <div className="sup-section-head">
+            <div>
+              <h2>Historik för vald strategi</h2>
+              <p>Klicka på en strategi eller rekommendation för att öppna historik och lärdomar.</p>
+            </div>
+          </div>
+          <StrategyHistoryDetail
+            history={selectedHistory}
+            loading={strategyHistoryLoading}
+            error={strategyHistoryError}
+            onClear={clearStrategyHistory}
+            plannerContext={selectedStrategyPlannerContext}
+          />
+          {selectedHistory ? (
+            <div className="sup-safety-copy" style={{ marginTop: 12 }}>
+              <strong>History details:</strong> Score {textValue(selectedHistoryScore.score, '–')} · Confidence {textValue(selectedHistoryScore.confidence, '–')}% · Sample {textValue(selectedHistoryScore.sample_size, '–')}
+              <br />
+              <strong>Summary:</strong> Paper {textValue(selectedHistorySummary.paper_trades_count, '0')} · Replay {textValue(selectedHistorySummary.replay_tests_count, '0')} · Batch {textValue(selectedHistorySummary.batch_tests_count, '0')} · Learning {textValue(selectedHistorySummary.learning_events_count, '0')}
+              {selectedHistoryLearningNotes.length > 0 ? (
+                <>
+                  <br />
+                  <strong>Learning notes:</strong> {selectedHistoryLearningNotes.join(' · ')}
+                </>
+              ) : null}
+              {selectedHistoryNextSteps.length > 0 ? (
+                <>
+                  <br />
+                  <strong>Next steps:</strong> {selectedHistoryNextSteps.join(' · ')}
+                </>
+              ) : null}
+            </div>
+          ) : null}
+        </section>
+      )}
 
       <SupGroupDivider index="4" title="Signaldiagnostik" question="Var stoppades signalerna och varför?" />
       <SignalStopSummary resource={resources.eventsRecent} />
