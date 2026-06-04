@@ -50,6 +50,10 @@ function normalizeArray(value) {
   return Array.isArray(value) ? value.filter(Boolean) : [];
 }
 
+function queueItemStatus(item) {
+  return String(item?.status || '').toLowerCase();
+}
+
 function textValue(value, fallback = 'Ej konfigurerad') {
   if (value === null || value === undefined || value === '') return fallback;
   if (typeof value === 'string') return value.trim() || fallback;
@@ -1074,17 +1078,33 @@ function StrategyPlannerPanel({ planner, onSelectRecommendation, onQueueRecommen
 }
 
 function ManualTestQueuePanel({ queue, onCancelQueueItem, onViewHistory, onViewPlan, queueMessage, queueBusyId, queueView, onChangeQueueView }) {
-  const items = normalizeArray(queue?.items);
-  const sortedItems = [...items].sort((a, b) => {
+  const queueData = queue && typeof queue === 'object' && !Array.isArray(queue)
+    ? (queue.data && typeof queue.data === 'object' ? queue.data : (queue.ok === false ? null : queue))
+    : null;
+  const summary = queueData?.summary || {};
+  const queueError = queue?.error || (queue?.ok === false ? 'Kunde inte läsa testkön just nu.' : '');
+  const apiItems = normalizeArray(queueData?.items);
+  const pendingItems = normalizeArray(queueData?.pending_items);
+  const recentItems = normalizeArray(queueData?.recent_items);
+  const allItems = apiItems.length > 0 ? apiItems : [...pendingItems, ...recentItems];
+  const sortedItems = [...allItems].sort((a, b) => {
     const aTime = new Date(a?.created_at || 0).getTime();
     const bTime = new Date(b?.created_at || 0).getTime();
     return bTime - aTime;
   });
-  const summary = queue?.summary || {};
   const latestItem = sortedItems[0] || null;
+  const filteredPendingItems = pendingItems.length > 0 ? pendingItems : sortedItems.filter((item) => queueItemStatus(item) === 'pending');
+  const filteredCancelledItems = normalizeArray(queueData?.cancelled_items).length > 0
+    ? normalizeArray(queueData?.cancelled_items)
+    : sortedItems.filter((item) => queueItemStatus(item) === 'cancelled');
   const visibleItems = queueView === 'all'
     ? sortedItems
-    : sortedItems.filter((item) => String(item?.status || '').toLowerCase() === queueView);
+    : queueView === 'pending'
+      ? filteredPendingItems
+      : queueView === 'cancelled'
+        ? filteredCancelledItems
+        : sortedItems.filter((item) => queueItemStatus(item) === queueView);
+  const recentCancelledItems = filteredCancelledItems.slice(0, 5);
 
   return (
     <section className="sup-section">
@@ -1092,15 +1112,16 @@ function ManualTestQueuePanel({ queue, onCancelQueueItem, onViewHistory, onViewP
         <div>
           <h2>Manuell testkö</h2>
           <p>AI kan föreslå tester, men inget körs automatiskt. Du har alltid kontroll.</p>
+          <p>Granska Trading OS-vyn. Kontrollera rekommenderade tester och testkön. Live trading är avstängt.</p>
         </div>
       </div>
 
       <div className="sup-v2-chip-row" style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginBottom: 12 }}>
-        <span className="sup-v2-chip">Totalt {textValue(summary.total, '0')}</span>
-        <span className="sup-v2-chip">Pending {textValue(summary.pending, '0')}</span>
-        <span className="sup-v2-chip">Completed {textValue(summary.completed, '0')}</span>
-        <span className="sup-v2-chip">Cancelled {textValue(summary.cancelled, '0')}</span>
-        <span className="sup-v2-chip">Failed {textValue(summary.failed, '0')}</span>
+        <span className="sup-v2-chip">Totalt {textValue(summary.total ?? sortedItems.length, '0')}</span>
+        <span className="sup-v2-chip">Pending {textValue(summary.pending ?? filteredPendingItems.length, '0')}</span>
+        <span className="sup-v2-chip">Completed {textValue(summary.completed ?? sortedItems.filter((item) => queueItemStatus(item) === 'completed').length, '0')}</span>
+        <span className="sup-v2-chip">Cancelled {textValue(summary.cancelled ?? recentCancelledItems.length, '0')}</span>
+        <span className="sup-v2-chip">Failed {textValue(summary.failed ?? sortedItems.filter((item) => queueItemStatus(item) === 'failed').length, '0')}</span>
         <span className="sup-v2-chip">
           Senast tillagd {latestItem ? `${textValue(latestItem.strategy_id, 'Okänd strategi')} · ${readableDateTime(latestItem.created_at)}` : 'Ingen köpost ännu'}
         </span>
@@ -1124,6 +1145,12 @@ function ManualTestQueuePanel({ queue, onCancelQueueItem, onViewHistory, onViewP
         ))}
       </div>
 
+      {queueError ? (
+        <div className="sup-error" style={{ marginBottom: 12 }}>
+          {queueError}
+        </div>
+      ) : null}
+
       {queueMessage ? (
         <div className="sup-safety-copy" style={{ marginBottom: 12 }}>
           {queueMessage}
@@ -1131,13 +1158,13 @@ function ManualTestQueuePanel({ queue, onCancelQueueItem, onViewHistory, onViewP
       ) : null}
 
       <div className="sup-safety-copy" style={{ marginBottom: 12 }}>
-        Testkön startar inga tester automatiskt. Live trading är avstängt.
+        Testkön startar inga replay- eller batchjobb automatiskt. Live trading är avstängt.
       </div>
 
       {visibleItems.length > 0 ? (
         <div className="sup-v2-answer-grid">
           {visibleItems.map((item) => {
-            const status = String(item?.status || '').toLowerCase();
+            const status = queueItemStatus(item);
             const isPending = status === 'pending';
             const isTradingView = queueStrategyTypeLabel(item) === 'TradingView-strategi';
             return (
@@ -1203,13 +1230,60 @@ function ManualTestQueuePanel({ queue, onCancelQueueItem, onViewHistory, onViewP
           {queueView === 'pending' ? (
             <>
               <div>Inga väntande tester just nu.</div>
-              <div>Lägg ett test från Nästa rekommenderade tester för att granska planen.</div>
+              <div>Lägg ett test från "Nästa rekommenderade tester" för att granska planen här.</div>
+            </>
+          ) : queueView === 'cancelled' ? (
+            <>
+              <div>Inga avbrutna tester just nu.</div>
+              <div>Avbrutna poster visas här när de finns i köhistoriken.</div>
             </>
           ) : (
             'Inga köposter för valt filter.'
           )}
         </div>
       )}
+
+      {recentCancelledItems.length > 0 ? (
+        <div style={{ marginTop: 16 }}>
+          <h3 style={{ margin: '0 0 10px', fontSize: 16, fontWeight: 900 }}>Senaste avbrutna</h3>
+          <div className="sup-v2-answer-grid">
+            {recentCancelledItems.map((item) => (
+              <article key={item.id} className="sup-v2-answer sup-v2-answer-neutral">
+                <div className="sup-v2-answer-head">
+                  <div>
+                    <div className="sup-v2-answer-kicker">
+                      {queueStrategyOriginLabel(item)} · {queueStrategyTypeLabel(item)}
+                    </div>
+                    <h3>{item.strategy_id}</h3>
+                  </div>
+                  <span className={`badge badge-${queueStatusBadgeTone('cancelled')}`}>{queueStatusLabel('cancelled')}</span>
+                </div>
+                <p className="sup-v2-answer-main">{textValue(item.reason, 'Ingen förklaring ännu.')}</p>
+                <div className="sup-safety-copy" style={{ marginTop: 8 }}>{queueNextStepText(item)}</div>
+                <div style={{ marginTop: 10 }}>
+                  <button
+                    type="button"
+                    className="badge badge-gray"
+                    onClick={() => onViewPlan?.(item.id)}
+                    style={{ border: 'none', cursor: 'pointer', marginRight: 8 }}
+                    disabled={!item.id}
+                  >
+                    Visa plan
+                  </button>
+                  <button
+                    type="button"
+                    className="badge badge-blue"
+                    onClick={() => onViewHistory?.(item.strategy_id, item)}
+                    style={{ border: 'none', cursor: 'pointer' }}
+                  >
+                    Visa historik
+                  </button>
+                </div>
+              </article>
+            ))}
+          </div>
+        </div>
+      ) : null}
     </section>
   );
 }
@@ -3031,7 +3105,7 @@ function buildDecisionModel(resources) {
     hasConflict,
     conflictKeys,
     conflictMessage: hasConflict
-      ? 'Strategikonflikt upptäckt: samma strategi förekommer både som rekommenderad och att undvika. Kontrollera datakällor i Insikter/Daytrading.'
+      ? 'Strategikonflikt upptäckt: samma strategi förekommer både som rekommenderad och att undvika. Granska Trading OS-vyn och kontrollera rekommenderade tester och testkön.'
       : '',
     mixedSignalSummary,
     mixedBest: bestMixed,
@@ -3283,7 +3357,7 @@ export default function SupervisorV2Page() {
   const testPlannerStatus = model.testPlannerStatus || null;
   const plannerSummary = testPlannerStatus?.summary || {};
   const plannerRecommendations = normalizeArray(testPlannerStatus?.recommendations).slice(0, 5);
-  const manualQueueStatus = unwrap(resources.testQueueStatus) || null;
+  const manualQueueStatus = resources.testQueueStatus || null;
   const advisorRows = useMemo(() => ADVISOR_WINDOWS.map((spec) => {
     const entry = advisorResources[spec.key];
     const state = endpointState(entry);
