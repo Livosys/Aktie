@@ -73,6 +73,7 @@ const strategyTestAutopilot = require('../services/strategyTestAutopilotService'
 const learningConnector = require('../services/learningConnectorService');
 const topStrategyGrid = require('../services/topStrategyGridService');
 const candidateLog      = require('../services/candidateLogService');
+const tradingViewConnector = require('../services/tradingViewConnectorService');
 const auditTrail        = require('../services/auditTrailService');
 const eventLogService   = require('../services/eventLogService');
 const tradeOutcomeReplay = require('../services/tradeOutcomeReplayService');
@@ -3306,6 +3307,60 @@ router.post('/strategies/presets', (req, res) => {
   } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
 });
 
+router.get('/strategies/registry/status', (req, res) => {
+  try {
+    res.json({ ok: true, ...strategyRegistry.getStatus() });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message, ...strategyRegistry.SAFETY });
+  }
+});
+
+router.get('/strategies/score/status', (req, res) => {
+  try {
+    res.json({ ok: true, ...strategyScore.defaultStrategyScoreService.getStrategyScores() });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message, ...strategyScore.SAFETY });
+  }
+});
+
+router.get('/strategies/:strategyId/history', (req, res) => {
+  try {
+    const result = strategyHistory.defaultStrategyHistoryService.getStrategyHistory(req.params.strategyId);
+    const status = result.ok ? 200 : (result.error === 'unknown_strategy_id' ? 404 : 400);
+    res.status(status).json(result);
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message, ...strategyHistory.SAFETY });
+  }
+});
+
+router.get('/strategies/test-planner/status', (req, res) => {
+  try {
+    res.json({ ok: true, ...strategyTestPlanner.defaultStrategyTestPlannerService.getTestPlannerStatus() });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message, ...strategyTestPlanner.SAFETY });
+  }
+});
+
+router.post('/strategies/registry/:strategyId/pause', (req, res) => {
+  try {
+    const result = strategyRegistry.pauseStrategy(req.params.strategyId, req.body?.reason || req.body?.disabled_reason || 'paused');
+    const status = result.ok ? 200 : (result.error === 'strategy_not_found' ? 404 : 400);
+    res.status(status).json(result);
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message, ...strategyRegistry.SAFETY });
+  }
+});
+
+router.post('/strategies/registry/:strategyId/activate', (req, res) => {
+  try {
+    const result = strategyRegistry.activateStrategy(req.params.strategyId);
+    const status = result.ok ? 200 : (result.error === 'strategy_not_found' ? 404 : 400);
+    res.status(status).json(result);
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message, ...strategyRegistry.SAFETY });
+  }
+});
+
 // ── Blocker Config ────────────────────────────────────────────────────────────
 router.get('/blockers/config', (req, res) => {
   try { res.json({ ok: true, ...blockerConfig.getBlockerConfig() }); }
@@ -3327,6 +3382,32 @@ router.get('/candidates/recent', (req, res) => {
 router.get('/candidates/stats', (req, res) => {
   try { res.json({ ok: true, ...candidateLog.getStats() }); }
   catch (err) { res.status(500).json({ ok: false, error: err.message }); }
+});
+
+// ── TradingView Connector ─────────────────────────────────────────────────────
+router.post('/tradingview/webhook', (req, res) => {
+  try {
+    const result = tradingViewConnector.defaultConnector.handleWebhook(req.body || {});
+    const status = Number.isFinite(result.statusCode) ? result.statusCode : (result.accepted ? 200 : 400);
+    res.status(status).json({
+      ok: !!result.ok,
+      accepted: result.accepted === true,
+      paper_forwarded: result.paper_forwarded === true,
+      disabled: result.disabled === true,
+      errors: result.errors || [],
+      ...tradingViewConnector.SAFETY,
+    });
+  } catch (err) {
+    res.status(500).json({ ok: false, accepted: false, paper_forwarded: false, ...tradingViewConnector.SAFETY });
+  }
+});
+
+router.get('/tradingview/status', (req, res) => {
+  try {
+    res.json(tradingViewConnector.defaultConnector.getStatus());
+  } catch (err) {
+    res.status(500).json({ ok: false, enabled: false, error: err.message, ...tradingViewConnector.SAFETY });
+  }
 });
 
 // ── Market Regime / Adaptive Market Intelligence ──────────────────────────────

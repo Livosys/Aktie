@@ -70,6 +70,9 @@ function basicAuth(req, res, next) {
 }
 
 function requireAuthForMutations(req, res, next) {
+  if (req.path && req.path.startsWith('/tradingview/webhook')) {
+    return next();
+  }
   if (req.method === 'GET' || req.method === 'HEAD' || req.method === 'OPTIONS') {
     return next();
   }
