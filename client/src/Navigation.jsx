@@ -95,7 +95,7 @@ export default function Navigation() {
     <nav className="nav">
       <Link to="/supervisor" className="nav-brand">
         <img src="/evin.png" alt="Aktier Livosys" className="app-logo" />
-        <span className="nav-brand-text">Trading OS v2</span>
+        <span className="nav-brand-text">Trading OS</span>
       </Link>
 
       <div className="nav-links nav-links-desktop">

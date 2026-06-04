@@ -891,18 +891,16 @@ function StrategyDrilldownCard({ title, kicker, badge, badgeTone, summary, items
                   cursor: 'pointer',
                 }}
               >
-                <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, alignItems: 'center', marginBottom: 4 }}>
+                <div style={{ display: 'flex', flexWrap: 'wrap', justifyContent: 'space-between', gap: 8, alignItems: 'center', marginBottom: 6 }}>
                   <strong>{drilldownRowLabel(strategy)}</strong>
-                  <span className={`badge badge-${strategySourceBadgeTone(strategy?.source)}`}>{textValue(strategy?.source, 'internal')}</span>
                   <span className={`badge badge-${strategyStatusBadgeTone(strategy?.status)}`}>{textValue(strategy?.status, 'paper_only')}</span>
-                  <span className="badge badge-blue">Visa detaljer</span>
                 </div>
-                <div className="sup-v2-chip-row" style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginBottom: 4 }}>
-                  <span className="sup-v2-chip">Score {textValue(strategy?.score, '–')}</span>
-                  <span className="sup-v2-chip">Confidence {textValue(strategy?.confidence, '–')}%</span>
-                  <span className="sup-v2-chip">Sample {textValue(strategy?.sample_size, '–')}</span>
+                <div style={{ lineHeight: 1.45, marginBottom: 6 }}>
+                  Score {textValue(strategy?.score, '–')} · Confidence {textValue(strategy?.confidence, '–')}%
                 </div>
-                <div style={{ lineHeight: 1.45 }}>{textValue(strategy?.recommended_action, 'Ingen rekommendation ännu.')}</div>
+                <div className="sup-v2-card-source" style={{ marginBottom: 0 }}>
+                  {textValue(strategy?.recommended_action, 'Ingen rekommendation ännu.')}
+                </div>
               </button>
             </li>
           ))}
@@ -949,7 +947,7 @@ function StrategyPlannerPanel({ planner, onSelectRecommendation }) {
       <div className="sup-section-head">
         <div>
           <h2>Nästa rekommenderade tester</h2>
-          <p>Read-only planner. Rekommendationerna startar inga tester automatiskt.</p>
+          <p>Förslag bara. Inga tester startas automatiskt.</p>
         </div>
         <SafetyTag />
       </div>
@@ -1445,13 +1443,14 @@ function EventSystemStatus({ resource }) {
 function SignalStopSummary({ resource }) {
   const summary = signalStopSummary(resource);
   const latestBlocked = summary.latestBlocked;
+  const stoppedSignals = summary.blocked + summary.observeOnly + summary.skipped;
 
   return (
     <section className="sup-section">
       <div className="sup-section-head">
         <div>
           <h2>Varför stoppas signaler?</h2>
-          <p>Kompakt översikt av de vanligaste stoppskälen.</p>
+          <p>Vanligaste orsaken, antal stopp och en kort förklaring.</p>
         </div>
         <SafetyTag />
       </div>
@@ -1460,37 +1459,6 @@ function SignalStopSummary({ resource }) {
         <div className="opt-empty">Inga events ännu. Systemet väntar på nya signaler.</div>
       ) : (
         <>
-          <div className="sup-pill-grid">
-            <div className="sup-pill sup-pill-missing">
-              <span>signal.detected</span>
-              <strong>{summary.detected}</strong>
-            </div>
-            <div className="sup-pill sup-pill-missing">
-              <span>strategy.matched</span>
-              <strong>{summary.matched}</strong>
-            </div>
-            <div className="sup-pill sup-pill-good">
-              <span>market_gate.allowed</span>
-              <strong>{summary.allowed}</strong>
-            </div>
-            <div className="sup-pill sup-pill-bad">
-              <span>market_gate.blocked</span>
-              <strong>{summary.blocked}</strong>
-            </div>
-            <div className="sup-pill sup-pill-missing">
-              <span>market_gate.observe_only</span>
-              <strong>{summary.observeOnly}</strong>
-            </div>
-            <div className="sup-pill sup-pill-good">
-              <span>paper_trade.opened</span>
-              <strong>{summary.opened}</strong>
-            </div>
-            <div className="sup-pill sup-pill-missing">
-              <span>paper_trade.skipped</span>
-              <strong>{summary.skipped}</strong>
-            </div>
-          </div>
-
           <div className="sup-grid sup-grid-2">
             <article className="sup-block sup-block-neutral">
               <span className="sup-block-title">Vanligaste stopporsak</span>
@@ -1498,14 +1466,14 @@ function SignalStopSummary({ resource }) {
               <span className="sup-block-note">{summary.topReasonCount ? `${summary.topReasonCount} händelser` : 'Ingen tydlig stopporsak ännu.'}</span>
             </article>
             <article className="sup-block sup-block-neutral">
-              <span className="sup-block-title">Vanligaste symbol</span>
-              <strong className="sup-block-value">{summary.topSymbol}</strong>
-              <span className="sup-block-note">{summary.topSymbolCount ? `${summary.topSymbolCount} händelser` : 'Ingen tydlig symbol ännu.'}</span>
+              <span className="sup-block-title">Antal stoppade signaler</span>
+              <strong className="sup-block-value">{stoppedSignals}</strong>
+              <span className="sup-block-note">{summary.blocked} blockerade · {summary.observeOnly} observe_only · {summary.skipped} skippade</span>
             </article>
             <article className="sup-block sup-block-neutral">
-              <span className="sup-block-title">Vanligaste strategi</span>
-              <strong className="sup-block-value">{summary.topStrategy}</strong>
-              <span className="sup-block-note">{summary.topStrategyCount ? `${summary.topStrategyCount} händelser` : 'Ingen tydlig strategi ännu.'}</span>
+              <span className="sup-block-title">Kort förklaring</span>
+              <strong className="sup-block-value">{summary.conclusion}</strong>
+              <span className="sup-block-note">{summary.allowed} tillåtna · {summary.opened} öppnade paper trades</span>
             </article>
             <article className="sup-block sup-block-neutral">
               <span className="sup-block-title">Senaste blockerade signal</span>
@@ -2916,14 +2884,12 @@ export default function SupervisorV2Page() {
   const internalStrategies = normalizeArray(model.scoreSummary?.internalDrilldown);
   const learningStrategies = normalizeArray(daytradingLearning?.by_strategy);
   const learningNeedsMoreData = learningStrategies.filter((row) => String(row?.status || '').toLowerCase() === 'needs_more_data').slice(0, 5);
-  const learningSkipReasons = normalizeArray(daytradingLearning?.skip_reasons).slice(0, 3);
 
   const tvEnabled = tradingViewStatus?.enabled !== false;
   const tvWebhookAuth = tradingViewStatus?.webhook_auth_configured === true;
   const tvMode = textValue(tradingViewStatus?.mode, 'paper_only');
   const tvAccepted = toNumber(tradingViewStatus?.accepted_signals) ?? 0;
   const tvRejected = toNumber(tradingViewStatus?.rejected_signals) ?? 0;
-  const tvForwardingState = tvRejected > 0 ? 'Delvis/blockeras' : tvAccepted > 0 ? 'Ja' : 'Okänt';
   const latestTvStrategy = registryStatus?.latest_tradingview_strategy || null;
   const latestBlockedReason = registryStatus?.latest_blocked_reason || null;
   const latestBlockedStrategy = registryStatus?.latest_blocked_strategy || null;
@@ -2945,9 +2911,9 @@ export default function SupervisorV2Page() {
       <div className="sup-page sup-v2-page">
         <div className="sup-hero sup-v2-hero">
           <div className="sup-hero-copy">
-            <div className="sup-kicker">Trading OS · Huvudvy</div>
-            <h1>Laddar Trading OS</h1>
-            <p>Systemet kör endast paper/test. Live trading är avstängt.</p>
+            <div className="sup-kicker">Trading OS</div>
+            <h1>Trading OS</h1>
+            <p>En enkel vy för strategier, TradingView-signaler, AI-lärdomar och nästa test.</p>
           </div>
         </div>
         <div className="sup-loading">Laddar sammanfogad Daytrading- och Supervisor-vy...</div>
@@ -2959,12 +2925,10 @@ export default function SupervisorV2Page() {
     <div className="sup-page sup-v2-page">
       <div className="sup-hero sup-v2-hero">
         <div className="sup-hero-copy">
-          <div className="sup-kicker">Trading OS · Huvudvy</div>
-          <h1>En enkel vy för strategi, lärande och safety</h1>
-          <p>
-            Systemet kör endast paper/test. Live trading är avstängt. TradingView används bara för signaler och strategi-test.
-          </p>
-          <div className="sup-safety-copy">En enda huvudvy för strategi, lärande och safety. Tekniska detaljer ligger bakom diagnostik.</div>
+          <div className="sup-kicker">Trading OS</div>
+          <h1>Trading OS</h1>
+          <p>En enkel vy för strategier, TradingView-signaler, AI-lärdomar och nästa test.</p>
+          <div className="sup-safety-copy">Systemet kör endast paper/test. Live trading är avstängt.</div>
         </div>
         <div className="sup-hero-actions">
           <button type="button" className="btn sup-refresh" onClick={refresh} disabled={refreshing}>
@@ -2977,8 +2941,8 @@ export default function SupervisorV2Page() {
       <section className="sup-section">
         <div className="sup-section-head">
           <div>
-            <h2>Vad händer just nu?</h2>
-            <p>Snabb överblick utan debug-brus.</p>
+            <h2>Läget just nu</h2>
+            <p>Kort läsning av system, safety och nästa steg.</p>
           </div>
           <SafetyTag />
         </div>
@@ -2990,32 +2954,32 @@ export default function SupervisorV2Page() {
           <article className={`sup-block ${summaryTone === 'good' ? 'sup-block-ok' : 'sup-block-warning'}`}>
             <span className="sup-block-title">Systemstatus</span>
             <strong className="sup-block-value">{model.systemStatus}</strong>
-            <span className="sup-block-note">{model.systemConclusion}</span>
+            <span className="sup-block-note">{bestText(model.systemConclusion, 'Systemet är igång.')}</span>
           </article>
           <article className="sup-block sup-block-ok">
-            <span className="sup-block-title">Paper mode / Safety</span>
+            <span className="sup-block-title">Safety</span>
             <strong className="sup-block-value">paper_only</strong>
-            <span className="sup-block-note">Endast paper/test. Live trading är avstängt.</span>
+            <span className="sup-block-note">Paper/test aktivt.</span>
           </article>
           <article className={`sup-block ${tvEnabled ? 'sup-block-ok' : 'sup-block-neutral'}`}>
             <span className="sup-block-title">TradingView</span>
-            <strong className="sup-block-value">{tvEnabled ? 'Aktiv' : 'Avstängd'}</strong>
-            <span className="sup-block-note">Mode {tvMode} · auth {tvWebhookAuth ? 'ja' : 'nej'} · {tvForwardingState}</span>
+            <strong className="sup-block-value">{tvEnabled ? 'Aktiv' : 'Av'}</strong>
+            <span className="sup-block-note">Mode {tvMode} · auth {tvWebhookAuth ? 'på' : 'av'}</span>
           </article>
           <article className="sup-block sup-block-neutral">
-            <span className="sup-block-title">Aktiva strategier</span>
+            <span className="sup-block-title">Strategier</span>
             <strong className="sup-block-value">{formatInt(activeStrategies, 'Ingen data ännu')}</strong>
             <span className="sup-block-note">{formatInt(totalStrategies, 'Ingen data ännu')} totalt · {formatInt(pausedStrategies, 'Ingen data ännu')} pausade</span>
           </article>
           <article className="sup-block sup-block-neutral">
-            <span className="sup-block-title">Rekommenderat nästa test</span>
+            <span className="sup-block-title">Nästa test</span>
             <strong className="sup-block-value">{nextPlannerAction}</strong>
-            <span className="sup-block-note">{nextPlannerReason || 'Ingen rekommendation ännu.'}</span>
+            <span className="sup-block-note">{bestText(nextPlannerReason, 'Ingen rekommendation ännu.')}</span>
           </article>
           <article className={`sup-block ${model.systemProblems.length > 0 ? 'sup-block-danger' : 'sup-block-warning'}`}>
-            <span className="sup-block-title">Viktigaste risk</span>
+            <span className="sup-block-title">Risk</span>
             <strong className="sup-block-value">{keyRisk}</strong>
-            <span className="sup-block-note">Inga liveorder kan skickas härifrån.</span>
+            <span className="sup-block-note">Ingen livehandel härifrån.</span>
           </article>
         </div>
       </section>
@@ -3024,12 +2988,12 @@ export default function SupervisorV2Page() {
         <div className="sup-section-head">
           <div>
             <h2>Vad ska jag göra nu?</h2>
-            <p>Högst fem tydliga punkter för idag.</p>
+            <p>Max 3 punkter. Detta startar inget automatiskt.</p>
           </div>
         </div>
         <div className="sup-focus-box">
           <div className="sup-focus-title">Nästa steg</div>
-          {model.actionItems.slice(0, 5).map((item, index) => (
+          {model.actionItems.slice(0, 3).map((item, index) => (
             <div className="sup-focus-item" key={`${index}-${item}`}>
               <strong>{index + 1}</strong>
               <span>{item}</span>
@@ -3042,7 +3006,7 @@ export default function SupervisorV2Page() {
         <div className="sup-section-head">
           <div>
             <h2>Strategier</h2>
-            <p>Aktiva, pausade, osäkra och TradingView-strategier.</p>
+            <p>Starkast, svagast, osäkrast och TradingView.</p>
           </div>
         </div>
 
@@ -3078,33 +3042,33 @@ export default function SupervisorV2Page() {
 
         <div style={{ display: 'grid', gap: 12, marginTop: 12, gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))' }}>
           <StrategyDrilldownCard
-            title="Top 5 starkaste strategier"
+            title="Top 5 starkaste"
             kicker="Score"
             badge="Starkast"
             badgeTone="green"
-            summary="De strategier som ser bäst ut just nu."
+            summary="Bäst score just nu."
             items={topStrategies}
             emptyText="Inga starka strategier ännu."
             onSelectStrategy={loadStrategyHistory}
             selectedStrategyId={selectedStrategyId}
           />
           <StrategyDrilldownCard
-            title="Top 5 svagaste strategier"
+            title="Top 5 svagaste"
             kicker="Score"
             badge="Svagast"
             badgeTone="red"
-            summary="Strategier med lägst styrka eller tydligast svaghet."
+            summary="Lägst score just nu."
             items={weakStrategies}
             emptyText="Inga svaga strategier ännu."
             onSelectStrategy={loadStrategyHistory}
             selectedStrategyId={selectedStrategyId}
           />
           <StrategyDrilldownCard
-            title="Top 5 mest osäkra strategier"
+            title="Top 5 mest osäkra"
             kicker="Datatrygghet"
             badge="Osäkra"
             badgeTone="yellow"
-            summary="Strategier som behöver mer data eller har låg confidence."
+            summary="Behöver mer data eller har låg confidence."
             items={uncertainStrategies}
             emptyText="Inga osäkra strategier ännu."
             onSelectStrategy={loadStrategyHistory}
@@ -3116,8 +3080,8 @@ export default function SupervisorV2Page() {
             badge={tradingViewStrategies.length ? `${tradingViewStrategies.length} TV` : '0 TV'}
             badgeTone="yellow"
             summary={tradingViewStrategies.length > 0
-              ? `${tradingViewStrategies.length} TradingView-strategier hittade. ${latestBlockedReason ? `Senaste blockering: ${latestBlockedReason}.` : 'Ingen senaste blockering sparad.'}`
-              : 'Inga TradingView-strategier hittade ännu.'}
+              ? `${tradingViewStrategies.length} TradingView-strategier. ${latestBlockedReason ? `Senaste blockering: ${latestBlockedReason}.` : 'Ingen senaste blockering.'}`
+              : 'Inga TradingView-strategier ännu.'}
             items={tradingViewStrategies}
             emptyText="Inga TradingView-strategier ännu."
             onSelectStrategy={loadStrategyHistory}
@@ -3129,8 +3093,8 @@ export default function SupervisorV2Page() {
       <section className="sup-section">
         <div className="sup-section-head">
           <div>
-            <h2>TradingView-strategier</h2>
-            <p>TradingView används för signaler och test, inte live trading.</p>
+            <h2>Strategier från TradingView</h2>
+            <p>TradingView används bara för signaler och strategi-test, inte live orders.</p>
           </div>
           <SafetyTag />
         </div>
@@ -3140,23 +3104,24 @@ export default function SupervisorV2Page() {
           style={{ display: 'grid', gap: 12, gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))' }}
         >
           <article className={`sup-block ${tvEnabled ? 'sup-block-ok' : 'sup-block-neutral'}`}>
-            <span className="sup-block-title">TradingView status</span>
-            <strong className="sup-block-value">{tvEnabled ? 'Enabled' : 'Disabled'}</strong>
-            <span className="sup-block-note">auth {tvWebhookAuth ? 'konfigurerad' : 'inte konfigurerad'} · mode {tvMode}</span>
+            <span className="sup-block-title">TradingView</span>
+            <strong className="sup-block-value">{tvEnabled ? 'Aktiv' : 'Av'}</strong>
+            <span className="sup-block-note">Signal-läge för TradingView.</span>
           </article>
           <article className="sup-block sup-block-neutral">
-            <span className="sup-block-title">Forwardas eller blockeras</span>
-            <strong className="sup-block-value">{tvForwardingState}</strong>
-            <span className="sup-block-note">
-              {tvAccepted > 0 || tvRejected > 0
-                ? `Godkända ${formatInt(tvAccepted, '0')} · blockerade ${formatInt(tvRejected, '0')}`
-                : 'Inga TradingView-signaler har registrerats ännu.'}
-            </span>
+            <span className="sup-block-title">Webhook auth</span>
+            <strong className="sup-block-value">{tvWebhookAuth ? 'På' : 'Av'}</strong>
+            <span className="sup-block-note">Auth styr om signaler får komma in.</span>
+          </article>
+          <article className="sup-block sup-block-neutral">
+            <span className="sup-block-title">Mode</span>
+            <strong className="sup-block-value">{tvMode}</strong>
+            <span className="sup-block-note">TradingView körs i paper_only.</span>
           </article>
           <article className="sup-block sup-block-neutral">
             <span className="sup-block-title">Antal TV-strategier</span>
             <strong className="sup-block-value">{formatInt(tradingViewCount, 'Ingen data ännu')}</strong>
-            <span className="sup-block-note">Senaste TradingView-strategi: {latestTvStrategy ? strategyDescriptor(latestTvStrategy) : 'ingen ännu'}</span>
+            <span className="sup-block-note">Senaste strategi: {latestTvStrategy ? strategyDescriptor(latestTvStrategy) : 'ingen ännu'}</span>
           </article>
           <article className={`sup-block ${latestBlockedReason ? 'sup-block-warning' : 'sup-block-neutral'}`}>
             <span className="sup-block-title">Senaste blockeringsorsak</span>
@@ -3166,9 +3131,7 @@ export default function SupervisorV2Page() {
         </div>
 
         <div className="sup-safety-copy" style={{ marginTop: 12 }}>
-          {tradingViewCount === 1
-            ? '1 TradingView-strategi hittad.'
-            : `${formatInt(tradingViewCount, '0')} TradingView-strategier hittade.`}
+          TradingView används bara för signaler och strategi-test, inte live orders.
         </div>
       </section>
 
@@ -3185,7 +3148,7 @@ export default function SupervisorV2Page() {
           style={{ display: 'grid', gap: 12, gridTemplateColumns: 'repeat(auto-fit, minmax(260px, 1fr))' }}
         >
           <article className="sup-block sup-block-ok">
-            <span className="sup-block-title">Vad AI verkar ha lärt sig</span>
+            <span className="sup-block-title">Bästa strategi</span>
             <strong className="sup-block-value">
               {learningSummary?.best_strategy?.label || learningSummary?.best_strategy?.key || 'Samlar lärdomar'}
             </strong>
@@ -3203,7 +3166,7 @@ export default function SupervisorV2Page() {
             </span>
           </article>
           <article className="sup-block sup-block-neutral">
-            <span className="sup-block-title">Senaste learning notes</span>
+            <span className="sup-block-title">Senaste lärdom</span>
             <strong className="sup-block-value">
               {learningSummary?.best_market_group?.label || learningSummary?.best_risk_class?.label || 'Ingen tydlig lärdom ännu'}
             </strong>
@@ -3213,31 +3176,11 @@ export default function SupervisorV2Page() {
                 : 'Learning sammanfattar fortfarande för få trades.'}
             </span>
           </article>
-          <article className="sup-block sup-block-neutral">
-            <span className="sup-block-title">Saknar underlag</span>
-            <strong className="sup-block-value">{formatInt(learningSummary?.skipped_total, 'Ingen data ännu')}</strong>
-            <span className="sup-block-note">{formatInt(learningSummary?.risk_blocks_total, 'Ingen data ännu')} risk-blockerade · {formatInt(learningSummary?.closed_trades, 'Ingen data ännu')} stängda trades</span>
-          </article>
         </div>
 
         {learningNeedsMoreData.length > 0 && (
           <div className="sup-safety-copy" style={{ marginTop: 12 }}>
-            Strategier som behöver mer data: {learningNeedsMoreData.map((row) => strategyDescriptor(row)).join(' · ')}
-          </div>
-        )}
-
-        {learningSkipReasons.length > 0 && (
-          <div className="sup-v2-chip-row" style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginTop: 12 }}>
-            {learningSkipReasons.map((reason) => (
-              <span
-                key={String(reason?.key || reason?.reason || reason?.label || reason?.name || reason)}
-                className="sup-v2-chip"
-              >
-                {renderReasonLabel(reason)}
-                {renderReasonCount(reason) != null ? ` · ${renderReasonCount(reason)}` : ''}
-                {renderReasonShare(reason) ? ` · ${renderReasonShare(reason)}` : ''}
-              </span>
-            ))}
+            Behöver mer data: {learningNeedsMoreData.slice(0, 3).map((row) => strategyDescriptor(row)).join(' · ')}
           </div>
         )}
       </section>

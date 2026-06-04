@@ -123,7 +123,7 @@ export default function Sidebar({ open, onClose }) {
         <div className="sb-footer">
           <ThemeToggle />
           <div className="sb-footer-meta">
-            <span>Trading OS v2</span>
+            <span>Trading OS</span>
             <span>Ingen handel utförs</span>
           </div>
         </div>
