@@ -324,6 +324,29 @@ function bestText(...segments) {
   return firstText(segments.filter(Boolean), 'Ingen data ännu');
 }
 
+function renderReasonLabel(item) {
+  if (item == null) return 'Okänt';
+  if (typeof item === 'string' || typeof item === 'number') return String(item);
+  if (typeof item === 'object') {
+    return item.label || item.reason || item.key || item.name || item.type || 'Okänt';
+  }
+  return String(item);
+}
+
+function renderReasonCount(item) {
+  if (!item || typeof item !== 'object') return null;
+  const count = Number(item.count);
+  return Number.isFinite(count) ? count : null;
+}
+
+function renderReasonShare(item) {
+  if (!item || typeof item !== 'object') return null;
+  const share = Number(item.share);
+  if (!Number.isFinite(share)) return null;
+  const pctValue = share <= 1 ? share * 100 : share;
+  return `${Math.round(pctValue)}%`;
+}
+
 function eventTone(eventType) {
   const type = String(eventType || '').toLowerCase();
   if (type === 'signal.detected') return 'blue';
@@ -3216,7 +3239,14 @@ export default function SupervisorV2Page() {
         {learningSkipReasons.length > 0 && (
           <div className="sup-v2-chip-row" style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginTop: 12 }}>
             {learningSkipReasons.map((reason) => (
-              <span key={reason} className="sup-v2-chip">{reason}</span>
+              <span
+                key={String(reason?.key || reason?.reason || reason?.label || reason?.name || reason)}
+                className="sup-v2-chip"
+              >
+                {renderReasonLabel(reason)}
+                {renderReasonCount(reason) != null ? ` · ${renderReasonCount(reason)}` : ''}
+                {renderReasonShare(reason) ? ` · ${renderReasonShare(reason)}` : ''}
+              </span>
             ))}
           </div>
         )}
