@@ -62,6 +62,7 @@ const marketUniverse    = require('../services/marketUniverseService');
 const blockerConfig     = require('../services/blockerConfigService');
 const strategyCatalog   = require('../services/strategyCatalogService');
 const daytradingStrategyCatalog = require('../services/daytradingStrategyCatalogService');
+const narrowStateEngine = require('../services/narrowStateEngineService');
 const strategyRegistry   = require('../services/strategyRegistryService');
 const strategyScore      = require('../services/strategyScoreService');
 const strategyHistory    = require('../services/strategyHistoryService');
@@ -2108,6 +2109,111 @@ router.get('/supervisor/operations-advisor', (req, res) => {
       ok: false,
       error: err.message,
       ...supervisorOperationsAdvisorService.SAFETY,
+    });
+  }
+});
+
+// ── Supervisor: Narrow State-first status ─────────────────────────────────────
+// Read-only Narrow State overview for the Supervisor / Narrow State Lab.
+// Aggregates live scanner results through the Narrow State Engine and joins
+// best/worst narrow-state strategies from the Learning Engine. Never trades.
+router.get('/supervisor/narrow-state', (req, res) => {
+  try {
+    const minScore = Number.isFinite(Number(req.query.minScore)) ? Number(req.query.minScore) : 60;
+
+    let stockResults = [];
+    let cryptoResults = [];
+    try { stockResults = getLatestResults() || []; } catch (_) { stockResults = []; }
+    try { cryptoResults = getCryptoResults() || []; } catch (_) { cryptoResults = []; }
+    const allResults = [...stockResults, ...cryptoResults];
+
+    const overview = narrowStateEngine.summarizeNarrowState(allResults, { minScore });
+
+    // Narrow-state strategy catalog (family === 'narrow_state')
+    let catalog = [];
+    try { catalog = (daytradingStrategyCatalog.getCatalog().strategies || []); } catch (_) { catalog = []; }
+    const narrowStrategies = catalog.filter((s) => s.family === 'narrow_state');
+    const narrowStrategyIds = new Set(narrowStrategies.map((s) => s.id));
+
+    // Best / worst narrow-state strategy from the Learning Engine
+    let bestStrategy = null;
+    let worstStrategy = null;
+    let latestLessons = [];
+    try {
+      const hours = Number.isFinite(Number(req.query.hours)) ? Number(req.query.hours) : 168;
+      const summary = daytradingLearning.buildLearningSummary({ hours });
+      const rows = (summary.by_strategy || [])
+        .filter((r) => narrowStrategyIds.has(r.key) && r.closed > 0);
+      if (rows.length) {
+        const ranked = [...rows].sort((a, b) => (b.win_rate - a.win_rate) || (b.avg_pl - a.avg_pl));
+        bestStrategy = { key: ranked[0].key, label: ranked[0].label, win_rate: ranked[0].win_rate, avg_pl: ranked[0].avg_pl, closed: ranked[0].closed };
+        const last = ranked[ranked.length - 1];
+        worstStrategy = { key: last.key, label: last.label, win_rate: last.win_rate, avg_pl: last.avg_pl, closed: last.closed };
+      }
+      if (Array.isArray(summary.lessons)) latestLessons = summary.lessons.slice(0, 5);
+      else if (Array.isArray(summary.notes)) latestLessons = summary.notes.slice(0, 5);
+    } catch (_) { /* learning summary optional */ }
+
+    // Recommended next test — prefer an untested narrow strategy, else strongest compression
+    let recommendedNextTest = null;
+    const untested = narrowStrategies.find((s) => !bestStrategy || s.id !== bestStrategy.key);
+    if (overview.strongestCompression && untested) {
+      recommendedNextTest = {
+        strategy_id: untested.id,
+        strategy_name: untested.name,
+        symbol: overview.strongestCompression.symbol,
+        timeframe: overview.timeframe,
+        reason_sv: `Starkast compression just nu: ${overview.strongestCompression.symbol} (score ${overview.strongestCompression.narrowScore}). Testa ${untested.name} i paper/replay.`,
+      };
+    } else if (untested) {
+      recommendedNextTest = {
+        strategy_id: untested.id,
+        strategy_name: untested.name,
+        symbol: null,
+        timeframe: overview.timeframe,
+        reason_sv: `Kör fler paper/replay-tester för ${untested.name} för att samla learning-data.`,
+      };
+    }
+
+    res.json({
+      ok: true,
+      mode: 'paper_only',
+      live_trading_enabled: false,
+      can_place_orders: false,
+      actions_allowed: false,
+      broker_enabled: false,
+      generated_at: new Date().toISOString(),
+      narrowState: {
+        timeframe: overview.timeframe,
+        minScore: overview.minScore,
+        scannedCount: overview.scannedCount,
+        activeCount: overview.activeCount,
+        strongCompressionCount: overview.strongCompressionCount,
+        topSymbols: overview.topSymbols,
+        strongestCompression: overview.strongestCompression,
+        breakoutWatch: overview.breakoutWatch,
+        fakeoutRisk: overview.fakeoutRisk,
+        meanReversion: overview.meanReversion,
+        strategies: narrowStrategies.map((s) => ({
+          id: s.id, name: s.name, family: s.family, version: s.version,
+          status: s.status, enabled: s.enabled, paper_only: s.paper_only,
+          live_enabled: s.live_enabled, learning_tags: s.learning_tags,
+        })),
+        bestStrategy,
+        worstStrategy,
+        latestLessons,
+        recommendedNextTest,
+      },
+    });
+  } catch (err) {
+    res.status(500).json({
+      ok: false,
+      error: err.message,
+      mode: 'paper_only',
+      live_trading_enabled: false,
+      can_place_orders: false,
+      actions_allowed: false,
+      broker_enabled: false,
     });
   }
 });
