@@ -29,6 +29,7 @@ const ENDPOINTS = [
   { key: 'registryStatus', url: '/api/strategies/registry/status', label: 'Strategy Registry status' },
   { key: 'strategyScoreStatus', url: '/api/strategies/score/status', label: 'Strategy Score v1' },
   { key: 'testPlannerStatus', url: '/api/strategies/test-planner/status', label: 'Strategy Test Planner v1' },
+  { key: 'testQueueStatus', url: '/api/strategies/test-queue/status', label: 'Manual Test Queue' },
   { key: 'recommendation', url: '/api/daytrading/recommendation', label: 'Daytrading recommendation' },
   { key: 'eventsRecent', url: '/api/events/recent?n=100', label: 'Recent trading events' },
   { key: 'eventsStatus', url: '/api/events/status', label: 'Event system status' },
@@ -700,6 +701,22 @@ async function fetchJson(url) {
   }
 }
 
+async function postJson(url, body) {
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    credentials: 'same-origin',
+    body: JSON.stringify(body || {}),
+  });
+  const data = await res.json().catch(() => null);
+  if (!res.ok) {
+    throw new Error(data?.error || `API ${res.status}`);
+  }
+  return data;
+}
+
 function statusBadgeTone(status) {
   if (status === 'Stabilt' || status === 'Testa') return 'green';
   if (status === 'Vänta') return 'yellow';
@@ -914,7 +931,8 @@ function StrategyDrilldownCard({ title, kicker, badge, badgeTone, summary, items
   );
 }
 
-function StrategyPlannerCard({ item, onSelect }) {
+function StrategyPlannerCard({ item, onSelect, onQueue, queueBusyId }) {
+  const queueDisabled = queueBusyId === item.id;
   return (
     <article className="sup-v2-answer sup-v2-answer-neutral" style={{ cursor: 'pointer' }} onClick={() => onSelect?.(item)}>
       <div className="sup-v2-answer-head">
@@ -933,11 +951,24 @@ function StrategyPlannerCard({ item, onSelect }) {
         <span className="sup-v2-chip">Learning {textValue(item.expected_learning_value, 'Ej konfigurerad')}</span>
       </div>
       <div className="sup-v2-card-source" style={{ marginTop: 8 }}>{textValue(item.safety_note, 'Read-only')}</div>
+      <div style={{ marginTop: 10 }}>
+        <button
+          type="button"
+          className="btn sup-refresh"
+          disabled={queueDisabled}
+          onClick={(event) => {
+            event.stopPropagation();
+            onQueue?.(item);
+          }}
+        >
+          {queueDisabled ? 'Lägger till...' : 'Lägg i testkö'}
+        </button>
+      </div>
     </article>
   );
 }
 
-function StrategyPlannerPanel({ planner, onSelectRecommendation }) {
+function StrategyPlannerPanel({ planner, onSelectRecommendation, onQueueRecommendation, queueBusyId }) {
   const recommendations = normalizeArray(planner?.recommendations).slice(0, 5);
   const summary = planner?.summary || {};
   const safety = planner?.safety || SAFETY_FLAGS;
@@ -970,11 +1001,80 @@ function StrategyPlannerPanel({ planner, onSelectRecommendation }) {
               key={item.id || `${item.strategy_id}-${item.test_type}`}
               item={item}
               onSelect={onSelectRecommendation}
+              onQueue={onQueueRecommendation}
+              queueBusyId={queueBusyId}
             />
           ))}
         </div>
       ) : (
         <div className="sup-safety-copy">Inga rekommendationer ännu. Systemet verkar vara tillräckligt täckt just nu.</div>
+      )}
+    </section>
+  );
+}
+
+function ManualTestQueuePanel({ queue, onCancelQueueItem, queueMessage, queueBusyId }) {
+  const pendingItems = normalizeArray(queue?.items).filter((item) => String(item?.status || '').toLowerCase() === 'pending').slice(0, 5);
+  const summary = queue?.summary || {};
+
+  return (
+    <section className="sup-section">
+      <div className="sup-section-head">
+        <div>
+          <h2>Manuell testkö</h2>
+          <p>Kön startar inga tester automatiskt.</p>
+        </div>
+      </div>
+
+      <div className="sup-v2-chip-row" style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginBottom: 12 }}>
+        <span className="sup-v2-chip">Pending {textValue(summary.pending, '0')}</span>
+        <span className="sup-v2-chip">Completed {textValue(summary.completed, '0')}</span>
+        <span className="sup-v2-chip">Cancelled {textValue(summary.cancelled, '0')}</span>
+        <span className="sup-v2-chip">Failed {textValue(summary.failed, '0')}</span>
+      </div>
+
+      {queueMessage ? (
+        <div className="sup-safety-copy" style={{ marginBottom: 12 }}>
+          {queueMessage}
+        </div>
+      ) : null}
+
+      {pendingItems.length > 0 ? (
+        <div className="sup-v2-answer-grid">
+          {pendingItems.map((item) => (
+            <article key={item.id} className="sup-v2-answer sup-v2-answer-neutral">
+              <div className="sup-v2-answer-head">
+                <div>
+                  <div className="sup-v2-answer-kicker">{item.source}</div>
+                  <h3>{item.strategy_id}</h3>
+                </div>
+                <span className="badge badge-yellow">{item.test_type}</span>
+              </div>
+              <p className="sup-v2-answer-main">{item.reason}</p>
+              <div className="sup-v2-card-meta" style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+                <span className="sup-v2-chip">Priority {textValue(item.priority, '–')}</span>
+                <span className="sup-v2-chip">Scope {textValue(item.suggested_scope, 'Ej konfigurerad')}</span>
+                <span className="sup-v2-chip">Learning {textValue(item.expected_learning_value, 'Ej konfigurerad')}</span>
+                <span className="sup-v2-chip">Tillagd {ageText(item.created_at)}</span>
+              </div>
+              <div className="sup-v2-card-source" style={{ marginTop: 8 }}>
+                {textValue(item.safety_note, 'Read-only')}
+              </div>
+              <div style={{ marginTop: 10 }}>
+                <button
+                  type="button"
+                  className="btn sup-refresh"
+                  disabled={queueBusyId === item.id}
+                  onClick={() => onCancelQueueItem?.(item.id)}
+                >
+                  {queueBusyId === item.id ? 'Avbryter...' : 'Avbryt'}
+                </button>
+              </div>
+            </article>
+          ))}
+        </div>
+      ) : (
+        <div className="sup-safety-copy">Inga pending items ännu.</div>
       )}
     </section>
   );
@@ -2742,6 +2842,8 @@ export default function SupervisorV2Page() {
   const [selectedStrategyPlannerContext, setSelectedStrategyPlannerContext] = useState(null);
   const [strategyHistoryLoading, setStrategyHistoryLoading] = useState(false);
   const [strategyHistoryError, setStrategyHistoryError] = useState('');
+  const [queueMessage, setQueueMessage] = useState('');
+  const [queueBusyId, setQueueBusyId] = useState('');
 
   useEffect(() => {
     let cancelled = false;
@@ -2841,6 +2943,41 @@ export default function SupervisorV2Page() {
     setStrategyHistoryLoading(false);
   }
 
+  async function addRecommendationToQueue(recommendation) {
+    const queueId = String(recommendation?.id || `${recommendation?.strategy_id || ''}:${recommendation?.test_type || ''}`).trim();
+    if (!recommendation?.strategy_id || !recommendation?.test_type) {
+      setQueueMessage('Kunde inte lägga i testkö: ogiltig rekommendation.');
+      return;
+    }
+    setQueueBusyId(queueId || recommendation.strategy_id);
+    setQueueMessage('');
+    try {
+      const result = await postJson('/api/strategies/test-queue/add', recommendation);
+      setQueueMessage(`Lade i testkö: ${result.item?.strategy_id || recommendation.strategy_id} · ${result.item?.test_type || recommendation.test_type}.`);
+      await refresh();
+    } catch (err) {
+      setQueueMessage(err?.message || 'Kunde inte lägga i testkö.');
+    } finally {
+      setQueueBusyId('');
+    }
+  }
+
+  async function cancelQueueItem(id) {
+    const queueId = String(id || '').trim();
+    if (!queueId) return;
+    setQueueBusyId(queueId);
+    setQueueMessage('');
+    try {
+      const result = await postJson(`/api/strategies/test-queue/${encodeURIComponent(queueId)}/cancel`, {});
+      setQueueMessage(`Avbröt köpost: ${result.item?.strategy_id || queueId}.`);
+      await refresh();
+    } catch (err) {
+      setQueueMessage(err?.message || 'Kunde inte avbryta köposten.');
+    } finally {
+      setQueueBusyId('');
+    }
+  }
+
   const model = useMemo(() => buildDecisionModel(resources), [resources]);
   const endpointRows = useMemo(() => buildEndpointRows(resources), [resources]);
   const technicalCards = useMemo(() => buildTechnicalCards(resources, model), [resources, model]);
@@ -2848,6 +2985,7 @@ export default function SupervisorV2Page() {
   const testPlannerStatus = model.testPlannerStatus || null;
   const plannerSummary = testPlannerStatus?.summary || {};
   const plannerRecommendations = normalizeArray(testPlannerStatus?.recommendations).slice(0, 5);
+  const manualQueueStatus = unwrap(resources.testQueueStatus) || null;
   const advisorRows = useMemo(() => ADVISOR_WINDOWS.map((spec) => {
     const entry = advisorResources[spec.key];
     const state = endpointState(entry);
@@ -3808,6 +3946,15 @@ export default function SupervisorV2Page() {
           safety: testPlannerStatus?.safety || SAFETY_FLAGS,
         }}
         onSelectRecommendation={loadStrategyHistory}
+        onQueueRecommendation={addRecommendationToQueue}
+        queueBusyId={queueBusyId}
+      />
+
+      <ManualTestQueuePanel
+        queue={manualQueueStatus}
+        queueMessage={queueMessage}
+        queueBusyId={queueBusyId}
+        onCancelQueueItem={cancelQueueItem}
       />
 
       <SupGroupDivider index="4" title="Signaldiagnostik" question="Var stoppades signalerna och varför?" />
