@@ -25,6 +25,9 @@ const ENDPOINTS = [
   { key: 'paperStatus', url: '/api/paper-trading/status', label: 'Paper Trading status' },
   { key: 'paperPerformance', url: '/api/paper-trading/performance', label: 'Paper Trading performance' },
   { key: 'runtimeStrategies', url: '/api/daytrading/runtime-strategies', label: 'Daytrading runtime strategies' },
+  { key: 'registryStatus', url: '/api/strategies/registry/status', label: 'Strategy Registry status' },
+  { key: 'strategyScoreStatus', url: '/api/strategies/score/status', label: 'Strategy Score v1' },
+  { key: 'testPlannerStatus', url: '/api/strategies/test-planner/status', label: 'Strategy Test Planner v1' },
   { key: 'recommendation', url: '/api/daytrading/recommendation', label: 'Daytrading recommendation' },
   { key: 'eventsRecent', url: '/api/events/recent?n=100', label: 'Recent trading events' },
   { key: 'eventsStatus', url: '/api/events/status', label: 'Event system status' },
@@ -255,6 +258,20 @@ function collectStrategyKeys(values) {
     if (key) keys.add(key);
   }
   return keys;
+}
+
+function eventDetailsSummary(details) {
+  if (!details || typeof details !== 'object' || Array.isArray(details)) return '';
+  const parts = [];
+  if (details.recommendation) parts.push(`Recommendation ${details.recommendation}`);
+  if (details.total_trades != null) parts.push(`${details.total_trades} trades`);
+  if (details.trades != null) parts.push(`${details.trades} trades`);
+  if (details.win_rate != null) parts.push(`WR ${details.win_rate}%`);
+  if (details.avg_pnl != null) parts.push(`avg PnL ${details.avg_pnl}`);
+  if (details.total_pnl != null) parts.push(`PnL ${details.total_pnl}`);
+  if (details.result) parts.push(`Result ${details.result}`);
+  if (details.reason) parts.push(`${details.reason}`);
+  return parts.join(' · ');
 }
 
 function winRateConfidence(trades) {
@@ -672,6 +689,23 @@ function recommendationPillTone(status) {
   return 'missing';
 }
 
+function strategyCatalogStatusKey(strategy = {}) {
+  const status = String(strategy.status || strategy.catalog_status || '').toLowerCase();
+  if (['active', 'testing', 'paused', 'roadmap', 'legacy'].includes(status)) return status;
+  if (strategy.enabled_by_user === false) return 'paused';
+  return 'roadmap';
+}
+
+function strategyCatalogStatusLabel(status) {
+  return {
+    active: 'ACTIVE',
+    testing: 'TESTING',
+    paused: 'PAUSED',
+    roadmap: 'ROADMAP',
+    legacy: 'LEGACY',
+  }[String(status || '').toLowerCase()] || 'ROADMAP';
+}
+
 // Översätter batchstatus till enkel svensk UI-text för read-only analys.
 function getBatchUiStatus(batch) {
   if (!batch || !batch.id) {
@@ -761,6 +795,313 @@ function DecisionCard({ item }) {
         </ul>
       )}
     </article>
+  );
+}
+
+function strategySourceBadgeTone(source) {
+  if (source === 'tradingview') return 'yellow';
+  if (source === 'internal') return 'blue';
+  return 'gray';
+}
+
+function strategyStatusBadgeTone(status) {
+  if (status === 'active' || status === 'paper_only') return 'green';
+  if (status === 'experimental') return 'blue';
+  if (status === 'watch') return 'yellow';
+  if (status === 'paused' || status === 'deprecated') return 'red';
+  return 'gray';
+}
+
+function plannerTestTypeBadgeTone(testType) {
+  const type = String(testType || '').toLowerCase();
+  if (type === 'replay') return 'green';
+  if (type === 'batch') return 'blue';
+  if (type === 'paper_observation') return 'yellow';
+  if (type === 'history_review') return 'gray';
+  return 'gray';
+}
+
+function drilldownRowLabel(strategy) {
+  return firstText([strategy?.strategy_id, strategy?.strategyId, strategy?.strategy_name, strategy?.strategyName], 'Ej konfigurerad');
+}
+
+function drilldownRowMeta(strategy) {
+  return [
+    `source=${textValue(strategy?.source, 'internal')}`,
+    `status=${textValue(strategy?.status, 'paper_only')}`,
+    `score=${textValue(strategy?.score, '–')}`,
+    `confidence=${textValue(strategy?.confidence, '–')}%`,
+    `sample=${textValue(strategy?.sample_size, '–')}`,
+  ].join(' · ');
+}
+
+function StrategyDrilldownCard({ title, kicker, badge, badgeTone, summary, items, emptyText, onSelectStrategy, selectedStrategyId }) {
+  const rows = normalizeArray(items).slice(0, 5);
+  return (
+    <article className="sup-v2-answer sup-v2-answer-neutral">
+      <div className="sup-v2-answer-head">
+        <div>
+          <div className="sup-v2-answer-kicker">{kicker}</div>
+          <h3>{title}</h3>
+        </div>
+        <span className={`badge badge-${badgeTone}`}>{badge}</span>
+      </div>
+      <p className="sup-v2-answer-main">{summary}</p>
+      {rows.length > 0 ? (
+        <ul className="sup-v2-answer-list">
+          {rows.map((strategy) => (
+            <li key={`${title}-${drilldownRowLabel(strategy)}`} style={{ listStyle: 'none' }}>
+              <button
+                type="button"
+                onClick={() => onSelectStrategy?.(strategy?.strategy_id || strategy?.strategyId || strategy?.name || strategy?.label || '')}
+                style={{
+                  width: '100%',
+                  textAlign: 'left',
+                  border: '1px solid rgba(148,163,184,0.16)',
+                  borderRadius: 14,
+                  padding: '10px 12px',
+                  background: selectedStrategyId === (strategy?.strategy_id || strategy?.strategyId || strategy?.name || strategy?.label)
+                    ? 'rgba(37, 99, 235, 0.14)'
+                    : 'rgba(15, 23, 42, 0.24)',
+                  color: 'inherit',
+                  cursor: 'pointer',
+                }}
+              >
+                <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, alignItems: 'center', marginBottom: 4 }}>
+                  <strong>{drilldownRowLabel(strategy)}</strong>
+                  <span className={`badge badge-${strategySourceBadgeTone(strategy?.source)}`}>{textValue(strategy?.source, 'internal')}</span>
+                  <span className={`badge badge-${strategyStatusBadgeTone(strategy?.status)}`}>{textValue(strategy?.status, 'paper_only')}</span>
+                  <span className="badge badge-blue">Visa detaljer</span>
+                </div>
+                <div className="sup-v2-chip-row" style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginBottom: 4 }}>
+                  <span className="sup-v2-chip">Score {textValue(strategy?.score, '–')}</span>
+                  <span className="sup-v2-chip">Confidence {textValue(strategy?.confidence, '–')}%</span>
+                  <span className="sup-v2-chip">Sample {textValue(strategy?.sample_size, '–')}</span>
+                </div>
+                <div style={{ lineHeight: 1.45 }}>{textValue(strategy?.recommended_action, 'Ingen rekommendation ännu.')}</div>
+              </button>
+            </li>
+          ))}
+        </ul>
+      ) : (
+        <div className="sup-safety-copy" style={{ marginTop: 8 }}>
+          {emptyText}
+        </div>
+      )}
+    </article>
+  );
+}
+
+function StrategyPlannerCard({ item, onSelect }) {
+  return (
+    <article className="sup-v2-answer sup-v2-answer-neutral" style={{ cursor: 'pointer' }} onClick={() => onSelect?.(item)}>
+      <div className="sup-v2-answer-head">
+        <div>
+          <div className="sup-v2-answer-kicker">Rekommendation</div>
+          <h3>{item.strategy_id}</h3>
+        </div>
+        <span className={`badge badge-${plannerTestTypeBadgeTone(item.test_type)}`}>{item.test_type}</span>
+      </div>
+      <p className="sup-v2-answer-main">{item.reason}</p>
+      <div className="sup-v2-card-meta" style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+        <span className="sup-v2-chip">Priority {textValue(item.priority, '–')}</span>
+        <span className={`badge badge-${strategySourceBadgeTone(item.source)}`}>{textValue(item.source, 'internal')}</span>
+        <span className={`badge badge-${strategyStatusBadgeTone(item.status)}`}>{textValue(item.status, 'paper_only')}</span>
+        <span className="sup-v2-chip">Scope {textValue(item.suggested_scope, 'Ej konfigurerad')}</span>
+        <span className="sup-v2-chip">Learning {textValue(item.expected_learning_value, 'Ej konfigurerad')}</span>
+      </div>
+      <div className="sup-v2-card-source" style={{ marginTop: 8 }}>{textValue(item.safety_note, 'Read-only')}</div>
+    </article>
+  );
+}
+
+function StrategyPlannerPanel({ planner, onSelectRecommendation }) {
+  const recommendations = normalizeArray(planner?.recommendations).slice(0, 5);
+  const summary = planner?.summary || {};
+  const safety = planner?.safety || SAFETY_FLAGS;
+
+  return (
+    <section className="sup-section">
+      <div className="sup-section-head">
+        <div>
+          <h2>Recommended Next Tests</h2>
+          <p>Read-only planner. Rekommendationerna startar inga tester automatiskt.</p>
+        </div>
+        <div className="sup-advisor-safety">
+          <span>actions_allowed={String(safety.actions_allowed === true ? 'true' : 'false')}</span>
+          <span>can_place_orders={String(safety.can_place_orders === true ? 'true' : 'false')}</span>
+          <span>live_trading_enabled={String(safety.live_trading_enabled === true ? 'true' : 'false')}</span>
+        </div>
+      </div>
+
+      <div className="sup-v2-chip-row" style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginBottom: 12 }}>
+        <span className="sup-v2-chip">Totalt {textValue(summary.total_recommendations, '0')}</span>
+        <span className="sup-v2-chip">Replay {textValue(summary.replay_recommendations, '0')}</span>
+        <span className="sup-v2-chip">Batch {textValue(summary.batch_recommendations, '0')}</span>
+        <span className="sup-v2-chip">Paper {textValue(summary.paper_observation_recommendations, '0')}</span>
+        <span className="sup-v2-chip">History {textValue(summary.history_review_recommendations, '0')}</span>
+        <span className="sup-v2-chip">TradingView {textValue(summary.tradingview_recommendations, '0')}</span>
+        <span className="sup-v2-chip">Internal {textValue(summary.internal_recommendations, '0')}</span>
+        <span className="sup-v2-chip">Paused/deprecated {textValue(summary.skipped_paused_count, '0')}</span>
+      </div>
+
+      {recommendations.length > 0 ? (
+        <div className="sup-v2-answer-grid">
+          {recommendations.map((item) => (
+            <StrategyPlannerCard
+              key={item.id || `${item.strategy_id}-${item.test_type}`}
+              item={item}
+              onSelect={onSelectRecommendation}
+            />
+          ))}
+        </div>
+      ) : (
+        <div className="sup-safety-copy">Inga rekommendationer ännu. Systemet verkar vara tillräckligt täckt just nu.</div>
+      )}
+    </section>
+  );
+}
+
+function StrategyHistoryDetail({ history, loading, error, onClear, plannerContext }) {
+  const data = history?.ok ? history : null;
+  const recentEvents = normalizeArray(data?.recent_events).slice(0, 5);
+  const learningNotes = normalizeArray(data?.learning_notes).slice(0, 5);
+  const nextSteps = normalizeArray(data?.recommended_next_steps).slice(0, 5);
+  const score = data?.score || {};
+  const historySummary = data?.history_summary || {};
+  const registry = data?.registry || {};
+  const planner = plannerContext || null;
+
+  return (
+    <section className="sup-section">
+      <div className="sup-section-head">
+        <div>
+          <h2>Strategy History Drilldown</h2>
+          <p>Kompakt read-only detaljvy för vald strategi. Inga tester startas och inga statusar ändras här.</p>
+        </div>
+        <div className="sup-advisor-safety">
+          <span>actions_allowed=false</span>
+          <span>can_place_orders=false</span>
+          <span>live_trading_enabled=false</span>
+        </div>
+      </div>
+
+      {loading ? (
+        <div className="sup-loading">Laddar strategi-historik...</div>
+      ) : error ? (
+        <div className="sup-error">{error}</div>
+      ) : !data ? (
+        <div className="sup-safety-copy">Ingen historik ännu. Klicka på en strategi i Drilldown för att se detaljer.</div>
+      ) : (
+        <article className="sup-v2-answer sup-v2-answer-neutral">
+          <div className="sup-v2-answer-head">
+            <div>
+              <div className="sup-v2-answer-kicker">{data.strategy_id}</div>
+              <h3>{data.strategy_id}</h3>
+            </div>
+            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+              <span className={`badge badge-${strategySourceBadgeTone(registry.source)}`}>{textValue(registry.source, 'internal')}</span>
+              <span className={`badge badge-${strategyStatusBadgeTone(registry.status)}`}>{textValue(registry.status, 'paper_only')}</span>
+              <button type="button" className="badge badge-blue" onClick={onClear} style={{ cursor: 'pointer', border: 'none' }}>
+                Stäng
+              </button>
+            </div>
+          </div>
+
+          <p className="sup-v2-answer-main">
+            Score {textValue(score.score, '–')} · Confidence {textValue(score.confidence, '–')}% · Sample size {textValue(score.sample_size, '0')}
+          </p>
+
+          {planner ? (
+            <div className="sup-safety-copy" style={{ marginBottom: 10 }}>
+              <strong>Öppnat från planner.</strong><br />
+              <strong>Föreslaget test:</strong> {textValue(planner.test_type, 'history_review')} ·{' '}
+              <strong>Prioritet:</strong> {textValue(planner.priority, '–')} ·{' '}
+              <strong>Varför:</strong> {textValue(planner.reason, 'Ingen förklaring ännu.')}<br />
+              <strong>Suggested scope:</strong> {textValue(planner.suggested_scope, 'Ej konfigurerad')}<br />
+              <strong>Expected learning value:</strong> {textValue(planner.expected_learning_value, 'Ej konfigurerad')}<br />
+              <strong>Safety note:</strong> {textValue(planner.safety_note, 'Read-only')}.
+            </div>
+          ) : null}
+
+          <div className="sup-v2-chip-row" style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginBottom: 10 }}>
+            <span className="sup-v2-chip">Paper {textValue(historySummary.paper_trades_count, '0')}</span>
+            <span className="sup-v2-chip">Replay {textValue(historySummary.replay_tests_count, '0')}</span>
+            <span className="sup-v2-chip">Batch {textValue(historySummary.batch_tests_count, '0')}</span>
+            <span className="sup-v2-chip">Learning {textValue(historySummary.learning_events_count, '0')}</span>
+            <span className="sup-v2-chip">Last signal {ageText(historySummary.last_signal_at)}</span>
+            <span className="sup-v2-chip">Last test {ageText(historySummary.last_test_at)}</span>
+          </div>
+
+          <div className="sup-grid sup-grid-2" style={{ marginTop: 8 }}>
+            <article className="sup-block sup-block-neutral">
+              <span className="sup-block-title">Varför score ser ut så här</span>
+              <strong className="sup-block-value">{score.recommended_action || 'Ingen rekommendation ännu'}</strong>
+              <span className="sup-block-note">
+                {uniqueText([
+                  ...(normalizeArray(score.strengths).slice(0, 2)),
+                  ...(normalizeArray(score.weaknesses).slice(0, 2)),
+                ]).join(' · ') || 'Ingen score-kommentar ännu.'}
+              </span>
+            </article>
+            <article className="sup-block sup-block-neutral">
+              <span className="sup-block-title">Registry och timing</span>
+              <strong className="sup-block-value">{registry.mode || 'paper_only'}</strong>
+              <span className="sup-block-note">
+                Source {textValue(registry.source, 'internal')} · Status {textValue(registry.status, 'paper_only')} · Enabled {registry.enabled ? 'ja' : 'nej'}
+              </span>
+            </article>
+          </div>
+
+          <div className="sup-v2-answer-list" style={{ marginTop: 12 }}>
+            <div style={{ fontWeight: 800, marginBottom: 6 }}>Strengths</div>
+            <div className="sup-v2-chip-row" style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginBottom: 10 }}>
+              {normalizeArray(score.strengths).length > 0
+                ? normalizeArray(score.strengths).slice(0, 5).map((item) => <span key={item} className="sup-v2-chip">{item}</span>)
+                : <span className="sup-v2-chip">Ingen historik ännu</span>}
+            </div>
+            <div style={{ fontWeight: 800, marginBottom: 6 }}>Weaknesses</div>
+            <div className="sup-v2-chip-row" style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginBottom: 10 }}>
+              {normalizeArray(score.weaknesses).length > 0
+                ? normalizeArray(score.weaknesses).slice(0, 5).map((item) => <span key={item} className="sup-v2-chip">{item}</span>)
+                : <span className="sup-v2-chip">Ingen historik ännu</span>}
+            </div>
+            <div style={{ fontWeight: 800, marginBottom: 6 }}>Learning notes</div>
+            <ul className="sup-v2-answer-list">
+              {learningNotes.length > 0
+                ? learningNotes.map((item) => <li key={item}>{item}</li>)
+                : <li>Ingen historik ännu</li>}
+            </ul>
+            <div style={{ fontWeight: 800, marginTop: 10, marginBottom: 6 }}>Recommended next steps</div>
+            <ul className="sup-v2-answer-list">
+              {nextSteps.length > 0
+                ? nextSteps.map((item) => <li key={item}>{item}</li>)
+                : <li>Ingen historik ännu</li>}
+            </ul>
+            <div style={{ fontWeight: 800, marginTop: 10, marginBottom: 6 }}>Recent events</div>
+            <ul className="sup-v2-answer-list">
+              {recentEvents.length > 0
+                ? recentEvents.map((event) => (
+                    <li key={`${event.timestamp || ''}-${event.event_type || ''}-${event.summary || ''}`}>
+                      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, alignItems: 'center', marginBottom: 4 }}>
+                        <strong>{event.summary || 'Event'}</strong>
+                        <span className={`badge badge-${strategySourceBadgeTone(event.source)}`}>{textValue(event.source, 'unknown')}</span>
+                        <span className="sup-v2-chip">{textValue(event.event_type, 'event')}</span>
+                        <span className="sup-v2-chip">{formatDateTime(event.timestamp)}</span>
+                      </div>
+                      {event.details ? (
+                        <div style={{ lineHeight: 1.45 }}>
+                          {eventDetailsSummary(event.details) || 'Ingen ytterligare detaljer ännu.'}
+                        </div>
+                      ) : null}
+                    </li>
+                  ))
+                : <li>Ingen historik ännu</li>}
+            </ul>
+          </div>
+        </article>
+      )}
+    </section>
   );
 }
 
@@ -2040,11 +2381,35 @@ function buildDecisionModel(resources) {
   const paperPerformance = unwrap(resources.paperPerformance);
   const recommendation = unwrap(resources.recommendation);
   const runtime = unwrap(resources.runtimeStrategies);
+  const registryStatus = unwrap(resources.registryStatus);
+  const strategyScoreStatus = unwrap(resources.strategyScoreStatus);
+  const testPlannerStatus = unwrap(resources.testPlannerStatus);
 
   const runtimeSummary = runtime?.summary || {};
   const runtimeStrategies = normalizeArray(runtime?.strategies);
   const topFocus = normalizeArray(priority?.topFocus || []);
   const avoidList = normalizeArray(priority?.avoid || []);
+  const catalogStatusCounts = runtimeStrategies.reduce((acc, strategy) => {
+    const key = strategyCatalogStatusKey(strategy);
+    acc[key] = (acc[key] || 0) + 1;
+    return acc;
+  }, {});
+  const catalogStatusRows = runtimeStrategies
+    .map((strategy) => {
+      const statusKey = strategyCatalogStatusKey(strategy);
+      return {
+        id: strategy.id || strategy.strategy_id || '',
+        name: strategy.name || strategy.strategy_name || strategy.id || strategy.strategy_id || 'Okänd strategi',
+        statusKey,
+        statusLabel: strategyCatalogStatusLabel(statusKey),
+        supportsScanner: strategy.supportsScanner === true,
+        supportsReplay: strategy.supportsReplay === true,
+        supportsBatch: strategy.supportsBatch === true,
+        supportsPaper: strategy.supportsPaper === true,
+        supportsLearning: strategy.supportsLearning === true,
+      };
+    })
+    .sort((a, b) => a.statusKey.localeCompare(b.statusKey) || String(a.name).localeCompare(String(b.name)));
 
   const selectedStrategies = runtimeStrategies.filter((strategy) => strategy.enabled_by_user === true);
   const runnableStrategies = runtimeStrategies.filter((strategy) => strategy.can_create_paper_trade === true);
@@ -2065,6 +2430,8 @@ function buildDecisionModel(resources) {
     ...(learningSummary?.connector?.avg_pnl_pct != null ? [] : ['Learning summary saknar P/L-underlag.']),
     ...(learningConnectorStatus?.errors?.length ? [`Learning Connector har ${formatInt(learningConnectorStatus.errors.length)} fel i kö.`] : []),
     ...(pipelineStatus?.warnings?.length ? [`Pipeline har ${formatInt(pipelineStatus.warnings.length)} varningar.`] : []),
+    ...(registryStatus?.ok === false ? ['Strategy Registry-data är inte tillgänglig.'] : []),
+    ...(strategyScoreStatus?.ok === false ? ['Strategy Score-data är inte tillgänglig.'] : []),
     ...(status?.ok === false ? ['Backend svarar inte.'] : []),
     ...(health?.ok === false ? ['Systemhälsa är inte tillgänglig.'] : []),
     ...(runtime?.ok === false ? ['Daytrading runtime-data är inte tillgänglig.'] : []),
@@ -2119,6 +2486,52 @@ function buildDecisionModel(resources) {
     noMappingCount > 0 ? `${noMappingCount} strategier saknar mapping till runtime.` : '',
     paperTradeCount > 0 ? `${paperTradeCount} strategier kan skapa paper trades.` : 'Ingen strategi kan skapa paper trades ännu.',
   ]);
+
+  const registrySummary = {
+    total: toNumber(registryStatus?.total_strategies) ?? 0,
+    active: toNumber(registryStatus?.active_strategies) ?? 0,
+    tradingview: toNumber(registryStatus?.tradingview_strategies) ?? 0,
+    paused: toNumber(registryStatus?.paused_strategies) ?? 0,
+    deprecated: toNumber(registryStatus?.deprecated_strategies) ?? 0,
+    latestTradingView: registryStatus?.latest_tradingview_strategy || null,
+    latestBlockedReason: registryStatus?.latest_blocked_reason || null,
+  };
+
+  const scoreStrategies = normalizeArray(strategyScoreStatus?.strategies);
+  const scoreTop = scoreStrategies[0] || strategyScoreStatus?.top_scores?.[0] || null;
+  const scoreWeak = strategyScoreStatus?.weakest_scores?.[0] || scoreStrategies[scoreStrategies.length - 1] || null;
+  const scoreTopDrilldown = normalizeArray(strategyScoreStatus?.top_strategies).slice(0, 5);
+  const scoreWeakDrilldown = normalizeArray(strategyScoreStatus?.weak_strategies).slice(0, 5);
+  const scoreUncertainDrilldown = normalizeArray(strategyScoreStatus?.uncertain_strategies).slice(0, 5);
+  const scoreTradingViewDrilldown = normalizeArray(strategyScoreStatus?.tradingview_strategies).slice(0, 5);
+  const scoreInternalDrilldown = normalizeArray(strategyScoreStatus?.internal_strategies).slice(0, 5);
+  const scoreNextTestsDrilldown = normalizeArray(strategyScoreStatus?.recommended_next_tests).slice(0, 5);
+  const scoreTopFallback = scoreStrategies.filter((row) => row.status !== 'paused' && row.status !== 'deprecated').slice(0, 5);
+  const scoreWeakFallback = [...scoreStrategies].reverse().slice(0, 5);
+  const scoreUncertainFallback = scoreStrategies
+    .filter((row) => row.confidence < 50 || row.sample_size < 10)
+    .sort((a, b) => a.confidence - b.confidence || a.sample_size - b.sample_size || a.score - b.score)
+    .slice(0, 5);
+  const scoreTradingViewFallback = scoreStrategies.filter((row) => row.source === 'tradingview').slice(0, 5);
+  const scoreInternalFallback = scoreStrategies.filter((row) => row.source === 'internal').slice(0, 5);
+  const scoreNextTestsFallback = scoreStrategies
+    .filter((row) => row.status !== 'paused' && row.status !== 'deprecated')
+    .filter((row) => String(row.recommended_action || '').toLowerCase().includes('replay') || String(row.recommended_action || '').toLowerCase().includes('batch'))
+    .slice(0, 5);
+  const scoreSummary = {
+    total: toNumber(strategyScoreStatus?.total_strategies) ?? scoreStrategies.length,
+    uncertain: toNumber(strategyScoreStatus?.uncertain_count) ?? 0,
+    top: scoreTop,
+    weak: scoreWeak,
+    topDrilldown: scoreTopDrilldown.length > 0 ? scoreTopDrilldown : scoreTopFallback,
+    weakDrilldown: scoreWeakDrilldown.length > 0 ? scoreWeakDrilldown : scoreWeakFallback,
+    uncertainDrilldown: scoreUncertainDrilldown.length > 0 ? scoreUncertainDrilldown : scoreUncertainFallback,
+    tradingviewDrilldown: scoreTradingViewDrilldown.length > 0 ? scoreTradingViewDrilldown : scoreTradingViewFallback,
+    internalDrilldown: scoreInternalDrilldown.length > 0 ? scoreInternalDrilldown : scoreInternalFallback,
+    nextTestsDrilldown: scoreNextTestsDrilldown.length > 0 ? scoreNextTestsDrilldown : scoreNextTestsFallback,
+  };
+  const plannerSummary = testPlannerStatus?.summary || {};
+  const plannerRecommendations = normalizeArray(testPlannerStatus?.recommendations).slice(0, 5);
 
   const bestReason = bestText(
     recommendation?.recommendation_sv,
@@ -2274,6 +2687,9 @@ function buildDecisionModel(resources) {
     problemPoints,
     actionItems: actionItems.slice(0, 3),
     riskSafetyPoints,
+    registrySummary,
+    scoreSummary,
+    testPlannerStatus,
     hasConflict,
     conflictKeys,
     conflictMessage: hasConflict
@@ -2283,6 +2699,8 @@ function buildDecisionModel(resources) {
     mixedBest: bestMixed,
     mixedAvoid: avoidMixed,
     systemProblems,
+    catalogStatusCounts,
+    catalogStatusRows,
     glossary,
     selectedButNotRunnableLabel,
     entryRuleLabel,
@@ -2315,6 +2733,11 @@ export default function SupervisorV2Page() {
   const [advisorResources, setAdvisorResources] = useState({});
   const [advisorLoading, setAdvisorLoading] = useState(true);
   const [advisorError, setAdvisorError] = useState('');
+  const [selectedStrategyId, setSelectedStrategyId] = useState('');
+  const [selectedStrategyHistory, setSelectedStrategyHistory] = useState(null);
+  const [selectedStrategyPlannerContext, setSelectedStrategyPlannerContext] = useState(null);
+  const [strategyHistoryLoading, setStrategyHistoryLoading] = useState(false);
+  const [strategyHistoryError, setStrategyHistoryError] = useState('');
 
   useEffect(() => {
     let cancelled = false;
@@ -2388,10 +2811,39 @@ export default function SupervisorV2Page() {
     }
   }
 
+  async function loadStrategyHistory(strategyId, plannerContext = null) {
+    const id = String(strategyId || '').trim();
+    if (!id) return;
+    setSelectedStrategyId(id);
+    setSelectedStrategyPlannerContext(plannerContext || null);
+    setStrategyHistoryLoading(true);
+    setStrategyHistoryError('');
+    try {
+      const data = await fetchJson(`/api/strategies/${encodeURIComponent(id)}/history`);
+      setSelectedStrategyHistory(data);
+    } catch (err) {
+      setSelectedStrategyHistory(null);
+      setStrategyHistoryError(err?.message || 'Kunde inte läsa strategi-historik.');
+    } finally {
+      setStrategyHistoryLoading(false);
+    }
+  }
+
+  function clearStrategyHistory() {
+    setSelectedStrategyId('');
+    setSelectedStrategyHistory(null);
+    setSelectedStrategyPlannerContext(null);
+    setStrategyHistoryError('');
+    setStrategyHistoryLoading(false);
+  }
+
   const model = useMemo(() => buildDecisionModel(resources), [resources]);
   const endpointRows = useMemo(() => buildEndpointRows(resources), [resources]);
   const technicalCards = useMemo(() => buildTechnicalCards(resources, model), [resources, model]);
   const optimization = unwrap(resources.optimization);
+  const testPlannerStatus = model.testPlannerStatus || null;
+  const plannerSummary = testPlannerStatus?.summary || {};
+  const plannerRecommendations = normalizeArray(testPlannerStatus?.recommendations).slice(0, 5);
   const advisorRows = useMemo(() => ADVISOR_WINDOWS.map((spec) => {
     const entry = advisorResources[spec.key];
     const state = endpointState(entry);
@@ -2589,6 +3041,173 @@ export default function SupervisorV2Page() {
         )}
       </section>
 
+      <section className="sup-section">
+        <div className="sup-section-head">
+          <div>
+            <h2>Strategy Registry och Score</h2>
+            <p>Read-only översikt av interna och TradingView-strategier samt första versionen av Strategy Score.</p>
+          </div>
+          <div className="sup-advisor-safety">
+            <span>actions_allowed=false</span>
+            <span>can_place_orders=false</span>
+            <span>live_trading_enabled=false</span>
+          </div>
+        </div>
+
+        <div className="sup-v2-answer-grid">
+          <DecisionCard
+            item={{
+              index: 'R1',
+              title: 'Registry översikt',
+              tone: 'neutral',
+              badgeTone: 'blue',
+              badge: `${model.registrySummary.total} strategier`,
+              summary: `Aktiva ${model.registrySummary.active} · TradingView ${model.registrySummary.tradingview} · Paused ${model.registrySummary.paused} · Deprecated ${model.registrySummary.deprecated}.`,
+              points: uniqueText([
+                `Senaste TradingView: ${strategyDescriptor(model.registrySummary.latestTradingView)}`,
+                model.registrySummary.latestBlockedReason ? `Senaste blockering: ${model.registrySummary.latestBlockedReason}` : 'Ingen blockering sparad ännu.',
+                'Safety: actions_allowed=false · can_place_orders=false · live_trading_enabled=false · mode=paper_only',
+              ]),
+            }}
+          />
+          <DecisionCard
+            item={{
+              index: 'R2',
+              title: 'Strategy Score v1',
+              tone: 'ok',
+              badgeTone: model.scoreSummary.uncertain > 0 ? 'yellow' : 'green',
+              badge: `${model.scoreSummary.total} scores`,
+              summary: model.scoreSummary.top
+                ? `${model.scoreSummary.top.strategy_id} · score ${model.scoreSummary.top.score} · confidence ${model.scoreSummary.top.confidence}%`
+                : 'Ingen score-data ännu.',
+              points: uniqueText([
+                `Osäkra scores: ${model.scoreSummary.uncertain}`,
+                model.scoreSummary.top ? `Bäst: ${model.scoreSummary.top.strategy_id} (${model.scoreSummary.top.score})` : 'Ingen toppstrategi ännu.',
+                model.scoreSummary.weak ? `Svagast: ${model.scoreSummary.weak.strategy_id} (${model.scoreSummary.weak.score})` : 'Ingen svagaste strategi ännu.',
+              ]),
+            }}
+          />
+          <DecisionCard
+            item={{
+              index: 'R3',
+              title: 'Tolkning',
+              tone: model.scoreSummary.top && model.scoreSummary.top.confidence < 50 ? 'warn' : 'ok',
+              badgeTone: model.scoreSummary.top && model.scoreSummary.top.confidence < 50 ? 'yellow' : 'green',
+              badge: model.scoreSummary.top?.recommended_action || 'Bevaka',
+              summary: model.scoreSummary.top
+                ? model.scoreSummary.top.recommended_action
+                : 'Kör replay och batch-test för att få första score-underlaget.',
+              points: uniqueText([
+                model.scoreSummary.top?.strengths?.[0] || 'Inga tydliga styrkor ännu.',
+                model.scoreSummary.top?.weaknesses?.[0] || 'Inga tydliga svagheter ännu.',
+                model.scoreSummary.top?.sample_size != null ? `Sample size ${model.scoreSummary.top.sample_size}` : '',
+              ]),
+            }}
+          />
+        </div>
+      </section>
+
+      <section className="sup-section">
+        <div className="sup-section-head">
+          <div>
+            <h2>Strategy Drilldown</h2>
+            <p>Read-only listor över de starkaste, svagaste och mest osäkra strategierna samt vilka tester som bör köras härnäst.</p>
+          </div>
+          <div className="sup-advisor-safety">
+            <span>actions_allowed=false</span>
+            <span>can_place_orders=false</span>
+            <span>live_trading_enabled=false</span>
+          </div>
+        </div>
+
+        <div className="sup-v2-answer-grid">
+          <StrategyDrilldownCard
+            title="Top 5 starkaste"
+            kicker="Styrka"
+            badge={`${model.scoreSummary.topDrilldown.length} strategier`}
+            badgeTone="green"
+            summary="Högst score bland aktiva och körbara strategier."
+            items={model.scoreSummary.topDrilldown}
+            emptyText="Inga starka strategier att visa ännu."
+            onSelectStrategy={loadStrategyHistory}
+            selectedStrategyId={selectedStrategyId}
+          />
+          <StrategyDrilldownCard
+            title="Top 5 svagaste"
+            kicker="Svaghet"
+            badge={`${model.scoreSummary.weakDrilldown.length} strategier`}
+            badgeTone="red"
+            summary="Strategier med lägst score eller tydlig svag historik."
+            items={model.scoreSummary.weakDrilldown}
+            emptyText="Inga svaga strategier att visa ännu."
+            onSelectStrategy={loadStrategyHistory}
+            selectedStrategyId={selectedStrategyId}
+          />
+          <StrategyDrilldownCard
+            title="Top 5 mest osäkra"
+            kicker="Osäkerhet"
+            badge={`${model.scoreSummary.uncertainDrilldown.length} strategier`}
+            badgeTone="yellow"
+            summary="Strategier med låg confidence eller litet sample size."
+            items={model.scoreSummary.uncertainDrilldown}
+            emptyText="Inga osäkra strategier att visa ännu."
+            onSelectStrategy={loadStrategyHistory}
+            selectedStrategyId={selectedStrategyId}
+          />
+          <StrategyDrilldownCard
+            title="TradingView-strategier"
+            kicker="Extern källa"
+            badge={`${model.scoreSummary.tradingviewDrilldown.length} strategier`}
+            badgeTone="yellow"
+            summary="TradingView-strategier som registrerats i registry."
+            items={model.scoreSummary.tradingviewDrilldown}
+            emptyText="Inga TradingView-strategier registrerade ännu."
+            onSelectStrategy={loadStrategyHistory}
+            selectedStrategyId={selectedStrategyId}
+          />
+          <StrategyDrilldownCard
+            title="Interna strategier"
+            kicker="Intern källa"
+            badge={`${model.scoreSummary.internalDrilldown.length} strategier`}
+            badgeTone="blue"
+            summary="Interna katalogstrategier från Trading OS."
+            items={model.scoreSummary.internalDrilldown}
+            emptyText="Inga interna strategier att visa ännu."
+            onSelectStrategy={loadStrategyHistory}
+            selectedStrategyId={selectedStrategyId}
+          />
+          <StrategyDrilldownCard
+            title="Rekommenderade nästa tester"
+            kicker="Nästa steg"
+            badge={`${model.scoreSummary.nextTestsDrilldown.length} strategier`}
+            badgeTone="green"
+            summary="Strategier som score v1 pekar ut för replay eller batch-test."
+            items={model.scoreSummary.nextTestsDrilldown}
+            emptyText="Inga nästa tester föreslagna ännu."
+            onSelectStrategy={loadStrategyHistory}
+            selectedStrategyId={selectedStrategyId}
+          />
+        </div>
+      </section>
+
+      <StrategyPlannerPanel
+        planner={{
+          ok: testPlannerStatus?.ok !== false,
+          recommendations: plannerRecommendations,
+          summary: plannerSummary,
+          safety: testPlannerStatus?.safety || SAFETY_FLAGS,
+        }}
+        onSelectRecommendation={loadStrategyHistory}
+      />
+
+      <StrategyHistoryDetail
+        history={selectedStrategyHistory}
+        loading={strategyHistoryLoading}
+        error={strategyHistoryError}
+        onClear={clearStrategyHistory}
+        plannerContext={selectedStrategyPlannerContext}
+      />
+
       <EventAiConclusion resource={resources.eventsRecent} />
       <EventsByMarket resource={resources.eventsRecent} />
       <SignalStopSummary resource={resources.eventsRecent} />
@@ -2651,6 +3270,21 @@ export default function SupervisorV2Page() {
             <span className="sup-block-note">actions_allowed=false, can_place_orders=false, live_trading_enabled=false.</span>
           </article>
         </div>
+        <div className="sup-v2-chip-row" style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginTop: 12 }}>
+          <span className="sup-v2-chip">ACTIVE {model.catalogStatusCounts?.active || 0}</span>
+          <span className="sup-v2-chip">TESTING {model.catalogStatusCounts?.testing || 0}</span>
+          <span className="sup-v2-chip">PAUSED {model.catalogStatusCounts?.paused || 0}</span>
+          <span className="sup-v2-chip">ROADMAP {model.catalogStatusCounts?.roadmap || 0}</span>
+          <span className="sup-v2-chip">LEGACY {model.catalogStatusCounts?.legacy || 0}</span>
+        </div>
+        <div className="sup-v2-card-source" style={{ marginTop: 8 }}>
+          Katalogstatus kommer från Strategy Catalog. Runtime-koppling, paper-körbarhet och learning-stöd visas separat i Daytrading och Lab.
+        </div>
+        {model.catalogStatusRows?.length > 0 && (
+          <div className="sup-v2-card-source" style={{ marginTop: 8 }}>
+            Exempel: {model.catalogStatusRows.slice(0, 5).map((row) => `${row.name} · ${row.statusLabel} · Scanner:${row.supportsScanner ? 'Ja' : 'Nej'} Replay:${row.supportsReplay ? 'Ja' : 'Nej'}`).join(' | ')}
+          </div>
+        )}
       </section>
 
       <section className="sup-section">
