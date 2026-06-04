@@ -62,6 +62,10 @@ const marketUniverse    = require('../services/marketUniverseService');
 const blockerConfig     = require('../services/blockerConfigService');
 const strategyCatalog   = require('../services/strategyCatalogService');
 const daytradingStrategyCatalog = require('../services/daytradingStrategyCatalogService');
+const strategyRegistry   = require('../services/strategyRegistryService');
+const strategyScore      = require('../services/strategyScoreService');
+const strategyHistory    = require('../services/strategyHistoryService');
+const strategyTestPlanner = require('../services/strategyTestPlannerService');
 const strategyPerformance = require('../services/strategyPerformanceService');
 const strategyPerformanceRead = require('../services/strategyPerformanceReadService');
 const strategyBatchTest = require('../services/strategyBatchTestService');
@@ -3256,6 +3260,37 @@ router.post('/markets/symbols/patch', (req, res) => {
 router.get('/strategies/catalog', (req, res) => {
   try { res.json({ ok: true, ...strategyCatalog.getCatalog() }); }
   catch (err) { res.status(500).json({ ok: false, error: err.message }); }
+});
+
+router.get('/strategies/catalog/status', (req, res) => {
+  try { res.json({ ok: true, ...strategyRegistry.getStatus() }); }
+  catch (err) { res.status(500).json({ ok: false, error: err.message, ...strategyRegistry.SAFETY }); }
+});
+
+router.post('/strategies/catalog/:id/pause', (req, res) => {
+  try {
+    const reason = req.body?.reason || req.body?.disabled_reason || 'paused';
+    res.status(200).json(daytradingStrategyCatalog.pauseStrategy(req.params.id, reason));
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message, ...daytradingStrategyCatalog.SAFETY });
+  }
+});
+
+router.post('/strategies/catalog/:id/activate', (req, res) => {
+  try {
+    res.status(200).json(daytradingStrategyCatalog.activateStrategy(req.params.id));
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message, ...daytradingStrategyCatalog.SAFETY });
+  }
+});
+
+router.post('/strategies/catalog/:id/deprecate', (req, res) => {
+  try {
+    const reason = req.body?.reason || req.body?.disabled_reason || 'deprecated';
+    res.status(200).json(daytradingStrategyCatalog.deprecateStrategy(req.params.id, reason));
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message, ...daytradingStrategyCatalog.SAFETY });
+  }
 });
 
 router.get('/strategies/presets', (req, res) => {

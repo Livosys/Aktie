@@ -1,5 +1,8 @@
 'use strict';
 
+const fs = require('fs');
+const path = require('path');
+
 const SAFETY = Object.freeze({
   actions_allowed: false,
   can_place_orders: false,
@@ -16,6 +19,197 @@ const MARKET_LABELS = Object.freeze({
   etf: 'ETF',
   all: 'Alla',
 });
+
+const SCANNER_EMITTER_STRATEGY_IDS = Object.freeze(new Set([
+  'crypto_momentum_scalper',
+  'ema_pullback_continuation',
+  'narrow_breakout',
+  'narrow_state_expansion_long',
+  'trend_continuation',
+  'vwap_failed_breakout_short',
+  'vwap_volume_breakout_long',
+]));
+
+const STATUS_VALUES = new Set(['active', 'paper_only', 'watch', 'experimental', 'paused', 'deprecated']);
+const SOURCE_VALUES = new Set(['internal', 'tradingview', 'replay', 'batch', 'manual']);
+const CATALOG_STATE_FILE = path.resolve(process.env.DAYTRADING_STRATEGY_CATALOG_FILE || path.resolve(__dirname, '../../data/config/daytrading-strategy-catalog.jsonl'));
+
+function safeObject(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return {};
+  try {
+    const cloned = JSON.parse(JSON.stringify(value));
+    return cloned && typeof cloned === 'object' && !Array.isArray(cloned) ? cloned : {};
+  } catch (_) {
+    return {};
+  }
+}
+
+function safeString(value) {
+  if (value == null) return null;
+  const text = String(value).trim();
+  return text || null;
+}
+
+function safeArray(value) {
+  if (!Array.isArray(value)) return [];
+  return value.filter((item) => item != null).map((item) => String(item));
+}
+
+function nowIso() {
+  return new Date().toISOString();
+}
+
+function ensureDir() {
+  fs.mkdirSync(path.dirname(CATALOG_STATE_FILE), { recursive: true });
+}
+
+function normalizeStatus(value, fallback = 'paper_only') {
+  const raw = String(value || fallback || '').toLowerCase();
+  if (STATUS_VALUES.has(raw)) return raw;
+  return fallback;
+}
+
+function normalizeSource(value, fallback = 'internal') {
+  const raw = String(value || fallback || '').toLowerCase();
+  if (SOURCE_VALUES.has(raw)) return raw;
+  return fallback;
+}
+
+function readStateHistory() {
+  try {
+    if (!fs.existsSync(CATALOG_STATE_FILE)) return [];
+    return fs.readFileSync(CATALOG_STATE_FILE, 'utf8')
+      .split('\n')
+      .map((line) => line.trim())
+      .filter(Boolean)
+      .map((line) => {
+        try {
+          return JSON.parse(line);
+        } catch (_) {
+          return null;
+        }
+      })
+      .filter(Boolean);
+  } catch (_) {
+    return [];
+  }
+}
+
+function appendStateRecord(record) {
+  ensureDir();
+  fs.appendFileSync(CATALOG_STATE_FILE, `${JSON.stringify(record)}\n`, 'utf8');
+}
+
+function defaultPerformanceSummary() {
+  return {
+    win_rate: null,
+    avg_pnl: null,
+    trades: 0,
+    score: null,
+  };
+}
+
+function defaultLearningFields() {
+  return {
+    performance_summary: defaultPerformanceSummary(),
+    known_weaknesses: [],
+    recommended_tests: [],
+    last_learning_review_at: null,
+    learning_notes: [],
+  };
+}
+
+function mapStatusFromCatalog(strategy = {}) {
+  const status = String(strategy.status || '').toLowerCase();
+  if (STATUS_VALUES.has(status)) return status;
+  if (status === 'testing') return 'experimental';
+  if (status === 'roadmap') return 'watch';
+  if (status === 'legacy') return 'deprecated';
+  if (status === 'paused') return 'paused';
+  return strategy.active === false ? 'paused' : 'active';
+}
+
+function inferMarketRegimeTags(strategy = {}) {
+  const tags = new Set();
+  const rules = Array.isArray(strategy.signal_rules) ? strategy.signal_rules : [];
+  const text = [strategy.id, strategy.name, strategy.explanation, strategy.description_sv, strategy.simple_explanation_sv, ...rules]
+    .filter(Boolean)
+    .map((value) => String(value).toLowerCase())
+    .join(' ');
+
+  if (strategy.market_group) tags.add(String(strategy.market_group).toLowerCase());
+  if (text.includes('vwap')) tags.add('vwap');
+  if (text.includes('ema')) tags.add('ema');
+  if (text.includes('narrow')) tags.add('narrow');
+  if (text.includes('opening_range')) tags.add('opening_range');
+  if (text.includes('index') || text.includes('qqq') || text.includes('spy')) tags.add('index');
+  if (text.includes('gap')) tags.add('gap');
+  if (text.includes('volume_spike') || text.includes('volymtopp')) tags.add('volume_spike');
+  if (text.includes('volatility')) tags.add('volatility');
+  if (text.includes('support') || text.includes('resistance')) tags.add('support_resistance');
+  if (text.includes('trend')) tags.add('trend');
+  if (text.includes('crypto')) tags.add('crypto');
+
+  return [...tags];
+}
+
+function normalizeStrategyRecord(strategy = {}) {
+  const source = normalizeSource(strategy.source, 'internal');
+  const enabled = strategy.enabled !== false && strategy.active !== false;
+  const signalRules = Array.isArray(strategy.signal_rules) ? [...strategy.signal_rules] : [];
+  const allowedTimeframes = Array.isArray(strategy.default_timeframes) ? [...strategy.default_timeframes] : [];
+  const exitRules = [];
+  if (strategy.default_stop_loss_pct != null || strategy.default_sl != null) exitRules.push('stop_loss');
+  if (strategy.default_take_profit_r != null || strategy.default_tp != null) exitRules.push('take_profit');
+  if (strategy.default_timeout_min != null || strategy.default_holding_time_min != null || strategy.default_holding_time != null) exitRules.push('timeout');
+  const learning = {
+    ...defaultLearningFields(),
+    performance_summary: safeObject(strategy.performance_summary || strategy.performanceSummary) || defaultPerformanceSummary(),
+    known_weaknesses: safeArray(strategy.known_weaknesses),
+    recommended_tests: safeArray(strategy.recommended_tests),
+    last_learning_review_at: strategy.last_learning_review_at || null,
+    learning_notes: safeArray(strategy.learning_notes),
+  };
+  const explicitStatus = safeString(strategy.status);
+  const status = normalizeStatus(
+    explicitStatus
+      || (source === 'tradingview' ? 'paper_only' : null)
+      || (enabled ? (strategy.is_new ? 'experimental' : mapStatusFromCatalog(strategy)) : 'paused'),
+    enabled ? 'paper_only' : 'paused',
+  );
+
+  return {
+    ...strategy,
+    source,
+    description: strategy.description_sv || strategy.explanation || '',
+    enabled,
+    status,
+    mode: safeString(strategy.mode) || 'paper_only',
+    disabled_reason: strategy.disabled_reason || null,
+    disabled_at: strategy.disabled_at || null,
+    catalog_status: safeString(strategy.catalog_status || strategy.status) || null,
+    catalog_enabled: strategy.catalog_enabled != null ? strategy.catalog_enabled : enabled,
+    entryRules: signalRules,
+    exitRules,
+    allowedTimeframes,
+    marketRegimeTags: inferMarketRegimeTags(strategy),
+    supportsScanner: SCANNER_EMITTER_STRATEGY_IDS.has(strategy.id),
+    supportsReplay: true,
+    supportsBatch: true,
+    supportsPaper: true,
+    supportsLearning: true,
+    performanceSummary: learning.performance_summary,
+    known_weaknesses: learning.known_weaknesses,
+    recommended_tests: learning.recommended_tests,
+    last_learning_review_at: learning.last_learning_review_at,
+    learning_notes: learning.learning_notes,
+    paper_only: true,
+    live_enabled: false,
+    actions_allowed: false,
+    can_place_orders: false,
+    live_trading_enabled: false,
+  };
+}
 
 function strategy({
   id,
@@ -79,6 +273,317 @@ function strategy({
     default_timeframes,
     active,
   };
+}
+
+function cloneStrategyState(record = {}) {
+  return {
+    strategy_id: safeString(record.strategy_id || record.id),
+    strategy_name: safeString(record.strategy_name || record.name || record.id),
+    source: normalizeSource(record.source, 'internal'),
+    status: normalizeStatus(record.status, 'paper_only'),
+    enabled: record.enabled !== false,
+    disabled_reason: record.disabled_reason || null,
+    disabled_at: record.disabled_at || null,
+    mode: safeString(record.mode) || 'paper_only',
+    catalog_status: safeString(record.catalog_status || null),
+    catalog_enabled: record.catalog_enabled,
+    description: safeString(record.description || ''),
+    performance_summary: safeObject(record.performance_summary || record.performanceSummary) || defaultPerformanceSummary(),
+    known_weaknesses: safeArray(record.known_weaknesses),
+    recommended_tests: safeArray(record.recommended_tests),
+    last_learning_review_at: record.last_learning_review_at || null,
+    learning_notes: safeArray(record.learning_notes),
+    market_regime_tags: safeArray(record.market_regime_tags),
+    allowed_timeframes: safeArray(record.allowed_timeframes || record.allowedTimeframes),
+    entry_rules: safeArray(record.entry_rules || record.entryRules),
+    exit_rules: safeArray(record.exit_rules || record.exitRules),
+    updated_at: record.updated_at || null,
+    created_at: record.created_at || null,
+    registry_managed: record.registry_managed === true,
+    ...SAFETY,
+  };
+}
+
+function applyStrategyPatch(current = {}, patch = {}) {
+  const next = cloneStrategyState(current);
+  const source = normalizeSource(patch.source, next.source || 'internal');
+  const patchEnabled = patch.enabled;
+  const patchActive = patch.active;
+  if (Object.prototype.hasOwnProperty.call(patch, 'strategy_name')) next.strategy_name = safeString(patch.strategy_name) || next.strategy_name;
+  if (Object.prototype.hasOwnProperty.call(patch, 'source')) next.source = source;
+  if (Object.prototype.hasOwnProperty.call(patch, 'status')) next.status = normalizeStatus(patch.status, next.status);
+  else if (patch.source === 'tradingview' && !patch.status) next.status = 'paper_only';
+  else if ((patchEnabled === false) || (patchActive === false)) next.status = 'paused';
+  if (patchEnabled != null) next.enabled = patchEnabled === true;
+  else if (patchActive != null) next.enabled = patchActive === true;
+  if (Object.prototype.hasOwnProperty.call(patch, 'disabled_reason')) next.disabled_reason = patch.disabled_reason || null;
+  if (Object.prototype.hasOwnProperty.call(patch, 'disabled_at')) next.disabled_at = patch.disabled_at || null;
+  if (Object.prototype.hasOwnProperty.call(patch, 'mode')) next.mode = safeString(patch.mode) || next.mode;
+  if (Object.prototype.hasOwnProperty.call(patch, 'catalog_status')) next.catalog_status = safeString(patch.catalog_status) || null;
+  if (Object.prototype.hasOwnProperty.call(patch, 'catalog_enabled')) next.catalog_enabled = patch.catalog_enabled;
+  if (Object.prototype.hasOwnProperty.call(patch, 'description')) next.description = safeString(patch.description) || '';
+  if (Object.prototype.hasOwnProperty.call(patch, 'performance_summary')) next.performance_summary = safeObject(patch.performance_summary) || defaultPerformanceSummary();
+  if (Object.prototype.hasOwnProperty.call(patch, 'known_weaknesses')) next.known_weaknesses = safeArray(patch.known_weaknesses);
+  if (Object.prototype.hasOwnProperty.call(patch, 'recommended_tests')) next.recommended_tests = safeArray(patch.recommended_tests);
+  if (Object.prototype.hasOwnProperty.call(patch, 'last_learning_review_at')) next.last_learning_review_at = patch.last_learning_review_at || null;
+  if (Object.prototype.hasOwnProperty.call(patch, 'learning_notes')) next.learning_notes = safeArray(patch.learning_notes);
+  if (Object.prototype.hasOwnProperty.call(patch, 'market_regime_tags')) next.market_regime_tags = safeArray(patch.market_regime_tags);
+  if (Object.prototype.hasOwnProperty.call(patch, 'allowed_timeframes')) next.allowed_timeframes = safeArray(patch.allowed_timeframes);
+  if (Object.prototype.hasOwnProperty.call(patch, 'entry_rules')) next.entry_rules = safeArray(patch.entry_rules);
+  if (Object.prototype.hasOwnProperty.call(patch, 'exit_rules')) next.exit_rules = safeArray(patch.exit_rules);
+  if (Object.prototype.hasOwnProperty.call(patch, 'registry_managed')) next.registry_managed = patch.registry_managed === true;
+  if (patch.created_at && !next.created_at) next.created_at = patch.created_at;
+  if (patch.updated_at) next.updated_at = patch.updated_at;
+  if (!next.created_at) next.created_at = patch.created_at || patch.recorded_at || null;
+  if (!next.updated_at) next.updated_at = patch.updated_at || patch.recorded_at || null;
+  next.paper_only = true;
+  next.live_enabled = false;
+  next.actions_allowed = false;
+  next.can_place_orders = false;
+  next.live_trading_enabled = false;
+  return next;
+}
+
+function buildState() {
+  const base = STRATEGIES.map((row) => normalizeStrategyRecord(row));
+  const byId = new Map(base.map((row) => [row.id, { ...row, strategy_id: row.id, strategy_name: row.name || row.id }]));
+
+  for (const record of readStateHistory()) {
+    const strategyId = safeString(record.strategy_id || record.strategyId || record.id);
+    if (!strategyId) continue;
+    const current = byId.get(strategyId) || cloneStrategyState({ strategy_id: strategyId, strategy_name: strategyId, source: 'manual' });
+    const next = applyStrategyPatch(current, {
+      ...record,
+      strategy_id: strategyId,
+      strategy_name: record.strategy_name || record.strategyName || current.strategy_name,
+    });
+    byId.set(strategyId, next);
+  }
+
+  return [...byId.values()]
+    .map((strategyRow) => ({
+      ...strategyRow,
+      id: strategyRow.strategy_id || strategyRow.id,
+      name: strategyRow.strategy_name || strategyRow.name || strategyRow.strategy_id,
+      status: normalizeStatus(strategyRow.status, strategyRow.enabled === false ? 'paused' : 'paper_only'),
+      enabled: strategyRow.enabled !== false,
+      source: normalizeSource(strategyRow.source, 'internal'),
+      mode: safeString(strategyRow.mode) || 'paper_only',
+      disabled_reason: strategyRow.disabled_reason || null,
+      disabled_at: strategyRow.disabled_at || null,
+      catalog_status: strategyRow.catalog_status || null,
+      catalog_enabled: strategyRow.catalog_enabled != null ? strategyRow.catalog_enabled : strategyRow.enabled !== false,
+      performanceSummary: strategyRow.performance_summary || defaultPerformanceSummary(),
+      known_weaknesses: safeArray(strategyRow.known_weaknesses),
+      recommended_tests: safeArray(strategyRow.recommended_tests),
+      last_learning_review_at: strategyRow.last_learning_review_at || null,
+      learning_notes: safeArray(strategyRow.learning_notes),
+      marketRegimeTags: safeArray(strategyRow.market_regime_tags),
+      allowedTimeframes: safeArray(strategyRow.allowed_timeframes),
+      entryRules: safeArray(strategyRow.entry_rules),
+      exitRules: safeArray(strategyRow.exit_rules),
+    }))
+    .sort((a, b) => String(a.name || a.id || '').localeCompare(String(b.name || b.id || '')));
+}
+
+function currentMap() {
+  return new Map(buildState().map((strategy) => [strategy.id, strategy]));
+}
+
+function getBaseStrategy(strategyId) {
+  const id = safeString(strategyId);
+  if (!id) return null;
+  return STRATEGIES.find((strategy) => strategy.id === id) || null;
+}
+
+function ensureStrategy(strategyId, defaults = {}) {
+  const id = safeString(strategyId);
+  if (!id) return { ok: false, error: 'strategy_id_required', ...SAFETY };
+  const existing = getStrategyById(id);
+  if (existing) return { ok: true, strategy: existing, created: false, ...SAFETY };
+
+  const now = nowIso();
+  const record = {
+    event_id: `${id}:${now}`,
+    event_type: 'strategy.registered',
+    recorded_at: now,
+    strategy_id: id,
+    strategy_name: safeString(defaults.strategy_name || defaults.strategyName || id) || id,
+    source: normalizeSource(defaults.source, 'manual'),
+    status: normalizeStatus(defaults.status, 'paper_only'),
+    enabled: defaults.enabled != null ? defaults.enabled === true : true,
+    disabled_reason: defaults.disabled_reason || null,
+    disabled_at: defaults.disabled_at || null,
+    mode: safeString(defaults.mode) || 'paper_only',
+    catalog_status: defaults.catalog_status || null,
+    catalog_enabled: defaults.catalog_enabled != null ? defaults.catalog_enabled : null,
+    description: defaults.description || '',
+    performance_summary: safeObject(defaults.performance_summary || defaults.performanceSummary) || defaultPerformanceSummary(),
+    known_weaknesses: safeArray(defaults.known_weaknesses),
+    recommended_tests: safeArray(defaults.recommended_tests),
+    last_learning_review_at: defaults.last_learning_review_at || null,
+    learning_notes: safeArray(defaults.learning_notes),
+    market_regime_tags: safeArray(defaults.market_regime_tags),
+    allowed_timeframes: safeArray(defaults.allowed_timeframes || defaults.allowedTimeframes),
+    entry_rules: safeArray(defaults.entry_rules || defaults.entryRules),
+    exit_rules: safeArray(defaults.exit_rules || defaults.exitRules),
+    registry_managed: defaults.registry_managed === true || normalizeSource(defaults.source, 'manual') !== 'internal',
+    created_at: now,
+    updated_at: now,
+  };
+  appendStateRecord(record);
+  return { ok: true, created: true, strategy: getStrategyById(id), ...SAFETY };
+}
+
+function registerTradingViewStrategy(strategyId, defaults = {}) {
+  const id = safeString(strategyId);
+  if (!id) return { ok: false, error: 'strategy_id_required', ...SAFETY };
+  const existing = getStrategyById(id);
+  if (existing) return { ok: true, created: false, strategy: existing, ...SAFETY };
+  return ensureStrategy(id, {
+    ...defaults,
+    source: 'tradingview',
+    status: 'paper_only',
+    enabled: true,
+    mode: 'paper_only',
+    registry_managed: true,
+  });
+}
+
+function pauseStrategy(strategyId, reason = 'paused') {
+  const id = safeString(strategyId);
+  if (!id) return { ok: false, error: 'strategy_id_required', ...SAFETY };
+  const current = getStrategyById(id);
+  if (!current) return { ok: false, error: 'strategy_not_found', ...SAFETY };
+  const now = nowIso();
+  appendStateRecord({
+    event_id: `${id}:pause:${now}`,
+    event_type: 'strategy.paused',
+    recorded_at: now,
+    strategy_id: id,
+    strategy_name: current.strategy_name || current.name || id,
+    source: current.source || 'manual',
+    status: 'paused',
+    enabled: false,
+    disabled_reason: safeString(reason) || 'paused',
+    disabled_at: now,
+    mode: current.mode || 'paper_only',
+    catalog_status: current.catalog_status || null,
+    catalog_enabled: current.catalog_enabled,
+    description: current.description || '',
+    performance_summary: current.performanceSummary || defaultPerformanceSummary(),
+    known_weaknesses: current.known_weaknesses || [],
+    recommended_tests: current.recommended_tests || [],
+    last_learning_review_at: current.last_learning_review_at || null,
+    learning_notes: current.learning_notes || [],
+    market_regime_tags: current.marketRegimeTags || [],
+    allowed_timeframes: current.allowedTimeframes || [],
+    entry_rules: current.entryRules || [],
+    exit_rules: current.exitRules || [],
+    registry_managed: true,
+    created_at: current.created_at || now,
+    updated_at: now,
+  });
+  return { ok: true, strategy: getStrategyById(id), ...SAFETY };
+}
+
+function activateStrategy(strategyId) {
+  const id = safeString(strategyId);
+  if (!id) return { ok: false, error: 'strategy_id_required', ...SAFETY };
+  const current = getStrategyById(id);
+  if (!current) return { ok: false, error: 'strategy_not_found', ...SAFETY };
+  const now = nowIso();
+  const base = getBaseStrategy(id);
+  const status = current.source === 'tradingview'
+    ? 'paper_only'
+    : normalizeStatus(base ? mapStatusFromCatalog(base) : current.status || 'active', 'active');
+  appendStateRecord({
+    event_id: `${id}:activate:${now}`,
+    event_type: 'strategy.activated',
+    recorded_at: now,
+    strategy_id: id,
+    strategy_name: current.strategy_name || current.name || id,
+    source: current.source || 'manual',
+    status,
+    enabled: true,
+    disabled_reason: null,
+    disabled_at: null,
+    mode: current.mode || 'paper_only',
+    catalog_status: current.catalog_status || null,
+    catalog_enabled: current.catalog_enabled,
+    description: current.description || '',
+    performance_summary: current.performanceSummary || defaultPerformanceSummary(),
+    known_weaknesses: current.known_weaknesses || [],
+    recommended_tests: current.recommended_tests || [],
+    last_learning_review_at: current.last_learning_review_at || null,
+    learning_notes: current.learning_notes || [],
+    market_regime_tags: current.marketRegimeTags || [],
+    allowed_timeframes: current.allowedTimeframes || [],
+    entry_rules: current.entryRules || [],
+    exit_rules: current.exitRules || [],
+    registry_managed: true,
+    created_at: current.created_at || now,
+    updated_at: now,
+  });
+  return { ok: true, strategy: getStrategyById(id), ...SAFETY };
+}
+
+function deprecateStrategy(strategyId, reason = 'deprecated') {
+  const id = safeString(strategyId);
+  if (!id) return { ok: false, error: 'strategy_id_required', ...SAFETY };
+  const current = getStrategyById(id);
+  if (!current) return { ok: false, error: 'strategy_not_found', ...SAFETY };
+  const now = nowIso();
+  appendStateRecord({
+    event_id: `${id}:deprecate:${now}`,
+    event_type: 'strategy.deprecated',
+    recorded_at: now,
+    strategy_id: id,
+    strategy_name: current.strategy_name || current.name || id,
+    source: current.source || 'manual',
+    status: 'deprecated',
+    enabled: false,
+    disabled_reason: safeString(reason) || 'deprecated',
+    disabled_at: now,
+    mode: current.mode || 'paper_only',
+    catalog_status: current.catalog_status || null,
+    catalog_enabled: current.catalog_enabled,
+    description: current.description || '',
+    performance_summary: current.performanceSummary || defaultPerformanceSummary(),
+    known_weaknesses: current.known_weaknesses || [],
+    recommended_tests: current.recommended_tests || [],
+    last_learning_review_at: current.last_learning_review_at || null,
+    learning_notes: current.learning_notes || [],
+    market_regime_tags: current.marketRegimeTags || [],
+    allowed_timeframes: current.allowedTimeframes || [],
+    entry_rules: current.entryRules || [],
+    exit_rules: current.exitRules || [],
+    registry_managed: true,
+    created_at: current.created_at || now,
+    updated_at: now,
+  });
+  return { ok: true, strategy: getStrategyById(id), ...SAFETY };
+}
+
+function canForwardStrategy(strategyId) {
+  const strategy = typeof strategyId === 'string' ? getStrategyById(strategyId) : strategyId;
+  if (!strategy) return { allowed: false, blocked_reason: 'strategy_disabled', strategy: null, ...SAFETY };
+  const status = normalizeStatus(strategy.status, 'paper_only');
+  const blocked = strategy.enabled === false || status === 'paused' || status === 'deprecated';
+  return {
+    allowed: !blocked,
+    blocked_reason: blocked ? 'strategy_disabled' : null,
+    strategy,
+    ...SAFETY,
+  };
+}
+
+function getLatestTradingViewStrategy() {
+  const strategies = buildState().filter((strategy) => strategy.source === 'tradingview');
+  if (strategies.length === 0) return null;
+  return strategies
+    .slice()
+    .sort((a, b) => String(b.updated_at || b.created_at || '').localeCompare(String(a.updated_at || a.created_at || '')))[0] || null;
 }
 
 const STRATEGIES = Object.freeze([
@@ -483,10 +988,11 @@ const STRATEGIES = Object.freeze([
 ]);
 
 function getCatalog() {
+  const strategies = buildState();
   return {
     ok: true,
-    strategies: STRATEGIES.map((s) => ({ ...s })),
-    count: STRATEGIES.length,
+    strategies,
+    count: strategies.length,
     market_groups: Object.keys(MARKET_LABELS),
     timeframes: ['1m', '2m', '5m', '15m', '30m', '1h'],
     adjustable_parameters: [
@@ -506,7 +1012,10 @@ function getCatalog() {
 }
 
 function getStrategyById(id) {
-  return STRATEGIES.find((s) => s.id === id) || null;
+  const key = safeString(id);
+  if (!key) return null;
+  const strategy = currentMap().get(key) || null;
+  return strategy ? { ...strategy } : null;
 }
 
 function inferStrategyForSignal(signal = {}) {
@@ -531,10 +1040,45 @@ function inferStrategyForSignal(signal = {}) {
   return getStrategyById('trend_continuation');
 }
 
+function getStatus() {
+  const strategies = buildState();
+  const latestTradingViewStrategy = getLatestTradingViewStrategy();
+  const summary = {
+    total_strategies: strategies.length,
+    active_strategies: strategies.filter((strategy) => strategy.enabled !== false && strategy.status === 'active').length,
+    tradingview_strategies: strategies.filter((strategy) => strategy.source === 'tradingview').length,
+    paused_strategies: strategies.filter((strategy) => strategy.status === 'paused').length,
+    deprecated_strategies: strategies.filter((strategy) => strategy.status === 'deprecated').length,
+    paper_only_strategies: strategies.filter((strategy) => strategy.status === 'paper_only').length,
+    watch_strategies: strategies.filter((strategy) => strategy.status === 'watch').length,
+    experimental_strategies: strategies.filter((strategy) => strategy.status === 'experimental').length,
+    enabled_strategies: strategies.filter((strategy) => strategy.enabled !== false).length,
+  };
+  return {
+    ok: true,
+    ...summary,
+    latest_tradingview_strategy: latestTradingViewStrategy,
+    strategies,
+    ...SAFETY,
+  };
+}
+
 module.exports = {
   SAFETY,
   STRATEGIES,
   getCatalog,
   getStrategyById,
   inferStrategyForSignal,
+  getStatus,
+  ensureStrategy,
+  registerTradingViewStrategy,
+  pauseStrategy,
+  activateStrategy,
+  deprecateStrategy,
+  canForwardStrategy,
+  getLatestTradingViewStrategy,
+  normalizeStatus,
+  normalizeSource,
+  mapStatusFromCatalog,
+  readStateHistory,
 };
