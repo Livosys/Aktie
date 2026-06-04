@@ -88,6 +88,9 @@ export default function NarrowStateLabPage() {
   const meanReversion = Array.isArray(ns?.meanReversion) ? ns.meanReversion : [];
   const strategies = Array.isArray(ns?.strategies) ? ns.strategies : [];
   const latestLessons = Array.isArray(ns?.latestLessons) ? ns.latestLessons : [];
+  // Narrow Performance Learning (measured from paper/replay/batch). May be null.
+  const perf = ns?.performanceLearning || null;
+  const CONF_LABELS = { none: 'Ingen', low: 'Låg', medium: 'Medium', high: 'Hög' };
 
   return (
     <div className="page narrow-state-lab">
@@ -228,6 +231,61 @@ export default function NarrowStateLabPage() {
       </section>
 
       {/* Learning */}
+      {/* Performance Learning — measured testresultat (paper/replay/batch) */}
+      <section className="ns-panel ns-perf">
+        <h2>📈 Performance Learning <span className="ns-perf-tag">testresultat · endast analysläge</span></h2>
+        <p className="ns-perf-note">
+          Mätt på paper-/replay-/batch-tester av de tre narrow-strategierna. Detta är{' '}
+          <strong>inte investeringsråd</strong> — bara vad testresultaten visar hittills.
+        </p>
+
+        {!perf || perf.totalNarrowTrades === 0 ? (
+          <div className="ns-empty-wide">
+            Systemet har ännu för lite Narrow State-data för säker slutsats. Kör fler paper-/replay-/batch-tester
+            på narrow-strategierna så börjar mätningen.
+            <div className="ns-badge-row" style={{ marginTop: 10 }}>
+              <Badge tone="amber">Datatillit: {CONF_LABELS[perf?.dataConfidence] || 'Ingen'}</Badge>
+              <Badge tone="green">Paper Only</Badge>
+            </div>
+          </div>
+        ) : (
+          <>
+            <div className="ns-badge-row">
+              <Badge tone={perf.dataConfidence === 'high' ? 'green' : 'amber'}>
+                Datatillit: {CONF_LABELS[perf.dataConfidence] || perf.dataConfidence}
+              </Badge>
+              <Badge tone="blue">{perf.totalNarrowTrades} testresultat</Badge>
+            </div>
+            <div className="ns-learn-grid">
+              <div>
+                <h4>📊 Bästa narrow-strategi</h4>
+                {perf.bestStrategy
+                  ? <p>{perf.bestStrategy.name} — vinst {perf.bestStrategy.winRate ?? '—'}% ({perf.bestStrategy.trades} tester){perf.dataConfidence === 'low' ? ', men datatilliten är låg' : ''}.</p>
+                  : <p className="ns-empty">Ingen tydlig vinnare ännu.</p>}
+                <h4>📉 Sämsta narrow-strategi</h4>
+                {perf.worstStrategy
+                  ? <p>{perf.worstStrategy.name} — vinst {perf.worstStrategy.winRate ?? '—'}% ({perf.worstStrategy.trades} tester).</p>
+                  : <p className="ns-empty">För lite data.</p>}
+                <h4>🎯 Bästa score-intervall</h4>
+                {perf.bestScoreBand
+                  ? <p>{perf.bestScoreBand.scoreRange} ({perf.bestScoreBand.band}) — vinst {perf.bestScoreBand.winRate ?? '—'}%.</p>
+                  : <p className="ns-empty">För lite data för score-band.</p>}
+              </div>
+              <div>
+                <h4>🔎 Bekräftelse som hjälper mest</h4>
+                {perf.strongestConfirmation
+                  ? <p>{perf.strongestConfirmation.confirmation.toUpperCase()}-bekräftelse: {perf.strongestConfirmation.withWinRate ?? '—'}% med vs {perf.strongestConfirmation.withoutWinRate ?? '—'}% utan.</p>
+                  : <p className="ns-empty">Ingen bekräftelse har tillräcklig data ännu.</p>}
+                <h4>📋 Nästa rekommenderade test</h4>
+                {perf.recommendedNextTest
+                  ? <p><strong>{perf.recommendedNextTest.title}</strong> — {perf.recommendedNextTest.reason}</p>
+                  : <p className="ns-empty">Ingen rekommendation ännu.</p>}
+              </div>
+            </div>
+          </>
+        )}
+      </section>
+
       <section className="ns-panel ns-learning">
         <h2>🧠 Vad systemet ska lära sig</h2>
         <ul className="ns-learn-questions">

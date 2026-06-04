@@ -17877,3 +17877,8 @@ body {
 .ns-strat-desc { font-size: 12px; opacity: 0.8; margin: 2px 0 4px; line-height: 1.45; }
 .ns-learn-questions { margin: 4px 0 14px; padding-left: 18px; font-size: 13px; opacity: 0.9; }
 .ns-learn-questions li { margin: 3px 0; }
+
+/* ── Narrow State Lab — Performance Learning (Goal 3) ──────────────────────── */
+.ns-perf h2 { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.ns-perf-tag { font-size: 11px; font-weight: 600; opacity: 0.6; padding: 2px 8px; border-radius: 999px; background: rgba(148,163,184,0.12); }
+.ns-perf-note { font-size: 12.5px; opacity: 0.8; margin: 0 0 12px; line-height: 1.5; }
