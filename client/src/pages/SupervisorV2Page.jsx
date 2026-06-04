@@ -862,6 +862,66 @@ function plannerTestTypeBadgeTone(testType) {
   return 'gray';
 }
 
+function queueStatusBadgeTone(status) {
+  const value = String(status || '').toLowerCase();
+  if (value === 'pending') return 'yellow';
+  if (value === 'completed') return 'green';
+  if (value === 'cancelled') return 'gray';
+  if (value === 'failed') return 'red';
+  return 'gray';
+}
+
+function queueStrategyOriginLabel(item) {
+  const source = String(item?.source || '').toLowerCase();
+  if (source === 'planner') return 'Planner';
+  if (source === 'tradingview') return 'TradingView';
+  if (source === 'internal') return 'Intern';
+  return textValue(item?.source, 'Okänd källa');
+}
+
+function queueStrategyTypeLabel(item) {
+  const source = String(item?.source || '').toLowerCase();
+  const strategyId = String(item?.strategy_id || '').trim().toUpperCase();
+  if (source === 'tradingview' || strategyId.startsWith('TV_')) return 'TradingView-strategi';
+  return 'Intern strategi';
+}
+
+function queueStatusLabel(status) {
+  const value = String(status || '').toLowerCase();
+  if (value === 'pending') return 'Väntar på manuell granskning';
+  if (value === 'cancelled') return 'Avbruten. Ingen testkörning startades.';
+  if (value === 'completed') return 'Slutförd manuellt.';
+  if (value === 'failed') return 'Misslyckades. Ingen automatisk körning.';
+  return textValue(status, 'Okänd status');
+}
+
+function queueNextStepText(item) {
+  const type = String(item?.test_type || '').toLowerCase();
+  if (type === 'replay') return 'Granska strategins historik innan du kör replay manuellt.';
+  if (type === 'batch') return 'Bekräfta scope och riskfrihet innan du kör batch manuellt.';
+  if (type === 'paper_observation') return 'Bekräfta att scope är rimligt innan du lägger mer data.';
+  if (type === 'history_review') return 'Läs historiken och jämför lärdomar innan du bestämmer nästa steg.';
+  return 'Detta är bara en köpost. Inget test startas automatiskt.';
+}
+
+function queueItemPriorityLabel(priority) {
+  const value = Number(priority);
+  if (!Number.isFinite(value)) return textValue(priority, '–');
+  if (value >= 8) return `Hög (${value})`;
+  if (value >= 4) return `Medel (${value})`;
+  return `Låg (${value})`;
+}
+
+function readableDateTime(value) {
+  if (!value) return 'Ingen data ännu';
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return 'Ingen data ännu';
+  return new Intl.DateTimeFormat('sv-SE', {
+    dateStyle: 'medium',
+    timeStyle: 'short',
+  }).format(date);
+}
+
 function drilldownRowLabel(strategy) {
   return firstText([strategy?.strategy_id, strategy?.strategyId, strategy?.strategy_name, strategy?.strategyName], 'Ej konfigurerad');
 }
@@ -1013,24 +1073,55 @@ function StrategyPlannerPanel({ planner, onSelectRecommendation, onQueueRecommen
   );
 }
 
-function ManualTestQueuePanel({ queue, onCancelQueueItem, queueMessage, queueBusyId }) {
-  const pendingItems = normalizeArray(queue?.items).filter((item) => String(item?.status || '').toLowerCase() === 'pending').slice(0, 5);
+function ManualTestQueuePanel({ queue, onCancelQueueItem, onViewHistory, queueMessage, queueBusyId, queueView, onChangeQueueView }) {
+  const items = normalizeArray(queue?.items);
+  const sortedItems = [...items].sort((a, b) => {
+    const aTime = new Date(a?.created_at || 0).getTime();
+    const bTime = new Date(b?.created_at || 0).getTime();
+    return bTime - aTime;
+  });
   const summary = queue?.summary || {};
+  const latestItem = sortedItems[0] || null;
+  const visibleItems = queueView === 'all'
+    ? sortedItems
+    : sortedItems.filter((item) => String(item?.status || '').toLowerCase() === queueView);
 
   return (
     <section className="sup-section">
       <div className="sup-section-head">
         <div>
           <h2>Manuell testkö</h2>
-          <p>Kön startar inga tester automatiskt.</p>
+          <p>AI kan föreslå tester, men inget körs automatiskt. Du har alltid kontroll.</p>
         </div>
       </div>
 
       <div className="sup-v2-chip-row" style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginBottom: 12 }}>
+        <span className="sup-v2-chip">Totalt {textValue(summary.total, '0')}</span>
         <span className="sup-v2-chip">Pending {textValue(summary.pending, '0')}</span>
         <span className="sup-v2-chip">Completed {textValue(summary.completed, '0')}</span>
         <span className="sup-v2-chip">Cancelled {textValue(summary.cancelled, '0')}</span>
         <span className="sup-v2-chip">Failed {textValue(summary.failed, '0')}</span>
+        <span className="sup-v2-chip">
+          Senast tillagd {latestItem ? `${textValue(latestItem.strategy_id, 'Okänd strategi')} · ${readableDateTime(latestItem.created_at)}` : 'Ingen köpost ännu'}
+        </span>
+      </div>
+
+      <div className="sup-v2-chip-row" style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginBottom: 12 }}>
+        {[
+          { key: 'pending', label: 'Pending' },
+          { key: 'cancelled', label: 'Cancelled' },
+          { key: 'all', label: 'Alla' },
+        ].map((tab) => (
+          <button
+            key={tab.key}
+            type="button"
+            className={`badge badge-${queueView === tab.key ? 'blue' : 'gray'}`}
+            onClick={() => onChangeQueueView?.(tab.key)}
+            style={{ border: 'none', cursor: 'pointer' }}
+          >
+            {tab.label}
+          </button>
+        ))}
       </div>
 
       {queueMessage ? (
@@ -1039,42 +1130,69 @@ function ManualTestQueuePanel({ queue, onCancelQueueItem, queueMessage, queueBus
         </div>
       ) : null}
 
-      {pendingItems.length > 0 ? (
+      <div className="sup-safety-copy" style={{ marginBottom: 12 }}>
+        Testkön startar inga tester automatiskt. Live trading är avstängt.
+      </div>
+
+      {visibleItems.length > 0 ? (
         <div className="sup-v2-answer-grid">
-          {pendingItems.map((item) => (
-            <article key={item.id} className="sup-v2-answer sup-v2-answer-neutral">
-              <div className="sup-v2-answer-head">
-                <div>
-                  <div className="sup-v2-answer-kicker">{item.source}</div>
-                  <h3>{item.strategy_id}</h3>
+          {visibleItems.map((item) => {
+            const status = String(item?.status || '').toLowerCase();
+            const isPending = status === 'pending';
+            const isTradingView = queueStrategyTypeLabel(item) === 'TradingView-strategi';
+            return (
+              <article key={item.id} className="sup-v2-answer sup-v2-answer-neutral">
+                <div className="sup-v2-answer-head">
+                  <div>
+                    <div className="sup-v2-answer-kicker">
+                      {queueStrategyOriginLabel(item)} · {queueStrategyTypeLabel(item)}
+                    </div>
+                    <h3>{item.strategy_id}</h3>
+                  </div>
+                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, justifyContent: 'flex-end' }}>
+                    {isTradingView ? <span className="badge badge-yellow">TradingView-strategi</span> : <span className="badge badge-blue">Intern strategi</span>}
+                    <span className={`badge badge-${queueStatusBadgeTone(status)}`}>{queueStatusLabel(status)}</span>
+                  </div>
                 </div>
-                <span className="badge badge-yellow">{item.test_type}</span>
-              </div>
-              <p className="sup-v2-answer-main">{item.reason}</p>
-              <div className="sup-v2-card-meta" style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
-                <span className="sup-v2-chip">Priority {textValue(item.priority, '–')}</span>
-                <span className="sup-v2-chip">Scope {textValue(item.suggested_scope, 'Ej konfigurerad')}</span>
-                <span className="sup-v2-chip">Learning {textValue(item.expected_learning_value, 'Ej konfigurerad')}</span>
-                <span className="sup-v2-chip">Tillagd {ageText(item.created_at)}</span>
-              </div>
-              <div className="sup-v2-card-source" style={{ marginTop: 8 }}>
-                {textValue(item.safety_note, 'Read-only')}
-              </div>
-              <div style={{ marginTop: 10 }}>
-                <button
-                  type="button"
-                  className="btn sup-refresh"
-                  disabled={queueBusyId === item.id}
-                  onClick={() => onCancelQueueItem?.(item.id)}
-                >
-                  {queueBusyId === item.id ? 'Avbryter...' : 'Avbryt'}
-                </button>
-              </div>
-            </article>
-          ))}
+                <p className="sup-v2-answer-main">{textValue(item.reason, 'Ingen förklaring ännu.')}</p>
+                <div className="sup-v2-card-meta" style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+                  <span className="sup-v2-chip">Typ {textValue(item.test_type, '–')}</span>
+                  <span className="sup-v2-chip">Prioritet {queueItemPriorityLabel(item.priority)}</span>
+                  <span className="sup-v2-chip">Källa {queueStrategyOriginLabel(item)}</span>
+                  <span className="sup-v2-chip">Tillagd {readableDateTime(item.created_at)}</span>
+                </div>
+                <div className="sup-v2-card-source" style={{ marginTop: 8 }}>Scope: {textValue(item.suggested_scope, 'Ej konfigurerad')}</div>
+                <div className="sup-v2-card-source" style={{ marginTop: 8 }}>Lärande: {textValue(item.expected_learning_value, 'Ej konfigurerad')}</div>
+                <div className="sup-v2-card-source" style={{ marginTop: 8 }}>Safety: {textValue(item.safety_note, 'Read-only')}</div>
+                <div className="sup-safety-copy" style={{ marginTop: 8 }}>{queueNextStepText(item)}</div>
+                <div style={{ marginTop: 10 }}>
+                  <button
+                    type="button"
+                    className="badge badge-blue"
+                    onClick={() => onViewHistory?.(item.strategy_id, item)}
+                    style={{ border: 'none', cursor: 'pointer', marginRight: 8 }}
+                  >
+                    Visa historik
+                  </button>
+                  {isPending ? (
+                    <button
+                      type="button"
+                      className="btn sup-refresh"
+                      disabled={queueBusyId === item.id}
+                      onClick={() => onCancelQueueItem?.(item.id)}
+                    >
+                      {queueBusyId === item.id ? 'Avbryter...' : 'Avbryt'}
+                    </button>
+                  ) : null}
+                </div>
+              </article>
+            );
+          })}
         </div>
       ) : (
-        <div className="sup-safety-copy">Inga pending items ännu.</div>
+        <div className="sup-safety-copy">
+          {queueView === 'pending' ? 'Inga väntande tester just nu.' : 'Inga köposter för valt filter.'}
+        </div>
       )}
     </section>
   );
@@ -2844,6 +2962,7 @@ export default function SupervisorV2Page() {
   const [strategyHistoryError, setStrategyHistoryError] = useState('');
   const [queueMessage, setQueueMessage] = useState('');
   const [queueBusyId, setQueueBusyId] = useState('');
+  const [queueView, setQueueView] = useState('pending');
 
   useEffect(() => {
     let cancelled = false;
@@ -3955,6 +4074,9 @@ export default function SupervisorV2Page() {
         queueMessage={queueMessage}
         queueBusyId={queueBusyId}
         onCancelQueueItem={cancelQueueItem}
+        onViewHistory={loadStrategyHistory}
+        queueView={queueView}
+        onChangeQueueView={setQueueView}
       />
 
       <SupGroupDivider index="4" title="Signaldiagnostik" question="Var stoppades signalerna och varför?" />
