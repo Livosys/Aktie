@@ -14,6 +14,9 @@ const SAFETY = Object.freeze({
 
 const VALID_STATUSES = new Set(['pending', 'cancelled', 'completed', 'failed']);
 const VALID_TEST_TYPES = new Set(['replay', 'batch', 'paper_observation', 'history_review']);
+const MAX_PENDING_ITEMS = 25;
+const MAX_STRATEGY_ID_LENGTH = 120;
+const MAX_TEXT_LENGTH = 500;
 const DEFAULT_QUEUE_FILE = path.resolve(__dirname, '../../data/manual-test-queue.jsonl');
 
 function nowIso() {
@@ -27,6 +30,13 @@ function ensureDir(filePath) {
 function safeString(value) {
   if (value == null) return '';
   return String(value).trim();
+}
+
+function limitText(value, maxLength) {
+  const text = safeString(value);
+  if (!text) return '';
+  if (!Number.isFinite(maxLength) || maxLength <= 0) return text;
+  return text.slice(0, maxLength);
 }
 
 function safeNumber(value, fallback = 0) {
@@ -82,14 +92,14 @@ function normalizeRecommendation(input = {}) {
 
   return {
     id: safeString(recommendation.id),
-    strategy_id: safeString(recommendation.strategy_id || recommendation.strategyId),
+    strategy_id: limitText(recommendation.strategy_id || recommendation.strategyId, MAX_STRATEGY_ID_LENGTH),
     test_type: safeString(recommendation.test_type || recommendation.testType).toLowerCase(),
     source: safeString(recommendation.source || 'planner').toLowerCase() || 'planner',
     priority: safeNumber(recommendation.priority, 0),
-    reason: safeString(recommendation.reason),
-    suggested_scope: safeString(recommendation.suggested_scope),
-    expected_learning_value: safeString(recommendation.expected_learning_value),
-    safety_note: safeString(recommendation.safety_note),
+    reason: limitText(recommendation.reason, MAX_TEXT_LENGTH),
+    suggested_scope: limitText(recommendation.suggested_scope, MAX_TEXT_LENGTH),
+    expected_learning_value: limitText(recommendation.expected_learning_value, MAX_TEXT_LENGTH),
+    safety_note: limitText(recommendation.safety_note, MAX_TEXT_LENGTH),
     mode: 'paper_only',
     created_by: 'user',
     status: 'pending',
@@ -148,6 +158,10 @@ function summarizeQueue(items) {
   };
 }
 
+function queueFieldsKey(strategyId, testType, suggestedScope) {
+  return [safeString(strategyId), safeString(testType).toLowerCase(), safeString(suggestedScope)].join('::');
+}
+
 function createManualTestQueueService(options = {}) {
   const queueFile = options.queueFile || DEFAULT_QUEUE_FILE;
 
@@ -167,10 +181,16 @@ function createManualTestQueueService(options = {}) {
 
   function getStatus() {
     const items = listQueueItems();
+    const recentItems = [...items]
+      .sort((a, b) => String(b.created_at || '').localeCompare(String(a.created_at || '')))
+      .slice(0, 5);
+    const pendingItems = items.filter((item) => item.status === 'pending');
     return {
       ok: true,
       queue_file: queueFile,
       items,
+      pending_items: pendingItems,
+      recent_items: recentItems,
       summary: summarizeQueue(items),
       safety: { ...SAFETY },
       ...SAFETY,
@@ -184,6 +204,22 @@ function createManualTestQueueService(options = {}) {
     }
     if (!VALID_TEST_TYPES.has(recommendation.test_type)) {
       return { ok: false, error: 'invalid_test_type', ...SAFETY };
+    }
+
+    const items = listQueueItems();
+    const pendingItems = items.filter((item) => item.status === 'pending');
+    if (pendingItems.length >= MAX_PENDING_ITEMS) {
+      return { ok: false, error: 'manual_test_queue_pending_limit_reached', ...SAFETY };
+    }
+
+    const duplicate = pendingItems.find((item) => queueFieldsKey(item.strategy_id, item.test_type, item.suggested_scope) === queueFieldsKey(recommendation.strategy_id, recommendation.test_type, recommendation.suggested_scope));
+    if (duplicate) {
+      return {
+        ok: true,
+        duplicate: true,
+        item: duplicate,
+        ...SAFETY,
+      };
     }
 
     const now = nowIso();
