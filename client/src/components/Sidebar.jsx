@@ -8,9 +8,8 @@ const NAV_GROUPS = [
     id: 'main',
     label: null,
     items: [
-      { path: '/supervisor', label: 'Supervisor', icon: '🧭', match: ['/supervisor', '/oversikt'], accent: 'blue' },
+      { path: '/supervisor', label: 'Trading OS', icon: '🧭', match: ['/supervisor', '/oversikt'], accent: 'blue' },
       { path: '/live',       label: 'LIVE',       icon: '♥', match: ['/', '/live', '/signalpuls', '/scanner', '/signaler', '/aktier', '/krypto', '/nasdaq'], accent: 'blue' },
-      { path: '/daytrading', label: 'DAYTRADING', icon: '◉', match: ['/daytrading'], accent: 'teal' },
       { path: '/lab',        label: 'LAB',        icon: 'L', match: ['/lab', '/trading-lab', '/strategy-lab', '/replay', '/review-chart', '/intelligence', '/machine'], accent: 'orange' },
       { path: '/insikter',   label: 'INSIKTER',   icon: 'I', match: ['/insikter', '/resultat', '/setup-performance', '/historik', '/paper-trading'], accent: 'green' },
       { path: '/system',     label: 'SYSTEM',     icon: 'S', match: ['/system', '/system-health', '/alerts', '/sakerhet', '/risk', '/risk-engine', '/safety', '/execution-safety'], accent: 'purple' },
@@ -95,7 +94,7 @@ export default function Sidebar({ open, onClose }) {
         <Link to="/supervisor" className="sb-brand" onClick={onClose}>
           <img src="/evin.png" alt="" className="sb-brand-logo" />
           <div className="sb-brand-text">
-            <strong>Trading OS v2</strong>
+            <strong>Trading OS</strong>
             <small>Kör bilen · Översikt · Test</small>
           </div>
         </Link>

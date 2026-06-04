@@ -7,6 +7,7 @@ import GlobalFilterBar from './GlobalFilterBar.jsx';
 
 const SEARCH_ROUTES = [
   { key: 'supervisor', to: '/supervisor' },
+  { key: 'trading os', to: '/supervisor' },
   { key: 'översikt', to: '/supervisor' },
   { key: 'oversikt', to: '/supervisor' },
   { key: 'kör bilen', to: '/supervisor' },
@@ -16,13 +17,6 @@ const SEARCH_ROUTES = [
   { key: 'aktier', to: '/live?filter=stocks' },
   { key: 'nasdaq', to: '/live?filter=nasdaq' },
   { key: 'krypto', to: '/live?filter=crypto' },
-  { key: 'daytrading', to: '/daytrading' },
-  { key: 'daytrade', to: '/daytrading' },
-  { key: 'strategier live', to: '/daytrading' },
-  { key: 'strategier', to: '/daytrading' },
-  { key: 'live pipeline', to: '/daytrading' },
-  { key: 'pipeline', to: '/daytrading' },
-  { key: 'paper trades', to: '/daytrading' },
   { key: 'larm', to: '/system?tab=logs' },
   { key: 'säkerhet', to: '/system?tab=safety' },
   { key: 'safety', to: '/system?tab=safety' },

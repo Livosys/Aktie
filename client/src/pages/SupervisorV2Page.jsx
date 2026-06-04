@@ -948,7 +948,7 @@ function StrategyPlannerPanel({ planner, onSelectRecommendation }) {
     <section className="sup-section">
       <div className="sup-section-head">
         <div>
-          <h2>Recommended Next Tests</h2>
+          <h2>Nästa rekommenderade tester</h2>
           <p>Read-only planner. Rekommendationerna startar inga tester automatiskt.</p>
         </div>
         <SafetyTag />
@@ -993,21 +993,13 @@ function StrategyHistoryDetail({ history, loading, error, onClear, plannerContex
   const planner = plannerContext || null;
 
   return (
-    <section className="sup-section">
-      <div className="sup-section-head">
-        <div>
-          <h2>Strategy History Drilldown</h2>
-          <p>Kompakt read-only detaljvy för vald strategi. Inga tester startas och inga statusar ändras här.</p>
-        </div>
-        <SafetyTag />
-      </div>
-
+    <>
       {loading ? (
         <div className="sup-loading">Laddar strategi-historik...</div>
       ) : error ? (
         <div className="sup-error">{error}</div>
       ) : !data ? (
-        <div className="sup-safety-copy">Ingen historik ännu. Klicka på en strategi i Drilldown för att se detaljer.</div>
+        <div className="sup-safety-copy">Ingen historik ännu. Klicka på en strategi eller rekommendation för att se detaljer.</div>
       ) : (
         <article className="sup-v2-answer sup-v2-answer-neutral">
           <div className="sup-v2-answer-head">
@@ -1117,14 +1109,14 @@ function StrategyHistoryDetail({ history, loading, error, onClear, plannerContex
           </div>
         </article>
       )}
-    </section>
+    </>
   );
 }
 
 function RecentTradingEvents({ resource }) {
   const data = unwrap(resource);
   const state = endpointState(resource);
-  const events = normalizeArray(data?.events).slice(0, 20);
+  const events = normalizeArray(data?.events).slice(0, 8);
   const hasEvents = events.length > 0;
 
   return (
@@ -1371,7 +1363,7 @@ function EventSystemStatus({ resource }) {
     <section className="sup-section">
       <div className="sup-section-head">
         <div>
-          <h2>Event system status</h2>
+          <h2>Systemstatus för events</h2>
           <p>Read-only översikt av JSONL-loggen och den optionala Kafka-adaptern.</p>
         </div>
         <SafetyTag />
@@ -1458,8 +1450,8 @@ function SignalStopSummary({ resource }) {
     <section className="sup-section">
       <div className="sup-section-head">
         <div>
-          <h2>Var stoppades signalerna?</h2>
-          <p>Read-only sammanfattning av de senaste 100 eventen från event-loggen.</p>
+          <h2>Varför stoppas signaler?</h2>
+          <p>Kompakt översikt av de vanligaste stoppskälen.</p>
         </div>
         <SafetyTag />
       </div>
@@ -2968,13 +2960,11 @@ export default function SupervisorV2Page() {
       <div className="sup-hero sup-v2-hero">
         <div className="sup-hero-copy">
           <div className="sup-kicker">Trading OS · Huvudvy</div>
-          <h1>En enkel vy för strategi, learning och safety</h1>
+          <h1>En enkel vy för strategi, lärande och safety</h1>
           <p>
-            Systemet kör endast paper/test. Live trading är avstängt. TradingView är kopplat för signaler och strategi-test.
+            Systemet kör endast paper/test. Live trading är avstängt. TradingView används bara för signaler och strategi-test.
           </p>
-          <div className="sup-safety-copy">
-            Den här sidan samlar Daytrading och Supervisor i en enda huvudvy. Debug, rådata och tekniska paneler ligger bakom teknisk diagnostik.
-          </div>
+          <div className="sup-safety-copy">En enda huvudvy för strategi, lärande och safety. Tekniska detaljer ligger bakom diagnostik.</div>
         </div>
         <div className="sup-hero-actions">
           <button type="button" className="btn sup-refresh" onClick={refresh} disabled={refreshing}>
@@ -2987,7 +2977,7 @@ export default function SupervisorV2Page() {
       <section className="sup-section">
         <div className="sup-section-head">
           <div>
-            <h2>Läget just nu</h2>
+            <h2>Vad händer just nu?</h2>
             <p>Snabb överblick utan debug-brus.</p>
           </div>
           <SafetyTag />
@@ -3033,7 +3023,7 @@ export default function SupervisorV2Page() {
       <section className="sup-section">
         <div className="sup-section-head">
           <div>
-            <h2>Nästa steg</h2>
+            <h2>Vad ska jag göra nu?</h2>
             <p>Högst fem tydliga punkter för idag.</p>
           </div>
         </div>
@@ -3185,8 +3175,8 @@ export default function SupervisorV2Page() {
       <section className="sup-section">
         <div className="sup-section-head">
           <div>
-            <h2>AI och lärande</h2>
-            <p>En primär sammanfattning. Dubletter ligger bakom debug.</p>
+            <h2>Vad AI har lärt sig</h2>
+            <p>Kort summering av det viktigaste lärandet just nu.</p>
           </div>
         </div>
 
@@ -3259,40 +3249,42 @@ export default function SupervisorV2Page() {
 
       <SignalStopSummary resource={resources.eventsRecent} />
 
-      <section className="sup-section">
-        <div className="sup-section-head">
-          <div>
-            <h2>Strategy History Drilldown</h2>
-            <p>Klicka på en strategi eller rekommendation för att öppna historik och lärdomar.</p>
+      {(selectedStrategyId || selectedHistory || strategyHistoryLoading || strategyHistoryError) && (
+        <section className="sup-section">
+          <div className="sup-section-head">
+            <div>
+              <h2>Historik för vald strategi</h2>
+              <p>Klicka på en strategi eller rekommendation för att öppna historik och lärdomar.</p>
+            </div>
           </div>
-        </div>
-        <StrategyHistoryDetail
-          history={selectedHistory}
-          loading={strategyHistoryLoading}
-          error={strategyHistoryError}
-          onClear={clearStrategyHistory}
-          plannerContext={selectedStrategyPlannerContext}
-        />
-        {selectedHistory ? (
-          <div className="sup-safety-copy" style={{ marginTop: 12 }}>
-            <strong>History details:</strong> Score {textValue(selectedHistoryScore.score, '–')} · Confidence {textValue(selectedHistoryScore.confidence, '–')}% · Sample {textValue(selectedHistoryScore.sample_size, '–')}
-            <br />
-            <strong>Summary:</strong> Paper {textValue(selectedHistorySummary.paper_trades_count, '0')} · Replay {textValue(selectedHistorySummary.replay_tests_count, '0')} · Batch {textValue(selectedHistorySummary.batch_tests_count, '0')} · Learning {textValue(selectedHistorySummary.learning_events_count, '0')}
-            {selectedHistoryLearningNotes.length > 0 ? (
-              <>
-                <br />
-                <strong>Learning notes:</strong> {selectedHistoryLearningNotes.join(' · ')}
-              </>
-            ) : null}
-            {selectedHistoryNextSteps.length > 0 ? (
-              <>
-                <br />
-                <strong>Next steps:</strong> {selectedHistoryNextSteps.join(' · ')}
-              </>
-            ) : null}
-          </div>
-        ) : null}
-      </section>
+          <StrategyHistoryDetail
+            history={selectedHistory}
+            loading={strategyHistoryLoading}
+            error={strategyHistoryError}
+            onClear={clearStrategyHistory}
+            plannerContext={selectedStrategyPlannerContext}
+          />
+          {selectedHistory ? (
+            <div className="sup-safety-copy" style={{ marginTop: 12 }}>
+              <strong>History details:</strong> Score {textValue(selectedHistoryScore.score, '–')} · Confidence {textValue(selectedHistoryScore.confidence, '–')}% · Sample {textValue(selectedHistoryScore.sample_size, '–')}
+              <br />
+              <strong>Summary:</strong> Paper {textValue(selectedHistorySummary.paper_trades_count, '0')} · Replay {textValue(selectedHistorySummary.replay_tests_count, '0')} · Batch {textValue(selectedHistorySummary.batch_tests_count, '0')} · Learning {textValue(selectedHistorySummary.learning_events_count, '0')}
+              {selectedHistoryLearningNotes.length > 0 ? (
+                <>
+                  <br />
+                  <strong>Learning notes:</strong> {selectedHistoryLearningNotes.join(' · ')}
+                </>
+              ) : null}
+              {selectedHistoryNextSteps.length > 0 ? (
+                <>
+                  <br />
+                  <strong>Next steps:</strong> {selectedHistoryNextSteps.join(' · ')}
+                </>
+              ) : null}
+            </div>
+          ) : null}
+        </section>
+      )}
 
       <details className="sup-advanced" style={{ marginTop: 16 }}>
         <summary>Visa teknisk diagnostik</summary>
@@ -3331,7 +3323,7 @@ export default function SupervisorV2Page() {
         <EventSystemStatus resource={resources.eventsStatus} />
         <OptimizationCenter optimization={optimization} />
 
-        <pre className="sup-safety-copy" style={{ marginTop: 12, whiteSpace: 'pre-wrap' }}>
+        <pre className="sup-safety-copy" style={{ marginTop: 12, whiteSpace: 'pre-wrap', maxHeight: 420, overflow: 'auto' }}>
           {JSON.stringify({
             system: {
               status: model.systemStatus,

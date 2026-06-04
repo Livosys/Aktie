@@ -87,7 +87,6 @@ export default function Navigation() {
 
   const isSupervisor = pathname.startsWith('/supervisor') || pathname.startsWith('/oversikt');
   const isPuls       = pathname === '/' || pathname.startsWith('/live') || pathname.startsWith('/signalpuls');
-  const isDaytrading = pathname.startsWith('/daytrading');
   const isLab        = pathname.startsWith('/lab') || pathname.startsWith('/trading-lab');
   const isResultat   = pathname.startsWith('/insikter') || pathname.startsWith('/resultat');
   const isSystem     = pathname.startsWith('/system');
@@ -101,13 +100,10 @@ export default function Navigation() {
 
       <div className="nav-links nav-links-desktop">
         <Link to="/supervisor" className={`nav-link${isSupervisor ? ' active' : ''}`}>
-          <span>🧭</span><span>ÖVERSIKT</span>
+          <span>🧭</span><span>TRADING OS</span>
         </Link>
         <Link to="/live"       className={`nav-link nav-live${isPuls ? ' active' : ''}`}>
           <span>❤️</span><span>LIVE</span>
-        </Link>
-        <Link to="/daytrading" className={`nav-link${isDaytrading ? ' active' : ''}`}>
-          <span>📡</span><span>DAYTRADING</span>
         </Link>
         <Link to="/lab"        className={`nav-link${isLab ? ' active' : ''}`}>
           <span>🧪</span><span>LAB</span>
