@@ -1110,6 +1110,7 @@ function ManualTestQueuePanel({ queue, onCancelQueueItem, onViewHistory, onViewP
     <section className="sup-section">
       <div className="sup-section-head">
         <div>
+          <p className="sup-kicker">Manuell testkö är laddad</p>
           <h2>Manuell testkö</h2>
           <p>AI kan föreslå tester, men inget körs automatiskt. Du har alltid kontroll.</p>
           <p>Granska Trading OS-vyn. Kontrollera rekommenderade tester och testkön. Live trading är avstängt.</p>
@@ -3700,6 +3701,17 @@ export default function SupervisorV2Page() {
         onSelectRecommendation={(item) => loadStrategyHistory(item?.strategy_id, item)}
       />
 
+      <ManualTestQueuePanel
+        queue={manualQueueStatus}
+        queueMessage={queueMessage}
+        queueBusyId={queueBusyId}
+        onCancelQueueItem={cancelQueueItem}
+        onViewHistory={loadStrategyHistory}
+        onViewPlan={loadTestPlanPreview}
+        queueView={queueView}
+        onChangeQueueView={setQueueView}
+      />
+
       <SignalStopSummary resource={resources.eventsRecent} />
 
       {(selectedStrategyId || selectedHistory || strategyHistoryLoading || strategyHistoryError) && (
@@ -4313,17 +4325,6 @@ export default function SupervisorV2Page() {
         onQueueRecommendation={addRecommendationToQueue}
         queueBusyId={queueBusyId}
       />
-
-      <ManualTestQueuePanel
-        queue={manualQueueStatus}
-        queueMessage={queueMessage}
-        queueBusyId={queueBusyId}
-        onCancelQueueItem={cancelQueueItem}
-        onViewHistory={loadStrategyHistory}
-        onViewPlan={loadTestPlanPreview}
-          queueView={queueView}
-          onChangeQueueView={setQueueView}
-        />
 
       <TestPlanPreviewCard
         preview={selectedTestPlanPreview}
