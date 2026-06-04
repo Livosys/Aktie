@@ -2964,8 +2964,8 @@ export default function SupervisorV2Page() {
       <section className="sup-section">
         <div className="sup-section-head">
           <div>
-            <h2>Trading OS-status</h2>
-            <p>Fyra till sex kort som visar läget utan debug-brus.</p>
+            <h2>Läget just nu</h2>
+            <p>Snabb överblick utan debug-brus.</p>
           </div>
           <SafetyTag />
         </div>
@@ -2982,12 +2982,12 @@ export default function SupervisorV2Page() {
           <article className="sup-block sup-block-ok">
             <span className="sup-block-title">Paper mode / Safety</span>
             <strong className="sup-block-value">paper_only</strong>
-            <span className="sup-block-note">Systemet kör endast paper/test. Live trading är avstängt.</span>
+            <span className="sup-block-note">Endast paper/test. Live trading är avstängt.</span>
           </article>
           <article className={`sup-block ${tvEnabled ? 'sup-block-ok' : 'sup-block-neutral'}`}>
             <span className="sup-block-title">TradingView</span>
             <strong className="sup-block-value">{tvEnabled ? 'Aktiv' : 'Avstängd'}</strong>
-            <span className="sup-block-note">Mode {tvMode} · webhook auth {tvWebhookAuth ? 'ja' : 'nej'} · {tvForwardingState}</span>
+            <span className="sup-block-note">Mode {tvMode} · auth {tvWebhookAuth ? 'ja' : 'nej'} · {tvForwardingState}</span>
           </article>
           <article className="sup-block sup-block-neutral">
             <span className="sup-block-title">Aktiva strategier</span>
@@ -3010,8 +3010,8 @@ export default function SupervisorV2Page() {
       <section className="sup-section">
         <div className="sup-section-head">
           <div>
-            <h2>Vad ska jag göra nu?</h2>
-            <p>3-5 enkla punkter som hjälper beslut utan att starta något automatiskt.</p>
+            <h2>Nästa steg</h2>
+            <p>Högst fem tydliga punkter för idag.</p>
           </div>
         </div>
         <div className="sup-focus-box">
@@ -3029,7 +3029,7 @@ export default function SupervisorV2Page() {
         <div className="sup-section-head">
           <div>
             <h2>Strategier</h2>
-            <p>Överblick över aktiva, pausade, osäkra och TradingView-baserade strategier.</p>
+            <p>Aktiva, pausade, osäkra och TradingView-strategier.</p>
           </div>
         </div>
 
@@ -3116,8 +3116,8 @@ export default function SupervisorV2Page() {
       <section className="sup-section">
         <div className="sup-section-head">
           <div>
-            <h2>Strategier från TradingView</h2>
-            <p>TradingView är kopplat för signaler och strategi-test, inte live trading.</p>
+            <h2>TradingView-strategier</h2>
+            <p>TradingView används för signaler och test, inte live trading.</p>
           </div>
           <SafetyTag />
         </div>
@@ -3129,7 +3129,7 @@ export default function SupervisorV2Page() {
           <article className={`sup-block ${tvEnabled ? 'sup-block-ok' : 'sup-block-neutral'}`}>
             <span className="sup-block-title">TradingView status</span>
             <strong className="sup-block-value">{tvEnabled ? 'Enabled' : 'Disabled'}</strong>
-            <span className="sup-block-note">webhook auth {tvWebhookAuth ? 'konfigurerad' : 'inte konfigurerad'} · mode {tvMode}</span>
+            <span className="sup-block-note">auth {tvWebhookAuth ? 'konfigurerad' : 'inte konfigurerad'} · mode {tvMode}</span>
           </article>
           <article className="sup-block sup-block-neutral">
             <span className="sup-block-title">Forwardas eller blockeras</span>
@@ -3162,8 +3162,8 @@ export default function SupervisorV2Page() {
       <section className="sup-section">
         <div className="sup-section-head">
           <div>
-            <h2>AI / learning</h2>
-            <p>En primär learning-sammanfattning visas här. Dubbla summaries hålls bakom debug.</p>
+            <h2>AI och lärande</h2>
+            <p>En primär sammanfattning. Dubletter ligger bakom debug.</p>
           </div>
         </div>
 
