@@ -63,6 +63,7 @@ const blockerConfig     = require('../services/blockerConfigService');
 const strategyCatalog   = require('../services/strategyCatalogService');
 const daytradingStrategyCatalog = require('../services/daytradingStrategyCatalogService');
 const narrowStateEngine = require('../services/narrowStateEngineService');
+const narrowPerformanceLearning = require('../services/narrowPerformanceLearningService');
 const strategyRegistry   = require('../services/strategyRegistryService');
 const strategyScore      = require('../services/strategyScoreService');
 const strategyHistory    = require('../services/strategyHistoryService');
@@ -2133,46 +2134,36 @@ router.get('/supervisor/narrow-state', (req, res) => {
     let catalog = [];
     try { catalog = (daytradingStrategyCatalog.getCatalog().strategies || []); } catch (_) { catalog = []; }
     const narrowStrategies = catalog.filter((s) => s.family === 'narrow_state');
-    const narrowStrategyIds = new Set(narrowStrategies.map((s) => s.id));
 
-    // Best / worst narrow-state strategy from the Learning Engine
+    // Performance Learning summary is the source of truth for narrow performance.
+    let performanceLearning = null;
     let bestStrategy = null;
     let worstStrategy = null;
+    let bestScoreBand = null;
+    let strongestConfirmation = null;
+    let recommendedNextTest = null;
+    let dataConfidence = 'none';
+    let status = 'needs_more_data';
+    let message = 'Systemet har ännu för lite Narrow State-data för säker slutsats.';
     let latestLessons = [];
     try {
       const hours = Number.isFinite(Number(req.query.hours)) ? Number(req.query.hours) : 168;
       const summary = daytradingLearning.buildLearningSummary({ hours });
-      const rows = (summary.by_strategy || [])
-        .filter((r) => narrowStrategyIds.has(r.key) && r.closed > 0);
-      if (rows.length) {
-        const ranked = [...rows].sort((a, b) => (b.win_rate - a.win_rate) || (b.avg_pl - a.avg_pl));
-        bestStrategy = { key: ranked[0].key, label: ranked[0].label, win_rate: ranked[0].win_rate, avg_pl: ranked[0].avg_pl, closed: ranked[0].closed };
-        const last = ranked[ranked.length - 1];
-        worstStrategy = { key: last.key, label: last.label, win_rate: last.win_rate, avg_pl: last.avg_pl, closed: last.closed };
-      }
       if (Array.isArray(summary.lessons)) latestLessons = summary.lessons.slice(0, 5);
       else if (Array.isArray(summary.notes)) latestLessons = summary.notes.slice(0, 5);
     } catch (_) { /* learning summary optional */ }
 
-    // Recommended next test — prefer an untested narrow strategy, else strongest compression
-    let recommendedNextTest = null;
-    const untested = narrowStrategies.find((s) => !bestStrategy || s.id !== bestStrategy.key);
-    if (overview.strongestCompression && untested) {
-      recommendedNextTest = {
-        strategy_id: untested.id,
-        strategy_name: untested.name,
-        symbol: overview.strongestCompression.symbol,
-        timeframe: overview.timeframe,
-        reason_sv: `Starkast compression just nu: ${overview.strongestCompression.symbol} (score ${overview.strongestCompression.narrowScore}). Testa ${untested.name} i paper/replay.`,
-      };
-    } else if (untested) {
-      recommendedNextTest = {
-        strategy_id: untested.id,
-        strategy_name: untested.name,
-        symbol: null,
-        timeframe: overview.timeframe,
-        reason_sv: `Kör fler paper/replay-tester för ${untested.name} för att samla learning-data.`,
-      };
+    // Additive: Narrow Performance Learning compact view (source of truth for narrow performance).
+    try { performanceLearning = narrowPerformanceLearning.buildSupervisorNarrowLearning(); } catch (_) { performanceLearning = null; }
+    if (performanceLearning) {
+      bestStrategy = performanceLearning.bestStrategy;
+      worstStrategy = performanceLearning.worstStrategy;
+      bestScoreBand = performanceLearning.bestScoreBand;
+      strongestConfirmation = performanceLearning.strongestConfirmation;
+      recommendedNextTest = performanceLearning.recommendedNextTest;
+      dataConfidence = performanceLearning.dataConfidence || 'none';
+      status = performanceLearning.status || 'needs_more_data';
+      message = performanceLearning.message || 'Systemet har ännu för lite Narrow State-data för säker slutsats.';
     }
 
     res.json({
@@ -2201,8 +2192,15 @@ router.get('/supervisor/narrow-state', (req, res) => {
         })),
         bestStrategy,
         worstStrategy,
+        bestScoreBand,
+        strongestConfirmation,
+        dataConfidence,
+        status,
+        message,
         latestLessons,
         recommendedNextTest,
+        // Narrow Performance Learning (Goal 3) — measured from paper/replay/batch
+        performanceLearning,
       },
     });
   } catch (err) {
@@ -2214,6 +2212,50 @@ router.get('/supervisor/narrow-state', (req, res) => {
       can_place_orders: false,
       actions_allowed: false,
       broker_enabled: false,
+    });
+  }
+});
+
+// ── Narrow Performance Learning ───────────────────────────────────────────────
+// Measures how the three narrow_state strategies actually perform across
+// paper/replay/batch results. Read-only, never trades. Returns ok=true with
+// "needs_more_data"/empty lists when there is no narrow_state data yet.
+router.get('/learning/narrow-performance', (req, res) => {
+  try {
+    const data = narrowPerformanceLearning.buildNarrowPerformanceSummary();
+    res.json({
+      ok: true,
+      mode: 'paper_only',
+      actions_allowed: false,
+      can_place_orders: false,
+      live_trading_enabled: false,
+      broker_enabled: false,
+      status: data.summary.status,
+      message: data.summary.message,
+      summary: data.summary,
+      rankings: data.rankings,
+      scoreBands: data.scoreBands,
+      confirmations: data.confirmations,
+      recommendedNextTest: data.recommendedNextTest,
+      warnings: data.warnings,
+      generatedAt: data.generatedAt,
+    });
+  } catch (err) {
+    // Never crash on empty/bad data — return a safe, empty needs_more_data shape.
+    res.json({
+      ok: true,
+      mode: 'paper_only',
+      actions_allowed: false,
+      can_place_orders: false,
+      live_trading_enabled: false,
+      broker_enabled: false,
+      summary: {
+        totalTrades: 0, strategiesCompared: 0, bestStrategy: null, worstStrategy: null,
+        bestScoreBand: null, strongestConfirmation: null, dataConfidence: 'none',
+        message: 'Systemet har ännu för lite Narrow State-data för säker slutsats.',
+      },
+      rankings: [], scoreBands: [], confirmations: [], recommendedNextTest: null,
+      warnings: ['error:' + err.message], generatedAt: new Date().toISOString(),
     });
   }
 });

@@ -11,7 +11,7 @@ import TradingLabPage   from './pages/TradingLabPage.jsx';
 import ResultatPage     from './pages/ResultatPage.jsx';
 import SystemPage       from './pages/SystemPage.jsx';
 import DaytradingPage   from './pages/DaytradingPage.jsx';
-import SupervisorV2Page from './pages/SupervisorV2Page.jsx';
+import SupervisorBrainPage from './pages/SupervisorBrainPage.jsx';
 import NarrowStateLabPage from './pages/NarrowStateLabPage.jsx';
 
 function RedirectWithSearch({ to }) {
@@ -29,7 +29,7 @@ export default function App() {
         <Routes>
           {/* Trading OS v2 */}
           <Route path="/"             element={<Navigate to="/supervisor" replace />} />
-          <Route path="/supervisor"   element={<SupervisorV2Page />} />
+          <Route path="/supervisor"   element={<SupervisorBrainPage />} />
           <Route path="/narrow"       element={<NarrowStateLabPage />} />
           <Route path="/narrow-state" element={<Navigate to="/narrow" replace />} />
           <Route path="/oversikt"     element={<Navigate to="/supervisor" replace />} />
