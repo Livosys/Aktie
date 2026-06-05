@@ -784,9 +784,28 @@ export default function SupervisorBrainPage() {
                   </div>
                   <div className="sup-brain-next-filters">
                     {safeArray(autopilotPlan.symbols).length ? <Badge tone="blue">{safeArray(autopilotPlan.symbols).join(', ')}</Badge> : null}
-                    {safeArray(autopilotPlan.timeframes).length ? <Badge tone="blue">{safeArray(autopilotPlan.timeframes).join(', ')}</Badge> : null}
                     {autopilotPlan.filters?.narrowScoreBand ? <Badge tone="purple">{BAND_LABELS[autopilotPlan.filters.narrowScoreBand] || autopilotPlan.filters.narrowScoreBand}</Badge> : null}
                     {safeArray(autopilotPlan.filters?.confirmations).length ? <Badge tone="good">{safeArray(autopilotPlan.filters.confirmations).join(', ')}</Badge> : null}
+                  </div>
+                  <div className="sup-brain-timeframes">
+                    <div className="sup-brain-timeframes-row">
+                      <span>Planerade timeframes:</span>
+                      {safeArray(autopilotPlan.requestedTimeframes).length
+                        ? safeArray(autopilotPlan.requestedTimeframes).map((tf) => <Badge key={`req-${tf}`} tone="neutral">{tf}</Badge>)
+                        : <Badge tone="neutral">1m, 2m, 5m, 10m</Badge>}
+                    </div>
+                    <div className="sup-brain-timeframes-row">
+                      <span>Tillgängliga nu:</span>
+                      {safeArray(autopilotPlan.availableTimeframes).length
+                        ? safeArray(autopilotPlan.availableTimeframes).map((tf) => <Badge key={`av-${tf}`} tone="good">{tf}</Badge>)
+                        : safeArray(autopilotPlan.timeframes).map((tf) => <Badge key={`tf-${tf}`} tone="good">{tf}</Badge>)}
+                    </div>
+                    {safeArray(autopilotPlan.missingTimeframes).length ? (
+                      <div className="sup-brain-timeframes-row">
+                        <span>Saknas:</span>
+                        {safeArray(autopilotPlan.missingTimeframes).map((tf) => <Badge key={`miss-${tf}`} tone="warning">{tf}</Badge>)}
+                      </div>
+                    ) : null}
                   </div>
                 </Card>
                 <Card className="sup-brain-next">
@@ -831,6 +850,9 @@ export default function SupervisorBrainPage() {
             ) : (
               <div className="sup-brain-empty">Autopiloten är inte tillgänglig just nu.</div>
             )}
+            <div className="sup-brain-learning-text">
+              Ny Narrow timeframe-standard: <strong>1m, 2m, 5m, 10m</strong>. 1m och 2m hittar snabba trånga lägen; 5m och 10m används för stabilare bekräftelse. Saknade candles visas som varning ovan — systemet fejkar aldrig marknadsdata.
+            </div>
             <BeginnerBox
               title="Vad gör autopiloten?"
               text="Autopiloten är en säker test-assistent. Den läser vad Performance Learning rekommenderar, bygger en testplan och kan köra små batch/replay/paper-tester för att samla mer data. Den handlar aldrig, lägger aldrig order och kan inte slå på live trading."

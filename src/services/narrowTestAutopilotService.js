@@ -25,6 +25,7 @@ const crypto = require('crypto');
 const { spawnSync } = require('child_process');
 
 const narrowPerformanceLearning = require('./narrowPerformanceLearningService');
+const { NARROW_DEFAULT_TIMEFRAMES, detectNarrowTimeframeAvailability } = require('../config/narrowTimeframes');
 
 // Always-false safety contract. This object is the single source of truth and
 // is forced onto every plan, history entry and status response.
@@ -43,14 +44,16 @@ const ALLOWED_TEST_TYPES = Object.freeze(['batch', 'replay', 'paper']);
 
 // Cautious defaults — small by design.
 const DEFAULT_SYMBOLS = Object.freeze(['MSFT', 'QQQ', 'TSLA']);
-const DEFAULT_TIMEFRAMES = Object.freeze(['2m']);
+// New Narrow timeframe standard (Goal 7): 1m / 2m / 5m / 10m. The plan always
+// REQUESTS these; the safe runnable subset is detected from real candle data.
+const DEFAULT_TIMEFRAMES = NARROW_DEFAULT_TIMEFRAMES;
 const DEFAULT_STRATEGY_ID = 'narrow_fakeout_reversal_v1';
 const DEFAULT_BAND = 'confirmed_narrow';
 const DEFAULT_CONFIRMATIONS = Object.freeze(['macd']);
 
 const DEFAULT_LIMITS = Object.freeze({
   maxSymbols: 3,
-  maxTimeframes: 2,
+  maxTimeframes: 4,
   maxRuns: 3,
   maxRuntimeSeconds: 120,
 });
@@ -213,7 +216,6 @@ function buildNarrowAutopilotPlan(options = {}) {
   let priority = 'low';
   let testType = 'batch';
   let symbols = [...DEFAULT_SYMBOLS];
-  let timeframes = [...DEFAULT_TIMEFRAMES];
   let narrowScoreBand = DEFAULT_BAND;
   let confirmations = [...DEFAULT_CONFIRMATIONS];
 
@@ -226,8 +228,6 @@ function buildNarrowAutopilotPlan(options = {}) {
     const f = recommendedNextTest.suggestedFilters || {};
     const recSymbols = uniqueStrings(f.symbols, { upper: true });
     symbols = recSymbols.length ? recSymbols : [...DEFAULT_SYMBOLS];
-    const recTfs = uniqueStrings(f.timeframes);
-    timeframes = recTfs.length ? recTfs : [...DEFAULT_TIMEFRAMES];
     narrowScoreBand = String(f.narrowScoreBand || DEFAULT_BAND);
     const recConfirms = uniqueStrings(f.confirmations);
     confirmations = recConfirms.length ? recConfirms : [...DEFAULT_CONFIRMATIONS];
@@ -254,7 +254,15 @@ function buildNarrowAutopilotPlan(options = {}) {
   };
 
   symbols = symbols.slice(0, limits.maxSymbols);
-  timeframes = timeframes.slice(0, limits.maxTimeframes);
+
+  // Timeframes: always REQUEST the new standard (1m/2m/5m/10m), then run only
+  // the safe subset that has real, loadable candle data. Never fake missing tfs.
+  const requestedTimeframes = [...NARROW_DEFAULT_TIMEFRAMES];
+  const availability = detectNarrowTimeframeAvailability(symbols, requestedTimeframes);
+  const availableTimeframes = availability.available;
+  const missingTimeframes = availability.missing;
+  const timeframes = availableTimeframes.slice(0, limits.maxTimeframes);
+  for (const w of availability.warnings) warnings.push(w);
 
   if (!isNarrowStrategy(strategyId)) {
     warnings.push(`non_narrow_strategy:${strategyId}`);
@@ -270,7 +278,13 @@ function buildNarrowAutopilotPlan(options = {}) {
     priority,
     testType,
     symbols,
+    // Safe runnable subset (what the batch will actually test).
     timeframes,
+    // New Narrow timeframe standard + honest availability breakdown.
+    requestedTimeframes,
+    availableTimeframes,
+    missingTimeframes,
+    timeframeDetails: availability.details,
     filters: {
       narrowScoreBand,
       confirmations,
@@ -428,11 +442,15 @@ function runNarrowAutopilotOnce(options = {}) {
   const runWarnings = [];
   try {
     const timeoutMs = Math.min(HARD_LIMITS.maxRuntimeSeconds, finalPlan.limits.maxRuntimeSeconds) * 1000;
+    // Pass the plan's safe runnable timeframes to the batch script. The script
+    // re-detects availability and skips any timeframe without real candle data.
+    const planTimeframes = Array.isArray(finalPlan.timeframes) ? finalPlan.timeframes.join(',') : '';
     const proc = spawnSync('node', [CLEAN_BATCH_SCRIPT], {
       cwd: path.resolve(__dirname, '../..'),
       timeout: timeoutMs,
       encoding: 'utf8',
       maxBuffer: 16 * 1024 * 1024,
+      env: { ...process.env, NARROW_BATCH_TIMEFRAMES: planTimeframes },
     });
     if (proc.error) throw proc.error;
     if (proc.status !== 0) {
