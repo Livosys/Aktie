@@ -45,21 +45,37 @@ function readJsonl(fp) {
   }
 }
 
+function timestampMs(row = {}) {
+  const raw = row.ts || row.t || row.timestamp;
+  if (raw == null) return NaN;
+  if (typeof raw === 'number') return raw < 1e12 ? raw * 1000 : raw;
+  const ms = new Date(raw).getTime();
+  return Number.isFinite(ms) ? ms : NaN;
+}
+
+function normalizeTimestamp(row = {}) {
+  const ms = timestampMs(row);
+  return Number.isFinite(ms) ? new Date(ms).toISOString() : null;
+}
+
+function normalizeStoredCandle(row = {}) {
+  const ts = normalizeTimestamp(row);
+  if (!ts) return null;
+  return { ...row, ts, t: ts };
+}
+
+function dedupeByTimestamp(rows = []) {
+  const merged = new Map();
+  for (const row of rows) {
+    const normalized = normalizeStoredCandle(row);
+    if (!normalized) continue;
+    merged.set(normalized.ts, normalized);
+  }
+  return [...merged.values()].sort((a, b) => timestampMs(a) - timestampMs(b));
+}
+
 function writeSorted(fp, bars) {
-  // Sort by timestamp, deduplicate
-  const seen    = new Set();
-  const sorted  = [...bars]
-    .sort((a, b) => {
-      const ta = a.ts || a.t || '';
-      const tb = b.ts || b.t || '';
-      return ta < tb ? -1 : ta > tb ? 1 : 0;
-    })
-    .filter((b) => {
-      const key = b.ts || b.t;
-      if (!key || seen.has(key)) return false;
-      seen.add(key);
-      return true;
-    });
+  const sorted = dedupeByTimestamp(bars);
 
   try {
     const lines = sorted.map((b) => JSON.stringify(b)).join('\n') + '\n';
@@ -140,11 +156,7 @@ function loadCandles(symbol, start, end, timeframe = '2m') {
     all.push(...bars);
   }
 
-  return all.sort((a, b) => {
-    const ta = a.ts || a.t || '';
-    const tb = b.ts || b.t || '';
-    return ta < tb ? -1 : ta > tb ? 1 : 0;
-  });
+  return dedupeByTimestamp(all);
 }
 
 /**
@@ -248,4 +260,8 @@ module.exports = {
   listSymbols,
   countCandles,
   getDatesInRange,
+  _internal: {
+    normalizeTimestamp,
+    dedupeByTimestamp,
+  },
 };
