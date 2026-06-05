@@ -77,6 +77,7 @@ function useSupervisorData() {
   const [state, setState] = useState({
     narrow: null,
     learning: null,
+    autopilot: null,
     loading: true,
     refreshing: false,
     error: '',
@@ -89,14 +90,17 @@ function useSupervisorData() {
     async function load() {
       if (!cancelled) setState((prev) => ({ ...prev, loading: prev.lastUpdated ? prev.loading : true, refreshing: !!prev.lastUpdated, error: '' }));
       try {
-        const [narrow, learning] = await Promise.all([
+        const [narrow, learning, autopilot] = await Promise.all([
           apiJson('/api/supervisor/narrow-state'),
           apiJson('/api/learning/narrow-performance'),
+          // Autopilot is read-only and optional — never block the page on it.
+          apiJson('/api/autopilot/narrow/status').catch(() => null),
         ]);
         if (cancelled) return;
         setState({
           narrow,
           learning,
+          autopilot,
           loading: false,
           refreshing: false,
           error: '',
@@ -410,7 +414,7 @@ function formatRecommendation(rec) {
 }
 
 export default function SupervisorBrainPage() {
-  const { narrow, learning, loading, refreshing, error, lastUpdated } = useSupervisorData();
+  const { narrow, learning, autopilot, loading, refreshing, error, lastUpdated } = useSupervisorData();
 
   const narrowState = narrow?.narrowState || {};
   const narrowFlags = {
@@ -445,6 +449,15 @@ export default function SupervisorBrainPage() {
   const totalTrades = Number(learningSummary.totalTrades ?? narrowState.totalTrades ?? 0) || 0;
   const strategiesCompared = Number(learningSummary.strategiesCompared ?? detailedLearning.rankings?.length ?? 0) || 0;
   const generatedAt = firstNonEmpty(detailedLearning.generatedAt, narrow?.generated_at, learning?.generatedAt);
+
+  // Narrow Test Autopilot (Goal 6) — read-only planner status.
+  const autopilotInfo = autopilot?.autopilot || null;
+  const autopilotPlan = autopilotInfo?.currentPlan || null;
+  const autopilotValidation = autopilotInfo?.planValidation || null;
+  const autopilotEvents = safeArray(autopilotInfo?.recentEvents).slice(-5).reverse();
+  const autopilotFlagsLocked = autopilot
+    ? [autopilot.actions_allowed, autopilot.can_place_orders, autopilot.live_trading_enabled, autopilot.broker_enabled].every((value) => value === false)
+    : true;
 
   const activeSymbols = Number(narrowState.activeCount ?? narrowTopSymbols.length ?? 0) || 0;
   const strongestCompression = narrowState.strongestCompression || null;
@@ -741,6 +754,87 @@ export default function SupervisorBrainPage() {
                 <div className="sup-brain-summary-empty">Väntar på fler batch/replay-resultat.</div>
               )}
             </Card>
+          </div>
+        </section>
+
+        <section className="sup-brain-section">
+          <SectionTitle
+            eyebrow="5b. Autopilot"
+            title="🤖 Narrow Test Autopilot"
+            subtitle="Autopiloten läser rekommendationen och bygger en säker testplan. Den kan bara planera och köra batch/replay/paper-tester — aldrig lägga riktiga order."
+            helper="Säker planerare"
+          />
+          <div className="sup-brain-autopilot">
+            <div className="sup-brain-autopilot-head">
+              <Badge tone={autopilotFlagsLocked ? 'good' : 'danger'}>{autopilotFlagsLocked ? 'SAFETY LÅST' : 'KONTROLLERA'}</Badge>
+              <Badge tone="blue">PAPER ONLY</Badge>
+              <Badge tone="neutral">DRY-RUN FÖRST</Badge>
+              <Badge tone="neutral">INGA RIKTIGA ORDER</Badge>
+            </div>
+            {autopilotPlan ? (
+              <div className="sup-brain-grid sup-brain-grid-3">
+                <Card className="sup-brain-next">
+                  <div className="sup-brain-summary-title">Senaste / aktuella plan</div>
+                  <div className="sup-brain-summary-main">{STRATEGY_META[autopilotPlan.strategy_id]?.name || autopilotPlan.strategy_id}</div>
+                  <div className="sup-brain-summary-sub">{text(autopilotPlan.reason, 'Försiktig default-plan.')}</div>
+                  <div className="sup-brain-card-stats">
+                    <InfoChip label="Test" value={text(autopilotPlan.testType, 'batch')} tone="blue" />
+                    <InfoChip label="Mode" value={text(autopilotPlan.mode, 'paper_only')} tone="good" />
+                    <InfoChip label="Priority" value={text(autopilotPlan.priority, 'low')} tone={autopilotPlan.priority === 'high' ? 'warning' : 'neutral'} />
+                  </div>
+                  <div className="sup-brain-next-filters">
+                    {safeArray(autopilotPlan.symbols).length ? <Badge tone="blue">{safeArray(autopilotPlan.symbols).join(', ')}</Badge> : null}
+                    {safeArray(autopilotPlan.timeframes).length ? <Badge tone="blue">{safeArray(autopilotPlan.timeframes).join(', ')}</Badge> : null}
+                    {autopilotPlan.filters?.narrowScoreBand ? <Badge tone="purple">{BAND_LABELS[autopilotPlan.filters.narrowScoreBand] || autopilotPlan.filters.narrowScoreBand}</Badge> : null}
+                    {safeArray(autopilotPlan.filters?.confirmations).length ? <Badge tone="good">{safeArray(autopilotPlan.filters.confirmations).join(', ')}</Badge> : null}
+                  </div>
+                </Card>
+                <Card className="sup-brain-next">
+                  <div className="sup-brain-summary-title">Safety-validering</div>
+                  <div className="sup-brain-summary-main">{autopilotValidation?.blocked ? 'Blockerad' : 'Godkänd'}</div>
+                  <div className="sup-brain-summary-sub">
+                    {autopilotValidation?.blocked
+                      ? 'Planen stoppades av säkerhetskontrollen.'
+                      : 'Planen är paper_only och passerade alla säkerhetsregler.'}
+                  </div>
+                  <div className="sup-brain-card-stats">
+                    <InfoChip label="actions_allowed" value="false" tone="good" />
+                    <InfoChip label="can_place_orders" value="false" tone="good" />
+                    <InfoChip label="live_trading_enabled" value="false" tone="good" />
+                    <InfoChip label="broker_enabled" value="false" tone="good" />
+                  </div>
+                  {safeArray(autopilotValidation?.reasons).length ? (
+                    <div className="sup-brain-next-filters">
+                      {safeArray(autopilotValidation.reasons).slice(0, 4).map((reason) => (
+                        <Badge key={reason} tone="warning">{reason}</Badge>
+                      ))}
+                    </div>
+                  ) : null}
+                </Card>
+                <Card className="sup-brain-next">
+                  <div className="sup-brain-summary-title">Senaste autopilot-händelser</div>
+                  {autopilotEvents.length ? (
+                    <ul className="sup-brain-autopilot-events">
+                      {autopilotEvents.map((event, index) => (
+                        <li key={`${event.timestamp || index}-${event.event}`}>
+                          <span className="sup-brain-warning-dot" />
+                          <span>{text(event.event, 'event')} · {text(event.testType, '—')} · {nowText(event.timestamp)}</span>
+                        </li>
+                      ))}
+                    </ul>
+                  ) : (
+                    <div className="sup-brain-summary-empty">Inga autopilot-körningar loggade ännu.</div>
+                  )}
+                  <div className="sup-brain-next-tag">Dry-run är standard · körning kräver explicit --execute</div>
+                </Card>
+              </div>
+            ) : (
+              <div className="sup-brain-empty">Autopiloten är inte tillgänglig just nu.</div>
+            )}
+            <BeginnerBox
+              title="Vad gör autopiloten?"
+              text="Autopiloten är en säker test-assistent. Den läser vad Performance Learning rekommenderar, bygger en testplan och kan köra små batch/replay/paper-tester för att samla mer data. Den handlar aldrig, lägger aldrig order och kan inte slå på live trading."
+            />
           </div>
         </section>
 

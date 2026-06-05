@@ -7031,6 +7031,31 @@ tbody td {
   font-size: 11px;
   line-height: 1.5;
 }
+.sup-brain-autopilot {
+  display: grid;
+  gap: 14px;
+}
+.sup-brain-autopilot-head {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+.sup-brain-autopilot-events {
+  list-style: none;
+  margin: 8px 0 0;
+  padding: 0;
+  display: grid;
+  gap: 8px;
+}
+.sup-brain-autopilot-events li {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  font-size: 13px;
+  line-height: 1.45;
+  color: rgba(226,232,240,.85);
+}
 .sup-brain-warning-list {
   display: grid;
   gap: 10px;

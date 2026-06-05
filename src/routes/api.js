@@ -64,6 +64,7 @@ const strategyCatalog   = require('../services/strategyCatalogService');
 const daytradingStrategyCatalog = require('../services/daytradingStrategyCatalogService');
 const narrowStateEngine = require('../services/narrowStateEngineService');
 const narrowPerformanceLearning = require('../services/narrowPerformanceLearningService');
+const narrowTestAutopilot = require('../services/narrowTestAutopilotService');
 const strategyRegistry   = require('../services/strategyRegistryService');
 const strategyScore      = require('../services/strategyScoreService');
 const strategyHistory    = require('../services/strategyHistoryService');
@@ -2257,6 +2258,85 @@ router.get('/learning/narrow-performance', (req, res) => {
       rankings: [], scoreBands: [], confirmations: [], recommendedNextTest: null,
       warnings: ['error:' + err.message], generatedAt: new Date().toISOString(),
     });
+  }
+});
+
+// ── Narrow Test Autopilot (Goal 6) ────────────────────────────────────────────
+// A SAFE test-assistant. It reads what Narrow Performance Learning recommends
+// and turns it into a validated paper/replay/batch-only test plan. It can never
+// place orders, enable a broker, or change live trading. Read-only GET endpoints
+// plus a tightly guarded, dryRun-first POST run-once.
+const AUTOPILOT_SAFETY = {
+  mode: 'paper_only',
+  actions_allowed: false,
+  can_place_orders: false,
+  live_trading_enabled: false,
+  broker_enabled: false,
+};
+
+router.get('/autopilot/narrow/status', (req, res) => {
+  try {
+    const status = narrowTestAutopilot.getNarrowAutopilotStatus();
+    res.json({ ok: true, ...AUTOPILOT_SAFETY, autopilot: status.autopilot });
+  } catch (err) {
+    res.json({ ok: false, error: err.message, ...AUTOPILOT_SAFETY, autopilot: null });
+  }
+});
+
+router.get('/autopilot/narrow/plan', (req, res) => {
+  try {
+    const plan = narrowTestAutopilot.buildNarrowAutopilotPlan();
+    const validation = narrowTestAutopilot.validateNarrowAutopilotPlan(plan);
+    res.json({
+      ok: true,
+      ...AUTOPILOT_SAFETY,
+      autopilot: {
+        plan: validation.normalizedPlan,
+        validation: { ok: validation.ok, blocked: validation.blocked, reasons: validation.reasons },
+      },
+    });
+  } catch (err) {
+    res.json({ ok: false, error: err.message, ...AUTOPILOT_SAFETY, autopilot: null });
+  }
+});
+
+// Run-once over HTTP is intentionally DRY-RUN ONLY. The web surface may plan
+// and validate, but never triggers a real batch/replay run (that requires the
+// CLI: `node scripts/runNarrowAutopilotOnce.js --execute`). Any live/order/broker
+// intent in the body is rejected outright. It can never place orders or go live.
+router.post('/autopilot/narrow/run-once', (req, res) => {
+  try {
+    const body = req.body || {};
+    const blockedIntent = narrowTestAutopilot.findBlockedIntent(body);
+    if (blockedIntent) {
+      return res.json({
+        ok: false, blocked: true, dryRun: true, executed: false,
+        ...AUTOPILOT_SAFETY,
+        reasons: [`blocked_intent:${blockedIntent}`],
+        message_sv: 'Förfrågan innehöll otillåten live/order-intent och blockerades.',
+        autopilot: null,
+      });
+    }
+    // Force dry run regardless of body — the API never executes a real run.
+    const result = narrowTestAutopilot.runNarrowAutopilotOnce({
+      dryRun: true,
+      maxRuns: body.maxRuns,
+      maxSymbols: body.maxSymbols,
+      maxTimeframes: body.maxTimeframes,
+    });
+    res.json({
+      ok: result.ok,
+      ...AUTOPILOT_SAFETY,
+      dryRun: true,
+      blocked: Boolean(result.blocked),
+      executed: false,
+      reasons: result.reasons || [],
+      message_sv: result.message_sv || null,
+      note: 'API kör endast dry-run. För en riktig (paper/batch) körning: node scripts/runNarrowAutopilotOnce.js --execute',
+      autopilot: { plan: result.plan, summary: result.summary || null, runStatus: result.runStatus || null },
+    });
+  } catch (err) {
+    res.json({ ok: false, error: err.message, ...AUTOPILOT_SAFETY, autopilot: null });
   }
 });
 
