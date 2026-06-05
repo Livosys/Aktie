@@ -92,6 +92,7 @@ function loadServiceWithData(seedFn) {
         narrowScore: 84,
         regimeLabel: 'narrow_breakout_watch',
         confirmationUsed: { vwap: true, volume: true },
+        confirmationQuality: { vwap: 'real', volume: 'heuristic', ema: 'missing', rsi: 'missing', macd: 'missing' },
         entryPrice: 100,
         exitPrice: 101,
         result: 'WIN',
@@ -120,6 +121,7 @@ function loadServiceWithData(seedFn) {
   assert.ok(summary.warnings.includes('missing_narrowScore:batch'), 'batch missing narrowScore warning');
   assert.ok(summary.warnings.includes('missing_regimeLabel:batch'), 'batch missing regime warning');
   assert.equal(summary.scoreBands.some((band) => band.band === 'strong_compression' && band.trades === 1), true, 'strong band counted');
+  assert.equal(summary.confirmations.find((c) => c.confirmation === 'vwap').confirmationEvidenceQuality, 'real', 'confirmation evidence quality real');
   assert.equal(summary.confirmations.find((c) => c.confirmation === 'vwap').impact, 'insufficient_data', 'confirmation impact low data');
 }
 
