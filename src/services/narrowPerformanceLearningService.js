@@ -595,7 +595,7 @@ function recommendNextNarrowTest(rankings, scoreBands, confirmations, sourceCoun
       ? `${best.name} ser bäst ut. ${positiveConfirm.confirmation.toUpperCase()}-bekräftelse verkar hjälpa — testa fler sådana setups.`
       : `${best.name} ser bäst ut hittills. Kör fler tester för att bekräfta.`,
     strategy_id: best.strategy_id,
-    source: 'paper',
+    source: sourceCounts.batch > 0 ? 'batch' : (sourceCounts.replay > 0 ? 'replay' : 'paper'),
     priority: 'low',
     suggestedFilters: {
       narrowScoreBand: best.bestNarrowScoreBand || 'confirmed_narrow',
