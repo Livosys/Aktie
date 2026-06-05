@@ -91,6 +91,11 @@ export default function NarrowStateLabPage() {
   // Narrow Performance Learning (measured from paper/replay/batch). May be null.
   const perf = ns?.performanceLearning || null;
   const CONF_LABELS = { none: 'Ingen', low: 'Låg', medium: 'Medium', high: 'Hög' };
+  const PERF_STATUS_LABELS = {
+    needs_more_data: 'Behöver mer data',
+    low_confidence: 'Låg säkerhet',
+    ready: 'Redo för slutsatser',
+  };
 
   return (
     <div className="page narrow-state-lab">
@@ -241,9 +246,10 @@ export default function NarrowStateLabPage() {
 
         {!perf || perf.totalNarrowTrades === 0 ? (
           <div className="ns-empty-wide">
-            Systemet har ännu för lite Narrow State-data för säker slutsats. Kör fler paper-/replay-/batch-tester
-            på narrow-strategierna så börjar mätningen.
+            <p>{perf?.message || 'Systemet har ännu för lite Narrow State-data för säker slutsats.'}</p>
+            <p>Kör fler paper-/replay-/batch-tester på narrow-strategierna så börjar mätningen.</p>
             <div className="ns-badge-row" style={{ marginTop: 10 }}>
+              {perf?.status ? <Badge tone="amber">Status: {PERF_STATUS_LABELS[perf.status] || perf.status}</Badge> : null}
               <Badge tone="amber">Datatillit: {CONF_LABELS[perf?.dataConfidence] || 'Ingen'}</Badge>
               <Badge tone="green">Paper Only</Badge>
             </div>
@@ -251,6 +257,7 @@ export default function NarrowStateLabPage() {
         ) : (
           <>
             <div className="ns-badge-row">
+              {perf?.status ? <Badge tone={perf.status === 'ready' ? 'green' : 'amber'}>Status: {PERF_STATUS_LABELS[perf.status] || perf.status}</Badge> : null}
               <Badge tone={perf.dataConfidence === 'high' ? 'green' : 'amber'}>
                 Datatillit: {CONF_LABELS[perf.dataConfidence] || perf.dataConfidence}
               </Badge>

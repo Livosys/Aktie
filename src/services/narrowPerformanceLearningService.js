@@ -23,14 +23,6 @@
 const fs = require('fs');
 const path = require('path');
 
-let daytradingCatalog = null;
-function lazyCatalog() {
-  if (!daytradingCatalog) {
-    try { daytradingCatalog = require('./daytradingStrategyCatalogService'); } catch (_) { daytradingCatalog = null; }
-  }
-  return daytradingCatalog;
-}
-
 const SAFETY = Object.freeze({
   actions_allowed: false,
   can_place_orders: false,
@@ -40,7 +32,8 @@ const SAFETY = Object.freeze({
   paper_only: true,
 });
 
-// The three known narrow strategies (explicit fallback, never trust other ids).
+// The three known narrow strategies. These are the only strategy_id fallbacks
+// we accept when strategy_family is missing from source data.
 const KNOWN_NARROW_IDS = Object.freeze([
   'narrow_breakout_v1',
   'narrow_fakeout_reversal_v1',
@@ -90,29 +83,29 @@ const BAND_RANGES = Object.freeze({
 });
 
 function narrowStrategyIdSet() {
-  const ids = new Set(KNOWN_NARROW_IDS);
-  const cat = lazyCatalog();
-  if (cat && typeof cat.getCatalog === 'function') {
-    try {
-      const strategies = cat.getCatalog().strategies || [];
-      for (const s of strategies) {
-        if (s && s.family === 'narrow_state' && s.id) ids.add(String(s.id));
-      }
-    } catch (_) { /* fall back to known ids */ }
-  }
-  return ids;
+  return new Set(KNOWN_NARROW_IDS);
 }
 
-function isNarrowRow(row, idSet) {
+function narrowFamilyOf(row) {
   if (!row || typeof row !== 'object') return false;
-  const fam = String(row.strategy_family || row.strategyFamily || '').toLowerCase();
-  if (fam === 'narrow_state') return true;
+  const fam = String(row.strategy_family || row.strategyFamily || '').trim().toLowerCase();
+  return fam === 'narrow_state' ? 'narrow_state' : null;
+}
+
+function isNarrowRow(row) {
+  if (!row || typeof row !== 'object') return false;
+  if (narrowFamilyOf(row) === 'narrow_state') return true;
   const id = String(row.strategy_id || row.strategyId || row.strategy || '').trim();
-  return id ? idSet.has(id) : false;
+  return id ? KNOWN_NARROW_IDS.includes(id) : false;
 }
 
 function strategyIdOf(row) {
-  return String(row.strategy_id || row.strategyId || row.strategy || '').trim() || 'unknown';
+  const explicit = String(row.strategy_id || row.strategyId || row.strategy || '').trim();
+  if (explicit) return explicit;
+  if (narrowFamilyOf(row) === 'narrow_state') {
+    return String(row.signalSubtype || row.signal_subtype || row.signalFamily || row.signal_family || row.familyLabel || row.family_label || '').trim() || 'unknown';
+  }
+  return 'unknown';
 }
 
 function resultFromRow(row) {
@@ -153,41 +146,77 @@ function safeReadJson(file, fallback) {
   }
 }
 
+function scoreBandFromRow(row) {
+  if (!row || typeof row !== 'object') return 'unknown';
+  if (row.narrowScore != null) return narrowScoreBand(row.narrowScore);
+  if (row.narrow_score != null) return narrowScoreBand(row.narrow_score);
+  return 'unknown';
+}
+
+function confirmationShapeFromRow(row) {
+  const value = row?.confirmationUsed || row?.confirmations || row?.confirmation_used || null;
+  return normalizeConfirmations(value);
+}
+
+function sourceWarningsForRow(row, source) {
+  const warnings = [];
+  const narrowScore = row?.narrowScore ?? row?.narrow_score ?? null;
+  const regimeLabel = row?.regimeLabel ?? row?.regime_label ?? null;
+  if (narrowScore == null) warnings.push(`missing_narrowScore:${source}`);
+  if (regimeLabel == null) warnings.push(`missing_regimeLabel:${source}`);
+  return warnings;
+}
+
+function summarizeMissingDataWarnings(records, rawSourceCounts) {
+  const warnings = [];
+  if (records.length === 0) warnings.push('no_narrow_state_data');
+  const allNoScore = rawSourceCounts.paper + rawSourceCounts.batch + rawSourceCounts.replay > 0 && records.every((r) => r.narrowScore == null);
+  if (allNoScore) warnings.push('missing_narrowScore');
+  const allNoRegime = rawSourceCounts.paper + rawSourceCounts.batch + rawSourceCounts.replay > 0 && records.every((r) => r.regimeLabel == null);
+  if (allNoRegime) warnings.push('missing_regimeLabel');
+  return warnings;
+}
+
 // ── Normalised narrow record ─────────────────────────────────────────────────
 // A record can be a single trade (paper) or an aggregate (batch). `tradeCount`,
 // `wins`, `losses`, `breakeven` make both granularities aggregate cleanly.
-function normalizePaperTrade(row) {
+function normalizeNarrowRecord(row, source, overrides = {}) {
   const result = resultFromRow(row);
-  const pnl = num(row.pnlPct ?? row.pnl_paper ?? row.pnl);
-  return {
-    recordKind: 'trade',
-    source: 'paper',
+  const pnl = num(row.pnlPct ?? row.pnl_paper ?? row.pnl_percent ?? row.pnl);
+  const strategyFamily = narrowFamilyOf(row);
+  const narrowScore = num(row.narrowScore ?? row.narrow_score);
+  const regimeLabel = row.regimeLabel ?? row.regime_label ?? null;
+  const timestamp = row.closed_at || row.exitTime || row.exit_time || row.entryTime || row.opened_at || row.created_at || row.run_completed_at || row.createdAt || null;
+  const record = {
+    recordKind: overrides.recordKind || 'trade',
+    source,
     strategy_id: strategyIdOf(row),
-    strategy_family: 'narrow_state',
+    strategy_family: strategyFamily || null,
     symbol: row.symbol ? String(row.symbol).toUpperCase() : null,
     timeframe: row.timeframe || row.tf || null,
-    timestamp: row.closed_at || row.exitTime || row.entryTime || row.opened_at || null,
-    narrowScore: num(row.narrowScore),
-    narrowScoreBand: narrowScoreBand(row.narrowScore),
-    regimeLabel: row.regimeLabel || null,
-    breakoutType: row.breakoutType || null,
-    fakeoutDetected: typeof row.fakeoutDetected === 'boolean' ? row.fakeoutDetected : null,
-    meanReversionCandidate: typeof row.meanReversionCandidate === 'boolean' ? row.meanReversionCandidate : null,
-    confirmationUsed: normalizeConfirmations(row.confirmationUsed || row.confirmations),
-    entryPrice: num(row.entryPrice),
-    exitPrice: num(row.exitPrice),
+    timestamp,
+    narrowScore,
+    narrowScoreBand: scoreBandFromRow(row),
+    regimeLabel,
+    breakoutType: row.breakoutType || row.breakout_type || null,
+    fakeoutDetected: typeof (row.fakeoutDetected ?? row.fakeout_detected) === 'boolean' ? (row.fakeoutDetected ?? row.fakeout_detected) : null,
+    meanReversionCandidate: typeof (row.meanReversionCandidate ?? row.mean_reversion_candidate) === 'boolean' ? (row.meanReversionCandidate ?? row.mean_reversion_candidate) : null,
+    confirmationUsed: confirmationShapeFromRow(row),
+    entryPrice: num(row.entryPrice ?? row.entry_price),
+    exitPrice: num(row.exitPrice ?? row.exit_price),
     pnl_paper: pnl,
     pnlPercent: pnl,
     result,
-    tradeCount: 1,
-    wins: result === 'win' ? 1 : 0,
-    losses: result === 'loss' ? 1 : 0,
-    breakeven: result === 'breakeven' ? 1 : 0,
-    maxAdverseExcursion: num(row.maxAdversePct ?? row.maxAdverseExcursion),
-    maxFavorableExcursion: num(row.maxFavorablePct ?? row.maxFavorableExcursion),
-    exitReason: row.exitReason || null,
+    tradeCount: num(overrides.tradeCount) ?? 1,
+    wins: num(overrides.wins) ?? (result === 'win' ? 1 : 0),
+    losses: num(overrides.losses) ?? (result === 'loss' ? 1 : 0),
+    breakeven: num(overrides.breakeven) ?? (result === 'breakeven' ? 1 : 0),
+    maxAdverseExcursion: num(row.maxAdversePct ?? row.maxAdverseExcursion ?? row.max_adverse_excursion),
+    maxFavorableExcursion: num(row.maxFavorablePct ?? row.maxFavorableExcursion ?? row.max_favorable_excursion),
+    exitReason: row.exitReason || row.exit_reason || null,
     lessonTags: Array.isArray(row.lessonTags) ? row.lessonTags : [],
   };
+  return { record, warnings: sourceWarningsForRow(row, source) };
 }
 
 function normalizeBatchRow(row) {
@@ -195,38 +224,29 @@ function normalizeBatchRow(row) {
   const wins = num(row.wins) || 0;
   const losses = num(row.losses) || 0;
   const breakeven = Math.max(0, trades - wins - losses);
-  const avgPnl = num(row.avg_pnl);
-  const totalPnl = num(row.total_pnl);
-  return {
+  const avgPnl = num(row.avg_pnl ?? row.avgPnl);
+  const totalPnl = num(row.total_pnl ?? row.totalPnl);
+  const base = normalizeNarrowRecord(row, 'batch', {
     recordKind: 'aggregate',
-    source: 'batch',
-    strategy_id: strategyIdOf(row),
-    strategy_family: 'narrow_state',
-    symbol: row.symbol ? String(row.symbol).toUpperCase() : null,
-    timeframe: row.timeframe || null,
-    timestamp: row.created_at || row.date_to || null,
-    narrowScore: null, // batch tests a date range, not a single narrowScore
-    narrowScoreBand: 'unknown',
-    regimeLabel: null,
-    breakoutType: null,
-    fakeoutDetected: null,
-    meanReversionCandidate: null,
-    confirmationUsed: normalizeConfirmations(null),
-    entryPrice: null,
-    exitPrice: null,
-    pnl_paper: avgPnl,
-    pnlPercent: avgPnl,
-    result: trades > 0 ? (wins > losses ? 'win' : losses > wins ? 'loss' : 'breakeven') : 'unknown',
     tradeCount: trades,
     wins,
     losses,
     breakeven,
+  });
+  return {
+    ...base.record,
+    narrowScore: num(row.narrowScore ?? row.narrow_score),
+    narrowScoreBand: scoreBandFromRow(row),
+    regimeLabel: row.regimeLabel ?? row.regime_label ?? null,
+    confirmationUsed: confirmationShapeFromRow(row),
+    pnl_paper: avgPnl,
+    pnlPercent: avgPnl,
     avgPnl,
     totalPnl,
-    maxAdverseExcursion: num(row.max_drawdown) !== null ? -Math.abs(num(row.max_drawdown)) : null,
+    result: trades > 0 ? (wins > losses ? 'win' : losses > wins ? 'loss' : 'breakeven') : 'unknown',
+    timestamp: row.created_at || row.run_completed_at || row.run_created_at || row.date_to || null,
+    maxAdverseExcursion: num(row.max_drawdown ?? row.maxDrawdown) !== null ? -Math.abs(num(row.max_drawdown ?? row.maxDrawdown)) : null,
     maxFavorableExcursion: null,
-    exitReason: null,
-    lessonTags: [],
   };
 }
 
@@ -241,67 +261,82 @@ function normalizeConfirmations(c) {
 
 // ── Source readers (all robust, never throw) ─────────────────────────────────
 
-function readPaperRecords(idSet) {
+function readPaperRecords() {
   const rows = safeReadJsonlLines(PAPER_TRADES_FILE);
-  return rows.filter((r) => isNarrowRow(r, idSet)).map(normalizePaperTrade);
+  const out = [];
+  const warnings = [];
+  for (const row of rows) {
+    if (!isNarrowRow(row)) continue;
+    const { record, warnings: rowWarnings } = normalizeNarrowRecord(row, 'paper');
+    out.push(record);
+    warnings.push(...rowWarnings);
+  }
+  return { records: out, warnings };
 }
 
-function readBatchRecords(idSet) {
+function readBatchRecords() {
   const out = [];
+  const warnings = [];
   try {
-    if (!fs.existsSync(BATCH_RESULTS_DIR)) return out;
+    if (!fs.existsSync(BATCH_RESULTS_DIR)) return { records: out, warnings };
     const files = fs.readdirSync(BATCH_RESULTS_DIR).filter((f) => f.endsWith('.json'));
     for (const f of files) {
       const data = safeReadJson(path.join(BATCH_RESULTS_DIR, f), []);
-      const rows = Array.isArray(data) ? data : [];
+      const rows = Array.isArray(data) ? data : (data && typeof data === 'object' ? [data] : []);
       for (const row of rows) {
-        if (isNarrowRow(row, idSet) && num(row.trades) > 0) out.push(normalizeBatchRow(row));
+        if (!isNarrowRow(row)) continue;
+        if (num(row.trades) <= 0) continue;
+        const normalized = normalizeBatchRow(row);
+        out.push(normalized);
+        warnings.push(...sourceWarningsForRow(row, 'batch'));
       }
     }
   } catch (_) { /* ignore */ }
-  return out;
+  return { records: out, warnings };
 }
 
-function readReplayRecords(idSet) {
+function readReplayRecords() {
   // Current replay events are signal-classification events without strategy
   // attribution or P/L, so they do not count as narrow strategy outcomes.
   // We only pick up replay events that explicitly carry a narrow strategy_id
   // AND a result/pnl — ready for when replay starts emitting strategy outcomes.
   const out = [];
+  const warnings = [];
   try {
-    if (!fs.existsSync(REPLAY_RUNS_DIR)) return out;
+    if (!fs.existsSync(REPLAY_RUNS_DIR)) return { records: out, warnings };
     const runs = fs.readdirSync(REPLAY_RUNS_DIR).filter((d) => d.startsWith('run_'));
     for (const run of runs) {
       const eventsFile = path.join(REPLAY_RUNS_DIR, run, 'events.jsonl');
       const rows = safeReadJsonlLines(eventsFile);
       for (const row of rows) {
-        const hasStrategy = isNarrowRow(row, idSet);
+        const hasStrategy = isNarrowRow(row);
         const hasOutcome = row.result != null || row.pnl != null || row.pnlPct != null;
         if (hasStrategy && hasOutcome) {
-          out.push({ ...normalizePaperTrade(row), source: 'replay', recordKind: 'trade' });
+          const { record, warnings: rowWarnings } = normalizeNarrowRecord(row, 'replay', { recordKind: 'trade' });
+          out.push(record);
+          warnings.push(...rowWarnings);
         }
       }
     }
   } catch (_) { /* ignore */ }
-  return out;
+  return { records: out, warnings };
 }
 
 function collectNarrowRecords() {
-  const idSet = narrowStrategyIdSet();
-  const warnings = [];
-  const paper = readPaperRecords(idSet);
-  const batch = readBatchRecords(idSet);
-  const replay = readReplayRecords(idSet);
-  const records = [...paper, ...batch, ...replay];
-  if (records.length === 0) warnings.push('no_narrow_state_data');
-  const withScore = records.filter((r) => r.narrowScore !== null).length;
-  if (records.length > 0 && withScore === 0) warnings.push('missing_narrow_score');
-  const withConfirm = records.filter((r) => Object.values(r.confirmationUsed).some((v) => v !== null)).length;
-  if (records.length > 0 && withConfirm === 0) warnings.push('missing_confirmation_data');
+  const paper = readPaperRecords();
+  const batch = readBatchRecords();
+  const replay = readReplayRecords();
+  const records = [...paper.records, ...batch.records, ...replay.records];
+  const warnings = [...paper.warnings, ...batch.warnings, ...replay.warnings];
+  warnings.push(...summarizeMissingDataWarnings(records, {
+    paper: paper.records.length,
+    batch: batch.records.length,
+    replay: replay.records.length,
+  }));
   return {
     records,
-    warnings,
-    sourceCounts: { paper: paper.length, batch: batch.length, replay: replay.length },
+    warnings: [...new Set(warnings)],
+    sourceCounts: { paper: paper.records.length, batch: batch.records.length, replay: replay.records.length },
   };
 }
 
@@ -315,7 +350,7 @@ function confidenceFromTrades(n) {
 }
 
 function verdictFor({ trades, winRate, avgPnl }) {
-  if (!trades || trades < 1) return 'unknown';
+  if (!trades || trades < 1) return 'needs_more_data';
   if (trades < 10) return 'needs_more_data';
   if (avgPnl !== null && avgPnl <= -0.15) return 'avoid_for_now';
   if (winRate !== null && winRate < 35) return 'weak';
@@ -337,6 +372,10 @@ function emptyStratAgg(id) {
   };
 }
 
+function emptyRankings() {
+  return KNOWN_NARROW_IDS.map((id) => finalizeStrat(emptyStratAgg(id)));
+}
+
 function bumpKeyed(map, key, wins, losses, trades, pnl) {
   if (!key) return;
   const cur = map.get(key) || { key, trades: 0, wins: 0, losses: 0, pnlSum: 0, pnlCount: 0 };
@@ -346,6 +385,7 @@ function bumpKeyed(map, key, wins, losses, trades, pnl) {
 }
 
 function rankNarrowStrategies(records) {
+  if (!records.length) return emptyRankings();
   const byStrat = new Map();
   for (const r of records) {
     const id = r.strategy_id;
@@ -430,6 +470,17 @@ function finalizeStrat(a) {
 // ── Score-band analysis ──────────────────────────────────────────────────────
 
 function analyzeNarrowScoreBands(records) {
+  if (!records.length) {
+    return ['not_narrow', 'weak_narrow', 'confirmed_narrow', 'strong_compression'].map((band) => ({
+      band,
+      scoreRange: BAND_RANGES[band],
+      trades: 0,
+      winRate: null,
+      avgPnl: null,
+      bestStrategy: null,
+      recommendation: 'För lite data ännu. Samla fler narrow_state-resultat innan slutsats.',
+    }));
+  }
   const order = ['not_narrow', 'weak_narrow', 'confirmed_narrow', 'strong_compression'];
   const byBand = new Map();
   for (const r of records) {
@@ -466,6 +517,14 @@ function analyzeNarrowScoreBands(records) {
 // ── Confirmation impact ──────────────────────────────────────────────────────
 
 function analyzeConfirmations(records) {
+  if (!records.length) {
+    return ['ema', 'rsi', 'vwap', 'volume', 'macd'].map((confirmation) => ({
+      confirmation,
+      withConfirmation: { trades: 0, winRate: null, avgPnl: null },
+      withoutConfirmation: { trades: 0, winRate: null, avgPnl: null },
+      impact: 'insufficient_data',
+    }));
+  }
   const keys = ['ema', 'rsi', 'vwap', 'volume', 'macd'];
   return keys.map((key) => {
     const withC = { trades: 0, wins: 0, losses: 0, pnlSum: 0, pnlCount: 0 };
@@ -578,9 +637,11 @@ function buildNarrowPerformanceSummary() {
     return { confirmation: top.confirmation, impact: top.impact, withWinRate: top.withConfirmation.winRate, withoutWinRate: top.withoutConfirmation.winRate };
   })();
   const dataConfidence = confidenceFromTrades(totalTrades);
+  const status = totalTrades === 0 ? 'needs_more_data' : (dataConfidence === 'high' ? 'ready' : 'low_confidence');
 
   return {
     summary: {
+      status,
       totalTrades,
       strategiesCompared: ranked.length,
       bestStrategy,
@@ -591,7 +652,7 @@ function buildNarrowPerformanceSummary() {
       sourceCounts,
       message: totalTrades === 0
         ? 'Systemet har ännu för lite Narrow State-data för säker slutsats.'
-        : (dataConfidence === 'high' ? 'Tillräckligt med data för första slutsatser.' : 'Begränsad data — tolka resultaten försiktigt.'),
+        : (dataConfidence === 'high' ? 'Tillräckligt med data för första slutsatser.' : 'Begränsad data - tolka resultaten försiktigt.'),
     },
     rankings,
     scoreBands,
@@ -607,6 +668,8 @@ function buildNarrowPerformanceSummary() {
 function buildSupervisorNarrowLearning() {
   const full = buildNarrowPerformanceSummary();
   return {
+    status: full.summary.status,
+    message: full.summary.message,
     bestStrategy: full.summary.bestStrategy,
     worstStrategy: full.summary.worstStrategy,
     bestScoreBand: full.summary.bestScoreBand,
