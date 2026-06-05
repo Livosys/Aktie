@@ -54,7 +54,7 @@ function assertValidConfig({ from, to, symbols }) {
 }
 
 function normalizeBar(bar = {}, symbol, timeframe = '2Min') {
-  const ts = bar.ts || bar.t || bar.timestamp;
+  const ts = normalizeCandleTimestamp(bar.ts || bar.t || bar.timestamp);
   const open = bar.open !== undefined ? bar.open : bar.o;
   const high = bar.high !== undefined ? bar.high : bar.h;
   const low = bar.low !== undefined ? bar.low : bar.l;
@@ -80,6 +80,18 @@ function normalizeBar(bar = {}, symbol, timeframe = '2Min') {
   };
 }
 
+function normalizeCandleTimestamp(ts) {
+  if (ts == null) return null;
+  const ms = typeof ts === 'number'
+    ? (ts < 1e12 ? ts * 1000 : ts)
+    : new Date(ts).getTime();
+  return Number.isFinite(ms) ? new Date(ms).toISOString() : null;
+}
+
+function normalizeCandle(candle = {}, symbol, timeframe = '2Min') {
+  return normalizeBar(candle, symbol, timeframe);
+}
+
 function isValidCandle(candle = {}) {
   const ts = candle.ts || candle.t;
   const values = [candle.o, candle.h, candle.l, candle.c, candle.v];
@@ -90,6 +102,22 @@ function isValidCandle(candle = {}) {
   if (Number(candle.h) < Math.max(Number(candle.o), Number(candle.c), Number(candle.l))) return false;
   if (Number(candle.l) > Math.min(Number(candle.o), Number(candle.c), Number(candle.h))) return false;
   return new Date(ts).getUTCMinutes() % 2 === 0;
+}
+
+function dedupeCandlesByTimestamp(candles = []) {
+  const byTs = new Map();
+  let duplicateCount = 0;
+  for (const candle of candles) {
+    const ts = normalizeCandleTimestamp(candle.ts || candle.t || candle.timestamp);
+    if (!ts) continue;
+    const normalized = { ...candle, ts, t: ts };
+    if (byTs.has(ts)) duplicateCount += 1;
+    byTs.set(ts, normalized);
+  }
+  return {
+    candles: [...byTs.values()].sort((a, b) => new Date(a.ts) - new Date(b.ts)),
+    duplicateCount,
+  };
 }
 
 function groupByDate(candles = []) {
@@ -121,6 +149,18 @@ function mergeStats(existingCount, incomingCount, finalCount) {
     candles_written: written,
     duplicates_skipped: Math.max(0, Number(incomingCount || 0) - written),
   };
+}
+
+function countDuplicateTimestamps(candles = []) {
+  const seen = new Set();
+  let duplicates = 0;
+  for (const candle of candles) {
+    const ts = normalizeCandleTimestamp(candle.ts || candle.t || candle.timestamp);
+    if (!ts) continue;
+    if (seen.has(ts)) duplicates += 1;
+    else seen.add(ts);
+  }
+  return duplicates;
 }
 
 function shouldFallbackTo1Min(err) {
@@ -217,12 +257,14 @@ async function runImport(input = {}, deps = {}) {
     const startedAt = new Date().toISOString();
     try {
       const fetched = await fetchCandles2m(symbol, plan.from, plan.to, resolved);
-      const normalized = fetched.candles.map((c) => normalizeBar(c, symbol, fetched.sourceTimeframe));
+      const normalized = fetched.candles.map((c) => normalizeCandle(c, symbol, fetched.sourceTimeframe));
       const valid = normalized.filter(isValidCandle);
+      const deduped = dedupeCandlesByTimestamp(valid);
+      const uniqueValid = deduped.candles;
       const invalidCandlesFiltered = normalized.length - valid.length;
-      const byDate = groupByDate(valid);
+      const byDate = groupByDate(uniqueValid);
       let candlesWritten = 0;
-      let duplicatesSkipped = 0;
+      let duplicatesSkipped = deduped.duplicateCount;
       let loaderCandles = 0;
 
       for (const [date, candles] of Object.entries(byDate).sort()) {
@@ -232,7 +274,9 @@ async function runImport(input = {}, deps = {}) {
         const stats = mergeStats(before, candles.length, after);
         candlesWritten += stats.candles_written;
         duplicatesSkipped += stats.duplicates_skipped;
-        loaderCandles += resolved.loadCandles(symbol, date, date, '2m').length;
+        const loaded = resolved.loadCandles(symbol, date, date, '2m');
+        duplicatesSkipped += countDuplicateTimestamps(loaded);
+        loaderCandles += loaded.length - countDuplicateTimestamps(loaded);
       }
 
       const datesWithCandles = new Set(Object.keys(byDate));
@@ -244,13 +288,13 @@ async function runImport(input = {}, deps = {}) {
         sourceTimeframe: fetched.sourceTimeframe,
         fallbackUsed: fetched.fallbackUsed,
         candles_fetched: fetched.rawFetched,
-        candles_valid: valid.length,
+        candles_valid: uniqueValid.length,
         candles_written: candlesWritten,
         duplicates_skipped: duplicatesSkipped,
         invalid_candles_filtered: invalidCandlesFiltered,
         missing_business_days: missingBusinessDays.length,
-        first_timestamp: valid[0]?.ts || null,
-        last_timestamp: valid[valid.length - 1]?.ts || null,
+        first_timestamp: uniqueValid[0]?.ts || null,
+        last_timestamp: uniqueValid[uniqueValid.length - 1]?.ts || null,
         loader_candles_after_write: loaderCandles,
         warnings: fetched.warnings,
         status: 'ok',
@@ -289,10 +333,14 @@ module.exports = {
   runImport,
   _internal: {
     normalizeBar,
+    normalizeCandleTimestamp,
+    normalizeCandle,
     isValidCandle,
+    dedupeCandlesByTimestamp,
     groupByDate,
     businessDatesInRange,
     mergeStats,
+    countDuplicateTimestamps,
     shouldFallbackTo1Min,
   },
 };
