@@ -42,17 +42,18 @@ const SOURCE = 'narrow_performance_learning';
 // The only test types the autopilot may ever plan.
 const ALLOWED_TEST_TYPES = Object.freeze(['batch', 'replay', 'paper']);
 
-// Cautious defaults — small by design.
-const DEFAULT_SYMBOLS = Object.freeze(['MSFT', 'QQQ', 'TSLA']);
-// New Narrow timeframe standard (Goal 7): 1m / 2m / 5m / 10m. The plan always
-// REQUESTS these; the safe runnable subset is detected from real candle data.
+// Broadened equity set — all have real 2m candle data with a shared common date
+// window. More symbols → more diverse, non-duplicate Narrow State evidence.
+const DEFAULT_SYMBOLS = Object.freeze(['MSFT', 'QQQ', 'TSLA', 'AAPL', 'NVDA', 'META', 'AMZN', 'AMD']);
+// Narrow timeframe standard comes from the central config (currently 2m-only).
+// The plan REQUESTS the standard; the safe runnable subset is detected from data.
 const DEFAULT_TIMEFRAMES = NARROW_DEFAULT_TIMEFRAMES;
 const DEFAULT_STRATEGY_ID = 'narrow_fakeout_reversal_v1';
 const DEFAULT_BAND = 'confirmed_narrow';
 const DEFAULT_CONFIRMATIONS = Object.freeze(['macd']);
 
 const DEFAULT_LIMITS = Object.freeze({
-  maxSymbols: 3,
+  maxSymbols: 8,
   maxTimeframes: 4,
   maxRuns: 3,
   maxRuntimeSeconds: 120,
@@ -226,8 +227,11 @@ function buildNarrowAutopilotPlan(options = {}) {
     const recType = String(recommendedNextTest.source || '').trim();
     testType = ALLOWED_TEST_TYPES.includes(recType) ? recType : 'batch';
     const f = recommendedNextTest.suggestedFilters || {};
+    // Broaden, never narrow: prioritise the recommendation's best symbols, then
+    // fill with the broad default set so we keep testing more symbols (the cap
+    // is applied later). Avoids re-running only the same 3 symbols every time.
     const recSymbols = uniqueStrings(f.symbols, { upper: true });
-    symbols = recSymbols.length ? recSymbols : [...DEFAULT_SYMBOLS];
+    symbols = uniqueStrings([...recSymbols, ...DEFAULT_SYMBOLS], { upper: true });
     narrowScoreBand = String(f.narrowScoreBand || DEFAULT_BAND);
     const recConfirms = uniqueStrings(f.confirmations);
     confirmations = recConfirms.length ? recConfirms : [...DEFAULT_CONFIRMATIONS];
@@ -468,26 +472,40 @@ function runNarrowAutopilotOnce(options = {}) {
     runWarnings.push(`run_error:${err.message}`);
   }
 
+  // The batch skips itself if an identical run already completed (no duplicate
+  // tests). Surface that as a distinct, non-failed outcome.
+  const duplicateSkipped = Boolean(runSummary && runSummary.duplicate_skipped);
+  if (duplicateSkipped && runStatus !== 'failed') {
+    runStatus = 'duplicate_skipped';
+    runWarnings.push(`duplicate_skipped:${runSummary.priorBatchId || ''}`);
+  }
+
   finalPlan.status = runStatus;
   const compact = runSummary && runSummary.summary ? {
     status: runSummary.summary.status,
     totalTrades: runSummary.summary.totalTrades,
     bestStrategy: runSummary.summary.bestStrategy ? runSummary.summary.bestStrategy.strategy_id : null,
   } : null;
-  logEvent(runStatus === 'failed' ? 'run_failed' : 'run_completed', finalPlan, { summary: compact, warnings: runWarnings });
+  const eventName = runStatus === 'failed' ? 'run_failed'
+    : runStatus === 'duplicate_skipped' ? 'run_skipped_duplicate'
+    : 'run_completed';
+  logEvent(eventName, finalPlan, { summary: compact, warnings: runWarnings });
 
   return {
     ok: runStatus !== 'failed',
     blocked: false,
     dryRun: false,
-    executed: runStatus !== 'failed',
+    executed: runStatus === 'completed',
+    duplicateSkipped,
     plan: finalPlan,
     runStatus,
     summary: compact,
     warnings: runWarnings,
     message_sv: runStatus === 'failed'
       ? 'Testkörningen misslyckades. Inga order lades. Se warnings.'
-      : 'En liten, säker paper/batch-testkörning slutfördes. Inga riktiga order lades.',
+      : runStatus === 'duplicate_skipped'
+        ? 'Identisk batch fanns redan — hoppade över för att undvika dubblett-data. Inga order lades.'
+        : 'En liten, säker paper/batch-testkörning slutfördes. Inga riktiga order lades.',
     mode: MODE, ...SAFETY,
   };
 }

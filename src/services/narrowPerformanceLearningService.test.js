@@ -125,4 +125,33 @@ function loadServiceWithData(seedFn) {
   assert.equal(summary.confirmations.find((c) => c.confirmation === 'vwap').impact, 'insufficient_data', 'confirmation impact low data');
 }
 
+// ── 3) identical batch files are deduped (no duplicate tests inflate the set) ──
+{
+  const identicalRow = {
+    strategy_id: 'narrow_breakout_v1',
+    strategy_family: 'narrow_state',
+    symbol: 'NVDA',
+    timeframe: '2m',
+    narrowScore: 72,
+    trades: 10,
+    wins: 6,
+    losses: 3,
+    avg_pnl: 0.2,
+    total_pnl: 2.0,
+    created_at: '2026-06-05T00:00:00.000Z',
+  };
+  const service = loadServiceWithData((tmpDir) => {
+    // Two batch files with byte-identical narrow evidence = one deterministic run
+    // repeated. The learning engine must count it once.
+    writeJson(path.join(tmpDir, 'strategy-batches', 'results', 'batch_a.json'), identicalRow);
+    writeJson(path.join(tmpDir, 'strategy-batches', 'results', 'batch_b.json'), identicalRow);
+  });
+
+  const summary = service.buildNarrowPerformanceSummary();
+  assert.equal(summary.summary.totalTrades, 10, 'identical batches counted once (not 20)');
+  assert.equal(summary.summary.duplicateBatchRowsSkipped, 1, 'one duplicate batch row skipped');
+  assert.ok(summary.warnings.includes('duplicate_batch_rows_skipped:1'), 'dedupe warning present');
+  assert.equal(summary.summary.sourceCounts.batch, 1, 'one unique batch record');
+}
+
 console.log('Narrow performance learning tests passed.');
