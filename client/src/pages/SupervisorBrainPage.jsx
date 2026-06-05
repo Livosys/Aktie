@@ -860,6 +860,11 @@ export default function SupervisorBrainPage() {
             subtitle="En bekräftelse är extra bevis innan en strategi räknas som stark."
             helper="Jämförelse"
           />
+          <div className="sup-brain-learning-text">
+            {performanceConfirmation && performanceConfirmation.confirmation
+              ? `Starkaste bekräftelse just nu: ${String(performanceConfirmation.confirmation).toUpperCase()} — gäller testdata, inte bevisad edge.`
+              : 'Ingen stark confirmation ännu — testdatan visar ännu ingen bekräftelse med tydlig, säker effekt.'}
+          </div>
           <div className="sup-brain-grid sup-brain-grid-5">
             {['vwap', 'volume', 'rsi', 'ema', 'macd'].map((confirmation) => (
               <ConfirmationCard
