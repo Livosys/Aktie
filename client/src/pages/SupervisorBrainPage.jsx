@@ -510,6 +510,16 @@ export default function SupervisorBrainPage() {
 
   const mobileSafetyText = 'Endast analysläge · Inga riktiga order · Paper / Replay / Batch only';
 
+  const hasFirstBatch = totalTrades > 0 && learningStatus !== 'ready';
+  const learningHeadline = learningStatus === 'ready'
+    ? 'Systemet börjar identifiera vilka Narrow-strategier som fungerar bäst.'
+    : hasFirstBatch
+      ? 'Första batchtestet är klart, men detta är inte bevisad edge.'
+      : 'För lite data ännu.';
+  const firstBatchNote = hasFirstBatch
+    ? 'Första batchtestet är klart. Datatilliten gäller testmängden, inte bevisad trading-edge.'
+    : null;
+
   if (loading && !narrow && !learning) {
     return (
       <div className="sup-brain-page">
@@ -539,6 +549,7 @@ export default function SupervisorBrainPage() {
               <div className="sup-brain-safety-tags">
                 <Badge tone="good">PAPER ONLY</Badge>
                 <Badge tone="blue">LIVE TRADING OFF</Badge>
+                <Badge tone="neutral">INGA RIKTIGA ORDER</Badge>
               </div>
               <div className="sup-brain-safety-banner">{mobileSafetyText}</div>
               <div className="sup-brain-safety-flags">
@@ -587,11 +598,12 @@ export default function SupervisorBrainPage() {
             <div className="sup-brain-learning-top">
               <div>
                 <div className="sup-brain-learning-status">{LEARNING_STATUS_LABELS[learningStatus] || learningStatus}</div>
-                <h3>{learningStatus === 'ready' ? 'Systemet börjar identifiera vilka Narrow-strategier som fungerar bäst.' : 'Systemet har ännu för lite Narrow State-data för säker slutsats.'}</h3>
+                <h3>{learningHeadline}</h3>
               </div>
               <Badge tone={toneForStatus(learningStatus)}>{CONFIDENCE_LABELS[dataConfidence] || dataConfidence}</Badge>
             </div>
             <p className="sup-brain-learning-text">{learningMessage}</p>
+            {firstBatchNote ? <div className="sup-brain-banner">{firstBatchNote}</div> : null}
             <div className="sup-brain-card-stats">
               <InfoChip label="Testresultat" value={formatInt(totalTrades, '0')} tone="blue" />
               <InfoChip label="Strategier" value={formatInt(strategiesCompared, '0')} tone="blue" />
@@ -693,7 +705,7 @@ export default function SupervisorBrainPage() {
           <SectionTitle
             eyebrow="5. Beslutsstöd"
             title="Bästa / Svagaste / Nästa test"
-            subtitle="Här ser du vad systemet tycker är bäst just nu och vad som bör testas härnäst."
+            subtitle="Här ser du vad systemet tycker är bäst just nu och vad som bör testas härnäst. Baserat på testdata, inte investeringsråd."
             helper="Rekommendationer"
           />
           <div className="sup-brain-grid sup-brain-grid-3">
