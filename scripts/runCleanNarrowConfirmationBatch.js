@@ -471,6 +471,15 @@ function appendFingerprint(entry) {
   try { fs.appendFileSync(FINGERPRINT_LOG, `${JSON.stringify(entry)}\n`, 'utf8'); } catch (_) { /* ignore */ }
 }
 
+function requestedDateWindow() {
+  const date_from = String(process.env.NARROW_BATCH_DATE_FROM || '').trim();
+  const date_to = String(process.env.NARROW_BATCH_DATE_TO || '').trim();
+  if (/^\d{4}-\d{2}-\d{2}$/.test(date_from) && /^\d{4}-\d{2}-\d{2}$/.test(date_to) && date_from <= date_to) {
+    return { date_from, date_to, date_window_source: 'autopilot_selected_window' };
+  }
+  return { ...pickDateWindow(SYMBOLS, 10), date_window_source: 'latest_common_window' };
+}
+
 async function main() {
   ensureDir(DATA_DIR);
   ensureDir(RESULTS_DIR);
@@ -492,7 +501,7 @@ async function main() {
     return;
   }
 
-  const { date_from, date_to } = pickDateWindow(SYMBOLS, 10);
+  const { date_from, date_to, date_window_source } = requestedDateWindow();
 
   // Duplicate guard: if an identical batch (same strategies/symbols/timeframes/
   // date window) already completed, skip — re-running it only produces duplicate
@@ -510,6 +519,7 @@ async function main() {
       priorBatchId: priorRun.batchId,
       date_from,
       date_to,
+      date_window_source,
       strategy_ids: STRATEGY_IDS,
       symbols: SYMBOLS,
       timeframes: TIMEFRAMES,
@@ -584,7 +594,7 @@ async function main() {
   fs.writeFileSync(resultsFile, JSON.stringify(finalRows, null, 2) + '\n', 'utf8');
 
   // Record this batch's fingerprint so identical re-runs are skipped next time.
-  appendFingerprint({ fingerprint, batchId, date_from, date_to, completed_at: new Date().toISOString() });
+  appendFingerprint({ fingerprint, batchId, date_from, date_to, date_window_source, completed_at: new Date().toISOString() });
 
   const summary = narrowLearning.buildNarrowPerformanceSummary();
   const qualityCounts = finalRows.reduce((acc, row) => {
@@ -602,6 +612,7 @@ async function main() {
     batchName,
     date_from,
     date_to,
+    date_window_source,
     strategy_ids: STRATEGY_IDS,
     symbols: SYMBOLS,
     timeframes: TIMEFRAMES,

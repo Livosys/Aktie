@@ -55,6 +55,8 @@ const DEFAULT_STRATEGY_ID = 'narrow_fakeout_reversal_v1';
 const DEFAULT_BAND = 'confirmed_narrow';
 const DEFAULT_CONFIRMATIONS = Object.freeze(['macd']);
 const ALLOWED_TEST_BANDS = Object.freeze(['confirmed_narrow', 'weak_narrow', 'strong_compression']);
+const WINDOW_BAND_PRIORITY = Object.freeze(['confirmed_narrow', 'weak_narrow', 'strong_compression']);
+const DEFAULT_DATE_WINDOW_TRADING_DAYS = 10;
 const BLOCKED_TEST_BANDS = Object.freeze({
   not_narrow: { reason: 'not_valid_for_narrow_strategy' },
 });
@@ -208,6 +210,200 @@ function pickDateWindow(symbols, days = 10, timeframe = '2m') {
   return { date_from: slice[0], date_to: slice[slice.length - 1] };
 }
 
+function dateWindowKey(dateFrom, dateTo, timeframe = '2m') {
+  return `${dateFrom || ''}:${dateTo || ''}:${timeframe || ''}`;
+}
+
+function countBusinessDayGaps(dates = []) {
+  const sorted = [...dates].sort();
+  let gaps = 0;
+  for (let i = 1; i < sorted.length; i += 1) {
+    const prev = new Date(`${sorted[i - 1]}T00:00:00Z`);
+    const next = new Date(`${sorted[i]}T00:00:00Z`);
+    if (Number.isNaN(prev.getTime()) || Number.isNaN(next.getTime())) continue;
+    prev.setUTCDate(prev.getUTCDate() + 1);
+    while (prev < next) {
+      const day = prev.getUTCDay();
+      if (day !== 0 && day !== 6) gaps += 1;
+      prev.setUTCDate(prev.getUTCDate() + 1);
+    }
+  }
+  return gaps;
+}
+
+function readAlreadyTestedWindows({ timeframe = '2m', symbols = DEFAULT_SYMBOLS } = {}) {
+  const wantedSymbols = uniqueStrings(symbols, { upper: true }).sort();
+  const windows = [];
+  const seen = new Set();
+
+  function add(entry = {}, source = 'unknown') {
+    const dateFrom = entry.date_from || entry.dateFrom || entry.metadata?.date_from || entry.metadata?.dateFrom || null;
+    const dateTo = entry.date_to || entry.dateTo || entry.metadata?.date_to || entry.metadata?.dateTo || null;
+    if (!dateFrom || !dateTo) return;
+    const entryTimeframes = uniqueStrings(entry.timeframes || entry.metadata?.timeframes || [timeframe]);
+    if (entryTimeframes.length && !entryTimeframes.includes(timeframe)) return;
+    const entrySymbols = uniqueStrings(entry.symbols || entry.metadata?.symbols || wantedSymbols, { upper: true }).sort();
+    const sameSymbols = !entrySymbols.length || JSON.stringify(entrySymbols) === JSON.stringify(wantedSymbols);
+    if (!sameSymbols) return;
+    const key = dateWindowKey(dateFrom, dateTo, timeframe);
+    if (seen.has(key)) return;
+    seen.add(key);
+    windows.push({
+      dateFrom,
+      dateTo,
+      timeframe,
+      symbols: entrySymbols.length ? entrySymbols : wantedSymbols,
+      source,
+      batchId: entry.batchId || entry.batch_id || entry.id || null,
+      fingerprint: entry.fingerprint || null,
+      completedAt: entry.completed_at || entry.completedAt || entry.batch_completed_at || null,
+    });
+  }
+
+  readJsonl(path.join(LEARNING_DATA_DIR, 'strategy-batches', 'narrow-batch-fingerprints.jsonl'))
+    .forEach((entry) => add(entry, 'narrow-batch-fingerprints'));
+
+  const batches = safeReadJson(path.join(LEARNING_DATA_DIR, 'strategy-batches', 'batches-v1.json'), []);
+  const list = Array.isArray(batches) ? batches : toArray(batches.batches);
+  list.forEach((batch) => {
+    const isNarrow = String(batch?.metadata?.run_type || batch?.name || '').toLowerCase().includes('narrow');
+    if (isNarrow && ['completed', 'done'].includes(String(batch.status || '').toLowerCase())) add(batch, 'batches-v1');
+  });
+
+  return windows.sort((a, b) => `${a.dateFrom}:${a.dateTo}`.localeCompare(`${b.dateFrom}:${b.dateTo}`));
+}
+
+function makeEmptyWindowBandAvailability() {
+  return { confirmed_narrow: 0, weak_narrow: 0, strong_compression: 0, not_narrow: 0 };
+}
+
+function windowBandRank(window = {}) {
+  if (!window || typeof window !== 'object') return { rank: 0, band: null };
+  const bands = window.bandAvailability || {};
+  if (Number(bands.confirmed_narrow || 0) > 0) return { rank: 3, band: 'confirmed_narrow' };
+  if (Number(bands.weak_narrow || 0) > 0) return { rank: 2, band: 'weak_narrow' };
+  if (Number(bands.strong_compression || 0) > 0) return { rank: 1, band: 'strong_compression' };
+  return { rank: 0, band: null };
+}
+
+function selectBestNarrowDateWindow(windows = []) {
+  const candidates = toArray(windows).filter((window) => !window.alreadyTested);
+  let bestWindow = null;
+  for (const window of candidates) {
+    const current = windowBandRank(window);
+    if (!current.rank) continue;
+    const best = windowBandRank(bestWindow);
+    if (!bestWindow || current.rank > best.rank) bestWindow = window;
+    else if (current.rank === best.rank) {
+      const dateCmp = String(window.dateTo || '').localeCompare(String(bestWindow.dateTo || ''));
+      if (dateCmp > 0) bestWindow = window;
+      else if (dateCmp === 0 && Number(window.candleCount || 0) > Number(bestWindow.candleCount || 0)) bestWindow = window;
+    }
+  }
+  return bestWindow;
+}
+
+function analyzeNarrowDateWindows({ symbols = DEFAULT_SYMBOLS, timeframe = '2m', windowTradingDays = DEFAULT_DATE_WINDOW_TRADING_DAYS } = {}) {
+  const normalizedSymbols = uniqueStrings(symbols, { upper: true });
+  const warnings = [];
+  const perSymbol = {};
+  const commonDates = pickCommonDates(normalizedSymbols, timeframe);
+  const alreadyTestedWindows = readAlreadyTestedWindows({ symbols: normalizedSymbols, timeframe });
+  const alreadyTestedKeys = new Set(alreadyTestedWindows.map((w) => dateWindowKey(w.dateFrom, w.dateTo, timeframe)));
+
+  for (const symbol of normalizedSymbols) {
+    const dates = marketDataStore.listAvailableDates(symbol)[timeframe] || [];
+    const candleCount = dates.reduce((sum, date) => sum + marketDataStore.countCandles(symbol, date, timeframe), 0);
+    perSymbol[symbol] = {
+      firstDate: dates[0] || null,
+      lastDate: dates[dates.length - 1] || null,
+      candleCount,
+      tradingDays: dates.length,
+      gaps: countBusinessDayGaps(dates),
+      dates,
+    };
+    if (!dates.length) warnings.push(`no_${timeframe}_data:${symbol}`);
+  }
+
+  const windowSize = Math.max(1, clampInt(windowTradingDays, DEFAULT_DATE_WINDOW_TRADING_DAYS, 1, 60));
+  const windows = [];
+  if (commonDates.length < windowSize) {
+    warnings.push(`common_window_too_short:${commonDates.length}<${windowSize}`);
+  }
+
+  for (let start = 0; start + windowSize <= commonDates.length; start += 1) {
+    const windowDates = commonDates.slice(start, start + windowSize);
+    const dateFrom = windowDates[0];
+    const dateTo = windowDates[windowDates.length - 1];
+    const bandAvailability = makeEmptyWindowBandAvailability();
+    const symbolBands = {};
+    let candleCount = 0;
+
+    for (const symbol of normalizedSymbols) {
+      const candles = loadCandles(symbol, dateFrom, dateTo, timeframe);
+      candleCount += candles.length;
+      if (!candles.length) {
+        warnings.push(`window_no_symbol_candles:${symbol}:${timeframe}:${dateFrom}:${dateTo}`);
+        continue;
+      }
+      const analysis = analyzeNarrowState({ symbol, timeframe, candles });
+      const band = narrowPerformanceLearning.narrowScoreBand(analysis?.narrowScore);
+      const normalizedBand = bandAvailability[band] != null ? band : 'not_narrow';
+      bandAvailability[normalizedBand] += 1;
+      symbolBands[symbol] = {
+        band: normalizedBand,
+        narrowScore: analysis?.narrowScore ?? null,
+        candleCount: candles.length,
+      };
+    }
+
+    const alreadyTested = alreadyTestedKeys.has(dateWindowKey(dateFrom, dateTo, timeframe));
+    const hasAllowedBand = WINDOW_BAND_PRIORITY.some((band) => bandAvailability[band] > 0);
+    const preferred = windowBandRank({ bandAvailability }).band;
+    windows.push({
+      dateFrom,
+      dateTo,
+      timeframe,
+      symbols: normalizedSymbols,
+      candleCount,
+      tradingDays: windowDates.length,
+      bandAvailability,
+      symbolBands,
+      alreadyTested,
+      recommended: false,
+      reason: alreadyTested
+        ? 'identical_window_already_tested'
+        : hasAllowedBand
+          ? `${preferred}_available`
+          : 'no_matching_narrow_windows',
+    });
+  }
+
+  const bestWindow = selectBestNarrowDateWindow(windows);
+  for (const window of windows) {
+    if (bestWindow && window.dateFrom === bestWindow.dateFrom && window.dateTo === bestWindow.dateTo && window.timeframe === bestWindow.timeframe) {
+      window.recommended = true;
+      window.reason = `selected_${windowBandRank(window).band}`;
+    }
+  }
+  if (!bestWindow && windows.length) warnings.push('no_matching_narrow_windows');
+
+  return {
+    windows,
+    bestWindow: bestWindow || null,
+    warnings,
+    symbols: normalizedSymbols,
+    timeframe,
+    commonDateWindow: {
+      dateFrom: commonDates[0] || null,
+      dateTo: commonDates[commonDates.length - 1] || null,
+      tradingDays: commonDates.length,
+    },
+    perSymbol,
+    alreadyTestedWindows,
+  };
+}
+
 function emptyBandAvailability(requestedBand) {
   return {
     requestedBand: requestedBand || DEFAULT_BAND,
@@ -272,7 +468,10 @@ function analyzeNarrowBandAvailability(plan = {}) {
   if (!timeframes.length) availability.warnings.push('band_availability_no_2m_timeframe');
 
   for (const timeframe of timeframes) {
-    const { date_from, date_to } = pickDateWindow(symbols, 10, timeframe);
+    const selectedWindow = plan.dateWindowSelected && plan.dateWindowSelected.timeframe === timeframe ? plan.dateWindowSelected : null;
+    const { date_from, date_to } = selectedWindow
+      ? { date_from: selectedWindow.dateFrom, date_to: selectedWindow.dateTo }
+      : pickDateWindow(symbols, 10, timeframe);
     if (!date_from || !date_to) {
       availability.warnings.push(`band_availability_no_candles:${timeframe}`);
       continue;
@@ -445,6 +644,22 @@ function buildNarrowAutopilotPlan(options = {}) {
     warnings.push(`non_narrow_strategy:${strategyId}`);
   }
 
+  const dateWindowRequested = {
+    timeframe: '2m',
+    tradingDays: DEFAULT_DATE_WINDOW_TRADING_DAYS,
+    requestedBand: requestedNarrowScoreBand,
+    symbols,
+  };
+  const dateWindowAnalysis = analyzeNarrowDateWindows({ symbols, timeframe: '2m', windowTradingDays: DEFAULT_DATE_WINDOW_TRADING_DAYS });
+  const dateWindowSelected = dateWindowAnalysis.bestWindow;
+  const selectedWindowBand = dateWindowSelected ? windowBandRank(dateWindowSelected).band : null;
+  const freshnessStatus = dateWindowSelected
+    ? (dateWindowSelected.dateTo === dateWindowAnalysis.commonDateWindow.dateTo ? 'fresh_common_window' : 'older_matching_window')
+    : (dateWindowAnalysis.commonDateWindow.dateTo ? 'no_matching_narrow_window_in_available_data' : 'missing_2m_data');
+  for (const w of dateWindowAnalysis.warnings) {
+    if (!warnings.includes(w)) warnings.push(w);
+  }
+
   const plan = {
     id: newId('narrow_autopilot_plan'),
     createdAt: nowIso(),
@@ -475,6 +690,20 @@ function buildNarrowAutopilotPlan(options = {}) {
       expectedNoMatchStatus: 'skipped_no_matching_band',
       expectedNoMatchResult: 'no_matching_setups',
     },
+    dateWindowRequested,
+    dateWindowSelected,
+    dateWindowAvailability: {
+      windows: dateWindowAnalysis.windows,
+      bestWindow: dateWindowSelected,
+      commonDateWindow: dateWindowAnalysis.commonDateWindow,
+      perSymbol: dateWindowAnalysis.perSymbol,
+      warnings: dateWindowAnalysis.warnings,
+    },
+    freshnessStatus,
+    alreadyTestedWindows: dateWindowAnalysis.alreadyTestedWindows,
+    windowSelectionReason: dateWindowSelected
+      ? dateWindowSelected.reason
+      : 'no_matching_narrow_windows',
     limits,
     safety: { ...SAFETY },
     status: 'planned',
@@ -486,6 +715,31 @@ function buildNarrowAutopilotPlan(options = {}) {
     ...plan,
     bandAvailabilityOverride: options.bandAvailabilityOverride,
   });
+  if (!options.bandAvailabilityOverride && dateWindowSelected) {
+    const strategyCount = Math.max(1, narrowStrategyIds().size || 3);
+    const selectedAvailability = emptyBandAvailability(requestedNarrowScoreBand);
+    for (const band of ALLOWED_TEST_BANDS) {
+      const symbolHits = Object.entries(dateWindowSelected.symbolBands || {})
+        .filter(([, row]) => row?.band === band)
+        .map(([symbol]) => symbol)
+        .sort();
+      selectedAvailability.availableBands[band] = {
+        rows: symbolHits.length * strategyCount,
+        estimatedTrades: symbolHits.length * strategyCount,
+        symbols: symbolHits,
+      };
+    }
+    selectedAvailability.blockedBands.not_narrow = {
+      ...selectedAvailability.blockedBands.not_narrow,
+      rows: Number(dateWindowSelected.bandAvailability?.not_narrow || 0) * strategyCount,
+      estimatedTrades: Number(dateWindowSelected.bandAvailability?.not_narrow || 0) * strategyCount,
+      symbols: Object.entries(dateWindowSelected.symbolBands || {})
+        .filter(([, row]) => row?.band === 'not_narrow')
+        .map(([symbol]) => symbol)
+        .sort(),
+    };
+    Object.assign(bandAvailability, selectedAvailability, selectNarrowScoreBand(selectedAvailability));
+  }
   plan.bandAvailability = bandAvailability;
   plan.bandSelection = {
     requestedNarrowScoreBand,
@@ -505,8 +759,11 @@ function buildNarrowAutopilotPlan(options = {}) {
     if (!plan.warnings.includes(warning)) plan.warnings.push(warning);
   }
   if (!bandAvailability.selectedBand) {
-    plan.status = 'no_matching_narrow_bands';
-    plan.nextStep = 'collect_more_data_or_broaden_date_window';
+    plan.status = dateWindowSelected ? 'no_matching_narrow_bands' : 'no_matching_narrow_windows';
+    plan.nextStep = dateWindowSelected ? 'collect_more_data_or_broaden_date_window' : 'collect_more_2m_data_or_expand_symbols';
+  }
+  if (dateWindowSelected && selectedWindowBand && bandAvailability.selectedBand !== selectedWindowBand) {
+    plan.warnings.push(`selected_band_differs_from_window:${selectedWindowBand}->${bandAvailability.selectedBand || 'none'}`);
   }
 
   const mismatch = detectPreviousFilterMismatch(plan);
@@ -552,7 +809,9 @@ function validateNarrowAutopilotPlan(plan = {}) {
   const timeframes = uniqueStrings(plan.timeframes);
   if (!symbols.length) reasons.push('no_symbols');
   if (!timeframes.length) reasons.push('no_timeframes');
-  if (!plan.selectedNarrowScoreBand && !plan.filters?.narrowScoreBand) reasons.push('no_matching_narrow_bands');
+  if (!plan.selectedNarrowScoreBand && !plan.filters?.narrowScoreBand) {
+    reasons.push(plan.status === 'no_matching_narrow_windows' ? 'no_matching_narrow_windows' : 'no_matching_narrow_bands');
+  }
   if (plan.selectedNarrowScoreBand === 'not_narrow' || plan.filters?.narrowScoreBand === 'not_narrow') {
     reasons.push('not_narrow_not_allowed_for_narrow_strategy');
   }
@@ -583,9 +842,17 @@ function validateNarrowAutopilotPlan(plan = {}) {
       expectedNoMatchResult: 'no_matching_setups',
     },
     safety: { ...SAFETY },
-    status: blocked ? (reasons.includes('no_matching_narrow_bands') ? 'no_matching_narrow_bands' : 'blocked') : 'validated',
+    status: blocked
+      ? (reasons.includes('no_matching_narrow_windows') ? 'no_matching_narrow_windows'
+        : reasons.includes('no_matching_narrow_bands') ? 'no_matching_narrow_bands'
+          : 'blocked')
+      : 'validated',
     warnings,
-    nextStep: blocked ? (reasons.includes('no_matching_narrow_bands') ? 'collect_more_data_or_broaden_date_window' : 'fix_plan') : (plan.testType === 'batch' || plan.testType === 'replay' || plan.testType === 'paper' ? 'run_or_queue' : 'fix_plan'),
+    nextStep: blocked
+      ? (reasons.includes('no_matching_narrow_windows') ? 'collect_more_2m_data_or_expand_symbols'
+        : reasons.includes('no_matching_narrow_bands') ? 'collect_more_data_or_broaden_date_window'
+          : 'fix_plan')
+      : (plan.testType === 'batch' || plan.testType === 'replay' || plan.testType === 'paper' ? 'run_or_queue' : 'fix_plan'),
   };
 
   return { ok: !blocked, blocked, reasons, warnings, normalizedPlan };
@@ -646,11 +913,14 @@ function runNarrowAutopilotOnce(options = {}) {
 
   if (validation.blocked) {
     const noMatchingBands = validation.reasons.includes('no_matching_narrow_bands');
+    const noMatchingWindows = validation.reasons.includes('no_matching_narrow_windows');
     return {
       ok: false, blocked: true, dryRun,
       reasons: validation.reasons,
       plan: finalPlan, mode: MODE, ...SAFETY,
-      message_sv: noMatchingBands
+      message_sv: noMatchingWindows
+        ? 'Dry-run: inga körbara narrow-fönster hittades i riktig 2m-data. Samla mer/färskare data eller bredda symbolerna.'
+        : noMatchingBands
         ? 'Dry-run: inga körbara narrow-band finns i aktuell 2m-data. not_narrow används inte som giltigt narrow-test. Samla mer data eller bredda datum/symboler.'
         : 'Planen blockerades av säkerhetsvalideringen. Inget test kördes.',
     };
@@ -680,6 +950,7 @@ function runNarrowAutopilotOnce(options = {}) {
     const planTimeframes = Array.isArray(finalPlan.timeframes) ? finalPlan.timeframes.join(',') : '';
     const requestedBand = String(finalPlan.requestedNarrowScoreBand || finalPlan.filterEnforcement?.requestedNarrowScoreBand || '').trim();
     const selectedBand = String(finalPlan.selectedNarrowScoreBand || finalPlan.filters?.narrowScoreBand || '').trim();
+    const selectedWindow = finalPlan.dateWindowSelected || {};
     const proc = spawnSync('node', [CLEAN_BATCH_SCRIPT], {
       cwd: path.resolve(__dirname, '../..'),
       timeout: timeoutMs,
@@ -691,6 +962,8 @@ function runNarrowAutopilotOnce(options = {}) {
         NARROW_BATCH_REQUESTED_NARROW_SCORE_BAND: requestedBand,
         NARROW_BATCH_SELECTED_NARROW_SCORE_BAND: selectedBand,
         NARROW_BATCH_NARROW_SCORE_BAND: selectedBand,
+        NARROW_BATCH_DATE_FROM: selectedWindow.dateFrom || '',
+        NARROW_BATCH_DATE_TO: selectedWindow.dateTo || '',
       },
     });
     if (proc.error) throw proc.error;
@@ -803,5 +1076,7 @@ module.exports = {
   findBlockedIntent,
   isNarrowStrategy,
   analyzeNarrowBandAvailability,
+  analyzeNarrowDateWindows,
+  selectBestNarrowDateWindow,
   selectNarrowScoreBand,
 };
