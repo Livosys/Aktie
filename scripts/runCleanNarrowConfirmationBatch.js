@@ -44,6 +44,14 @@ const REQUESTED_TIMEFRAMES = requestedTimeframes();
 const TF_AVAILABILITY = detectNarrowTimeframeAvailability(SYMBOLS, REQUESTED_TIMEFRAMES);
 // Only run timeframes with real, loadable data (today: 2m). Never mislabel.
 const TIMEFRAMES = TF_AVAILABILITY.available;
+const VALID_NARROW_SCORE_BANDS = new Set(['not_narrow', 'weak_narrow', 'confirmed_narrow', 'strong_compression', 'unknown']);
+
+function requestedNarrowScoreBand() {
+  const band = String(process.env.NARROW_BATCH_NARROW_SCORE_BAND || '').trim();
+  return VALID_NARROW_SCORE_BANDS.has(band) && band !== 'unknown' ? band : null;
+}
+
+const REQUESTED_NARROW_SCORE_BAND = requestedNarrowScoreBand();
 
 function round(value, decimals = 4) {
   const n = Number(value);
@@ -62,6 +70,80 @@ function sleep(ms) {
 
 function safeArray(value) {
   return Array.isArray(value) ? value : [];
+}
+
+function rowMatchesRequestedBand(row, requestedBand = REQUESTED_NARROW_SCORE_BAND) {
+  if (!requestedBand) return true;
+  return String(row?.narrowScoreBand || '') === requestedBand;
+}
+
+function applyScoreBandFilter(rows, requestedBand = REQUESTED_NARROW_SCORE_BAND) {
+  const list = safeArray(rows);
+  if (!requestedBand) {
+    return { rows: list, requestedBand: null, skippedRows: 0, status: 'not_requested' };
+  }
+  const filtered = list.filter((row) => rowMatchesRequestedBand(row, requestedBand));
+  return {
+    rows: filtered,
+    requestedBand,
+    skippedRows: list.length - filtered.length,
+    status: filtered.length ? 'matched' : 'skipped_no_matching_band',
+  };
+}
+
+function buildNoMatchingSetupsRow(batchMeta = {}, filterResult = {}) {
+  const requestedBand = filterResult.requestedBand || REQUESTED_NARROW_SCORE_BAND || null;
+  return {
+    status: 'skipped_no_matching_band',
+    result: 'no_matching_setups',
+    skipReason: 'no_matching_setups',
+    strategy_family: 'narrow_state',
+    strategy_id: 'narrow_score_band_filter',
+    symbol: null,
+    timeframe: TIMEFRAMES.join(',') || null,
+    date_from: batchMeta.date_from || null,
+    date_to: batchMeta.date_to || null,
+    run_created_at: batchMeta.created_at || null,
+    run_completed_at: batchMeta.batch_completed_at || null,
+    requestedFilters: { narrowScoreBand: requestedBand },
+    filters: { narrowScoreBand: requestedBand },
+    filterEnforcement: {
+      requestedNarrowScoreBand: requestedBand,
+      enforceable: Boolean(requestedBand),
+      status: 'skipped_no_matching_band',
+      skippedRows: Number(filterResult.skippedRows || 0),
+      expectedNoMatchStatus: 'skipped_no_matching_band',
+    },
+    narrowScore: null,
+    narrowScoreBand: requestedBand,
+    regimeLabel: null,
+    trades: 0,
+    tradeCount: 0,
+    wins: 0,
+    losses: 0,
+    breakeven: 0,
+    avgPnl: 0,
+    totalPnl: 0,
+    actions_allowed: false,
+    can_place_orders: false,
+    live_trading_enabled: false,
+    broker_enabled: false,
+  };
+}
+
+function attachRequestedFilterMetadata(row, requestedBand = REQUESTED_NARROW_SCORE_BAND) {
+  if (!requestedBand) return row;
+  return {
+    ...row,
+    requestedFilters: { ...(row.requestedFilters || {}), narrowScoreBand: requestedBand },
+    filters: { ...(row.filters || {}), narrowScoreBand: requestedBand },
+    filterEnforcement: {
+      requestedNarrowScoreBand: requestedBand,
+      enforceable: true,
+      status: 'matched',
+      expectedNoMatchStatus: 'skipped_no_matching_band',
+    },
+  };
 }
 
 function pickCommonDates(symbols, timeframe = '2m') {
@@ -358,6 +440,9 @@ function batchFingerprint(date_from, date_to) {
     strategy_ids: [...STRATEGY_IDS].sort(),
     symbols: [...SYMBOLS].sort(),
     timeframes: [...TIMEFRAMES].sort(),
+    filters: {
+      narrowScoreBand: REQUESTED_NARROW_SCORE_BAND,
+    },
     date_from,
     date_to,
   });
@@ -418,6 +503,12 @@ async function main() {
       strategy_ids: STRATEGY_IDS,
       symbols: SYMBOLS,
       timeframes: TIMEFRAMES,
+      requestedFilters: { narrowScoreBand: REQUESTED_NARROW_SCORE_BAND },
+      filterEnforcement: {
+        requestedNarrowScoreBand: REQUESTED_NARROW_SCORE_BAND,
+        enforceable: Boolean(REQUESTED_NARROW_SCORE_BAND),
+        expectedNoMatchStatus: 'skipped_no_matching_band',
+      },
       message_sv: 'Identisk batch har redan körts — hoppas över för att undvika dubblett-data. (NARROW_BATCH_FORCE=1 tvingar).',
       summary: narrowLearning.buildNarrowPerformanceSummary().summary,
       actions_allowed: false, can_place_orders: false, live_trading_enabled: false, broker_enabled: false,
@@ -465,19 +556,26 @@ async function main() {
 
   const resultsFile = path.join(RESULTS_DIR, `${batchId}.json`);
   const rawResults = JSON.parse(fs.readFileSync(resultsFile, 'utf8'));
-  const enriched = safeArray(rawResults).map((row) => enrichRow({
+  const batchMeta = {
     created_at: batch.batch.created_at,
     batch_completed_at: completedBatch.batch_completed_at || completedBatch.completed_at || null,
     date_from,
     date_to,
-  }, row));
-  fs.writeFileSync(resultsFile, JSON.stringify(enriched, null, 2) + '\n', 'utf8');
+  };
+  const enriched = safeArray(rawResults)
+    .map((row) => enrichRow(batchMeta, row))
+    .map((row) => attachRequestedFilterMetadata(row));
+  const filterResult = applyScoreBandFilter(enriched);
+  const finalRows = filterResult.status === 'skipped_no_matching_band'
+    ? [buildNoMatchingSetupsRow(batchMeta, filterResult)]
+    : filterResult.rows;
+  fs.writeFileSync(resultsFile, JSON.stringify(finalRows, null, 2) + '\n', 'utf8');
 
   // Record this batch's fingerprint so identical re-runs are skipped next time.
   appendFingerprint({ fingerprint, batchId, date_from, date_to, completed_at: new Date().toISOString() });
 
   const summary = narrowLearning.buildNarrowPerformanceSummary();
-  const qualityCounts = enriched.reduce((acc, row) => {
+  const qualityCounts = finalRows.reduce((acc, row) => {
     const rowCounts = confirmationQualitySummary(row.confirmationQuality);
     acc.real += rowCounts.real;
     acc.heuristic += rowCounts.heuristic;
@@ -499,7 +597,15 @@ async function main() {
     availableTimeframes: TF_AVAILABILITY.available,
     missingTimeframes: TF_AVAILABILITY.missing,
     timeframeSkips,
-    result_count: enriched.length,
+    requestedFilters: { narrowScoreBand: REQUESTED_NARROW_SCORE_BAND },
+    filterEnforcement: {
+      requestedNarrowScoreBand: REQUESTED_NARROW_SCORE_BAND,
+      enforceable: Boolean(REQUESTED_NARROW_SCORE_BAND),
+      status: filterResult.status,
+      skippedRows: filterResult.skippedRows,
+      expectedNoMatchStatus: 'skipped_no_matching_band',
+    },
+    result_count: finalRows.length,
     confirmationQualityTotals: qualityCounts,
     summary: summary.summary,
     recommendedNextTest: summary.recommendedNextTest,
@@ -508,7 +614,16 @@ async function main() {
   console.log(JSON.stringify(output, null, 2));
 }
 
-main().catch((err) => {
-  console.error(err.stack || err.message || String(err));
-  process.exitCode = 1;
-});
+if (require.main === module) {
+  main().catch((err) => {
+    console.error(err.stack || err.message || String(err));
+    process.exitCode = 1;
+  });
+}
+
+module.exports = {
+  applyScoreBandFilter,
+  buildNoMatchingSetupsRow,
+  rowMatchesRequestedBand,
+  requestedNarrowScoreBand,
+};

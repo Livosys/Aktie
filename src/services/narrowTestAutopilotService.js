@@ -70,6 +70,8 @@ const HARD_LIMITS = Object.freeze({
 // Data dir is env-overridable so tests can isolate to a tmp dir.
 const DATA_DIR = path.resolve(process.env.NARROW_AUTOPILOT_DIR || path.resolve(__dirname, '../../data/autopilot'));
 const HISTORY_FILE = path.join(DATA_DIR, 'narrow-autopilot-history.jsonl');
+const LEARNING_DATA_DIR = path.resolve(process.env.NARROW_DATA_DIR || path.resolve(__dirname, '../../data'));
+const BATCH_RESULTS_DIR = path.join(LEARNING_DATA_DIR, 'strategy-batches', 'results');
 
 const CLEAN_BATCH_SCRIPT = path.resolve(__dirname, '../../scripts/runCleanNarrowConfirmationBatch.js');
 
@@ -131,6 +133,54 @@ function readJsonl(file) {
   } catch (_) {
     return [];
   }
+}
+
+function safeReadJson(file, fallback) {
+  try {
+    if (!fs.existsSync(file)) return fallback;
+    return JSON.parse(fs.readFileSync(file, 'utf8'));
+  } catch (_) {
+    return fallback;
+  }
+}
+
+function latestBatchRows() {
+  try {
+    if (!fs.existsSync(BATCH_RESULTS_DIR)) return [];
+    const files = fs.readdirSync(BATCH_RESULTS_DIR)
+      .filter((f) => f.endsWith('.json'))
+      .map((f) => ({ file: f, path: path.join(BATCH_RESULTS_DIR, f), stat: fs.statSync(path.join(BATCH_RESULTS_DIR, f)) }))
+      .sort((a, b) => b.stat.mtimeMs - a.stat.mtimeMs);
+    if (!files.length) return [];
+    const data = safeReadJson(files[0].path, []);
+    const rows = Array.isArray(data) ? data : (data && typeof data === 'object' ? [data] : []);
+    return rows.map((row) => ({ ...row, __sourceFile: files[0].file }));
+  } catch (_) {
+    return [];
+  }
+}
+
+function detectPreviousFilterMismatch(plan) {
+  const requestedBand = String(plan?.filters?.narrowScoreBand || '').trim();
+  if (!requestedBand) return null;
+  const symbols = new Set(uniqueStrings(plan.symbols, { upper: true }));
+  const timeframes = new Set(uniqueStrings(plan.timeframes));
+  const rows = latestBatchRows().filter((row) => {
+    const symbol = String(row.symbol || '').toUpperCase();
+    const timeframe = String(row.timeframe || '');
+    return symbols.has(symbol) && timeframes.has(timeframe);
+  });
+  if (!rows.length) return null;
+  const bands = [...new Set(rows.map((row) => String(row.narrowScoreBand || 'unknown')))];
+  const requestedFilterSeen = rows.some((row) => String(row.requestedFilters?.narrowScoreBand || row.filters?.narrowScoreBand || '') === requestedBand);
+  const hasRequestedBand = rows.some((row) => String(row.narrowScoreBand || '') === requestedBand);
+  if (requestedFilterSeen || hasRequestedBand) return null;
+  return {
+    code: 'filter_mismatch_previous_run',
+    requestedNarrowScoreBand: requestedBand,
+    observedNarrowScoreBands: bands,
+    sourceFile: rows[0].__sourceFile || null,
+  };
 }
 
 function appendJsonl(file, entry) {
@@ -295,12 +345,24 @@ function buildNarrowAutopilotPlan(options = {}) {
       confirmationQuality,
       marketGroup: inferMarketGroup(symbols),
     },
+    filterEnforcement: {
+      requestedNarrowScoreBand: narrowScoreBand,
+      enforceable: true,
+      expectedNoMatchStatus: 'skipped_no_matching_band',
+      expectedNoMatchResult: 'no_matching_setups',
+    },
     limits,
     safety: { ...SAFETY },
     status: 'planned',
     warnings,
     nextStep: 'validate',
   };
+
+  const mismatch = detectPreviousFilterMismatch(plan);
+  if (mismatch) {
+    plan.warnings.push(mismatch.code);
+    plan.filterEnforcement.previousRunWarning = mismatch;
+  }
 
   return plan;
 }
@@ -357,6 +419,13 @@ function validateNarrowAutopilotPlan(plan = {}) {
     mode: MODE,
     symbols,
     timeframes,
+    filterEnforcement: {
+      ...(plan.filterEnforcement || {}),
+      requestedNarrowScoreBand: plan.filters?.narrowScoreBand || plan.filterEnforcement?.requestedNarrowScoreBand || null,
+      enforceable: true,
+      expectedNoMatchStatus: 'skipped_no_matching_band',
+      expectedNoMatchResult: 'no_matching_setups',
+    },
     safety: { ...SAFETY },
     status: blocked ? 'blocked' : 'validated',
     warnings,
@@ -449,12 +518,17 @@ function runNarrowAutopilotOnce(options = {}) {
     // Pass the plan's safe runnable timeframes to the batch script. The script
     // re-detects availability and skips any timeframe without real candle data.
     const planTimeframes = Array.isArray(finalPlan.timeframes) ? finalPlan.timeframes.join(',') : '';
+    const requestedBand = String(finalPlan.filters?.narrowScoreBand || '').trim();
     const proc = spawnSync('node', [CLEAN_BATCH_SCRIPT], {
       cwd: path.resolve(__dirname, '../..'),
       timeout: timeoutMs,
       encoding: 'utf8',
       maxBuffer: 16 * 1024 * 1024,
-      env: { ...process.env, NARROW_BATCH_TIMEFRAMES: planTimeframes },
+      env: {
+        ...process.env,
+        NARROW_BATCH_TIMEFRAMES: planTimeframes,
+        NARROW_BATCH_NARROW_SCORE_BAND: requestedBand,
+      },
     });
     if (proc.error) throw proc.error;
     if (proc.status !== 0) {

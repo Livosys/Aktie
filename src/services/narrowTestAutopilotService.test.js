@@ -4,6 +4,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const assert = require('assert/strict');
+const cleanBatch = require('../../scripts/runCleanNarrowConfirmationBatch');
 
 // Isolate both the performance-learning data dir and the autopilot history dir
 // to a fresh tmp dir, then load the service with a clean require cache.
@@ -60,6 +61,10 @@ function seedNarrowData(tmpDir) {
   assert.ok(plan.symbols.length >= 1, 'plan has symbols');
   assert.ok(plan.timeframes.length >= 1, 'plan has timeframes');
   assert.ok(service.ALLOWED_TEST_TYPES.includes(plan.testType), 'plan testType is allowed');
+  assert.equal(plan.filters.narrowScoreBand, 'confirmed_narrow', 'plan requests confirmed_narrow by default');
+  assert.equal(plan.filterEnforcement.requestedNarrowScoreBand, 'confirmed_narrow', 'plan exposes requested score-band enforcement');
+  assert.equal(plan.filterEnforcement.enforceable, true, 'score-band filter is enforceable');
+  assert.equal(plan.filterEnforcement.expectedNoMatchStatus, 'skipped_no_matching_band', 'no-match behavior is explicit');
 }
 
 // ── 2) default (cautious) plan when there is no narrow data ───────────────────
@@ -156,6 +161,64 @@ function seedNarrowData(tmpDir) {
   const history = service.readNarrowAutopilotHistory();
   assert.ok(Array.isArray(history), 'history is an array');
   assert.equal(history.length, 0, 'history empty before any run');
+}
+
+// ── 9) score-band filtering never keeps non-matching batch rows ──────────────
+{
+  const rows = [
+    { strategy_family: 'narrow_state', strategy_id: 'narrow_fakeout_reversal_v1', symbol: 'MSFT', timeframe: '2m', narrowScoreBand: 'not_narrow', trades: 12 },
+    { strategy_family: 'narrow_state', strategy_id: 'narrow_fakeout_reversal_v1', symbol: 'AAPL', timeframe: '2m', narrowScoreBand: 'confirmed_narrow', trades: 4 },
+  ];
+  const filtered = cleanBatch.applyScoreBandFilter(rows, 'confirmed_narrow');
+  assert.equal(filtered.status, 'matched', 'confirmed_narrow row matched');
+  assert.equal(filtered.rows.length, 1, 'only matching row kept');
+  assert.equal(filtered.rows[0].narrowScoreBand, 'confirmed_narrow', 'non-matching not_narrow row removed');
+  assert.equal(filtered.skippedRows, 1, 'skipped row counted');
+}
+
+// ── 10) no matching score-band writes an honest zero-trade skip row ──────────
+{
+  const filtered = cleanBatch.applyScoreBandFilter([
+    { strategy_family: 'narrow_state', strategy_id: 'narrow_fakeout_reversal_v1', symbol: 'MSFT', timeframe: '2m', narrowScoreBand: 'not_narrow', trades: 12 },
+  ], 'confirmed_narrow');
+  assert.equal(filtered.status, 'skipped_no_matching_band', 'no matching band skips');
+  assert.equal(filtered.rows.length, 0, 'no invalid result rows kept');
+  const skip = cleanBatch.buildNoMatchingSetupsRow({ date_from: '2026-01-01', date_to: '2026-01-02' }, filtered);
+  assert.equal(skip.status, 'skipped_no_matching_band', 'skip status set');
+  assert.equal(skip.result, 'no_matching_setups', 'skip result honest');
+  assert.equal(skip.tradeCount, 0, 'skip row has zero tradeCount');
+  assert.equal(skip.trades, 0, 'skip row has zero trades');
+  assert.equal(skip.narrowScoreBand, 'confirmed_narrow', 'skip row records requested band');
+  assert.equal(skip.actions_allowed, false, 'skip safety actions false');
+  assert.equal(skip.can_place_orders, false, 'skip safety orders false');
+  assert.equal(skip.live_trading_enabled, false, 'skip safety live false');
+  assert.equal(skip.broker_enabled, false, 'skip safety broker false');
+}
+
+// ── 11) dry-run warns if latest identical batch produced the wrong band ──────
+{
+  const { service } = loadServiceWithData((tmpDir) => {
+    seedNarrowData(tmpDir);
+    fs.writeFileSync(path.join(tmpDir, 'strategy-batches', 'results', 'batch_latest.json'), JSON.stringify([
+      {
+        strategy_family: 'narrow_state',
+        strategy_id: 'narrow_fakeout_reversal_v1',
+        symbol: 'MSFT',
+        timeframe: '2m',
+        narrowScore: 20,
+        narrowScoreBand: 'not_narrow',
+        trades: 3,
+        wins: 1,
+        losses: 2,
+      },
+    ], null, 2), 'utf8');
+  });
+  const run = service.runNarrowAutopilotOnce();
+  assert.equal(run.dryRun, true, 'mismatch check stays dry-run');
+  assert.equal(run.executed, false, 'mismatch check does not execute');
+  assert.ok(run.plan.warnings.includes('filter_mismatch_previous_run'), 'mismatch warning exposed');
+  assert.equal(run.plan.filterEnforcement.previousRunWarning.requestedNarrowScoreBand, 'confirmed_narrow', 'mismatch records requested band');
+  assert.deepEqual(run.plan.filterEnforcement.previousRunWarning.observedNarrowScoreBands, ['not_narrow'], 'mismatch records observed band');
 }
 
 console.log('Narrow test autopilot tests passed.');
