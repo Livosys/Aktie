@@ -19,10 +19,19 @@
 const fs = require('fs');
 const path = require('path');
 
-// New standard for Narrow State-first learning (autopilot / batch / replay).
-const NARROW_DEFAULT_TIMEFRAMES = Object.freeze(['1m', '2m', '5m', '10m']);
+// Current standard for Narrow State-first learning (autopilot / batch / replay).
+// FOCUSED ON 2m for now: it is the only timeframe that is stably available and
+// loadable today, which keeps the first Narrow State learning runs simple and
+// stable (no missing-timeframe noise). 1m/5m/10m are kept as optional future
+// timeframes and can be promoted once their data sources are fully wired.
+const NARROW_DEFAULT_TIMEFRAMES = Object.freeze(['2m']);
 
-// 15m is intentionally NOT a default anymore. Kept here as optional/legacy only.
+// Optional future timeframes — NOT default yet, not shown as "missing" in the
+// standard plan. 1m needs a clean source, 5m needs loader wiring, 10m needs
+// aggregation from 2m. See detectNarrowTimeframeAvailability for status.
+const OPTIONAL_FUTURE_TIMEFRAMES = Object.freeze(['1m', '5m', '10m']);
+
+// 15m is intentionally NOT a default. Kept here as optional/legacy only.
 const LEGACY_OPTIONAL_TIMEFRAMES = Object.freeze(['15m']);
 
 // The timeframe the batch loader (marketDataStore.loadCandles) can serve today
@@ -139,6 +148,7 @@ function detectNarrowTimeframeAvailability(symbols, requested = NARROW_DEFAULT_T
 
 module.exports = {
   NARROW_DEFAULT_TIMEFRAMES,
+  OPTIONAL_FUTURE_TIMEFRAMES,
   LEGACY_OPTIONAL_TIMEFRAMES,
   LOADER_RUNNABLE_TIMEFRAMES,
   detectNarrowTimeframeAvailability,

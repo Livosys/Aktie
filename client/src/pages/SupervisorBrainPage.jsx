@@ -792,7 +792,7 @@ export default function SupervisorBrainPage() {
                       <span>Planerade timeframes:</span>
                       {safeArray(autopilotPlan.requestedTimeframes).length
                         ? safeArray(autopilotPlan.requestedTimeframes).map((tf) => <Badge key={`req-${tf}`} tone="neutral">{tf}</Badge>)
-                        : <Badge tone="neutral">1m, 2m, 5m, 10m</Badge>}
+                        : <Badge tone="neutral">2m</Badge>}
                     </div>
                     <div className="sup-brain-timeframes-row">
                       <span>Tillgängliga nu:</span>
@@ -851,7 +851,7 @@ export default function SupervisorBrainPage() {
               <div className="sup-brain-empty">Autopiloten är inte tillgänglig just nu.</div>
             )}
             <div className="sup-brain-learning-text">
-              Ny Narrow timeframe-standard: <strong>1m, 2m, 5m, 10m</strong>. 1m och 2m hittar snabba trånga lägen; 5m och 10m används för stabilare bekräftelse. Saknade candles visas som varning ovan — systemet fejkar aldrig marknadsdata.
+              Systemet fokuserar just nu på <strong>2-minutersdata</strong>. Det är den timeframe som är stabilt tillgänglig och bäst lämpad för våra första Narrow State-tester. 1m, 5m och 10m kan läggas till senare när datakällorna är fullt kopplade. Systemet fejkar aldrig marknadsdata.
             </div>
             <BeginnerBox
               title="Vad gör autopiloten?"
