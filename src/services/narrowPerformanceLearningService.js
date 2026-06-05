@@ -316,11 +316,31 @@ function readPaperRecords() {
   return { records: out, warnings };
 }
 
+// Content fingerprint for a normalized batch row. Two rows with the same
+// strategy/symbol/timeframe AND identical result numbers are the SAME evidence
+// (e.g. a deterministic batch re-run over the same candle window). We count each
+// unique fingerprint once so repeated identical tests never inflate the dataset.
+function batchRowFingerprint(n) {
+  return [
+    String(n.strategy_id || ''),
+    String(n.symbol || ''),
+    String(n.timeframe || ''),
+    n.tradeCount ?? '',
+    n.wins ?? '',
+    n.losses ?? '',
+    n.avgPnl ?? '',
+    n.totalPnl ?? '',
+    n.narrowScore ?? '',
+  ].join('|');
+}
+
 function readBatchRecords() {
   const out = [];
   const warnings = [];
+  const seen = new Set();
+  let duplicatesSkipped = 0;
   try {
-    if (!fs.existsSync(BATCH_RESULTS_DIR)) return { records: out, warnings };
+    if (!fs.existsSync(BATCH_RESULTS_DIR)) return { records: out, warnings, duplicatesSkipped };
     const files = fs.readdirSync(BATCH_RESULTS_DIR).filter((f) => f.endsWith('.json'));
     for (const f of files) {
       const data = safeReadJson(path.join(BATCH_RESULTS_DIR, f), []);
@@ -329,12 +349,17 @@ function readBatchRecords() {
         if (!isNarrowRow(row)) continue;
         if (num(row.trades) <= 0) continue;
         const normalized = normalizeBatchRow(row);
+        // Dedupe identical batch evidence (no duplicate tests in the learning set).
+        const fp = batchRowFingerprint(normalized);
+        if (seen.has(fp)) { duplicatesSkipped += 1; continue; }
+        seen.add(fp);
         out.push(normalized);
         warnings.push(...sourceWarningsForRow(row, 'batch'));
       }
     }
   } catch (_) { /* ignore */ }
-  return { records: out, warnings };
+  if (duplicatesSkipped > 0) warnings.push(`duplicate_batch_rows_skipped:${duplicatesSkipped}`);
+  return { records: out, warnings, duplicatesSkipped };
 }
 
 function readReplayRecords() {
@@ -379,6 +404,7 @@ function collectNarrowRecords() {
     records,
     warnings: [...new Set(warnings)],
     sourceCounts: { paper: paper.records.length, batch: batch.records.length, replay: replay.records.length },
+    duplicateBatchRowsSkipped: batch.duplicatesSkipped || 0,
   };
 }
 
@@ -678,7 +704,7 @@ function recommendNextNarrowTest(rankings, scoreBands, confirmations, sourceCoun
 // ── Top-level summary ────────────────────────────────────────────────────────
 
 function buildNarrowPerformanceSummary() {
-  const { records, warnings, sourceCounts } = collectNarrowRecords();
+  const { records, warnings, sourceCounts, duplicateBatchRowsSkipped } = collectNarrowRecords();
   const rankings = rankNarrowStrategies(records);
   const scoreBands = analyzeNarrowScoreBands(records);
   const confirmations = analyzeConfirmations(records);
@@ -723,6 +749,7 @@ function buildNarrowPerformanceSummary() {
       strongestConfirmation,
       dataConfidence,
       sourceCounts,
+      duplicateBatchRowsSkipped: duplicateBatchRowsSkipped || 0,
       message: totalTrades === 0
         ? 'Systemet har ännu för lite Narrow State-data för säker slutsats.'
         : (dataConfidence === 'high' ? 'Tillräckligt med data för första slutsatser.' : 'Begränsad data - tolka resultaten försiktigt.'),

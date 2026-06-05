@@ -2,6 +2,7 @@
 
 const fs = require('fs');
 const path = require('path');
+const crypto = require('crypto');
 
 const batchService = require('../src/services/strategyBatchTestService');
 const narrowLearning = require('../src/services/narrowPerformanceLearningService');
@@ -15,6 +16,9 @@ const { NARROW_DEFAULT_TIMEFRAMES, detectNarrowTimeframeAvailability } = require
 const ROOT = path.resolve(__dirname, '..');
 const DATA_DIR = path.join(ROOT, 'data', 'strategy-batches');
 const RESULTS_DIR = path.join(DATA_DIR, 'results');
+// Runtime log of completed batch fingerprints (gitignored) — used to skip
+// re-running an identical batch that would only produce duplicate evidence.
+const FINGERPRINT_LOG = path.join(DATA_DIR, 'narrow-batch-fingerprints.jsonl');
 
 const STRATEGY_IDS = [
   'narrow_breakout_v1',
@@ -22,7 +26,9 @@ const STRATEGY_IDS = [
   'narrow_vwap_mean_reversion_v1',
 ];
 
-const SYMBOLS = ['MSFT', 'QQQ', 'TSLA'];
+// Broadened equity set (all have real 2m candle data with a shared common date
+// window). More symbols → more diverse, non-duplicate Narrow State evidence.
+const SYMBOLS = ['MSFT', 'QQQ', 'TSLA', 'AAPL', 'NVDA', 'META', 'AMZN', 'AMD'];
 
 // Requested Narrow timeframe standard (Goal 7): 1m / 2m / 5m / 10m.
 // Comes from the autopilot plan (NARROW_BATCH_TIMEFRAMES env) or the standard.
@@ -345,6 +351,31 @@ function buildTimeframeSkips() {
   return skips;
 }
 
+// Content fingerprint of a batch's inputs. Same strategies+symbols+timeframes
+// over the same date window = deterministically identical results = duplicate.
+function batchFingerprint(date_from, date_to) {
+  const payload = JSON.stringify({
+    strategy_ids: [...STRATEGY_IDS].sort(),
+    symbols: [...SYMBOLS].sort(),
+    timeframes: [...TIMEFRAMES].sort(),
+    date_from,
+    date_to,
+  });
+  return crypto.createHash('sha256').update(payload).digest('hex').slice(0, 16);
+}
+
+function readFingerprintLog() {
+  try {
+    if (!fs.existsSync(FINGERPRINT_LOG)) return [];
+    return fs.readFileSync(FINGERPRINT_LOG, 'utf8').split('\n').map((l) => l.trim()).filter(Boolean)
+      .map((l) => { try { return JSON.parse(l); } catch { return null; } }).filter(Boolean);
+  } catch (_) { return []; }
+}
+
+function appendFingerprint(entry) {
+  try { fs.appendFileSync(FINGERPRINT_LOG, `${JSON.stringify(entry)}\n`, 'utf8'); } catch (_) { /* ignore */ }
+}
+
 async function main() {
   ensureDir(DATA_DIR);
   ensureDir(RESULTS_DIR);
@@ -367,6 +398,33 @@ async function main() {
   }
 
   const { date_from, date_to } = pickDateWindow(SYMBOLS, 10);
+
+  // Duplicate guard: if an identical batch (same strategies/symbols/timeframes/
+  // date window) already completed, skip — re-running it only produces duplicate
+  // evidence (deterministic over the same candle data). Set NARROW_BATCH_FORCE=1
+  // to override. New candle dates change the window → a new, non-duplicate run.
+  const fingerprint = batchFingerprint(date_from, date_to);
+  const priorRun = readFingerprintLog().find((e) => e.fingerprint === fingerprint);
+  if (priorRun && process.env.NARROW_BATCH_FORCE !== '1') {
+    console.error(`[narrow-batch] duplicate_skipped fingerprint=${fingerprint} priorBatch=${priorRun.batchId}`);
+    console.log(JSON.stringify({
+      ok: true,
+      duplicate_skipped: true,
+      reason: 'identical_batch_already_completed',
+      fingerprint,
+      priorBatchId: priorRun.batchId,
+      date_from,
+      date_to,
+      strategy_ids: STRATEGY_IDS,
+      symbols: SYMBOLS,
+      timeframes: TIMEFRAMES,
+      message_sv: 'Identisk batch har redan körts — hoppas över för att undvika dubblett-data. (NARROW_BATCH_FORCE=1 tvingar).',
+      summary: narrowLearning.buildNarrowPerformanceSummary().summary,
+      actions_allowed: false, can_place_orders: false, live_trading_enabled: false, broker_enabled: false,
+    }, null, 2));
+    return;
+  }
+
   const batchName = `Narrow State Clean Confirmation Batch ${new Date().toISOString().slice(0, 10)}`;
   let batch;
   const reusable = findReusableBatch();
@@ -415,6 +473,9 @@ async function main() {
   }, row));
   fs.writeFileSync(resultsFile, JSON.stringify(enriched, null, 2) + '\n', 'utf8');
 
+  // Record this batch's fingerprint so identical re-runs are skipped next time.
+  appendFingerprint({ fingerprint, batchId, date_from, date_to, completed_at: new Date().toISOString() });
+
   const summary = narrowLearning.buildNarrowPerformanceSummary();
   const qualityCounts = enriched.reduce((acc, row) => {
     const rowCounts = confirmationQualitySummary(row.confirmationQuality);
@@ -426,6 +487,8 @@ async function main() {
 
   const output = {
     batchId,
+    fingerprint,
+    duplicate_skipped: false,
     batchName,
     date_from,
     date_to,
