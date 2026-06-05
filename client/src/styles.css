@@ -7177,6 +7177,197 @@ tbody td {
   }
 }
 
+[data-theme="light"] .sup-brain-page {
+  background:
+    radial-gradient(circle at top left, rgba(59,130,246,.10), transparent 28%),
+    radial-gradient(circle at 82% 12%, rgba(168,85,247,.08), transparent 24%),
+    linear-gradient(180deg, #f8fafc 0%, #eef2f7 100%);
+  color: #0f172a;
+}
+
+[data-theme="light"] .sup-brain-hero-copy,
+[data-theme="light"] .sup-brain-safety-sticky,
+[data-theme="light"] .sup-brain-section {
+  border-color: rgba(15,23,42,.10);
+  background:
+    radial-gradient(circle at 14% 8%, rgba(59,130,246,.08), transparent 30%),
+    linear-gradient(180deg, rgba(255,255,255,.96), rgba(248,250,252,.98));
+  box-shadow: 0 14px 42px rgba(15,23,42,.08);
+}
+
+[data-theme="light"] .sup-brain-card,
+[data-theme="light"] .sup-brain-learning-card,
+[data-theme="light"] .sup-brain-details,
+[data-theme="light"] .sup-brain-mini-chip,
+[data-theme="light"] .sup-brain-band,
+[data-theme="light"] .sup-brain-confirmation-grid div,
+[data-theme="light"] .sup-brain-empty,
+[data-theme="light"] .sup-brain-loading {
+  background: rgba(255,255,255,.86);
+  border-color: rgba(15,23,42,.10);
+  color: #0f172a;
+}
+
+[data-theme="light"] .sup-brain-stat-good,
+[data-theme="light"] .sup-brain-strategy-green,
+[data-theme="light"] .sup-brain-band-good,
+[data-theme="light"] .sup-brain-confirmation-good {
+  background: rgba(22,163,74,.10);
+  border-color: rgba(22,163,74,.22);
+}
+
+[data-theme="light"] .sup-brain-stat-warning,
+[data-theme="light"] .sup-brain-strategy-amber,
+[data-theme="light"] .sup-brain-band-warning,
+[data-theme="light"] .sup-brain-confirmation-warning,
+[data-theme="light"] .sup-brain-warning-item {
+  background: rgba(217,119,6,.10);
+  border-color: rgba(217,119,6,.22);
+}
+
+[data-theme="light"] .sup-brain-stat-danger,
+[data-theme="light"] .sup-brain-confirmation-danger {
+  background: rgba(220,38,38,.08);
+  border-color: rgba(220,38,38,.20);
+}
+
+[data-theme="light"] .sup-brain-stat-blue,
+[data-theme="light"] .sup-brain-stat-purple,
+[data-theme="light"] .sup-brain-strategy-blue,
+[data-theme="light"] .sup-brain-band-purple,
+[data-theme="light"] .sup-brain-confirmation-blue,
+[data-theme="light"] .sup-brain-next,
+[data-theme="light"] .sup-brain-banner,
+[data-theme="light"] .sup-brain-helper-chip,
+[data-theme="light"] .sup-brain-hero-note {
+  background: rgba(37,99,235,.08);
+  border-color: rgba(37,99,235,.20);
+}
+
+[data-theme="light"] .sup-brain-badge-good,
+[data-theme="light"] .sup-brain-chip-good {
+  background: rgba(22,163,74,.10);
+  border-color: rgba(22,163,74,.26);
+  color: #166534;
+}
+
+[data-theme="light"] .sup-brain-badge-warning,
+[data-theme="light"] .sup-brain-chip-warning {
+  background: rgba(217,119,6,.12);
+  border-color: rgba(217,119,6,.30);
+  color: #92400e;
+}
+
+[data-theme="light"] .sup-brain-badge-danger,
+[data-theme="light"] .sup-brain-chip-danger {
+  background: rgba(220,38,38,.10);
+  border-color: rgba(220,38,38,.26);
+  color: #991b1b;
+}
+
+[data-theme="light"] .sup-brain-badge-blue,
+[data-theme="light"] .sup-brain-chip-blue,
+[data-theme="light"] .sup-brain-helper-chip,
+[data-theme="light"] .sup-brain-hero-note,
+[data-theme="light"] .sup-brain-banner,
+[data-theme="light"] .sup-brain-next-tag {
+  background: rgba(37,99,235,.09);
+  border-color: rgba(37,99,235,.24);
+  color: #1e40af;
+}
+
+[data-theme="light"] .sup-brain-badge-purple,
+[data-theme="light"] .sup-brain-chip-purple {
+  background: rgba(126,34,206,.10);
+  border-color: rgba(126,34,206,.24);
+  color: #6b21a8;
+}
+
+[data-theme="light"] .sup-brain-hero-note-soft {
+  background: rgba(71,85,105,.09);
+  border-color: rgba(71,85,105,.18);
+  color: #334155;
+}
+
+[data-theme="light"] .sup-brain-hero h1,
+[data-theme="light"] .sup-brain-section-head h2,
+[data-theme="light"] .sup-brain-learning-top h3,
+[data-theme="light"] .sup-brain-stat-title,
+[data-theme="light"] .sup-brain-stat-value,
+[data-theme="light"] .sup-brain-strategy-name,
+[data-theme="light"] .sup-brain-summary-title,
+[data-theme="light"] .sup-brain-summary-main,
+[data-theme="light"] .sup-brain-confirmation-name,
+[data-theme="light"] .sup-brain-band-title,
+[data-theme="light"] .sup-brain-step-title,
+[data-theme="light"] .sup-brain-mini-chip strong,
+[data-theme="light"] .sup-brain-chip strong {
+  color: #0f172a;
+}
+
+[data-theme="light"] .sup-brain-hero p,
+[data-theme="light"] .sup-brain-section-head p,
+[data-theme="light"] .sup-brain-details p,
+[data-theme="light"] .sup-brain-stat-subtitle,
+[data-theme="light"] .sup-brain-stat-detail,
+[data-theme="light"] .sup-brain-strategy-id,
+[data-theme="light"] .sup-brain-strategy-desc,
+[data-theme="light"] .sup-brain-summary-sub,
+[data-theme="light"] .sup-brain-summary-empty,
+[data-theme="light"] .sup-brain-step-body,
+[data-theme="light"] .sup-brain-band-range,
+[data-theme="light"] .sup-brain-loading,
+[data-theme="light"] .sup-brain-empty,
+[data-theme="light"] .sup-brain-footer,
+[data-theme="light"] .sup-brain-learning-text,
+[data-theme="light"] .sup-brain-mini-chip span {
+  color: #475569;
+}
+
+[data-theme="light"] .sup-brain-chip span,
+[data-theme="light"] .sup-brain-confirmation-grid span {
+  color: #475569;
+}
+
+[data-theme="light"] .sup-brain-confirmation-grid small,
+[data-theme="light"] .sup-brain-autopilot-events li {
+  color: #334155;
+}
+
+[data-theme="light"] .sup-brain-kicker,
+[data-theme="light"] .sup-brain-eyebrow,
+[data-theme="light"] .sup-brain-learning-status,
+[data-theme="light"] .sup-brain-summary-foot {
+  color: #2563eb;
+}
+
+[data-theme="light"] .sup-brain-safety-banner {
+  background: rgba(22,163,74,.10);
+  border-color: rgba(22,163,74,.22);
+  color: #15803d;
+}
+
+[data-theme="light"] .sup-brain-warning-item {
+  color: #92400e;
+}
+
+[data-theme="light"] .sup-brain-safety-flags span,
+[data-theme="light"] .sup-brain-meta span,
+[data-theme="light"] .sup-brain-chip,
+[data-theme="light"] .sup-brain-badge-neutral,
+[data-theme="light"] .sup-brain-badge-muted {
+  background: rgba(241,245,249,.86);
+  border-color: rgba(15,23,42,.10);
+  color: #475569;
+}
+
+[data-theme="light"] .sup-brain-icon,
+[data-theme="light"] .sup-brain-step-index,
+[data-theme="light"] .sup-brain-band-bar {
+  background: rgba(15,23,42,.08);
+  color: #0f172a;
+}
+
 [data-theme="light"] .sup-hero {
   border-color: var(--border);
   background:
