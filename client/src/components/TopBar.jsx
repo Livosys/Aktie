@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useLocation, useNavigate } from 'react-router-dom';
 import SystemStatusStrip from './SystemStatusStrip.jsx';
 import ThemeToggle from './ThemeToggle.jsx';
 import AiSummaryBar from './AiSummaryBar.jsx';
@@ -33,6 +33,8 @@ const SEARCH_ROUTES = [
 export default function TopBar({ onMenu, status }) {
   const [query, setQuery] = useState('');
   const navigate = useNavigate();
+  const { pathname } = useLocation();
+  const themeLocked = pathname === '/supervisor' || pathname === '/oversikt';
 
   function submitSearch(event) {
     event.preventDefault();
@@ -75,7 +77,7 @@ export default function TopBar({ onMenu, status }) {
         <button type="button" className="premium-help-button" onClick={openHelp}>
           Ny här?
         </button>
-        <ThemeToggle />
+        <ThemeToggle locked={themeLocked} />
       </div>
       <AiSummaryBar />
     </header>

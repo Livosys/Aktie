@@ -10,7 +10,7 @@ export function applyTheme(theme) {
   window.dispatchEvent(new CustomEvent('themechange', { detail: theme }));
 }
 
-export default function ThemeToggle() {
+export default function ThemeToggle({ locked = false }) {
   const [theme, setThemeState] = useState(getTheme);
 
   useEffect(() => {
@@ -20,21 +20,25 @@ export default function ThemeToggle() {
   }, []);
 
   function toggle() {
+    if (locked) return;
     const next = theme === 'dark' ? 'light' : 'dark';
     applyTheme(next);
     setThemeState(next);
   }
 
   const isDark = theme === 'dark';
+  const label = locked ? 'Mörkt låst' : isDark ? 'Ljust' : 'Mörkt';
   return (
     <button
-      className="topbar-theme-btn"
+      className={`topbar-theme-btn${locked ? ' topbar-theme-btn-locked' : ''}`}
       onClick={toggle}
-      title={isDark ? 'Byt till ljust läge' : 'Byt till mörkt läge'}
+      title={locked ? 'Supervisor är låst i mörkt läge' : isDark ? 'Byt till ljust läge' : 'Byt till mörkt läge'}
       type="button"
+      disabled={locked}
+      aria-disabled={locked}
     >
-      <span className="topbar-theme-icon">{isDark ? '☀' : '☾'}</span>
-      <span className="topbar-theme-label">{isDark ? 'Ljust' : 'Mörkt'}</span>
+      <span className="topbar-theme-icon">{locked ? '☾' : isDark ? '☀' : '☾'}</span>
+      <span className="topbar-theme-label">{label}</span>
     </button>
   );
 }
