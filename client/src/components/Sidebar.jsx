@@ -54,8 +54,6 @@ function NavItem({ item, onClose }) {
 
 function ThemeToggle() {
   const [theme, setThemeState] = useState(getTheme);
-  const { pathname } = useLocation();
-  const locked = pathname === '/supervisor' || pathname === '/oversikt';
 
   useEffect(() => {
     function handler(e) { setThemeState(e.detail); }
@@ -64,7 +62,6 @@ function ThemeToggle() {
   }, []);
 
   function toggle() {
-    if (locked) return;
     const next = theme === 'dark' ? 'light' : 'dark';
     applyTheme(next);
     setThemeState(next);
@@ -72,18 +69,11 @@ function ThemeToggle() {
 
   const isDark = theme === 'dark';
   return (
-    <button
-      className={`sb-theme-toggle${locked ? ' sb-theme-toggle-locked' : ''}`}
-      onClick={toggle}
-      type="button"
-      disabled={locked}
-      aria-disabled={locked}
-      title={locked ? 'Supervisor är låst i mörkt läge' : undefined}
-    >
+    <button className="sb-theme-toggle" onClick={toggle} type="button">
       <span className="sb-theme-track">
-        <span className={`sb-theme-thumb ${locked || isDark ? 'thumb-dark' : 'thumb-light'}`} />
+        <span className={`sb-theme-thumb ${isDark ? 'thumb-dark' : 'thumb-light'}`} />
       </span>
-      <span className="sb-theme-label">{locked ? '☾ Mörkt låst' : isDark ? '☾ Mörkt läge' : '☀ Ljust läge'}</span>
+      <span className="sb-theme-label">{isDark ? '☾ Mörkt läge' : '☀ Ljust läge'}</span>
     </button>
   );
 }

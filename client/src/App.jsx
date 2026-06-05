@@ -1,4 +1,4 @@
-import React, { useEffect } from 'react';
+import React from 'react';
 import { Routes, Route, Navigate, useLocation } from 'react-router-dom';
 import AppShell from './layout/AppShell.jsx';
 import MobileBottomNav from './MobileBottomNav.jsx';
@@ -22,22 +22,6 @@ function RedirectWithSearch({ to }) {
 }
 
 export default function App() {
-  const { pathname } = useLocation();
-  const isSupervisor = pathname === '/supervisor' || pathname === '/oversikt';
-
-  useEffect(() => {
-    const root = document.documentElement;
-    if (isSupervisor) {
-      root.classList.add('supervisor-dark-mode');
-    } else {
-      root.classList.remove('supervisor-dark-mode');
-    }
-
-    return () => {
-      root.classList.remove('supervisor-dark-mode');
-    };
-  }, [isSupervisor]);
-
   return (
     <AlertProvider>
       <AppShell>
