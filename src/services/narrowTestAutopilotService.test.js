@@ -47,10 +47,26 @@ function seedNarrowData(tmpDir) {
   ]);
 }
 
+function bandAvailabilityOverride(bands = {}) {
+  const availableBands = {
+    confirmed_narrow: { rows: 0, estimatedTrades: 0, symbols: [] },
+    weak_narrow: { rows: 0, estimatedTrades: 0, symbols: [] },
+    strong_compression: { rows: 0, estimatedTrades: 0, symbols: [] },
+  };
+  for (const [band, rows] of Object.entries(bands)) {
+    availableBands[band] = { rows, estimatedTrades: rows, symbols: rows ? ['MSFT'] : [] };
+  }
+  return {
+    requestedBand: 'confirmed_narrow',
+    availableBands,
+    blockedBands: { not_narrow: { reason: 'not_valid_for_narrow_strategy', rows: 24, estimatedTrades: 24, symbols: ['QQQ'] } },
+  };
+}
+
 // ── 1) plan is created from recommendedNextTest and defaults to paper_only ────
 {
   const { service } = loadServiceWithData(seedNarrowData);
-  const plan = service.buildNarrowAutopilotPlan();
+  const plan = service.buildNarrowAutopilotPlan({ bandAvailabilityOverride: bandAvailabilityOverride({ confirmed_narrow: 3 }) });
   assert.equal(plan.mode, 'paper_only', 'plan defaults to paper_only');
   assert.equal(plan.source, 'narrow_performance_learning', 'plan source is performance learning');
   assert.ok(service.isNarrowStrategy(plan.strategy_id), 'plan strategy is a narrow strategy');
@@ -61,8 +77,11 @@ function seedNarrowData(tmpDir) {
   assert.ok(plan.symbols.length >= 1, 'plan has symbols');
   assert.ok(plan.timeframes.length >= 1, 'plan has timeframes');
   assert.ok(service.ALLOWED_TEST_TYPES.includes(plan.testType), 'plan testType is allowed');
-  assert.equal(plan.filters.narrowScoreBand, 'confirmed_narrow', 'plan requests confirmed_narrow by default');
+  assert.equal(plan.requestedNarrowScoreBand, 'confirmed_narrow', 'plan requests confirmed_narrow by default');
+  assert.equal(plan.selectedNarrowScoreBand, 'confirmed_narrow', 'plan selects confirmed_narrow when available');
+  assert.equal(plan.filters.narrowScoreBand, 'confirmed_narrow', 'batch filter uses selected confirmed_narrow');
   assert.equal(plan.filterEnforcement.requestedNarrowScoreBand, 'confirmed_narrow', 'plan exposes requested score-band enforcement');
+  assert.equal(plan.filterEnforcement.selectedNarrowScoreBand, 'confirmed_narrow', 'plan exposes selected score-band enforcement');
   assert.equal(plan.filterEnforcement.enforceable, true, 'score-band filter is enforceable');
   assert.equal(plan.filterEnforcement.expectedNoMatchStatus, 'skipped_no_matching_band', 'no-match behavior is explicit');
 }
@@ -70,19 +89,21 @@ function seedNarrowData(tmpDir) {
 // ── 2) default (cautious) plan when there is no narrow data ───────────────────
 {
   const { service } = loadServiceWithData(); // no seed → no narrow data
-  const plan = service.buildNarrowAutopilotPlan();
+  const plan = service.buildNarrowAutopilotPlan({ bandAvailabilityOverride: bandAvailabilityOverride({ weak_narrow: 3 }) });
   assert.equal(plan.mode, 'paper_only', 'default plan paper_only');
   // With an empty dataset the recommendation still names a narrow strategy.
   assert.ok(service.isNarrowStrategy(plan.strategy_id), 'default plan uses a narrow strategy');
   const validation = service.validateNarrowAutopilotPlan(plan);
   assert.equal(validation.ok, true, 'default plan validates');
   assert.equal(validation.blocked, false, 'default plan not blocked');
+  assert.equal(plan.selectedNarrowScoreBand, 'weak_narrow', 'falls back to weak_narrow when confirmed missing');
+  assert.ok(plan.warnings.includes('fallback_from_confirmed_to_weak'), 'fallback warning exposed');
 }
 
 // ── 3) unsafe plan is blocked (mode + safety flag) ────────────────────────────
 {
   const { service } = loadServiceWithData(seedNarrowData);
-  const plan = service.buildNarrowAutopilotPlan();
+  const plan = service.buildNarrowAutopilotPlan({ bandAvailabilityOverride: bandAvailabilityOverride({ confirmed_narrow: 3 }) });
   const unsafe = { ...plan, mode: 'live', safety: { ...plan.safety, live_trading_enabled: true } };
   const validation = service.validateNarrowAutopilotPlan(unsafe);
   assert.equal(validation.blocked, true, 'unsafe plan is blocked');
@@ -96,7 +117,7 @@ function seedNarrowData(tmpDir) {
 // ── 4) unknown / non-narrow strategy is blocked ───────────────────────────────
 {
   const { service } = loadServiceWithData(seedNarrowData);
-  const plan = service.buildNarrowAutopilotPlan();
+  const plan = service.buildNarrowAutopilotPlan({ bandAvailabilityOverride: bandAvailabilityOverride({ confirmed_narrow: 3 }) });
   const bad = { ...plan, strategy_id: 'some_random_live_strategy' };
   const validation = service.validateNarrowAutopilotPlan(bad);
   assert.equal(validation.blocked, true, 'non-narrow strategy blocked');
@@ -106,14 +127,14 @@ function seedNarrowData(tmpDir) {
 // ── 5) live_trading_enabled=true intent anywhere is blocked ───────────────────
 {
   const { service } = loadServiceWithData(seedNarrowData);
-  const plan = service.buildNarrowAutopilotPlan();
+  const plan = service.buildNarrowAutopilotPlan({ bandAvailabilityOverride: bandAvailabilityOverride({ confirmed_narrow: 3 }) });
   const withIntent = { ...plan, filters: { ...plan.filters, broker: 'order' } };
   const validation = service.validateNarrowAutopilotPlan(withIntent);
   assert.equal(validation.blocked, true, 'blocked intent plan is blocked');
   assert.ok(validation.reasons.some((r) => r.startsWith('blocked_intent')), 'reports blocked intent');
 
   // run-once with explicit live intent in options must refuse before running.
-  const run = service.runNarrowAutopilotOnce({ live_trading_enabled: true });
+  const run = service.runNarrowAutopilotOnce({ live_trading_enabled: true, bandAvailabilityOverride: bandAvailabilityOverride({ confirmed_narrow: 3 }) });
   assert.equal(run.ok, false, 'run with live intent refused');
   assert.equal(run.blocked, true, 'run with live intent blocked');
   assert.equal(run.live_trading_enabled, false, 'run response keeps flag false');
@@ -123,7 +144,7 @@ function seedNarrowData(tmpDir) {
 {
   const { service, historyFile } = loadServiceWithData(seedNarrowData);
   assert.equal(fs.existsSync(historyFile), false, 'no history before run');
-  const run = service.runNarrowAutopilotOnce(); // dryRun default
+  const run = service.runNarrowAutopilotOnce({ bandAvailabilityOverride: bandAvailabilityOverride({ confirmed_narrow: 3 }) }); // dryRun default
   assert.equal(run.dryRun, true, 'defaults to dryRun');
   assert.equal(run.executed, false, 'dryRun does not execute');
   assert.equal(run.ok, true, 'dryRun ok');
@@ -213,12 +234,39 @@ function seedNarrowData(tmpDir) {
       },
     ], null, 2), 'utf8');
   });
-  const run = service.runNarrowAutopilotOnce();
+  const run = service.runNarrowAutopilotOnce({ bandAvailabilityOverride: bandAvailabilityOverride({ confirmed_narrow: 3 }) });
   assert.equal(run.dryRun, true, 'mismatch check stays dry-run');
   assert.equal(run.executed, false, 'mismatch check does not execute');
   assert.ok(run.plan.warnings.includes('filter_mismatch_previous_run'), 'mismatch warning exposed');
   assert.equal(run.plan.filterEnforcement.previousRunWarning.requestedNarrowScoreBand, 'confirmed_narrow', 'mismatch records requested band');
   assert.deepEqual(run.plan.filterEnforcement.previousRunWarning.observedNarrowScoreBands, ['not_narrow'], 'mismatch records observed band');
+}
+
+// ── 12) adaptive band selection prefers confirmed_narrow ────────────────────
+{
+  const { service } = loadServiceWithData(seedNarrowData);
+  const selected = service.selectNarrowScoreBand(bandAvailabilityOverride({ confirmed_narrow: 3, weak_narrow: 6 }));
+  assert.equal(selected.selectedBand, 'confirmed_narrow', 'confirmed_narrow wins when available');
+  assert.equal(selected.selectionReason, 'confirmed_narrow_available', 'confirmed selection reason');
+}
+
+// ── 13) adaptive band selection falls back to weak_narrow ───────────────────
+{
+  const { service } = loadServiceWithData(seedNarrowData);
+  const selected = service.selectNarrowScoreBand(bandAvailabilityOverride({ weak_narrow: 6, strong_compression: 3 }));
+  assert.equal(selected.selectedBand, 'weak_narrow', 'weak_narrow chosen when confirmed missing');
+  assert.ok(selected.warnings.includes('fallback_from_confirmed_to_weak'), 'weak fallback warning included');
+}
+
+// ── 14) not_narrow is never selected ─────────────────────────────────────────
+{
+  const { service } = loadServiceWithData(seedNarrowData);
+  const plan = service.buildNarrowAutopilotPlan({ bandAvailabilityOverride: bandAvailabilityOverride({}) });
+  const validation = service.validateNarrowAutopilotPlan(plan);
+  assert.equal(plan.selectedNarrowScoreBand, null, 'no allowed band selected');
+  assert.notEqual(plan.selectedNarrowScoreBand, 'not_narrow', 'not_narrow never selected');
+  assert.equal(validation.blocked, true, 'no narrow bands blocks plan');
+  assert.ok(validation.reasons.includes('no_matching_narrow_bands'), 'reports no matching narrow bands');
 }
 
 console.log('Narrow test autopilot tests passed.');

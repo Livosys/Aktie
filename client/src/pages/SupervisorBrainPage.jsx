@@ -458,6 +458,12 @@ export default function SupervisorBrainPage() {
   const autopilotFlagsLocked = autopilot
     ? [autopilot.actions_allowed, autopilot.can_place_orders, autopilot.live_trading_enabled, autopilot.broker_enabled].every((value) => value === false)
     : true;
+  const autopilotBandAvailability = autopilotPlan?.bandAvailability || {};
+  const autopilotAvailableBands = autopilotBandAvailability.availableBands || {};
+  const autopilotBandSelection = autopilotPlan?.bandSelection || {};
+  const requestedBand = autopilotPlan?.requestedNarrowScoreBand || autopilotBandSelection.requestedNarrowScoreBand || autopilotPlan?.filterEnforcement?.requestedNarrowScoreBand || autopilotPlan?.filters?.narrowScoreBand;
+  const selectedBand = autopilotPlan?.selectedNarrowScoreBand || autopilotBandSelection.selectedNarrowScoreBand || autopilotPlan?.filterEnforcement?.selectedNarrowScoreBand || autopilotPlan?.filters?.narrowScoreBand;
+  const bandSelectionWarnings = safeArray(autopilotPlan?.bandSelectionWarnings || autopilotBandAvailability.warnings);
 
   const activeSymbols = Number(narrowState.activeCount ?? narrowTopSymbols.length ?? 0) || 0;
   const strongestCompression = narrowState.strongestCompression || null;
@@ -784,7 +790,8 @@ export default function SupervisorBrainPage() {
                   </div>
                   <div className="sup-brain-next-filters">
                     {safeArray(autopilotPlan.symbols).length ? <Badge tone="blue">{safeArray(autopilotPlan.symbols).join(', ')}</Badge> : null}
-                    {autopilotPlan.filters?.narrowScoreBand ? <Badge tone="purple">{BAND_LABELS[autopilotPlan.filters.narrowScoreBand] || autopilotPlan.filters.narrowScoreBand}</Badge> : null}
+                    {requestedBand ? <Badge tone="neutral">Requested: {BAND_LABELS[requestedBand] || requestedBand}</Badge> : null}
+                    {selectedBand ? <Badge tone="purple">Selected: {BAND_LABELS[selectedBand] || selectedBand}</Badge> : <Badge tone="warning">Inget körbart narrow-band</Badge>}
                     {safeArray(autopilotPlan.filters?.confirmations).length ? <Badge tone="good">{safeArray(autopilotPlan.filters.confirmations).join(', ')}</Badge> : null}
                   </div>
                   <div className="sup-brain-timeframes">
@@ -806,6 +813,40 @@ export default function SupervisorBrainPage() {
                         {safeArray(autopilotPlan.missingTimeframes).map((tf) => <Badge key={`miss-${tf}`} tone="warning">{tf}</Badge>)}
                       </div>
                     ) : null}
+                  </div>
+                </Card>
+                <Card className="sup-brain-next">
+                  <div className="sup-brain-summary-title">Adaptive band selection</div>
+                  <div className="sup-brain-summary-main">
+                    {selectedBand ? (BAND_LABELS[selectedBand] || selectedBand) : 'Inget narrow-band just nu'}
+                  </div>
+                  <div className="sup-brain-summary-sub">
+                    {text(autopilotBandSelection.selectionReason || autopilotBandAvailability.selectionReason, 'Systemet kontrollerar först vilka score-band som faktiskt finns i aktuell 2m-data.')}
+                  </div>
+                  <div className="sup-brain-card-stats">
+                    <InfoChip label="Requested band" value={requestedBand ? (BAND_LABELS[requestedBand] || requestedBand) : '—'} tone="blue" />
+                    <InfoChip label="Selected band" value={selectedBand ? (BAND_LABELS[selectedBand] || selectedBand) : 'Ingen'} tone={selectedBand ? 'good' : 'warning'} />
+                    <InfoChip label="not_narrow" value="Aldrig valt" tone="good" />
+                  </div>
+                  <div className="sup-brain-next-filters">
+                    {['confirmed_narrow', 'weak_narrow', 'strong_compression'].map((band) => {
+                      const item = autopilotAvailableBands[band] || {};
+                      return (
+                        <Badge key={band} tone={Number(item.rows || 0) > 0 ? 'good' : 'neutral'}>
+                          {BAND_LABELS[band] || band}: {Number(item.rows || 0)}
+                        </Badge>
+                      );
+                    })}
+                  </div>
+                  {bandSelectionWarnings.length ? (
+                    <div className="sup-brain-next-filters">
+                      {bandSelectionWarnings.slice(0, 4).map((warning) => (
+                        <Badge key={warning} tone="warning">{warning}</Badge>
+                      ))}
+                    </div>
+                  ) : null}
+                  <div className="sup-brain-learning-text">
+                    Systemet kontrollerar först om det finns riktiga trånga lägen. Om confirmed_narrow saknas kan det föreslå weak_narrow, men det använder aldrig not_narrow som giltigt narrow-test.
                   </div>
                 </Card>
                 <Card className="sup-brain-next">

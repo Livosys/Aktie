@@ -26,6 +26,9 @@ const { spawnSync } = require('child_process');
 
 const narrowPerformanceLearning = require('./narrowPerformanceLearningService');
 const { NARROW_DEFAULT_TIMEFRAMES, detectNarrowTimeframeAvailability } = require('../config/narrowTimeframes');
+const marketDataStore = require('../data/marketDataStore');
+const { loadCandles } = require('../data/marketDataStore');
+const { analyzeNarrowState } = require('./narrowStateEngineService');
 
 // Always-false safety contract. This object is the single source of truth and
 // is forced onto every plan, history entry and status response.
@@ -51,6 +54,10 @@ const DEFAULT_TIMEFRAMES = NARROW_DEFAULT_TIMEFRAMES;
 const DEFAULT_STRATEGY_ID = 'narrow_fakeout_reversal_v1';
 const DEFAULT_BAND = 'confirmed_narrow';
 const DEFAULT_CONFIRMATIONS = Object.freeze(['macd']);
+const ALLOWED_TEST_BANDS = Object.freeze(['confirmed_narrow', 'weak_narrow', 'strong_compression']);
+const BLOCKED_TEST_BANDS = Object.freeze({
+  not_narrow: { reason: 'not_valid_for_narrow_strategy' },
+});
 
 const DEFAULT_LIMITS = Object.freeze({
   maxSymbols: 8,
@@ -183,6 +190,122 @@ function detectPreviousFilterMismatch(plan) {
   };
 }
 
+function pickCommonDates(symbols, timeframe = '2m') {
+  const perSymbol = uniqueStrings(symbols, { upper: true })
+    .map((symbol) => new Set(marketDataStore.listAvailableDates(symbol)[timeframe] || []));
+  if (!perSymbol.length) return [];
+  let common = [...perSymbol[0]];
+  for (const dates of perSymbol.slice(1)) {
+    common = common.filter((date) => dates.has(date));
+  }
+  return common.sort();
+}
+
+function pickDateWindow(symbols, days = 10, timeframe = '2m') {
+  const common = pickCommonDates(symbols, timeframe);
+  if (!common.length) return { date_from: null, date_to: null };
+  const slice = common.slice(-Math.max(1, days));
+  return { date_from: slice[0], date_to: slice[slice.length - 1] };
+}
+
+function emptyBandAvailability(requestedBand) {
+  return {
+    requestedBand: requestedBand || DEFAULT_BAND,
+    availableBands: {
+      confirmed_narrow: { rows: 0, estimatedTrades: 0, symbols: [] },
+      weak_narrow: { rows: 0, estimatedTrades: 0, symbols: [] },
+      strong_compression: { rows: 0, estimatedTrades: 0, symbols: [] },
+    },
+    blockedBands: {
+      not_narrow: { ...BLOCKED_TEST_BANDS.not_narrow },
+    },
+    selectedBand: null,
+    selectionReason: 'no_matching_narrow_bands',
+    warnings: [],
+  };
+}
+
+function selectNarrowScoreBand(availability = {}) {
+  const availableBands = availability.availableBands || {};
+  const hasRows = (band) => Number(availableBands[band]?.rows || 0) > 0;
+  const warnings = Array.isArray(availability.warnings) ? [...availability.warnings] : [];
+
+  if (hasRows('confirmed_narrow')) {
+    return { selectedBand: 'confirmed_narrow', selectionReason: 'confirmed_narrow_available', warnings };
+  }
+  if (hasRows('weak_narrow')) {
+    warnings.push('fallback_from_confirmed_to_weak');
+    return { selectedBand: 'weak_narrow', selectionReason: 'confirmed_missing_weak_available', warnings };
+  }
+  if (hasRows('strong_compression')) {
+    return { selectedBand: 'strong_compression', selectionReason: 'only_strong_compression_available', warnings };
+  }
+  warnings.push('no_matching_narrow_bands');
+  return { selectedBand: null, selectionReason: 'no_matching_narrow_bands', warnings };
+}
+
+function addAvailabilityHit(availability, band, symbol, strategyCount) {
+  if (!ALLOWED_TEST_BANDS.includes(band)) return;
+  const bucket = availability.availableBands[band];
+  bucket.rows += strategyCount;
+  bucket.estimatedTrades += strategyCount;
+  if (symbol && !bucket.symbols.includes(symbol)) bucket.symbols.push(symbol);
+}
+
+function analyzeNarrowBandAvailability(plan = {}) {
+  if (plan.bandAvailabilityOverride && typeof plan.bandAvailabilityOverride === 'object') {
+    const base = {
+      ...emptyBandAvailability(plan.filters?.narrowScoreBand || plan.requestedNarrowScoreBand || DEFAULT_BAND),
+      ...plan.bandAvailabilityOverride,
+    };
+    const selected = selectNarrowScoreBand(base);
+    return { ...base, ...selected };
+  }
+
+  const requestedBand = String(plan.filters?.narrowScoreBand || plan.requestedNarrowScoreBand || DEFAULT_BAND).trim();
+  const availability = emptyBandAvailability(requestedBand);
+  const symbols = uniqueStrings(plan.symbols, { upper: true });
+  const timeframes = uniqueStrings(plan.timeframes).filter((tf) => tf === '2m');
+  const strategyCount = Math.max(1, narrowStrategyIds().size || 3);
+
+  if (!symbols.length) availability.warnings.push('band_availability_no_symbols');
+  if (!timeframes.length) availability.warnings.push('band_availability_no_2m_timeframe');
+
+  for (const timeframe of timeframes) {
+    const { date_from, date_to } = pickDateWindow(symbols, 10, timeframe);
+    if (!date_from || !date_to) {
+      availability.warnings.push(`band_availability_no_candles:${timeframe}`);
+      continue;
+    }
+
+    for (const symbol of symbols) {
+      const candles = loadCandles(symbol, date_from, date_to, timeframe);
+      if (!candles.length) {
+        availability.warnings.push(`band_availability_no_symbol_candles:${symbol}:${timeframe}`);
+        continue;
+      }
+      const analysis = analyzeNarrowState({ symbol, timeframe, candles });
+      const band = narrowPerformanceLearning.narrowScoreBand(analysis?.narrowScore);
+      if (band === 'not_narrow') {
+        const blocked = availability.blockedBands.not_narrow;
+        blocked.rows = (blocked.rows || 0) + strategyCount;
+        blocked.estimatedTrades = (blocked.estimatedTrades || 0) + strategyCount;
+        blocked.symbols = [...new Set([...(blocked.symbols || []), symbol])];
+      } else {
+        addAvailabilityHit(availability, band, symbol, strategyCount);
+      }
+    }
+  }
+
+  for (const band of ALLOWED_TEST_BANDS) {
+    availability.availableBands[band].symbols.sort();
+  }
+  if (availability.blockedBands.not_narrow?.symbols) availability.blockedBands.not_narrow.symbols.sort();
+
+  const selected = selectNarrowScoreBand(availability);
+  return { ...availability, ...selected };
+}
+
 function appendJsonl(file, entry) {
   if (!ensureDir()) return false;
   try {
@@ -267,7 +390,7 @@ function buildNarrowAutopilotPlan(options = {}) {
   let priority = 'low';
   let testType = 'batch';
   let symbols = [...DEFAULT_SYMBOLS];
-  let narrowScoreBand = DEFAULT_BAND;
+  let requestedNarrowScoreBand = DEFAULT_BAND;
   let confirmations = [...DEFAULT_CONFIRMATIONS];
 
   if (recommendedNextTest && recommendedNextTest.strategy_id) {
@@ -282,7 +405,7 @@ function buildNarrowAutopilotPlan(options = {}) {
     // is applied later). Avoids re-running only the same 3 symbols every time.
     const recSymbols = uniqueStrings(f.symbols, { upper: true });
     symbols = uniqueStrings([...recSymbols, ...DEFAULT_SYMBOLS], { upper: true });
-    narrowScoreBand = String(f.narrowScoreBand || DEFAULT_BAND);
+    requestedNarrowScoreBand = String(f.narrowScoreBand || DEFAULT_BAND);
     const recConfirms = uniqueStrings(f.confirmations);
     confirmations = recConfirms.length ? recConfirms : [...DEFAULT_CONFIRMATIONS];
   } else {
@@ -339,14 +462,15 @@ function buildNarrowAutopilotPlan(options = {}) {
     availableTimeframes,
     missingTimeframes,
     timeframeDetails: availability.details,
+    requestedNarrowScoreBand,
     filters: {
-      narrowScoreBand,
+      narrowScoreBand: requestedNarrowScoreBand,
       confirmations,
       confirmationQuality,
       marketGroup: inferMarketGroup(symbols),
     },
     filterEnforcement: {
-      requestedNarrowScoreBand: narrowScoreBand,
+      requestedNarrowScoreBand,
       enforceable: true,
       expectedNoMatchStatus: 'skipped_no_matching_band',
       expectedNoMatchResult: 'no_matching_setups',
@@ -357,6 +481,33 @@ function buildNarrowAutopilotPlan(options = {}) {
     warnings,
     nextStep: 'validate',
   };
+
+  const bandAvailability = analyzeNarrowBandAvailability({
+    ...plan,
+    bandAvailabilityOverride: options.bandAvailabilityOverride,
+  });
+  plan.bandAvailability = bandAvailability;
+  plan.bandSelection = {
+    requestedNarrowScoreBand,
+    selectedNarrowScoreBand: bandAvailability.selectedBand,
+    selectionReason: bandAvailability.selectionReason,
+  };
+  plan.bandSelectionWarnings = bandAvailability.warnings;
+  plan.selectedNarrowScoreBand = bandAvailability.selectedBand;
+  plan.filters.narrowScoreBand = bandAvailability.selectedBand;
+  plan.filterEnforcement.selectedNarrowScoreBand = bandAvailability.selectedBand;
+  plan.filterEnforcement.bandSelection = plan.bandSelection;
+  plan.filterEnforcement.bandAvailability = bandAvailability;
+  if (requestedNarrowScoreBand !== bandAvailability.selectedBand && bandAvailability.selectedBand) {
+    plan.warnings.push(`selected_band_differs_from_requested:${requestedNarrowScoreBand}->${bandAvailability.selectedBand}`);
+  }
+  for (const warning of bandAvailability.warnings) {
+    if (!plan.warnings.includes(warning)) plan.warnings.push(warning);
+  }
+  if (!bandAvailability.selectedBand) {
+    plan.status = 'no_matching_narrow_bands';
+    plan.nextStep = 'collect_more_data_or_broaden_date_window';
+  }
 
   const mismatch = detectPreviousFilterMismatch(plan);
   if (mismatch) {
@@ -401,6 +552,10 @@ function validateNarrowAutopilotPlan(plan = {}) {
   const timeframes = uniqueStrings(plan.timeframes);
   if (!symbols.length) reasons.push('no_symbols');
   if (!timeframes.length) reasons.push('no_timeframes');
+  if (!plan.selectedNarrowScoreBand && !plan.filters?.narrowScoreBand) reasons.push('no_matching_narrow_bands');
+  if (plan.selectedNarrowScoreBand === 'not_narrow' || plan.filters?.narrowScoreBand === 'not_narrow') {
+    reasons.push('not_narrow_not_allowed_for_narrow_strategy');
+  }
 
   // 7) Limits must be sane.
   const limits = plan.limits || {};
@@ -421,15 +576,16 @@ function validateNarrowAutopilotPlan(plan = {}) {
     timeframes,
     filterEnforcement: {
       ...(plan.filterEnforcement || {}),
-      requestedNarrowScoreBand: plan.filters?.narrowScoreBand || plan.filterEnforcement?.requestedNarrowScoreBand || null,
+      requestedNarrowScoreBand: plan.requestedNarrowScoreBand || plan.filterEnforcement?.requestedNarrowScoreBand || null,
+      selectedNarrowScoreBand: plan.selectedNarrowScoreBand || plan.filters?.narrowScoreBand || null,
       enforceable: true,
       expectedNoMatchStatus: 'skipped_no_matching_band',
       expectedNoMatchResult: 'no_matching_setups',
     },
     safety: { ...SAFETY },
-    status: blocked ? 'blocked' : 'validated',
+    status: blocked ? (reasons.includes('no_matching_narrow_bands') ? 'no_matching_narrow_bands' : 'blocked') : 'validated',
     warnings,
-    nextStep: blocked ? 'fix_plan' : (plan.testType === 'batch' || plan.testType === 'replay' || plan.testType === 'paper' ? 'run_or_queue' : 'fix_plan'),
+    nextStep: blocked ? (reasons.includes('no_matching_narrow_bands') ? 'collect_more_data_or_broaden_date_window' : 'fix_plan') : (plan.testType === 'batch' || plan.testType === 'replay' || plan.testType === 'paper' ? 'run_or_queue' : 'fix_plan'),
   };
 
   return { ok: !blocked, blocked, reasons, warnings, normalizedPlan };
@@ -489,10 +645,14 @@ function runNarrowAutopilotOnce(options = {}) {
   logEvent(validation.blocked ? 'run_blocked' : 'plan_validated', finalPlan, { warnings: validation.reasons });
 
   if (validation.blocked) {
+    const noMatchingBands = validation.reasons.includes('no_matching_narrow_bands');
     return {
       ok: false, blocked: true, dryRun,
       reasons: validation.reasons,
       plan: finalPlan, mode: MODE, ...SAFETY,
+      message_sv: noMatchingBands
+        ? 'Dry-run: inga körbara narrow-band finns i aktuell 2m-data. not_narrow används inte som giltigt narrow-test. Samla mer data eller bredda datum/symboler.'
+        : 'Planen blockerades av säkerhetsvalideringen. Inget test kördes.',
     };
   }
 
@@ -518,7 +678,8 @@ function runNarrowAutopilotOnce(options = {}) {
     // Pass the plan's safe runnable timeframes to the batch script. The script
     // re-detects availability and skips any timeframe without real candle data.
     const planTimeframes = Array.isArray(finalPlan.timeframes) ? finalPlan.timeframes.join(',') : '';
-    const requestedBand = String(finalPlan.filters?.narrowScoreBand || '').trim();
+    const requestedBand = String(finalPlan.requestedNarrowScoreBand || finalPlan.filterEnforcement?.requestedNarrowScoreBand || '').trim();
+    const selectedBand = String(finalPlan.selectedNarrowScoreBand || finalPlan.filters?.narrowScoreBand || '').trim();
     const proc = spawnSync('node', [CLEAN_BATCH_SCRIPT], {
       cwd: path.resolve(__dirname, '../..'),
       timeout: timeoutMs,
@@ -527,7 +688,9 @@ function runNarrowAutopilotOnce(options = {}) {
       env: {
         ...process.env,
         NARROW_BATCH_TIMEFRAMES: planTimeframes,
-        NARROW_BATCH_NARROW_SCORE_BAND: requestedBand,
+        NARROW_BATCH_REQUESTED_NARROW_SCORE_BAND: requestedBand,
+        NARROW_BATCH_SELECTED_NARROW_SCORE_BAND: selectedBand,
+        NARROW_BATCH_NARROW_SCORE_BAND: selectedBand,
       },
     });
     if (proc.error) throw proc.error;
@@ -639,4 +802,6 @@ module.exports = {
   readNarrowAutopilotHistory,
   findBlockedIntent,
   isNarrowStrategy,
+  analyzeNarrowBandAvailability,
+  selectNarrowScoreBand,
 };
