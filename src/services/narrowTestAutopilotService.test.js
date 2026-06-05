@@ -269,4 +269,57 @@ function bandAvailabilityOverride(bands = {}) {
   assert.ok(validation.reasons.includes('no_matching_narrow_bands'), 'reports no matching narrow bands');
 }
 
+// ── 15) date-window selection prefers confirmed_narrow ──────────────────────
+{
+  const { service } = loadServiceWithData(seedNarrowData);
+  const best = service.selectBestNarrowDateWindow([
+    { dateFrom: '2026-04-20', dateTo: '2026-05-01', bandAvailability: { confirmed_narrow: 0, weak_narrow: 2, strong_compression: 0, not_narrow: 6 } },
+    { dateFrom: '2026-05-04', dateTo: '2026-05-15', bandAvailability: { confirmed_narrow: 1, weak_narrow: 0, strong_compression: 0, not_narrow: 7 } },
+  ]);
+  assert.equal(best.dateFrom, '2026-05-04', 'confirmed_narrow window selected');
+}
+
+// ── 16) date-window selection falls back to weak_narrow ─────────────────────
+{
+  const { service } = loadServiceWithData(seedNarrowData);
+  const best = service.selectBestNarrowDateWindow([
+    { dateFrom: '2026-04-20', dateTo: '2026-05-01', bandAvailability: { confirmed_narrow: 0, weak_narrow: 0, strong_compression: 2, not_narrow: 6 } },
+    { dateFrom: '2026-05-04', dateTo: '2026-05-15', bandAvailability: { confirmed_narrow: 0, weak_narrow: 1, strong_compression: 0, not_narrow: 7 } },
+  ]);
+  assert.equal(best.dateFrom, '2026-05-04', 'weak_narrow chosen before strong_compression');
+}
+
+// ── 17) date-window selection blocks when only not_narrow exists ────────────
+{
+  const { service } = loadServiceWithData(seedNarrowData);
+  const best = service.selectBestNarrowDateWindow([
+    { dateFrom: '2026-04-20', dateTo: '2026-05-01', bandAvailability: { confirmed_narrow: 0, weak_narrow: 0, strong_compression: 0, not_narrow: 8 } },
+  ]);
+  assert.equal(best, null, 'only not_narrow produces no best window');
+}
+
+// ── 18) date-window selection avoids already-tested identical windows ───────
+{
+  const { service } = loadServiceWithData(seedNarrowData);
+  const best = service.selectBestNarrowDateWindow([
+    { dateFrom: '2026-05-04', dateTo: '2026-05-15', alreadyTested: true, bandAvailability: { confirmed_narrow: 3, weak_narrow: 0, strong_compression: 0, not_narrow: 5 } },
+    { dateFrom: '2026-04-20', dateTo: '2026-05-01', alreadyTested: false, bandAvailability: { confirmed_narrow: 0, weak_narrow: 2, strong_compression: 0, not_narrow: 6 } },
+  ]);
+  assert.equal(best.dateFrom, '2026-04-20', 'already-tested confirmed window skipped');
+}
+
+// ── 19) window analysis reads real candles and exposes safety false ─────────
+{
+  const { service } = loadServiceWithData(seedNarrowData);
+  const analysis = service.analyzeNarrowDateWindows({ symbols: ['MSFT', 'QQQ'], timeframe: '2m' });
+  assert.ok(Array.isArray(analysis.windows), 'window analysis returns windows');
+  assert.ok(analysis.windows.length > 0, 'real repo candles produce windows');
+  assert.ok(analysis.windows.every((window) => Number(window.candleCount || 0) > 0), 'windows use real candle counts');
+  const status = service.getNarrowAutopilotStatus();
+  assert.equal(status.actions_allowed, false, 'status actions false after window analysis');
+  assert.equal(status.can_place_orders, false, 'status orders false after window analysis');
+  assert.equal(status.live_trading_enabled, false, 'status live false after window analysis');
+  assert.equal(status.broker_enabled, false, 'status broker false after window analysis');
+}
+
 console.log('Narrow test autopilot tests passed.');

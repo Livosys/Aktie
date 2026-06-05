@@ -464,6 +464,15 @@ export default function SupervisorBrainPage() {
   const requestedBand = autopilotPlan?.requestedNarrowScoreBand || autopilotBandSelection.requestedNarrowScoreBand || autopilotPlan?.filterEnforcement?.requestedNarrowScoreBand || autopilotPlan?.filters?.narrowScoreBand;
   const selectedBand = autopilotPlan?.selectedNarrowScoreBand || autopilotBandSelection.selectedNarrowScoreBand || autopilotPlan?.filterEnforcement?.selectedNarrowScoreBand || autopilotPlan?.filters?.narrowScoreBand;
   const bandSelectionWarnings = safeArray(autopilotPlan?.bandSelectionWarnings || autopilotBandAvailability.warnings);
+  const autopilotDateWindowAvailability = autopilotPlan?.dateWindowAvailability || {};
+  const autopilotDateWindowSelected = autopilotPlan?.dateWindowSelected || autopilotDateWindowAvailability.bestWindow || null;
+  const autopilotDateWindowRequested = autopilotPlan?.dateWindowRequested || {};
+  const autopilotCommonDateWindow = autopilotDateWindowAvailability.commonDateWindow || {};
+  const autopilotAlreadyTestedWindows = safeArray(autopilotPlan?.alreadyTestedWindows);
+  const autopilotWindowAvailability = autopilotDateWindowSelected?.bandAvailability || {};
+  const windowBlockedReason = autopilotValidation?.blocked
+    ? safeArray(autopilotValidation.reasons).join(', ') || autopilotPlan?.windowSelectionReason
+    : autopilotPlan?.windowSelectionReason;
 
   const activeSymbols = Number(narrowState.activeCount ?? narrowTopSymbols.length ?? 0) || 0;
   const strongestCompression = narrowState.strongestCompression || null;
@@ -850,6 +859,40 @@ export default function SupervisorBrainPage() {
                   </div>
                 </Card>
                 <Card className="sup-brain-next">
+                  <div className="sup-brain-summary-title">Datafönster & freshness</div>
+                  <div className="sup-brain-summary-main">
+                    {autopilotDateWindowSelected
+                      ? `${autopilotDateWindowSelected.dateFrom} - ${autopilotDateWindowSelected.dateTo}`
+                      : 'Inget narrow-fönster hittat'}
+                  </div>
+                  <div className="sup-brain-summary-sub">
+                    {text(autopilotPlan?.freshnessStatus, 'Freshness saknas')} · {text(autopilotPlan?.windowSelectionReason, 'Väntar på analys')}
+                  </div>
+                  <div className="sup-brain-card-stats">
+                    <InfoChip label="Begärt" value={`${text(autopilotDateWindowRequested.timeframe, '2m')} · ${formatInt(autopilotDateWindowRequested.tradingDays, '10')} dagar`} tone="blue" />
+                    <InfoChip label="Gemensamt" value={autopilotCommonDateWindow.dateFrom ? `${autopilotCommonDateWindow.dateFrom} - ${autopilotCommonDateWindow.dateTo}` : 'Saknas'} tone="blue" />
+                    <InfoChip label="Redan testade" value={formatInt(autopilotAlreadyTestedWindows.length, '0')} tone={autopilotAlreadyTestedWindows.length ? 'warning' : 'good'} />
+                  </div>
+                  <div className="sup-brain-next-filters">
+                    {['confirmed_narrow', 'weak_narrow', 'strong_compression'].map((band) => (
+                      <Badge key={`window-${band}`} tone={Number(autopilotWindowAvailability[band] || 0) > 0 ? 'good' : 'neutral'}>
+                        {BAND_LABELS[band] || band}: {Number(autopilotWindowAvailability[band] || 0)}
+                      </Badge>
+                    ))}
+                    <Badge tone={Number(autopilotWindowAvailability.not_narrow || 0) > 0 ? 'warning' : 'neutral'}>
+                      not_narrow: {Number(autopilotWindowAvailability.not_narrow || 0)}
+                    </Badge>
+                  </div>
+                  {autopilotValidation?.blocked ? (
+                    <div className="sup-brain-next-filters">
+                      <Badge tone="warning">Blockerat: {text(windowBlockedReason, 'okänd orsak')}</Badge>
+                    </div>
+                  ) : null}
+                  <div className="sup-brain-learning-text">
+                    Systemet letar först efter tidsperioder där marknaden faktiskt var trång. Om ingen sådan period finns körs inget test.
+                  </div>
+                </Card>
+                <Card className="sup-brain-next">
                   <div className="sup-brain-summary-title">Safety-validering</div>
                   <div className="sup-brain-summary-main">{autopilotValidation?.blocked ? 'Blockerad' : 'Godkänd'}</div>
                   <div className="sup-brain-summary-sub">
@@ -896,7 +939,7 @@ export default function SupervisorBrainPage() {
             </div>
             <BeginnerBox
               title="Vad gör autopiloten?"
-              text="Autopiloten är en säker test-assistent. Den läser vad Performance Learning rekommenderar, bygger en testplan och kan köra små batch/replay/paper-tester för att samla mer data. Den handlar aldrig, lägger aldrig order och kan inte slå på live trading."
+              text="Systemet letar först efter tidsperioder där marknaden faktiskt var trång. Om ingen sådan period finns körs inget test."
             />
           </div>
         </section>
