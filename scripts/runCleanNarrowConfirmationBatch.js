@@ -10,6 +10,7 @@ const marketDataStore = require('../src/data/marketDataStore');
 const { loadCandles } = require('../src/data/marketDataStore');
 const { calcIndicators } = require('../src/scanner/indicators');
 const { ema } = require('../src/scanner/indicators');
+const { NARROW_DEFAULT_TIMEFRAMES, detectNarrowTimeframeAvailability } = require('../src/config/narrowTimeframes');
 
 const ROOT = path.resolve(__dirname, '..');
 const DATA_DIR = path.join(ROOT, 'data', 'strategy-batches');
@@ -22,7 +23,21 @@ const STRATEGY_IDS = [
 ];
 
 const SYMBOLS = ['MSFT', 'QQQ', 'TSLA'];
-const TIMEFRAMES = ['2m'];
+
+// Requested Narrow timeframe standard (Goal 7): 1m / 2m / 5m / 10m.
+// Comes from the autopilot plan (NARROW_BATCH_TIMEFRAMES env) or the standard.
+// We only RUN the safe subset that has real, loadable candle data — missing
+// timeframes are logged, never faked.
+function requestedTimeframes() {
+  const fromEnv = String(process.env.NARROW_BATCH_TIMEFRAMES || '')
+    .split(',').map((t) => t.trim()).filter(Boolean);
+  return fromEnv.length ? fromEnv : [...NARROW_DEFAULT_TIMEFRAMES];
+}
+
+const REQUESTED_TIMEFRAMES = requestedTimeframes();
+const TF_AVAILABILITY = detectNarrowTimeframeAvailability(SYMBOLS, REQUESTED_TIMEFRAMES);
+// Only run timeframes with real, loadable data (today: 2m). Never mislabel.
+const TIMEFRAMES = TF_AVAILABILITY.available;
 
 function round(value, decimals = 4) {
   const n = Number(value);
@@ -315,9 +330,41 @@ function findReusableBatch() {
   return matches.sort((a, b) => String(b.created_at).localeCompare(String(a.created_at)))[0];
 }
 
+// Build honest skip records for timeframes we cannot safely run. We never
+// fabricate candles — a missing/unwired timeframe is logged and skipped.
+function buildTimeframeSkips() {
+  const skips = [];
+  for (const tf of TF_AVAILABILITY.missing) {
+    const detail = TF_AVAILABILITY.details[tf] || {};
+    let reason;
+    if (detail.status === 'present_not_wired') reason = 'present_not_wired'; // real data on disk, loader can't serve it
+    else if (TF_AVAILABILITY.aggregatable.includes(tf)) reason = 'missing_candles_aggregatable_from_2m';
+    else reason = 'no_data_for_timeframe';
+    skips.push({ timeframe: tf, status: 'skipped_timeframe', reason, note: 'Inga candles fejkas. Saknad timeframe hoppas över.' });
+  }
+  return skips;
+}
+
 async function main() {
   ensureDir(DATA_DIR);
   ensureDir(RESULTS_DIR);
+
+  const timeframeSkips = buildTimeframeSkips();
+  for (const skip of timeframeSkips) {
+    console.error(`[narrow-batch] skipped_timeframe ${skip.timeframe}: ${skip.reason}`);
+  }
+  if (!TIMEFRAMES.length) {
+    console.log(JSON.stringify({
+      ok: false,
+      error: 'no_runnable_timeframes',
+      requestedTimeframes: REQUESTED_TIMEFRAMES,
+      availableTimeframes: TF_AVAILABILITY.available,
+      missingTimeframes: TF_AVAILABILITY.missing,
+      timeframeSkips,
+      actions_allowed: false, can_place_orders: false, live_trading_enabled: false, broker_enabled: false,
+    }, null, 2));
+    return;
+  }
 
   const { date_from, date_to } = pickDateWindow(SYMBOLS, 10);
   const batchName = `Narrow State Clean Confirmation Batch ${new Date().toISOString().slice(0, 10)}`;
@@ -385,6 +432,10 @@ async function main() {
     strategy_ids: STRATEGY_IDS,
     symbols: SYMBOLS,
     timeframes: TIMEFRAMES,
+    requestedTimeframes: REQUESTED_TIMEFRAMES,
+    availableTimeframes: TF_AVAILABILITY.available,
+    missingTimeframes: TF_AVAILABILITY.missing,
+    timeframeSkips,
     result_count: enriched.length,
     confirmationQualityTotals: qualityCounts,
     summary: summary.summary,
