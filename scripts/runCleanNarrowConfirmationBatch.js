@@ -47,11 +47,17 @@ const TIMEFRAMES = TF_AVAILABILITY.available;
 const VALID_NARROW_SCORE_BANDS = new Set(['not_narrow', 'weak_narrow', 'confirmed_narrow', 'strong_compression', 'unknown']);
 
 function requestedNarrowScoreBand() {
-  const band = String(process.env.NARROW_BATCH_NARROW_SCORE_BAND || '').trim();
+  const band = String(process.env.NARROW_BATCH_REQUESTED_NARROW_SCORE_BAND || process.env.NARROW_BATCH_NARROW_SCORE_BAND || '').trim();
   return VALID_NARROW_SCORE_BANDS.has(band) && band !== 'unknown' ? band : null;
 }
 
+function selectedNarrowScoreBand() {
+  const band = String(process.env.NARROW_BATCH_SELECTED_NARROW_SCORE_BAND || process.env.NARROW_BATCH_NARROW_SCORE_BAND || '').trim();
+  return VALID_NARROW_SCORE_BANDS.has(band) && band !== 'unknown' && band !== 'not_narrow' ? band : null;
+}
+
 const REQUESTED_NARROW_SCORE_BAND = requestedNarrowScoreBand();
+const SELECTED_NARROW_SCORE_BAND = selectedNarrowScoreBand();
 
 function round(value, decimals = 4) {
   const n = Number(value);
@@ -72,12 +78,12 @@ function safeArray(value) {
   return Array.isArray(value) ? value : [];
 }
 
-function rowMatchesRequestedBand(row, requestedBand = REQUESTED_NARROW_SCORE_BAND) {
+function rowMatchesRequestedBand(row, requestedBand = SELECTED_NARROW_SCORE_BAND) {
   if (!requestedBand) return true;
   return String(row?.narrowScoreBand || '') === requestedBand;
 }
 
-function applyScoreBandFilter(rows, requestedBand = REQUESTED_NARROW_SCORE_BAND) {
+function applyScoreBandFilter(rows, requestedBand = SELECTED_NARROW_SCORE_BAND) {
   const list = safeArray(rows);
   if (!requestedBand) {
     return { rows: list, requestedBand: null, skippedRows: 0, status: 'not_requested' };
@@ -92,7 +98,8 @@ function applyScoreBandFilter(rows, requestedBand = REQUESTED_NARROW_SCORE_BAND)
 }
 
 function buildNoMatchingSetupsRow(batchMeta = {}, filterResult = {}) {
-  const requestedBand = filterResult.requestedBand || REQUESTED_NARROW_SCORE_BAND || null;
+  const selectedBand = filterResult.requestedBand || SELECTED_NARROW_SCORE_BAND || null;
+  const requestedBand = REQUESTED_NARROW_SCORE_BAND || selectedBand;
   return {
     status: 'skipped_no_matching_band',
     result: 'no_matching_setups',
@@ -106,16 +113,17 @@ function buildNoMatchingSetupsRow(batchMeta = {}, filterResult = {}) {
     run_created_at: batchMeta.created_at || null,
     run_completed_at: batchMeta.batch_completed_at || null,
     requestedFilters: { narrowScoreBand: requestedBand },
-    filters: { narrowScoreBand: requestedBand },
+    filters: { narrowScoreBand: selectedBand },
     filterEnforcement: {
       requestedNarrowScoreBand: requestedBand,
-      enforceable: Boolean(requestedBand),
+      selectedNarrowScoreBand: selectedBand,
+      enforceable: Boolean(selectedBand),
       status: 'skipped_no_matching_band',
       skippedRows: Number(filterResult.skippedRows || 0),
       expectedNoMatchStatus: 'skipped_no_matching_band',
     },
     narrowScore: null,
-    narrowScoreBand: requestedBand,
+    narrowScoreBand: selectedBand,
     regimeLabel: null,
     trades: 0,
     tradeCount: 0,
@@ -131,15 +139,16 @@ function buildNoMatchingSetupsRow(batchMeta = {}, filterResult = {}) {
   };
 }
 
-function attachRequestedFilterMetadata(row, requestedBand = REQUESTED_NARROW_SCORE_BAND) {
-  if (!requestedBand) return row;
+function attachRequestedFilterMetadata(row, requestedBand = REQUESTED_NARROW_SCORE_BAND, selectedBand = SELECTED_NARROW_SCORE_BAND) {
+  if (!selectedBand && !requestedBand) return row;
   return {
     ...row,
-    requestedFilters: { ...(row.requestedFilters || {}), narrowScoreBand: requestedBand },
-    filters: { ...(row.filters || {}), narrowScoreBand: requestedBand },
+    requestedFilters: { ...(row.requestedFilters || {}), narrowScoreBand: requestedBand || selectedBand },
+    filters: { ...(row.filters || {}), narrowScoreBand: selectedBand },
     filterEnforcement: {
-      requestedNarrowScoreBand: requestedBand,
-      enforceable: true,
+      requestedNarrowScoreBand: requestedBand || selectedBand,
+      selectedNarrowScoreBand: selectedBand,
+      enforceable: Boolean(selectedBand),
       status: 'matched',
       expectedNoMatchStatus: 'skipped_no_matching_band',
     },
@@ -441,7 +450,8 @@ function batchFingerprint(date_from, date_to) {
     symbols: [...SYMBOLS].sort(),
     timeframes: [...TIMEFRAMES].sort(),
     filters: {
-      narrowScoreBand: REQUESTED_NARROW_SCORE_BAND,
+      requestedNarrowScoreBand: REQUESTED_NARROW_SCORE_BAND,
+      selectedNarrowScoreBand: SELECTED_NARROW_SCORE_BAND,
     },
     date_from,
     date_to,
@@ -504,9 +514,11 @@ async function main() {
       symbols: SYMBOLS,
       timeframes: TIMEFRAMES,
       requestedFilters: { narrowScoreBand: REQUESTED_NARROW_SCORE_BAND },
+      selectedFilters: { narrowScoreBand: SELECTED_NARROW_SCORE_BAND },
       filterEnforcement: {
         requestedNarrowScoreBand: REQUESTED_NARROW_SCORE_BAND,
-        enforceable: Boolean(REQUESTED_NARROW_SCORE_BAND),
+        selectedNarrowScoreBand: SELECTED_NARROW_SCORE_BAND,
+        enforceable: Boolean(SELECTED_NARROW_SCORE_BAND),
         expectedNoMatchStatus: 'skipped_no_matching_band',
       },
       message_sv: 'Identisk batch har redan körts — hoppas över för att undvika dubblett-data. (NARROW_BATCH_FORCE=1 tvingar).',
@@ -598,9 +610,11 @@ async function main() {
     missingTimeframes: TF_AVAILABILITY.missing,
     timeframeSkips,
     requestedFilters: { narrowScoreBand: REQUESTED_NARROW_SCORE_BAND },
+    selectedFilters: { narrowScoreBand: SELECTED_NARROW_SCORE_BAND },
     filterEnforcement: {
       requestedNarrowScoreBand: REQUESTED_NARROW_SCORE_BAND,
-      enforceable: Boolean(REQUESTED_NARROW_SCORE_BAND),
+      selectedNarrowScoreBand: SELECTED_NARROW_SCORE_BAND,
+      enforceable: Boolean(SELECTED_NARROW_SCORE_BAND),
       status: filterResult.status,
       skippedRows: filterResult.skippedRows,
       expectedNoMatchStatus: 'skipped_no_matching_band',
@@ -626,4 +640,5 @@ module.exports = {
   buildNoMatchingSetupsRow,
   rowMatchesRequestedBand,
   requestedNarrowScoreBand,
+  selectedNarrowScoreBand,
 };
