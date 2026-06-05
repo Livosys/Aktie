@@ -158,6 +158,44 @@ function confirmationShapeFromRow(row) {
   return normalizeConfirmations(value);
 }
 
+function normalizeConfirmationQualityValue(value) {
+  const v = String(value || '').toLowerCase();
+  if (v === 'real' || v === 'heuristic' || v === 'missing') return v;
+  if (v === 'true' || v === 'yes' || v === '1') return 'real';
+  if (v === 'false' || v === '0') return 'missing';
+  return 'missing';
+}
+
+function confirmationQualityFromRow(row) {
+  const explicit = row?.confirmationQuality || row?.confirmation_quality || null;
+  const base = { ema: 'missing', rsi: 'missing', vwap: 'missing', volume: 'missing', macd: 'missing' };
+  if (explicit && typeof explicit === 'object') {
+    for (const key of Object.keys(base)) {
+      const value = explicit[key];
+      if (value === true) base[key] = 'real';
+      else if (value === false) base[key] = 'heuristic';
+      else base[key] = normalizeConfirmationQualityValue(value);
+    }
+    return base;
+  }
+
+  const flags = confirmationShapeFromRow(row);
+  for (const key of Object.keys(base)) {
+    base[key] = flags[key] === null || flags[key] === undefined ? 'missing' : 'heuristic';
+  }
+  return base;
+}
+
+function evidenceQualityFromConfirmationQuality(quality = {}) {
+  const values = Object.values(quality || {});
+  const real = values.filter((value) => value === 'real').length;
+  const heuristic = values.filter((value) => value === 'heuristic').length;
+  if (real > 0 && heuristic > 0) return 'mixed';
+  if (real > 0) return 'real';
+  if (heuristic > 0) return 'heuristic';
+  return 'insufficient_data';
+}
+
 function sourceWarningsForRow(row, source) {
   const warnings = [];
   const narrowScore = row?.narrowScore ?? row?.narrow_score ?? null;
@@ -202,6 +240,8 @@ function normalizeNarrowRecord(row, source, overrides = {}) {
     fakeoutDetected: typeof (row.fakeoutDetected ?? row.fakeout_detected) === 'boolean' ? (row.fakeoutDetected ?? row.fakeout_detected) : null,
     meanReversionCandidate: typeof (row.meanReversionCandidate ?? row.mean_reversion_candidate) === 'boolean' ? (row.meanReversionCandidate ?? row.mean_reversion_candidate) : null,
     confirmationUsed: confirmationShapeFromRow(row),
+    confirmationQuality: confirmationQualityFromRow(row),
+    confirmationEvidenceQuality: evidenceQualityFromConfirmationQuality(confirmationQualityFromRow(row)),
     entryPrice: num(row.entryPrice ?? row.entry_price),
     exitPrice: num(row.exitPrice ?? row.exit_price),
     pnl_paper: pnl,
@@ -239,6 +279,8 @@ function normalizeBatchRow(row) {
     narrowScoreBand: scoreBandFromRow(row),
     regimeLabel: row.regimeLabel ?? row.regime_label ?? null,
     confirmationUsed: confirmationShapeFromRow(row),
+    confirmationQuality: confirmationQualityFromRow(row),
+    confirmationEvidenceQuality: evidenceQualityFromConfirmationQuality(confirmationQualityFromRow(row)),
     pnl_paper: avgPnl,
     pnlPercent: avgPnl,
     avgPnl,
@@ -522,29 +564,55 @@ function analyzeConfirmations(records) {
       confirmation,
       withConfirmation: { trades: 0, winRate: null, avgPnl: null },
       withoutConfirmation: { trades: 0, winRate: null, avgPnl: null },
+      qualityCounts: { real: 0, heuristic: 0, missing: 0 },
+      confirmationEvidenceQuality: 'insufficient_data',
       impact: 'insufficient_data',
     }));
   }
   const keys = ['ema', 'rsi', 'vwap', 'volume', 'macd'];
   return keys.map((key) => {
-    const withC = { trades: 0, wins: 0, losses: 0, pnlSum: 0, pnlCount: 0 };
-    const without = { trades: 0, wins: 0, losses: 0, pnlSum: 0, pnlCount: 0 };
+    const withC = { trades: 0, wins: 0, losses: 0, pnlSum: 0, pnlCount: 0, weightedTrades: 0, weightedWins: 0, weightedLosses: 0, weightedPnlSum: 0, weightedPnlCount: 0 };
+    const without = { trades: 0, wins: 0, losses: 0, pnlSum: 0, pnlCount: 0, weightedTrades: 0, weightedWins: 0, weightedLosses: 0, weightedPnlSum: 0, weightedPnlCount: 0 };
+    const qualityCounts = { real: 0, heuristic: 0, missing: 0 };
     for (const r of records) {
       const flag = r.confirmationUsed ? r.confirmationUsed[key] : null;
       if (flag === null || flag === undefined) continue; // unknown → not counted
+      const quality = r.confirmationQuality?.[key] || (r.confirmationQuality ? 'missing' : 'heuristic');
+      if (qualityCounts[quality] !== undefined) qualityCounts[quality] += 1;
       const bucket = flag ? withC : without;
       const tc = r.tradeCount || 0;
+      const qualityWeight = quality === 'real' ? 1 : quality === 'heuristic' ? 0.35 : 0;
+      const weightedTrades = tc * qualityWeight;
+      const weightedPnlCount = weightedTrades > 0 ? weightedTrades : 0;
       bucket.trades += tc; bucket.wins += r.wins || 0; bucket.losses += r.losses || 0;
+      bucket.weightedTrades += weightedTrades;
+      bucket.weightedWins += (r.wins || 0) * qualityWeight;
+      bucket.weightedLosses += (r.losses || 0) * qualityWeight;
       if (r.pnlPercent !== null) { bucket.pnlSum += r.pnlPercent * (tc || 1); bucket.pnlCount += (tc || 1); }
+      if (r.pnlPercent !== null && weightedPnlCount > 0) { bucket.weightedPnlSum += r.pnlPercent * weightedPnlCount; bucket.weightedPnlCount += weightedPnlCount; }
     }
-    const fmt = (b) => ({ trades: b.trades, winRate: b.trades ? round((b.wins / b.trades) * 100, 1) : null, avgPnl: b.pnlCount ? round(b.pnlSum / b.pnlCount, 4) : null });
+    const fmt = (b) => ({
+      trades: b.trades,
+      qualityWeightedTrades: round(b.weightedTrades, 1),
+      winRate: b.weightedTrades ? round((b.weightedWins / b.weightedTrades) * 100, 1) : (b.trades ? round((b.wins / b.trades) * 100, 1) : null),
+      avgPnl: b.weightedPnlCount ? round(b.weightedPnlSum / b.weightedPnlCount, 4) : (b.pnlCount ? round(b.pnlSum / b.pnlCount, 4) : null),
+    });
     const a = fmt(withC); const b = fmt(without);
+    const evidenceQuality = qualityCounts.real > 0 && qualityCounts.heuristic > 0
+      ? 'mixed'
+      : qualityCounts.real > 0
+        ? 'real'
+        : qualityCounts.heuristic > 0
+          ? 'heuristic'
+          : 'insufficient_data';
     let impact = 'insufficient_data';
-    if (a.trades >= 10 && b.trades >= 10 && a.winRate !== null && b.winRate !== null) {
-      const diff = a.winRate - b.winRate;
-      impact = diff >= 5 ? 'positive' : diff <= -5 ? 'negative' : 'neutral';
+    const evidenceWeight = evidenceQuality === 'real' ? 1 : evidenceQuality === 'mixed' ? 0.75 : evidenceQuality === 'heuristic' ? 0.35 : 0;
+    if (a.qualityWeightedTrades >= 5 && b.qualityWeightedTrades >= 5 && a.winRate !== null && b.winRate !== null && evidenceWeight > 0) {
+      const diff = (a.winRate - b.winRate) * evidenceWeight;
+      const threshold = evidenceQuality === 'real' ? 3.5 : evidenceQuality === 'mixed' ? 2.5 : 5;
+      impact = diff >= threshold ? 'positive' : diff <= -threshold ? 'negative' : 'neutral';
     }
-    return { confirmation: key, withConfirmation: a, withoutConfirmation: b, impact };
+    return { confirmation: key, withConfirmation: a, withoutConfirmation: b, qualityCounts, confirmationEvidenceQuality: evidenceQuality, impact };
   });
 }
 
@@ -633,8 +701,13 @@ function buildNarrowPerformanceSummary() {
   const strongestConfirmation = (() => {
     const positives = confirmations.filter((c) => c.impact === 'positive');
     if (!positives.length) return null;
-    const top = positives.sort((a, b) => (b.withConfirmation.winRate ?? 0) - (a.withConfirmation.winRate ?? 0))[0];
-    return { confirmation: top.confirmation, impact: top.impact, withWinRate: top.withConfirmation.winRate, withoutWinRate: top.withoutConfirmation.winRate };
+    const qualityWeight = (quality) => (quality === 'real' ? 1 : quality === 'mixed' ? 0.75 : quality === 'heuristic' ? 0.35 : 0);
+    const top = positives.sort((a, b) => {
+      const scoreA = ((a.withConfirmation.winRate ?? 0) - (a.withoutConfirmation.winRate ?? 0)) * qualityWeight(a.confirmationEvidenceQuality);
+      const scoreB = ((b.withConfirmation.winRate ?? 0) - (b.withoutConfirmation.winRate ?? 0)) * qualityWeight(b.confirmationEvidenceQuality);
+      return scoreB - scoreA;
+    })[0];
+    return { confirmation: top.confirmation, impact: top.impact, withWinRate: top.withConfirmation.winRate, withoutWinRate: top.withoutConfirmation.winRate, evidenceQuality: top.confirmationEvidenceQuality };
   })();
   const dataConfidence = confidenceFromTrades(totalTrades);
   const status = totalTrades === 0 ? 'needs_more_data' : (dataConfidence === 'high' ? 'ready' : 'low_confidence');
