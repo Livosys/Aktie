@@ -51,6 +51,7 @@ function main() {
       availableTimeframes: result.plan.availableTimeframes,
       missingTimeframes: result.plan.missingTimeframes,
       filters: result.plan.filters,
+      filterEnforcement: result.plan.filterEnforcement,
       limits: result.plan.limits,
       priority: result.plan.priority,
       reason: result.plan.reason,
