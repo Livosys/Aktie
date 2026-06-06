@@ -93,6 +93,7 @@ const daytradingLearning = require('../services/daytradingLearningEngineService'
 const supervisorOperationsAdvisorService = require('../services/supervisorOperationsAdvisorService');
 const supervisorOverviewService = require('../services/supervisorOverviewService');
 const batchStatusService = require('../services/batchStatusService');
+const dataJobsStatusService = require('../services/dataJobsStatusService');
 const TEST_LIVE_SEND_COOLDOWN_MS = 5 * 60 * 1000;
 let testLiveSendLastAt = 0;
 const auditScanLastAt = new Map();
@@ -587,6 +588,17 @@ router.get('/status/batches', (req, res) => {
     res.json(batchStatusService.buildBatchStatus());
   } catch (err) {
     res.status(200).json({ ok: false, status: 'error', error: err.message, ...batchStatusService.SAFETY });
+  }
+});
+
+// ── Read-only Backend Status: Data Jobs / Alpaca ────────────────────────────
+// Reads import/backfill/cache status only. It never starts data imports,
+// backfills, schedulers or provider calls.
+router.get('/status/data-jobs', (req, res) => {
+  try {
+    res.json(dataJobsStatusService.buildDataJobsStatus());
+  } catch (err) {
+    res.status(200).json({ ok: false, status: 'error', error: err.message, ...dataJobsStatusService.SAFETY });
   }
 });
 
