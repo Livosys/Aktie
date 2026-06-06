@@ -213,11 +213,10 @@ function SafetyStatusBar({ overview }) {
         <span>Ingen riktig handel sker. Plattformen analyserar, testar och lär sig i paper-läge.</span>
       </div>
       <div className="research-safety-flags">
-        <Badge tone={locked ? 'good' : 'danger'}>{safety.mode}</Badge>
-        <Badge tone={!safety.actions_allowed ? 'good' : 'danger'}>actions_allowed=false</Badge>
-        <Badge tone={!safety.can_place_orders ? 'good' : 'danger'}>can_place_orders=false</Badge>
-        <Badge tone={!safety.live_trading_enabled ? 'good' : 'danger'}>live_trading_enabled=false</Badge>
-        <Badge tone={!safety.broker_enabled ? 'good' : 'danger'}>broker_enabled=false</Badge>
+        <Badge tone={locked ? 'good' : 'danger'}>Endast testläge</Badge>
+        <Badge tone={!safety.can_place_orders ? 'good' : 'danger'}>Inga riktiga order</Badge>
+        <Badge tone={!safety.broker_enabled ? 'good' : 'danger'}>Broker avstängd</Badge>
+        <Badge tone={!safety.live_trading_enabled ? 'good' : 'danger'}>Ingen livehandel</Badge>
       </div>
     </div>
   );
@@ -339,7 +338,7 @@ function StrategyCard({ item, tone = 'neutral', note }) {
         <strong><SafeText value={item.key || item.strategy || item.strategy_id || item.name} fallback="Strategi" /></strong>
         <Badge tone={tone}>{note || 'Testdata'}</Badge>
       </div>
-      <div className="research-mini-grid">
+      <div className="research-mini-grid research-mini-grid-quiet">
         <span><b>Andel lyckade tester</b>{item.winRate != null ? fmtPct(item.winRate) : '—'}</span>
         <span><b>Antal tester</b>{fmtNumber(item.trades || item.tradeCount || item.total || 0)}</span>
         <span><b>Genomsnitt</b>{item.avgResult != null || item.avgPnl != null ? fmtSigned(first(item.avgResult, item.avgPnl)) : '—'}</span>
@@ -440,7 +439,7 @@ function AiAnalystSummary({ status, latest, onRefresh, refreshing }) {
           <strong>AI-analytiker</strong>
           <Badge tone={disabled ? 'warning' : 'purple'}>{disabled ? 'Avstängd' : 'Read-only'}</Badge>
         </div>
-        <p>AI-analytikern läser systemets säkra sammanfattning. Den kan inte handla eller ändra något.</p>
+        <p>AI-analytikern läser systemets säkra sammanfattning. AI kan inte handla eller ändra något.</p>
         <div className="research-mini-grid">
           <span><b>Provider</b>{provider}</span>
           <span><b>Model</b>{text(status?.model, 'Saknas')}</span>
@@ -485,7 +484,7 @@ function RiskBlockerCard({ risks, dataJobs, batches, activity }) {
     ...degradedSources.map((source) => ({ tone: 'warning', title: 'Källa saknar data', message: `${source.name} svarade delvis.` })),
   ];
   if (batches?.status === 'empty') combined.push({ tone: 'warning', title: 'Batchdata saknas', message: 'Batchtester har inte tillräcklig historik ännu.' });
-  if (!combined.length) combined.push({ tone: 'good', title: 'Live trading off', message: 'Det är en positiv säkerhet: systemet kan inte handla på riktigt.' });
+  if (!combined.length) combined.push({ tone: 'good', title: 'Livehandel avstängd', message: 'Det är en positiv säkerhet: systemet kan inte handla på riktigt.' });
   return (
     <div className="research-risk-grid">
       {combined.slice(0, 10).map((item, index) => (
@@ -522,6 +521,7 @@ export default function SupervisorBrainPage() {
   const [historyLimit, setHistoryLimit] = useState(20);
   const [aiRefreshing, setAiRefreshing] = useState(false);
   const [aiOverride, setAiOverride] = useState(null);
+  const [showAllStrategies, setShowAllStrategies] = useState(false);
   const data = useResearchLabData(historyLimit);
   const overview = data.overview || {};
   const blocks = overview.blocks || {};
@@ -529,6 +529,10 @@ export default function SupervisorBrainPage() {
   const canonical = overview.canonicalStats || {};
   const latestTest = arr(overview.recentTests)[0] || null;
   const strategies = blocks.strategies?.summary || {};
+  const topStrategies = arr(strategies.top);
+  const weakStrategies = arr(strategies.worst);
+  const visibleTopStrategies = showAllStrategies ? topStrategies : topStrategies.slice(0, 3);
+  const visibleWeakStrategies = showAllStrategies ? weakStrategies : weakStrategies.slice(0, 3);
   const learning = blocks.learning?.summary || {};
   const narrow = blocks.narrow?.summary || {};
   const recommended = arr(overview.actionPlan)[0] || null;
@@ -583,11 +587,11 @@ export default function SupervisorBrainPage() {
           <div>
             <div className="research-eyebrow">AI Kontrollrum</div>
             <h1>Trading OS är en säker AI-forskningsplattform</h1>
-            <p>Systemet analyserar, paper-testar, replay-testar, batch-testar och lär sig av resultaten. Ingen riktig handel sker.</p>
+            <p>Analys, paper testing, replay, batchtester och learning. Ingen riktig handel sker.</p>
           </div>
           <div className="research-hero-status">
             <Badge tone={safetyLocked ? 'good' : 'danger'}>{safetyLocked ? 'Säkert läge' : 'Kontrollera'}</Badge>
-            <span>Senast uppdaterad: {timeText(data.lastUpdated)}</span>
+            <span>{timeText(data.lastUpdated)}</span>
             {data.refreshing ? <small>Uppdaterar data...</small> : null}
           </div>
         </header>
@@ -642,15 +646,24 @@ export default function SupervisorBrainPage() {
 
         {active === 'strategies' ? (
           <section className="research-section">
-            <SectionHeader eyebrow="Strategier" title="Vad fungerar och vad behöver mer test" subtitle="Visar den strategi-data som finns i Supervisor. Om något saknas visas ett tomt läge i stället för att sidan kraschar." />
+            <SectionHeader
+              eyebrow="Strategier"
+              title="Vad fungerar och vad behöver mer test"
+              subtitle="En lugn sammanfattning av strategi-data från Supervisor."
+              aside={(topStrategies.length > 3 || weakStrategies.length > 3) ? (
+                <button className="research-link-button" type="button" onClick={() => setShowAllStrategies((value) => !value)}>
+                  {showAllStrategies ? 'Visa färre' : 'Visa fler'}
+                </button>
+              ) : null}
+            />
             <div className="research-grid research-grid-2">
-              <Card>
+              <Card className="research-strategy-group">
                 <div className="research-card-title"><strong>Bäst just nu</strong><Badge tone="good">Testdata</Badge></div>
-                {arr(strategies.top).length ? arr(strategies.top).map((item, index) => <StrategyCard key={item.key || item.strategy || `top-${index}`} item={item} tone="good" note="Bäst" />) : <EmptyState />}
+                {visibleTopStrategies.length ? visibleTopStrategies.map((item, index) => <StrategyCard key={item.key || item.strategy || `top-${index}`} item={item} tone="good" note="Bäst" />) : <EmptyState />}
               </Card>
-              <Card>
+              <Card className="research-strategy-group">
                 <div className="research-card-title"><strong>Svagast just nu</strong><Badge tone="warning">Behöver mer test</Badge></div>
-                {arr(strategies.worst).length ? arr(strategies.worst).map((item, index) => <StrategyCard key={item.key || item.strategy || `worst-${index}`} item={item} tone="warning" note="Svagast" />) : <EmptyState />}
+                {visibleWeakStrategies.length ? visibleWeakStrategies.map((item, index) => <StrategyCard key={item.key || item.strategy || `worst-${index}`} item={item} tone="warning" note="Svagast" />) : <EmptyState />}
               </Card>
               <MetricCard label="Bästa narrow-strategi" value={text(narrow.bestStrategy, 'Saknas')} help="Från Narrow Learning." tone="good" />
               <MetricCard label="Inte testade nog" value={text(learning.connectorSummary?.strategiesTracked ? 'Fler strategier följs' : 'För lite data')} help="Mer paper/replay/batch behövs." tone="warning" />
