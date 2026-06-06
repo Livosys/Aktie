@@ -243,6 +243,75 @@ function deriveActionPlan(blocks) {
   return plan;
 }
 
+// ── recent tests (read-only autopilot history) ───────────────────────────────
+const RECENT_TESTS_SOURCE = 'data/autopilot/narrow-autopilot-history.jsonl';
+
+// Normalize one raw history event into a stable, render-safe shape. Returns null
+// for anything that is not a usable object (so callers can count drops).
+function normalizeRecentTest(ev) {
+  if (!ev || typeof ev !== 'object' || Array.isArray(ev)) return null;
+  const symbols = Array.isArray(ev.symbols) ? ev.symbols : null;
+  const tfs = Array.isArray(ev.timeframes) ? ev.timeframes : null;
+  const summary = ev.summary && typeof ev.summary === 'object' && !Array.isArray(ev.summary) ? ev.summary : null;
+  const type = typeof ev.event === 'string' ? ev.event : null;
+  const warnings = Array.isArray(ev.warnings) ? ev.warnings.filter((w) => typeof w === 'string') : [];
+  const finite = (v) => (Number.isFinite(Number(v)) ? Number(v) : null);
+  return {
+    id: ev.planId || ev.id || null,
+    timestamp: ev.timestamp || null,
+    type,
+    source: 'narrow_autopilot',
+    strategy: ev.strategy_id || ev.strategyId || null,
+    symbol: symbols && symbols.length ? symbols.join(', ') : null,
+    timeframe: tfs && tfs.length ? tfs.join(', ') : null,
+    scoreBand: ev.selectedNarrowScoreBand || ev.scoreBand || (ev.filters && ev.filters.narrowScoreBand) || null,
+    tradesCount: summary ? finite(summary.totalTrades ?? summary.tradesCount) : null,
+    winRate: summary ? finite(summary.winRate) : null,
+    avgResult: summary ? finite(summary.avgPnl ?? summary.avgResult) : null,
+    dryRun: typeof ev.dryRun === 'boolean' ? ev.dryRun : null,
+    executed: type === 'run_completed' ? true : (type === 'run_blocked' ? false : null),
+    accepted: typeof ev.accepted === 'boolean' ? ev.accepted : null,
+    blockedReason: ev.blockedReason || (type === 'run_blocked' ? (warnings[0] || 'blocked') : null),
+    reason: ev.reason || (warnings.length ? warnings.join('; ') : null),
+    recommendation: summary && summary.bestStrategy ? summary.bestStrategy : null,
+    status: ev.status || null,
+  };
+}
+
+// Build the recentTests list + status metadata from autopilot history.
+// Fully read-only and fault-isolated: never throws, always returns a shape.
+function buildRecentTests(limit = 25) {
+  try {
+    const autopilot = require('./narrowTestAutopilotService');
+    const raw = autopilot.readNarrowAutopilotHistory(limit);
+    if (!Array.isArray(raw)) {
+      return { recentTests: [], recentTestsStatus: { status: 'error', count: 0, source: RECENT_TESTS_SOURCE, message: 'Oväntad historikform.' } };
+    }
+    if (raw.length === 0) {
+      return { recentTests: [], recentTestsStatus: { status: 'empty', count: 0, source: RECENT_TESTS_SOURCE, message: 'Ingen testhistorik än.' } };
+    }
+    const normalized = [];
+    let dropped = 0;
+    for (const ev of raw) {
+      const n = normalizeRecentTest(ev);
+      if (n) normalized.push(n); else dropped++;
+    }
+    normalized.reverse(); // newest first
+    let status = 'ok';
+    let message = `${normalized.length} senaste testhändelser.`;
+    if (normalized.length === 0) {
+      status = 'degraded';
+      message = 'Historik fanns men kunde inte tolkas.';
+    } else if (dropped > 0) {
+      status = 'degraded';
+      message = `${normalized.length} händelser visas, ${dropped} ogiltiga hoppades över.`;
+    }
+    return { recentTests: normalized, recentTestsStatus: { status, count: normalized.length, source: RECENT_TESTS_SOURCE, message } };
+  } catch (err) {
+    return { recentTests: [], recentTestsStatus: { status: 'error', count: 0, source: RECENT_TESTS_SOURCE, message: err && err.message ? err.message : String(err) } };
+  }
+}
+
 // ── main aggregator ───────────────────────────────────────────────────────────
 async function buildOverview() {
   const systemHealth = lazy('../systemHealth');
@@ -298,12 +367,26 @@ async function buildOverview() {
     };
   } catch (_) { canonicalStats = null; }
 
+  // Recent autopilot test history (read-only, fault-isolated).
+  let recentTests = [];
+  let recentTestsStatus = { status: 'error', count: 0, source: RECENT_TESTS_SOURCE, message: 'unavailable' };
+  try {
+    const rt = buildRecentTests(25);
+    recentTests = rt.recentTests;
+    recentTestsStatus = rt.recentTestsStatus;
+  } catch (err) {
+    recentTests = [];
+    recentTestsStatus = { status: 'error', count: 0, source: RECENT_TESTS_SOURCE, message: err && err.message ? err.message : 'unavailable' };
+  }
+
   return {
     ok: true,
     generatedAt: new Date().toISOString(),
     ...SAFETY,
     canonicalStats,
     blocks,
+    recentTests,
+    recentTestsStatus,
     risks: deriveRisks(blocks, canonicalStats),
     actionPlan: deriveActionPlan(blocks),
   };
@@ -317,4 +400,6 @@ module.exports = {
   deriveRisks,
   deriveActionPlan,
   summarizeStrategies,
+  buildRecentTests,
+  normalizeRecentTest,
 };
