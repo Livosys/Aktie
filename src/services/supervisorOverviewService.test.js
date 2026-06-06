@@ -126,6 +126,23 @@ const overview = require('./supervisorOverviewService');
   delete process.env.NARROW_AUTOPILOT_DIR;
   delete require.cache[require.resolve('./narrowTestAutopilotService')];
 
+  // ── 9. short cache: second call within TTL is served from cache ─────────────
+  overview.resetOverviewCache();
+  const c1 = await overview.getCachedOverview();
+  assert.equal(c1.cached, false, 'first call rebuilds');
+  assert.equal(c1.ok, true);
+  const c2 = await overview.getCachedOverview();
+  assert.equal(c2.cached, true, 'second call within TTL is cached');
+  // Safety flags survive the cache untouched.
+  assert.equal(c2.mode, 'paper_only');
+  assert.equal(c2.live_trading_enabled, false);
+  assert.equal(c2.can_place_orders, false);
+  assert.equal(c2.broker_enabled, false);
+  // force bypasses the cache (so errors can never be hidden permanently).
+  const c3 = await overview.getCachedOverview({ force: true });
+  assert.equal(c3.cached, false, 'force rebuilds');
+  overview.resetOverviewCache();
+
   console.log('# supervisorOverviewService tests passed.');
   // Some source modules hold open handles (e.g. Redis); exit explicitly so the
   // script-style test terminates instead of hanging on those handles.

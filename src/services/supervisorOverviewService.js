@@ -392,9 +392,34 @@ async function buildOverview() {
   };
 }
 
+// ── short read-only cache ─────────────────────────────────────────────────────
+// The overview fans out to several synchronous, file-scanning sources (cold
+// builds take several seconds). A brief TTL keeps repeated dashboard polls fast
+// without ever hiding stale errors for long: error/degraded block states clear
+// on the next rebuild after TTL. Safety flags are never affected.
+const OVERVIEW_TTL_MS = 45 * 1000;
+let overviewCache = { at: 0, value: null };
+
+async function getCachedOverview({ force = false } = {}) {
+  const now = Date.now();
+  if (!force && overviewCache.value && (now - overviewCache.at) < OVERVIEW_TTL_MS) {
+    return { ...overviewCache.value, cached: true, cacheAgeMs: now - overviewCache.at };
+  }
+  const fresh = await buildOverview();
+  overviewCache = { at: now, value: fresh };
+  return { ...fresh, cached: false, cacheAgeMs: 0 };
+}
+
+function resetOverviewCache() {
+  overviewCache = { at: 0, value: null };
+}
+
 module.exports = {
   SAFETY,
+  OVERVIEW_TTL_MS,
   buildOverview,
+  getCachedOverview,
+  resetOverviewCache,
   // exported for tests
   safeBlock,
   deriveRisks,

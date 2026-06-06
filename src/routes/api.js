@@ -2123,7 +2123,7 @@ router.get('/supervisor/operations-advisor', (req, res) => {
 // trades. Contract: docs/supervisor-overview-contract.md
 router.get('/supervisor/overview', async (req, res) => {
   try {
-    res.json(await supervisorOverviewService.buildOverview());
+    res.json(await supervisorOverviewService.getCachedOverview({ force: req.query.fresh === '1' }));
   } catch (err) {
     res.status(500).json({
       ok: false,
