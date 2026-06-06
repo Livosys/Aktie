@@ -41,6 +41,7 @@ const { buildSignalDecisionSummary }                   = require('../scanner/sig
 const { buildDecisionMonitor }                         = require('../scanner/decisionMonitor');
 const { buildAiContext }                               = require('../ai/contextBuilder');
 const { askAi, isConfigured: aiIsConfigured, RISK_NOTE } = require('../ai/aiService');
+const aiAnalystService                                  = require('../services/aiAnalystService');
 const redisService                                      = require('../services/redisService');
 const agentReasoningService                            = require('../services/agentReasoningService');
 const vectorMemoryService                              = require('../services/vectorMemoryService');
@@ -546,6 +547,34 @@ router.post('/ai/ask', async (req, res) => {
     }
     console.warn('[AI] ask failed:', err.message);
     res.status(500).json({ ok: false, error: 'AI request failed' });
+  }
+});
+
+// ── AI Analyst Layer v1 ──────────────────────────────────────────────────────
+// Read-only Supervisor analyst. It summarizes sanitized overview data only and
+// cannot trade, place orders, change risk, enable broker/live mode or apply config.
+router.get('/ai/analyst/status', (req, res) => {
+  try {
+    res.json(aiAnalystService.getStatus());
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message, ...aiAnalystService.SAFETY });
+  }
+});
+
+router.get('/ai/analyst/latest', (req, res) => {
+  try {
+    res.json(aiAnalystService.getLatestAnalysis());
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message, ...aiAnalystService.SAFETY });
+  }
+});
+
+router.post('/ai/analyst/run', async (req, res) => {
+  try {
+    const force = req.query.force === '1' || req.body?.force === true;
+    res.json(await aiAnalystService.runAnalyst({ force }));
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message, ...aiAnalystService.SAFETY });
   }
 });
 

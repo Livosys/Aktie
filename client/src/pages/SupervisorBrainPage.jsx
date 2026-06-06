@@ -72,8 +72,8 @@ const BEGINNER_TERMS = [
   ['rekommenderat test', 'Nästa säkra research-test som systemet tycker är mest relevant.'],
 ];
 
-function apiJson(url) {
-  return fetch(url, { credentials: 'same-origin' })
+function apiJson(url, options = {}) {
+  return fetch(url, { credentials: 'same-origin', ...options })
     .then(async (res) => {
       const data = await res.json().catch(() => null);
       if (!res.ok) {
@@ -623,6 +623,140 @@ function BatchSummarySection({ batchSummary }) {
           </details>
         </>
       )}
+    </section>
+  );
+}
+
+function listItems(items, fallback) {
+  const clean = safeArray(items).map((item) => String(item || '').trim()).filter(Boolean);
+  return clean.length ? clean : [fallback];
+}
+
+function AIAnalystPanel() {
+  const [state, setState] = useState({
+    status: null,
+    latest: null,
+    loading: true,
+    running: false,
+    error: '',
+  });
+
+  useEffect(() => {
+    let cancelled = false;
+    async function loadSafe() {
+      const [status, latest] = await Promise.all([
+        apiJson('/api/ai/analyst/status').catch(() => null),
+        apiJson('/api/ai/analyst/latest').catch(() => null),
+      ]);
+      if (!cancelled) setState((prev) => ({ ...prev, status, latest, loading: false, error: '' }));
+    }
+    loadSafe();
+    return () => { cancelled = true; };
+  }, []);
+
+  async function runAnalysis() {
+    setState((prev) => ({ ...prev, running: true, error: '' }));
+    try {
+      const result = await apiJson('/api/ai/analyst/run', {
+        method: 'POST',
+      });
+      const status = await apiJson('/api/ai/analyst/status').catch(() => state.status);
+      setState((prev) => ({
+        ...prev,
+        status,
+        latest: { ok: true, status: result.status, latest: result, cache: result.cache || null },
+        running: false,
+        loading: false,
+        error: '',
+      }));
+    } catch (err) {
+      setState((prev) => ({ ...prev, running: false, loading: false, error: err?.message || 'AI-analys kunde inte uppdateras.' }));
+    }
+  }
+
+  const status = state.status || {};
+  const latestPayload = state.latest?.latest || null;
+  const output = latestPayload?.output || null;
+  const provider = status.provider || latestPayload?.provider || 'disabled';
+  const latestStatus = latestPayload?.status || state.latest?.status || status.latestStatus || 'empty';
+  const isDisabled = provider === 'disabled' || latestStatus === 'disabled';
+  const confidence = output?.confidence != null ? `${Math.round(Number(output.confidence || 0) * 100)}%` : '—';
+
+  return (
+    <section className="sup-brain-section sup-ai-analyst-panel">
+      <SectionTitle
+        eyebrow="AI Analyst"
+        title="AI-analytiker"
+        subtitle="AI läser systemets säkra sammanfattning och förklarar vad som bör testas härnäst. Den kan inte handla eller ändra något."
+        helper="Read-only"
+      />
+      <div className="sup-ai-analyst-head">
+        <div>
+          <div className="sup-ai-analyst-statusline">
+            <Badge tone={isDisabled ? 'warning' : 'purple'}>{isDisabled ? 'Disabled' : 'Read-only AI'}</Badge>
+            <span>Provider: <SafeText value={provider} fallback="disabled" /></span>
+            <span>Model: <SafeText value={status.model || latestPayload?.model} fallback="—" /></span>
+            <span>Senast: {latestPayload?.generatedAt ? nowText(latestPayload.generatedAt) : 'ingen analys ännu'}</span>
+          </div>
+          <p className="sup-ai-analyst-copy">
+            AI Analyst får bara sammanfatta, hitta risker och föreslå säkra paper/replay/batch-tester.
+          </p>
+        </div>
+        <button className="sup-ai-analyst-run" type="button" onClick={runAnalysis} disabled={state.running}>
+          {state.running ? 'Uppdaterar...' : 'Uppdatera AI-analys'}
+        </button>
+      </div>
+
+      {state.loading ? <div className="sup-brain-empty">Laddar AI Analyst-status...</div> : null}
+      {state.error ? <div className="sup-brain-batch-alert"><SafeText value={state.error} /></div> : null}
+      {isDisabled ? (
+        <BeginnerBox
+          title="AI Analyst är avstängd"
+          text="Sätt AI_ANALYST_PROVIDER=openai eller anthropic på servern för att aktivera manuell read-only analys. Systemet fortsätter fungera utan extern AI."
+        />
+      ) : null}
+
+      <div className="sup-ai-analyst-summary">
+        <div className="sup-ai-analyst-main">
+          <div className="sup-brain-summary-title">Senaste AI-sammanfattning</div>
+          <p>{output?.summary || 'Ingen AI-analys sparad ännu.'}</p>
+        </div>
+        <div className="sup-ai-analyst-side">
+          <InfoChip label="Confidence" value={confidence} tone="purple" />
+          <InfoChip label="Status" value={latestStatus} tone={latestStatus === 'ok' ? 'good' : 'warning'} />
+          <InfoChip label="Safety" value="paper_only" tone="good" />
+        </div>
+      </div>
+
+      <div className="sup-brain-grid sup-brain-grid-2 sup-brain-spaced-grid">
+        <Card className="sup-ai-analyst-card">
+          <div className="sup-brain-summary-title">Vad AI lärde sig</div>
+          <ul>{listItems(output?.what_ai_learned, 'Ingen AI-lärdom sparad ännu.').map((item) => <li key={item}><SafeText value={item} /></li>)}</ul>
+        </Card>
+        <Card className="sup-ai-analyst-card">
+          <div className="sup-brain-summary-title">Strategier</div>
+          <div className="sup-brain-listrow"><span>Bäst</span><span><SafeText value={output?.best_strategy} fallback="—" /></span></div>
+          <div className="sup-brain-listrow"><span>Svagast</span><span><SafeText value={output?.weakest_strategy} fallback="—" /></span></div>
+        </Card>
+        <Card className="sup-ai-analyst-card">
+          <div className="sup-brain-summary-title">Risker AI ser</div>
+          <ul>{listItems(output?.risks, 'Inga AI-risker sparade ännu.').map((item) => <li key={item}><SafeText value={item} /></li>)}</ul>
+        </Card>
+        <Card className="sup-ai-analyst-card">
+          <div className="sup-brain-summary-title">Nästa rekommenderade test</div>
+          <ul>{listItems(output?.next_recommended_tests, 'Vänta på mer testdata eller uppdatera AI-analysen.').map((item) => <li key={item}><SafeText value={item} /></li>)}</ul>
+        </Card>
+      </div>
+
+      <details className="sup-brain-details sup-ai-analyst-details">
+        <summary>Visa detaljer</summary>
+        <div className="sup-brain-batch-detail-grid">
+          <InfoChip label="actions_allowed" value={String(output?.safety?.actions_allowed ?? false)} tone="good" />
+          <InfoChip label="can_place_orders" value={String(output?.safety?.can_place_orders ?? false)} tone="good" />
+          <InfoChip label="live_trading_enabled" value={String(output?.safety?.live_trading_enabled ?? false)} tone="good" />
+          <InfoChip label="broker_enabled" value={String(output?.safety?.broker_enabled ?? false)} tone="good" />
+        </div>
+      </details>
     </section>
   );
 }
@@ -1192,6 +1326,8 @@ export default function SupervisorBrainPage() {
           autopilotScheduler={autopilotScheduler}
           latestRecommendedTest={latestRecommendedTest}
         />
+
+        <AIAnalystPanel />
 
         <section className="sup-brain-section sup-brain-section-safety">
           <SectionTitle
