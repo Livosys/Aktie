@@ -92,6 +92,7 @@ const daytradingControl = require('../services/daytradingControlService');
 const daytradingLearning = require('../services/daytradingLearningEngineService');
 const supervisorOperationsAdvisorService = require('../services/supervisorOperationsAdvisorService');
 const supervisorOverviewService = require('../services/supervisorOverviewService');
+const batchStatusService = require('../services/batchStatusService');
 const TEST_LIVE_SEND_COOLDOWN_MS = 5 * 60 * 1000;
 let testLiveSendLastAt = 0;
 const auditScanLastAt = new Map();
@@ -575,6 +576,17 @@ router.post('/ai/analyst/run', async (req, res) => {
     res.json(await aiAnalystService.runAnalyst({ force }));
   } catch (err) {
     res.status(500).json({ ok: false, error: err.message, ...aiAnalystService.SAFETY });
+  }
+});
+
+// ── Read-only Backend Status: Batches ────────────────────────────────────────
+// Reads batch history/status only. It never starts, pauses, stops or schedules
+// batch tests.
+router.get('/status/batches', (req, res) => {
+  try {
+    res.json(batchStatusService.buildBatchStatus());
+  } catch (err) {
+    res.status(200).json({ ok: false, status: 'error', error: err.message, ...batchStatusService.SAFETY });
   }
 });
 
