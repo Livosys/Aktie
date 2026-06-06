@@ -74,7 +74,7 @@ button, a, [role="button"] { touch-action: manipulation; }
   --research-line: rgba(15, 23, 42, .10);
   --research-shadow: 0 10px 30px rgba(15, 23, 42, .07);
   display: grid;
-  grid-template-columns: 236px minmax(0, 1fr);
+  grid-template-columns: minmax(0, 1fr);
   gap: 0;
   min-height: calc(100vh - var(--topbar-h, 68px));
   background:
@@ -203,6 +203,57 @@ button, a, [role="button"] { touch-action: manipulation; }
   min-width: 160px;
   color: var(--research-soft);
   font-size: 12px;
+}
+
+.research-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 4px 0 16px;
+  padding-bottom: 4px;
+}
+
+.research-tabs::-webkit-scrollbar {
+  height: 6px;
+}
+
+.research-tab {
+  border: 1px solid var(--research-line);
+  border-radius: 999px;
+  background: var(--research-card);
+  color: var(--research-soft);
+  min-height: 34px;
+  padding: 0 14px;
+  font: inherit;
+  font-weight: 750;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.research-tab:hover {
+  background: rgba(59, 130, 246, .08);
+  color: var(--research-ink);
+}
+
+.research-tab.active {
+  background: #fff;
+  color: #2563eb;
+  border-color: rgba(59, 130, 246, .35);
+  box-shadow: 0 5px 16px rgba(37, 99, 235, .12);
+}
+
+[data-theme="dark"] .research-tab.active {
+  background: rgba(59, 130, 246, .14);
+  color: #93c5fd;
+  box-shadow: none;
+}
+
+@media (max-width: 760px) {
+  .research-tabs {
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+  }
 }
 
 .research-eyebrow {

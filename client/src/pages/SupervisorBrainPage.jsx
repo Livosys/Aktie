@@ -599,26 +599,6 @@ export default function SupervisorBrainPage() {
 
   return (
     <div className="research-lab-page">
-      <aside className="research-sidebar" aria-label="Research Lab navigation">
-        <div className="research-brand">
-          <span>AI</span>
-          <strong>Research Lab</strong>
-          <small>Trading OS v2</small>
-        </div>
-        <nav>
-          {SECTIONS.map((section) => (
-            <button
-              key={section.id}
-              type="button"
-              className={active === section.id ? 'active' : ''}
-              onClick={() => setActive(section.id)}
-            >
-              {section.label}
-            </button>
-          ))}
-        </nav>
-      </aside>
-
       <main className="research-main">
         <header className="research-hero">
           <div>
@@ -634,6 +614,21 @@ export default function SupervisorBrainPage() {
         </header>
 
         <SafetyStatusBar overview={overview} />
+
+        <nav className="research-tabs" aria-label="Supervisor-sektioner">
+          {SECTIONS.map((section) => (
+            <button
+              key={section.id}
+              type="button"
+              className={active === section.id ? 'research-tab active' : 'research-tab'}
+              onClick={() => setActive(section.id)}
+              aria-pressed={active === section.id}
+            >
+              {section.label}
+            </button>
+          ))}
+        </nav>
+
         {data.error ? <DegradedState>{data.error}</DegradedState> : null}
         {data.loading ? <EmptyState title="Laddar Research Lab">Hämtar säker systemöversikt...</EmptyState> : null}
 
