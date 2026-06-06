@@ -205,6 +205,17 @@ button, a, [role="button"] { touch-action: manipulation; }
   font-size: 12px;
 }
 
+.research-readiness {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin: 4px 0 12px;
+  color: var(--research-soft);
+  font-size: 12px;
+  font-weight: 650;
+}
+
 .research-tabs {
   display: flex;
   flex-wrap: wrap;

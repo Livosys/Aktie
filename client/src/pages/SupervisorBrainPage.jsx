@@ -179,6 +179,30 @@ function Badge({ tone = 'neutral', children }) {
   return <span className={`research-badge research-badge-${tone}`}>{children}</span>;
 }
 
+function autopilotReadiness(summary) {
+  if (!summary) return { tone: 'neutral', label: 'Status saknas' };
+  if (summary.enabled) return { tone: 'blue', label: 'Förberedd' };
+  return { tone: 'good', label: 'Förberedd men avstängd' };
+}
+
+function aiReadiness(status) {
+  const r = status?.status || status?.readiness || null;
+  if (r === 'ready') return { tone: 'purple', label: 'Aktiv' };
+  if (r === 'not_configured') return { tone: 'warning', label: 'Inte konfigurerad' };
+  return { tone: 'good', label: 'Avstängd' };
+}
+
+function ReadinessNote({ readiness, lastRun, lastResult }) {
+  return (
+    <div className="research-readiness">
+      <Badge tone={readiness.tone}>{readiness.label}</Badge>
+      <span>Endast testläge</span>
+      {lastRun ? <span>Senaste händelse: {timeText(lastRun)}</span> : null}
+      {lastResult ? <span>Senaste resultat: <SafeText value={lastResult} /></span> : null}
+    </div>
+  );
+}
+
 function Card({ className = '', children }) {
   return <article className={`research-card ${className}`.trim()}>{children}</article>;
 }
@@ -573,6 +597,9 @@ export default function SupervisorBrainPage() {
   const learning = blocks.learning?.summary || {};
   const narrow = blocks.narrow?.summary || {};
   const recommended = arr(overview.actionPlan)[0] || null;
+  const batchAuto = overview.batchAutopilotSummary || null;
+  const replayAuto = overview.replayAutopilotSummary || null;
+  const aiStatusForReadiness = aiOverride?.status || data.aiStatus || overview.aiAnalystStatus || null;
 
   const safetyLocked = overview.mode === 'paper_only'
     && overview.actions_allowed === false
@@ -658,6 +685,13 @@ export default function SupervisorBrainPage() {
         {active === 'live' ? (
           <section className="research-section">
             <SectionHeader eyebrow="Live just nu" title="Vad systemet gör just nu" subtitle="En read-only tidslinje från systemets aktivitet. Den här vyn har inga kontrollknappar." aside={<Badge tone={toneForStatus(data.activity?.status)}>{text(data.activity?.status, 'Saknas')}</Badge>} />
+            {visibleActivity[0] ? (
+              <ReadinessNote
+                readiness={{ tone: 'blue', label: 'Senaste händelse' }}
+                lastRun={visibleActivity[0].timestamp}
+                lastResult={visibleActivity[0].result}
+              />
+            ) : null}
             <LiveActivityFeed events={visibleActivity} limit={50} />
           </section>
         ) : null}
@@ -705,14 +739,16 @@ export default function SupervisorBrainPage() {
 
         {active === 'batches' ? (
           <section className="research-section">
-            <SectionHeader eyebrow="Batchtester" title="Batchtester jämför många varianter" subtitle="Batchtester jämför många varianter för att hitta vad som fungerar bäst. Här visas bara status och historik." />
+            <SectionHeader eyebrow="Batchtester" title="Batchtester jämför många varianter" subtitle="Batchtester jämför många varianter för att hitta vad som fungerar bäst. Här visas bara status och historik." aside={<Badge tone={autopilotReadiness(batchAuto).tone}>{`Batch-autopilot: ${autopilotReadiness(batchAuto).label}`}</Badge>} />
+            {batchAuto ? <ReadinessNote readiness={autopilotReadiness(batchAuto)} lastRun={batchAuto.lastRun} /> : null}
             <BatchStatusCard batches={data.batches || overview.batchSummary} />
           </section>
         ) : null}
 
         {active === 'replay' ? (
           <section className="research-section">
-            <SectionHeader eyebrow="Replaytester" title="Replay testar på gammal data" subtitle="Replay betyder att systemet testar en strategi på historisk marknadsdata. Den här vyn visar bara förslag och händelser." />
+            <SectionHeader eyebrow="Replaytester" title="Replay testar på gammal data" subtitle="Replay betyder att systemet testar en strategi på historisk marknadsdata. Den här vyn visar bara förslag och händelser." aside={<Badge tone={autopilotReadiness(replayAuto).tone}>{`Replay-autopilot: ${autopilotReadiness(replayAuto).label}`}</Badge>} />
+            {replayAuto ? <ReadinessNote readiness={autopilotReadiness(replayAuto)} lastRun={replayAuto.lastRun} lastResult={replayAuto.lastReplayResult} /> : null}
             <div className="research-grid research-grid-2">
               <Card>
                 <div className="research-card-title"><strong>Visa replay-förslag</strong><Badge tone="blue">Read-only</Badge></div>
@@ -749,7 +785,8 @@ export default function SupervisorBrainPage() {
 
         {active === 'ai' ? (
           <section className="research-section">
-            <SectionHeader eyebrow="AI-analytiker" title="AI förklarar vad som bör testas härnäst" subtitle="AI får bara läsa systemets säkra sammanfattning, sammanfatta och rekommendera säkra research-tester." />
+            <SectionHeader eyebrow="AI-analytiker" title="AI förklarar vad som bör testas härnäst" subtitle="AI får bara läsa systemets säkra sammanfattning, sammanfatta och rekommendera säkra research-tester." aside={<Badge tone={aiReadiness(aiStatusForReadiness).tone}>{`Claude: ${aiReadiness(aiStatusForReadiness).label}`}</Badge>} />
+            {aiStatusForReadiness?.message ? <ReadinessNote readiness={aiReadiness(aiStatusForReadiness)} lastRun={aiStatusForReadiness.latestTimestamp} lastResult={aiStatusForReadiness.message} /> : null}
             <AiAnalystSummary status={aiOverride?.status || data.aiStatus || overview.aiAnalystStatus} latest={aiOverride?.latest || data.aiLatest} onRefresh={refreshAiAnalysis} refreshing={aiRefreshing} />
           </section>
         ) : null}
