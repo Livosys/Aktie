@@ -12,6 +12,14 @@ delete process.env.AI_ANALYST_API_KEY;
 
 const svc = require('./aiAnalystService');
 
+function assertSafety(obj) {
+  assert.equal(obj.mode, 'paper_only');
+  assert.equal(obj.actions_allowed, false);
+  assert.equal(obj.can_place_orders, false);
+  assert.equal(obj.live_trading_enabled, false);
+  assert.equal(obj.broker_enabled, false);
+}
+
 (async () => {
   // 1. latest works when no analysis exists.
   const empty = svc.getLatestAnalysis();
@@ -100,6 +108,12 @@ const svc = require('./aiAnalystService');
   assert.ok(status.logEventCount >= 1);
   assert.equal(status.broker_enabled, false);
   assert.equal(JSON.stringify(status).includes('secret-value'), false);
+  // Readiness fields for a disabled provider.
+  assert.equal(status.status, 'disabled');
+  assert.equal(status.providerAvailable, false);
+  assert.equal(status.anthropicConfigured, false);
+  assert.equal(status.openaiConfigured, false);
+  assert.ok(typeof status.message === 'string' && status.message.length > 0);
 
   // 6. Log/write failures are fault-isolated; run still returns safe response.
   const badDir = path.join(tmp, 'not-a-dir');
@@ -111,6 +125,42 @@ const svc = require('./aiAnalystService');
   assert.equal(noCrash.mode, 'paper_only');
   assert.equal(noCrash.can_place_orders, false);
   process.env.AI_ANALYST_DIR = tmp;
+
+  // 7. Provider readiness: selected but unconfigured → safe not_configured.
+  delete process.env.AI_ANALYST_API_KEY;
+  delete process.env.AI_ANALYST_ANTHROPIC_API_KEY;
+  delete process.env.ANTHROPIC_API_KEY;
+  delete process.env.AI_API_KEY;
+
+  process.env.AI_ANALYST_PROVIDER = 'anthropic';
+  const anth = svc.getStatus();
+  assert.equal(anth.provider, 'anthropic');
+  assert.equal(anth.status, 'not_configured');
+  assert.equal(anth.providerAvailable, false);
+  assert.equal(anth.anthropicConfigured, false);
+  assert.ok(anth.message.includes('Claude'));
+  assertSafety(anth);
+
+  process.env.AI_ANALYST_PROVIDER = 'openai';
+  const oai = svc.getStatus();
+  assert.equal(oai.status, 'not_configured');
+  assert.equal(oai.providerAvailable, false);
+  assert.equal(oai.openaiConfigured, false);
+  assert.ok(oai.message.includes('OpenAI'));
+  assertSafety(oai);
+
+  // 8. Configured provider → ready, and the key value is never exposed.
+  process.env.ANTHROPIC_API_KEY = 'sk-ant-SECRET-do-not-leak';
+  process.env.AI_ANALYST_PROVIDER = 'anthropic';
+  const ready = svc.getStatus();
+  assert.equal(ready.status, 'ready');
+  assert.equal(ready.providerAvailable, true);
+  assert.equal(ready.anthropicConfigured, true);
+  assert.equal(JSON.stringify(ready).includes('SECRET'), false);
+  assertSafety(ready);
+
+  delete process.env.ANTHROPIC_API_KEY;
+  process.env.AI_ANALYST_PROVIDER = 'disabled';
 
   console.log('# aiAnalystService tests passed.');
   process.exit(0);

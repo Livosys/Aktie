@@ -440,7 +440,25 @@ function getLatestAnalysis() {
 function getStatus() {
   const p = provider();
   const latest = getLatestAnalysis();
-  const enabled = p === 'openai' ? !!openAiKey() : p === 'anthropic' ? !!anthropicKey() : false;
+  // Configuration is reported without ever exposing the key values themselves.
+  const anthropicConfigured = !!anthropicKey();
+  const openaiConfigured = !!openAiKey();
+  const providerAvailable = p === 'openai' ? openaiConfigured : p === 'anthropic' ? anthropicConfigured : false;
+  const enabled = providerAvailable;
+  // Readiness state: disabled | ready | not_configured.
+  let readiness = 'disabled';
+  let readinessMessage = 'AI Analyst är avstängd (AI_ANALYST_PROVIDER=disabled).';
+  if (p === 'anthropic' || p === 'openai') {
+    if (providerAvailable) {
+      readiness = 'ready';
+      readinessMessage = `${p === 'anthropic' ? 'Claude' : 'OpenAI'} är vald och konfigurerad (read-only).`;
+    } else {
+      readiness = 'not_configured';
+      readinessMessage = p === 'anthropic'
+        ? 'Claude är vald men API-nyckel saknas.'
+        : 'OpenAI är vald men API-nyckel saknas.';
+    }
+  }
   const latestPayload = latest.latest || null;
   const latestTimestamp = latestPayload?.generatedAt || latestPayload?.timestamp || null;
   const lastError = latestPayload?.error
@@ -450,6 +468,11 @@ function getStatus() {
     ok: true,
     provider: p,
     enabled,
+    providerAvailable,
+    anthropicConfigured,
+    openaiConfigured,
+    status: readiness,
+    message: readinessMessage,
     model: p === 'disabled' ? null : modelForProvider(p),
     cacheEnabled: cacheTtlMs() > 0,
     cacheTtlMs: cacheTtlMs(),
