@@ -183,11 +183,45 @@ function summarizeOpsAdvisor(o) {
   };
 }
 
+function summarizeAutopilotControl(status, kind) {
+  const label = kind === 'replay' ? 'Replay-autopilot' : 'Batch-autopilot';
+  if (!status) {
+    return { status: 'empty', message: `${label}-status kunde inte läsas.`, updatedAt: new Date().toISOString(), ...SAFETY };
+  }
+  const out = {
+    status: status.status || (status.enabled ? 'idle' : 'disabled'),
+    enabled: status.enabled === true,
+    dryRunOnly: status.dryRunOnly !== false,
+    intervalMinutes: num(status.intervalMinutes),
+    maxPerDay: num(status.maxPerDay),
+    lastRun: status.lastRun || null,
+    nextRun: status.nextRun || null,
+    todayRunCount: num(status.todayRunCount),
+    lastBlockedReason: status.lastBlockedReason || null,
+    latestTimestamp: status.lastRun || null,
+    message: status.message || `${label} status.`,
+    updatedAt: status.updatedAt || new Date().toISOString(),
+    ...SAFETY,
+  };
+  if (kind === 'replay') {
+    out.lastReplayPlan = status.lastReplayPlan || null;
+    out.lastReplayResult = status.lastReplayResult || null;
+  } else {
+    out.lastPlan = status.lastPlan || null;
+  }
+  return out;
+}
+
 function summarizeAiAnalystStatus(status) {
   if (!status) return null;
   return {
     provider: status.provider || null,
     enabled: status.enabled === true,
+    providerAvailable: status.providerAvailable === true,
+    anthropicConfigured: status.anthropicConfigured === true,
+    openaiConfigured: status.openaiConfigured === true,
+    readiness: status.status || null,
+    message: status.message || null,
     model: status.model || null,
     cacheEnabled: status.cacheEnabled === true,
     cacheTtlMs: num(status.cacheTtlMs),
@@ -542,6 +576,8 @@ async function buildOverview() {
   const aiAnalyst = lazy('./aiAnalystService');
   const dataJobsStatus = lazy('./dataJobsStatusService');
   const liveActivity = lazy('./liveActivityService');
+  const batchAutopilot = lazy('./batchAutopilotService');
+  const replayAutopilot = lazy('./replayAutopilotService');
 
   const [
     system_health, learning, strategies, narrow, autopilotBlock,
@@ -648,6 +684,26 @@ async function buildOverview() {
     liveActivitySummary = { status: 'error', count: 0, latestEvents: [], message: err && err.message ? err.message : 'unavailable', ...SAFETY };
   }
 
+  let batchAutopilotSummary = null;
+  try {
+    batchAutopilotSummary = summarizeAutopilotControl(
+      batchAutopilot && typeof batchAutopilot.getStatus === 'function' ? batchAutopilot.getStatus() : null,
+      'batch',
+    );
+  } catch (err) {
+    batchAutopilotSummary = { status: 'error', message: err && err.message ? err.message : 'unavailable', ...SAFETY };
+  }
+
+  let replayAutopilotSummary = null;
+  try {
+    replayAutopilotSummary = summarizeAutopilotControl(
+      replayAutopilot && typeof replayAutopilot.getStatus === 'function' ? replayAutopilot.getStatus() : null,
+      'replay',
+    );
+  } catch (err) {
+    replayAutopilotSummary = { status: 'error', message: err && err.message ? err.message : 'unavailable', ...SAFETY };
+  }
+
   return {
     ok: true,
     generatedAt: new Date().toISOString(),
@@ -657,6 +713,8 @@ async function buildOverview() {
     recentTests,
     recentTestsStatus,
     batchSummary,
+    batchAutopilotSummary,
+    replayAutopilotSummary,
     aiAnalystStatus,
     dataJobsSummary,
     liveActivitySummary,
@@ -704,4 +762,5 @@ module.exports = {
   normalizeBatch,
   normalizeBatchResult,
   summarizeAiAnalystStatus,
+  summarizeAutopilotControl,
 };

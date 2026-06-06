@@ -91,6 +91,15 @@ const overview = require('./supervisorOverviewService');
   assert.equal(o.liveActivitySummary.mode, 'paper_only');
   assert.equal(o.liveActivitySummary.can_place_orders, false);
   assert.equal(o.liveActivitySummary.live_trading_enabled, false);
+  // Autopilot summaries (safe, disabled by default).
+  assert.ok(o.batchAutopilotSummary && typeof o.batchAutopilotSummary === 'object', 'batchAutopilotSummary present');
+  assert.equal(o.batchAutopilotSummary.mode, 'paper_only');
+  assert.equal(o.batchAutopilotSummary.live_trading_enabled, false);
+  assert.equal(o.batchAutopilotSummary.broker_enabled, false);
+  assert.ok(o.replayAutopilotSummary && typeof o.replayAutopilotSummary === 'object', 'replayAutopilotSummary present');
+  assert.equal(o.replayAutopilotSummary.mode, 'paper_only');
+  assert.equal(o.replayAutopilotSummary.live_trading_enabled, false);
+  assert.equal(o.replayAutopilotSummary.broker_enabled, false);
 
   // ── 7. normalizeRecentTest maps a real event and drops junk ─────────────────
   const norm = overview.normalizeRecentTest({
@@ -171,6 +180,32 @@ const overview = require('./supervisorOverviewService');
   assert.equal(aiStatus.logEventCount, 4);
   assert.equal(aiStatus.mode, 'paper_only');
   assert.equal(aiStatus.can_place_orders, false);
+
+  // summarizeAutopilotControl: condenses status, keeps safety, tolerates null.
+  const batchCtl = overview.summarizeAutopilotControl({
+    status: 'disabled', enabled: false, dryRunOnly: true, intervalMinutes: 360,
+    maxPerDay: 2, lastRun: null, nextRun: null, todayRunCount: 0,
+    lastBlockedReason: 'disabled', lastPlan: null, message: 'off', updatedAt: 't',
+  }, 'batch');
+  assert.equal(batchCtl.status, 'disabled');
+  assert.equal(batchCtl.enabled, false);
+  assert.equal(batchCtl.live_trading_enabled, false);
+  assert.equal(batchCtl.broker_enabled, false);
+  assert.equal('lastPlan' in batchCtl, true);
+
+  const replayCtl = overview.summarizeAutopilotControl({
+    status: 'idle', enabled: true, dryRunOnly: true, intervalMinutes: 360,
+    maxPerDay: 3, lastRun: '2026-06-06T08:00:00.000Z', nextRun: '2026-06-06T14:00:00.000Z',
+    todayRunCount: 1, lastBlockedReason: null, lastReplayPlan: { kind: 'x' }, lastReplayResult: null,
+  }, 'replay');
+  assert.equal(replayCtl.status, 'idle');
+  assert.equal(replayCtl.latestTimestamp, '2026-06-06T08:00:00.000Z');
+  assert.equal('lastReplayPlan' in replayCtl, true);
+  assert.equal(replayCtl.can_place_orders, false);
+
+  const nullCtl = overview.summarizeAutopilotControl(null, 'batch');
+  assert.equal(nullCtl.status, 'empty');
+  assert.equal(nullCtl.live_trading_enabled, false);
 
   // ── 9. empty / broken history never crashes; overview stays ok (HTTP 200) ───
   const fs = require('fs'); const os = require('os'); const path = require('path');
