@@ -90,6 +90,7 @@ const dataCoverageExpansion = require('../services/dataCoverageExpansionService'
 const daytradingControl = require('../services/daytradingControlService');
 const daytradingLearning = require('../services/daytradingLearningEngineService');
 const supervisorOperationsAdvisorService = require('../services/supervisorOperationsAdvisorService');
+const supervisorOverviewService = require('../services/supervisorOverviewService');
 const TEST_LIVE_SEND_COOLDOWN_MS = 5 * 60 * 1000;
 let testLiveSendLastAt = 0;
 const auditScanLastAt = new Map();
@@ -2112,6 +2113,22 @@ router.get('/supervisor/operations-advisor', (req, res) => {
       ok: false,
       error: err.message,
       ...supervisorOperationsAdvisorService.SAFETY,
+    });
+  }
+});
+
+// ── Supervisor: system-wide overview (the brain) ──────────────────────────────
+// Read-only aggregation of all existing system-wide endpoints into one
+// fault-isolated response. One failing block never blanks the page. Never
+// trades. Contract: docs/supervisor-overview-contract.md
+router.get('/supervisor/overview', async (req, res) => {
+  try {
+    res.json(await supervisorOverviewService.buildOverview());
+  } catch (err) {
+    res.status(500).json({
+      ok: false,
+      error: err.message,
+      ...supervisorOverviewService.SAFETY,
     });
   }
 });
