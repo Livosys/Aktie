@@ -17,6 +17,7 @@ const DEFAULT_FILES = Object.freeze({
   aiEvents: path.join(ROOT, 'data/ai-analyst/analyst-events.jsonl'),
   batchFile: path.join(ROOT, 'data/strategy-batches/batches-v1.json'),
   batchResultsDir: path.join(ROOT, 'data/strategy-batches/results'),
+  replayRunsDir: path.join(ROOT, 'data/replay/runs'),
   eventLog: path.join(ROOT, 'data/events/trading-events.jsonl'),
 });
 
@@ -274,6 +275,50 @@ function eventsFromBatches(file, limit) {
     return { name: 'batch', status: 'degraded', events: [], error: safeMessage(err) };
   }
 }
+// Read the newest replay run summaries (data/replay/runs/<id>/summary.json) and
+// turn each into one read-only "Replaytest klart" event. Never starts a replay.
+function eventsFromReplayRuns(dir, limit) {
+  return sourceRead('replay', () => {
+    try {
+      if (!fs.existsSync(dir)) return [];
+      const runIds = fs.readdirSync(dir)
+        .filter((d) => /^run_/.test(d))
+        .sort()
+        .reverse()
+        .slice(0, Math.max(1, Math.min(limit, 30)));
+      const rows = [];
+      for (const runId of runIds) {
+        const summary = readJson(path.join(dir, runId, 'summary.json'), null);
+        if (!summary || typeof summary !== 'object') continue;
+        const symbols = arr(summary.symbols);
+        const best = arr(summary.bestSymbols)[0];
+        const score = summary.avgTradeScore;
+        const parts = [];
+        if (Number.isFinite(Number(summary.totalEvents))) parts.push(`${Number(summary.totalEvents)} lägen`);
+        if (Number.isFinite(Number(score))) parts.push(`snittbetyg ${Number(score)}`);
+        if (best && best.symbol) parts.push(`bäst ${best.symbol}`);
+        rows.push({
+          event: 'replay.completed',
+          type: 'replay.completed',
+          source: 'replay',
+          timestamp: summary.createdAt || null,
+          id: summary.runId || runId,
+          symbol: symbols[0] || null,
+          symbols,
+          timeframe: '2m',
+          period_from: summary.start || null,
+          period_to: summary.end || null,
+          message: `Replay ${summary.start || '?'}–${summary.end || '?'}${parts.length ? `: ${parts.join(', ')}` : ''}`,
+          paper_only: true,
+        });
+      }
+      return rows;
+    } catch (_) {
+      return [];
+    }
+  });
+}
+
 function eventsFromBatchResults(dir, limit) {
   return sourceRead('batch_results', () => {
     const rows = [];
@@ -295,6 +340,7 @@ function buildLiveActivity(options = {}) {
     eventsFromJsonl('ai', files.aiEvents, sourceLimit),
     eventsFromBatches(files.batchFile, sourceLimit),
     eventsFromBatchResults(files.batchResultsDir, sourceLimit),
+    eventsFromReplayRuns(files.replayRunsDir, sourceLimit),
     eventsFromJsonl('system_events', files.eventLog, sourceLimit),
   ];
   const warnings = sources.filter((s) => s.status === 'degraded').map((s) => ({ source: s.name, error: s.error || 'source_degraded' }));

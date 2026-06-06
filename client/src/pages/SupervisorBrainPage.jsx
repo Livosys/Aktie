@@ -468,6 +468,34 @@ function BatchStatusCard({ batches }) {
   );
 }
 
+function ReplayResultsCard({ replay }) {
+  const latest = replay?.latestReplay || null;
+  const period = latest?.period || {};
+  const best = latest?.bestSymbol || null;
+  return (
+    <div className="research-grid research-grid-3">
+      <MetricCard label="Replaytester totalt" value={fmtNumber(replay?.totalReplayTests || 0)} help="Sparade replay-körningar (scan/paper)." tone="blue" />
+      <MetricCard label="Senaste replay" value={latest ? timeText(latest.createdAt) : 'Saknas'} help={latest ? `Period ${text(period.from, '?')}–${text(period.to, '?')}` : 'Ingen historik ännu'} tone={latest ? 'blue' : 'warning'} />
+      <MetricCard label="Data sträcker sig" value={replay?.earliestPeriod ? `${text(replay.earliestPeriod)} →` : 'Saknas'} help={`Senaste: ${text(replay?.latestPeriod, 'Saknas')}`} tone="purple" />
+      <Card className="research-wide">
+        <div className="research-card-title">
+          <strong>Senaste replay-resultat</strong>
+          <Badge tone={toneForStatus(replay?.status)}>{text(replay?.status, 'Saknas')}</Badge>
+        </div>
+        <p><SafeText value={latest?.runId} fallback="Ingen replay ännu" /></p>
+        <div className="research-mini-grid">
+          <span><b>Period</b>{`${text(period.from, '?')}–${text(period.to, '?')}`}</span>
+          <span><b>Symboler</b>{text(latest?.symbols, 'Saknas')}</span>
+          <span><b>Timeframe</b>{text(latest?.timeframe, '2m')}</span>
+          <span><b>Lägen hittade</b>{fmtNumber(latest?.totalEvents || 0)}</span>
+          <span><b>Snittbetyg</b>{latest?.avgTradeScore != null ? fmtNumber(latest.avgTradeScore) : '—'}</span>
+          <span><b>Bäst symbol</b>{best?.symbol ? `${best.symbol} (${fmtNumber(best.avgScore)})` : '—'}</span>
+        </div>
+      </Card>
+    </div>
+  );
+}
+
 function DataPipelineCard({ dataJobs }) {
   const hourly = dataJobs?.hourlyImport || {};
   const weekly = dataJobs?.weeklyBackfill || {};
@@ -617,6 +645,7 @@ export default function SupervisorBrainPage() {
   const recommended = arr(overview.actionPlan)[0] || null;
   const batchAuto = overview.batchAutopilotSummary || null;
   const replayAuto = overview.replayAutopilotSummary || null;
+  const replaySummary = overview.replaySummary || null;
   const aiStatusForReadiness = aiOverride?.status || data.aiStatus || overview.aiAnalystStatus || null;
 
   const safetyLocked = overview.mode === 'paper_only'
@@ -767,6 +796,7 @@ export default function SupervisorBrainPage() {
           <section className="research-section">
             <SectionHeader eyebrow="Replaytester" title="Replay testar på gammal data" subtitle="Replay betyder att systemet testar en strategi på historisk marknadsdata. Den här vyn visar bara förslag och händelser." aside={<Badge tone={autopilotReadiness(replayAuto).tone}>{`Replay-autopilot: ${autopilotReadiness(replayAuto).label}`}</Badge>} />
             {replayAuto ? <ReadinessNote readiness={autopilotReadiness(replayAuto)} lastRun={replayAuto.lastRun} lastResult={replayAuto.lastReplayResult} /> : null}
+            <ReplayResultsCard replay={replaySummary} />
             <div className="research-grid research-grid-2">
               <Card>
                 <div className="research-card-title"><strong>Visa replay-förslag</strong><Badge tone="blue">Read-only</Badge></div>

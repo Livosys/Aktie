@@ -578,6 +578,7 @@ async function buildOverview() {
   const liveActivity = lazy('./liveActivityService');
   const batchAutopilot = lazy('./batchAutopilotService');
   const replayAutopilot = lazy('./replayAutopilotService');
+  const replayStatus = lazy('./replayStatusService');
 
   const [
     system_health, learning, strategies, narrow, autopilotBlock,
@@ -704,6 +705,15 @@ async function buildOverview() {
     replayAutopilotSummary = { status: 'error', message: err && err.message ? err.message : 'unavailable', ...SAFETY };
   }
 
+  let replaySummary = null;
+  try {
+    replaySummary = replayStatus && typeof replayStatus.buildSupervisorReplaySummary === 'function'
+      ? replayStatus.buildSupervisorReplaySummary()
+      : null;
+  } catch (err) {
+    replaySummary = { status: 'error', totalReplayTests: 0, latestReplay: null, message: err && err.message ? err.message : 'unavailable', ...SAFETY };
+  }
+
   return {
     ok: true,
     generatedAt: new Date().toISOString(),
@@ -715,6 +725,7 @@ async function buildOverview() {
     batchSummary,
     batchAutopilotSummary,
     replayAutopilotSummary,
+    replaySummary,
     aiAnalystStatus,
     dataJobsSummary,
     liveActivitySummary,

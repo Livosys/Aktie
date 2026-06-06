@@ -97,6 +97,7 @@ const dataJobsStatusService = require('../services/dataJobsStatusService');
 const liveActivityService = require('../services/liveActivityService');
 const batchAutopilotService = require('../services/batchAutopilotService');
 const replayAutopilotService = require('../services/replayAutopilotService');
+const replayStatusService = require('../services/replayStatusService');
 const TEST_LIVE_SEND_COOLDOWN_MS = 5 * 60 * 1000;
 let testLiveSendLastAt = 0;
 const auditScanLastAt = new Map();
@@ -635,6 +636,17 @@ router.get('/status/replay-autopilot', (req, res) => {
     res.json(replayAutopilotService.getStatus());
   } catch (err) {
     res.status(200).json({ ok: false, status: 'error', error: err.message, ...replayAutopilotService.SAFETY });
+  }
+});
+
+// ── Read-only Backend Status: Replay Results ─────────────────────────────────
+// Reads replay run summaries only (data/replay/runs/). It never starts a replay,
+// never schedules one, never places orders and never enables a broker.
+router.get('/status/replay', (req, res) => {
+  try {
+    res.json(replayStatusService.buildReplayStatus());
+  } catch (err) {
+    res.status(200).json({ ok: false, status: 'error', error: err.message, ...replayStatusService.SAFETY });
   }
 });
 

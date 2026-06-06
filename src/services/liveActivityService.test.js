@@ -28,6 +28,7 @@ function appendJsonl(file, rows) {
       aiEvents: path.join(emptyRoot, 'missing-ai.jsonl'),
       batchFile: path.join(emptyRoot, 'missing-batches.json'),
       batchResultsDir: path.join(emptyRoot, 'missing-results'),
+      replayRunsDir: path.join(emptyRoot, 'missing-replay-runs'),
       eventLog: path.join(emptyRoot, 'missing-events.jsonl'),
     },
   });
@@ -47,6 +48,7 @@ function appendJsonl(file, rows) {
     aiEvents: path.join(root, 'ai.jsonl'),
     batchFile: path.join(root, 'batches.json'),
     batchResultsDir: path.join(root, 'results'),
+    replayRunsDir: path.join(root, 'replay-runs'),
     eventLog: path.join(root, 'events.jsonl'),
   };
   appendJsonl(files.autopilotHistory, [
@@ -67,6 +69,12 @@ function appendJsonl(file, rows) {
   appendJsonl(files.eventLog, [
     { event_id: 'e1', event_type: 'DATA_BACKFILL_COMPLETED', timestamp: '2026-06-01T09:59:00.000Z', source: 'learning', message: 'Data backfill klar', symbol: 'MSFT' },
   ]);
+  // Replay run summary — read-only source. Dated earliest so feed ordering is stable.
+  writeJson(path.join(files.replayRunsDir, 'run_test_001', 'summary.json'), {
+    runId: 'run_test_001', start: '2026-05-30', end: '2026-06-01', symbols: ['MSFT', 'QQQ'],
+    mode: 'scan_only', totalCandles: 200, totalEvents: 5, avgTradeScore: 57,
+    bestSymbols: [{ symbol: 'QQQ', avgScore: 62, events: 2 }], createdAt: '2026-06-01T09:58:00.000Z',
+  });
 
   const ok = svc.buildLiveActivity({ limit: 3, files });
   assert.equal(ok.status, 'ok');
@@ -75,7 +83,15 @@ function appendJsonl(file, rows) {
   assert.equal(ok.events[0].type, 'ai');
   assert.equal(ok.events[0].can_place_orders, false);
   assert.ok(ok.events.some((event) => event.type === 'learning'));
-  assert.equal(ok.sources.length, 6);
+  assert.equal(ok.sources.length, 7);
+  // Replay run summaries surface as read-only "Replaytest klart" events.
+  const replaySource = ok.sources.find((s) => s.name === 'replay');
+  assert.ok(replaySource && replaySource.count === 1);
+  const allEvents = svc.buildLiveActivity({ limit: 50, files }).events;
+  const replayEvent = allEvents.find((e) => e.type === 'replay');
+  assert.ok(replayEvent && replayEvent.title === 'Replaytest klart');
+  assert.equal(replayEvent.can_place_orders, false);
+  assert.equal(replayEvent.timeframe, '2m');
 
   const maxed = svc.buildLiveActivity({ limit: 999, files });
   assert.ok(maxed.count <= 200);
@@ -120,6 +136,7 @@ function appendJsonl(file, rows) {
     aiEvents: path.join(brokenRoot, 'missing-ai.jsonl'),
     batchFile: path.join(brokenRoot, 'broken-batches.json'),
     batchResultsDir: path.join(brokenRoot, 'missing-results'),
+    replayRunsDir: path.join(brokenRoot, 'missing-replay-runs'),
     eventLog: path.join(brokenRoot, 'missing-events.jsonl'),
   };
   fs.writeFileSync(brokenFiles.autopilotHistory, '{"timestamp":"2026-06-01T10:00:00.000Z","event":"plan_created"}\n{broken\n', 'utf8');
