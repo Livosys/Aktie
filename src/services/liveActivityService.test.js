@@ -85,9 +85,13 @@ function appendJsonl(file, rows) {
   const ok = svc.buildLiveActivity({ limit: 3, files });
   assert.equal(ok.status, 'ok');
   assert.equal(ok.count, 3);
-  assert.equal(ok.events[0].timestamp, '2026-06-01T10:03:00.000Z');
-  assert.equal(ok.events[0].type, 'ai');
+  // The newest finished paper trade is pinned to the very top of the feed.
+  assert.equal(ok.events[0].type, 'paper');
+  assert.equal(ok.events[0].pinned, true);
+  assert.equal(ok.events[0].timestamp, '2026-06-01T09:57:00.000Z');
   assert.equal(ok.events[0].can_place_orders, false);
+  // The rest of the feed still follows newest-first below the pin.
+  assert.ok(ok.events.some((event) => event.type === 'ai'));
   assert.ok(ok.events.some((event) => event.type === 'learning'));
   assert.equal(ok.sources.length, 8);
   // Replay run summaries surface as read-only "Replaytest klart" events.
@@ -107,6 +111,8 @@ function appendJsonl(file, rows) {
   assert.equal(paperEvent.timeframe, '2m');
   assert.equal(paperEvent.can_place_orders, false);
   assert.equal(paperEvent.paperOnly, true);
+  assert.equal(paperEvent.pinned, true);
+  assert.equal(allEvents[0].type, 'paper'); // pinned to the very top
   assert.ok(paperEvent.result && paperEvent.result.includes('P/L +0.4%'));
 
   const maxed = svc.buildLiveActivity({ limit: 999, files });
@@ -163,9 +169,9 @@ function appendJsonl(file, rows) {
   assert.ok(degraded.warnings.length >= 1);
   assert.equal(degraded.can_place_orders, false);
 
-  // ── ensurePaperVisibility: buried paper trades are pulled into the feed ──────
+  // ── pinPaperTrades: newest paper trades are pinned to the top of the feed ────
   const mk = (id, ts, source) => ({ id, timestamp: ts, type: source === 'paper' ? 'paper' : 'system', source });
-  // 10 newest = non-paper; 2 paper trades are older and would be buried at limit 5.
+  // 5 newest = non-paper; 2 paper trades are older and would be buried by time.
   const synthetic = [
     mk('s1', '2026-06-06T10:00:00.000Z', 'system_events'),
     mk('s2', '2026-06-06T09:00:00.000Z', 'system_events'),
@@ -175,21 +181,24 @@ function appendJsonl(file, rows) {
     mk('p1', '2026-06-01T17:00:00.000Z', 'paper'),
     mk('p2', '2026-06-01T16:00:00.000Z', 'paper'),
   ];
-  const quotaFeed = svc._internal.ensurePaperVisibility(synthetic, 5);
-  assert.equal(quotaFeed.length, 5);
-  // limit 5 → quota ceil(5*0.2)=1 → at least one paper trade is kept visible.
-  const paperKept = quotaFeed.filter((e) => e.source === 'paper');
-  assert.ok(paperKept.length >= 1);
-  // newest paper trade is preferred and feed stays newest-first.
-  assert.equal(paperKept[0].id, 'p1');
-  for (let i = 1; i < quotaFeed.length; i += 1) {
-    assert.ok(quotaFeed[i - 1].timestamp >= quotaFeed[i].timestamp);
-  }
-  // the newest non-paper events are never dropped to make room.
-  assert.ok(quotaFeed.some((e) => e.id === 's1'));
-  // when paper already meets quota, the feed is returned unchanged (no churn).
-  const alreadyOk = svc._internal.ensurePaperVisibility([mk('p0', '2026-06-06T11:00:00.000Z', 'paper'), ...synthetic], 5);
-  assert.equal(alreadyOk[0].id, 'p0');
+  const pinnedFeed = svc._internal.pinPaperTrades(synthetic, 5);
+  assert.equal(pinnedFeed.length, 5);
+  // The two newest paper trades are pinned to the very top, newest-first, flagged.
+  assert.equal(pinnedFeed[0].id, 'p1');
+  assert.equal(pinnedFeed[0].pinned, true);
+  assert.equal(pinnedFeed[1].id, 'p2');
+  assert.equal(pinnedFeed[1].pinned, true);
+  // The rest below the pins stays newest-first and is never duplicated.
+  assert.equal(pinnedFeed[2].id, 's1');
+  assert.equal(pinnedFeed.filter((e) => e.id === 'p1').length, 1);
+  // Pins never dominate a small feed (at most half the slots).
+  const tiny = svc._internal.pinPaperTrades(synthetic, 2);
+  assert.equal(tiny.filter((e) => e.pinned).length, 1);
+  assert.equal(tiny[0].id, 'p1');
+  // No paper trades → feed returned untouched, newest-first.
+  const noPaper = svc._internal.pinPaperTrades([mk('a', '2026-06-06T10:00:00.000Z', 'ai')], 5);
+  assert.equal(noPaper[0].id, 'a');
+  assert.ok(!noPaper[0].pinned);
 
   console.log('# liveActivityService tests passed.');
   process.exit(0);

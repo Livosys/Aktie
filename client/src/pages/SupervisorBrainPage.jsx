@@ -348,12 +348,13 @@ function LiveActivityFeed({ events = [], limit, compact = false }) {
   return (
     <div className={`research-timeline ${compact ? 'research-timeline-compact' : ''}`}>
       {visible.map((event, index) => (
-        <div key={`${event.id || index}-${event.timestamp || index}`} className={`research-event research-event-${toneForStatus(event.severity || event.status)}`}>
+        <div key={`${event.id || index}-${event.timestamp || index}`} className={`research-event research-event-${toneForStatus(event.severity || event.status)}${event.pinned ? ' research-event-pinned' : ''}`}>
           <div className="research-event-time">{shortTime(event.timestamp)}</div>
           <div className="research-event-dot" />
           <div className="research-event-body">
             <div className="research-event-top">
               <strong>{activityLabel(event)}</strong>
+              {event.pinned ? <Badge tone="purple">📌 Senaste låtsastest</Badge> : null}
               <Badge tone={toneForStatus(event.status)}>{statusSv(event.status)}</Badge>
             </div>
             <p><SafeText value={simpleEventLabel(event.message, 'Systemet uppdaterade status.')} fallback="Systemet uppdaterade status." /></p>

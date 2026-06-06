@@ -31,10 +31,9 @@ const SAFETY = Object.freeze({
 });
 
 // Finished paper trades (Låtsastest) can be older than the constant stream of
-// skip/market events, so a pure time sort buries them. Reserve up to this share
-// of the feed (capped) for paper trades so they stay visible.
-const PAPER_FEED_QUOTA_RATIO = 0.2;
-const PAPER_FEED_QUOTA_MAX = 5;
+// skip/market events, so a pure time sort buries them. Pin up to this many of
+// the newest paper trades to the top of the feed so they stay visible.
+const PAPER_PIN_MAX = 3;
 
 function nowIso() { return new Date().toISOString(); }
 function arr(value) {
@@ -370,28 +369,21 @@ function eventsFromBatchResults(dir, limit) {
   });
 }
 
-// Guarantee a minimum number of paper-trade slots in the time-sorted feed. The
-// feed stays newest-first and capped at `limit`; we only swap the oldest
-// non-paper events for the newest paper trades until the quota is met. Pure
-// read-only re-ordering — no events are created, mutated or executed.
-function ensurePaperVisibility(sortedDesc, limit) {
+// Pin the newest finished paper trades to the very top of the feed. Finished
+// paper trades are older than the constant stream of skip/market events, so a
+// pure time sort buries them — pinning surfaces the latest låtsastester first,
+// each flagged `pinned: true`, with the rest of the feed following newest-first.
+// Pure read-only re-ordering — no events are created, mutated or executed.
+function pinPaperTrades(sortedDesc, limit) {
   const isPaper = (e) => !!(e && e.source === 'paper');
-  const quota = Math.min(PAPER_FEED_QUOTA_MAX, Math.ceil(limit * PAPER_FEED_QUOTA_RATIO));
-  const top = sortedDesc.slice(0, limit);
-  if (quota < 1) return top;
-  const inTop = new Set(top.map((e) => `${e.id}|${e.timestamp}`));
-  const have = top.filter(isPaper).length;
-  if (have >= quota) return top;
-  const extra = sortedDesc
-    .filter((e) => isPaper(e) && !inTop.has(`${e.id}|${e.timestamp}`))
-    .slice(0, quota - have);
-  if (!extra.length) return top;
-  const kept = top.slice();
-  let drop = extra.length;
-  for (let i = kept.length - 1; i >= 0 && drop > 0; i -= 1) {
-    if (!isPaper(kept[i])) { kept.splice(i, 1); drop -= 1; }
-  }
-  return kept.concat(extra).sort((a, b) => b.timestamp.localeCompare(a.timestamp)).slice(0, limit);
+  const paper = sortedDesc.filter(isPaper);
+  // Cap pins so they never dominate a small feed (at most half of it).
+  const pinCount = Math.min(PAPER_PIN_MAX, paper.length, Math.max(1, Math.floor(limit / 2)));
+  if (pinCount < 1 || !paper.length) return sortedDesc.slice(0, limit);
+  const pinned = paper.slice(0, pinCount).map((e) => ({ ...e, pinned: true }));
+  const pinnedKeys = new Set(pinned.map((e) => `${e.id}|${e.timestamp}`));
+  const rest = sortedDesc.filter((e) => !pinnedKeys.has(`${e.id}|${e.timestamp}`));
+  return [...pinned, ...rest].slice(0, limit);
 }
 
 function buildLiveActivity(options = {}) {
@@ -411,7 +403,7 @@ function buildLiveActivity(options = {}) {
   const warnings = sources.filter((s) => s.status === 'degraded').map((s) => ({ source: s.name, error: s.error || 'source_degraded' }));
   const sorted = dedupeEvents(sources.flatMap((s) => s.events))
     .sort((a, b) => b.timestamp.localeCompare(a.timestamp));
-  const events = ensurePaperVisibility(sorted, limit);
+  const events = pinPaperTrades(sorted, limit);
   const status = warnings.length ? 'degraded' : (events.length ? 'ok' : 'empty');
   return {
     ok: true,
@@ -450,6 +442,6 @@ module.exports = {
     svLabel,
     displayTimeFor,
     resultFor,
-    ensurePaperVisibility,
+    pinPaperTrades,
   },
 };

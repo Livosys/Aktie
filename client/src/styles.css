@@ -473,6 +473,15 @@ button, a, [role="button"] { touch-action: manipulation; }
   align-items: start;
 }
 
+/* Pinned paper trades (Senaste låtsastest) sit at the top of the feed. */
+.research-event-pinned {
+  background: rgba(139, 92, 246, 0.06);
+  border-left: 3px solid rgba(139, 92, 246, 0.55);
+  border-radius: 8px;
+  padding: 8px 10px;
+  margin-left: -10px;
+}
+
 .research-event-time {
   color: var(--research-soft);
   font-size: 12px;
