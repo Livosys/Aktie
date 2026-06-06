@@ -93,6 +93,25 @@ function appendJsonl(file, rows) {
   assert.equal(normalized.status, 'completed');
   assert.equal(normalized.paperOnly, true);
   assert.equal(normalized.live_trading_enabled, false);
+  // New normalized fields: displayTime, result and Swedish labels.
+  assert.equal(normalized.title, 'Test klart');
+  assert.ok(typeof normalized.displayTime === 'string' && normalized.displayTime.length > 0);
+  assert.ok('result' in normalized);
+
+  const withResult = svc._internal.normalizeEvent({
+    timestamp: '2026-06-01T11:05:00.000Z',
+    event: 'batch.completed',
+    strategy_id: 's2',
+    win_rate: 60,
+    paper_pnl_percent: 0.4,
+  }, 'batch');
+  assert.equal(withResult.title, 'Batchtest klart');
+  assert.ok(withResult.result.includes('P/L +0.4%'));
+  assert.ok(withResult.result.includes('Träff 60%'));
+  assert.equal(svc._internal.svLabel('dry_run'), 'Säker testkörning');
+  assert.equal(svc._internal.svLabel('unknown_event'), null);
+  assert.equal(svc._internal.resultFor({}), null);
+  assert.equal(svc._internal.displayTimeFor(null), null);
 
   const brokenRoot = tmpDir();
   const brokenFiles = {

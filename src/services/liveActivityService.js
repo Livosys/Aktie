@@ -51,6 +51,48 @@ function isIso(value) {
 function toIso(value) {
   return isIso(value) ? new Date(value).toISOString() : null;
 }
+function displayTimeFor(iso) {
+  if (!iso) return null;
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return null;
+  try {
+    return new Intl.DateTimeFormat('sv-SE', { dateStyle: 'short', timeStyle: 'short', timeZone: 'Europe/Stockholm' }).format(d);
+  } catch (_) {
+    return iso;
+  }
+}
+
+// Enkel svensk label-mappning för kända händelsetyper. Read-only, ingen action.
+const SWED_EVENT_LABELS = Object.freeze({
+  run_completed: 'Test klart',
+  plan_validated: 'Plan kontrollerad',
+  'signal detected': 'Signal hittad',
+  signal_detected: 'Signal hittad',
+  'strategy matched': 'Strategi matchad',
+  strategy_matched: 'Strategi matchad',
+  dry_run: 'Säker testkörning',
+  'batch.completed': 'Batchtest klart',
+  'replay.completed': 'Replaytest klart',
+  'paper_trade.simulated': 'Låtsastest klart',
+  'data.import.completed': 'Datahämtning klar',
+  'ai.analysis.completed': 'AI-analys klar',
+});
+function svLabel(rawType) {
+  const k = str(rawType, '').trim();
+  if (!k) return null;
+  return SWED_EVENT_LABELS[k] || SWED_EVENT_LABELS[k.toLowerCase()] || null;
+}
+function resultFor(raw = {}) {
+  const finite = (v) => (v !== null && v !== undefined && v !== '' && Number.isFinite(Number(v)) ? Number(v) : null);
+  const pnl = finite(firstPresent(raw.paper_pnl_percent, raw.result?.pnl_pct, raw.avg_pnl, raw.avgPnl, raw.avgResult, raw.pnlPercent));
+  const win = finite(firstPresent(raw.win_rate, raw.winRate));
+  const combos = finite(firstPresent(raw.combinationsTested, raw.combinations_tested, raw.progress?.completed));
+  const parts = [];
+  if (pnl !== null) parts.push(`P/L ${pnl > 0 ? '+' : ''}${pnl}%`);
+  if (win !== null) parts.push(`Träff ${win}%`);
+  if (combos !== null) parts.push(`${combos} komb.`);
+  return parts.length ? parts.join(' · ') : null;
+}
 function limitFromQuery(value) {
   const n = Number(value);
   if (!Number.isFinite(n)) return 50;
@@ -132,6 +174,7 @@ function normalizeEvent(raw = {}, source = 'system') {
   return {
     id: String(id),
     timestamp,
+    displayTime: displayTimeFor(timestamp),
     type,
     title,
     message,
@@ -139,6 +182,7 @@ function normalizeEvent(raw = {}, source = 'system') {
     strategy: strategy || null,
     symbol: symbol || null,
     timeframe: timeframe || null,
+    result: resultFor(raw),
     source,
     severity: severityFromStatus(status),
     paperOnly: raw.paper_only !== false,
@@ -149,6 +193,8 @@ function normalizeEvent(raw = {}, source = 'system') {
   };
 }
 function titleFor(type, rawType, raw) {
+  const sv = svLabel(rawType);
+  if (sv) return sv;
   const label = str(rawType, type).replace(/[_.-]+/g, ' ');
   if (type === 'autopilot') return `Autopilot: ${label}`;
   if (type === 'batch') return `Batch: ${label}`;
@@ -290,5 +336,8 @@ module.exports = {
     normalizeEvent,
     limitFromQuery,
     dedupeEvents,
+    svLabel,
+    displayTimeFor,
+    resultFor,
   },
 };
