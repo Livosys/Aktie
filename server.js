@@ -9,6 +9,8 @@ const { startScheduler } = require('./src/scanner/scheduler');
 const { startCryptoScheduler } = require('./src/scanner/cryptoScheduler');
 const { startAutoMachineScheduler } = require('./src/jobs/autoMachineScheduler');
 const { startNarrowAutopilotScheduler } = require('./src/jobs/narrowAutopilotScheduler');
+const { startBatchAutopilotScheduler } = require('./src/jobs/batchAutopilotScheduler');
+const { startReplayAutopilotScheduler } = require('./src/jobs/replayAutopilotScheduler');
 const apiRouter = require('./src/routes/api');
 const { initOnStartup: initPaperTrading } = require('./src/paperTrading/paperTradingAgent');
 const { buildProviderStatus } = require('./src/providerStatus');
@@ -153,6 +155,8 @@ app.listen(PORT, '127.0.0.1', () => {
   }
   startAutoMachineScheduler();
   startNarrowAutopilotScheduler();
+  startBatchAutopilotScheduler();
+  startReplayAutopilotScheduler();
   dailyIntelligencePipeline.startScheduler();
   initPaperTrading();
   redisService.connect().then((connected) => {
