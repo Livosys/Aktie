@@ -1,75 +1,20 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import GlossaryTooltip from '../components/tradingos/GlossaryTooltip.jsx';
-import { SafeText, num } from '../utils/safeRender.js';
+import { SafeText } from '../utils/safeRender.js';
 
-const REFRESH_MS = 15000;
+const REFRESH_MS = 20_000;
 
-const STRATEGY_META = {
-  narrow_breakout_v1: {
-    name: 'Breakout efter trång marknad',
-    description: 'Testar om priset bryter upp eller ner efter compression.',
-    tone: 'green',
-  },
-  narrow_fakeout_reversal_v1: {
-    name: 'Falskt breakout och vändning',
-    description: 'Testar om priset lurar utanför range och sedan vänder tillbaka.',
-    tone: 'amber',
-  },
-  narrow_vwap_mean_reversion_v1: {
-    name: 'Återgång mot VWAP',
-    description: 'Testar om priset går tillbaka mot VWAP när marknaden är trång.',
-    tone: 'blue',
-  },
-};
-
-const BAND_LABELS = {
-  not_narrow: 'Inte narrow',
-  weak_narrow: 'Svag narrow',
-  confirmed_narrow: 'Bekräftad narrow',
-  strong_compression: 'Stark compression',
-};
-
-const BAND_TONES = {
-  not_narrow: 'muted',
-  weak_narrow: 'warning',
-  confirmed_narrow: 'good',
-  strong_compression: 'purple',
-};
-
-const CONFIDENCE_LABELS = {
-  none: 'Ingen',
-  low: 'Låg',
-  medium: 'Medium',
-  high: 'Hög',
-};
-
-const LEARNING_STATUS_LABELS = {
-  needs_more_data: 'För lite data',
-  low_confidence: 'Låg säkerhet',
-  ready: 'Redo',
-};
-
-const TERMS = [
-  ['Narrow State', 'Marknaden rör sig trångt och lugnt. Systemet letar efter compression.'],
-  ['Breakout', 'Priset bryter ut från ett trångt intervall.'],
-  ['Fakeout', 'Priset ser ut att bryta ut men vänder snabbt tillbaka.'],
-  ['VWAP', 'Ett viktat medelpris som många använder som riktmärke.'],
-  ['Replay', 'Test på historisk data för att se hur något hade fungerat.'],
-  ['Batch', 'Många testkombinationer körs i ett säkert testflöde.'],
-  ['Paper', 'Testläge utan riktiga order eller riktiga pengar.'],
-  ['Confidence', 'Hur säkert systemet känner sig med slutsatsen.'],
-];
-
-const BEGINNER_TERMS = [
-  ['paper_only', 'Systemet simulerar och analyserar. Det lägger aldrig riktiga order.'],
-  ['dry-run', 'Systemet planerar och kontrollerar vad det skulle göra, men startar ingen riktig körning.'],
-  ['scheduler', 'En automatisk klocka som kör planering med jämna mellanrum.'],
-  ['execute avstängt', 'Systemet får inte starta batch- eller paper-körningar automatiskt.'],
-  ['cooldown', 'Systemet väntar en bestämd tid innan nästa automatiska planering.'],
-  ['blocked reason', 'Orsaken till att systemet stoppade eller hoppade över en planering.'],
-  ['winRate', 'Andel testresultat som blev vinst i testdata.'],
-  ['avgPnL', 'Genomsnittligt testresultat. Positivt är bättre, negativt är sämre.'],
-  ['rekommenderat test', 'Nästa säkra research-test som systemet tycker är mest relevant.'],
+const SECTIONS = [
+  { id: 'overview', label: 'Översikt' },
+  { id: 'live', label: 'Live just nu' },
+  { id: 'history', label: 'Historik' },
+  { id: 'strategies', label: 'Strategier' },
+  { id: 'batches', label: 'Batchtester' },
+  { id: 'replay', label: 'Replaytester' },
+  { id: 'paper', label: 'Låtsashandel' },
+  { id: 'data', label: 'Datahämtning' },
+  { id: 'ai', label: 'AI-analytiker' },
+  { id: 'risks', label: 'Risker' },
+  { id: 'technical', label: 'Tekniskt' },
 ];
 
 function apiJson(url, options = {}) {
@@ -86,13 +31,14 @@ function apiJson(url, options = {}) {
     });
 }
 
-function useSupervisorData() {
+function useResearchLabData(limit) {
   const [state, setState] = useState({
     overview: null,
-    narrow: null,
-    learning: null,
-    autopilot: null,
-    coreLearning: null,
+    activity: null,
+    batches: null,
+    dataJobs: null,
+    aiStatus: null,
+    aiLatest: null,
     loading: true,
     refreshing: false,
     error: '',
@@ -101,1789 +47,682 @@ function useSupervisorData() {
 
   useEffect(() => {
     let cancelled = false;
-
     async function load() {
-      if (!cancelled) setState((prev) => ({ ...prev, loading: prev.lastUpdated ? prev.loading : true, refreshing: !!prev.lastUpdated, error: '' }));
-      try {
-        const [overview, narrow, learning, autopilot, coreLearning] = await Promise.all([
-          // Primary system-wide data source (read-only, fault-isolated server-side).
-          apiJson('/api/supervisor/overview').catch(() => null),
-          // Kept as supplementary/fallback so the page stays stable if overview is cold.
-          apiJson('/api/supervisor/narrow-state').catch(() => null),
-          apiJson('/api/learning/narrow-performance').catch(() => null),
-          // Autopilot is read-only and optional — never block the page on it.
-          apiJson('/api/autopilot/narrow/status').catch(() => null),
-          apiJson('/api/daytrading/learning-summary').catch(() => null),
-        ]);
-        if (cancelled) return;
-        setState({
-          overview,
-          narrow,
-          learning,
-          autopilot,
-          coreLearning,
-          loading: false,
-          refreshing: false,
-          error: '',
-          lastUpdated: new Date().toISOString(),
-        });
-      } catch (error) {
-        if (cancelled) return;
-        setState((prev) => ({
-          ...prev,
-          loading: false,
-          refreshing: false,
-          error: error?.message || 'Kunde inte hämta data just nu.',
-          lastUpdated: prev.lastUpdated || new Date().toISOString(),
-        }));
+      if (!cancelled) {
+        setState((prev) => ({ ...prev, loading: !prev.lastUpdated, refreshing: Boolean(prev.lastUpdated), error: '' }));
       }
+      const [overview, activity, batches, dataJobs, aiStatus, aiLatest] = await Promise.all([
+        apiJson('/api/supervisor/overview').catch(() => null),
+        apiJson(`/api/status/live-activity?limit=${limit}`).catch(() => null),
+        apiJson('/api/status/batches').catch(() => null),
+        apiJson('/api/status/data-jobs').catch(() => null),
+        apiJson('/api/ai/analyst/status').catch(() => null),
+        apiJson('/api/ai/analyst/latest').catch(() => null),
+      ]);
+      if (cancelled) return;
+      setState({
+        overview,
+        activity,
+        batches,
+        dataJobs,
+        aiStatus,
+        aiLatest,
+        loading: false,
+        refreshing: false,
+        error: overview ? '' : 'Kunde inte hämta full Supervisor-data. Vyn visar det som finns.',
+        lastUpdated: new Date().toISOString(),
+      });
     }
-
     load();
     const timer = setInterval(load, REFRESH_MS);
     return () => {
       cancelled = true;
       clearInterval(timer);
     };
-  }, []);
+  }, [limit]);
 
   return state;
 }
 
-function nowText(iso) {
-  if (!iso) return 'saknas';
-  const date = new Date(iso);
-  if (Number.isNaN(date.getTime())) return 'saknas';
-  return new Intl.DateTimeFormat('sv-SE', { dateStyle: 'medium', timeStyle: 'short' }).format(date);
-}
-
-function safeArray(value) {
+function arr(value) {
   return Array.isArray(value) ? value.filter(Boolean) : [];
 }
 
-function formatInt(value, fallback = '0') {
-  const n = Number(value);
-  return Number.isFinite(n) ? new Intl.NumberFormat('sv-SE').format(n) : fallback;
+function first(...values) {
+  return values.find((value) => value !== undefined && value !== null && value !== '') ?? null;
 }
 
-function formatPct(value, digits = 1) {
-  const n = Number(value);
-  if (!Number.isFinite(n)) return '—';
-  return `${n.toFixed(digits)}%`;
-}
-
-function formatSignedPct(value, digits = 3) {
-  const n = Number(value);
-  if (!Number.isFinite(n)) return '—';
-  const sign = n > 0 ? '+' : '';
-  return `${sign}${n.toFixed(digits)}%`;
-}
-
-function text(value, fallback = 'För lite data ännu') {
-  if (value === null || value === undefined || value === '') return fallback;
+function text(value, fallback = 'Saknas') {
+  if (value === undefined || value === null || value === '') return fallback;
   if (typeof value === 'string') return value;
   if (typeof value === 'number' && Number.isFinite(value)) return String(value);
   if (typeof value === 'boolean') return value ? 'Ja' : 'Nej';
-  if (Array.isArray(value)) return value.map((item) => text(item, '')).filter(Boolean).join(' · ') || fallback;
+  if (Array.isArray(value)) return value.map((item) => text(item, '')).filter(Boolean).join(', ') || fallback;
   if (typeof value === 'object') {
-    return text(
-      value.label ??
-      value.name ??
-      value.title ??
-      value.symbol ??
-      value.message ??
-      value.summary_sv ??
-      value.summary ??
-      value.conclusion_sv ??
-      value.note_sv ??
-      value.text ??
-      value.value,
-      fallback,
-    );
+    return text(value.title_sv || value.message_sv || value.summary || value.title || value.message || value.name || value.strategy || value.id, fallback);
   }
   return fallback;
 }
 
-function firstNonEmpty(...values) {
-  return values.find((value) => value !== undefined && value !== null && value !== '') ?? null;
+function fmtNumber(value, fallback = '0') {
+  const n = Number(value);
+  return Number.isFinite(n) ? new Intl.NumberFormat('sv-SE').format(n) : fallback;
+}
+
+function fmtPct(value, digits = 1) {
+  const n = Number(value);
+  return Number.isFinite(n) ? `${n.toFixed(digits)}%` : '—';
+}
+
+function fmtSigned(value, digits = 3) {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return '—';
+  return `${n > 0 ? '+' : ''}${n.toFixed(digits)}%`;
+}
+
+function timeText(value) {
+  if (!value) return 'Saknas';
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return 'Saknas';
+  return new Intl.DateTimeFormat('sv-SE', { dateStyle: 'medium', timeStyle: 'short' }).format(date);
+}
+
+function shortTime(value) {
+  if (!value) return 'Saknas';
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return 'Saknas';
+  return new Intl.DateTimeFormat('sv-SE', { hour: '2-digit', minute: '2-digit', second: '2-digit' }).format(date);
 }
 
 function toneForStatus(status) {
-  if (status === 'ready' || status === 'promising') return 'good';
-  if (status === 'weak') return 'danger';
-  if (status === 'needs_more_data' || status === 'testing' || status === 'low_confidence') return 'warning';
+  const s = String(status || '').toLowerCase();
+  if (['ok', 'completed', 'complete', 'ready', 'safe', 'disabled'].includes(s)) return 'good';
+  if (['running', 'active', 'info'].includes(s)) return 'blue';
+  if (['ai', 'learning', 'purple'].includes(s)) return 'purple';
+  if (['empty', 'waiting', 'cooldown', 'degraded', 'warning', 'blocked'].includes(s)) return 'warning';
+  if (['error', 'failed', 'danger'].includes(s)) return 'danger';
   return 'neutral';
 }
 
 function Badge({ tone = 'neutral', children }) {
-  return <span className={`sup-brain-badge sup-brain-badge-${tone}`}>{children}</span>;
+  return <span className={`research-badge research-badge-${tone}`}>{children}</span>;
 }
 
 function Card({ className = '', children }) {
-  return <article className={`sup-brain-card ${className}`.trim()}>{children}</article>;
+  return <article className={`research-card ${className}`.trim()}>{children}</article>;
 }
 
-function SectionTitle({ eyebrow, title, subtitle, helper }) {
+function EmptyState({ title = 'Ingen data ännu', children }) {
   return (
-    <div className="sup-brain-section-head">
-      <div>
-        {eyebrow ? <div className="sup-brain-eyebrow">{eyebrow}</div> : null}
-        <h2>{title}</h2>
-        {subtitle ? <p>{subtitle}</p> : null}
-      </div>
-      {helper ? <div className="sup-brain-helper-chip">{helper}</div> : null}
+    <div className="research-empty">
+      <strong>{title}</strong>
+      <p>{children || 'När systemet har mer testdata visas den här.'}</p>
     </div>
   );
 }
 
-function StatCard({ icon, title, value, subtitle, tone = 'neutral', detail }) {
+function DegradedState({ title = 'Data saknas delvis', children }) {
   return (
-    <Card className={`sup-brain-stat sup-brain-stat-${tone}`}>
-      <div className="sup-brain-stat-head">
-        <div className="sup-brain-icon" aria-hidden="true">{icon}</div>
-        <div>
-          <div className="sup-brain-stat-title">{title}</div>
-          <div className="sup-brain-stat-subtitle">{subtitle}</div>
-        </div>
+    <div className="research-degraded">
+      <strong>{title}</strong>
+      <p>{children || 'En källa svarade inte, men resten av sidan fortsätter fungera.'}</p>
+    </div>
+  );
+}
+
+function SectionHeader({ eyebrow, title, subtitle, aside }) {
+  return (
+    <div className="research-section-head">
+      <div>
+        {eyebrow ? <div className="research-eyebrow">{eyebrow}</div> : null}
+        <h2>{title}</h2>
+        {subtitle ? <p>{subtitle}</p> : null}
       </div>
-      <div className="sup-brain-stat-value">{value}</div>
-      {detail ? <div className="sup-brain-stat-detail">{detail}</div> : null}
+      {aside ? <div className="research-section-aside">{aside}</div> : null}
+    </div>
+  );
+}
+
+function MetricCard({ label, value, help, tone = 'neutral' }) {
+  return (
+    <Card className={`research-metric research-metric-${tone}`}>
+      <span>{label}</span>
+      <strong>{value}</strong>
+      {help ? <small>{help}</small> : null}
     </Card>
   );
 }
 
-function InfoChip({ label, value, tone = 'neutral' }) {
+function SafetyStatusBar({ overview }) {
+  const safety = {
+    mode: overview?.mode || 'paper_only',
+    actions_allowed: overview?.actions_allowed === true,
+    can_place_orders: overview?.can_place_orders === true,
+    live_trading_enabled: overview?.live_trading_enabled === true,
+    broker_enabled: overview?.broker_enabled === true,
+  };
+  const locked = safety.mode === 'paper_only'
+    && !safety.actions_allowed
+    && !safety.can_place_orders
+    && !safety.live_trading_enabled
+    && !safety.broker_enabled;
   return (
-    <div className={`sup-brain-chip sup-brain-chip-${tone}`}>
-      <span>{label}</span>
-      <strong>{value}</strong>
+    <div className="research-safetybar">
+      <div>
+        <strong>{locked ? 'Systemet är säkert' : 'Kontrollera säkerheten'}</strong>
+        <span>Ingen riktig handel sker. Plattformen analyserar, testar och lär sig i paper-läge.</span>
+      </div>
+      <div className="research-safety-flags">
+        <Badge tone={locked ? 'good' : 'danger'}>{safety.mode}</Badge>
+        <Badge tone={!safety.actions_allowed ? 'good' : 'danger'}>actions_allowed=false</Badge>
+        <Badge tone={!safety.can_place_orders ? 'good' : 'danger'}>can_place_orders=false</Badge>
+        <Badge tone={!safety.live_trading_enabled ? 'good' : 'danger'}>live_trading_enabled=false</Badge>
+        <Badge tone={!safety.broker_enabled ? 'good' : 'danger'}>broker_enabled=false</Badge>
+      </div>
     </div>
   );
 }
 
-function BeginnerBox({ title, text: body }) {
+function SystemPipeline() {
+  const steps = [
+    ['Data', 'Marknadsdata hämtas och sparas.'],
+    ['Test', 'Systemet gör säkra paper/replay/batch-tester.'],
+    ['Resultat', 'Utfallet sparas som testdata.'],
+    ['AI lär sig', 'Learning Engine och AI sammanfattar mönster.'],
+    ['Nästa test', 'Systemet föreslår nästa säkra research-steg.'],
+  ];
   return (
-    <details className="sup-brain-details">
-      <summary>{title}</summary>
-      <p>{body}</p>
-    </details>
-  );
-}
-
-function BeginnerTermGrid({ compact = false }) {
-  return (
-    <div className={`sup-brain-term-grid ${compact ? 'sup-brain-term-grid-compact' : ''}`}>
-      {BEGINNER_TERMS.map(([term, help]) => (
-        <div key={term} className="sup-brain-term-card">
-          <strong>{term}</strong>
-          <span>{help}</span>
+    <div className="research-pipeline">
+      {steps.map(([title, body], index) => (
+        <div key={title} className="research-pipeline-step">
+          <span>{index + 1}</span>
+          <strong>{title}</strong>
+          <small>{body}</small>
         </div>
       ))}
     </div>
   );
 }
 
-function StrategyCard({ strategyId, row, summaryStatus }) {
-  const meta = STRATEGY_META[strategyId] || {
-    name: strategyId,
-    description: 'Testar Narrow State i säkert testläge.',
-    tone: 'neutral',
-  };
-  const trades = Number(row?.trades ?? 0) || 0;
-  const winRate = Number.isFinite(Number(row?.winRate)) ? Number(row.winRate) : Number(row?.win_rate);
-  const avgPnl = Number.isFinite(Number(row?.avgPnl)) ? Number(row.avgPnl) : Number(row?.avg_pnl);
-  const confidence = row?.confidence || (trades >= 30 ? 'high' : trades >= 10 ? 'medium' : trades >= 1 ? 'low' : 'none');
-  const status = row?.verdict === 'promising'
-    ? 'promising'
-    : row?.verdict === 'weak'
-      ? 'weak'
-      : trades === 0
-        ? 'needs_more_data'
-        : summaryStatus === 'ready' && trades >= 25
-          ? 'testing'
-          : 'testing';
-  const tone = toneForStatus(status);
-
-  return (
-    <Card className={`sup-brain-strategy sup-brain-strategy-${meta.tone}`}>
-      <div className="sup-brain-strategy-head">
-        <div>
-          <div className="sup-brain-strategy-name">{meta.name}</div>
-          <div className="sup-brain-strategy-id">{strategyId}</div>
-        </div>
-        <Badge tone={tone}>{LEARNING_STATUS_LABELS[status] || status}</Badge>
-      </div>
-      <p className="sup-brain-strategy-desc">{meta.description}</p>
-      <div className="sup-brain-card-stats">
-        <InfoChip label="Testresultat" value={trades ? formatInt(trades) : 'För lite data'} tone={tone} />
-        <InfoChip label="Win rate" value={Number.isFinite(winRate) ? formatPct(winRate, 1) : '—'} tone={Number.isFinite(winRate) && winRate >= 55 ? 'good' : 'neutral'} />
-        <InfoChip label="Avg result" value={Number.isFinite(avgPnl) ? formatSignedPct(avgPnl, 3) : '—'} tone={Number.isFinite(avgPnl) && avgPnl >= 0 ? 'good' : 'warning'} />
-        <InfoChip label="Confidence" value={CONFIDENCE_LABELS[confidence] || confidence} tone={confidence === 'high' ? 'good' : confidence === 'medium' ? 'blue' : confidence === 'low' ? 'warning' : 'neutral'} />
-      </div>
-    </Card>
-  );
+function activityLabel(event) {
+  if (!event) return 'Systemhändelse';
+  if (event.title) return event.title;
+  if (event.type === 'autopilot') return 'Autopilot planerade';
+  if (event.type === 'batch') return 'Batchtest uppdaterades';
+  if (event.type === 'data_job') return 'Datahämtning uppdaterades';
+  if (event.type === 'ai') return 'AI-analys uppdaterades';
+  if (event.type === 'learning') return 'Learning uppdaterades';
+  return text(event.type, 'Systemhändelse');
 }
 
-function SummaryCard({ title, item, emptyText }) {
-  if (!item) {
-    return (
-      <Card className="sup-brain-summary-card sup-brain-summary-card-empty">
-        <div className="sup-brain-summary-title">{title}</div>
-        <div className="sup-brain-summary-empty">{emptyText}</div>
-      </Card>
-    );
+function statusSv(status) {
+  const s = String(status || '').toLowerCase();
+  if (s === 'running') return 'Pågår';
+  if (s === 'completed') return 'Klart';
+  if (s === 'blocked') return 'Stoppat';
+  if (s === 'failed') return 'Fel';
+  if (s === 'waiting') return 'Väntar';
+  return 'Info';
+}
+
+function LiveActivityFeed({ events = [], limit, compact = false }) {
+  const visible = arr(events).slice(0, limit || 20);
+  if (!visible.length) {
+    return <EmptyState title="Ingen aktivitet ännu">När systemet planerar, testar eller lär sig visas händelser här.</EmptyState>;
   }
-
   return (
-    <Card className="sup-brain-summary-card">
-      <div className="sup-brain-summary-title">{title}</div>
-      <div className="sup-brain-summary-main">{text(item.name || item.strategy_id || item.title, 'Ingen säker slutsats')}</div>
-      <div className="sup-brain-summary-sub">{text(item.reason || item.message || item.description, 'För lite data ännu')}</div>
-      <div className="sup-brain-card-stats">
-        {item.trades != null ? <InfoChip label="Testresultat" value={formatInt(item.trades)} tone="blue" /> : null}
-        {item.winRate != null || item.win_rate != null ? <InfoChip label="Win rate" value={formatPct(firstNonEmpty(item.winRate, item.win_rate), 1)} tone="good" /> : null}
-        {item.avgPnl != null || item.avg_pnl != null ? <InfoChip label="Avg result" value={formatSignedPct(firstNonEmpty(item.avgPnl, item.avg_pnl), 3)} tone="blue" /> : null}
-      </div>
-      {item.safety ? (
-        <div className="sup-brain-summary-foot">
-          {item.safety.actions_allowed === false ? 'Ej automatisk ändring' : 'Kontrollera säkerhet'}
-        </div>
-      ) : null}
-    </Card>
-  );
-}
-
-function BandRow({ band, data, maxTrades }) {
-  const width = maxTrades > 0 ? Math.max(6, Math.round(((data?.trades || 0) / maxTrades) * 100)) : 8;
-  const tone = BAND_TONES[band] || 'neutral';
-  return (
-    <div className={`sup-brain-band sup-brain-band-${tone}`}>
-      <div className="sup-brain-band-top">
-        <div>
-          <div className="sup-brain-band-title">{BAND_LABELS[band] || band}</div>
-          <div className="sup-brain-band-range">
-            {band === 'not_narrow' ? '0–39' : band === 'weak_narrow' ? '40–59' : band === 'confirmed_narrow' ? '60–79' : '80–100'}
+    <div className={`research-timeline ${compact ? 'research-timeline-compact' : ''}`}>
+      {visible.map((event, index) => (
+        <div key={`${event.id || index}-${event.timestamp || index}`} className={`research-event research-event-${toneForStatus(event.severity || event.status)}`}>
+          <div className="research-event-time">{shortTime(event.timestamp)}</div>
+          <div className="research-event-dot" />
+          <div className="research-event-body">
+            <div className="research-event-top">
+              <strong>{activityLabel(event)}</strong>
+              <Badge tone={toneForStatus(event.status)}>{statusSv(event.status)}</Badge>
+            </div>
+            <p><SafeText value={event.message} fallback="Systemet uppdaterade status." /></p>
+            <div className="research-event-meta">
+              {event.strategy ? <span><SafeText value={event.strategy} /></span> : null}
+              {event.symbol ? <span><SafeText value={event.symbol} /></span> : null}
+              {event.timeframe ? <span><SafeText value={event.timeframe} /></span> : null}
+              <span>paper only</span>
+            </div>
           </div>
         </div>
-        <Badge tone={tone}>{text(data?.recommendation, 'För lite data ännu')}</Badge>
-      </div>
-      <div className="sup-brain-band-bar" aria-hidden="true">
-        <span style={{ width: `${width}%` }} />
-      </div>
-      <div className="sup-brain-band-stats">
-        <InfoChip label="Testresultat" value={formatInt(data?.trades || 0)} tone={tone === 'good' ? 'good' : tone === 'purple' ? 'blue' : tone} />
-        <InfoChip label="Win rate" value={data?.winRate != null ? formatPct(data.winRate, 1) : '—'} tone={tone === 'good' ? 'good' : 'neutral'} />
-        <InfoChip label="Avg result" value={data?.avgPnl != null ? formatSignedPct(data.avgPnl, 3) : '—'} tone={tone === 'good' ? 'good' : 'warning'} />
-      </div>
+      ))}
     </div>
   );
 }
 
-function ConfirmationCard({ confirmation, data }) {
-  const impactTone = data?.impact === 'positive' ? 'good' : data?.impact === 'negative' ? 'danger' : data?.impact === 'neutral' ? 'blue' : 'warning';
-  const withCount = data?.withConfirmation?.trades ?? data?.with?.trades ?? 0;
-  const withoutCount = data?.withoutConfirmation?.trades ?? data?.without?.trades ?? 0;
-  const withWin = data?.withConfirmation?.winRate ?? data?.with?.winRate ?? null;
-  const withoutWin = data?.withoutConfirmation?.winRate ?? data?.without?.winRate ?? null;
-  const withPnl = data?.withConfirmation?.avgPnl ?? data?.with?.avgPnl ?? null;
-  const withoutPnl = data?.withoutConfirmation?.avgPnl ?? data?.without?.avgPnl ?? null;
-
+function HistoryTimeline({ tests, limit }) {
+  const visible = arr(tests).slice(0, limit);
+  if (!visible.length) return <EmptyState title="Ingen testhistorik">När autopilot eller batchtester har historik visas den här.</EmptyState>;
   return (
-    <Card className={`sup-brain-confirmation sup-brain-confirmation-${impactTone}`}>
-      <div className="sup-brain-confirmation-head">
-        <div className="sup-brain-confirmation-name">{confirmation.toUpperCase()}</div>
-        <Badge tone={impactTone}>{data?.impact || 'insufficient_data'}</Badge>
-      </div>
-      <div className="sup-brain-confirmation-grid">
-        <div>
-          <span>Med bekräftelse</span>
-          <strong>{withCount ? `${formatInt(withCount)} testresultat` : 'För lite data'}</strong>
-          <small>{withWin != null ? `${formatPct(withWin, 1)} · ${formatSignedPct(withPnl, 3)}` : 'Ingen säker slutsats'}</small>
-        </div>
-        <div>
-          <span>Utan bekräftelse</span>
-          <strong>{withoutCount ? `${formatInt(withoutCount)} testresultat` : 'För lite data'}</strong>
-          <small>{withoutWin != null ? `${formatPct(withoutWin, 1)} · ${formatSignedPct(withoutPnl, 3)}` : 'Ingen säker slutsats'}</small>
-        </div>
-      </div>
-    </Card>
-  );
-}
-
-function StepCard({ index, title, text: body }) {
-  return (
-    <Card className="sup-brain-step">
-      <div className="sup-brain-step-index">{index}</div>
-      <div className="sup-brain-step-title">{title}</div>
-      <div className="sup-brain-step-body">{body}</div>
-    </Card>
-  );
-}
-
-function metric(row, ...keys) {
-  for (const key of keys) {
-    if (row?.[key] !== undefined && row?.[key] !== null && row?.[key] !== '') return row[key];
-  }
-  return null;
-}
-
-function strategyName(strategyId) {
-  return STRATEGY_META[strategyId]?.name || text(strategyId, 'Ingen strategi');
-}
-
-function explainWeakItem(item) {
-  if (!item) return 'Ingen tydlig svag punkt ännu.';
-  const trades = Number(metric(item, 'trades', 'tradeCount') ?? 0) || 0;
-  const winRate = Number(metric(item, 'winRate', 'win_rate'));
-  const avgPnl = Number(metric(item, 'avgPnl', 'avg_pnl', 'avg_pl'));
-  if (!trades) return 'För lite testdata för robust slutsats.';
-  if (Number.isFinite(avgPnl) && avgPnl < 0) return 'Negativt genomsnittligt resultat i testdata.';
-  if (Number.isFinite(winRate) && winRate < 50) return 'Låg win rate i testdata.';
-  return 'Svagare ranking än bästa alternativet.';
-}
-
-function formatSchedulerTest(rec) {
-  if (!rec) return null;
-  const window = rec.dateWindowSelected || {};
-  const symbols = safeArray(firstNonEmpty(rec.symbols, rec.recommendedSymbols, rec.filters?.symbols, rec.suggestedFilters?.symbols));
-  const timeframes = safeArray(firstNonEmpty(rec.timeframes, rec.recommendedTimeframes, rec.filters?.timeframes, rec.suggestedFilters?.timeframes));
-  return {
-    strategy: rec.strategy_id || rec.strategyId || 'För lite data ännu',
-    band: rec.selectedNarrowScoreBand || rec.narrowScoreBand || null,
-    window: window.dateFrom && window.dateTo ? `${window.dateFrom} - ${window.dateTo}` : 'Inget fönster valt',
-    symbols,
-    timeframes,
-    reason: rec.reason || rec.windowSelectionReason || 'Systemet har sparat senaste planerade dry-run.',
-  };
-}
-
-function formatRecommendation(rec) {
-  if (!rec) return null;
-  const strategy = rec.strategy_id || rec.strategyId || rec.title || 'För lite data ännu';
-  const source = rec.source ? rec.source.toUpperCase() : 'PAPER';
-  const symbols = safeArray(firstNonEmpty(rec.suggestedFilters?.symbols, rec.symbols, rec.recommendedSymbols));
-  const timeframes = safeArray(firstNonEmpty(rec.suggestedFilters?.timeframes, rec.timeframes, rec.recommendedTimeframes));
-  const confirmations = safeArray(firstNonEmpty(rec.suggestedFilters?.confirmations, rec.confirmations, rec.recommendedConfirmations));
-  const parts = [
-    `Kör mer ${source.toLowerCase()} på ${strategy}`,
-    symbols.length ? `för ${symbols.join(', ')}` : '',
-    timeframes.length ? `på ${timeframes.join(', ')}` : '',
-    confirmations.length ? `med ${confirmations.join(', ')}` : '',
-  ].filter(Boolean);
-
-  return {
-    title: rec.title || 'Nästa föreslagna test',
-    reason: rec.reason || rec.message || parts.join(' · '),
-    strategy,
-    source,
-    priority: rec.priority || 'low',
-    symbols,
-    timeframes,
-    confirmations,
-    safety: rec.safety || null,
-  };
-}
-
-function formatSchedulerRecommendation(rec) {
-  if (!rec) return null;
-  const window = rec.dateWindowSelected || {};
-  const band = rec.selectedNarrowScoreBand || window.reason || null;
-  return {
-    strategy: rec.strategy_id || 'För lite data ännu',
-    band,
-    window: window.dateFrom && window.dateTo ? `${window.dateFrom} - ${window.dateTo}` : 'Inget fönster valt',
-    reason: rec.reason || 'Systemet har planerat nästa säkra dry-run.',
-    priority: rec.priority || 'low',
-  };
-}
-
-function eventTypeLabel(type) {
-  if (type === 'plan_created') return 'Plan skapad';
-  if (type === 'plan_validated') return 'Plan kontrollerad';
-  if (type === 'run_completed') return 'Paper-test klart';
-  if (type === 'run_blocked') return 'Stoppad';
-  return text(type, 'Testhändelse');
-}
-
-function dryRunLabel(value) {
-  if (value === true) return 'Säker testkörning';
-  if (value === false) return 'Paper/batch-test';
-  return 'Säker planering';
-}
-
-function executedLabel(value) {
-  if (value === false) return 'Ingen riktig körning';
-  if (value === true) return 'Paper/batch-körning klar';
-  return 'Ingen order';
-}
-
-function testTone(test) {
-  if (test?.blockedReason || test?.type === 'run_blocked') return 'warning';
-  if (test?.type === 'run_completed') return 'good';
-  if (test?.type === 'plan_created' || test?.type === 'plan_validated') return 'blue';
-  return 'neutral';
-}
-
-function latestOverviewTest(overview) {
-  const tests = safeArray(overview?.recentTests);
-  return tests[0] || null;
-}
-
-function formatBatchName(batch) {
-  if (!batch) return '—';
-  const parts = [
-    batch.id,
-    batch.strategy,
-    batch.timeframe,
-  ].filter(Boolean);
-  return parts.join(' · ') || 'Batch utan namn';
-}
-
-function formatBatchOutcome(outcome) {
-  if (!outcome) return '—';
-  const score = Number.isFinite(Number(outcome.score)) ? `score ${num(outcome.score)}` : '';
-  const avg = Number.isFinite(Number(outcome.avgResult)) ? `avg ${num(outcome.avgResult)}` : '';
-  const win = Number.isFinite(Number(outcome.winRate)) ? `${num(outcome.winRate, '%')} winRate` : '';
-  return [outcome.strategy, outcome.symbol, score, win, avg].filter(Boolean).join(' · ') || '—';
-}
-
-function BatchSummarySection({ batchSummary }) {
-  const bs = batchSummary || {};
-  const status = bs.status || 'empty';
-  const latest = bs.latestBatch || null;
-  const latestCompleted = bs.latestCompletedBatch || null;
-  const latestResult = bs.latestResult || null;
-  const hasBatches = Number(bs.totalBatches || 0) > 0;
-  const active = bs.activeBatch || (Number(bs.runningBatches || 0) > 0 ? latest : null);
-  const degraded = status === 'degraded' || status === 'error';
-  const bestOutcome = latest?.bestOutcome || null;
-  const avgResult = firstNonEmpty(latest?.avgResult, latestResult?.avgResult, bestOutcome?.avgResult);
-
-  return (
-    <section className="sup-brain-section sup-brain-batch-section">
-      <SectionTitle
-        eyebrow="Batchtester"
-        title="Batchtester"
-        subtitle="Batchtester jämför många testvarianter säkert. Ingen riktig handel sker."
-        helper="Senare egen vy"
-      />
-      {degraded ? (
-        <div className="sup-brain-batch-alert">Batchdata kunde inte läsas just nu, men Supervisor fungerar fortfarande.</div>
-      ) : null}
-      {!hasBatches && !degraded ? (
-        <div className="sup-brain-empty">Det finns inga batchtester att visa ännu.</div>
-      ) : (
-        <>
-          <div className="sup-brain-grid sup-brain-grid-4">
-            <InfoChip label="Körs batch nu?" value={active ? 'Ja' : 'Nej'} tone={active ? 'warning' : 'good'} />
-            <InfoChip label="Batcher totalt" value={formatInt(bs.totalBatches || 0)} tone="blue" />
-            <InfoChip label="Klara batcher" value={formatInt(bs.completedBatches || 0)} tone="good" />
-            <InfoChip label="Status" value="Säker testdata / ingen live handel" tone="good" />
-          </div>
-          <div className="sup-brain-grid sup-brain-grid-3 sup-brain-spaced-grid">
-            <Card className="sup-brain-batch-card">
-              <div className="sup-brain-summary-title">Senaste batch</div>
-              <div className="sup-brain-summary-main">{formatBatchName(latest)}</div>
-              <div className="sup-brain-summary-sub">
-                <SafeText value={latest?.status} fallback="status saknas" /> · {latest?.startedAt ? nowText(latest.startedAt) : 'start saknas'}
+    <div className="research-history">
+      {visible.map((test, index) => {
+        const blocked = test.blockedReason || test.type === 'run_blocked';
+        return (
+          <Card key={`${test.id || index}-${test.timestamp || index}`} className="research-history-card">
+            <div className="research-history-top">
+              <div>
+                <strong>{timeText(test.timestamp)}</strong>
+                <span>{text(test.strategy, 'Narrow Autopilot')}</span>
               </div>
-              <div className="sup-brain-card-stats">
-                <InfoChip label="Kombinationer" value={formatInt(latest?.combinationsTested || 0)} tone="neutral" />
-                <InfoChip label="Symboler" value={formatInt(safeArray(latest?.symbols).length)} tone="neutral" />
-              </div>
-            </Card>
-            <Card className="sup-brain-batch-card">
-              <div className="sup-brain-summary-title">Senaste resultat</div>
-              <div className="sup-brain-summary-main">{formatBatchOutcome(latestResult || bestOutcome)}</div>
-              <div className="sup-brain-card-stats">
-                <InfoChip label="Bästa outcome" value={formatBatchOutcome(bestOutcome)} tone="good" />
-                <InfoChip label="Genomsnitt" value={Number.isFinite(Number(avgResult)) ? num(avgResult) : '—'} tone={Number(avgResult) >= 0 ? 'good' : 'warning'} />
-              </div>
-            </Card>
-            <Card className="sup-brain-batch-card">
-              <div className="sup-brain-summary-title">Read-only säkerhet</div>
-              <div className="sup-brain-summary-main">Ingen live handel</div>
-              <div className="sup-brain-summary-sub">Supervisor visar bara befintlig batchhistorik.</div>
-              <div className="sup-brain-card-stats">
-                <InfoChip label="Paper only" value={bs.paperOnly === false ? 'Nej' : 'Ja'} tone={bs.paperOnly === false ? 'danger' : 'good'} />
-                <InfoChip label="Order" value={bs.canPlaceOrders ? 'På' : 'Av'} tone={bs.canPlaceOrders ? 'danger' : 'good'} />
-              </div>
-            </Card>
-          </div>
-          <details className="sup-brain-details sup-brain-batch-details">
-            <summary>Visa detaljer</summary>
-            <div className="sup-brain-batch-detail-grid">
-              <InfoChip label="Senaste klara batch" value={formatBatchName(latestCompleted)} tone="neutral" />
-              <InfoChip label="Körande" value={formatInt(bs.runningBatches || 0)} tone={bs.runningBatches ? 'warning' : 'good'} />
-              <InfoChip label="Pausade" value={formatInt(bs.pausedBatches || 0)} tone={bs.pausedBatches ? 'warning' : 'neutral'} />
-              <InfoChip label="Misslyckade" value={formatInt(bs.failedBatches || 0)} tone={bs.failedBatches ? 'warning' : 'neutral'} />
-              <InfoChip label="Källa" value={bs.source || 'strategyBatchTestService'} tone="neutral" />
-              <InfoChip label="Meddelande" value={bs.message || 'ok'} tone={degraded ? 'warning' : 'neutral'} />
+              <Badge tone={blocked ? 'warning' : toneForStatus(test.type === 'run_completed' ? 'completed' : 'info')}>
+                {blocked ? 'Stoppades' : test.type === 'run_completed' ? 'Test klart' : 'Planering'}
+              </Badge>
             </div>
-          </details>
-        </>
-      )}
-    </section>
+            <div className="research-history-grid">
+              <span><b>Testtyp</b>{text(test.type, 'Testhändelse')}</span>
+              <span><b>Symbol/timeframe</b>{text([test.symbol, test.timeframe].filter(Boolean), 'Saknas')}</span>
+              <span><b>Säker testkörning</b>{test.dryRun === true ? 'Dry-run' : 'Paper/batch-test'}</span>
+              <span><b>Ingen riktig körning</b>{test.executed === false ? 'Ja' : test.executed === true ? 'Paper/batch klar' : 'Ja'}</span>
+              <span><b>Andel lyckade tester</b>{test.winRate != null ? fmtPct(test.winRate) : '—'}</span>
+              <span><b>Genomsnittligt resultat</b>{test.avgResult != null ? fmtSigned(test.avgResult) : '—'}</span>
+            </div>
+            {test.scoreBand ? <p className="research-muted">Testnivå: <SafeText value={test.scoreBand} /></p> : null}
+            {blocked ? <p className="research-warning-copy">Stoppades därför att: <SafeText value={test.blockedReason || test.reason} /></p> : null}
+            {test.recommendation ? <p className="research-muted">Nästa rekommendation: <SafeText value={test.recommendation} /></p> : null}
+          </Card>
+        );
+      })}
+    </div>
   );
 }
 
-function listItems(items, fallback) {
-  const clean = safeArray(items).map((item) => String(item || '').trim()).filter(Boolean);
-  return clean.length ? clean : [fallback];
-}
-
-function AIAnalystPanel() {
-  const [state, setState] = useState({
-    status: null,
-    latest: null,
-    loading: true,
-    running: false,
-    error: '',
-  });
-
-  useEffect(() => {
-    let cancelled = false;
-    async function loadSafe() {
-      const [status, latest] = await Promise.all([
-        apiJson('/api/ai/analyst/status').catch(() => null),
-        apiJson('/api/ai/analyst/latest').catch(() => null),
-      ]);
-      if (!cancelled) setState((prev) => ({ ...prev, status, latest, loading: false, error: '' }));
-    }
-    loadSafe();
-    return () => { cancelled = true; };
-  }, []);
-
-  async function runAnalysis() {
-    setState((prev) => ({ ...prev, running: true, error: '' }));
-    try {
-      const result = await apiJson('/api/ai/analyst/run', {
-        method: 'POST',
-      });
-      const status = await apiJson('/api/ai/analyst/status').catch(() => state.status);
-      setState((prev) => ({
-        ...prev,
-        status,
-        latest: { ok: true, status: result.status, latest: result, cache: result.cache || null },
-        running: false,
-        loading: false,
-        error: '',
-      }));
-    } catch (err) {
-      setState((prev) => ({ ...prev, running: false, loading: false, error: err?.message || 'AI-analys kunde inte uppdateras.' }));
-    }
-  }
-
-  const status = state.status || {};
-  const latestPayload = state.latest?.latest || null;
-  const output = latestPayload?.output || null;
-  const provider = status.provider || latestPayload?.provider || 'disabled';
-  const latestStatus = latestPayload?.status || state.latest?.status || status.latestStatus || 'empty';
-  const isDisabled = provider === 'disabled' || latestStatus === 'disabled';
-  const confidence = output?.confidence != null ? `${Math.round(Number(output.confidence || 0) * 100)}%` : '—';
-
+function StrategyCard({ item, tone = 'neutral', note }) {
+  if (!item) return <EmptyState title="Saknas">För lite data för att visa strategi.</EmptyState>;
   return (
-    <section className="sup-brain-section sup-ai-analyst-panel">
-      <SectionTitle
-        eyebrow="AI Analyst"
-        title="AI-analytiker"
-        subtitle="AI läser systemets säkra sammanfattning och förklarar vad som bör testas härnäst. Den kan inte handla eller ändra något."
-        helper="Read-only"
-      />
-      <div className="sup-ai-analyst-head">
-        <div>
-          <div className="sup-ai-analyst-statusline">
-            <Badge tone={isDisabled ? 'warning' : 'purple'}>{isDisabled ? 'Disabled' : 'Read-only AI'}</Badge>
-            <span>Provider: <SafeText value={provider} fallback="disabled" /></span>
-            <span>Model: <SafeText value={status.model || latestPayload?.model} fallback="—" /></span>
-            <span>Senast: {latestPayload?.generatedAt ? nowText(latestPayload.generatedAt) : 'ingen analys ännu'}</span>
-          </div>
-          <p className="sup-ai-analyst-copy">
-            AI Analyst får bara sammanfatta, hitta risker och föreslå säkra paper/replay/batch-tester.
-          </p>
-        </div>
-        <button className="sup-ai-analyst-run" type="button" onClick={runAnalysis} disabled={state.running}>
-          {state.running ? 'Uppdaterar...' : 'Uppdatera AI-analys'}
-        </button>
+    <Card className={`research-strategy research-strategy-${tone}`}>
+      <div className="research-card-title">
+        <strong><SafeText value={item.key || item.strategy || item.strategy_id || item.name} fallback="Strategi" /></strong>
+        <Badge tone={tone}>{note || 'Testdata'}</Badge>
       </div>
-
-      {state.loading ? <div className="sup-brain-empty">Laddar AI Analyst-status...</div> : null}
-      {state.error ? <div className="sup-brain-batch-alert"><SafeText value={state.error} /></div> : null}
-      {isDisabled ? (
-        <BeginnerBox
-          title="AI Analyst är avstängd"
-          text="Sätt AI_ANALYST_PROVIDER=openai eller anthropic på servern för att aktivera manuell read-only analys. Systemet fortsätter fungera utan extern AI."
-        />
-      ) : null}
-
-      <div className="sup-ai-analyst-summary">
-        <div className="sup-ai-analyst-main">
-          <div className="sup-brain-summary-title">Senaste AI-sammanfattning</div>
-          <p>{output?.summary || 'Ingen AI-analys sparad ännu.'}</p>
-        </div>
-        <div className="sup-ai-analyst-side">
-          <InfoChip label="Confidence" value={confidence} tone="purple" />
-          <InfoChip label="Status" value={latestStatus} tone={latestStatus === 'ok' ? 'good' : 'warning'} />
-          <InfoChip label="Safety" value="paper_only" tone="good" />
-        </div>
+      <div className="research-mini-grid">
+        <span><b>Andel lyckade tester</b>{item.winRate != null ? fmtPct(item.winRate) : '—'}</span>
+        <span><b>Antal tester</b>{fmtNumber(item.trades || item.tradeCount || item.total || 0)}</span>
+        <span><b>Genomsnitt</b>{item.avgResult != null || item.avgPnl != null ? fmtSigned(first(item.avgResult, item.avgPnl)) : '—'}</span>
       </div>
-
-      <div className="sup-brain-grid sup-brain-grid-2 sup-brain-spaced-grid">
-        <Card className="sup-ai-analyst-card">
-          <div className="sup-brain-summary-title">Vad AI lärde sig</div>
-          <ul>{listItems(output?.what_ai_learned, 'Ingen AI-lärdom sparad ännu.').map((item) => <li key={item}><SafeText value={item} /></li>)}</ul>
-        </Card>
-        <Card className="sup-ai-analyst-card">
-          <div className="sup-brain-summary-title">Strategier</div>
-          <div className="sup-brain-listrow"><span>Bäst</span><span><SafeText value={output?.best_strategy} fallback="—" /></span></div>
-          <div className="sup-brain-listrow"><span>Svagast</span><span><SafeText value={output?.weakest_strategy} fallback="—" /></span></div>
-        </Card>
-        <Card className="sup-ai-analyst-card">
-          <div className="sup-brain-summary-title">Risker AI ser</div>
-          <ul>{listItems(output?.risks, 'Inga AI-risker sparade ännu.').map((item) => <li key={item}><SafeText value={item} /></li>)}</ul>
-        </Card>
-        <Card className="sup-ai-analyst-card">
-          <div className="sup-brain-summary-title">Nästa rekommenderade test</div>
-          <ul>{listItems(output?.next_recommended_tests, 'Vänta på mer testdata eller uppdatera AI-analysen.').map((item) => <li key={item}><SafeText value={item} /></li>)}</ul>
-        </Card>
-      </div>
-
-      <details className="sup-brain-details sup-ai-analyst-details">
-        <summary>Visa detaljer</summary>
-        <div className="sup-brain-batch-detail-grid">
-          <InfoChip label="actions_allowed" value={String(output?.safety?.actions_allowed ?? false)} tone="good" />
-          <InfoChip label="can_place_orders" value={String(output?.safety?.can_place_orders ?? false)} tone="good" />
-          <InfoChip label="live_trading_enabled" value={String(output?.safety?.live_trading_enabled ?? false)} tone="good" />
-          <InfoChip label="broker_enabled" value={String(output?.safety?.broker_enabled ?? false)} tone="good" />
-        </div>
-      </details>
-    </section>
+    </Card>
   );
 }
 
-function nextRecommendationText(overview, fallbackRecommendation) {
-  const action = safeArray(overview?.actionPlan)[0];
-  if (action?.title_sv) return action.title_sv;
-  if (fallbackRecommendation?.band) return `Testa ${BAND_LABELS[fallbackRecommendation.band] || fallbackRecommendation.band}`;
-  if (fallbackRecommendation?.title) return fallbackRecommendation.title;
-  if (fallbackRecommendation?.strategy) return strategyName(fallbackRecommendation.strategy);
-  return 'Vänta in nästa automatiska dry-run';
-}
-
-function FirstLookPanel({ overview, safetyIsLocked, autopilotScheduler, latestRecommendedTest }) {
-  const latestTest = latestOverviewTest(overview);
-  const autopilotOn = Boolean(autopilotScheduler?.schedulerActive || overview?.blocks?.autopilot?.summary?.schedulerActive);
-  const blockedReason = autopilotScheduler?.blockedReason || latestTest?.blockedReason || null;
-  const whatNow = latestTest
-    ? `${eventTypeLabel(latestTest.type)} · ${dryRunLabel(latestTest.dryRun)}`
-    : 'Systemet väntar på nästa planering.';
-
+function BatchStatusCard({ batches }) {
+  const latest = batches?.latestBatch || batches?.latestCompletedBatch || null;
+  const best = batches?.bestOutcome || latest?.bestOutcome || null;
+  const worst = batches?.worstOutcome || latest?.worstOutcome || null;
   return (
-    <section className="sup-brain-section sup-brain-firstlook">
-      <SectionTitle
-        eyebrow="Direktöversikt"
-        title="Så mår systemet just nu"
-        subtitle="Fyra svar för dig som vill förstå läget utan tekniska detaljer."
-        helper="Read-only"
-      />
-      <div className="sup-brain-firstlook-grid">
-        <Card className="sup-brain-firstlook-card sup-brain-firstlook-good">
-          <div className="sup-brain-firstlook-kicker">Är systemet säkert?</div>
-          <h3>{safetyIsLocked ? 'Systemet är säkert' : 'Kontrollera säkerhet'}</h3>
-          <p>Paper only betyder att systemet bara testar och analyserar. Det handlar inte på riktigt.</p>
-          <Badge tone={safetyIsLocked ? 'good' : 'danger'}>{safetyIsLocked ? 'Inga riktiga order' : 'Kontrollera'}</Badge>
-        </Card>
-        <Card className={`sup-brain-firstlook-card ${autopilotOn ? 'sup-brain-firstlook-blue' : 'sup-brain-firstlook-warning'}`}>
-          <div className="sup-brain-firstlook-kicker">Är autopilot igång?</div>
-          <h3>{autopilotOn ? 'Autopilot jobbar i bakgrunden' : 'Autopilot väntar'}</h3>
-          <p>Autopilot får bara planera och analysera. Den får inte starta live trading.</p>
-          <Badge tone={autopilotOn ? 'blue' : 'warning'}>{autopilotOn ? 'Planering aktiv' : 'Vilande'}</Badge>
-        </Card>
-        <Card className="sup-brain-firstlook-card sup-brain-firstlook-neutral">
-          <div className="sup-brain-firstlook-kicker">Vad gör systemet just nu?</div>
-          <h3>{whatNow}</h3>
-          <p>Dry-run betyder att systemet planerar ett test utan att genomföra något farligt.</p>
-          {blockedReason ? <Badge tone="warning">Stoppades därför att {blockedReason}</Badge> : <Badge tone="good">Ingen blockerare</Badge>}
-        </Card>
-        <Card className="sup-brain-firstlook-card sup-brain-firstlook-purple">
-          <div className="sup-brain-firstlook-kicker">Vad rekommenderas härnäst?</div>
-          <h3>{nextRecommendationText(overview, latestRecommendedTest)}</h3>
-          <p>Nästa steg är en rekommendation för research, inte en order eller automatisk ändring.</p>
-          <Badge tone="purple">Nästa steg</Badge>
-        </Card>
-      </div>
-    </section>
+    <div className="research-grid research-grid-3">
+      <MetricCard label="Körs batch nu?" value={batches?.isRunning ? 'Ja' : 'Nej'} help="Endast visning, ingen kontroll här." tone={batches?.isRunning ? 'warning' : 'good'} />
+      <MetricCard label="Batcher totalt" value={fmtNumber(batches?.totalBatches || 0)} help={`${fmtNumber(batches?.completedBatches || 0)} klara`} tone="blue" />
+      <MetricCard label="Misslyckade" value={fmtNumber(batches?.failedBatches || 0)} help="Visas för felsökning." tone={batches?.failedBatches ? 'warning' : 'good'} />
+      <Card className="research-wide">
+        <div className="research-card-title">
+          <strong>Senaste batch</strong>
+          <Badge tone={toneForStatus(latest?.status || batches?.status)}>{text(latest?.status || batches?.status, 'Saknas')}</Badge>
+        </div>
+        <p><SafeText value={latest?.id} fallback="Ingen batch ännu" /></p>
+        <div className="research-mini-grid">
+          <span><b>Strategi</b>{text(latest?.strategy, 'Saknas')}</span>
+          <span><b>Symboler</b>{text(latest?.symbols, 'Saknas')}</span>
+          <span><b>Timeframe</b>{text(latest?.timeframe, 'Saknas')}</span>
+          <span><b>Kombinationer</b>{fmtNumber(latest?.combinationsTested || 0)}</span>
+        </div>
+      </Card>
+      <Card>
+        <div className="research-card-title"><strong>Bästa outcome</strong><Badge tone="good">Bäst</Badge></div>
+        <p><SafeText value={best?.strategy} fallback="Saknas" /></p>
+        <div className="research-mini-grid">
+          <span><b>Win rate</b>{best?.winRate != null ? fmtPct(best.winRate) : '—'}</span>
+          <span><b>Avg</b>{best?.avgResult != null ? fmtSigned(best.avgResult) : '—'}</span>
+        </div>
+      </Card>
+      <Card>
+        <div className="research-card-title"><strong>Sämsta outcome</strong><Badge tone="warning">Svagast</Badge></div>
+        <p><SafeText value={worst?.strategy} fallback="Saknas" /></p>
+        <div className="research-mini-grid">
+          <span><b>Win rate</b>{worst?.winRate != null ? fmtPct(worst.winRate) : '—'}</span>
+          <span><b>Avg</b>{worst?.avgResult != null ? fmtSigned(worst.avgResult) : '—'}</span>
+        </div>
+      </Card>
+    </div>
   );
 }
 
-// Unified, system-wide sections driven by GET /api/supervisor/overview. Kept as
-// one self-contained, fully null-safe component so it can never destabilize the
-// existing narrow deep-dive sections below it. Read-only display.
-function OverviewUnifiedSections({ overview }) {
-  if (!overview || typeof overview !== 'object') {
-    return (
-      <section className="sup-brain-section">
-        <SectionTitle eyebrow="1c. Hela systemet" title="Systemöversikt laddas…" subtitle="Den system-wide översikten hämtas. Narrow State-vyn nedan fungerar ändå." />
-      </section>
-    );
-  }
-  const blocks = overview.blocks || {};
-  const cs = overview.canonicalStats || {};
-  const sh = (blocks.system_health && blocks.system_health.summary) || {};
-  const ap = (blocks.autopilot && blocks.autopilot.summary) || {};
-  const strat = (blocks.strategies && blocks.strategies.summary) || {};
-  const learn = (blocks.learning && blocks.learning.summary) || {};
-  const narrowBlock = (blocks.narrow && blocks.narrow.summary) || {};
-  const recent = Array.isArray(overview.recentTests) ? overview.recentTests : [];
-  const risks = Array.isArray(overview.risks) ? overview.risks : [];
-  const plan = Array.isArray(overview.actionPlan) ? overview.actionPlan : [];
-  const topStrats = Array.isArray(strat.top) ? strat.top : [];
-  const worstStrats = Array.isArray(strat.worst) ? strat.worst : [];
-
+function DataPipelineCard({ dataJobs }) {
+  const hourly = dataJobs?.hourlyImport || {};
+  const weekly = dataJobs?.weeklyBackfill || {};
+  const cache = dataJobs?.cacheStatus || {};
+  const quality = dataJobs?.dataQuality || {};
   return (
     <>
-      {/* System-wide headline + status */}
-      <section className="sup-brain-section">
-        <SectionTitle
-          eyebrow="1c. Hela systemet"
-          title="Systemet är säkert"
-          subtitle="Samlad bild av hälsa, lärande, tester och risker. Allt är i analysläge."
-          helper="System-wide"
-        />
-        <div className="sup-brain-grid sup-brain-grid-4">
-          <StatCard icon="📊" title="Testresultat" value={num(cs.totalTrades)} subtitle="Totalt (testdata)" detail="Detta är testdata, inte bevisad edge." tone="blue" />
-          <StatCard icon="✅" title="winRate" value={num(cs.winRate, '%')} subtitle="TIMEOUT räknas emot" detail="Konservativ, ärlig vy." tone="neutral" />
-          <StatCard icon="🎯" title="decisiveWinRate" value={num(cs.decisiveWinRate, '%')} subtitle="TIMEOUT exkluderad" detail="När traden faktiskt avgjordes." tone="neutral" />
-          <StatCard icon="🟢" title="Systemhälsa" value={<SafeText value={sh.overallStatus} fallback="—" />} subtitle={<SafeText value={sh.summarySv} fallback="status okänd" />} detail={`${num(sh.alertCount)} larm`} tone="good" />
-        </div>
-      </section>
-
-      {/* Autopilot working in the background */}
-      <section className="sup-brain-section">
-        <SectionTitle eyebrow="2. Autopilot" title="Autopilot jobbar i bakgrunden" subtitle="Autopilot planerar nästa test automatiskt. Den köper eller säljer aldrig." helper="Dry-run only" />
-        <div className="sup-brain-safety-tags">
-          <Badge tone="good">PAPER ONLY</Badge>
-          <Badge tone="blue">DRY-RUN ONLY</Badge>
-          <Badge tone="neutral">EXECUTE AV</Badge>
-          <Badge tone="neutral">INGA RIKTIGA ORDER</Badge>
-        </div>
-        <div className="sup-brain-grid sup-brain-grid-4 sup-brain-spaced-grid">
-          <InfoChip label="Status" value={ap.schedulerActive ? 'Aktiv' : 'Vilande'} tone={ap.schedulerActive ? 'good' : 'warning'} />
-          <InfoChip label="Läge" value={ap.dryRunOnly === false ? 'execute?' : 'Dry-run only'} tone="blue" />
-          <InfoChip label="Auto-execute" value={ap.executionEnabled ? 'På' : 'Avstängt'} tone={ap.executionEnabled ? 'danger' : 'good'} />
-          <InfoChip label="Nästa körning" value={ap.nextRunAt ? nowText(ap.nextRunAt) : '—'} tone="neutral" />
-        </div>
-        {ap.blockedReason ? <BeginnerBox title="Pausorsak / cooldown" text={String(ap.blockedReason)} /> : null}
-      </section>
-
-      {/* Recent tests timeline */}
-      <section className="sup-brain-section">
-        <SectionTitle eyebrow="3. Tester" title="Senaste tester" subtitle="Autopilotens senaste planeringar och testkörningar. Inga riktiga order lades någonsin." helper="Historik" />
-        {recent.length === 0 ? (
-          <BeginnerBox title="Ingen testhistorik än" text="När autopilot kört dry-run-planering eller batch-tester visas de här." />
-        ) : (
-          <div className="sup-brain-timeline">
-            {recent.slice(0, 25).map((t, i) => (
-              <div key={(t && t.id ? String(t.id) : 'evt') + '-' + i} className={`sup-brain-timeline-row sup-brain-timeline-${testTone(t)}`}>
-                <div className="sup-brain-timeline-time">{t && t.timestamp ? nowText(t.timestamp) : '—'}</div>
-                <div className="sup-brain-timeline-main">
-                  <span className="sup-brain-timeline-type">{eventTypeLabel(t && t.type)}</span>
-                  <span className="sup-brain-timeline-strat">{t?.strategy ? strategyName(t.strategy) : 'Narrow Autopilot'}</span>
-                  <span className="sup-brain-timeline-soft">
-                    <SafeText value={t && t.symbol} fallback="—" /> · <SafeText value={t && t.timeframe} fallback="—" />
-                    {t && t.scoreBand ? <> · band <SafeText value={t.scoreBand} /></> : null}
-                  </span>
-                </div>
-                {t && t.blockedReason ? (
-                  <div className="sup-brain-timeline-blocked">Stoppades därför att <SafeText value={t.blockedReason} /></div>
-                ) : null}
-                <div className="sup-brain-timeline-stats">
-                  {t && t.tradesCount != null ? <InfoChip label="Trades" value={num(t.tradesCount)} tone="neutral" /> : null}
-                  {t && t.winRate != null ? <InfoChip label="Win rate" value={`${num(t.winRate, '%')} positiva tester`} tone="good" /> : null}
-                  {t && t.avgResult != null ? <InfoChip label="Avg result" value={`${num(t.avgResult)} i snitt`} tone="blue" /> : null}
-                  <InfoChip label="Dry-run" value={dryRunLabel(t && t.dryRun)} tone="blue" />
-                  <InfoChip label="Körning" value={executedLabel(t && t.executed)} tone={t?.executed ? 'good' : 'neutral'} />
-                </div>
-                {t && (t.reason || t.recommendation) ? (
-                  <div className="sup-brain-timeline-note">
-                    {t.recommendation ? <span>Rek: <SafeText value={t.recommendation} /></span> : null}
-                    {t.reason ? <span className="sup-brain-timeline-soft"><SafeText value={t.reason} /></span> : null}
-                  </div>
-                ) : null}
-              </div>
-            ))}
+      <div className="research-pipeline research-pipeline-data">
+        {['Alpaca', 'Candles', 'Cache', 'Tester', 'AI lär sig'].map((step, index) => (
+          <div key={step} className="research-pipeline-step">
+            <span>{index + 1}</span>
+            <strong>{step}</strong>
+            <small>{index === 0 ? (dataJobs?.alpacaConfigured ? 'Konfigurerad' : 'Saknar config') : 'Read-only status'}</small>
           </div>
-        )}
-        <div className="sup-brain-meta"><span>Källa: {overview.recentTestsStatus ? <SafeText value={overview.recentTestsStatus.source} /> : 'autopilot-historik'} · {overview.recentTestsStatus ? <SafeText value={overview.recentTestsStatus.message} /> : ''}</span></div>
-      </section>
-
-      <BatchSummarySection batchSummary={overview.batchSummary} />
-
-      {/* What AI learned + strategy results */}
-      <section className="sup-brain-section">
-        <SectionTitle eyebrow="4. Lärande" title="Vad AI har lärt sig" subtitle="Sammanfattning från mätningarna. Endast testdata, inte investeringsråd." helper="Lärande" />
-        <div className="sup-brain-grid sup-brain-grid-4">
-          <StatCard icon="📈" title="Bästa strategi" value={<SafeText value={narrowBlock.bestStrategy} fallback="—" />} subtitle="Starkast just nu (testdata)" tone="good" />
-          <StatCard icon="📉" title="Svagaste strategi" value={<SafeText value={narrowBlock.worstStrategy} fallback="—" />} subtitle="Behöver mer testning" tone="warning" />
-          <StatCard icon="🧪" title="Analyserade resultat" value={num((learn.canonicalPaperStats && learn.canonicalPaperStats.totalTrades) ?? narrowBlock.totalTrades)} subtitle="Paper/replay/batch" tone="blue" />
-          <StatCard icon="🔎" title="Datatillit" value={<SafeText value={narrowBlock.dataConfidence} fallback="—" />} subtitle="Hur säkert underlaget är" tone="neutral" />
+        ))}
+      </div>
+      <div className="research-grid research-grid-4">
+        <MetricCard label="Alpaca status" value={dataJobs?.alpacaConfigured ? 'Redo' : 'Saknas'} help="Nycklar visas aldrig." tone={dataJobs?.alpacaConfigured ? 'good' : 'warning'} />
+        <MetricCard label="Timvis import" value={text(hourly.status, 'Saknas')} help={`Senast: ${timeText(hourly.lastRun)}`} tone={toneForStatus(hourly.status)} />
+        <MetricCard label="Historisk backfill" value={text(weekly.status, 'Saknas')} help={`Jobb: ${fmtNumber(weekly.totalJobs || 0)}`} tone={toneForStatus(weekly.status)} />
+        <MetricCard label="Cache age" value={cache.cacheAgeSeconds != null ? `${fmtNumber(cache.cacheAgeSeconds)} sek` : 'Saknas'} help={timeText(cache.lastUpdated)} tone={cache.cacheExists ? 'blue' : 'warning'} />
+      </div>
+      <Card>
+        <div className="research-card-title">
+          <strong>Datakvalitet</strong>
+          <Badge tone={quality.missingCandles ? 'warning' : 'good'}>{quality.missingCandles ? 'Behöver mer data' : 'OK'}</Badge>
         </div>
-      </section>
-
-      <section className="sup-brain-section">
-        <SectionTitle eyebrow="5. Strategiresultat" title="Vad fungerar — och vad behöver mer testning" subtitle="Topp och botten i testdata. Inga ändringar görs automatiskt." helper="Strategier" />
-        <div className="sup-brain-grid sup-brain-grid-2">
-          <Card className="sup-brain-overview-card sup-brain-overview-card-good">
-            <div className="sup-brain-overview-title">📈 Fungerar bäst just nu</div>
-            {topStrats.length ? topStrats.map((s, i) => (
-              <div key={'top' + i} className="sup-brain-listrow"><span><SafeText value={s.key} /></span><span className="sup-good">{num(s.winRate, '%')}</span><span className="sup-brain-timeline-soft">{num(s.trades)} trades</span></div>
-            )) : <div className="sup-brain-timeline-soft">För lite data ännu.</div>}
-          </Card>
-          <Card className="sup-brain-overview-card sup-brain-overview-card-warning">
-            <div className="sup-brain-overview-title">📉 Behöver mer testning</div>
-            {worstStrats.length ? worstStrats.map((s, i) => (
-              <div key={'worst' + i} className="sup-brain-listrow"><span><SafeText value={s.key} /></span><span className="sup-bad">{num(s.winRate, '%')}</span><span className="sup-brain-timeline-soft">{num(s.trades)} trades</span></div>
-            )) : <div className="sup-brain-timeline-soft">För lite data ännu.</div>}
-          </Card>
+        <p><SafeText value={quality.message} fallback="Ingen tydlig datakvalitet rapporterad." /></p>
+        <div className="research-mini-grid">
+          <span><b>Importerade candles</b>{fmtNumber(hourly.candlesImported || 0)}</span>
+          <span><b>Symboler uppdaterade</b>{fmtNumber(arr(hourly.symbolsUpdated).length)}</span>
+          <span><b>Providerfel</b>{fmtNumber(arr(quality.providerErrors).length)}</span>
         </div>
-        <div className="sup-brain-banner">Inga strategiändringar appliceras automatiskt. Allt sker manuellt i Trading Lab.</div>
-      </section>
-
-      {/* Risks / blockers */}
-      <section className="sup-brain-section">
-        <SectionTitle eyebrow="6. Risker" title="Risker att känna till" subtitle="Det systemet vill uppmärksamma. Live trading-avstängt visas som säkerhet, inte som problem." helper="Risker" />
-        <div className="sup-brain-risklist">
-          {risks.length ? risks.map((r, i) => (
-            <div key={'risk' + i} className={`sup-brain-riskrow sup-brain-risk-${r && r.level ? r.level : 'info'}`}>
-              <span className="sup-brain-risk-lvl"><SafeText value={r && r.level} fallback="info" /></span>
-              <span><SafeText value={r && r.message_sv} /></span>
-            </div>
-          )) : <div className="sup-brain-timeline-soft">Inga risker rapporterade.</div>}
-        </div>
-      </section>
-
-      {/* Action plan */}
-      <section className="sup-brain-section">
-        <SectionTitle eyebrow="7. Nästa steg" title="Nästa steg" subtitle="Enkla, säkra steg. Allt stannar i paper/analys-läge." helper="Plan" />
-        <ol className="sup-brain-planlist">
-          {plan.length ? plan.map((p, i) => (
-            <li key={'plan' + i}>
-              <strong>[<SafeText value={p && p.priority} fallback="low" />] <SafeText value={p && p.title_sv} /></strong>
-              <div className="sup-brain-timeline-soft"><SafeText value={p && p.detail_sv} fallback="" /></div>
-            </li>
-          )) : (
-            <>
-              <li>Vänta in nästa automatiska dry-run.</li>
-              <li>Följ rekommenderat test.</li>
-              <li>Kontrollera datakvalitet.</li>
-              <li>Fortsätt paper-only.</li>
-              <li>Samla mer resultat innan ändringar.</li>
-            </>
-          )}
-        </ol>
-      </section>
+      </Card>
     </>
   );
 }
 
-export default function SupervisorBrainPage() {
-  const { overview, narrow, learning, autopilot, coreLearning, loading, refreshing, error, lastUpdated } = useSupervisorData();
-
-  const narrowState = narrow?.narrowState || {};
-  const coreLearningData = coreLearning?.data || null;
-  const coreSummary = coreLearningData?.summary || {};
-  const coreSkipReasons = safeArray(coreLearningData?.skip_reasons);
-  const narrowFlags = {
-    actions_allowed: narrow?.actions_allowed ?? learning?.actions_allowed ?? false,
-    can_place_orders: narrow?.can_place_orders ?? learning?.can_place_orders ?? false,
-    live_trading_enabled: narrow?.live_trading_enabled ?? learning?.live_trading_enabled ?? false,
-    broker_enabled: narrow?.broker_enabled ?? learning?.broker_enabled ?? false,
-  };
-  const safetyIsLocked = Object.values(narrowFlags).every((value) => value === false);
-
-  const narrowTopSymbols = safeArray(narrowState.topSymbols);
-  const breakoutWatch = safeArray(narrowState.breakoutWatch);
-  const fakeoutRisk = safeArray(narrowState.fakeoutRisk);
-  const meanReversion = safeArray(narrowState.meanReversion);
-  const strategies = safeArray(narrowState.strategies);
-  const latestLessons = safeArray(narrowState.latestLessons);
-
-  const learningSummary = learning?.summary || {};
-  const detailedLearning = learning || {};
-  const rankings = safeArray(detailedLearning.rankings);
-  const scoreBands = safeArray(detailedLearning.scoreBands);
-  const confirmations = safeArray(detailedLearning.confirmations);
-  const recommendation = formatRecommendation(detailedLearning.recommendedNextTest || learningSummary.recommendedNextTest || narrowState.recommendedNextTest);
-
-  const learningStatus = learningSummary.status || narrowState.status || 'needs_more_data';
-  const dataConfidence = learningSummary.dataConfidence || narrowState.dataConfidence || 'none';
-  const learningMessage = learningSummary.message || narrowState.message || 'Systemet har ännu för lite Narrow State-data för säker slutsats.';
-  const performanceBest = learningSummary.bestStrategy || narrowState.bestStrategy || null;
-  const performanceWorst = learningSummary.worstStrategy || narrowState.worstStrategy || null;
-  const performanceBand = learningSummary.bestScoreBand || narrowState.bestScoreBand || null;
-  const performanceConfirmation = learningSummary.strongestConfirmation || narrowState.strongestConfirmation || null;
-  const totalTrades = Number(learningSummary.totalTrades ?? narrowState.totalTrades ?? 0) || 0;
-  const strategiesCompared = Number(learningSummary.strategiesCompared ?? detailedLearning.rankings?.length ?? 0) || 0;
-  const generatedAt = firstNonEmpty(detailedLearning.generatedAt, narrow?.generated_at, learning?.generatedAt);
-
-  // Narrow Test Autopilot (Goal 6) — read-only planner status.
-  const autopilotInfo = autopilot?.autopilot || null;
-  const autopilotScheduler = autopilot?.scheduler || narrowState.narrowAutopilotScheduler || null;
-  const schedulerLastDryRun = autopilotScheduler?.lastScheduledDryRun || null;
-  const schedulerRecommendation = formatSchedulerRecommendation(autopilotScheduler?.lastRecommendedTest);
-  const schedulerTest = formatSchedulerTest(autopilotScheduler?.lastRecommendedTest);
-  const autopilotPlan = autopilotInfo?.currentPlan || null;
-  const autopilotValidation = autopilotInfo?.planValidation || null;
-  const autopilotEvents = safeArray(autopilotInfo?.recentEvents).slice(-5).reverse();
-  const autopilotFlagsLocked = autopilot
-    ? [autopilot.actions_allowed, autopilot.can_place_orders, autopilot.live_trading_enabled, autopilot.broker_enabled].every((value) => value === false)
-    : true;
-  const autopilotBandAvailability = autopilotPlan?.bandAvailability || {};
-  const autopilotAvailableBands = autopilotBandAvailability.availableBands || {};
-  const autopilotBandSelection = autopilotPlan?.bandSelection || {};
-  const requestedBand = autopilotPlan?.requestedNarrowScoreBand || autopilotBandSelection.requestedNarrowScoreBand || autopilotPlan?.filterEnforcement?.requestedNarrowScoreBand || autopilotPlan?.filters?.narrowScoreBand;
-  const selectedBand = autopilotPlan?.selectedNarrowScoreBand || autopilotBandSelection.selectedNarrowScoreBand || autopilotPlan?.filterEnforcement?.selectedNarrowScoreBand || autopilotPlan?.filters?.narrowScoreBand;
-  const bandSelectionWarnings = safeArray(autopilotPlan?.bandSelectionWarnings || autopilotBandAvailability.warnings);
-  const autopilotDateWindowAvailability = autopilotPlan?.dateWindowAvailability || {};
-  const autopilotDateWindowSelected = autopilotPlan?.dateWindowSelected || autopilotDateWindowAvailability.bestWindow || null;
-  const autopilotDateWindowRequested = autopilotPlan?.dateWindowRequested || {};
-  const autopilotCommonDateWindow = autopilotDateWindowAvailability.commonDateWindow || {};
-  const autopilotAlreadyTestedWindows = safeArray(autopilotPlan?.alreadyTestedWindows);
-  const autopilotWindowAvailability = autopilotDateWindowSelected?.bandAvailability || {};
-  const windowBlockedReason = autopilotValidation?.blocked
-    ? safeArray(autopilotValidation.reasons).join(', ') || autopilotPlan?.windowSelectionReason
-    : autopilotPlan?.windowSelectionReason;
-
-  const activeSymbols = Number(narrowState.activeCount ?? narrowTopSymbols.length ?? 0) || 0;
-  const strongestCompression = narrowState.strongestCompression || null;
-  const controlCards = useMemo(() => ([
-    {
-      icon: '🔌',
-      title: 'Backend',
-      value: narrow || learning ? 'Ansluten' : 'Väntar',
-      subtitle: 'Status från lästa API-svar',
-      detail: 'Systemet svarar och data går att läsa.',
-      tone: narrow || learning ? 'good' : 'warning',
-    },
-    {
-      icon: '📡',
-      title: 'Scanner',
-      value: activeSymbols > 0 ? 'Aktiv' : 'Väntar',
-      subtitle: 'Marknaden skannas i testläge',
-      detail: `${formatInt(activeSymbols, '0')} symboler i Narrow State just nu.`,
-      tone: activeSymbols > 0 ? 'blue' : 'warning',
-    },
-    {
-      icon: '🧠',
-      title: 'Learning Engine',
-      value: learningStatus === 'ready' ? 'Aktiv' : 'Lär sig',
-      subtitle: 'Analyserar resultat och mönster',
-      detail: `${formatInt(totalTrades, '0')} testresultat · ${formatInt(strategiesCompared, '0')} strategier`,
-      tone: totalTrades > 0 ? 'good' : 'warning',
-    },
-    {
-      icon: '🛡️',
-      title: 'Safety',
-      value: safetyIsLocked ? 'Skydd aktivt' : 'Kontrollera',
-      subtitle: 'actions_allowed=false · can_place_orders=false',
-      detail: 'Live trading är låst och kan inte aktiveras härifrån.',
-      tone: safetyIsLocked ? 'good' : 'danger',
-    },
-  ]), [activeSymbols, learningStatus, narrow, learning, safetyIsLocked, strategiesCompared, totalTrades]);
-
-  const strategyRows = useMemo(() => ([
-    { id: 'narrow_breakout_v1', row: rankings.find((item) => item.strategy_id === 'narrow_breakout_v1') },
-    { id: 'narrow_fakeout_reversal_v1', row: rankings.find((item) => item.strategy_id === 'narrow_fakeout_reversal_v1') },
-    { id: 'narrow_vwap_mean_reversion_v1', row: rankings.find((item) => item.strategy_id === 'narrow_vwap_mean_reversion_v1') },
-  ]), [rankings]);
-
-  const maxBandTrades = Math.max(1, ...scoreBands.map((band) => Number(band?.trades) || 0));
-
-  const bestStrategyRows = useMemo(() => rankings
-    .filter((item) => Number(metric(item, 'trades', 'tradeCount') ?? 0) > 0)
-    .slice(0, 3), [rankings]);
-
-  const weakestStrategyRows = useMemo(() => [...rankings]
-    .filter((item) => Number(metric(item, 'trades', 'tradeCount') ?? 0) > 0)
-    .sort((a, b) => {
-      const avgDiff = Number(metric(a, 'avgPnl', 'avg_pnl') ?? 0) - Number(metric(b, 'avgPnl', 'avg_pnl') ?? 0);
-      if (avgDiff !== 0) return avgDiff;
-      return Number(metric(a, 'winRate', 'win_rate') ?? 100) - Number(metric(b, 'winRate', 'win_rate') ?? 100);
-    })
-    .slice(0, 3), [rankings]);
-
-  const weakestBandRows = useMemo(() => [...scoreBands]
-    .filter((item) => Number(metric(item, 'trades', 'tradeCount') ?? 0) > 0)
-    .sort((a, b) => {
-      const avgDiff = Number(metric(a, 'avgPnl', 'avg_pnl') ?? 0) - Number(metric(b, 'avgPnl', 'avg_pnl') ?? 0);
-      if (avgDiff !== 0) return avgDiff;
-      return Number(metric(a, 'winRate', 'win_rate') ?? 100) - Number(metric(b, 'winRate', 'win_rate') ?? 100);
-    })
-    .slice(0, 2), [scoreBands]);
-
-  const coreHasTrades = Number(coreSummary.trades_total ?? coreSummary.closed_trades ?? 0) > 0;
-  const topCoreSkipReason = coreSkipReasons[0] || null;
-  const latestRecommendedTest = schedulerTest || recommendation;
-
-  const overviewItems = useMemo(() => ([
-    {
-      title: 'Systemstatus',
-      value: safetyIsLocked ? 'Paper only' : 'Kontrollera safety',
-      tone: safetyIsLocked ? 'good' : 'danger',
-      body: `${text(narrow?.mode || learning?.mode || autopilot?.mode, 'paper_only')} · scheduler ${autopilotScheduler?.schedulerActive ? 'aktiv' : autopilotScheduler ? 'pausad' : 'saknas'}`,
-    },
-    {
-      title: 'Vad AI lärde sig',
-      value: `${formatInt(totalTrades, '0')} narrow-resultat`,
-      tone: totalTrades > 0 ? 'blue' : 'warning',
-      body: coreHasTrades
-        ? `Core learning har ${formatInt(coreSummary.trades_total ?? coreSummary.closed_trades, '0')} trades.`
-        : 'Core/daytrading saknar stängda trades ännu.',
-    },
-    {
-      title: 'Bästa strategier',
-      value: performanceBest ? strategyName(performanceBest.strategy_id || performanceBest.name) : 'Ingen säker vinnare',
-      tone: performanceBest ? 'good' : 'warning',
-      body: performanceBest
-        ? `${formatInt(metric(performanceBest, 'trades', 'tradeCount') ?? 0)} trades · ${formatPct(metric(performanceBest, 'winRate', 'win_rate'), 1)} win rate`
-        : 'Väntar på mer testdata.',
-    },
-    {
-      title: 'Svagaste strategier',
-      value: performanceWorst ? strategyName(performanceWorst.strategy_id || performanceWorst.name) : 'Ingen tydlig svaghet',
-      tone: performanceWorst ? 'warning' : 'neutral',
-      body: performanceWorst ? explainWeakItem(performanceWorst) : 'Systemet visar inga robusta svagheter ännu.',
-    },
-    {
-      title: 'Pågående tester',
-      value: autopilotScheduler?.dryRunOnly ? 'Endast dry-run' : 'Status saknas',
-      tone: autopilotScheduler?.dryRunOnly ? 'good' : 'warning',
-      body: `Senast ${nowText(autopilotScheduler?.lastRunAt)} · nästa ${nowText(autopilotScheduler?.nextRunAt)}`,
-    },
-    {
-      title: 'Nästa test',
-      value: latestRecommendedTest?.band ? (BAND_LABELS[latestRecommendedTest.band] || latestRecommendedTest.band) : text(latestRecommendedTest?.strategy, 'Väntar'),
-      tone: latestRecommendedTest ? 'blue' : 'warning',
-      body: text(latestRecommendedTest?.reason, 'Ingen rekommendation tillgänglig ännu.'),
-    },
-    {
-      title: 'Risker och blockers',
-      value: autopilotScheduler?.blockedReason || (autopilotScheduler?.cooldownActive ? 'Cooldown aktiv' : 'Inga blockerare'),
-      tone: autopilotScheduler?.blockedReason ? 'warning' : 'good',
-      body: topCoreSkipReason ? `Vanligaste dataflödesblocker: ${topCoreSkipReason.key} (${formatPct(topCoreSkipReason.share, 1)})` : 'Inga daytrading-blockers rapporterade.',
-    },
-    {
-      title: 'Handlingsplan',
-      value: 'Research only',
-      tone: 'neutral',
-      body: 'Följ rekommenderade tester och validera data. Inga execute-knappar finns här.',
-    },
-  ]), [
-    autopilotScheduler,
-    autopilot,
-    coreHasTrades,
-    coreSummary,
-    latestRecommendedTest,
-    learning,
-    narrow,
-    performanceBest,
-    performanceWorst,
-    safetyIsLocked,
-    topCoreSkipReason,
-    totalTrades,
-  ]);
-
-  const actionPlan = useMemo(() => {
-    const items = [];
-    if (autopilotScheduler?.cooldownActive) {
-      items.push({
-        title: 'Vänta in nästa schemalagda dry-run',
-        text: `Nästa automatiska planering är ${nowText(autopilotScheduler.nextRunAt)}.`,
-      });
-    } else if (autopilotScheduler?.schedulerActive) {
-      items.push({
-        title: 'Låt schedulern fortsätta planera',
-        text: 'Den kör endast dry-run och sparar nästa rekommenderade narrow-test.',
-      });
-    }
-    if (latestRecommendedTest) {
-      const band = latestRecommendedTest.band ? (BAND_LABELS[latestRecommendedTest.band] || latestRecommendedTest.band) : 'valt band saknas';
-      items.push({
-        title: 'Följ senaste rekommenderade test',
-        text: `${band} · ${text(latestRecommendedTest.reason, 'Väntar på tydligare orsak')}`,
-      });
-    }
-    if (performanceBest) {
-      items.push({
-        title: 'Validera bästa narrow-strategi',
-        text: `${strategyName(performanceBest.strategy_id || performanceBest.name)} ser starkast ut i testdata, men är inte bevisad edge.`,
-      });
-    }
-    if (topCoreSkipReason) {
-      items.push({
-        title: 'Kontrollera dataflödesblockers',
-        text: `Vanligaste core/daytrading-blocker är ${topCoreSkipReason.key}. Det påverkar datatillit.`,
-      });
-    }
-    items.push({
-      title: 'Behåll safety låst',
-      text: 'Fortsätt paper_only med actions_allowed=false, can_place_orders=false, live_trading_enabled=false och broker_enabled=false.',
-    });
-    return items.slice(0, 5);
-  }, [autopilotScheduler, latestRecommendedTest, performanceBest, topCoreSkipReason]);
-
-  const warningItems = useMemo(() => {
-    const items = [];
-    if (autopilotScheduler?.blockedReason) {
-      items.push(`Scheduler blockerad: ${autopilotScheduler.blockedReason}`);
-    }
-    if (autopilotScheduler?.cooldownActive) {
-      items.push(`Cooldown aktiv till nästa planerade dry-run ${nowText(autopilotScheduler.nextRunAt)}.`);
-    }
-    if (safeArray(autopilotPlan?.missingTimeframes).length) {
-      items.push(`Saknade timeframes: ${safeArray(autopilotPlan.missingTimeframes).join(', ')}.`);
-    }
-    if (topCoreSkipReason) {
-      items.push(`Core/daytrading saknar ofta körbar data: ${topCoreSkipReason.key} (${formatPct(topCoreSkipReason.share, 1)} av skip reasons).`);
-    }
-    items.push(
-      'Resultaten är testdata från paper, replay eller batch-testning.',
-      'Live trading är avstängt och kan inte slås på härifrån.',
-    );
-    if (learningMessage && learningMessage !== 'Systemet har ännu för lite Narrow State-data för säker slutsats.') {
-      items.unshift(learningMessage);
-    }
-    if (narrowState.message && !items.includes(narrowState.message)) {
-      items.unshift(narrowState.message);
-    }
-    return items.slice(0, 6);
-  }, [autopilotPlan, autopilotScheduler, learningMessage, narrowState.message, topCoreSkipReason]);
-
-  const mobileSafetyText = 'Endast analysläge · Inga riktiga order · Paper / Replay / Batch only';
-
-  const hasFirstBatch = totalTrades > 0 && learningStatus !== 'ready';
-  const learningHeadline = learningStatus === 'ready'
-    ? 'Systemet börjar identifiera vilka Narrow-strategier som fungerar bäst.'
-    : hasFirstBatch
-      ? 'Första batchtestet är klart, men detta är inte bevisad edge.'
-      : 'För lite data ännu.';
-  const firstBatchNote = hasFirstBatch
-    ? 'Första batchtestet är klart. Datatilliten gäller testmängden, inte bevisad trading-edge.'
-    : null;
-
-  if (loading && !narrow && !learning) {
-    return (
-      <div className="sup-brain-page">
-        <div className="sup-brain-shell">
-          <div className="sup-brain-loading">Laddar Supervisor…</div>
+function AiAnalystSummary({ status, latest, onRefresh, refreshing }) {
+  const latestPayload = latest?.latest || latest || {};
+  const output = latestPayload.output || {};
+  const provider = status?.provider || latestPayload.provider || 'disabled';
+  const disabled = provider === 'disabled' || latestPayload.status === 'disabled' || status?.enabled === false;
+  return (
+    <div className="research-grid research-grid-2">
+      <Card className="research-ai-card">
+        <div className="research-card-title">
+          <strong>AI-analytiker</strong>
+          <Badge tone={disabled ? 'warning' : 'purple'}>{disabled ? 'Avstängd' : 'Read-only'}</Badge>
         </div>
+        <p>AI-analytikern läser systemets säkra sammanfattning. Den kan inte handla eller ändra något.</p>
+        <div className="research-mini-grid">
+          <span><b>Provider</b>{provider}</span>
+          <span><b>Model</b>{text(status?.model, 'Saknas')}</span>
+          <span><b>Senast</b>{timeText(status?.latestTimestamp || latestPayload.generatedAt)}</span>
+          <span><b>Confidence</b>{output.confidence != null ? fmtPct(Number(output.confidence) * 100) : '—'}</span>
+        </div>
+        <button className="research-soft-button" type="button" onClick={onRefresh} disabled={refreshing}>
+          {refreshing ? 'Uppdaterar...' : 'Uppdatera AI-analys'}
+        </button>
+      </Card>
+      <Card className="research-ai-card">
+        <div className="research-card-title"><strong>Senaste sammanfattning</strong><Badge tone="purple">AI</Badge></div>
+        <p><SafeText value={output.summary} fallback={disabled ? 'AI Analyst är avstängd. Systemet fungerar ändå med intern learning.' : 'Ingen AI-analys sparad ännu.'} /></p>
+        <div className="research-list">
+          <strong>Vad AI lärde sig</strong>
+          {arr(output.what_ai_learned).length ? arr(output.what_ai_learned).slice(0, 4).map((item) => <span key={item}><SafeText value={item} /></span>) : <span>Ingen AI-lärdom sparad ännu.</span>}
+        </div>
+      </Card>
+      <Card>
+        <div className="research-card-title"><strong>Strategier enligt AI</strong><Badge tone="purple">Analys</Badge></div>
+        <div className="research-mini-grid">
+          <span><b>Bäst</b>{text(output.best_strategy, 'Saknas')}</span>
+          <span><b>Svagast</b>{text(output.weakest_strategy, 'Saknas')}</span>
+        </div>
+      </Card>
+      <Card>
+        <div className="research-card-title"><strong>Nästa rekommenderade tester</strong><Badge tone="blue">Förslag</Badge></div>
+        <div className="research-list">
+          {arr(output.next_recommended_tests).length ? arr(output.next_recommended_tests).slice(0, 5).map((item) => <span key={item}><SafeText value={item} /></span>) : <span>Vänta in mer testdata eller uppdatera AI-analysen.</span>}
+        </div>
+      </Card>
+    </div>
+  );
+}
+
+function RiskBlockerCard({ risks, dataJobs, batches, activity }) {
+  const providerErrors = arr(dataJobs?.dataQuality?.providerErrors);
+  const degradedSources = arr(activity?.sources).filter((source) => source.status === 'degraded');
+  const combined = [
+    ...arr(risks).map((risk) => ({ tone: toneForStatus(risk.level), title: text(risk.code, 'Risk'), message: text(risk.message_sv, 'Saknas') })),
+    ...providerErrors.map((err) => ({ tone: 'warning', title: 'Providerfel', message: text(err.message, 'Datakälla rapporterade fel.') })),
+    ...degradedSources.map((source) => ({ tone: 'warning', title: 'Källa saknar data', message: `${source.name} svarade delvis.` })),
+  ];
+  if (batches?.status === 'empty') combined.push({ tone: 'warning', title: 'Batchdata saknas', message: 'Batchtester har inte tillräcklig historik ännu.' });
+  if (!combined.length) combined.push({ tone: 'good', title: 'Live trading off', message: 'Det är en positiv säkerhet: systemet kan inte handla på riktigt.' });
+  return (
+    <div className="research-risk-grid">
+      {combined.slice(0, 10).map((item, index) => (
+        <Card key={`${item.title}-${index}`} className={`research-risk-card research-risk-${item.tone}`}>
+          <Badge tone={item.tone}>{item.title}</Badge>
+          <p>{item.message}</p>
+        </Card>
+      ))}
+    </div>
+  );
+}
+
+function TechnicalDetailsPanel({ data }) {
+  return (
+    <details className="research-tech" open>
+      <summary>Tekniska detaljer</summary>
+      <div className="research-tech-grid">
+        <MetricCard label="mode" value={data.overview?.mode || 'paper_only'} tone="good" />
+        <MetricCard label="actions_allowed" value={String(data.overview?.actions_allowed === true ? true : false)} tone="good" />
+        <MetricCard label="can_place_orders" value={String(data.overview?.can_place_orders === true ? true : false)} tone="good" />
+        <MetricCard label="live_trading_enabled" value={String(data.overview?.live_trading_enabled === true ? true : false)} tone="good" />
+        <MetricCard label="broker_enabled" value={String(data.overview?.broker_enabled === true ? true : false)} tone="good" />
+        <MetricCard label="AI cache" value={data.aiStatus?.cacheEnabled ? 'På' : 'Av'} help={`${fmtNumber(data.aiStatus?.cacheTtlMs || 0)} ms`} tone="purple" />
+        <MetricCard label="Batch API" value={text(data.batches?.status, 'Saknas')} tone={toneForStatus(data.batches?.status)} />
+        <MetricCard label="Data API" value={text(data.dataJobs?.status, 'Saknas')} tone={toneForStatus(data.dataJobs?.status)} />
+        <MetricCard label="Activity API" value={text(data.activity?.status, 'Saknas')} tone={toneForStatus(data.activity?.status)} />
       </div>
-    );
+    </details>
+  );
+}
+
+export default function SupervisorBrainPage() {
+  const [active, setActive] = useState('overview');
+  const [historyLimit, setHistoryLimit] = useState(20);
+  const [aiRefreshing, setAiRefreshing] = useState(false);
+  const [aiOverride, setAiOverride] = useState(null);
+  const data = useResearchLabData(historyLimit);
+  const overview = data.overview || {};
+  const blocks = overview.blocks || {};
+  const autopilot = blocks.autopilot?.summary || {};
+  const canonical = overview.canonicalStats || {};
+  const latestTest = arr(overview.recentTests)[0] || null;
+  const strategies = blocks.strategies?.summary || {};
+  const learning = blocks.learning?.summary || {};
+  const narrow = blocks.narrow?.summary || {};
+  const recommended = arr(overview.actionPlan)[0] || null;
+
+  const safetyLocked = overview.mode === 'paper_only'
+    && overview.actions_allowed === false
+    && overview.can_place_orders === false
+    && overview.live_trading_enabled === false
+    && overview.broker_enabled === false;
+
+  const visibleActivity = useMemo(() => arr(data.activity?.events), [data.activity]);
+  const recentTests = useMemo(() => arr(overview.recentTests), [overview.recentTests]);
+
+  async function refreshAiAnalysis() {
+    setAiRefreshing(true);
+    try {
+      const result = await apiJson('/api/ai/analyst/run', { method: 'POST' }).catch((err) => ({ ok: false, error: err.message }));
+      const [status, latest] = await Promise.all([
+        apiJson('/api/ai/analyst/status').catch(() => data.aiStatus),
+        apiJson('/api/ai/analyst/latest').catch(() => ({ latest: result })),
+      ]);
+      setAiOverride({ status, latest });
+    } finally {
+      setAiRefreshing(false);
+    }
   }
 
   return (
-    <div className="sup-brain-page">
-      <div className="sup-brain-shell">
-        <header className="sup-brain-hero">
-          <div className="sup-brain-hero-copy">
-            <div className="sup-brain-kicker">Trading OS Supervisor</div>
-            <h1>Supervisor</h1>
-            <p>AI-hjärnan som övervakar systemet, lärandet och nästa test.</p>
-            <div className="sup-brain-hero-sub">
-              <span className="sup-brain-hero-note">Narrow State-first AI Learning System</span>
-              <span className="sup-brain-hero-note sup-brain-hero-note-soft">Detta är inte investeringsråd</span>
-            </div>
-          </div>
+    <div className="research-lab-page">
+      <aside className="research-sidebar" aria-label="Research Lab navigation">
+        <div className="research-brand">
+          <span>AI</span>
+          <strong>Research Lab</strong>
+          <small>Trading OS v2</small>
+        </div>
+        <nav>
+          {SECTIONS.map((section) => (
+            <button
+              key={section.id}
+              type="button"
+              className={active === section.id ? 'active' : ''}
+              onClick={() => setActive(section.id)}
+            >
+              {section.label}
+            </button>
+          ))}
+        </nav>
+      </aside>
 
-          <aside className="sup-brain-safety-rail">
-            <div className="sup-brain-safety-sticky">
-              <div className="sup-brain-safety-tags">
-                <Badge tone="good">PAPER ONLY</Badge>
-                <Badge tone="blue">LIVE TRADING OFF</Badge>
-                <Badge tone="neutral">INGA RIKTIGA ORDER</Badge>
-              </div>
-              <div className="sup-brain-safety-banner">{mobileSafetyText}</div>
-              <details className="sup-brain-technical-details">
-                <summary>Visa tekniska säkerhetsflaggor</summary>
-                <div className="sup-brain-safety-flags">
-                  <span>actions_allowed={String(narrowFlags.actions_allowed)}</span>
-                  <span>can_place_orders={String(narrowFlags.can_place_orders)}</span>
-                  <span>live_trading_enabled={String(narrowFlags.live_trading_enabled)}</span>
-                  <span>broker_enabled={String(narrowFlags.broker_enabled)}</span>
-                </div>
-              </details>
-              <div className="sup-brain-meta">
-                <span>Senast uppdaterad: {nowText(lastUpdated || generatedAt)}</span>
-                {refreshing ? <span>Uppdaterar…</span> : <span>Automatisk refresh aktiv</span>}
-              </div>
-            </div>
-          </aside>
+      <main className="research-main">
+        <header className="research-hero">
+          <div>
+            <div className="research-eyebrow">AI Kontrollrum</div>
+            <h1>Trading OS är en säker AI-forskningsplattform</h1>
+            <p>Systemet analyserar, paper-testar, replay-testar, batch-testar och lär sig av resultaten. Ingen riktig handel sker.</p>
+          </div>
+          <div className="research-hero-status">
+            <Badge tone={safetyLocked ? 'good' : 'danger'}>{safetyLocked ? 'Säkert läge' : 'Kontrollera'}</Badge>
+            <span>Senast uppdaterad: {timeText(data.lastUpdated)}</span>
+            {data.refreshing ? <small>Uppdaterar data...</small> : null}
+          </div>
         </header>
 
-        <FirstLookPanel
-          overview={overview}
-          safetyIsLocked={safetyIsLocked}
-          autopilotScheduler={autopilotScheduler}
-          latestRecommendedTest={latestRecommendedTest}
-        />
+        <SafetyStatusBar overview={overview} />
+        {data.error ? <DegradedState>{data.error}</DegradedState> : null}
+        {data.loading ? <EmptyState title="Laddar Research Lab">Hämtar säker systemöversikt...</EmptyState> : null}
 
-        <AIAnalystPanel />
+        {active === 'overview' ? (
+          <section className="research-section">
+            <SectionHeader
+              eyebrow="Översikt"
+              title="Det viktigaste först"
+              subtitle="Fyra korta svar: säkerhet, autopilot, senaste test och nästa säkra steg."
+              aside={<Badge tone="good">Read-only</Badge>}
+            />
+            <div className="research-grid research-grid-4">
+              <MetricCard label="Är systemet säkert?" value={safetyLocked ? 'Ja' : 'Kontrollera'} help="Paper only betyder låtsashandel och analys." tone={safetyLocked ? 'good' : 'danger'} />
+              <MetricCard label="Autopilot" value={autopilot.schedulerActive ? 'Jobbar i bakgrunden' : 'Väntar'} help="Autopilot får bara planera och analysera." tone={autopilot.schedulerActive ? 'blue' : 'warning'} />
+              <MetricCard label="Senaste test" value={latestTest ? text(latestTest.type, 'Testhändelse') : 'Saknas'} help={latestTest ? timeText(latestTest.timestamp) : 'Ingen historik ännu'} tone={latestTest ? 'blue' : 'warning'} />
+              <MetricCard label="Nästa säkra test" value={text(recommended?.title_sv || narrow.recommendedNextTest, 'Vänta på mer data')} help={text(recommended?.detail_sv, 'Rekommendation, inte automatisk ändring.')} tone="purple" />
+            </div>
+            <SystemPipeline />
+            <div className="research-grid research-grid-3">
+              <MetricCard label="Totalt testade händelser" value={fmtNumber(canonical.totalTrades || 0)} help="Testdata, inte bevisad edge." tone="blue" />
+              <MetricCard label="Andel lyckade tester" value={fmtPct(canonical.winRate)} help="Win rate i paper/testdata." tone="good" />
+              <MetricCard label="AI-lärdom" value={text(narrow.bestScoreBand, 'För lite data')} help="Bästa narrow-nivå just nu." tone="purple" />
+            </div>
+          </section>
+        ) : null}
 
-        <section className="sup-brain-section sup-brain-section-safety">
-          <SectionTitle
-            eyebrow="1. Systemstatus"
-            title="Systemet är säkert"
-            subtitle="Fyra enkla statuskort: data går att läsa, systemet skannar och safety är låst."
-            helper="Vad betyder detta?"
-          />
-          <div className="sup-brain-grid sup-brain-grid-4">
-            {controlCards.map((card) => (
-              <StatCard key={card.title} {...card} />
-            ))}
-          </div>
-          <div className="sup-brain-banner">
-            Systemet kan analysera, replay-testa, batch-testa och paper-testa men aldrig lägga riktiga order.
-          </div>
-          <BeginnerBox
-            title="Vad betyder statusen?"
-            text="Ansluten betyder att data går att läsa. Aktiv betyder att systemet hittar något att analysera. Skydd aktivt betyder att live trading är låst och att inga riktiga order kan skickas."
-          />
-        </section>
+        {active === 'live' ? (
+          <section className="research-section">
+            <SectionHeader eyebrow="Live just nu" title="Vad systemet gör just nu" subtitle="En read-only tidslinje från systemets aktivitet. Den här vyn har inga kontrollknappar." aside={<Badge tone={toneForStatus(data.activity?.status)}>{text(data.activity?.status, 'Saknas')}</Badge>} />
+            <LiveActivityFeed events={visibleActivity} limit={50} />
+          </section>
+        ) : null}
 
-        <OverviewUnifiedSections overview={overview} />
+        {active === 'history' ? (
+          <section className="research-section">
+            <SectionHeader eyebrow="Historik" title="Senaste testhändelser" subtitle="Dry-run betyder säker testkörning. executed=false betyder ingen riktig körning." aside={(
+              <label className="research-select-label">
+                Visa
+                <select value={historyLimit} onChange={(event) => setHistoryLimit(Number(event.target.value))}>
+                  {[10, 20, 30, 40, 50].map((value) => <option key={value} value={value}>{value} senaste</option>)}
+                </select>
+              </label>
+            )} />
+            <HistoryTimeline tests={recentTests} limit={historyLimit} />
+          </section>
+        ) : null}
 
-        <section className="sup-brain-section">
-          <SectionTitle
-            eyebrow="1b. Systemöversikt"
-            title="Supervisor som systemets hjärna"
-            subtitle="En enkel översikt över vad systemet gör, vad det lär sig och varför det väntar."
-            helper="Översikt"
-          />
-          <div className="sup-brain-plain-safety">
-            <strong>Tryggt läge:</strong>
-            <span>Allt här är research. Paper only betyder simulering. Live trading och riktiga order är avstängda.</span>
-          </div>
-          <div className="sup-brain-overview-grid">
-            {overviewItems.map((item) => (
-              <Card key={item.title} className={`sup-brain-overview-card sup-brain-overview-card-${item.tone}`}>
-                <div className="sup-brain-overview-title">{item.title}</div>
-                <div className="sup-brain-overview-value">{item.value}</div>
-                <div className="sup-brain-overview-body">{item.body}</div>
+        {active === 'strategies' ? (
+          <section className="research-section">
+            <SectionHeader eyebrow="Strategier" title="Vad fungerar och vad behöver mer test" subtitle="Visar den strategi-data som finns i Supervisor. Om något saknas visas ett tomt läge i stället för att sidan kraschar." />
+            <div className="research-grid research-grid-2">
+              <Card>
+                <div className="research-card-title"><strong>Bäst just nu</strong><Badge tone="good">Testdata</Badge></div>
+                {arr(strategies.top).length ? arr(strategies.top).map((item, index) => <StrategyCard key={item.key || item.strategy || `top-${index}`} item={item} tone="good" note="Bäst" />) : <EmptyState />}
               </Card>
-            ))}
-          </div>
-          <BeginnerTermGrid compact />
-        </section>
-
-        <section className="sup-brain-section">
-          <SectionTitle
-            eyebrow="2. AI-lärande"
-            title="Vad AI lärde sig"
-            subtitle="Detta är bara testresultat från replay, batch och paper."
-            helper={CONFIDENCE_LABELS[dataConfidence] ? `Datatillit: ${CONFIDENCE_LABELS[dataConfidence]}` : 'Datatillit'}
-          />
-          <div className="sup-brain-learning-card">
-            <div className="sup-brain-learning-top">
-              <div>
-                <div className="sup-brain-learning-status">{LEARNING_STATUS_LABELS[learningStatus] || learningStatus}</div>
-                <h3>{learningHeadline}</h3>
-              </div>
-              <Badge tone={toneForStatus(learningStatus)}>{CONFIDENCE_LABELS[dataConfidence] || dataConfidence}</Badge>
+              <Card>
+                <div className="research-card-title"><strong>Svagast just nu</strong><Badge tone="warning">Behöver mer test</Badge></div>
+                {arr(strategies.worst).length ? arr(strategies.worst).map((item, index) => <StrategyCard key={item.key || item.strategy || `worst-${index}`} item={item} tone="warning" note="Svagast" />) : <EmptyState />}
+              </Card>
+              <MetricCard label="Bästa narrow-strategi" value={text(narrow.bestStrategy, 'Saknas')} help="Från Narrow Learning." tone="good" />
+              <MetricCard label="Inte testade nog" value={text(learning.connectorSummary?.strategiesTracked ? 'Fler strategier följs' : 'För lite data')} help="Mer paper/replay/batch behövs." tone="warning" />
             </div>
-            <p className="sup-brain-learning-text">{learningMessage}</p>
-            {firstBatchNote ? <div className="sup-brain-banner">{firstBatchNote}</div> : null}
-            <div className="sup-brain-card-stats">
-              <InfoChip label="Testresultat" value={formatInt(totalTrades, '0')} tone="blue" />
-              <InfoChip label="Strategier" value={formatInt(strategiesCompared, '0')} tone="blue" />
-              <InfoChip label="Lärande" value={learningStatus === 'ready' ? 'Kommer igång' : 'Samlar data'} tone={learningStatus === 'ready' ? 'good' : 'warning'} />
-              <InfoChip label="Core trades" value={formatInt(coreSummary.trades_total ?? coreSummary.closed_trades ?? 0, '0')} tone={coreHasTrades ? 'good' : 'warning'} />
-              <InfoChip label="Core status" value={coreHasTrades ? 'Data finns' : 'Ingen data ännu'} tone={coreHasTrades ? 'good' : 'neutral'} />
-              <InfoChip label="Vanlig blocker" value={topCoreSkipReason?.key || 'Ingen'} tone={topCoreSkipReason ? 'warning' : 'good'} />
+          </section>
+        ) : null}
+
+        {active === 'batches' ? (
+          <section className="research-section">
+            <SectionHeader eyebrow="Batchtester" title="Batchtester jämför många varianter" subtitle="Batchtester jämför många varianter för att hitta vad som fungerar bäst. Här visas bara status och historik." />
+            <BatchStatusCard batches={data.batches || overview.batchSummary} />
+          </section>
+        ) : null}
+
+        {active === 'replay' ? (
+          <section className="research-section">
+            <SectionHeader eyebrow="Replaytester" title="Replay testar på gammal data" subtitle="Replay betyder att systemet testar en strategi på historisk marknadsdata. Den här vyn visar bara förslag och händelser." />
+            <div className="research-grid research-grid-2">
+              <Card>
+                <div className="research-card-title"><strong>Visa replay-förslag</strong><Badge tone="blue">Read-only</Badge></div>
+                <p>{text(recommended?.detail_sv, 'Ingen särskild replay-rekommendation finns just nu.')}</p>
+              </Card>
+              <Card>
+                <div className="research-card-title"><strong>Senaste replay-liknande händelser</strong><Badge tone="blue">Historik</Badge></div>
+                <LiveActivityFeed events={visibleActivity.filter((event) => event.type === 'replay' || event.type === 'batch')} limit={8} compact />
+              </Card>
             </div>
-            <div className="sup-brain-learning-sources">
-              <div>
-                <strong>Narrow learning</strong>
-                <span>{totalTrades ? `${formatInt(totalTrades)} testresultat · ${text(performanceBand?.band || performanceBand, 'inget bästa band ännu')}` : 'Ingen data tillgänglig ännu'}</span>
-              </div>
-              <div>
-                <strong>Daytrading/core learning</strong>
-                <span>{coreHasTrades ? `${formatInt(coreSummary.trades_total ?? coreSummary.closed_trades)} trades · ${formatPct(coreSummary.win_rate, 1)} win rate` : 'Ingen data tillgänglig ännu'}</span>
-              </div>
+          </section>
+        ) : null}
+
+        {active === 'paper' ? (
+          <section className="research-section">
+            <SectionHeader eyebrow="Paper testing" title="Låtsashandel utan riktiga pengar" subtitle="Paper testing betyder låtsashandel. Inga riktiga pengar används och inga riktiga order läggs." />
+            <div className="research-grid research-grid-4">
+              <MetricCard label="Simulerade signaler" value={fmtNumber(canonical.totalTrades || 0)} help="Alla är testhändelser." tone="blue" />
+              <MetricCard label="Andel lyckade tester" value={fmtPct(canonical.winRate)} help="Baserat på testdata." tone="good" />
+              <MetricCard label="Genomsnittligt resultat" value={canonical.avgPnl != null ? fmtSigned(canonical.avgPnl) : '—'} help="Paper-resultat." tone="blue" />
+              <MetricCard label="Lärdom" value={text(narrow.bestStrategy, 'Samla mer data')} help="Starkast i test just nu." tone="purple" />
             </div>
-            <BeginnerBox
-              title="Vad betyder winRate och avgPnL?"
-              text="WinRate är hur ofta ett test slutade positivt. AvgPnL är genomsnittligt testresultat. Båda gäller bara testdata och bevisar inte att något fungerar live."
-            />
-          </div>
-        </section>
+            <HistoryTimeline tests={recentTests.filter((test) => test.executed === true || test.type === 'run_completed')} limit={8} />
+          </section>
+        ) : null}
 
-        <section className="sup-brain-section">
-          <SectionTitle
-            eyebrow="3. Narrow State"
-            title="📉 Narrow State just nu"
-            subtitle="Marknaden rör sig trångt. Systemet letar efter compression före breakout, fakeout eller återgång mot VWAP."
-            helper="Vad betyder detta?"
-          />
-          <div className="sup-brain-grid sup-brain-grid-5">
-            <StatCard
-              icon="📈"
-              title="Active Narrow Symbols"
-              value={formatInt(activeSymbols, '0')}
-              subtitle="Symboler som ser trånga ut just nu"
-              detail={narrowTopSymbols.length ? narrowTopSymbols.slice(0, 3).map((row) => `${row.symbol} · ${row.narrowScore ?? row.score ?? '—'}`).join(' · ') : 'För lite data ännu'}
-              tone="blue"
-            />
-            <StatCard
-              icon="🧲"
-              title="Strongest Compression"
-              value={strongestCompression?.symbol || 'Väntar'}
-              subtitle={strongestCompression?.narrowScore != null ? `Score ${strongestCompression.narrowScore}` : 'Ingen stark compression ännu'}
-              detail={strongestCompression?.regimeLabel ? text(strongestCompression.regimeLabel, 'Narrow') : 'Väntar på fler batch/replay-resultat'}
-              tone="purple"
-            />
-            <StatCard
-              icon="🚀"
-              title="Breakout Watch"
-              value={formatInt(breakoutWatch.length, '0')}
-              subtitle="Symboler där priset kan bryta ut efter trång rörelse"
-              detail={breakoutWatch.length ? 'Bevaka men kör inte live.' : 'För lite data ännu'}
-              tone="green"
-            />
-            <StatCard
-              icon="⚠️"
-              title="Fakeout Risk"
-              value={formatInt(fakeoutRisk.length, '0')}
-              subtitle="Symboler där utbrott kan misslyckas"
-              detail={fakeoutRisk.length ? 'Systemet letar efter falska breakouts.' : 'För lite data ännu'}
-              tone="warning"
-            />
-            <StatCard
-              icon="🔄"
-              title="Mean Reversion"
-              value={formatInt(meanReversion.length, '0')}
-              subtitle="Symboler som kan återgå mot VWAP"
-              detail={meanReversion.length ? 'Möjliga återgångar mot mitten/VWAP.' : 'För lite data ännu'}
-              tone="blue"
-            />
-          </div>
+        {active === 'data' ? (
+          <section className="research-section">
+            <SectionHeader eyebrow="Datahämtning" title="Data hämtas och sparas för tester" subtitle="Read-only status för Alpaca, historisk backfill, candles och cache. Inga synk- eller datajobbsknappar." />
+            <DataPipelineCard dataJobs={data.dataJobs || overview.dataJobsSummary} />
+            <LiveActivityFeed events={visibleActivity.filter((event) => event.type === 'data_job')} limit={10} compact />
+          </section>
+        ) : null}
 
-          <div className="sup-brain-mini-strip">
-            {narrowTopSymbols.length ? narrowTopSymbols.slice(0, 6).map((item, index) => (
-              <div key={`${item.symbol || index}`} className="sup-brain-mini-chip">
-                <strong>{item.symbol || '—'}</strong>
-                <span>{item.narrowScore ?? item.score ?? '—'} · {text(item.band || item.narrowScoreBand, '—')}</span>
-              </div>
-            )) : (
-              <div className="sup-brain-empty">Inga symboler i Narrow State just nu. Det är normalt när marknaden inte är tillräckligt trång.</div>
-            )}
-          </div>
+        {active === 'ai' ? (
+          <section className="research-section">
+            <SectionHeader eyebrow="AI-analytiker" title="AI förklarar vad som bör testas härnäst" subtitle="AI får bara läsa systemets säkra sammanfattning, sammanfatta och rekommendera säkra research-tester." />
+            <AiAnalystSummary status={aiOverride?.status || data.aiStatus || overview.aiAnalystStatus} latest={aiOverride?.latest || data.aiLatest} onRefresh={refreshAiAnalysis} refreshing={aiRefreshing} />
+          </section>
+        ) : null}
 
-          <BeginnerBox
-            title="Vad betyder Narrow State?"
-            text="Narrow State betyder att priset är ihoptryckt och rör sig lugnare än vanligt. Systemet letar efter sådana lugna lägen för att planera säkra paper-/replay-tester."
-          />
-        </section>
+        {active === 'risks' ? (
+          <section className="research-section">
+            <SectionHeader eyebrow="Risker" title="Risker och blockers" subtitle="Live trading off visas som positiv säkerhet. Övriga varningar visar vad som behöver mer data eller kontroll." />
+            <RiskBlockerCard risks={overview.risks} dataJobs={data.dataJobs} batches={data.batches} activity={data.activity} />
+          </section>
+        ) : null}
 
-        <section className="sup-brain-section">
-          <SectionTitle
-            eyebrow="4. Strategimätning"
-            title="📈 Strategier som systemet mäter"
-            subtitle="Tre Narrow State-strategier testas i paper/replay/batch."
-            helper="Testresultat"
-          />
-          <div className="sup-brain-grid sup-brain-grid-3">
-            {strategyRows.map(({ id, row }) => (
-              <StrategyCard key={id} strategyId={id} row={row} summaryStatus={learningStatus} />
-            ))}
-          </div>
-          <BeginnerBox
-            title="Vad menas med testresultat?"
-            text="Varje strategi visar hur många testresultat den har, hur ofta den vinner och om den verkar lovande, svag eller behöver mer data. Inga köp eller sälj görs här."
-          />
-        </section>
-
-        <section className="sup-brain-section">
-          <SectionTitle
-            eyebrow="5. Beslutsstöd"
-            title="Bästa / Svagaste / Nästa test"
-            subtitle="Här ser du vad systemet tycker är bäst just nu och vad som bör testas härnäst. Baserat på testdata, inte investeringsråd."
-            helper="Rekommendationer"
-          />
-          <div className="sup-brain-grid sup-brain-grid-3">
-            <SummaryCard
-              title="Bästa strategi just nu"
-              item={performanceBest}
-              emptyText="Ingen säker vinnare ännu"
-            />
-            <SummaryCard
-              title="Svagaste strategi just nu"
-              item={performanceWorst}
-              emptyText="För lite data ännu"
-            />
-            <Card className="sup-brain-next">
-              <div className="sup-brain-summary-title">Rekommenderat nästa test</div>
-              {latestRecommendedTest ? (
-                <>
-                  <div className="sup-brain-next-tag">Föreslaget test - ej automatisk ändring</div>
-                  <div className="sup-brain-summary-main">{latestRecommendedTest.title || strategyName(latestRecommendedTest.strategy)}</div>
-                  <div className="sup-brain-summary-sub">{latestRecommendedTest.reason}</div>
-                  <div className="sup-brain-card-stats">
-                    <InfoChip label="Strategy" value={latestRecommendedTest.strategy || '—'} tone="blue" />
-                    <InfoChip label="Band" value={latestRecommendedTest.band ? (BAND_LABELS[latestRecommendedTest.band] || latestRecommendedTest.band) : '—'} tone="blue" />
-                    <InfoChip label="Timeframe" value={safeArray(latestRecommendedTest.timeframes).join(', ') || '—'} tone="blue" />
-                  </div>
-                  <div className="sup-brain-next-filters">
-                    {safeArray(latestRecommendedTest.symbols).length ? <Badge tone="blue">{safeArray(latestRecommendedTest.symbols).join(', ')}</Badge> : <Badge tone="neutral">Symboler saknas</Badge>}
-                    {latestRecommendedTest.window ? <Badge tone="blue">{latestRecommendedTest.window}</Badge> : null}
-                    {recommendation?.confirmations?.length ? <Badge tone="good">{recommendation.confirmations.join(', ')}</Badge> : null}
-                  </div>
-                </>
-              ) : (
-                <div className="sup-brain-summary-empty">Väntar på fler batch/replay-resultat.</div>
-              )}
-            </Card>
-          </div>
-          <div className="sup-brain-grid sup-brain-grid-2 sup-brain-decision-lists">
-            <Card className="sup-brain-summary-card">
-              <div className="sup-brain-summary-title">Bästa narrow/strategy-resultat</div>
-              {bestStrategyRows.length ? bestStrategyRows.map((row) => (
-                <div key={`best-${row.strategy_id || row.name}`} className="sup-brain-result-row">
-                  <div>
-                    <strong>{strategyName(row.strategy_id || row.name)}</strong>
-                    <span>{row.strategy_id || row.name}</span>
-                  </div>
-                  <div className="sup-brain-result-metrics">
-                    <span>{formatInt(metric(row, 'trades', 'tradeCount') ?? 0)} trades</span>
-                    <span>{formatPct(metric(row, 'winRate', 'win_rate'), 1)}</span>
-                    <span>{formatSignedPct(metric(row, 'avgPnl', 'avg_pnl'), 3)}</span>
-                  </div>
-                </div>
-              )) : <div className="sup-brain-summary-empty">Ingen data tillgänglig ännu.</div>}
-            </Card>
-            <Card className="sup-brain-summary-card">
-              <div className="sup-brain-summary-title">Svagaste strategier eller band</div>
-              {[...weakestStrategyRows, ...weakestBandRows].length ? [...weakestStrategyRows, ...weakestBandRows].slice(0, 5).map((row) => {
-                const id = row.strategy_id || row.name || row.band;
-                return (
-                  <div key={`weak-${id}`} className="sup-brain-result-row">
-                    <div>
-                      <strong>{row.band ? (BAND_LABELS[row.band] || row.band) : strategyName(id)}</strong>
-                      <span>{explainWeakItem(row)}</span>
-                    </div>
-                    <div className="sup-brain-result-metrics">
-                      <span>{formatInt(metric(row, 'trades', 'tradeCount') ?? 0)} trades</span>
-                      <span>{formatPct(metric(row, 'winRate', 'win_rate'), 1)}</span>
-                      <span>{formatSignedPct(metric(row, 'avgPnl', 'avg_pnl'), 3)}</span>
-                    </div>
-                  </div>
-                );
-              }) : <div className="sup-brain-summary-empty">Ingen svag strategi kan pekas ut ännu.</div>}
-            </Card>
-          </div>
-        </section>
-
-        <section className="sup-brain-section">
-          <SectionTitle
-            eyebrow="5b. Autopilot"
-            title="🤖 Narrow Test Autopilot"
-            subtitle="Autopiloten läser rekommendationen och bygger en säker testplan. Den kan bara planera och köra batch/replay/paper-tester — aldrig lägga riktiga order."
-            helper="Säker planerare"
-          />
-          <div className="sup-brain-autopilot">
-            <div className="sup-brain-autopilot-head">
-              <Badge tone={autopilotFlagsLocked ? 'good' : 'danger'}>{autopilotFlagsLocked ? 'SAFETY LÅST' : 'KONTROLLERA'}</Badge>
-              <Badge tone="blue">PAPER ONLY</Badge>
-              <Badge tone="neutral">DRY-RUN FÖRST</Badge>
-              <Badge tone="neutral">INGA RIKTIGA ORDER</Badge>
-            </div>
-            <Card className="sup-brain-next sup-brain-scheduler-card">
-              <div className="sup-brain-summary-title">Automatisk planering</div>
-              <div className="sup-brain-summary-main">
-                {autopilotScheduler?.schedulerActive ? 'Aktiv' : autopilotScheduler ? 'Pausad' : 'Status saknas'}
-              </div>
-              <div className="sup-brain-summary-sub">
-                Scheduler betyder automatisk planering. Den kör bara dry-run: planering och kontroll, ingen automatisk execute.
-              </div>
-              <div className="sup-brain-card-stats">
-                <InfoChip label="Planering" value={autopilotScheduler?.enabled ? 'Aktiv' : 'Av'} tone={autopilotScheduler?.enabled ? 'good' : 'warning'} />
-                <InfoChip label="Körläge" value={autopilotScheduler?.dryRunOnly ? 'Endast dry-run' : 'Kontrollera'} tone={autopilotScheduler?.dryRunOnly ? 'good' : 'danger'} />
-                <InfoChip label="Execute" value={autopilotScheduler?.executionEnabled ? 'På' : 'Avstängt'} tone={autopilotScheduler?.executionEnabled ? 'danger' : 'good'} />
-                <InfoChip label="Safety" value={autopilotScheduler?.mode || 'paper_only'} tone="good" />
-              </div>
-              <div className="sup-brain-card-stats">
-                <InfoChip label="Senast" value={nowText(autopilotScheduler?.lastRunAt)} tone="blue" />
-                <InfoChip label="Nästa" value={nowText(autopilotScheduler?.nextRunAt)} tone="blue" />
-                <InfoChip label="Cooldown" value={autopilotScheduler?.cooldownActive ? 'Aktiv' : 'Inte aktiv'} tone={autopilotScheduler?.cooldownActive ? 'warning' : 'good'} />
-                <InfoChip label="Blocked reason" value={autopilotScheduler?.blockedReason || 'Ingen'} tone={autopilotScheduler?.blockedReason ? 'warning' : 'good'} />
-              </div>
-              {schedulerRecommendation ? (
-                <div className="sup-brain-scheduler-recommendation">
-                  <strong>Senaste rekommenderade test:</strong>
-                  <span>{STRATEGY_META[schedulerRecommendation.strategy]?.name || schedulerRecommendation.strategy}</span>
-                  <span>{schedulerRecommendation.band ? (BAND_LABELS[schedulerRecommendation.band] || schedulerRecommendation.band) : 'Band saknas'} · {schedulerRecommendation.window}</span>
-                  <span>{schedulerRecommendation.reason}</span>
-                </div>
-              ) : (
-                <div className="sup-brain-summary-empty">Ingen schemalagd rekommendation sparad ännu.</div>
-              )}
-              {schedulerLastDryRun ? (
-                <div className="sup-brain-next-filters">
-                  <Badge tone={schedulerLastDryRun.dryRun ? 'good' : 'danger'}>dryRun={String(schedulerLastDryRun.dryRun)}</Badge>
-                  <Badge tone={!schedulerLastDryRun.executed ? 'good' : 'danger'}>executed={String(Boolean(schedulerLastDryRun.executed))}</Badge>
-                  <Badge tone="blue">{schedulerLastDryRun.mode || 'paper_only'}</Badge>
-                </div>
-              ) : null}
-              <div className="sup-brain-mini-explainers">
-                <span><strong>Dry-run:</strong> bara planering och analys.</span>
-                <span><strong>Execute avstängt:</strong> ingen automatisk batch/paper-körning.</span>
-                <span><strong>Cooldown:</strong> väntar innan nästa planering.</span>
-              </div>
-            </Card>
-            {autopilotPlan ? (
-              <div className="sup-brain-grid sup-brain-grid-3">
-                <Card className="sup-brain-next">
-                  <div className="sup-brain-summary-title">Senaste / aktuella plan</div>
-                  <div className="sup-brain-summary-main">{STRATEGY_META[autopilotPlan.strategy_id]?.name || autopilotPlan.strategy_id}</div>
-                  <div className="sup-brain-summary-sub">{text(autopilotPlan.reason, 'Försiktig default-plan.')}</div>
-                  <div className="sup-brain-card-stats">
-                    <InfoChip label="Test" value={text(autopilotPlan.testType, 'batch')} tone="blue" />
-                    <InfoChip label="Mode" value={text(autopilotPlan.mode, 'paper_only')} tone="good" />
-                    <InfoChip label="Priority" value={text(autopilotPlan.priority, 'low')} tone={autopilotPlan.priority === 'high' ? 'warning' : 'neutral'} />
-                  </div>
-                  <div className="sup-brain-next-filters">
-                    {safeArray(autopilotPlan.symbols).length ? <Badge tone="blue">{safeArray(autopilotPlan.symbols).join(', ')}</Badge> : null}
-                    {requestedBand ? <Badge tone="neutral">Requested: {BAND_LABELS[requestedBand] || requestedBand}</Badge> : null}
-                    {selectedBand ? <Badge tone="purple">Selected: {BAND_LABELS[selectedBand] || selectedBand}</Badge> : <Badge tone="warning">Inget körbart narrow-band</Badge>}
-                    {safeArray(autopilotPlan.filters?.confirmations).length ? <Badge tone="good">{safeArray(autopilotPlan.filters.confirmations).join(', ')}</Badge> : null}
-                  </div>
-                  <div className="sup-brain-timeframes">
-                    <div className="sup-brain-timeframes-row">
-                      <span>Planerade timeframes:</span>
-                      {safeArray(autopilotPlan.requestedTimeframes).length
-                        ? safeArray(autopilotPlan.requestedTimeframes).map((tf) => <Badge key={`req-${tf}`} tone="neutral">{tf}</Badge>)
-                        : <Badge tone="neutral">2m</Badge>}
-                    </div>
-                    <div className="sup-brain-timeframes-row">
-                      <span>Tillgängliga nu:</span>
-                      {safeArray(autopilotPlan.availableTimeframes).length
-                        ? safeArray(autopilotPlan.availableTimeframes).map((tf) => <Badge key={`av-${tf}`} tone="good">{tf}</Badge>)
-                        : safeArray(autopilotPlan.timeframes).map((tf) => <Badge key={`tf-${tf}`} tone="good">{tf}</Badge>)}
-                    </div>
-                    {safeArray(autopilotPlan.missingTimeframes).length ? (
-                      <div className="sup-brain-timeframes-row">
-                        <span>Saknas:</span>
-                        {safeArray(autopilotPlan.missingTimeframes).map((tf) => <Badge key={`miss-${tf}`} tone="warning">{tf}</Badge>)}
-                      </div>
-                    ) : null}
-                  </div>
-                </Card>
-                <Card className="sup-brain-next">
-                  <div className="sup-brain-summary-title">Adaptive band selection</div>
-                  <div className="sup-brain-summary-main">
-                    {selectedBand ? (BAND_LABELS[selectedBand] || selectedBand) : 'Inget narrow-band just nu'}
-                  </div>
-                  <div className="sup-brain-summary-sub">
-                    {text(autopilotBandSelection.selectionReason || autopilotBandAvailability.selectionReason, 'Systemet kontrollerar först vilka score-band som faktiskt finns i aktuell 2m-data.')}
-                  </div>
-                  <div className="sup-brain-card-stats">
-                    <InfoChip label="Requested band" value={requestedBand ? (BAND_LABELS[requestedBand] || requestedBand) : '—'} tone="blue" />
-                    <InfoChip label="Selected band" value={selectedBand ? (BAND_LABELS[selectedBand] || selectedBand) : 'Ingen'} tone={selectedBand ? 'good' : 'warning'} />
-                    <InfoChip label="not_narrow" value="Aldrig valt" tone="good" />
-                  </div>
-                  <div className="sup-brain-next-filters">
-                    {['confirmed_narrow', 'weak_narrow', 'strong_compression'].map((band) => {
-                      const item = autopilotAvailableBands[band] || {};
-                      return (
-                        <Badge key={band} tone={Number(item.rows || 0) > 0 ? 'good' : 'neutral'}>
-                          {BAND_LABELS[band] || band}: {Number(item.rows || 0)}
-                        </Badge>
-                      );
-                    })}
-                  </div>
-                  {bandSelectionWarnings.length ? (
-                    <div className="sup-brain-next-filters">
-                      {bandSelectionWarnings.slice(0, 4).map((warning) => (
-                        <Badge key={warning} tone="warning">{warning}</Badge>
-                      ))}
-                    </div>
-                  ) : null}
-                  <div className="sup-brain-learning-text">
-                    Systemet kontrollerar först om det finns riktiga trånga lägen. Om confirmed_narrow saknas kan det föreslå weak_narrow, men det använder aldrig not_narrow som giltigt narrow-test.
-                  </div>
-                </Card>
-                <Card className="sup-brain-next">
-                  <div className="sup-brain-summary-title">Datafönster & freshness</div>
-                  <div className="sup-brain-summary-main">
-                    {autopilotDateWindowSelected
-                      ? `${autopilotDateWindowSelected.dateFrom} - ${autopilotDateWindowSelected.dateTo}`
-                      : 'Inget narrow-fönster hittat'}
-                  </div>
-                  <div className="sup-brain-summary-sub">
-                    {text(autopilotPlan?.freshnessStatus, 'Freshness saknas')} · {text(autopilotPlan?.windowSelectionReason, 'Väntar på analys')}
-                  </div>
-                  <div className="sup-brain-card-stats">
-                    <InfoChip label="Begärt" value={`${text(autopilotDateWindowRequested.timeframe, '2m')} · ${formatInt(autopilotDateWindowRequested.tradingDays, '10')} dagar`} tone="blue" />
-                    <InfoChip label="Gemensamt" value={autopilotCommonDateWindow.dateFrom ? `${autopilotCommonDateWindow.dateFrom} - ${autopilotCommonDateWindow.dateTo}` : 'Saknas'} tone="blue" />
-                    <InfoChip label="Redan testade" value={formatInt(autopilotAlreadyTestedWindows.length, '0')} tone={autopilotAlreadyTestedWindows.length ? 'warning' : 'good'} />
-                  </div>
-                  <div className="sup-brain-next-filters">
-                    {['confirmed_narrow', 'weak_narrow', 'strong_compression'].map((band) => (
-                      <Badge key={`window-${band}`} tone={Number(autopilotWindowAvailability[band] || 0) > 0 ? 'good' : 'neutral'}>
-                        {BAND_LABELS[band] || band}: {Number(autopilotWindowAvailability[band] || 0)}
-                      </Badge>
-                    ))}
-                    <Badge tone={Number(autopilotWindowAvailability.not_narrow || 0) > 0 ? 'warning' : 'neutral'}>
-                      not_narrow: {Number(autopilotWindowAvailability.not_narrow || 0)}
-                    </Badge>
-                  </div>
-                  {autopilotValidation?.blocked ? (
-                    <div className="sup-brain-next-filters">
-                      <Badge tone="warning">Blockerat: {text(windowBlockedReason, 'okänd orsak')}</Badge>
-                    </div>
-                  ) : null}
-                  <div className="sup-brain-learning-text">
-                    Systemet letar först efter tidsperioder där marknaden faktiskt var trång. Om ingen sådan period finns körs inget test.
-                  </div>
-                </Card>
-                <Card className="sup-brain-next">
-                  <div className="sup-brain-summary-title">Safety-validering</div>
-                  <div className="sup-brain-summary-main">{autopilotValidation?.blocked ? 'Blockerad' : 'Godkänd'}</div>
-                  <div className="sup-brain-summary-sub">
-                    {autopilotValidation?.blocked
-                      ? 'Planen stoppades av säkerhetskontrollen.'
-                      : 'Planen är paper_only och passerade alla säkerhetsregler.'}
-                  </div>
-                  <div className="sup-brain-card-stats">
-                    <InfoChip label="actions_allowed" value="false" tone="good" />
-                    <InfoChip label="can_place_orders" value="false" tone="good" />
-                    <InfoChip label="live_trading_enabled" value="false" tone="good" />
-                    <InfoChip label="broker_enabled" value="false" tone="good" />
-                  </div>
-                  {safeArray(autopilotValidation?.reasons).length ? (
-                    <div className="sup-brain-next-filters">
-                      {safeArray(autopilotValidation.reasons).slice(0, 4).map((reason) => (
-                        <Badge key={reason} tone="warning">{reason}</Badge>
-                      ))}
-                    </div>
-                  ) : null}
-                </Card>
-                <Card className="sup-brain-next">
-                  <div className="sup-brain-summary-title">Senaste autopilot-händelser</div>
-                  {autopilotEvents.length ? (
-                    <ul className="sup-brain-autopilot-events">
-                      {autopilotEvents.map((event, index) => (
-                        <li key={`${event.timestamp || index}-${event.event}`}>
-                          <span className="sup-brain-warning-dot" />
-                          <span>{text(event.event, 'event')} · {text(event.testType, '—')} · {nowText(event.timestamp)}</span>
-                        </li>
-                      ))}
-                    </ul>
-                  ) : (
-                    <div className="sup-brain-summary-empty">Inga autopilot-körningar loggade ännu.</div>
-                  )}
-                  <div className="sup-brain-next-tag">Dry-run är standard · körning kräver explicit --execute</div>
-                </Card>
-              </div>
-            ) : (
-              <div className="sup-brain-empty">Autopiloten är inte tillgänglig just nu.</div>
-            )}
-            <div className="sup-brain-learning-text">
-              Systemet fokuserar just nu på <strong>2-minutersdata</strong>. Det är den timeframe som är stabilt tillgänglig och bäst lämpad för våra första Narrow State-tester. 1m, 5m och 10m kan läggas till senare när datakällorna är fullt kopplade. Systemet fejkar aldrig marknadsdata.
-            </div>
-            <BeginnerBox
-              title="Vad gör autopiloten?"
-              text="Systemet letar först efter tidsperioder där marknaden faktiskt var trång. Om ingen sådan period finns körs inget test."
-            />
-          </div>
-        </section>
-
-        <section className="sup-brain-section">
-          <SectionTitle
-            eyebrow="6. Score-band"
-            title="🎯 Vilket Narrow Score fungerar bäst?"
-            subtitle="Högre score betyder mer compression. Här visas vilken styrka som verkar bäst."
-            helper="Score-band"
-          />
-          <div className="sup-brain-band-list">
-            {['not_narrow', 'weak_narrow', 'confirmed_narrow', 'strong_compression'].map((band) => (
-              <BandRow key={band} band={band} data={scoreBands.find((row) => row.band === band)} maxTrades={maxBandTrades} />
-            ))}
-            {!scoreBands.length ? <div className="sup-brain-empty">För lite data ännu</div> : null}
-          </div>
-        </section>
-
-        <section className="sup-brain-section">
-          <SectionTitle
-            eyebrow="7. Confirmations"
-            title="✅ Vilka bekräftelser hjälper?"
-            subtitle="En bekräftelse är extra bevis innan en strategi räknas som stark."
-            helper="Jämförelse"
-          />
-          <div className="sup-brain-learning-text">
-            {performanceConfirmation && performanceConfirmation.confirmation
-              ? `Starkaste bekräftelse just nu: ${String(performanceConfirmation.confirmation).toUpperCase()} — gäller testdata, inte bevisad edge.`
-              : 'Ingen stark confirmation ännu — testdatan visar ännu ingen bekräftelse med tydlig, säker effekt.'}
-          </div>
-          <div className="sup-brain-grid sup-brain-grid-5">
-            {['vwap', 'volume', 'rsi', 'ema', 'macd'].map((confirmation) => (
-              <ConfirmationCard
-                key={confirmation}
-                confirmation={confirmation}
-                data={confirmations.find((row) => row.confirmation === confirmation)}
-              />
-            ))}
-          </div>
-        </section>
-
-        <section className="sup-brain-section">
-          <SectionTitle
-            eyebrow="8. Varningar"
-            title="⚠ Risker systemet ser"
-            subtitle="Det här är lugna varningar som hjälper dig förstå läget."
-            helper="Försiktigt"
-          />
-          <div className="sup-brain-warning-list">
-            {warningItems.map((item, index) => (
-              <div key={`${index}-${item}`} className="sup-brain-warning-item">
-                <span className="sup-brain-warning-dot" />
-                <span>{item}</span>
-              </div>
-            ))}
-          </div>
-        </section>
-
-        <section className="sup-brain-section">
-          <SectionTitle
-            eyebrow="9. Handlingsplan"
-            title="📋 Nästa handlingsplan"
-            subtitle="Ett enkelt research-workflow för nästa steg."
-            helper="Workflow"
-          />
-          <div className="sup-brain-grid sup-brain-grid-5">
-            {actionPlan.map((item, index) => (
-              <StepCard key={`${index}-${item.title}`} index={String(index + 1)} title={item.title} text={item.text} />
-            ))}
-          </div>
-        </section>
-
-        <section className="sup-brain-section">
-          <SectionTitle
-            eyebrow="10. Begrepp"
-            title="Vad betyder detta?"
-            subtitle="Snabb hjälp för nya användare."
-            helper="Ordlista"
-          />
-          <div className="sup-brain-glossary">
-            {TERMS.map(([term, help]) => (
-              <GlossaryTooltip key={term} term={term} help={help} className="sup-brain-glossary-tooltip" />
-            ))}
-          </div>
-        </section>
-
-        <footer className="sup-brain-footer">
-          Trading OS är en analys- och forskningsplattform. Den lägger inga riktiga order. Alla resultat är från paper, replay eller batch-testning.
-        </footer>
-      </div>
+        {active === 'technical' ? (
+          <section className="research-section">
+            <SectionHeader eyebrow="Tekniskt" title="Tekniska detaljer" subtitle="Här finns råare statusfält för felsökning. Huvudvyn ovan är förenklad." />
+            <TechnicalDetailsPanel data={data} />
+          </section>
+        ) : null}
+      </main>
     </div>
   );
 }
