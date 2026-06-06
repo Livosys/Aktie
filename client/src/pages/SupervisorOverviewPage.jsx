@@ -56,7 +56,68 @@ function Block({ icon, title, block, children }) {
   );
 }
 
-function num(v, suffix = '') { return v === null || v === undefined ? '—' : `${v}${suffix}`; }
+// Object-safe numeric formatter — an object/array never reaches the DOM.
+function num(v, suffix = '') {
+  if (v === null || v === undefined || typeof v === 'object') return '—';
+  if (typeof v === 'number' && !Number.isFinite(v)) return '—';
+  return `${v}${suffix}`;
+}
+
+const BAND_LABELS = {
+  confirmed_narrow: 'Bekräftad narrow',
+  weak_narrow: 'Svag narrow',
+  strong_compression: 'Stark kompression',
+  not_narrow: 'Inte narrow',
+};
+
+function fmtPct(v, dec = 1) {
+  const n = Number(v);
+  if (v === null || v === undefined || !Number.isFinite(n)) return null;
+  return `${n.toFixed(dec).replace('.', ',')} %`;
+}
+
+function fmtSignedPct(v, dec = 2) {
+  const n = Number(v);
+  if (v === null || v === undefined || !Number.isFinite(n)) return null;
+  return `${n >= 0 ? '+' : ''}${n.toFixed(dec).replace('.', ',')} %`;
+}
+
+// Render a {band, scoreRange, winRate, avgPnl}-shaped object as human text, e.g.
+// "Bekräftad narrow · Win rate 52,7 % · Avg +0,08 %".
+function formatBand(b) {
+  if (!b || typeof b !== 'object') return safeString(b);
+  const parts = [BAND_LABELS[b.band] || (typeof b.band === 'string' ? b.band : 'Narrow')];
+  if (typeof b.scoreRange === 'string') parts.push(`score ${b.scoreRange}`);
+  const wr = fmtPct(b.winRate, 1);
+  if (wr) parts.push(`Win rate ${wr}`);
+  const ap = fmtSignedPct(b.avgPnl, 2);
+  if (ap) parts.push(`Avg ${ap}`);
+  return parts.join(' · ');
+}
+
+// Convert any value to a safe display string — never returns an object/array.
+function safeString(value, fallback = 'Saknas') {
+  if (value === null || value === undefined || value === '') return fallback;
+  if (typeof value === 'string') return value;
+  if (typeof value === 'number') return Number.isFinite(value) ? String(value) : fallback;
+  if (typeof value === 'boolean') return value ? 'Ja' : 'Nej';
+  if (Array.isArray(value)) {
+    const joined = value.map((v) => safeString(v, '')).filter(Boolean).join(', ');
+    return joined || fallback;
+  }
+  if (typeof value === 'object') {
+    if ('band' in value || 'scoreRange' in value || ('winRate' in value && 'avgPnl' in value)) return formatBand(value);
+    const id = value.strategy_id || value.strategyId || value.id || value.key || value.name || value.label;
+    if (id && typeof id !== 'object') return String(id);
+    return 'Detaljer finns';
+  }
+  return fallback;
+}
+
+// Guarantees a React-safe child: any object/array is formatted, never rendered raw.
+function SafeText({ value, fallback = 'Saknas' }) {
+  return <>{safeString(value, fallback)}</>;
+}
 
 export default function SupervisorOverviewPage() {
   const [data, setData] = useState(null);
@@ -112,7 +173,7 @@ export default function SupervisorOverviewPage() {
 
           <div className="sov-grid">
             <Block icon="🟢" title="Systemstatus" block={blocks.system_health}>
-              <p><strong>{sh && sh.overallStatus}</strong> — {sh && (sh.summarySv || 'inga detaljer')}</p>
+              <p><strong><SafeText value={sh && sh.overallStatus} fallback="—" /></strong> — <SafeText value={sh && sh.summarySv} fallback="inga detaljer" /></p>
               <p className="sov-soft">{sh && num(sh.alertCount)} larm ({sh && num(sh.criticalAlerts)} kritiska), {sh && num(sh.componentCount)} komponenter.</p>
             </Block>
 
@@ -127,16 +188,16 @@ export default function SupervisorOverviewPage() {
 
             <Block icon="📈" title="Bästa strategier" block={blocks.strategies}>
               <ul className="sov-list">
-                {strat && strat.top && strat.top.length ? strat.top.map((s) => (
-                  <li key={`t-${s.key}`}><span>{s.key}</span><span className="sov-good">{num(s.winRate, '%')}</span><span className="sov-soft">{num(s.trades)} trades</span></li>
+                {strat && strat.top && strat.top.length ? strat.top.map((s, i) => (
+                  <li key={`t-${i}`}><span><SafeText value={s.key} /></span><span className="sov-good">{num(s.winRate, '%')}</span><span className="sov-soft">{num(s.trades)} trades</span></li>
                 )) : <li className="sov-soft">Ingen data än.</li>}
               </ul>
             </Block>
 
             <Block icon="📉" title="Sämsta strategier" block={blocks.strategies}>
               <ul className="sov-list">
-                {strat && strat.worst && strat.worst.length ? strat.worst.map((s) => (
-                  <li key={`w-${s.key}`}><span>{s.key}</span><span className="sov-bad">{num(s.winRate, '%')}</span><span className="sov-soft">{num(s.trades)} trades</span></li>
+                {strat && strat.worst && strat.worst.length ? strat.worst.map((s, i) => (
+                  <li key={`w-${i}`}><span><SafeText value={s.key} /></span><span className="sov-bad">{num(s.winRate, '%')}</span><span className="sov-soft">{num(s.trades)} trades</span></li>
                 )) : <li className="sov-soft">Ingen data än.</li>}
               </ul>
               <p className="sov-soft">Ingen auto-apply — ändringar görs manuellt i Trading Lab.</p>
@@ -145,13 +206,13 @@ export default function SupervisorOverviewPage() {
             <Block icon="🔬" title="Pågående tester" block={blocks.autopilot}>
               <p>Autopilot: {ap && ap.schedulerActive ? 'aktiv' : 'vilande'} · {ap && ap.dryRunOnly ? 'DRY-RUN ONLY' : 'execute?'} · execute {ap && ap.executionEnabled ? 'PÅ' : 'av'}.</p>
               {ap && ap.nextRunAt && <p className="sov-soft">Nästa planering: {new Date(ap.nextRunAt).toLocaleString('sv-SE')}.</p>}
-              {ap && ap.blockedReason && <p className="sov-soft">Pausorsak: {ap.blockedReason}.</p>}
-              {daily && <p className="sov-soft">Daglig pipeline: {daily.enabled ? 'på' : 'av'}{daily.lastStatus ? ` · senast ${daily.lastStatus}` : ''}.</p>}
+              {ap && ap.blockedReason && <p className="sov-soft">Pausorsak: <SafeText value={ap.blockedReason} />.</p>}
+              {daily && <p className="sov-soft">Daglig pipeline: {daily.enabled ? 'på' : 'av'}{daily.lastStatus ? <> · senast <SafeText value={daily.lastStatus} /></> : ''}.</p>}
             </Block>
 
             <Block icon="🌍" title="Marknadsläge" block={blocks.market_regime}>
-              <p>{regime && (regime.regime || 'okänt')} {regime && regime.volatilityState ? `· ${regime.volatilityState}` : ''}</p>
-              {regime && regime.biasSv && <p className="sov-soft">{regime.biasSv}</p>}
+              <p><SafeText value={regime && regime.regime} fallback="okänt" /> {regime && regime.volatilityState ? <>· <SafeText value={regime.volatilityState} /></> : ''}</p>
+              {regime && regime.biasSv && <p className="sov-soft"><SafeText value={regime.biasSv} /></p>}
             </Block>
 
             <Block icon="📊" title="AI-optimering" block={blocks.ai_optimization}>
@@ -159,8 +220,8 @@ export default function SupervisorOverviewPage() {
             </Block>
 
             <Block icon="📉" title="Narrow State" block={blocks.narrow}>
-              {narrow && <p>{narrow.status} · {num(narrow.totalTrades)} trades · tillit {narrow.dataConfidence || '—'}.</p>}
-              {narrow && narrow.bestStrategy && <p className="sov-soft">Bäst: {narrow.bestStrategy} ({narrow.bestScoreBand || '—'}).</p>}
+              {narrow && <p><SafeText value={narrow.status} fallback="—" /> · {num(narrow.totalTrades)} trades · tillit <SafeText value={narrow.dataConfidence} fallback="—" />.</p>}
+              {narrow && narrow.bestStrategy && <p className="sov-soft">Bäst: <SafeText value={narrow.bestStrategy} /> (<SafeText value={narrow.bestScoreBand} fallback="—" />).</p>}
             </Block>
           </div>
 
@@ -168,8 +229,8 @@ export default function SupervisorOverviewPage() {
           <section className="sov-block sov-risks">
             <h3>⚠ Risker</h3>
             <ul className="sov-list">
-              {(data.risks || []).map((r, i) => (
-                <li key={i} className={`sov-risk sov-risk-${r.level}`}><span className="sov-risk-lvl">{r.level}</span><span>{r.message_sv}</span></li>
+              {(Array.isArray(data.risks) ? data.risks : []).map((r, i) => (
+                <li key={i} className={`sov-risk sov-risk-${r && r.level ? r.level : 'info'}`}><span className="sov-risk-lvl"><SafeText value={r && r.level} fallback="info" /></span><span><SafeText value={r && r.message_sv} /></span></li>
               ))}
             </ul>
           </section>
@@ -178,8 +239,8 @@ export default function SupervisorOverviewPage() {
           <section className="sov-block sov-plan">
             <h3>📋 Handlingsplan — vad fokusera på</h3>
             <ol className="sov-list">
-              {(data.actionPlan || []).map((p, i) => (
-                <li key={i}><strong>[{p.priority}] {p.title_sv}</strong><br /><span className="sov-soft">{p.detail_sv}</span></li>
+              {(Array.isArray(data.actionPlan) ? data.actionPlan : []).map((p, i) => (
+                <li key={i}><strong>[<SafeText value={p && p.priority} fallback="low" />] <SafeText value={p && p.title_sv} /></strong><br /><span className="sov-soft"><SafeText value={p && p.detail_sv} fallback="" /></span></li>
               ))}
             </ol>
           </section>
