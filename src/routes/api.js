@@ -95,6 +95,8 @@ const supervisorOverviewService = require('../services/supervisorOverviewService
 const batchStatusService = require('../services/batchStatusService');
 const dataJobsStatusService = require('../services/dataJobsStatusService');
 const liveActivityService = require('../services/liveActivityService');
+const batchAutopilotService = require('../services/batchAutopilotService');
+const replayAutopilotService = require('../services/replayAutopilotService');
 const TEST_LIVE_SEND_COOLDOWN_MS = 5 * 60 * 1000;
 let testLiveSendLastAt = 0;
 const auditScanLastAt = new Map();
@@ -611,6 +613,28 @@ router.get('/status/live-activity', (req, res) => {
     res.json(liveActivityService.buildLiveActivity({ limit: req.query.limit || req.query.n }));
   } catch (err) {
     res.status(200).json({ ok: false, status: 'error', error: err.message, events: [], ...liveActivityService.SAFETY });
+  }
+});
+
+// ── Read-only Status: Batch Autopilot (safe, disabled by default) ────────────
+// Reports configuration/readiness only. It never starts a batch, never places
+// orders and never enables a broker. Default is fully disabled.
+router.get('/status/batch-autopilot', (req, res) => {
+  try {
+    res.json(batchAutopilotService.getStatus());
+  } catch (err) {
+    res.status(200).json({ ok: false, status: 'error', error: err.message, ...batchAutopilotService.SAFETY });
+  }
+});
+
+// ── Read-only Status: Replay Autopilot (safe, disabled by default) ───────────
+// Reports configuration/readiness only. It never starts a replay, never places
+// orders and never enables a broker. Default is fully disabled.
+router.get('/status/replay-autopilot', (req, res) => {
+  try {
+    res.json(replayAutopilotService.getStatus());
+  } catch (err) {
+    res.status(200).json({ ok: false, status: 'error', error: err.message, ...replayAutopilotService.SAFETY });
   }
 });
 
