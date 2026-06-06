@@ -579,6 +579,7 @@ async function buildOverview() {
   const batchAutopilot = lazy('./batchAutopilotService');
   const replayAutopilot = lazy('./replayAutopilotService');
   const replayStatus = lazy('./replayStatusService');
+  const paperTradingStatus = lazy('./paperTradingStatusService');
 
   const [
     system_health, learning, strategies, narrow, autopilotBlock,
@@ -714,6 +715,15 @@ async function buildOverview() {
     replaySummary = { status: 'error', totalReplayTests: 0, latestReplay: null, message: err && err.message ? err.message : 'unavailable', ...SAFETY };
   }
 
+  let paperTradingSummary = null;
+  try {
+    paperTradingSummary = paperTradingStatus && typeof paperTradingStatus.buildSupervisorPaperSummary === 'function'
+      ? paperTradingStatus.buildSupervisorPaperSummary()
+      : null;
+  } catch (err) {
+    paperTradingSummary = { status: 'error', count: 0, latestPaperTrade: null, message: err && err.message ? err.message : 'unavailable', ...SAFETY };
+  }
+
   return {
     ok: true,
     generatedAt: new Date().toISOString(),
@@ -726,6 +736,7 @@ async function buildOverview() {
     batchAutopilotSummary,
     replayAutopilotSummary,
     replaySummary,
+    paperTradingSummary,
     aiAnalystStatus,
     dataJobsSummary,
     liveActivitySummary,

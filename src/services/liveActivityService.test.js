@@ -29,6 +29,7 @@ function appendJsonl(file, rows) {
       batchFile: path.join(emptyRoot, 'missing-batches.json'),
       batchResultsDir: path.join(emptyRoot, 'missing-results'),
       replayRunsDir: path.join(emptyRoot, 'missing-replay-runs'),
+      paperTradesFile: path.join(emptyRoot, 'missing-paper-trades.jsonl'),
       eventLog: path.join(emptyRoot, 'missing-events.jsonl'),
     },
   });
@@ -49,6 +50,7 @@ function appendJsonl(file, rows) {
     batchFile: path.join(root, 'batches.json'),
     batchResultsDir: path.join(root, 'results'),
     replayRunsDir: path.join(root, 'replay-runs'),
+    paperTradesFile: path.join(root, 'paper-trades.jsonl'),
     eventLog: path.join(root, 'events.jsonl'),
   };
   appendJsonl(files.autopilotHistory, [
@@ -75,6 +77,10 @@ function appendJsonl(file, rows) {
     mode: 'scan_only', totalCandles: 200, totalEvents: 5, avgTradeScore: 57,
     bestSymbols: [{ symbol: 'QQQ', avgScore: 62, events: 2 }], createdAt: '2026-06-01T09:58:00.000Z',
   });
+  // Finished paper trade — read-only source. Dated earliest so feed ordering is stable.
+  appendJsonl(files.paperTradesFile, [
+    { tradeId: 'pt_test_1', symbol: 'MSFT', strategy_id: 'vwap_volume_breakout_long', strategyName: 'VWAP Volume Breakout Long', entryTime: '2026-06-01T09:50:00.000Z', exitTime: '2026-06-01T09:57:00.000Z', entryReasonSv: 'VWAP-test', exitReason: 'TARGET_HIT', pnlPct: 0.4, result: 'WIN', mode: 'paper' },
+  ]);
 
   const ok = svc.buildLiveActivity({ limit: 3, files });
   assert.equal(ok.status, 'ok');
@@ -83,7 +89,7 @@ function appendJsonl(file, rows) {
   assert.equal(ok.events[0].type, 'ai');
   assert.equal(ok.events[0].can_place_orders, false);
   assert.ok(ok.events.some((event) => event.type === 'learning'));
-  assert.equal(ok.sources.length, 7);
+  assert.equal(ok.sources.length, 8);
   // Replay run summaries surface as read-only "Replaytest klart" events.
   const replaySource = ok.sources.find((s) => s.name === 'replay');
   assert.ok(replaySource && replaySource.count === 1);
@@ -92,6 +98,16 @@ function appendJsonl(file, rows) {
   assert.ok(replayEvent && replayEvent.title === 'Replaytest klart');
   assert.equal(replayEvent.can_place_orders, false);
   assert.equal(replayEvent.timeframe, '2m');
+  // Finished paper trades surface as read-only "Låtsastest klart" events.
+  const paperSource = ok.sources.find((s) => s.name === 'paper');
+  assert.ok(paperSource && paperSource.count === 1);
+  const paperEvent = allEvents.find((e) => e.type === 'paper');
+  assert.ok(paperEvent && paperEvent.title === 'Låtsastest klart');
+  assert.equal(paperEvent.symbol, 'MSFT');
+  assert.equal(paperEvent.timeframe, '2m');
+  assert.equal(paperEvent.can_place_orders, false);
+  assert.equal(paperEvent.paperOnly, true);
+  assert.ok(paperEvent.result && paperEvent.result.includes('P/L +0.4%'));
 
   const maxed = svc.buildLiveActivity({ limit: 999, files });
   assert.ok(maxed.count <= 200);
@@ -137,6 +153,7 @@ function appendJsonl(file, rows) {
     batchFile: path.join(brokenRoot, 'broken-batches.json'),
     batchResultsDir: path.join(brokenRoot, 'missing-results'),
     replayRunsDir: path.join(brokenRoot, 'missing-replay-runs'),
+    paperTradesFile: path.join(brokenRoot, 'missing-paper-trades.jsonl'),
     eventLog: path.join(brokenRoot, 'missing-events.jsonl'),
   };
   fs.writeFileSync(brokenFiles.autopilotHistory, '{"timestamp":"2026-06-01T10:00:00.000Z","event":"plan_created"}\n{broken\n', 'utf8');

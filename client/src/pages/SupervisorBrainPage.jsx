@@ -39,6 +39,7 @@ function useResearchLabData(limit) {
     dataJobs: null,
     aiStatus: null,
     aiLatest: null,
+    paperTrading: null,
     loading: true,
     refreshing: false,
     error: '',
@@ -51,13 +52,14 @@ function useResearchLabData(limit) {
       if (!cancelled) {
         setState((prev) => ({ ...prev, loading: !prev.lastUpdated, refreshing: Boolean(prev.lastUpdated), error: '' }));
       }
-      const [overview, activity, batches, dataJobs, aiStatus, aiLatest] = await Promise.all([
+      const [overview, activity, batches, dataJobs, aiStatus, aiLatest, paperTrading] = await Promise.all([
         apiJson('/api/supervisor/overview').catch(() => null),
         apiJson(`/api/status/live-activity?limit=${limit}`).catch(() => null),
         apiJson('/api/status/batches').catch(() => null),
         apiJson('/api/status/data-jobs').catch(() => null),
         apiJson('/api/ai/analyst/status').catch(() => null),
         apiJson('/api/ai/analyst/latest').catch(() => null),
+        apiJson('/api/status/paper-trading').catch(() => null),
       ]);
       if (cancelled) return;
       setState({
@@ -67,6 +69,7 @@ function useResearchLabData(limit) {
         dataJobs,
         aiStatus,
         aiLatest,
+        paperTrading,
         loading: false,
         refreshing: false,
         error: overview ? '' : 'Kunde inte hämta full Supervisor-data. Vyn visar det som finns.',
@@ -496,6 +499,90 @@ function ReplayResultsCard({ replay }) {
   );
 }
 
+// Map a paper-trade result token to a calm, beginner-safe Swedish badge label.
+function paperResultLabel(result) {
+  const r = String(result || '').toUpperCase();
+  if (r === 'WIN') return 'Nådde mål';
+  if (r === 'LOSS') return 'Nådde stopp';
+  if (r === 'TIMEOUT') return 'Tidsgräns';
+  if (r === 'BREAKEVEN') return 'Nära noll';
+  return 'Testhändelse';
+}
+function paperResultTone(result) {
+  const r = String(result || '').toUpperCase();
+  if (r === 'WIN') return 'good';
+  if (r === 'LOSS') return 'danger';
+  if (r === 'TIMEOUT') return 'warning';
+  return 'blue';
+}
+
+// Read-only list of recent paper trades (låtsastester). No actions, no controls.
+function PaperTradeList({ trades, limit = 8 }) {
+  const visible = arr(trades).slice(0, limit);
+  if (!visible.length) return <EmptyState title="Inga låtsastester">Det finns inga låtsastester att visa ännu.</EmptyState>;
+  return (
+    <div className="research-history">
+      {visible.map((trade, index) => (
+        <Card key={`${trade.id || index}-${trade.timestamp || index}`} className="research-history-card">
+          <div className="research-history-top">
+            <div>
+              <strong>{timeText(trade.timestamp)}</strong>
+              <span>{simpleStrategyLabel(trade.strategyLabel || trade.strategy, 'Simulerad signal')}</span>
+            </div>
+            <Badge tone={paperResultTone(trade.result)}>{paperResultLabel(trade.result)}</Badge>
+          </div>
+          <div className="research-history-grid">
+            <span><b>Symbol/timeframe</b>{text([trade.symbol, trade.timeframe].filter(Boolean), 'Saknas')}</span>
+            <span><b>Resultat</b>{trade.pnl != null ? fmtSigned(trade.pnl) : '—'}</span>
+            <span><b>Varför signalen skapades</b><SafeText value={trade.entryReason} fallback="Saknas" /></span>
+            <span><b>Hur testet avslutades</b><SafeText value={trade.exitReason} fallback="Saknas" /></span>
+          </div>
+          {trade.lesson ? <p className="research-muted">Vad systemet lärde sig: <SafeText value={trade.lesson} /></p> : null}
+        </Card>
+      ))}
+    </div>
+  );
+}
+
+function PaperTradingCard({ paper }) {
+  const summary = paper?.summary || {};
+  const latest = paper?.latestPaperTrade && paper.latestPaperTrade.id ? paper.latestPaperTrade : null;
+  const best = summary.bestStrategy || null;
+  return (
+    <>
+      <div className="research-grid research-grid-4">
+        <MetricCard label="Simulerade signaler" value={fmtNumber(paper?.count || summary.totalTrades || 0)} help="Alla är testhändelser. Inga riktiga pengar." tone="blue" />
+        <MetricCard label="Andel lyckade tester" value={fmtPct(summary.winRate)} help="Win rate i låtsashandel." tone="good" />
+        <MetricCard label="Genomsnittligt resultat" value={summary.avgPnl != null ? fmtSigned(summary.avgPnl) : '—'} help="Simulerat resultat per test." tone="blue" />
+        <MetricCard label="Starkast i test" value={simpleStrategyLabel(best?.strategy, 'Samla mer data')} help={best?.winRate != null ? `Träff ${fmtPct(best.winRate)}` : 'För lite data ännu'} tone="purple" />
+      </div>
+      <Card className="research-wide">
+        <div className="research-card-title">
+          <strong>Senaste låtsastest</strong>
+          <Badge tone={latest ? paperResultTone(latest.result) : toneForStatus(paper?.status)}>
+            {latest ? paperResultLabel(latest.result) : text(paper?.status, 'Saknas')}
+          </Badge>
+        </div>
+        {latest ? (
+          <>
+            <p><strong>{timeText(latest.timestamp)}</strong> · <SafeText value={latest.symbol} fallback="Okänd symbol" /></p>
+            <div className="research-mini-grid">
+              <span><b>Strategi</b>{simpleStrategyLabel(latest.strategyLabel || latest.strategy, 'Simulerad signal')}</span>
+              <span><b>Symbol/timeframe</b>{text([latest.symbol, latest.timeframe].filter(Boolean), 'Saknas')}</span>
+              <span><b>Resultat</b>{latest.pnl != null ? fmtSigned(latest.pnl) : '—'}</span>
+              <span><b>Varför signalen skapades</b><SafeText value={latest.entryReason} fallback="Saknas" /></span>
+              <span><b>Hur testet avslutades</b><SafeText value={latest.exitReason} fallback="Saknas" /></span>
+              <span><b>Vad systemet lärde sig</b><SafeText value={latest.lesson} fallback="Saknas" /></span>
+            </div>
+          </>
+        ) : (
+          <p>Det finns inga låtsastester att visa ännu.</p>
+        )}
+      </Card>
+    </>
+  );
+}
+
 function DataPipelineCard({ dataJobs }) {
   const hourly = dataJobs?.hourlyImport || {};
   const weekly = dataJobs?.weeklyBackfill || {};
@@ -634,6 +721,9 @@ export default function SupervisorBrainPage() {
   const blocks = overview.blocks || {};
   const autopilot = blocks.autopilot?.summary || {};
   const canonical = overview.canonicalStats || {};
+  // Paper trading (Låtsashandel): prefer the dedicated read-only endpoint, fall
+  // back to the compact summary embedded in the overview if it didn't load.
+  const paperTrading = data.paperTrading || overview.paperTradingSummary || null;
   const latestTest = arr(overview.recentTests)[0] || null;
   const strategies = blocks.strategies?.summary || {};
   const topStrategies = arr(strategies.top);
@@ -812,14 +902,13 @@ export default function SupervisorBrainPage() {
 
         {active === 'paper' ? (
           <section className="research-section">
-            <SectionHeader eyebrow="Paper testing" title="Låtsashandel utan riktiga pengar" subtitle="Paper testing betyder låtsashandel. Inga riktiga pengar används och inga riktiga order läggs." />
-            <div className="research-grid research-grid-4">
-              <MetricCard label="Simulerade signaler" value={fmtNumber(canonical.totalTrades || 0)} help="Alla är testhändelser." tone="blue" />
-              <MetricCard label="Andel lyckade tester" value={fmtPct(canonical.winRate)} help="Baserat på testdata." tone="good" />
-              <MetricCard label="Genomsnittligt resultat" value={canonical.avgPnl != null ? fmtSigned(canonical.avgPnl) : '—'} help="Paper-resultat." tone="blue" />
-              <MetricCard label="Lärdom" value={simpleStrategyLabel(narrow.bestStrategy, 'Samla mer data')} help="Starkast i test just nu." tone="purple" />
-            </div>
-            <HistoryTimeline tests={recentTests.filter((test) => test.executed === true || test.type === 'run_completed')} limit={8} />
+            <SectionHeader eyebrow="Låtsashandel" title="Låtsashandel utan riktiga pengar" subtitle="Låtsashandel betyder simulering. Inga riktiga pengar används." aside={<Badge tone={toneForStatus(paperTrading?.status)}>{text(paperTrading?.status, 'Saknas')}</Badge>} />
+            {paperTrading?.status === 'degraded' || paperTrading?.status === 'error' ? (
+              <DegradedState title="Låtsashandeln kunde inte läsas helt"><SafeText value={paperTrading?.message} fallback="En källa svarade inte, men resten av sidan fungerar." /></DegradedState>
+            ) : null}
+            <PaperTradingCard paper={paperTrading} />
+            <h3 className="research-subhead">Senaste låtsastester</h3>
+            <PaperTradeList trades={paperTrading?.recentPaperTrades} limit={8} />
           </section>
         ) : null}
 

@@ -98,6 +98,7 @@ const liveActivityService = require('../services/liveActivityService');
 const batchAutopilotService = require('../services/batchAutopilotService');
 const replayAutopilotService = require('../services/replayAutopilotService');
 const replayStatusService = require('../services/replayStatusService');
+const paperTradingStatusService = require('../services/paperTradingStatusService');
 const TEST_LIVE_SEND_COOLDOWN_MS = 5 * 60 * 1000;
 let testLiveSendLastAt = 0;
 const auditScanLastAt = new Map();
@@ -647,6 +648,18 @@ router.get('/status/replay', (req, res) => {
     res.json(replayStatusService.buildReplayStatus());
   } catch (err) {
     res.status(200).json({ ok: false, status: 'error', error: err.message, ...replayStatusService.SAFETY });
+  }
+});
+
+// ── Read-only Backend Status: Paper Trading (Låtsashandel) ───────────────────
+// Reads finished paper-trade results only (data/paper-trading/trades.jsonl). It
+// never starts a paper trade, never places orders and never enables a broker.
+// For the live agent controls see /paper-trading/* — this is read-only status.
+router.get('/status/paper-trading', (req, res) => {
+  try {
+    res.json(paperTradingStatusService.buildPaperTradingStatus());
+  } catch (err) {
+    res.status(200).json({ ok: false, status: 'error', error: err.message, ...paperTradingStatusService.SAFETY });
   }
 });
 

@@ -18,6 +18,7 @@ const DEFAULT_FILES = Object.freeze({
   batchFile: path.join(ROOT, 'data/strategy-batches/batches-v1.json'),
   batchResultsDir: path.join(ROOT, 'data/strategy-batches/results'),
   replayRunsDir: path.join(ROOT, 'data/replay/runs'),
+  paperTradesFile: path.join(ROOT, 'data/paper-trading/trades.jsonl'),
   eventLog: path.join(ROOT, 'data/events/trading-events.jsonl'),
 });
 
@@ -319,6 +320,39 @@ function eventsFromReplayRuns(dir, limit) {
   });
 }
 
+// Read the newest finished paper trades (data/paper-trading/trades.jsonl) and
+// turn each into one read-only "Låtsastest klart" event. Never starts a trade,
+// never places an order. Pure read of an existing append-only log.
+function eventsFromPaperTrades(file, limit) {
+  return sourceRead('paper', () => {
+    const read = readJsonlTail(file, Math.max(1, Math.min(limit, 40)));
+    const rows = [];
+    for (const row of read.rows) {
+      if (!row || typeof row !== 'object') continue;
+      const ts = firstPresent(row.exitTime, row.closed_at, row.entryTime, row.opened_at);
+      if (!ts) continue;
+      const result = str(row.result ?? row.outcome, '').toUpperCase();
+      const label = row.strategyName || row.familyLabelSv || row.signalSubtype || row.signalFamily || 'Signal';
+      const exit = row.exitReason || row.exit_reason || null;
+      rows.push({
+        event: 'paper_trade.simulated',
+        type: 'paper_trade.simulated',
+        source: 'paper',
+        timestamp: ts,
+        status: 'completed',
+        id: row.tradeId || row.id || row.signalId || null,
+        symbol: row.symbol || null,
+        strategy: row.strategy_id || row.strategyId || row.strategy || null,
+        timeframe: '2m',
+        paper_pnl_percent: Number.isFinite(Number(row.pnlPct)) ? Number(row.pnlPct) : null,
+        message: `${row.symbol || 'Signal'} · ${label}${result ? ` · ${result}` : ''}${exit ? ` (${exit})` : ''}`,
+        paper_only: true,
+      });
+    }
+    return rows;
+  });
+}
+
 function eventsFromBatchResults(dir, limit) {
   return sourceRead('batch_results', () => {
     const rows = [];
@@ -341,6 +375,7 @@ function buildLiveActivity(options = {}) {
     eventsFromBatches(files.batchFile, sourceLimit),
     eventsFromBatchResults(files.batchResultsDir, sourceLimit),
     eventsFromReplayRuns(files.replayRunsDir, sourceLimit),
+    eventsFromPaperTrades(files.paperTradesFile, sourceLimit),
     eventsFromJsonl('system_events', files.eventLog, sourceLimit),
   ];
   const warnings = sources.filter((s) => s.status === 'degraded').map((s) => ({ source: s.name, error: s.error || 'source_degraded' }));
