@@ -104,6 +104,37 @@ function text(value, fallback = 'Saknas') {
   return fallback;
 }
 
+const SIMPLE_EVENT_LABELS = {
+  run_completed: 'Test klart',
+  run_blocked: 'Test stoppat',
+  plan_validated: 'Plan kontrollerad',
+  'signal detected': 'Signal hittad',
+  signal_detected: 'Signal hittad',
+  'strategy matched': 'Strategi matchad',
+  strategy_matched: 'Strategi matchad',
+  SHORT_TRIGGERED: 'Signal hittad',
+  dry_run: 'Säker testkörning',
+};
+
+const SIMPLE_STRATEGY_LABELS = {
+  narrow_fakeout_reversal_v1: 'Fakeout-vändning',
+  narrow_vwap_mean_reversion_v1: 'VWAP-vändning',
+  narrow_breakout_v1: 'Breakout-test',
+  vwap_volume_breakout_long: 'Volym-breakout',
+};
+
+function simpleEventLabel(value, fallback = 'Systemhändelse') {
+  const raw = text(value, '').trim();
+  if (!raw) return fallback;
+  return SIMPLE_EVENT_LABELS[raw] || SIMPLE_EVENT_LABELS[raw.toLowerCase()] || raw;
+}
+
+function simpleStrategyLabel(value, fallback = 'Strategi') {
+  const raw = text(value, '').trim();
+  if (!raw) return fallback;
+  return SIMPLE_STRATEGY_LABELS[raw] || raw;
+}
+
 function fmtNumber(value, fallback = '0') {
   const n = Number(value);
   return Number.isFinite(n) ? new Intl.NumberFormat('sv-SE').format(n) : fallback;
@@ -245,13 +276,13 @@ function SystemPipeline() {
 
 function activityLabel(event) {
   if (!event) return 'Systemhändelse';
-  if (event.title) return event.title;
+  if (event.title) return simpleEventLabel(event.title);
   if (event.type === 'autopilot') return 'Autopilot planerade';
   if (event.type === 'batch') return 'Batchtest uppdaterades';
   if (event.type === 'data_job') return 'Datahämtning uppdaterades';
   if (event.type === 'ai') return 'AI-analys uppdaterades';
   if (event.type === 'learning') return 'Learning uppdaterades';
-  return text(event.type, 'Systemhändelse');
+  return simpleEventLabel(event.type);
 }
 
 function statusSv(status) {
@@ -280,12 +311,12 @@ function LiveActivityFeed({ events = [], limit, compact = false }) {
               <strong>{activityLabel(event)}</strong>
               <Badge tone={toneForStatus(event.status)}>{statusSv(event.status)}</Badge>
             </div>
-            <p><SafeText value={event.message} fallback="Systemet uppdaterade status." /></p>
+            <p><SafeText value={simpleEventLabel(event.message, 'Systemet uppdaterade status.')} fallback="Systemet uppdaterade status." /></p>
             <div className="research-event-meta">
-              {event.strategy ? <span><SafeText value={event.strategy} /></span> : null}
+              {event.strategy ? <span><SafeText value={simpleStrategyLabel(event.strategy)} /></span> : null}
               {event.symbol ? <span><SafeText value={event.symbol} /></span> : null}
               {event.timeframe ? <span><SafeText value={event.timeframe} /></span> : null}
-              <span>paper only</span>
+              <span>Endast testläge</span>
             </div>
           </div>
         </div>
@@ -306,17 +337,17 @@ function HistoryTimeline({ tests, limit }) {
             <div className="research-history-top">
               <div>
                 <strong>{timeText(test.timestamp)}</strong>
-                <span>{text(test.strategy, 'Narrow Autopilot')}</span>
+                <span>{simpleStrategyLabel(test.strategy, 'Narrow Autopilot')}</span>
               </div>
               <Badge tone={blocked ? 'warning' : toneForStatus(test.type === 'run_completed' ? 'completed' : 'info')}>
                 {blocked ? 'Stoppades' : test.type === 'run_completed' ? 'Test klart' : 'Planering'}
               </Badge>
             </div>
             <div className="research-history-grid">
-              <span><b>Testtyp</b>{text(test.type, 'Testhändelse')}</span>
+              <span><b>Testtyp</b>{simpleEventLabel(test.type, 'Testhändelse')}</span>
               <span><b>Symbol/timeframe</b>{text([test.symbol, test.timeframe].filter(Boolean), 'Saknas')}</span>
-              <span><b>Säker testkörning</b>{test.dryRun === true ? 'Dry-run' : 'Paper/batch-test'}</span>
-              <span><b>Ingen riktig körning</b>{test.executed === false ? 'Ja' : test.executed === true ? 'Paper/batch klar' : 'Ja'}</span>
+              <span><b>Säker testkörning</b>{test.dryRun === true ? 'Säker testkörning' : 'Paper/batch-test'}</span>
+              <span><b>Ingen riktig körning</b>{test.executed === false ? 'Ja' : test.executed === true ? 'Testdata klar' : 'Ja'}</span>
               <span><b>Andel lyckade tester</b>{test.winRate != null ? fmtPct(test.winRate) : '—'}</span>
               <span><b>Genomsnittligt resultat</b>{test.avgResult != null ? fmtSigned(test.avgResult) : '—'}</span>
             </div>
@@ -332,10 +363,16 @@ function HistoryTimeline({ tests, limit }) {
 
 function StrategyCard({ item, tone = 'neutral', note }) {
   if (!item) return <EmptyState title="Saknas">För lite data för att visa strategi.</EmptyState>;
+  const rawName = text(item.key || item.strategy || item.strategy_id || item.name, '');
+  const label = simpleStrategyLabel(rawName);
+  const showTechnicalName = rawName && rawName !== label;
   return (
     <Card className={`research-strategy research-strategy-${tone}`}>
       <div className="research-card-title">
-        <strong><SafeText value={item.key || item.strategy || item.strategy_id || item.name} fallback="Strategi" /></strong>
+        <strong>
+          <SafeText value={label} fallback="Strategi" />
+          {showTechnicalName ? <small><SafeText value={rawName} /></small> : null}
+        </strong>
         <Badge tone={tone}>{note || 'Testdata'}</Badge>
       </div>
       <div className="research-mini-grid research-mini-grid-quiet">
@@ -353,7 +390,7 @@ function BatchStatusCard({ batches }) {
   const worst = batches?.worstOutcome || latest?.worstOutcome || null;
   return (
     <div className="research-grid research-grid-3">
-      <MetricCard label="Körs batch nu?" value={batches?.isRunning ? 'Ja' : 'Nej'} help="Endast visning, ingen kontroll här." tone={batches?.isRunning ? 'warning' : 'good'} />
+      <MetricCard label="Batch aktiv nu?" value={batches?.isRunning ? 'Ja' : 'Nej'} help="Endast visning, ingen kontroll här." tone={batches?.isRunning ? 'warning' : 'good'} />
       <MetricCard label="Batcher totalt" value={fmtNumber(batches?.totalBatches || 0)} help={`${fmtNumber(batches?.completedBatches || 0)} klara`} tone="blue" />
       <MetricCard label="Misslyckade" value={fmtNumber(batches?.failedBatches || 0)} help="Visas för felsökning." tone={batches?.failedBatches ? 'warning' : 'good'} />
       <Card className="research-wide">
@@ -363,7 +400,7 @@ function BatchStatusCard({ batches }) {
         </div>
         <p><SafeText value={latest?.id} fallback="Ingen batch ännu" /></p>
         <div className="research-mini-grid">
-          <span><b>Strategi</b>{text(latest?.strategy, 'Saknas')}</span>
+          <span><b>Strategi</b>{simpleStrategyLabel(latest?.strategy, 'Saknas')}</span>
           <span><b>Symboler</b>{text(latest?.symbols, 'Saknas')}</span>
           <span><b>Timeframe</b>{text(latest?.timeframe, 'Saknas')}</span>
           <span><b>Kombinationer</b>{fmtNumber(latest?.combinationsTested || 0)}</span>
@@ -371,7 +408,7 @@ function BatchStatusCard({ batches }) {
       </Card>
       <Card>
         <div className="research-card-title"><strong>Bästa outcome</strong><Badge tone="good">Bäst</Badge></div>
-        <p><SafeText value={best?.strategy} fallback="Saknas" /></p>
+        <p><SafeText value={simpleStrategyLabel(best?.strategy, 'Saknas')} fallback="Saknas" /></p>
         <div className="research-mini-grid">
           <span><b>Win rate</b>{best?.winRate != null ? fmtPct(best.winRate) : '—'}</span>
           <span><b>Avg</b>{best?.avgResult != null ? fmtSigned(best.avgResult) : '—'}</span>
@@ -379,7 +416,7 @@ function BatchStatusCard({ batches }) {
       </Card>
       <Card>
         <div className="research-card-title"><strong>Sämsta outcome</strong><Badge tone="warning">Svagast</Badge></div>
-        <p><SafeText value={worst?.strategy} fallback="Saknas" /></p>
+        <p><SafeText value={simpleStrategyLabel(worst?.strategy, 'Saknas')} fallback="Saknas" /></p>
         <div className="research-mini-grid">
           <span><b>Win rate</b>{worst?.winRate != null ? fmtPct(worst.winRate) : '—'}</span>
           <span><b>Avg</b>{worst?.avgResult != null ? fmtSigned(worst.avgResult) : '—'}</span>
@@ -461,8 +498,8 @@ function AiAnalystSummary({ status, latest, onRefresh, refreshing }) {
       <Card>
         <div className="research-card-title"><strong>Strategier enligt AI</strong><Badge tone="purple">Analys</Badge></div>
         <div className="research-mini-grid">
-          <span><b>Bäst</b>{text(output.best_strategy, 'Saknas')}</span>
-          <span><b>Svagast</b>{text(output.weakest_strategy, 'Saknas')}</span>
+          <span><b>Bäst</b>{simpleStrategyLabel(output.best_strategy, 'Saknas')}</span>
+          <span><b>Svagast</b>{simpleStrategyLabel(output.weakest_strategy, 'Saknas')}</span>
         </div>
       </Card>
       <Card>
@@ -611,7 +648,7 @@ export default function SupervisorBrainPage() {
             <div className="research-grid research-grid-4">
               <MetricCard label="Är systemet säkert?" value={safetyLocked ? 'Ja' : 'Kontrollera'} help="Paper only betyder låtsashandel och analys." tone={safetyLocked ? 'good' : 'danger'} />
               <MetricCard label="Autopilot" value={autopilot.schedulerActive ? 'Jobbar i bakgrunden' : 'Väntar'} help="Autopilot får bara planera och analysera." tone={autopilot.schedulerActive ? 'blue' : 'warning'} />
-              <MetricCard label="Senaste test" value={latestTest ? text(latestTest.type, 'Testhändelse') : 'Saknas'} help={latestTest ? timeText(latestTest.timestamp) : 'Ingen historik ännu'} tone={latestTest ? 'blue' : 'warning'} />
+              <MetricCard label="Senaste test" value={latestTest ? simpleEventLabel(latestTest.type, 'Testhändelse') : 'Saknas'} help={latestTest ? timeText(latestTest.timestamp) : 'Ingen historik ännu'} tone={latestTest ? 'blue' : 'warning'} />
               <MetricCard label="Nästa säkra test" value={text(recommended?.title_sv || narrow.recommendedNextTest, 'Vänta på mer data')} help={text(recommended?.detail_sv, 'Rekommendation, inte automatisk ändring.')} tone="purple" />
             </div>
             <SystemPipeline />
@@ -632,7 +669,7 @@ export default function SupervisorBrainPage() {
 
         {active === 'history' ? (
           <section className="research-section">
-            <SectionHeader eyebrow="Historik" title="Senaste testhändelser" subtitle="Dry-run betyder säker testkörning. executed=false betyder ingen riktig körning." aside={(
+            <SectionHeader eyebrow="Historik" title="Senaste testhändelser" subtitle="Säker testkörning betyder att systemet planerar eller testar utan riktig handel. Ingen riktig körning betyder att inget farligt genomfördes." aside={(
               <label className="research-select-label">
                 Visa
                 <select value={historyLimit} onChange={(event) => setHistoryLimit(Number(event.target.value))}>
@@ -665,7 +702,7 @@ export default function SupervisorBrainPage() {
                 <div className="research-card-title"><strong>Svagast just nu</strong><Badge tone="warning">Behöver mer test</Badge></div>
                 {visibleWeakStrategies.length ? visibleWeakStrategies.map((item, index) => <StrategyCard key={item.key || item.strategy || `worst-${index}`} item={item} tone="warning" note="Svagast" />) : <EmptyState />}
               </Card>
-              <MetricCard label="Bästa narrow-strategi" value={text(narrow.bestStrategy, 'Saknas')} help="Från Narrow Learning." tone="good" />
+              <MetricCard label="Bästa narrow-strategi" value={simpleStrategyLabel(narrow.bestStrategy, 'Saknas')} help="Från Narrow Learning." tone="good" />
               <MetricCard label="Inte testade nog" value={text(learning.connectorSummary?.strategiesTracked ? 'Fler strategier följs' : 'För lite data')} help="Mer paper/replay/batch behövs." tone="warning" />
             </div>
           </section>
@@ -701,7 +738,7 @@ export default function SupervisorBrainPage() {
               <MetricCard label="Simulerade signaler" value={fmtNumber(canonical.totalTrades || 0)} help="Alla är testhändelser." tone="blue" />
               <MetricCard label="Andel lyckade tester" value={fmtPct(canonical.winRate)} help="Baserat på testdata." tone="good" />
               <MetricCard label="Genomsnittligt resultat" value={canonical.avgPnl != null ? fmtSigned(canonical.avgPnl) : '—'} help="Paper-resultat." tone="blue" />
-              <MetricCard label="Lärdom" value={text(narrow.bestStrategy, 'Samla mer data')} help="Starkast i test just nu." tone="purple" />
+              <MetricCard label="Lärdom" value={simpleStrategyLabel(narrow.bestStrategy, 'Samla mer data')} help="Starkast i test just nu." tone="purple" />
             </div>
             <HistoryTimeline tests={recentTests.filter((test) => test.executed === true || test.type === 'run_completed')} limit={8} />
           </section>
@@ -724,7 +761,7 @@ export default function SupervisorBrainPage() {
 
         {active === 'risks' ? (
           <section className="research-section">
-            <SectionHeader eyebrow="Risker" title="Risker och blockers" subtitle="Live trading off visas som positiv säkerhet. Övriga varningar visar vad som behöver mer data eller kontroll." />
+            <SectionHeader eyebrow="Risker" title="Risker och blockers" subtitle="Livehandel avstängd visas som positiv säkerhet. Övriga varningar visar vad som behöver mer data eller kontroll." />
             <RiskBlockerCard risks={overview.risks} dataJobs={data.dataJobs} batches={data.batches} activity={data.activity} />
           </section>
         ) : null}
