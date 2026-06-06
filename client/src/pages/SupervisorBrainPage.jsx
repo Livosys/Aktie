@@ -87,6 +87,7 @@ function apiJson(url) {
 
 function useSupervisorData() {
   const [state, setState] = useState({
+    overview: null,
     narrow: null,
     learning: null,
     autopilot: null,
@@ -103,7 +104,10 @@ function useSupervisorData() {
     async function load() {
       if (!cancelled) setState((prev) => ({ ...prev, loading: prev.lastUpdated ? prev.loading : true, refreshing: !!prev.lastUpdated, error: '' }));
       try {
-        const [narrow, learning, autopilot, coreLearning] = await Promise.all([
+        const [overview, narrow, learning, autopilot, coreLearning] = await Promise.all([
+          // Primary system-wide data source (read-only, fault-isolated server-side).
+          apiJson('/api/supervisor/overview').catch(() => null),
+          // Kept as supplementary/fallback so the page stays stable if overview is cold.
           apiJson('/api/supervisor/narrow-state').catch(() => null),
           apiJson('/api/learning/narrow-performance').catch(() => null),
           // Autopilot is read-only and optional — never block the page on it.
@@ -112,6 +116,7 @@ function useSupervisorData() {
         ]);
         if (cancelled) return;
         setState({
+          overview,
           narrow,
           learning,
           autopilot,
