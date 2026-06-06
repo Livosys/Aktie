@@ -79,6 +79,18 @@ const overview = require('./supervisorOverviewService');
   assert.equal(o.batchSummary.canPlaceOrders, false);
   assert.equal(o.batchSummary.liveTradingEnabled, false);
   assert.equal(o.batchSummary.brokerEnabled, false);
+  assert.ok(o.aiAnalystStatus && typeof o.aiAnalystStatus === 'object', 'aiAnalystStatus present');
+  assert.equal(o.aiAnalystStatus.mode, 'paper_only');
+  assert.equal(o.aiAnalystStatus.can_place_orders, false);
+  assert.equal(o.aiAnalystStatus.live_trading_enabled, false);
+  assert.ok(o.dataJobsSummary && typeof o.dataJobsSummary === 'object', 'dataJobsSummary present');
+  assert.equal(o.dataJobsSummary.mode, 'paper_only');
+  assert.equal(o.dataJobsSummary.can_place_orders, false);
+  assert.equal(o.dataJobsSummary.live_trading_enabled, false);
+  assert.ok(o.liveActivitySummary && typeof o.liveActivitySummary === 'object', 'liveActivitySummary present');
+  assert.equal(o.liveActivitySummary.mode, 'paper_only');
+  assert.equal(o.liveActivitySummary.can_place_orders, false);
+  assert.equal(o.liveActivitySummary.live_trading_enabled, false);
 
   // ── 7. normalizeRecentTest maps a real event and drops junk ─────────────────
   const norm = overview.normalizeRecentTest({
@@ -140,6 +152,25 @@ const overview = require('./supervisorOverviewService');
   assert.equal(errorBatch.totalBatches, 0);
   assert.equal(errorBatch.canPlaceOrders, false);
   assert.equal(errorBatch.liveTradingEnabled, false);
+
+  const aiStatus = overview.summarizeAiAnalystStatus({
+    provider: 'disabled',
+    enabled: false,
+    cacheEnabled: true,
+    cacheTtlMs: 300000,
+    latestExists: true,
+    latestTimestamp: '2026-06-01T00:00:00.000Z',
+    latestStatus: 'disabled',
+    latestProvider: 'disabled',
+    latestDurationMs: 3,
+    logPathExists: true,
+    logEventCount: 4,
+  });
+  assert.equal(aiStatus.provider, 'disabled');
+  assert.equal(aiStatus.enabled, false);
+  assert.equal(aiStatus.logEventCount, 4);
+  assert.equal(aiStatus.mode, 'paper_only');
+  assert.equal(aiStatus.can_place_orders, false);
 
   // ── 9. empty / broken history never crashes; overview stays ok (HTTP 200) ───
   const fs = require('fs'); const os = require('os'); const path = require('path');

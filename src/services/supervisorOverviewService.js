@@ -183,6 +183,26 @@ function summarizeOpsAdvisor(o) {
   };
 }
 
+function summarizeAiAnalystStatus(status) {
+  if (!status) return null;
+  return {
+    provider: status.provider || null,
+    enabled: status.enabled === true,
+    model: status.model || null,
+    cacheEnabled: status.cacheEnabled === true,
+    cacheTtlMs: num(status.cacheTtlMs),
+    latestExists: status.latestExists === true,
+    latestTimestamp: status.latestTimestamp || null,
+    latestStatus: status.latestStatus || null,
+    latestProvider: status.latestProvider || null,
+    latestDurationMs: num(status.latestDurationMs),
+    logPathExists: status.logPathExists === true,
+    logEventCount: num(status.logEventCount),
+    lastError: status.lastError || null,
+    ...SAFETY,
+  };
+}
+
 function normalizeBatchOutcome(row) {
   if (!row || typeof row !== 'object' || Array.isArray(row)) return null;
   return {
@@ -519,6 +539,9 @@ async function buildOverview() {
   const optimization = lazy('./aiOptimizationAgentService');
   const opsAdvisor = lazy('./supervisorOperationsAdvisorService');
   const strategyBatch = lazy('./strategyBatchTestService');
+  const aiAnalyst = lazy('./aiAnalystService');
+  const dataJobsStatus = lazy('./dataJobsStatusService');
+  const liveActivity = lazy('./liveActivityService');
 
   const [
     system_health, learning, strategies, narrow, autopilotBlock,
@@ -600,6 +623,31 @@ async function buildOverview() {
     };
   }
 
+  let aiAnalystStatus = null;
+  try {
+    aiAnalystStatus = summarizeAiAnalystStatus(aiAnalyst && typeof aiAnalyst.getStatus === 'function' ? aiAnalyst.getStatus() : null);
+  } catch (err) {
+    aiAnalystStatus = { status: 'error', provider: null, enabled: false, lastError: err && err.message ? err.message : 'unavailable', ...SAFETY };
+  }
+
+  let dataJobsSummary = null;
+  try {
+    dataJobsSummary = dataJobsStatus && typeof dataJobsStatus.buildSupervisorDataJobsSummary === 'function'
+      ? dataJobsStatus.buildSupervisorDataJobsSummary()
+      : null;
+  } catch (err) {
+    dataJobsSummary = { status: 'error', message: err && err.message ? err.message : 'unavailable', ...SAFETY };
+  }
+
+  let liveActivitySummary = null;
+  try {
+    liveActivitySummary = liveActivity && typeof liveActivity.buildSupervisorLiveActivitySummary === 'function'
+      ? liveActivity.buildSupervisorLiveActivitySummary()
+      : null;
+  } catch (err) {
+    liveActivitySummary = { status: 'error', count: 0, latestEvents: [], message: err && err.message ? err.message : 'unavailable', ...SAFETY };
+  }
+
   return {
     ok: true,
     generatedAt: new Date().toISOString(),
@@ -609,6 +657,9 @@ async function buildOverview() {
     recentTests,
     recentTestsStatus,
     batchSummary,
+    aiAnalystStatus,
+    dataJobsSummary,
+    liveActivitySummary,
     risks: deriveRisks(blocks, canonicalStats),
     actionPlan: deriveActionPlan(blocks),
   };
@@ -652,4 +703,5 @@ module.exports = {
   buildBatchSummary,
   normalizeBatch,
   normalizeBatchResult,
+  summarizeAiAnalystStatus,
 };
