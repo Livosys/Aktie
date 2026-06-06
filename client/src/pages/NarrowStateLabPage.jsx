@@ -53,6 +53,18 @@ const LEARNING_QUESTIONS = [
   'Vilken timeframe fungerar bäst?',
 ];
 
+const BEGINNER_TERMS = [
+  ['paper_only', 'Simulering och analys. Inga riktiga order.'],
+  ['dry-run', 'Systemet planerar och kontrollerar, men startar inget riktigt test.'],
+  ['scheduler', 'Automatisk planering som körs med jämna mellanrum.'],
+  ['execute avstängt', 'Systemet får inte starta batch- eller paper-körningar automatiskt.'],
+  ['cooldown', 'Väntetid innan nästa automatiska planering.'],
+  ['blocked reason', 'Förklarar varför systemet stoppade eller hoppade över något.'],
+  ['winRate', 'Hur ofta testerna blev positiva.'],
+  ['avgPnL', 'Genomsnittligt resultat i testdata.'],
+  ['rekommenderat test', 'Nästa säkra research-test som systemet föreslår.'],
+];
+
 function regimeTone(regime) {
   if (regime === 'narrow_breakout_watch') return 'green';
   if (regime === 'narrow_fakeout_risk') return 'amber';
@@ -62,6 +74,39 @@ function regimeTone(regime) {
 
 function Badge({ tone = 'blue', children }) {
   return <span className={`ns-badge ns-badge-${tone}`}>{children}</span>;
+}
+
+function timeText(iso) {
+  if (!iso) return 'Saknas';
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) return 'Saknas';
+  return new Intl.DateTimeFormat('sv-SE', { dateStyle: 'medium', timeStyle: 'short' }).format(date);
+}
+
+function schedulerRecommendationText(rec) {
+  if (!rec) return null;
+  const window = rec.dateWindowSelected || {};
+  const band = rec.selectedNarrowScoreBand ? (BAND_LABELS[rec.selectedNarrowScoreBand] || rec.selectedNarrowScoreBand) : 'Band saknas';
+  const windowText = window.dateFrom && window.dateTo ? `${window.dateFrom} - ${window.dateTo}` : 'Inget fönster valt';
+  return {
+    title: rec.strategy_id || 'Nästa narrow-test',
+    band,
+    windowText,
+    reason: rec.reason || 'Systemet har planerat nästa säkra dry-run.',
+  };
+}
+
+function BeginnerTerms() {
+  return (
+    <div className="ns-term-grid">
+      {BEGINNER_TERMS.map(([term, help]) => (
+        <div key={term} className="ns-term-card">
+          <strong>{term}</strong>
+          <span>{help}</span>
+        </div>
+      ))}
+    </div>
+  );
 }
 
 function SymbolRow({ item }) {
@@ -88,6 +133,9 @@ export default function NarrowStateLabPage() {
   const meanReversion = Array.isArray(ns?.meanReversion) ? ns.meanReversion : [];
   const strategies = Array.isArray(ns?.strategies) ? ns.strategies : [];
   const latestLessons = Array.isArray(ns?.latestLessons) ? ns.latestLessons : [];
+  const scheduler = ns?.narrowAutopilotScheduler || null;
+  const schedulerRec = schedulerRecommendationText(scheduler?.lastRecommendedTest);
+  const schedulerDryRun = scheduler?.lastScheduledDryRun || null;
   // Narrow Performance Learning (measured from paper/replay/batch). May be null.
   const perf = ns?.performanceLearning || null;
   const CONF_LABELS = { none: 'Ingen', low: 'Låg', medium: 'Medium', high: 'Hög' };
@@ -108,8 +156,75 @@ export default function NarrowStateLabPage() {
 
       {/* Safety banner — always shows the locked state */}
       <div className="ns-safety-banner">
-        🟢 Paper Only · live_trading_enabled=false · can_place_orders=false · actions_allowed=false · broker_enabled=false
+        <strong>Tryggt läge: Paper only.</strong>
+        <span>Systemet simulerar och analyserar. Live trading, broker och riktiga order är avstängda.</span>
+        <small>live_trading_enabled=false · can_place_orders=false · actions_allowed=false · broker_enabled=false</small>
       </div>
+
+      <section className="ns-panel ns-beginner-guide">
+        <h2>Snabbguide för nya användare</h2>
+        <p>
+          Den här sidan visar när marknaden är lugn och ihoptryckt. Systemet använder det för att
+          planera säkra research-tester i paper/replay/batch, inte för att handla live.
+        </p>
+        <BeginnerTerms />
+      </section>
+
+      <section className="ns-panel ns-autopilot-scheduler">
+        <div className="ns-autopilot-head">
+          <div>
+            <h2>Automatisk Narrow-planering</h2>
+            <p>Schedulern letar efter nästa rimliga research-test. Den kör bara dry-run och kan inte lägga order.</p>
+          </div>
+          <Badge tone={scheduler?.schedulerActive ? 'green' : 'amber'}>
+            {scheduler?.schedulerActive ? 'Automatisk planering aktiv' : 'Planering pausad'}
+          </Badge>
+        </div>
+        <div className="ns-autopilot-grid">
+          <div>
+            <span>Endast dry-run</span>
+            <strong>{scheduler?.dryRunOnly ? 'Ja, bara planering' : 'Kontrollera'}</strong>
+          </div>
+          <div>
+            <span>Execute</span>
+            <strong>{scheduler?.executionEnabled ? 'På' : 'Avstängt automatiskt'}</strong>
+          </div>
+          <div>
+            <span>Senaste körning</span>
+            <strong>{timeText(scheduler?.lastRunAt)}</strong>
+          </div>
+          <div>
+            <span>Nästa körning</span>
+            <strong>{timeText(scheduler?.nextRunAt)}</strong>
+          </div>
+          <div>
+            <span>Cooldown</span>
+            <strong>{scheduler?.cooldownActive ? `Aktiv till ${timeText(scheduler.cooldownUntil)}` : 'Inte aktiv'}</strong>
+          </div>
+          <div>
+            <span>Safety</span>
+            <strong>{scheduler?.mode || 'paper_only'}</strong>
+          </div>
+        </div>
+        <div className="ns-autopilot-note">
+          <strong>Senaste rekommenderade test:</strong>{' '}
+          {schedulerRec
+            ? `${schedulerRec.title} · ${schedulerRec.band} · ${schedulerRec.windowText}`
+            : 'Ingen rekommendation sparad ännu. Det betyder bara att schedulern inte har hittat nästa tydliga test i sparad status.'}
+          {schedulerRec?.reason ? <p>{schedulerRec.reason}</p> : null}
+        </div>
+        <div className="ns-simple-explainers">
+          <span><strong>Dry-run</strong> = planerar och analyserar.</span>
+          <span><strong>Execute avstängt</strong> = startar inte körningar automatiskt.</span>
+          <span><strong>Blocked reason</strong> = varför systemet väntar eller stoppar.</span>
+        </div>
+        <div className="ns-badge-row">
+          <Badge tone={schedulerDryRun?.dryRun ? 'green' : 'amber'}>dryRun={String(Boolean(schedulerDryRun?.dryRun))}</Badge>
+          <Badge tone={!schedulerDryRun?.executed ? 'green' : 'amber'}>executed={String(Boolean(schedulerDryRun?.executed))}</Badge>
+          <Badge tone={scheduler?.blockedReason ? 'amber' : 'green'}>blockedReason={scheduler?.blockedReason || 'Ingen'}</Badge>
+          <Badge tone="green">paper_only</Badge>
+        </div>
+      </section>
 
       {/* What is Narrow State? — beginner explainer */}
       <section className="ns-panel ns-explainer">
@@ -119,6 +234,10 @@ export default function NarrowStateLabPage() {
           trycks ihop (compression). Efter en sådan period brukar något hända: ett{' '}
           <strong>breakout</strong> (priset bryter ut), ett <strong>fakeout</strong> (falskt utbrott
           som vänder), eller en <strong>mean reversion</strong> (återgång mot mitten/VWAP).
+        </p>
+        <p>
+          Om listorna är tomma är det inte ett fel. Det betyder oftast att marknaden inte är tillräckligt
+          ihoptryckt just nu eller att systemet väntar på mer testdata.
         </p>
         <div className="ns-badge-row">
           <Badge tone="blue">Compression</Badge>
@@ -166,8 +285,8 @@ export default function NarrowStateLabPage() {
 
       {ns && topSymbols.length === 0 && breakoutWatch.length === 0 && fakeoutRisk.length === 0 ? (
         <p className="ns-empty ns-empty-wide">
-          Inga symboler i Narrow State just nu. Det är normalt — systemet väntar på att marknaden
-          trycks ihop. Vyn uppdateras automatiskt.
+          Inga symboler i Narrow State just nu. Det är normalt: systemet väntar på att marknaden blir
+          lugn och ihoptryckt nog för att vara intressant. Inga tester eller order startas härifrån.
         </p>
       ) : null}
 
@@ -175,14 +294,14 @@ export default function NarrowStateLabPage() {
         <section className="ns-panel">
           <h2>📉 Narrow State just nu</h2>
           {topSymbols.length === 0
-            ? <p className="ns-empty">Inga symboler i narrow state just nu.</p>
+            ? <p className="ns-empty">Inga symboler är tillräckligt lugna och ihoptryckta just nu.</p>
             : topSymbols.map((s, i) => <SymbolRow key={s?.symbol || i} item={s} />)}
         </section>
 
         <section className="ns-panel">
           <h2>🚀 Nära breakout</h2>
           {breakoutWatch.length === 0
-            ? <p className="ns-empty">Inga breakout-kandidater.</p>
+            ? <p className="ns-empty">Inga tydliga utbrottskandidater. Systemet väntar.</p>
             : breakoutWatch.map((s, i) => (
                 <div className="ns-row" key={s?.symbol || i}>
                   <span className="ns-row-sym">{s?.symbol || '—'}</span>
@@ -195,14 +314,14 @@ export default function NarrowStateLabPage() {
         <section className="ns-panel">
           <h2>⚠️ Fakeout-risk</h2>
           {fakeoutRisk.length === 0
-            ? <p className="ns-empty">Inga fakeout-risker.</p>
+            ? <p className="ns-empty">Inga tydliga falska utbrott att bevaka just nu.</p>
             : fakeoutRisk.map((s, i) => <SymbolRow key={s?.symbol || i} item={s} />)}
         </section>
 
         <section className="ns-panel">
           <h2>🔄 Återgång mot VWAP</h2>
           {meanReversion.length === 0
-            ? <p className="ns-empty">Inga mean reversion-kandidater.</p>
+            ? <p className="ns-empty">Inga tydliga återgångar mot mitten/VWAP just nu.</p>
             : meanReversion.map((s, i) => (
                 <div className="ns-row" key={s?.symbol || i}>
                   <span className="ns-row-sym">{s?.symbol || '—'}</span>
@@ -231,7 +350,7 @@ export default function NarrowStateLabPage() {
               </div>
             );
           })}
-          {strategies.length === 0 ? <p className="ns-empty">Strategier laddas…</p> : null}
+          {strategies.length === 0 ? <p className="ns-empty">Strategier saknas i API-svaret just nu. Sidan fortsätter fungera i read-only-läge.</p> : null}
         </div>
       </section>
 
@@ -247,7 +366,7 @@ export default function NarrowStateLabPage() {
         {!perf || perf.totalNarrowTrades === 0 ? (
           <div className="ns-empty-wide">
             <p>{perf?.message || 'Systemet har ännu för lite Narrow State-data för säker slutsats.'}</p>
-            <p>Kör fler paper-/replay-/batch-tester på narrow-strategierna så börjar mätningen.</p>
+            <p>Mer paper-/replay-/batch-data behövs innan winRate och avgPnL går att tolka på ett rimligt sätt.</p>
             <div className="ns-badge-row" style={{ marginTop: 10 }}>
               {perf?.status ? <Badge tone="amber">Status: {PERF_STATUS_LABELS[perf.status] || perf.status}</Badge> : null}
               <Badge tone="amber">Datatillit: {CONF_LABELS[perf?.dataConfidence] || 'Ingen'}</Badge>
@@ -303,7 +422,7 @@ export default function NarrowStateLabPage() {
             <h4>📊 Bästa narrow-strategi</h4>
             {ns?.bestStrategy
               ? <p>{ns.bestStrategy.label} — vinst {Math.round((ns.bestStrategy.win_rate || 0) * 100)}% ({ns.bestStrategy.closed} trades)</p>
-              : <p className="ns-empty">Ingen learning-data ännu — kör fler paper/replay-tester.</p>}
+              : <p className="ns-empty">Ingen learning-data ännu. Systemet behöver fler säkra testresultat.</p>}
             <h4>📉 Sämsta narrow-strategi</h4>
             {ns?.worstStrategy
               ? <p>{ns.worstStrategy.label} — vinst {Math.round((ns.worstStrategy.win_rate || 0) * 100)}% ({ns.worstStrategy.closed} trades)</p>
@@ -313,7 +432,7 @@ export default function NarrowStateLabPage() {
             <h4>📋 Nästa rekommenderade test</h4>
             {ns?.recommendedNextTest
               ? <p>{ns.recommendedNextTest.reason_sv}</p>
-              : <p className="ns-empty">Ingen rekommendation ännu.</p>}
+              : <p className="ns-empty">Ingen rekommendation ännu. Det är normalt när data saknas eller är för svag.</p>}
             <h4>💡 Senaste lärdomar</h4>
             {latestLessons.length === 0
               ? <p className="ns-empty">Inga lärdomar ännu.</p>

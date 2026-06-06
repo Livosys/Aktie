@@ -59,6 +59,18 @@ const TERMS = [
   ['Confidence', 'Hur säkert systemet känner sig med slutsatsen.'],
 ];
 
+const BEGINNER_TERMS = [
+  ['paper_only', 'Systemet simulerar och analyserar. Det lägger aldrig riktiga order.'],
+  ['dry-run', 'Systemet planerar och kontrollerar vad det skulle göra, men startar ingen riktig körning.'],
+  ['scheduler', 'En automatisk klocka som kör planering med jämna mellanrum.'],
+  ['execute avstängt', 'Systemet får inte starta batch- eller paper-körningar automatiskt.'],
+  ['cooldown', 'Systemet väntar en bestämd tid innan nästa automatiska planering.'],
+  ['blocked reason', 'Orsaken till att systemet stoppade eller hoppade över en planering.'],
+  ['winRate', 'Andel testresultat som blev vinst i testdata.'],
+  ['avgPnL', 'Genomsnittligt testresultat. Positivt är bättre, negativt är sämre.'],
+  ['rekommenderat test', 'Nästa säkra research-test som systemet tycker är mest relevant.'],
+];
+
 function apiJson(url) {
   return fetch(url, { credentials: 'same-origin' })
     .then(async (res) => {
@@ -78,6 +90,7 @@ function useSupervisorData() {
     narrow: null,
     learning: null,
     autopilot: null,
+    coreLearning: null,
     loading: true,
     refreshing: false,
     error: '',
@@ -90,17 +103,19 @@ function useSupervisorData() {
     async function load() {
       if (!cancelled) setState((prev) => ({ ...prev, loading: prev.lastUpdated ? prev.loading : true, refreshing: !!prev.lastUpdated, error: '' }));
       try {
-        const [narrow, learning, autopilot] = await Promise.all([
-          apiJson('/api/supervisor/narrow-state'),
-          apiJson('/api/learning/narrow-performance'),
+        const [narrow, learning, autopilot, coreLearning] = await Promise.all([
+          apiJson('/api/supervisor/narrow-state').catch(() => null),
+          apiJson('/api/learning/narrow-performance').catch(() => null),
           // Autopilot is read-only and optional — never block the page on it.
           apiJson('/api/autopilot/narrow/status').catch(() => null),
+          apiJson('/api/daytrading/learning-summary').catch(() => null),
         ]);
         if (cancelled) return;
         setState({
           narrow,
           learning,
           autopilot,
+          coreLearning,
           loading: false,
           refreshing: false,
           error: '',
@@ -249,6 +264,19 @@ function BeginnerBox({ title, text: body }) {
   );
 }
 
+function BeginnerTermGrid({ compact = false }) {
+  return (
+    <div className={`sup-brain-term-grid ${compact ? 'sup-brain-term-grid-compact' : ''}`}>
+      {BEGINNER_TERMS.map(([term, help]) => (
+        <div key={term} className="sup-brain-term-card">
+          <strong>{term}</strong>
+          <span>{help}</span>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 function StrategyCard({ strategyId, row, summaryStatus }) {
   const meta = STRATEGY_META[strategyId] || {
     name: strategyId,
@@ -386,6 +414,43 @@ function StepCard({ index, title, text: body }) {
   );
 }
 
+function metric(row, ...keys) {
+  for (const key of keys) {
+    if (row?.[key] !== undefined && row?.[key] !== null && row?.[key] !== '') return row[key];
+  }
+  return null;
+}
+
+function strategyName(strategyId) {
+  return STRATEGY_META[strategyId]?.name || text(strategyId, 'Ingen strategi');
+}
+
+function explainWeakItem(item) {
+  if (!item) return 'Ingen tydlig svag punkt ännu.';
+  const trades = Number(metric(item, 'trades', 'tradeCount') ?? 0) || 0;
+  const winRate = Number(metric(item, 'winRate', 'win_rate'));
+  const avgPnl = Number(metric(item, 'avgPnl', 'avg_pnl', 'avg_pl'));
+  if (!trades) return 'För lite testdata för robust slutsats.';
+  if (Number.isFinite(avgPnl) && avgPnl < 0) return 'Negativt genomsnittligt resultat i testdata.';
+  if (Number.isFinite(winRate) && winRate < 50) return 'Låg win rate i testdata.';
+  return 'Svagare ranking än bästa alternativet.';
+}
+
+function formatSchedulerTest(rec) {
+  if (!rec) return null;
+  const window = rec.dateWindowSelected || {};
+  const symbols = safeArray(firstNonEmpty(rec.symbols, rec.recommendedSymbols, rec.filters?.symbols, rec.suggestedFilters?.symbols));
+  const timeframes = safeArray(firstNonEmpty(rec.timeframes, rec.recommendedTimeframes, rec.filters?.timeframes, rec.suggestedFilters?.timeframes));
+  return {
+    strategy: rec.strategy_id || rec.strategyId || 'För lite data ännu',
+    band: rec.selectedNarrowScoreBand || rec.narrowScoreBand || null,
+    window: window.dateFrom && window.dateTo ? `${window.dateFrom} - ${window.dateTo}` : 'Inget fönster valt',
+    symbols,
+    timeframes,
+    reason: rec.reason || rec.windowSelectionReason || 'Systemet har sparat senaste planerade dry-run.',
+  };
+}
+
 function formatRecommendation(rec) {
   if (!rec) return null;
   const strategy = rec.strategy_id || rec.strategyId || rec.title || 'För lite data ännu';
@@ -413,10 +478,26 @@ function formatRecommendation(rec) {
   };
 }
 
+function formatSchedulerRecommendation(rec) {
+  if (!rec) return null;
+  const window = rec.dateWindowSelected || {};
+  const band = rec.selectedNarrowScoreBand || window.reason || null;
+  return {
+    strategy: rec.strategy_id || 'För lite data ännu',
+    band,
+    window: window.dateFrom && window.dateTo ? `${window.dateFrom} - ${window.dateTo}` : 'Inget fönster valt',
+    reason: rec.reason || 'Systemet har planerat nästa säkra dry-run.',
+    priority: rec.priority || 'low',
+  };
+}
+
 export default function SupervisorBrainPage() {
-  const { narrow, learning, autopilot, loading, refreshing, error, lastUpdated } = useSupervisorData();
+  const { narrow, learning, autopilot, coreLearning, loading, refreshing, error, lastUpdated } = useSupervisorData();
 
   const narrowState = narrow?.narrowState || {};
+  const coreLearningData = coreLearning?.data || null;
+  const coreSummary = coreLearningData?.summary || {};
+  const coreSkipReasons = safeArray(coreLearningData?.skip_reasons);
   const narrowFlags = {
     actions_allowed: narrow?.actions_allowed ?? learning?.actions_allowed ?? false,
     can_place_orders: narrow?.can_place_orders ?? learning?.can_place_orders ?? false,
@@ -452,6 +533,10 @@ export default function SupervisorBrainPage() {
 
   // Narrow Test Autopilot (Goal 6) — read-only planner status.
   const autopilotInfo = autopilot?.autopilot || null;
+  const autopilotScheduler = autopilot?.scheduler || narrowState.narrowAutopilotScheduler || null;
+  const schedulerLastDryRun = autopilotScheduler?.lastScheduledDryRun || null;
+  const schedulerRecommendation = formatSchedulerRecommendation(autopilotScheduler?.lastRecommendedTest);
+  const schedulerTest = formatSchedulerTest(autopilotScheduler?.lastRecommendedTest);
   const autopilotPlan = autopilotInfo?.currentPlan || null;
   const autopilotValidation = autopilotInfo?.planValidation || null;
   const autopilotEvents = safeArray(autopilotInfo?.recentEvents).slice(-5).reverse();
@@ -519,14 +604,157 @@ export default function SupervisorBrainPage() {
 
   const maxBandTrades = Math.max(1, ...scoreBands.map((band) => Number(band?.trades) || 0));
 
+  const bestStrategyRows = useMemo(() => rankings
+    .filter((item) => Number(metric(item, 'trades', 'tradeCount') ?? 0) > 0)
+    .slice(0, 3), [rankings]);
+
+  const weakestStrategyRows = useMemo(() => [...rankings]
+    .filter((item) => Number(metric(item, 'trades', 'tradeCount') ?? 0) > 0)
+    .sort((a, b) => {
+      const avgDiff = Number(metric(a, 'avgPnl', 'avg_pnl') ?? 0) - Number(metric(b, 'avgPnl', 'avg_pnl') ?? 0);
+      if (avgDiff !== 0) return avgDiff;
+      return Number(metric(a, 'winRate', 'win_rate') ?? 100) - Number(metric(b, 'winRate', 'win_rate') ?? 100);
+    })
+    .slice(0, 3), [rankings]);
+
+  const weakestBandRows = useMemo(() => [...scoreBands]
+    .filter((item) => Number(metric(item, 'trades', 'tradeCount') ?? 0) > 0)
+    .sort((a, b) => {
+      const avgDiff = Number(metric(a, 'avgPnl', 'avg_pnl') ?? 0) - Number(metric(b, 'avgPnl', 'avg_pnl') ?? 0);
+      if (avgDiff !== 0) return avgDiff;
+      return Number(metric(a, 'winRate', 'win_rate') ?? 100) - Number(metric(b, 'winRate', 'win_rate') ?? 100);
+    })
+    .slice(0, 2), [scoreBands]);
+
+  const coreHasTrades = Number(coreSummary.trades_total ?? coreSummary.closed_trades ?? 0) > 0;
+  const topCoreSkipReason = coreSkipReasons[0] || null;
+  const latestRecommendedTest = schedulerTest || recommendation;
+
+  const overviewItems = useMemo(() => ([
+    {
+      title: 'Systemstatus',
+      value: safetyIsLocked ? 'Paper only' : 'Kontrollera safety',
+      tone: safetyIsLocked ? 'good' : 'danger',
+      body: `${text(narrow?.mode || learning?.mode || autopilot?.mode, 'paper_only')} · scheduler ${autopilotScheduler?.schedulerActive ? 'aktiv' : autopilotScheduler ? 'pausad' : 'saknas'}`,
+    },
+    {
+      title: 'Vad AI lärde sig',
+      value: `${formatInt(totalTrades, '0')} narrow-resultat`,
+      tone: totalTrades > 0 ? 'blue' : 'warning',
+      body: coreHasTrades
+        ? `Core learning har ${formatInt(coreSummary.trades_total ?? coreSummary.closed_trades, '0')} trades.`
+        : 'Core/daytrading saknar stängda trades ännu.',
+    },
+    {
+      title: 'Bästa strategier',
+      value: performanceBest ? strategyName(performanceBest.strategy_id || performanceBest.name) : 'Ingen säker vinnare',
+      tone: performanceBest ? 'good' : 'warning',
+      body: performanceBest
+        ? `${formatInt(metric(performanceBest, 'trades', 'tradeCount') ?? 0)} trades · ${formatPct(metric(performanceBest, 'winRate', 'win_rate'), 1)} win rate`
+        : 'Väntar på mer testdata.',
+    },
+    {
+      title: 'Svagaste strategier',
+      value: performanceWorst ? strategyName(performanceWorst.strategy_id || performanceWorst.name) : 'Ingen tydlig svaghet',
+      tone: performanceWorst ? 'warning' : 'neutral',
+      body: performanceWorst ? explainWeakItem(performanceWorst) : 'Systemet visar inga robusta svagheter ännu.',
+    },
+    {
+      title: 'Pågående tester',
+      value: autopilotScheduler?.dryRunOnly ? 'Endast dry-run' : 'Status saknas',
+      tone: autopilotScheduler?.dryRunOnly ? 'good' : 'warning',
+      body: `Senast ${nowText(autopilotScheduler?.lastRunAt)} · nästa ${nowText(autopilotScheduler?.nextRunAt)}`,
+    },
+    {
+      title: 'Nästa test',
+      value: latestRecommendedTest?.band ? (BAND_LABELS[latestRecommendedTest.band] || latestRecommendedTest.band) : text(latestRecommendedTest?.strategy, 'Väntar'),
+      tone: latestRecommendedTest ? 'blue' : 'warning',
+      body: text(latestRecommendedTest?.reason, 'Ingen rekommendation tillgänglig ännu.'),
+    },
+    {
+      title: 'Risker och blockers',
+      value: autopilotScheduler?.blockedReason || (autopilotScheduler?.cooldownActive ? 'Cooldown aktiv' : 'Inga blockerare'),
+      tone: autopilotScheduler?.blockedReason ? 'warning' : 'good',
+      body: topCoreSkipReason ? `Vanligaste dataflödesblocker: ${topCoreSkipReason.key} (${formatPct(topCoreSkipReason.share, 1)})` : 'Inga daytrading-blockers rapporterade.',
+    },
+    {
+      title: 'Handlingsplan',
+      value: 'Research only',
+      tone: 'neutral',
+      body: 'Följ rekommenderade tester och validera data. Inga execute-knappar finns här.',
+    },
+  ]), [
+    autopilotScheduler,
+    autopilot,
+    coreHasTrades,
+    coreSummary,
+    latestRecommendedTest,
+    learning,
+    narrow,
+    performanceBest,
+    performanceWorst,
+    safetyIsLocked,
+    topCoreSkipReason,
+    totalTrades,
+  ]);
+
+  const actionPlan = useMemo(() => {
+    const items = [];
+    if (autopilotScheduler?.cooldownActive) {
+      items.push({
+        title: 'Vänta in nästa schemalagda dry-run',
+        text: `Nästa automatiska planering är ${nowText(autopilotScheduler.nextRunAt)}.`,
+      });
+    } else if (autopilotScheduler?.schedulerActive) {
+      items.push({
+        title: 'Låt schedulern fortsätta planera',
+        text: 'Den kör endast dry-run och sparar nästa rekommenderade narrow-test.',
+      });
+    }
+    if (latestRecommendedTest) {
+      const band = latestRecommendedTest.band ? (BAND_LABELS[latestRecommendedTest.band] || latestRecommendedTest.band) : 'valt band saknas';
+      items.push({
+        title: 'Följ senaste rekommenderade test',
+        text: `${band} · ${text(latestRecommendedTest.reason, 'Väntar på tydligare orsak')}`,
+      });
+    }
+    if (performanceBest) {
+      items.push({
+        title: 'Validera bästa narrow-strategi',
+        text: `${strategyName(performanceBest.strategy_id || performanceBest.name)} ser starkast ut i testdata, men är inte bevisad edge.`,
+      });
+    }
+    if (topCoreSkipReason) {
+      items.push({
+        title: 'Kontrollera dataflödesblockers',
+        text: `Vanligaste core/daytrading-blocker är ${topCoreSkipReason.key}. Det påverkar datatillit.`,
+      });
+    }
+    items.push({
+      title: 'Behåll safety låst',
+      text: 'Fortsätt paper_only med actions_allowed=false, can_place_orders=false, live_trading_enabled=false och broker_enabled=false.',
+    });
+    return items.slice(0, 5);
+  }, [autopilotScheduler, latestRecommendedTest, performanceBest, topCoreSkipReason]);
+
   const warningItems = useMemo(() => {
-    const items = [
-      'För lite data för vissa slutsatser trots att systemet nu har första riktiga narrow-batchen.',
-      '2m används eftersom 5m/15m saknas i candle-lagret för den här körningen.',
-      'MACD ser starkast ut i den här batchen, men det bör följas upp i en ny körning.',
+    const items = [];
+    if (autopilotScheduler?.blockedReason) {
+      items.push(`Scheduler blockerad: ${autopilotScheduler.blockedReason}`);
+    }
+    if (autopilotScheduler?.cooldownActive) {
+      items.push(`Cooldown aktiv till nästa planerade dry-run ${nowText(autopilotScheduler.nextRunAt)}.`);
+    }
+    if (safeArray(autopilotPlan?.missingTimeframes).length) {
+      items.push(`Saknade timeframes: ${safeArray(autopilotPlan.missingTimeframes).join(', ')}.`);
+    }
+    if (topCoreSkipReason) {
+      items.push(`Core/daytrading saknar ofta körbar data: ${topCoreSkipReason.key} (${formatPct(topCoreSkipReason.share, 1)} av skip reasons).`);
+    }
+    items.push(
       'Resultaten är testdata från paper, replay eller batch-testning.',
       'Live trading är avstängt och kan inte slås på härifrån.',
-    ];
+    );
     if (learningMessage && learningMessage !== 'Systemet har ännu för lite Narrow State-data för säker slutsats.') {
       items.unshift(learningMessage);
     }
@@ -534,7 +762,7 @@ export default function SupervisorBrainPage() {
       items.unshift(narrowState.message);
     }
     return items.slice(0, 6);
-  }, [learningMessage, narrowState.message]);
+  }, [autopilotPlan, autopilotScheduler, learningMessage, narrowState.message, topCoreSkipReason]);
 
   const mobileSafetyText = 'Endast analysläge · Inga riktiga order · Paper / Replay / Batch only';
 
@@ -617,6 +845,29 @@ export default function SupervisorBrainPage() {
 
         <section className="sup-brain-section">
           <SectionTitle
+            eyebrow="1b. Systemöversikt"
+            title="Supervisor som systemets hjärna"
+            subtitle="En enkel översikt över vad systemet gör, vad det lär sig och varför det väntar."
+            helper="Översikt"
+          />
+          <div className="sup-brain-plain-safety">
+            <strong>Tryggt läge:</strong>
+            <span>Allt här är research. Paper only betyder simulering. Live trading och riktiga order är avstängda.</span>
+          </div>
+          <div className="sup-brain-overview-grid">
+            {overviewItems.map((item) => (
+              <Card key={item.title} className={`sup-brain-overview-card sup-brain-overview-card-${item.tone}`}>
+                <div className="sup-brain-overview-title">{item.title}</div>
+                <div className="sup-brain-overview-value">{item.value}</div>
+                <div className="sup-brain-overview-body">{item.body}</div>
+              </Card>
+            ))}
+          </div>
+          <BeginnerTermGrid compact />
+        </section>
+
+        <section className="sup-brain-section">
+          <SectionTitle
             eyebrow="2. AI-lärande"
             title="Vad AI lärde sig"
             subtitle="Detta är bara testresultat från replay, batch och paper."
@@ -636,10 +887,23 @@ export default function SupervisorBrainPage() {
               <InfoChip label="Testresultat" value={formatInt(totalTrades, '0')} tone="blue" />
               <InfoChip label="Strategier" value={formatInt(strategiesCompared, '0')} tone="blue" />
               <InfoChip label="Lärande" value={learningStatus === 'ready' ? 'Kommer igång' : 'Samlar data'} tone={learningStatus === 'ready' ? 'good' : 'warning'} />
+              <InfoChip label="Core trades" value={formatInt(coreSummary.trades_total ?? coreSummary.closed_trades ?? 0, '0')} tone={coreHasTrades ? 'good' : 'warning'} />
+              <InfoChip label="Core status" value={coreHasTrades ? 'Data finns' : 'Ingen data ännu'} tone={coreHasTrades ? 'good' : 'neutral'} />
+              <InfoChip label="Vanlig blocker" value={topCoreSkipReason?.key || 'Ingen'} tone={topCoreSkipReason ? 'warning' : 'good'} />
+            </div>
+            <div className="sup-brain-learning-sources">
+              <div>
+                <strong>Narrow learning</strong>
+                <span>{totalTrades ? `${formatInt(totalTrades)} testresultat · ${text(performanceBand?.band || performanceBand, 'inget bästa band ännu')}` : 'Ingen data tillgänglig ännu'}</span>
+              </div>
+              <div>
+                <strong>Daytrading/core learning</strong>
+                <span>{coreHasTrades ? `${formatInt(coreSummary.trades_total ?? coreSummary.closed_trades)} trades · ${formatPct(coreSummary.win_rate, 1)} win rate` : 'Ingen data tillgänglig ännu'}</span>
+              </div>
             </div>
             <BeginnerBox
-              title="Vad betyder detta?"
-              text="Systemet gör inga affärer här. Det läser testdata och försöker förstå vad som verkar fungera bättre, svagare eller kräver mer data."
+              title="Vad betyder winRate och avgPnL?"
+              text="WinRate är hur ofta ett test slutade positivt. AvgPnL är genomsnittligt testresultat. Båda gäller bara testdata och bevisar inte att något fungerar live."
             />
           </div>
         </section>
@@ -707,7 +971,7 @@ export default function SupervisorBrainPage() {
 
           <BeginnerBox
             title="Vad betyder Narrow State?"
-            text="Narrow State betyder att priset är ihoptryckt och rör sig lugnare än vanligt. Det kan föregå breakout, fakeout eller mean reversion."
+            text="Narrow State betyder att priset är ihoptryckt och rör sig lugnare än vanligt. Systemet letar efter sådana lugna lägen för att planera säkra paper-/replay-tester."
           />
         </section>
 
@@ -749,25 +1013,62 @@ export default function SupervisorBrainPage() {
             />
             <Card className="sup-brain-next">
               <div className="sup-brain-summary-title">Rekommenderat nästa test</div>
-              {recommendation ? (
+              {latestRecommendedTest ? (
                 <>
                   <div className="sup-brain-next-tag">Föreslaget test - ej automatisk ändring</div>
-                  <div className="sup-brain-summary-main">{recommendation.title}</div>
-                  <div className="sup-brain-summary-sub">{recommendation.reason}</div>
+                  <div className="sup-brain-summary-main">{latestRecommendedTest.title || strategyName(latestRecommendedTest.strategy)}</div>
+                  <div className="sup-brain-summary-sub">{latestRecommendedTest.reason}</div>
                   <div className="sup-brain-card-stats">
-                    <InfoChip label="Strategy" value={recommendation.strategy} tone="blue" />
-                    <InfoChip label="Source" value={recommendation.source} tone="blue" />
-                    <InfoChip label="Priority" value={recommendation.priority} tone={recommendation.priority === 'high' ? 'warning' : 'neutral'} />
+                    <InfoChip label="Strategy" value={latestRecommendedTest.strategy || '—'} tone="blue" />
+                    <InfoChip label="Band" value={latestRecommendedTest.band ? (BAND_LABELS[latestRecommendedTest.band] || latestRecommendedTest.band) : '—'} tone="blue" />
+                    <InfoChip label="Timeframe" value={safeArray(latestRecommendedTest.timeframes).join(', ') || '—'} tone="blue" />
                   </div>
                   <div className="sup-brain-next-filters">
-                    {recommendation.symbols.length ? <Badge tone="blue">{recommendation.symbols.join(', ')}</Badge> : <Badge tone="neutral">För lite data ännu</Badge>}
-                    {recommendation.timeframes.length ? <Badge tone="blue">{recommendation.timeframes.join(', ')}</Badge> : null}
-                    {recommendation.confirmations.length ? <Badge tone="good">{recommendation.confirmations.join(', ')}</Badge> : null}
+                    {safeArray(latestRecommendedTest.symbols).length ? <Badge tone="blue">{safeArray(latestRecommendedTest.symbols).join(', ')}</Badge> : <Badge tone="neutral">Symboler saknas</Badge>}
+                    {latestRecommendedTest.window ? <Badge tone="blue">{latestRecommendedTest.window}</Badge> : null}
+                    {recommendation?.confirmations?.length ? <Badge tone="good">{recommendation.confirmations.join(', ')}</Badge> : null}
                   </div>
                 </>
               ) : (
                 <div className="sup-brain-summary-empty">Väntar på fler batch/replay-resultat.</div>
               )}
+            </Card>
+          </div>
+          <div className="sup-brain-grid sup-brain-grid-2 sup-brain-decision-lists">
+            <Card className="sup-brain-summary-card">
+              <div className="sup-brain-summary-title">Bästa narrow/strategy-resultat</div>
+              {bestStrategyRows.length ? bestStrategyRows.map((row) => (
+                <div key={`best-${row.strategy_id || row.name}`} className="sup-brain-result-row">
+                  <div>
+                    <strong>{strategyName(row.strategy_id || row.name)}</strong>
+                    <span>{row.strategy_id || row.name}</span>
+                  </div>
+                  <div className="sup-brain-result-metrics">
+                    <span>{formatInt(metric(row, 'trades', 'tradeCount') ?? 0)} trades</span>
+                    <span>{formatPct(metric(row, 'winRate', 'win_rate'), 1)}</span>
+                    <span>{formatSignedPct(metric(row, 'avgPnl', 'avg_pnl'), 3)}</span>
+                  </div>
+                </div>
+              )) : <div className="sup-brain-summary-empty">Ingen data tillgänglig ännu.</div>}
+            </Card>
+            <Card className="sup-brain-summary-card">
+              <div className="sup-brain-summary-title">Svagaste strategier eller band</div>
+              {[...weakestStrategyRows, ...weakestBandRows].length ? [...weakestStrategyRows, ...weakestBandRows].slice(0, 5).map((row) => {
+                const id = row.strategy_id || row.name || row.band;
+                return (
+                  <div key={`weak-${id}`} className="sup-brain-result-row">
+                    <div>
+                      <strong>{row.band ? (BAND_LABELS[row.band] || row.band) : strategyName(id)}</strong>
+                      <span>{explainWeakItem(row)}</span>
+                    </div>
+                    <div className="sup-brain-result-metrics">
+                      <span>{formatInt(metric(row, 'trades', 'tradeCount') ?? 0)} trades</span>
+                      <span>{formatPct(metric(row, 'winRate', 'win_rate'), 1)}</span>
+                      <span>{formatSignedPct(metric(row, 'avgPnl', 'avg_pnl'), 3)}</span>
+                    </div>
+                  </div>
+                );
+              }) : <div className="sup-brain-summary-empty">Ingen svag strategi kan pekas ut ännu.</div>}
             </Card>
           </div>
         </section>
@@ -786,6 +1087,49 @@ export default function SupervisorBrainPage() {
               <Badge tone="neutral">DRY-RUN FÖRST</Badge>
               <Badge tone="neutral">INGA RIKTIGA ORDER</Badge>
             </div>
+            <Card className="sup-brain-next sup-brain-scheduler-card">
+              <div className="sup-brain-summary-title">Automatisk planering</div>
+              <div className="sup-brain-summary-main">
+                {autopilotScheduler?.schedulerActive ? 'Aktiv' : autopilotScheduler ? 'Pausad' : 'Status saknas'}
+              </div>
+              <div className="sup-brain-summary-sub">
+                Scheduler betyder automatisk planering. Den kör bara dry-run: planering och kontroll, ingen automatisk execute.
+              </div>
+              <div className="sup-brain-card-stats">
+                <InfoChip label="Planering" value={autopilotScheduler?.enabled ? 'Aktiv' : 'Av'} tone={autopilotScheduler?.enabled ? 'good' : 'warning'} />
+                <InfoChip label="Körläge" value={autopilotScheduler?.dryRunOnly ? 'Endast dry-run' : 'Kontrollera'} tone={autopilotScheduler?.dryRunOnly ? 'good' : 'danger'} />
+                <InfoChip label="Execute" value={autopilotScheduler?.executionEnabled ? 'På' : 'Avstängt'} tone={autopilotScheduler?.executionEnabled ? 'danger' : 'good'} />
+                <InfoChip label="Safety" value={autopilotScheduler?.mode || 'paper_only'} tone="good" />
+              </div>
+              <div className="sup-brain-card-stats">
+                <InfoChip label="Senast" value={nowText(autopilotScheduler?.lastRunAt)} tone="blue" />
+                <InfoChip label="Nästa" value={nowText(autopilotScheduler?.nextRunAt)} tone="blue" />
+                <InfoChip label="Cooldown" value={autopilotScheduler?.cooldownActive ? 'Aktiv' : 'Inte aktiv'} tone={autopilotScheduler?.cooldownActive ? 'warning' : 'good'} />
+                <InfoChip label="Blocked reason" value={autopilotScheduler?.blockedReason || 'Ingen'} tone={autopilotScheduler?.blockedReason ? 'warning' : 'good'} />
+              </div>
+              {schedulerRecommendation ? (
+                <div className="sup-brain-scheduler-recommendation">
+                  <strong>Senaste rekommenderade test:</strong>
+                  <span>{STRATEGY_META[schedulerRecommendation.strategy]?.name || schedulerRecommendation.strategy}</span>
+                  <span>{schedulerRecommendation.band ? (BAND_LABELS[schedulerRecommendation.band] || schedulerRecommendation.band) : 'Band saknas'} · {schedulerRecommendation.window}</span>
+                  <span>{schedulerRecommendation.reason}</span>
+                </div>
+              ) : (
+                <div className="sup-brain-summary-empty">Ingen schemalagd rekommendation sparad ännu.</div>
+              )}
+              {schedulerLastDryRun ? (
+                <div className="sup-brain-next-filters">
+                  <Badge tone={schedulerLastDryRun.dryRun ? 'good' : 'danger'}>dryRun={String(schedulerLastDryRun.dryRun)}</Badge>
+                  <Badge tone={!schedulerLastDryRun.executed ? 'good' : 'danger'}>executed={String(Boolean(schedulerLastDryRun.executed))}</Badge>
+                  <Badge tone="blue">{schedulerLastDryRun.mode || 'paper_only'}</Badge>
+                </div>
+              ) : null}
+              <div className="sup-brain-mini-explainers">
+                <span><strong>Dry-run:</strong> bara planering och analys.</span>
+                <span><strong>Execute avstängt:</strong> ingen automatisk batch/paper-körning.</span>
+                <span><strong>Cooldown:</strong> väntar innan nästa planering.</span>
+              </div>
+            </Card>
             {autopilotPlan ? (
               <div className="sup-brain-grid sup-brain-grid-3">
                 <Card className="sup-brain-next">
@@ -1007,11 +1351,9 @@ export default function SupervisorBrainPage() {
             helper="Workflow"
           />
           <div className="sup-brain-grid sup-brain-grid-5">
-            <StepCard index="1" title="Samla mer Narrow State-data" text="Målet är fler testresultat så att systemet får säkrare slutsatser." />
-            <StepCard index="2" title="Kör fler batchtester" text="Batch hjälper till att jämföra strategier på ett säkert och repeterbart sätt." />
-            <StepCard index="3" title="Jämför 2m mot 5m/15m" text="När mer candle-data finns kan timeframes jämföras på ett renare sätt." />
-            <StepCard index="4" title="Validera bästa strategi" text="Kontrollera om den strategi som ser bäst ut också fortsätter att vara stabil." />
-            <StepCard index="5" title="Skicka lärdomar till Supervisor" text="När data blir bättre ska nästa test föreslås tydligare och lugnare." />
+            {actionPlan.map((item, index) => (
+              <StepCard key={`${index}-${item.title}`} index={String(index + 1)} title={item.title} text={item.text} />
+            ))}
           </div>
         </section>
 
