@@ -163,6 +163,34 @@ function appendJsonl(file, rows) {
   assert.ok(degraded.warnings.length >= 1);
   assert.equal(degraded.can_place_orders, false);
 
+  // ── ensurePaperVisibility: buried paper trades are pulled into the feed ──────
+  const mk = (id, ts, source) => ({ id, timestamp: ts, type: source === 'paper' ? 'paper' : 'system', source });
+  // 10 newest = non-paper; 2 paper trades are older and would be buried at limit 5.
+  const synthetic = [
+    mk('s1', '2026-06-06T10:00:00.000Z', 'system_events'),
+    mk('s2', '2026-06-06T09:00:00.000Z', 'system_events'),
+    mk('s3', '2026-06-06T08:00:00.000Z', 'system_events'),
+    mk('s4', '2026-06-06T07:00:00.000Z', 'system_events'),
+    mk('s5', '2026-06-06T06:00:00.000Z', 'system_events'),
+    mk('p1', '2026-06-01T17:00:00.000Z', 'paper'),
+    mk('p2', '2026-06-01T16:00:00.000Z', 'paper'),
+  ];
+  const quotaFeed = svc._internal.ensurePaperVisibility(synthetic, 5);
+  assert.equal(quotaFeed.length, 5);
+  // limit 5 → quota ceil(5*0.2)=1 → at least one paper trade is kept visible.
+  const paperKept = quotaFeed.filter((e) => e.source === 'paper');
+  assert.ok(paperKept.length >= 1);
+  // newest paper trade is preferred and feed stays newest-first.
+  assert.equal(paperKept[0].id, 'p1');
+  for (let i = 1; i < quotaFeed.length; i += 1) {
+    assert.ok(quotaFeed[i - 1].timestamp >= quotaFeed[i].timestamp);
+  }
+  // the newest non-paper events are never dropped to make room.
+  assert.ok(quotaFeed.some((e) => e.id === 's1'));
+  // when paper already meets quota, the feed is returned unchanged (no churn).
+  const alreadyOk = svc._internal.ensurePaperVisibility([mk('p0', '2026-06-06T11:00:00.000Z', 'paper'), ...synthetic], 5);
+  assert.equal(alreadyOk[0].id, 'p0');
+
   console.log('# liveActivityService tests passed.');
   process.exit(0);
 })().catch((err) => {

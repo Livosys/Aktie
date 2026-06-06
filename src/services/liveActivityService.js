@@ -30,6 +30,12 @@ const SAFETY = Object.freeze({
   broker_enabled: false,
 });
 
+// Finished paper trades (Låtsastest) can be older than the constant stream of
+// skip/market events, so a pure time sort buries them. Reserve up to this share
+// of the feed (capped) for paper trades so they stay visible.
+const PAPER_FEED_QUOTA_RATIO = 0.2;
+const PAPER_FEED_QUOTA_MAX = 5;
+
 function nowIso() { return new Date().toISOString(); }
 function arr(value) {
   if (!value) return [];
@@ -344,7 +350,7 @@ function eventsFromPaperTrades(file, limit) {
         symbol: row.symbol || null,
         strategy: row.strategy_id || row.strategyId || row.strategy || null,
         timeframe: '2m',
-        paper_pnl_percent: Number.isFinite(Number(row.pnlPct)) ? Number(row.pnlPct) : null,
+        paper_pnl_percent: Number.isFinite(Number(row.pnlPct)) ? Math.round(Number(row.pnlPct) * 100) / 100 : null,
         message: `${row.symbol || 'Signal'} · ${label}${result ? ` · ${result}` : ''}${exit ? ` (${exit})` : ''}`,
         paper_only: true,
       });
@@ -364,6 +370,30 @@ function eventsFromBatchResults(dir, limit) {
   });
 }
 
+// Guarantee a minimum number of paper-trade slots in the time-sorted feed. The
+// feed stays newest-first and capped at `limit`; we only swap the oldest
+// non-paper events for the newest paper trades until the quota is met. Pure
+// read-only re-ordering — no events are created, mutated or executed.
+function ensurePaperVisibility(sortedDesc, limit) {
+  const isPaper = (e) => !!(e && e.source === 'paper');
+  const quota = Math.min(PAPER_FEED_QUOTA_MAX, Math.ceil(limit * PAPER_FEED_QUOTA_RATIO));
+  const top = sortedDesc.slice(0, limit);
+  if (quota < 1) return top;
+  const inTop = new Set(top.map((e) => `${e.id}|${e.timestamp}`));
+  const have = top.filter(isPaper).length;
+  if (have >= quota) return top;
+  const extra = sortedDesc
+    .filter((e) => isPaper(e) && !inTop.has(`${e.id}|${e.timestamp}`))
+    .slice(0, quota - have);
+  if (!extra.length) return top;
+  const kept = top.slice();
+  let drop = extra.length;
+  for (let i = kept.length - 1; i >= 0 && drop > 0; i -= 1) {
+    if (!isPaper(kept[i])) { kept.splice(i, 1); drop -= 1; }
+  }
+  return kept.concat(extra).sort((a, b) => b.timestamp.localeCompare(a.timestamp)).slice(0, limit);
+}
+
 function buildLiveActivity(options = {}) {
   const files = { ...DEFAULT_FILES, ...(options.files || {}) };
   const limit = limitFromQuery(options.limit);
@@ -379,9 +409,9 @@ function buildLiveActivity(options = {}) {
     eventsFromJsonl('system_events', files.eventLog, sourceLimit),
   ];
   const warnings = sources.filter((s) => s.status === 'degraded').map((s) => ({ source: s.name, error: s.error || 'source_degraded' }));
-  const events = dedupeEvents(sources.flatMap((s) => s.events))
-    .sort((a, b) => b.timestamp.localeCompare(a.timestamp))
-    .slice(0, limit);
+  const sorted = dedupeEvents(sources.flatMap((s) => s.events))
+    .sort((a, b) => b.timestamp.localeCompare(a.timestamp));
+  const events = ensurePaperVisibility(sorted, limit);
   const status = warnings.length ? 'degraded' : (events.length ? 'ok' : 'empty');
   return {
     ok: true,
@@ -420,5 +450,6 @@ module.exports = {
     svLabel,
     displayTimeFor,
     resultFor,
+    ensurePaperVisibility,
   },
 };
