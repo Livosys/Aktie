@@ -95,9 +95,39 @@ function writeJson(file, value) {
   fs.writeFileSync(file, JSON.stringify(value, null, 2) + '\n', 'utf8');
 }
 
-function appendEvent(event) {
-  ensureDir();
-  fs.appendFileSync(eventsFile(), JSON.stringify(event) + '\n', 'utf8');
+function safeWriteJson(file, value) {
+  try {
+    writeJson(file, value);
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, error: err && err.message ? err.message : String(err) };
+  }
+}
+
+function safeAppendEvent(event) {
+  try {
+    ensureDir();
+    fs.appendFileSync(eventsFile(), JSON.stringify(event) + '\n', 'utf8');
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, error: err && err.message ? err.message : String(err) };
+  }
+}
+
+function fileExists(file) {
+  try { return fs.existsSync(file); } catch (_) { return false; }
+}
+
+function lineCount(file, maxBytes = 1024 * 1024) {
+  try {
+    if (!fs.existsSync(file)) return 0;
+    const stat = fs.statSync(file);
+    if (stat.size > maxBytes) return null;
+    const raw = fs.readFileSync(file, 'utf8');
+    return raw.split('\n').filter(Boolean).length;
+  } catch (_) {
+    return null;
+  }
 }
 
 function text(value, fallback = '') {
@@ -213,6 +243,54 @@ function inputMetadata(context) {
     hasBatchSummary: !!context.batchSummary,
     hasLearningSummary: !!context.learningSummary,
     hasNarrowSummary: !!context.narrowSummary,
+  };
+}
+
+function outputMetadata(output) {
+  const o = output || {};
+  return {
+    hasSummary: !!o.summary,
+    learnedCount: arr(o.what_ai_learned).length,
+    riskCount: arr(o.risks).length,
+    nextTestCount: arr(o.next_recommended_tests).length,
+    questionCount: arr(o.questions_for_user).length,
+    confidence: Number.isFinite(Number(o.confidence)) ? Number(o.confidence) : null,
+    safety: { ...SAFETY },
+  };
+}
+
+function safeErrorMessage(value) {
+  return text(value, '').replace(/Bearer\s+[A-Za-z0-9._~+/=-]+/g, 'Bearer <redacted>');
+}
+
+function analystEvent({
+  eventType,
+  provider: eventProvider,
+  model,
+  status,
+  durationMs,
+  cacheHit = false,
+  disabled = false,
+  errorCode = null,
+  errorMessage = null,
+  inputSummary = null,
+  output = null,
+}) {
+  return {
+    timestamp: nowIso(),
+    eventType,
+    provider: eventProvider,
+    model: model || null,
+    status,
+    durationMs: Number.isFinite(Number(durationMs)) ? Number(durationMs) : null,
+    cacheHit: cacheHit === true,
+    disabled: disabled === true,
+    errorCode: errorCode || null,
+    errorMessage: errorMessage ? safeErrorMessage(errorMessage).slice(0, 300) : null,
+    inputSummary: inputSummary || null,
+    outputSummary: outputMetadata(output),
+    safety: { ...SAFETY },
+    ...SAFETY,
   };
 }
 
@@ -363,12 +441,26 @@ function getStatus() {
   const p = provider();
   const latest = getLatestAnalysis();
   const enabled = p === 'openai' ? !!openAiKey() : p === 'anthropic' ? !!anthropicKey() : false;
+  const latestPayload = latest.latest || null;
+  const latestTimestamp = latestPayload?.generatedAt || latestPayload?.timestamp || null;
+  const lastError = latestPayload?.error
+    ? safeErrorMessage(latestPayload.error).slice(0, 300)
+    : (['error', 'missing_key'].includes(latestPayload?.status) ? latestPayload?.status : null);
   return {
     ok: true,
     provider: p,
     enabled,
     model: p === 'disabled' ? null : modelForProvider(p),
+    cacheEnabled: cacheTtlMs() > 0,
+    cacheTtlMs: cacheTtlMs(),
+    latestExists: !!latestPayload,
+    latestTimestamp,
     latestStatus: latest.status,
+    latestProvider: latestPayload?.provider || null,
+    latestDurationMs: latestPayload?.durationMs ?? null,
+    logPathExists: fileExists(eventsFile()),
+    logEventCount: lineCount(eventsFile()),
+    lastError,
     latestGeneratedAt: latest.latest?.generatedAt || null,
     cache: latest.cache,
     supportedProviders: ['disabled', 'openai', 'anthropic'],
@@ -380,7 +472,7 @@ async function runAnalyst(options = {}) {
   const started = Date.now();
   const p = provider();
   if (!['disabled', 'openai', 'anthropic'].includes(p)) {
-    return {
+    const result = {
       ok: false,
       status: 'error',
       provider: p,
@@ -388,27 +480,48 @@ async function runAnalyst(options = {}) {
       message: 'AI_ANALYST_PROVIDER måste vara disabled, openai eller anthropic.',
       ...SAFETY,
     };
+    safeAppendEvent(analystEvent({
+      eventType: 'analyst.run.rejected',
+      provider: p,
+      model: null,
+      status: 'error',
+      durationMs: Date.now() - started,
+      errorCode: 'unsupported_provider',
+      errorMessage: result.message,
+      output: defaultOutput({ summary: result.message }),
+    }));
+    return result;
   }
 
   if (p === 'disabled') {
     const response = disabledResponse();
-    const event = {
-      timestamp: nowIso(),
+    const durationMs = Date.now() - started;
+    const event = analystEvent({
+      eventType: 'analyst.run.disabled',
       provider: p,
       model: null,
       status: 'disabled',
-      input: null,
+      durationMs,
+      disabled: true,
       output: response.output,
-      durationMs: Date.now() - started,
-      ...SAFETY,
-    };
-    appendEvent(event);
-    writeJson(latestFile(), { ...response, generatedAt: event.timestamp, durationMs: event.durationMs });
-    return { ...response, durationMs: event.durationMs };
+    });
+    safeAppendEvent(event);
+    safeWriteJson(latestFile(), { ...response, generatedAt: event.timestamp, durationMs });
+    return { ...response, generatedAt: event.timestamp, durationMs };
   }
 
   const latest = getLatestAnalysis();
   if (!options.force && latest.latest && latest.cache?.fresh) {
+    safeAppendEvent(analystEvent({
+      eventType: 'analyst.run.cache_hit',
+      provider: latest.latest.provider || p,
+      model: latest.latest.model || modelForProvider(p),
+      status: latest.latest.status || 'ok',
+      durationMs: Date.now() - started,
+      cacheHit: true,
+      inputSummary: latest.latest.input || null,
+      output: latest.latest.output || null,
+    }));
     return {
       ...latest.latest,
       ok: true,
@@ -422,6 +535,7 @@ async function runAnalyst(options = {}) {
   let output = null;
   let status = 'ok';
   let error = null;
+  let errorCode = null;
 
   try {
     const overview = options.overview || await supervisorOverviewService.getCachedOverview({ force: options.force === true });
@@ -430,7 +544,8 @@ async function runAnalyst(options = {}) {
     output = parseAnalystJson(content);
   } catch (err) {
     status = err.code === 'missing_key' ? 'missing_key' : 'error';
-    error = err && err.message ? err.message : String(err);
+    errorCode = err.code || status;
+    error = err && err.message ? safeErrorMessage(err.message) : safeErrorMessage(String(err));
     output = defaultOutput({
       summary: status === 'missing_key'
         ? `AI Analyst provider ${p} saknar API-nyckel. Ingen extern analys kördes.`
@@ -455,18 +570,19 @@ async function runAnalyst(options = {}) {
     ...SAFETY,
   };
 
-  appendEvent({
-    timestamp: generatedAt,
+  safeAppendEvent(analystEvent({
+    eventType: status === 'ok' ? 'analyst.run.completed' : 'analyst.run.failed',
     provider: p,
     model: result.model,
     status,
-    input: result.input,
-    output,
-    error,
     durationMs: result.durationMs,
-    ...SAFETY,
-  });
-  writeJson(latestFile(), result);
+    cacheHit: false,
+    errorCode,
+    errorMessage: error,
+    inputSummary: result.input,
+    output,
+  }));
+  safeWriteJson(latestFile(), result);
   return result;
 }
 

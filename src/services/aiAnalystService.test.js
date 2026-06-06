@@ -75,13 +75,42 @@ const svc = require('./aiAnalystService');
   assert.equal(latest.latest.provider, 'disabled');
   assert.ok(fs.existsSync(path.join(tmp, 'latest.json')));
   assert.ok(fs.existsSync(path.join(tmp, 'analyst-events.jsonl')));
+  const eventLines = fs.readFileSync(path.join(tmp, 'analyst-events.jsonl'), 'utf8').trim().split('\n');
+  assert.ok(eventLines.length >= 1);
+  const event = JSON.parse(eventLines[eventLines.length - 1]);
+  assert.equal(event.eventType, 'analyst.run.disabled');
+  assert.equal(event.cacheHit, false);
+  assert.equal(event.disabled, true);
+  assert.equal(event.status, 'disabled');
+  assert.equal(event.can_place_orders, false);
+  assert.ok(event.outputSummary && typeof event.outputSummary === 'object');
+  assert.equal(JSON.stringify(event).includes('secret-value'), false);
 
   // 5. Status is safe and reports provider without exposing keys.
   const status = svc.getStatus();
   assert.equal(status.provider, 'disabled');
   assert.equal(status.enabled, false);
+  assert.equal(status.cacheEnabled, true);
+  assert.equal(status.cacheTtlMs, 300000);
+  assert.equal(status.latestExists, true);
+  assert.equal(status.latestStatus, 'disabled');
+  assert.equal(status.latestProvider, 'disabled');
+  assert.equal(typeof status.latestDurationMs, 'number');
+  assert.equal(status.logPathExists, true);
+  assert.ok(status.logEventCount >= 1);
   assert.equal(status.broker_enabled, false);
   assert.equal(JSON.stringify(status).includes('secret-value'), false);
+
+  // 6. Log/write failures are fault-isolated; run still returns safe response.
+  const badDir = path.join(tmp, 'not-a-dir');
+  fs.writeFileSync(badDir, 'file, not directory', 'utf8');
+  process.env.AI_ANALYST_DIR = badDir;
+  const noCrash = await svc.runAnalyst({ force: true, overview: { blocks: {}, risks: [] } });
+  assert.equal(noCrash.ok, true);
+  assert.equal(noCrash.status, 'disabled');
+  assert.equal(noCrash.mode, 'paper_only');
+  assert.equal(noCrash.can_place_orders, false);
+  process.env.AI_ANALYST_DIR = tmp;
 
   console.log('# aiAnalystService tests passed.');
   process.exit(0);
