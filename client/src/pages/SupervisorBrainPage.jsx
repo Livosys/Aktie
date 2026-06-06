@@ -192,6 +192,24 @@ function aiReadiness(status) {
   return { tone: 'good', label: 'Avstängd' };
 }
 
+// Provider-neutral badge label so the UI shows the real active analyst provider.
+function aiBadgeLabel(status) {
+  const provider = String(status?.provider || '').toLowerCase();
+  const r = status?.status || status?.readiness || null;
+  if (provider === 'openai') {
+    if (r === 'ready') return 'AI Analyst: OpenAI aktiv';
+    if (r === 'not_configured') return 'AI Analyst: OpenAI inte konfigurerad';
+    return 'AI Analyst: Avstängd';
+  }
+  if (provider === 'anthropic') {
+    if (r === 'ready') return 'AI Analyst: Claude aktiv';
+    if (r === 'not_configured') return 'AI Analyst: Claude inte konfigurerad';
+    return 'AI Analyst: Avstängd';
+  }
+  if (provider === 'disabled') return 'AI Analyst: Avstängd';
+  return 'AI Analyst: Status okänd';
+}
+
 function ReadinessNote({ readiness, lastRun, lastResult }) {
   return (
     <div className="research-readiness">
@@ -785,7 +803,7 @@ export default function SupervisorBrainPage() {
 
         {active === 'ai' ? (
           <section className="research-section">
-            <SectionHeader eyebrow="AI-analytiker" title="AI förklarar vad som bör testas härnäst" subtitle="AI får bara läsa systemets säkra sammanfattning, sammanfatta och rekommendera säkra research-tester." aside={<Badge tone={aiReadiness(aiStatusForReadiness).tone}>{`Claude: ${aiReadiness(aiStatusForReadiness).label}`}</Badge>} />
+            <SectionHeader eyebrow="AI-analytiker" title="AI förklarar vad som bör testas härnäst" subtitle="AI får bara läsa systemets säkra sammanfattning, sammanfatta och rekommendera säkra research-tester." aside={<Badge tone={aiReadiness(aiStatusForReadiness).tone}>{aiBadgeLabel(aiStatusForReadiness)}</Badge>} />
             {aiStatusForReadiness?.message ? <ReadinessNote readiness={aiReadiness(aiStatusForReadiness)} lastRun={aiStatusForReadiness.latestTimestamp} lastResult={aiStatusForReadiness.message} /> : null}
             <AiAnalystSummary status={aiOverride?.status || data.aiStatus || overview.aiAnalystStatus} latest={aiOverride?.latest || data.aiLatest} onRefresh={refreshAiAnalysis} refreshing={aiRefreshing} />
           </section>
