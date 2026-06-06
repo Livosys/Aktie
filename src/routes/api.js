@@ -109,6 +109,7 @@ const {
 const { processSystemHealth, sendTestMessage } = require('../alerts/notificationService');
 const { runAutoMachine, isRunning: autoMachineRunning, getStatus: getAutoMachineStatus } = require('../jobs/autoMachine');
 const { getSchedulerStatus } = require('../jobs/autoMachineScheduler');
+const { getNarrowAutopilotSchedulerStatus } = require('../jobs/narrowAutopilotScheduler');
 const paperTrading = require('../paperTrading/paperTradingAgent');
 const { emptyReport: emptyGateEffectivenessReport } = require('../markets/marketGateEffectiveness');
 
@@ -2156,6 +2157,8 @@ router.get('/supervisor/narrow-state', (req, res) => {
 
     // Additive: Narrow Performance Learning compact view (source of truth for narrow performance).
     try { performanceLearning = narrowPerformanceLearning.buildSupervisorNarrowLearning(); } catch (_) { performanceLearning = null; }
+    let narrowAutopilotScheduler = null;
+    try { narrowAutopilotScheduler = getNarrowAutopilotSchedulerStatus(); } catch (_) { narrowAutopilotScheduler = null; }
     if (performanceLearning) {
       bestStrategy = performanceLearning.bestStrategy;
       worstStrategy = performanceLearning.worstStrategy;
@@ -2200,6 +2203,7 @@ router.get('/supervisor/narrow-state', (req, res) => {
         message,
         latestLessons,
         recommendedNextTest,
+        narrowAutopilotScheduler,
         // Narrow Performance Learning (Goal 3) — measured from paper/replay/batch
         performanceLearning,
       },
@@ -2277,9 +2281,10 @@ const AUTOPILOT_SAFETY = {
 router.get('/autopilot/narrow/status', (req, res) => {
   try {
     const status = narrowTestAutopilot.getNarrowAutopilotStatus();
-    res.json({ ok: true, ...AUTOPILOT_SAFETY, autopilot: status.autopilot });
+    const scheduler = getNarrowAutopilotSchedulerStatus();
+    res.json({ ok: true, ...AUTOPILOT_SAFETY, autopilot: status.autopilot, scheduler });
   } catch (err) {
-    res.json({ ok: false, error: err.message, ...AUTOPILOT_SAFETY, autopilot: null });
+    res.json({ ok: false, error: err.message, ...AUTOPILOT_SAFETY, autopilot: null, scheduler: null });
   }
 });
 

@@ -8,6 +8,7 @@ const path = require('path');
 const { startScheduler } = require('./src/scanner/scheduler');
 const { startCryptoScheduler } = require('./src/scanner/cryptoScheduler');
 const { startAutoMachineScheduler } = require('./src/jobs/autoMachineScheduler');
+const { startNarrowAutopilotScheduler } = require('./src/jobs/narrowAutopilotScheduler');
 const apiRouter = require('./src/routes/api');
 const { initOnStartup: initPaperTrading } = require('./src/paperTrading/paperTradingAgent');
 const { buildProviderStatus } = require('./src/providerStatus');
@@ -151,6 +152,7 @@ app.listen(PORT, '127.0.0.1', () => {
     console.log('[Server] Crypto scanner disabled via ENABLE_CRYPTO_SCANNER=false');
   }
   startAutoMachineScheduler();
+  startNarrowAutopilotScheduler();
   dailyIntelligencePipeline.startScheduler();
   initPaperTrading();
   redisService.connect().then((connected) => {
