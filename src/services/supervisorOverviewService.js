@@ -53,6 +53,14 @@ function num(v) {
   return Number.isFinite(n) ? n : null;
 }
 
+function arr(v) {
+  return Array.isArray(v) ? v : [];
+}
+
+function firstValue(...values) {
+  return values.find((value) => value !== undefined && value !== null && value !== '') ?? null;
+}
+
 // ── per-block summarizers (condense, never dump full payloads) ────────────────
 function summarizeSystemHealth(h) {
   if (!h) return null;
@@ -173,6 +181,191 @@ function summarizeOpsAdvisor(o) {
     recommendationCount: Array.isArray(o.recommendations) ? o.recommendations.length : null,
     window: o.window || null,
   };
+}
+
+function normalizeBatchOutcome(row) {
+  if (!row || typeof row !== 'object' || Array.isArray(row)) return null;
+  return {
+    strategy: row.strategy_id || row.strategyId || row.strategy_name || row.strategyName || null,
+    symbol: row.symbol || row.traded_symbol || row.underlying_symbol || null,
+    timeframe: row.timeframe || null,
+    score: num(row.score ?? row.outcome),
+    winRate: num(row.win_rate ?? row.winRate),
+    avgResult: num(row.avg_pnl ?? row.avgPnl ?? row.avgResult ?? row.pnlPercent ?? row.paper_pnl_percent),
+    trades: num(row.trades ?? row.tradeCount),
+    result: row.result || null,
+  };
+}
+
+function normalizeBatchResult(row) {
+  if (!row || typeof row !== 'object' || Array.isArray(row)) return null;
+  return {
+    batchId: row.batch_id || row.batchId || null,
+    strategy: row.strategy_id || row.strategyId || row.strategy_name || row.strategyName || null,
+    symbol: row.symbol || row.traded_symbol || row.underlying_symbol || null,
+    timeframe: row.timeframe || null,
+    completedAt: row.run_completed_at || row.completed_at || row.test_completed_at || row.created_at || null,
+    score: num(row.score),
+    winRate: num(row.win_rate ?? row.winRate),
+    avgResult: num(row.avg_pnl ?? row.avgPnl ?? row.avgResult ?? row.pnlPercent ?? row.paper_pnl_percent),
+    trades: num(row.trades ?? row.tradeCount),
+    mode: row.mode || 'paper_only',
+    paperOnly: row.paper_only !== false,
+    canPlaceOrders: row.can_place_orders === true,
+    liveTradingEnabled: row.live_trading_enabled === true,
+    brokerEnabled: false,
+  };
+}
+
+function batchTime(batch) {
+  return String(firstValue(batch?.updated_at, batch?.completed_at, batch?.batch_completed_at, batch?.started_at, batch?.created_at, ''));
+}
+
+function normalizeBatch(batch, extra = {}) {
+  if (!batch || typeof batch !== 'object' || Array.isArray(batch)) return null;
+  const config = batch.config && typeof batch.config === 'object' ? batch.config : {};
+  const progress = batch.progress && typeof batch.progress === 'object' ? batch.progress : {};
+  const best = normalizeBatchOutcome(extra.bestOutcome);
+  const worst = normalizeBatchOutcome(extra.worstOutcome);
+  const latestResult = normalizeBatchResult(extra.latestResult);
+  return {
+    id: batch.id || null,
+    status: batch.status || null,
+    strategy: arr(config.strategy_ids || config.strategyIds || config.strategies).join(', ') || batch.strategy_id || batch.strategy || null,
+    timeframe: arr(config.timeframes || config.timeframe).join(', ') || batch.timeframe || null,
+    symbols: arr(config.symbols || batch.symbols),
+    startedAt: firstValue(batch.started_at, batch.batch_started_at, batch.last_run_at),
+    completedAt: firstValue(batch.completed_at, batch.batch_completed_at),
+    combinationsTested: num(progress.completed ?? batch.combinations_tested ?? extra.resultsCount),
+    bestOutcome: best,
+    worstOutcome: worst,
+    winRate: num(latestResult?.winRate ?? best?.winRate),
+    avgResult: num(latestResult?.avgResult ?? best?.avgResult),
+    mode: batch.mode || 'paper_only',
+    paperOnly: batch.paper_only !== false,
+    canPlaceOrders: batch.can_place_orders === true,
+    liveTradingEnabled: batch.live_trading_enabled === true,
+    brokerEnabled: false,
+  };
+}
+
+function buildBatchSummary(batchService = lazy('./strategyBatchTestService')) {
+  const source = 'strategyBatchTestService';
+  const safety = {
+    mode: 'paper_only',
+    paperOnly: true,
+    canPlaceOrders: false,
+    liveTradingEnabled: false,
+    brokerEnabled: false,
+  };
+
+  if (!batchService || typeof batchService.listBatchTests !== 'function') {
+    return {
+      status: 'error',
+      totalBatches: 0,
+      completedBatches: 0,
+      runningBatches: 0,
+      pausedBatches: 0,
+      failedBatches: 0,
+      latestBatch: null,
+      latestCompletedBatch: null,
+      latestResult: null,
+      activeBatch: null,
+      source,
+      message: 'Batchservice kunde inte laddas.',
+      ...safety,
+    };
+  }
+
+  try {
+    const listed = batchService.listBatchTests();
+    const batches = arr(listed && listed.batches);
+    const base = {
+      totalBatches: batches.length,
+      completedBatches: batches.filter((b) => String(b?.status || '').toLowerCase() === 'completed').length,
+      runningBatches: batches.filter((b) => String(b?.status || '').toLowerCase() === 'running').length,
+      pausedBatches: batches.filter((b) => String(b?.status || '').toLowerCase() === 'paused').length,
+      failedBatches: batches.filter((b) => ['failed', 'error'].includes(String(b?.status || '').toLowerCase())).length,
+      latestBatch: null,
+      latestCompletedBatch: null,
+      latestResult: null,
+      activeBatch: null,
+      source,
+      message: '',
+      ...safety,
+    };
+
+    if (!batches.length) {
+      return { status: 'empty', ...base, message: 'Det finns inga batchtester att visa ännu.' };
+    }
+
+    const sorted = [...batches].sort((a, b) => batchTime(b).localeCompare(batchTime(a)));
+    const latest = sorted[0] || null;
+    const latestCompleted = sorted.find((b) => String(b?.status || '').toLowerCase() === 'completed') || null;
+    const active = sorted.find((b) => ['running', 'paused'].includes(String(b?.status || '').toLowerCase())) || null;
+
+    let status = 'ok';
+    let message = `${batches.length} batchtester lästa.`;
+    let latestResults = null;
+    let latestCompare = null;
+
+    if (latest && typeof batchService.getBatchTestResults === 'function') {
+      try {
+        latestResults = batchService.getBatchTestResults(latest.id);
+        if (latestResults && latestResults.ok === false) status = 'degraded';
+      } catch (_) {
+        status = 'degraded';
+        message = 'Batchhistorik finns men senaste resultat kunde inte läsas.';
+      }
+    }
+
+    if (typeof batchService.getLatestBatchComparison === 'function') {
+      try {
+        latestCompare = batchService.getLatestBatchComparison();
+        if (latestCompare && latestCompare.ok === false) status = 'degraded';
+      } catch (_) {
+        status = 'degraded';
+        message = 'Batchhistorik finns men jämförelsedata kunde inte läsas.';
+      }
+    }
+
+    const top = arr(latestResults?.top);
+    const worst = arr(latestResults?.worst);
+    const latestResult = top[0] || latestCompare?.recommended_config || arr(latestCompare?.best_overall)[0] || null;
+    const bestOutcome = top[0] || arr(latestCompare?.best_overall)[0] || latestCompare?.recommended_config || null;
+    const worstOutcome = worst[0] || arr(latestCompare?.worst_overall)[0] || null;
+    const resultsCount = num(latestResults?.count ?? latestCompare?.total_results);
+
+    if (status === 'degraded' && message === `${batches.length} batchtester lästa.`) {
+      message = 'Batchhistorik lästes delvis.';
+    }
+
+    return {
+      status,
+      ...base,
+      latestBatch: normalizeBatch(latest, { bestOutcome, worstOutcome, latestResult, resultsCount }),
+      latestCompletedBatch: normalizeBatch(latestCompleted, { bestOutcome, worstOutcome, latestResult, resultsCount }),
+      latestResult: normalizeBatchResult(latestResult),
+      activeBatch: normalizeBatch(active),
+      message,
+    };
+  } catch (err) {
+    return {
+      status: 'error',
+      totalBatches: 0,
+      completedBatches: 0,
+      runningBatches: 0,
+      pausedBatches: 0,
+      failedBatches: 0,
+      latestBatch: null,
+      latestCompletedBatch: null,
+      latestResult: null,
+      activeBatch: null,
+      source,
+      message: err && err.message ? err.message : String(err),
+      ...safety,
+    };
+  }
 }
 
 // ── risk + action-plan derivation (read-only, derived from the blocks) ────────
@@ -325,6 +518,7 @@ async function buildOverview() {
   const daily = lazy('./dailyIntelligencePipelineService');
   const optimization = lazy('./aiOptimizationAgentService');
   const opsAdvisor = lazy('./supervisorOperationsAdvisorService');
+  const strategyBatch = lazy('./strategyBatchTestService');
 
   const [
     system_health, learning, strategies, narrow, autopilotBlock,
@@ -379,6 +573,33 @@ async function buildOverview() {
     recentTestsStatus = { status: 'error', count: 0, source: RECENT_TESTS_SOURCE, message: err && err.message ? err.message : 'unavailable' };
   }
 
+  // Batch summary is first-class read-only status. It is intentionally outside
+  // the generic blocks because the UI consumes it directly as stable data.
+  let batchSummary = null;
+  try {
+    batchSummary = buildBatchSummary(strategyBatch);
+  } catch (err) {
+    batchSummary = {
+      status: 'error',
+      totalBatches: 0,
+      completedBatches: 0,
+      runningBatches: 0,
+      pausedBatches: 0,
+      failedBatches: 0,
+      latestBatch: null,
+      latestCompletedBatch: null,
+      latestResult: null,
+      activeBatch: null,
+      source: 'strategyBatchTestService',
+      message: err && err.message ? err.message : 'unavailable',
+      mode: 'paper_only',
+      paperOnly: true,
+      canPlaceOrders: false,
+      liveTradingEnabled: false,
+      brokerEnabled: false,
+    };
+  }
+
   return {
     ok: true,
     generatedAt: new Date().toISOString(),
@@ -387,6 +608,7 @@ async function buildOverview() {
     blocks,
     recentTests,
     recentTestsStatus,
+    batchSummary,
     risks: deriveRisks(blocks, canonicalStats),
     actionPlan: deriveActionPlan(blocks),
   };
@@ -427,4 +649,7 @@ module.exports = {
   summarizeStrategies,
   buildRecentTests,
   normalizeRecentTest,
+  buildBatchSummary,
+  normalizeBatch,
+  normalizeBatchResult,
 };

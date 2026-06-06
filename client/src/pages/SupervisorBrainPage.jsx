@@ -529,6 +529,104 @@ function latestOverviewTest(overview) {
   return tests[0] || null;
 }
 
+function formatBatchName(batch) {
+  if (!batch) return '—';
+  const parts = [
+    batch.id,
+    batch.strategy,
+    batch.timeframe,
+  ].filter(Boolean);
+  return parts.join(' · ') || 'Batch utan namn';
+}
+
+function formatBatchOutcome(outcome) {
+  if (!outcome) return '—';
+  const score = Number.isFinite(Number(outcome.score)) ? `score ${num(outcome.score)}` : '';
+  const avg = Number.isFinite(Number(outcome.avgResult)) ? `avg ${num(outcome.avgResult)}` : '';
+  const win = Number.isFinite(Number(outcome.winRate)) ? `${num(outcome.winRate, '%')} winRate` : '';
+  return [outcome.strategy, outcome.symbol, score, win, avg].filter(Boolean).join(' · ') || '—';
+}
+
+function BatchSummarySection({ batchSummary }) {
+  const bs = batchSummary || {};
+  const status = bs.status || 'empty';
+  const latest = bs.latestBatch || null;
+  const latestCompleted = bs.latestCompletedBatch || null;
+  const latestResult = bs.latestResult || null;
+  const hasBatches = Number(bs.totalBatches || 0) > 0;
+  const active = bs.activeBatch || (Number(bs.runningBatches || 0) > 0 ? latest : null);
+  const degraded = status === 'degraded' || status === 'error';
+  const bestOutcome = latest?.bestOutcome || null;
+  const avgResult = firstNonEmpty(latest?.avgResult, latestResult?.avgResult, bestOutcome?.avgResult);
+
+  return (
+    <section className="sup-brain-section sup-brain-batch-section">
+      <SectionTitle
+        eyebrow="Batchtester"
+        title="Batchtester"
+        subtitle="Batchtester jämför många testvarianter säkert. Ingen riktig handel sker."
+        helper="Senare egen vy"
+      />
+      {degraded ? (
+        <div className="sup-brain-batch-alert">Batchdata kunde inte läsas just nu, men Supervisor fungerar fortfarande.</div>
+      ) : null}
+      {!hasBatches && !degraded ? (
+        <div className="sup-brain-empty">Det finns inga batchtester att visa ännu.</div>
+      ) : (
+        <>
+          <div className="sup-brain-grid sup-brain-grid-4">
+            <InfoChip label="Körs batch nu?" value={active ? 'Ja' : 'Nej'} tone={active ? 'warning' : 'good'} />
+            <InfoChip label="Batcher totalt" value={formatInt(bs.totalBatches || 0)} tone="blue" />
+            <InfoChip label="Klara batcher" value={formatInt(bs.completedBatches || 0)} tone="good" />
+            <InfoChip label="Status" value="Säker testdata / ingen live handel" tone="good" />
+          </div>
+          <div className="sup-brain-grid sup-brain-grid-3 sup-brain-spaced-grid">
+            <Card className="sup-brain-batch-card">
+              <div className="sup-brain-summary-title">Senaste batch</div>
+              <div className="sup-brain-summary-main">{formatBatchName(latest)}</div>
+              <div className="sup-brain-summary-sub">
+                <SafeText value={latest?.status} fallback="status saknas" /> · {latest?.startedAt ? nowText(latest.startedAt) : 'start saknas'}
+              </div>
+              <div className="sup-brain-card-stats">
+                <InfoChip label="Kombinationer" value={formatInt(latest?.combinationsTested || 0)} tone="neutral" />
+                <InfoChip label="Symboler" value={formatInt(safeArray(latest?.symbols).length)} tone="neutral" />
+              </div>
+            </Card>
+            <Card className="sup-brain-batch-card">
+              <div className="sup-brain-summary-title">Senaste resultat</div>
+              <div className="sup-brain-summary-main">{formatBatchOutcome(latestResult || bestOutcome)}</div>
+              <div className="sup-brain-card-stats">
+                <InfoChip label="Bästa outcome" value={formatBatchOutcome(bestOutcome)} tone="good" />
+                <InfoChip label="Genomsnitt" value={Number.isFinite(Number(avgResult)) ? num(avgResult) : '—'} tone={Number(avgResult) >= 0 ? 'good' : 'warning'} />
+              </div>
+            </Card>
+            <Card className="sup-brain-batch-card">
+              <div className="sup-brain-summary-title">Read-only säkerhet</div>
+              <div className="sup-brain-summary-main">Ingen live handel</div>
+              <div className="sup-brain-summary-sub">Supervisor visar bara befintlig batchhistorik.</div>
+              <div className="sup-brain-card-stats">
+                <InfoChip label="Paper only" value={bs.paperOnly === false ? 'Nej' : 'Ja'} tone={bs.paperOnly === false ? 'danger' : 'good'} />
+                <InfoChip label="Order" value={bs.canPlaceOrders ? 'På' : 'Av'} tone={bs.canPlaceOrders ? 'danger' : 'good'} />
+              </div>
+            </Card>
+          </div>
+          <details className="sup-brain-details sup-brain-batch-details">
+            <summary>Visa detaljer</summary>
+            <div className="sup-brain-batch-detail-grid">
+              <InfoChip label="Senaste klara batch" value={formatBatchName(latestCompleted)} tone="neutral" />
+              <InfoChip label="Körande" value={formatInt(bs.runningBatches || 0)} tone={bs.runningBatches ? 'warning' : 'good'} />
+              <InfoChip label="Pausade" value={formatInt(bs.pausedBatches || 0)} tone={bs.pausedBatches ? 'warning' : 'neutral'} />
+              <InfoChip label="Misslyckade" value={formatInt(bs.failedBatches || 0)} tone={bs.failedBatches ? 'warning' : 'neutral'} />
+              <InfoChip label="Källa" value={bs.source || 'strategyBatchTestService'} tone="neutral" />
+              <InfoChip label="Meddelande" value={bs.message || 'ok'} tone={degraded ? 'warning' : 'neutral'} />
+            </div>
+          </details>
+        </>
+      )}
+    </section>
+  );
+}
+
 function nextRecommendationText(overview, fallbackRecommendation) {
   const action = safeArray(overview?.actionPlan)[0];
   if (action?.title_sv) return action.title_sv;
@@ -684,6 +782,8 @@ function OverviewUnifiedSections({ overview }) {
         )}
         <div className="sup-brain-meta"><span>Källa: {overview.recentTestsStatus ? <SafeText value={overview.recentTestsStatus.source} /> : 'autopilot-historik'} · {overview.recentTestsStatus ? <SafeText value={overview.recentTestsStatus.message} /> : ''}</span></div>
       </section>
+
+      <BatchSummarySection batchSummary={overview.batchSummary} />
 
       {/* What AI learned + strategy results */}
       <section className="sup-brain-section">

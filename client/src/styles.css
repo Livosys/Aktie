@@ -19181,6 +19181,32 @@ body {
   line-height: 1.45;
 }
 
+.sup-brain-batch-section {
+  border-color: rgba(14,165,233,.22);
+}
+.sup-brain-batch-card {
+  min-height: 150px;
+}
+.sup-brain-batch-alert {
+  margin-bottom: 12px;
+  padding: 10px 12px;
+  border-radius: 12px;
+  border: 1px solid rgba(245,158,11,.24);
+  background: rgba(245,158,11,.08);
+  color: #fed7aa;
+  font-size: 13px;
+  line-height: 1.45;
+}
+.sup-brain-batch-details {
+  margin-top: 12px;
+}
+.sup-brain-batch-detail-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 10px;
+}
+
 .sup-brain-listrow { display: flex; justify-content: space-between; gap: 10px; align-items: baseline; padding: 4px 0; border-bottom: 1px solid var(--border, #1f2937); font-size: 13px; }
 .sup-good { color: #6ee7b7; font-weight: 600; }
 .sup-bad { color: #fca5a5; font-weight: 600; }

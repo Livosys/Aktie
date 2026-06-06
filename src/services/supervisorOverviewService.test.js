@@ -72,6 +72,13 @@ const overview = require('./supervisorOverviewService');
   assert.ok(Array.isArray(o.recentTests), 'recentTests is an array');
   assert.ok(o.recentTestsStatus && ['ok', 'empty', 'degraded', 'error'].includes(o.recentTestsStatus.status), 'recentTestsStatus valid');
   assert.equal(o.recentTestsStatus.source, 'data/autopilot/narrow-autopilot-history.jsonl');
+  assert.ok(o.batchSummary && typeof o.batchSummary === 'object', 'batchSummary present');
+  assert.ok(['ok', 'empty', 'degraded', 'error'].includes(o.batchSummary.status), 'batchSummary status valid');
+  assert.equal(o.batchSummary.source, 'strategyBatchTestService');
+  assert.equal(o.batchSummary.mode, 'paper_only');
+  assert.equal(o.batchSummary.canPlaceOrders, false);
+  assert.equal(o.batchSummary.liveTradingEnabled, false);
+  assert.equal(o.batchSummary.brokerEnabled, false);
 
   // ── 7. normalizeRecentTest maps a real event and drops junk ─────────────────
   const norm = overview.normalizeRecentTest({
@@ -90,7 +97,51 @@ const overview = require('./supervisorOverviewService');
   assert.equal(overview.normalizeRecentTest([1, 2]), null);
   assert.equal(overview.normalizeRecentTest(null), null);
 
-  // ── 8. empty / broken history never crashes; overview stays ok (HTTP 200) ───
+  // ── 8. batchSummary is read-only, stable, and fault-isolated ───────────────
+  const emptyBatch = overview.buildBatchSummary({
+    listBatchTests: () => ({ ok: true, batches: [], count: 0, actions_allowed: false, can_place_orders: false, live_trading_enabled: false, paper_only: true }),
+    getLatestBatchComparison: () => ({ ok: true, batch: {} }),
+  });
+  assert.equal(emptyBatch.status, 'empty');
+  assert.equal(emptyBatch.totalBatches, 0);
+  assert.equal(emptyBatch.canPlaceOrders, false);
+  assert.equal(emptyBatch.liveTradingEnabled, false);
+
+  const degradedBatch = overview.buildBatchSummary({
+    listBatchTests: () => ({
+      ok: true,
+      batches: [{
+        id: 'b1',
+        status: 'completed',
+        config: { strategy_ids: ['s1'], timeframes: ['2m'], symbols: ['MSFT'] },
+        progress: { completed: 1 },
+        started_at: '2026-01-01T00:00:00.000Z',
+        completed_at: '2026-01-01T00:01:00.000Z',
+        actions_allowed: false,
+        can_place_orders: false,
+        live_trading_enabled: false,
+        paper_only: true,
+      }],
+    }),
+    getBatchTestResults: () => { throw new Error('missing results'); },
+    getLatestBatchComparison: () => ({ ok: true, total_results: 0, best_overall: [], worst_overall: [] }),
+  });
+  assert.equal(degradedBatch.status, 'degraded');
+  assert.equal(degradedBatch.totalBatches, 1);
+  assert.equal(degradedBatch.completedBatches, 1);
+  assert.equal(degradedBatch.latestBatch.id, 'b1');
+  assert.equal(degradedBatch.latestBatch.canPlaceOrders, false);
+  assert.equal(degradedBatch.latestBatch.liveTradingEnabled, false);
+
+  const errorBatch = overview.buildBatchSummary({
+    listBatchTests: () => { throw new Error('broken batch file'); },
+  });
+  assert.equal(errorBatch.status, 'error');
+  assert.equal(errorBatch.totalBatches, 0);
+  assert.equal(errorBatch.canPlaceOrders, false);
+  assert.equal(errorBatch.liveTradingEnabled, false);
+
+  // ── 9. empty / broken history never crashes; overview stays ok (HTTP 200) ───
   const fs = require('fs'); const os = require('os'); const path = require('path');
   function withHistory(content) {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'sov-hist-'));
@@ -126,7 +177,7 @@ const overview = require('./supervisorOverviewService');
   delete process.env.NARROW_AUTOPILOT_DIR;
   delete require.cache[require.resolve('./narrowTestAutopilotService')];
 
-  // ── 9. short cache: second call within TTL is served from cache ─────────────
+  // ── 10. short cache: second call within TTL is served from cache ────────────
   overview.resetOverviewCache();
   const c1 = await overview.getCachedOverview();
   assert.equal(c1.cached, false, 'first call rebuilds');
