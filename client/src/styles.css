@@ -19080,3 +19080,28 @@ body {
   line-height: 1.4;
 }
 .ns-simple-explainers strong { color: var(--text); }
+
+/* ── Supervisor unified overview sections (system-wide) ───────────────────── */
+.sup-brain-timeline { display: flex; flex-direction: column; gap: 8px; margin-top: 10px; }
+.sup-brain-timeline-row { border: 1px solid var(--border, #1f2937); border-radius: 10px; padding: 10px 12px; background: var(--card, #111827); }
+.sup-brain-timeline-time { font-size: 11px; color: var(--muted, #9ca3af); }
+.sup-brain-timeline-main { display: flex; flex-wrap: wrap; gap: 8px; align-items: baseline; margin: 2px 0 6px; }
+.sup-brain-timeline-type { font-weight: 700; font-size: 13px; }
+.sup-brain-timeline-strat { font-size: 13px; color: var(--text, #e6e6e6); }
+.sup-brain-timeline-soft { font-size: 12px; color: var(--muted, #9ca3af); }
+.sup-brain-timeline-stats { display: flex; flex-wrap: wrap; gap: 6px; }
+.sup-brain-timeline-note { margin-top: 6px; display: flex; flex-wrap: wrap; gap: 10px; font-size: 12px; }
+
+.sup-brain-listrow { display: flex; justify-content: space-between; gap: 10px; align-items: baseline; padding: 4px 0; border-bottom: 1px solid var(--border, #1f2937); font-size: 13px; }
+.sup-good { color: #6ee7b7; font-weight: 600; }
+.sup-bad { color: #fca5a5; font-weight: 600; }
+
+.sup-brain-risklist { display: flex; flex-direction: column; gap: 6px; margin-top: 8px; }
+.sup-brain-riskrow { display: flex; gap: 8px; align-items: baseline; font-size: 13px; }
+.sup-brain-risk-lvl { text-transform: uppercase; font-size: 10px; padding: 1px 6px; border-radius: 999px; background: #374151; color: #d1d5db; height: fit-content; }
+.sup-brain-risk-critical .sup-brain-risk-lvl { background: #7f1d1d; color: #fecaca; }
+.sup-brain-risk-warning .sup-brain-risk-lvl { background: #78350f; color: #fcd34d; }
+.sup-brain-risk-info .sup-brain-risk-lvl { background: #1e3a8a; color: #bfdbfe; }
+
+.sup-brain-planlist { margin: 8px 0 0; padding-left: 18px; display: flex; flex-direction: column; gap: 8px; }
+.sup-brain-planlist li { font-size: 13px; }
