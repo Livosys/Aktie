@@ -94,6 +94,7 @@ const supervisorOperationsAdvisorService = require('../services/supervisorOperat
 const supervisorOverviewService = require('../services/supervisorOverviewService');
 const batchStatusService = require('../services/batchStatusService');
 const dataJobsStatusService = require('../services/dataJobsStatusService');
+const liveActivityService = require('../services/liveActivityService');
 const TEST_LIVE_SEND_COOLDOWN_MS = 5 * 60 * 1000;
 let testLiveSendLastAt = 0;
 const auditScanLastAt = new Map();
@@ -599,6 +600,17 @@ router.get('/status/data-jobs', (req, res) => {
     res.json(dataJobsStatusService.buildDataJobsStatus());
   } catch (err) {
     res.status(200).json({ ok: false, status: 'error', error: err.message, ...dataJobsStatusService.SAFETY });
+  }
+});
+
+// ── Read-only Backend Status: Live Activity Feed ────────────────────────────
+// Aggregates existing logs only. It never opens live streams, starts jobs,
+// changes scheduler state or mutates trading state.
+router.get('/status/live-activity', (req, res) => {
+  try {
+    res.json(liveActivityService.buildLiveActivity({ limit: req.query.limit || req.query.n }));
+  } catch (err) {
+    res.status(200).json({ ok: false, status: 'error', error: err.message, events: [], ...liveActivityService.SAFETY });
   }
 });
 
