@@ -75,6 +75,9 @@ const manualTestPlanPreview = require('../services/manualTestPlanPreviewService'
 const strategyPerformance = require('../services/strategyPerformanceService');
 const strategyPerformanceRead = require('../services/strategyPerformanceReadService');
 const strategyBatchTest = require('../services/strategyBatchTestService');
+const strategyRuntimeMatrix = require('../services/strategyRuntimeMatrixService');
+const automationPlanService = require('../services/automationPlanService');
+const automationApprovalService = require('../services/automationApprovalService');
 const strategyTestAutopilot = require('../services/strategyTestAutopilotService');
 const learningConnector = require('../services/learningConnectorService');
 const topStrategyGrid = require('../services/topStrategyGridService');
@@ -955,6 +958,64 @@ router.get('/daytrading-strategies/:id', (req, res) => {
     res.status(result.ok ? 200 : 404).json(result);
   } catch (err) {
     res.status(500).json({ ok: false, error: err.message, ...strategyPerformance.SAFETY });
+  }
+});
+
+router.get('/strategies/runtime-matrix', (req, res) => {
+  try {
+    res.json(strategyRuntimeMatrix.getStrategyRuntimeMatrix());
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message, safety: strategyRuntimeMatrix.SAFETY });
+  }
+});
+
+// Read-only Automation Plan. GET only. Suggests future paper-only candidates.
+// Never starts batch/replay/paper trades, never mutates allowlist/risk/broker.
+router.get('/automation/plan', (req, res) => {
+  try {
+    res.json(automationPlanService.getAutomationPlan());
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message, safety: automationPlanService.SAFETY });
+  }
+});
+
+// ── Manual Approval layer ─────────────────────────────────────────────────────
+// Records which proposed strategies a human approves/rejects for FUTURE
+// paper-only testing. It NEVER starts a test, batch, replay or paper trade,
+// never touches the scheduler, paper runtime, allowlist, risk, broker or live
+// trading. Safety is always paper_only with every action flag false.
+router.get('/automation/approvals', (req, res) => {
+  try {
+    res.json(automationApprovalService.getAutomationApprovals());
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message, safety: automationApprovalService.SAFETY });
+  }
+});
+
+router.post('/automation/approvals/approve', (req, res) => {
+  try {
+    const body = req.body && typeof req.body === 'object' ? req.body : {};
+    // Reject any attempt to smuggle live/order/broker intent through the body.
+    if (body.live_trading_enabled === true || body.can_place_orders === true || body.actions_allowed === true || body.broker_enabled === true) {
+      return res.status(400).json({ ok: false, error: 'approval_is_paper_only', safety: automationApprovalService.SAFETY });
+    }
+    const result = automationApprovalService.approveStrategy({ strategyId: body.strategyId, reason: body.reason });
+    res.status(result.ok ? 200 : 400).json(result);
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message, safety: automationApprovalService.SAFETY });
+  }
+});
+
+router.post('/automation/approvals/reject', (req, res) => {
+  try {
+    const body = req.body && typeof req.body === 'object' ? req.body : {};
+    if (body.live_trading_enabled === true || body.can_place_orders === true || body.actions_allowed === true || body.broker_enabled === true) {
+      return res.status(400).json({ ok: false, error: 'approval_is_paper_only', safety: automationApprovalService.SAFETY });
+    }
+    const result = automationApprovalService.rejectStrategy({ strategyId: body.strategyId, reason: body.reason });
+    res.status(result.ok ? 200 : 400).json(result);
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message, safety: automationApprovalService.SAFETY });
   }
 });
 
@@ -3878,6 +3939,13 @@ router.get('/priority/summary', async (req, res) => {
 router.get('/priority/market-context', async (req, res) => {
   try { res.json(await priorityEngine.buildMarketContextResponse()); }
   catch (err) { res.status(500).json({ ok: false, error: err.message, ...priorityEngine.SAFETY }); }
+});
+
+// ── Paper Allowlist — read-only status ──────────────────────────────────────
+const paperAllowlistService = require('../services/paperAllowlistService');
+router.get('/automation/paper-allowlist/status', (req, res) => {
+  try { res.json(paperAllowlistService.getPaperAllowlistStatus()); }
+  catch (err) { res.status(500).json({ ok: false, error: err.message, ...paperAllowlistService.SAFETY }); }
 });
 
 // ── API 404 — never return HTML for unknown /api/* paths ──────────────────────
