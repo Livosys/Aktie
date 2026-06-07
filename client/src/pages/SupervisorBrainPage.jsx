@@ -36,6 +36,9 @@ function useResearchLabData(limit) {
     overview: null,
     activity: null,
     batches: null,
+    batchAuto: null,
+    replayAuto: null,
+    replay: null,
     dataJobs: null,
     aiStatus: null,
     aiLatest: null,
@@ -52,10 +55,13 @@ function useResearchLabData(limit) {
       if (!cancelled) {
         setState((prev) => ({ ...prev, loading: !prev.lastUpdated, refreshing: Boolean(prev.lastUpdated), error: '' }));
       }
-      const [overview, activity, batches, dataJobs, aiStatus, aiLatest, paperTrading] = await Promise.all([
+      const [overview, activity, batches, batchAuto, replayAuto, replay, dataJobs, aiStatus, aiLatest, paperTrading] = await Promise.all([
         apiJson('/api/supervisor/overview').catch(() => null),
         apiJson(`/api/status/live-activity?limit=${limit}`).catch(() => null),
         apiJson('/api/status/batches').catch(() => null),
+        apiJson('/api/status/batch-autopilot').catch(() => null),
+        apiJson('/api/status/replay-autopilot').catch(() => null),
+        apiJson('/api/status/replay').catch(() => null),
         apiJson('/api/status/data-jobs').catch(() => null),
         apiJson('/api/ai/analyst/status').catch(() => null),
         apiJson('/api/ai/analyst/latest').catch(() => null),
@@ -66,6 +72,9 @@ function useResearchLabData(limit) {
         overview,
         activity,
         batches,
+        batchAuto,
+        replayAuto,
+        replay,
         dataJobs,
         aiStatus,
         aiLatest,
@@ -184,8 +193,15 @@ function Badge({ tone = 'neutral', children }) {
 
 function autopilotReadiness(summary) {
   if (!summary) return { tone: 'neutral', label: 'Status saknas' };
-  if (summary.enabled) return { tone: 'blue', label: 'Förberedd' };
+  if (summary.enabled) return { tone: 'blue', label: summary.dryRunOnly ? 'Aktiv dry-run' : 'Förberedd' };
   return { tone: 'good', label: 'Förberedd men avstängd' };
+}
+
+function autopilotStatusText(summary) {
+  if (!summary) return 'Status saknas';
+  if (summary.enabled && summary.dryRunOnly) return 'Aktiv i dry-run';
+  if (summary.enabled) return 'Förberedd';
+  return 'Förberedd men avstängd';
 }
 
 function aiReadiness(status) {
@@ -286,7 +302,7 @@ function SafetyStatusBar({ overview }) {
     <div className="research-safetybar">
       <div>
         <strong>{locked ? 'Systemet är säkert' : 'Kontrollera säkerheten'}</strong>
-        <span>Ingen riktig handel sker. Plattformen analyserar, testar och lär sig i paper-läge.</span>
+        <span>Ingen riktig handel sker. Plattformen analyserar, testar och lär sig i testläge.</span>
       </div>
       <div className="research-safety-flags">
         <Badge tone={locked ? 'good' : 'danger'}>Endast testläge</Badge>
@@ -301,7 +317,7 @@ function SafetyStatusBar({ overview }) {
 function SystemPipeline() {
   const steps = [
     ['Data', 'Marknadsdata hämtas och sparas.'],
-    ['Test', 'Systemet gör säkra paper/replay/batch-tester.'],
+    ['Test', 'Systemet gör säkra låtsas-, replay- och batchtester.'],
     ['Resultat', 'Utfallet sparas som testdata.'],
     ['AI lär sig', 'Learning Engine och AI sammanfattar mönster.'],
     ['Nästa test', 'Systemet föreslår nästa säkra research-steg.'],
@@ -392,7 +408,7 @@ function HistoryTimeline({ tests, limit }) {
             <div className="research-history-grid">
               <span><b>Testtyp</b>{simpleEventLabel(test.type, 'Testhändelse')}</span>
               <span><b>Symbol/timeframe</b>{text([test.symbol, test.timeframe].filter(Boolean), 'Saknas')}</span>
-              <span><b>Säker testkörning</b>{test.dryRun === true ? 'Säker testkörning' : 'Paper/batch-test'}</span>
+              <span><b>Säker testkörning</b>{test.dryRun === true ? 'Säker testkörning' : 'Låtsas-/batchtest'}</span>
               <span><b>Ingen riktig körning</b>{test.executed === false ? 'Ja' : test.executed === true ? 'Testdata klar' : 'Ja'}</span>
               <span><b>Andel lyckade tester</b>{test.winRate != null ? fmtPct(test.winRate) : '—'}</span>
               <span><b>Genomsnittligt resultat</b>{test.avgResult != null ? fmtSigned(test.avgResult) : '—'}</span>
@@ -430,7 +446,7 @@ function StrategyCard({ item, tone = 'neutral', note }) {
   );
 }
 
-function BatchStatusCard({ batches }) {
+function BatchStatusCard({ batches, autopilot }) {
   const latest = batches?.latestBatch || batches?.latestCompletedBatch || null;
   const best = batches?.bestOutcome || latest?.bestOutcome || null;
   const worst = batches?.worstOutcome || latest?.worstOutcome || null;
@@ -450,10 +466,21 @@ function BatchStatusCard({ batches }) {
           <span><b>Symboler</b>{text(latest?.symbols, 'Saknas')}</span>
           <span><b>Timeframe</b>{text(latest?.timeframe, 'Saknas')}</span>
           <span><b>Kombinationer</b>{fmtNumber(latest?.combinationsTested || 0)}</span>
+          <span><b>Datum/tid</b>{timeText(latest?.completedAt || latest?.startedAt)}</span>
         </div>
       </Card>
       <Card>
-        <div className="research-card-title"><strong>Bästa outcome</strong><Badge tone="good">Bäst</Badge></div>
+        <div className="research-card-title"><strong>Autopilot-plan</strong><Badge tone={autopilotReadiness(autopilot).tone}>Dry-run</Badge></div>
+        <p><SafeText value={autopilot?.lastPlan?.recommendation || autopilot?.message} fallback="Ingen batchplan sparad ännu." /></p>
+        <div className="research-mini-grid">
+          <span><b>Status</b>{autopilotStatusText(autopilot)}</span>
+          <span><b>Planerare</b>{autopilot?.enabled ? 'Förberedd' : 'Avstängd'}</span>
+          <span><b>Nästa plan</b>{timeText(autopilot?.nextRun)}</span>
+          <span><b>Planer idag</b>{fmtNumber(autopilot?.todayRunCount || 0)}</span>
+        </div>
+      </Card>
+      <Card>
+        <div className="research-card-title"><strong>Bästa utfall</strong><Badge tone="good">Bäst</Badge></div>
         <p><SafeText value={simpleStrategyLabel(best?.strategy, 'Saknas')} fallback="Saknas" /></p>
         <div className="research-mini-grid">
           <span><b>Win rate</b>{best?.winRate != null ? fmtPct(best.winRate) : '—'}</span>
@@ -461,7 +488,7 @@ function BatchStatusCard({ batches }) {
         </div>
       </Card>
       <Card>
-        <div className="research-card-title"><strong>Sämsta outcome</strong><Badge tone="warning">Svagast</Badge></div>
+        <div className="research-card-title"><strong>Sämsta utfall</strong><Badge tone="warning">Svagast</Badge></div>
         <p><SafeText value={simpleStrategyLabel(worst?.strategy, 'Saknas')} fallback="Saknas" /></p>
         <div className="research-mini-grid">
           <span><b>Win rate</b>{worst?.winRate != null ? fmtPct(worst.winRate) : '—'}</span>
@@ -472,13 +499,14 @@ function BatchStatusCard({ batches }) {
   );
 }
 
-function ReplayResultsCard({ replay }) {
+function ReplayResultsCard({ replay, autopilot }) {
   const latest = replay?.latestReplay || null;
+  const latestResult = replay?.latestResult || latest;
   const period = latest?.period || {};
   const best = latest?.bestSymbol || null;
   return (
     <div className="research-grid research-grid-3">
-      <MetricCard label="Replaytester totalt" value={fmtNumber(replay?.totalReplayTests || 0)} help="Sparade replay-körningar (scan/paper)." tone="blue" />
+      <MetricCard label="Replaytester totalt" value={fmtNumber(replay?.totalReplayTests || 0)} help="Sparade replaytester i säkert testläge." tone="blue" />
       <MetricCard label="Senaste replay" value={latest ? timeText(latest.createdAt) : 'Saknas'} help={latest ? `Period ${text(period.from, '?')}–${text(period.to, '?')}` : 'Ingen historik ännu'} tone={latest ? 'blue' : 'warning'} />
       <MetricCard label="Data sträcker sig" value={replay?.earliestPeriod ? `${text(replay.earliestPeriod)} →` : 'Saknas'} help={`Senaste: ${text(replay?.latestPeriod, 'Saknas')}`} tone="purple" />
       <Card className="research-wide">
@@ -494,6 +522,17 @@ function ReplayResultsCard({ replay }) {
           <span><b>Lägen hittade</b>{fmtNumber(latest?.totalEvents || 0)}</span>
           <span><b>Snittbetyg</b>{latest?.avgTradeScore != null ? fmtNumber(latest.avgTradeScore) : '—'}</span>
           <span><b>Bäst symbol</b>{best?.symbol ? `${best.symbol} (${fmtNumber(best.avgScore)})` : '—'}</span>
+          <span><b>Källa</b>{text(replay?.source || latest?.replayMode, 'data/replay/runs')}</span>
+        </div>
+      </Card>
+      <Card>
+        <div className="research-card-title"><strong>Replay-plan</strong><Badge tone={autopilotReadiness(autopilot).tone}>Dry-run</Badge></div>
+        <p><SafeText value={autopilot?.lastReplayPlan?.recommendation || autopilot?.message} fallback="Ingen replay-plan sparad ännu." /></p>
+        <div className="research-mini-grid">
+          <span><b>Status</b>{autopilotStatusText(autopilot)}</span>
+          <span><b>Planerare</b>{autopilot?.enabled ? 'Förberedd' : 'Avstängd'}</span>
+          <span><b>Senaste resultat</b>{timeText(latestResult?.createdAt)}</span>
+          <span><b>Nästa plan</b>{timeText(autopilot?.nextRun)}</span>
         </div>
       </Card>
     </div>
@@ -589,6 +628,8 @@ function DataPipelineCard({ dataJobs }) {
   const weekly = dataJobs?.weeklyBackfill || {};
   const cache = dataJobs?.cacheStatus || {};
   const quality = dataJobs?.dataQuality || {};
+  const latestImport = hourly.latestImport || {};
+  const latestBackfill = weekly.latestBackfill || {};
   return (
     <>
       <div className="research-pipeline research-pipeline-data">
@@ -596,7 +637,7 @@ function DataPipelineCard({ dataJobs }) {
           <div key={step} className="research-pipeline-step">
             <span>{index + 1}</span>
             <strong>{step}</strong>
-            <small>{index === 0 ? (dataJobs?.alpacaConfigured ? 'Konfigurerad' : 'Saknar config') : 'Read-only status'}</small>
+            <small>{index === 0 ? (dataJobs?.alpacaConfigured ? 'Konfigurerad' : 'Saknar config') : 'Endast status'}</small>
           </div>
         ))}
       </div>
@@ -616,6 +657,10 @@ function DataPipelineCard({ dataJobs }) {
           <span><b>Importerade candles</b>{fmtNumber(hourly.candlesImported || 0)}</span>
           <span><b>Symboler uppdaterade</b>{fmtNumber(arr(hourly.symbolsUpdated).length)}</span>
           <span><b>Providerfel</b>{fmtNumber(arr(quality.providerErrors).length)}</span>
+          <span><b>Tidigaste data</b>{text(weekly.dateRange?.from || latestBackfill.dateRange?.from, 'Saknas')}</span>
+          <span><b>Senaste data</b>{text(latestImport.to || weekly.dateRange?.to || latestBackfill.dateRange?.to, 'Saknas')}</span>
+          <span><b>Tidsramar</b>{text(latestImport.timeframe || latestBackfill.timeframe || latestBackfill.timeframes, 'Saknas')}</span>
+          <span><b>Cache-symboler</b>{fmtNumber(cache.symbolsCached || 0)}</span>
         </div>
       </Card>
     </>
@@ -632,11 +677,11 @@ function AiAnalystSummary({ status, latest, onRefresh, refreshing }) {
       <Card className="research-ai-card">
         <div className="research-card-title">
           <strong>AI-analytiker</strong>
-          <Badge tone={disabled ? 'warning' : 'purple'}>{disabled ? 'Avstängd' : 'Read-only'}</Badge>
+          <Badge tone={disabled ? 'warning' : 'purple'}>{disabled ? 'Avstängd' : 'Endast visning'}</Badge>
         </div>
         <p>AI-analytikern läser systemets säkra sammanfattning. AI kan inte handla eller ändra något.</p>
         <div className="research-mini-grid">
-          <span><b>Provider</b>{provider}</span>
+          <span><b>Leverantör</b>{provider}</span>
           <span><b>Model</b>{text(status?.model, 'Saknas')}</span>
           <span><b>Senast</b>{timeText(status?.latestTimestamp || latestPayload.generatedAt)}</span>
           <span><b>Confidence</b>{output.confidence != null ? fmtPct(Number(output.confidence) * 100) : '—'}</span>
@@ -704,8 +749,13 @@ function TechnicalDetailsPanel({ data }) {
         <MetricCard label="broker_enabled" value={String(data.overview?.broker_enabled === true ? true : false)} tone="good" />
         <MetricCard label="AI cache" value={data.aiStatus?.cacheEnabled ? 'På' : 'Av'} help={`${fmtNumber(data.aiStatus?.cacheTtlMs || 0)} ms`} tone="purple" />
         <MetricCard label="Batch API" value={text(data.batches?.status, 'Saknas')} tone={toneForStatus(data.batches?.status)} />
+        <MetricCard label="Batch autopilot" value={text(data.batchAuto?.status, 'Saknas')} help={`dryRunOnly=${String(data.batchAuto?.dryRunOnly === true)}`} tone={toneForStatus(data.batchAuto?.status)} />
+        <MetricCard label="Replay autopilot" value={text(data.replayAuto?.status, 'Saknas')} help={`dryRunOnly=${String(data.replayAuto?.dryRunOnly === true)}`} tone={toneForStatus(data.replayAuto?.status)} />
+        <MetricCard label="Replay API" value={text(data.replay?.status, 'Saknas')} help={`${fmtNumber(data.replay?.totalReplayTests || 0)} replaytester`} tone={toneForStatus(data.replay?.status)} />
         <MetricCard label="Data API" value={text(data.dataJobs?.status, 'Saknas')} tone={toneForStatus(data.dataJobs?.status)} />
         <MetricCard label="Activity API" value={text(data.activity?.status, 'Saknas')} tone={toneForStatus(data.activity?.status)} />
+        <MetricCard label="Provider" value={text(data.aiStatus?.provider || data.dataJobs?.providerStatus?.alpaca?.provider, 'Saknas')} tone="neutral" />
+        <MetricCard label="scheduler status" value={text([data.batchAuto?.status, data.replayAuto?.status].filter(Boolean), 'Saknas')} tone="blue" />
       </div>
     </details>
   );
@@ -734,9 +784,9 @@ export default function SupervisorBrainPage() {
   const learning = blocks.learning?.summary || {};
   const narrow = blocks.narrow?.summary || {};
   const recommended = arr(overview.actionPlan)[0] || null;
-  const batchAuto = overview.batchAutopilotSummary || null;
-  const replayAuto = overview.replayAutopilotSummary || null;
-  const replaySummary = overview.replaySummary || null;
+  const batchAuto = data.batchAuto || overview.batchAutopilotSummary || null;
+  const replayAuto = data.replayAuto || overview.replayAutopilotSummary || null;
+  const replaySummary = data.replay || overview.replaySummary || null;
   const aiStatusForReadiness = aiOverride?.status || data.aiStatus || overview.aiAnalystStatus || null;
 
   const safetyLocked = overview.mode === 'paper_only'
@@ -769,7 +819,7 @@ export default function SupervisorBrainPage() {
           <div>
             <div className="research-eyebrow">AI Kontrollrum</div>
             <h1>Trading OS är en säker AI-forskningsplattform</h1>
-            <p>Analys, paper testing, replay, batchtester och learning. Ingen riktig handel sker.</p>
+            <p>Analys, låtsastester, replay, batchtester och learning. Ingen riktig handel sker.</p>
           </div>
           <div className="research-hero-status">
             <Badge tone={safetyLocked ? 'good' : 'danger'}>{safetyLocked ? 'Säkert läge' : 'Kontrollera'}</Badge>
@@ -803,10 +853,10 @@ export default function SupervisorBrainPage() {
               eyebrow="Översikt"
               title="Det viktigaste först"
               subtitle="Fyra korta svar: säkerhet, autopilot, senaste test och nästa säkra steg."
-              aside={<Badge tone="good">Read-only</Badge>}
+              aside={<Badge tone="good">Endast visning</Badge>}
             />
             <div className="research-grid research-grid-4">
-              <MetricCard label="Är systemet säkert?" value={safetyLocked ? 'Ja' : 'Kontrollera'} help="Paper only betyder låtsashandel och analys." tone={safetyLocked ? 'good' : 'danger'} />
+              <MetricCard label="Är systemet säkert?" value={safetyLocked ? 'Ja' : 'Kontrollera'} help="Endast testläge betyder låtsashandel och analys." tone={safetyLocked ? 'good' : 'danger'} />
               <MetricCard label="Autopilot" value={autopilot.schedulerActive ? 'Jobbar i bakgrunden' : 'Väntar'} help="Autopilot får bara planera och analysera." tone={autopilot.schedulerActive ? 'blue' : 'warning'} />
               <MetricCard label="Senaste test" value={latestTest ? simpleEventLabel(latestTest.type, 'Testhändelse') : 'Saknas'} help={latestTest ? timeText(latestTest.timestamp) : 'Ingen historik ännu'} tone={latestTest ? 'blue' : 'warning'} />
               <MetricCard label="Nästa säkra test" value={text(recommended?.title_sv || narrow.recommendedNextTest, 'Vänta på mer data')} help={text(recommended?.detail_sv, 'Rekommendation, inte automatisk ändring.')} tone="purple" />
@@ -814,7 +864,7 @@ export default function SupervisorBrainPage() {
             <SystemPipeline />
             <div className="research-grid research-grid-3">
               <MetricCard label="Totalt testade händelser" value={fmtNumber(canonical.totalTrades || 0)} help="Testdata, inte bevisad edge." tone="blue" />
-              <MetricCard label="Andel lyckade tester" value={fmtPct(canonical.winRate)} help="Win rate i paper/testdata." tone="good" />
+              <MetricCard label="Andel lyckade tester" value={fmtPct(canonical.winRate)} help="Win rate i testdata." tone="good" />
               <MetricCard label="AI-lärdom" value={text(narrow.bestScoreBand, 'För lite data')} help="Bästa narrow-nivå just nu." tone="purple" />
             </div>
           </section>
@@ -870,16 +920,16 @@ export default function SupervisorBrainPage() {
                 {visibleWeakStrategies.length ? visibleWeakStrategies.map((item, index) => <StrategyCard key={item.key || item.strategy || `worst-${index}`} item={item} tone="warning" note="Svagast" />) : <EmptyState />}
               </Card>
               <MetricCard label="Bästa narrow-strategi" value={simpleStrategyLabel(narrow.bestStrategy, 'Saknas')} help="Från Narrow Learning." tone="good" />
-              <MetricCard label="Inte testade nog" value={text(learning.connectorSummary?.strategiesTracked ? 'Fler strategier följs' : 'För lite data')} help="Mer paper/replay/batch behövs." tone="warning" />
+              <MetricCard label="Inte testade nog" value={text(learning.connectorSummary?.strategiesTracked ? 'Fler strategier följs' : 'För lite data')} help="Mer låtsas-, replay- och batchdata behövs." tone="warning" />
             </div>
           </section>
         ) : null}
 
         {active === 'batches' ? (
           <section className="research-section">
-            <SectionHeader eyebrow="Batchtester" title="Batchtester jämför många varianter" subtitle="Batchtester jämför många varianter för att hitta vad som fungerar bäst. Här visas bara status och historik." aside={<Badge tone={autopilotReadiness(batchAuto).tone}>{`Batch-autopilot: ${autopilotReadiness(batchAuto).label}`}</Badge>} />
+            <SectionHeader eyebrow="Batchtester" title="Batchtester jämför många varianter" subtitle="Batchtester jämför många varianter för att hitta vad som fungerar bäst. Autopilot skapar bara säkra planer i dry-run-läge." aside={<Badge tone={autopilotReadiness(batchAuto).tone}>{`Batch-autopilot: ${autopilotReadiness(batchAuto).label}`}</Badge>} />
             {batchAuto ? <ReadinessNote readiness={autopilotReadiness(batchAuto)} lastRun={batchAuto.lastRun} /> : null}
-            <BatchStatusCard batches={data.batches || overview.batchSummary} />
+            <BatchStatusCard batches={data.batches || overview.batchSummary} autopilot={batchAuto} />
           </section>
         ) : null}
 
@@ -887,10 +937,10 @@ export default function SupervisorBrainPage() {
           <section className="research-section">
             <SectionHeader eyebrow="Replaytester" title="Replay testar på gammal data" subtitle="Replay betyder att systemet testar en strategi på historisk marknadsdata. Den här vyn visar bara förslag och händelser." aside={<Badge tone={autopilotReadiness(replayAuto).tone}>{`Replay-autopilot: ${autopilotReadiness(replayAuto).label}`}</Badge>} />
             {replayAuto ? <ReadinessNote readiness={autopilotReadiness(replayAuto)} lastRun={replayAuto.lastRun} lastResult={replayAuto.lastReplayResult} /> : null}
-            <ReplayResultsCard replay={replaySummary} />
+            <ReplayResultsCard replay={replaySummary} autopilot={replayAuto} />
             <div className="research-grid research-grid-2">
               <Card>
-                <div className="research-card-title"><strong>Visa replay-förslag</strong><Badge tone="blue">Read-only</Badge></div>
+                <div className="research-card-title"><strong>Visa replay-förslag</strong><Badge tone="blue">Endast visning</Badge></div>
                 <p>{text(recommended?.detail_sv, 'Ingen särskild replay-rekommendation finns just nu.')}</p>
               </Card>
               <Card>
@@ -915,7 +965,7 @@ export default function SupervisorBrainPage() {
 
         {active === 'data' ? (
           <section className="research-section">
-            <SectionHeader eyebrow="Datahämtning" title="Data hämtas och sparas för tester" subtitle="Read-only status för Alpaca, historisk backfill, candles och cache. Inga synk- eller datajobbsknappar." />
+            <SectionHeader eyebrow="Datahämtning" title="Data hämtas och sparas för tester" subtitle="Endast status för Alpaca, historisk backfill, candles och cache. Inga synk- eller datajobbsknappar." />
             <DataPipelineCard dataJobs={data.dataJobs || overview.dataJobsSummary} />
             <LiveActivityFeed events={visibleActivity.filter((event) => event.type === 'data_job')} limit={10} compact />
           </section>
