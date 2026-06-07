@@ -11,6 +11,7 @@ import {
   useUnifiedConfig,
 } from '../hooks/useUnifiedConfig.js';
 import { SignalAge, TradingViewLink } from '../shared.jsx';
+import { useLanguage } from '../i18n/LanguageContext.jsx';
 
 // ── Default configs ───────────────────────────────────────────────────────────
 const TOGGLE_META = [
@@ -468,23 +469,25 @@ function formatSliderValue(meta, value) {
 }
 
 function GroupHeader({ icon, title }) {
+  const { tr } = useLanguage();
   return (
     <div className="tl-group-header">
       <span>{icon}</span>
-      <span>{title}</span>
+      <span>{tr(title)}</span>
     </div>
   );
 }
 
 function Toggle({ label, desc, value, onChange, disabled, scope = 'test' }) {
+  const { tr } = useLanguage();
   return (
     <div className={`tl-toggle${disabled ? ' tl-toggle-disabled' : ''}`}>
       <div className="tl-toggle-info">
         <div className="tl-toggle-label-row">
-          <div className="tl-toggle-label">{label}</div>
+          <div className="tl-toggle-label">{tr(label)}</div>
           <ConfigScopeBadge scope={disabled ? 'safety' : scope} />
         </div>
-        <div className="tl-toggle-desc">{disabled ? `${desc} Påverkar inte live-scannern från Trading Lab.` : `${desc} Påverkar endast tester och analys.`}</div>
+        <div className="tl-toggle-desc">{disabled ? `${tr(desc)} ${tr('Påverkar inte live-scannern från Trading Lab.')}` : `${tr(desc)} ${tr('Påverkar endast tester och analys.')}`}</div>
       </div>
       <button
         className={`tl-switch${value ? ' tl-switch-on' : ''}`}
@@ -500,6 +503,7 @@ function Toggle({ label, desc, value, onChange, disabled, scope = 'test' }) {
 }
 
 function Slider({ meta, value, onChange }) {
+  const sliderKey = Object.keys(SLIDER_META).find(key => SLIDER_META[key] === meta);
   const options = meta.options || null;
   const numericValue = finiteNumber(value, meta.defaultValue);
   const sliderValue = options
@@ -519,6 +523,9 @@ function Slider({ meta, value, onChange }) {
         <div className="tl-slider-value">{display}</div>
       </div>
       <div className="tl-slider-desc">{meta.desc}</div>
+      {SIMPLE_SLIDER_EXPLANATIONS[sliderKey] && (
+        <div className="tl-slider-simple">{SIMPLE_SLIDER_EXPLANATIONS[sliderKey]}</div>
+      )}
       <div className="tl-slider-track">
         <div className="tl-slider-fill" style={{ width: `${clamp(pct, 0, 100)}%` }} />
         <input
@@ -683,12 +690,13 @@ function ComboCard({ combo, toggles }) {
 }
 
 function SafetyNote() {
+  const { tr } = useLanguage();
   return (
     <div className="tl-safety-note">
       <span>🔒</span>
       <div>
-        <div className="tl-safety-note-title">Testmiljö — inga riktiga orders</div>
-        <div className="tl-safety-note-sub">Riskmotor och säkerhetsmotor kan inte kringgås. actions_allowed=false alltid.</div>
+        <div className="tl-safety-note-title">{tr('Testmiljö — inga riktiga orders')}</div>
+        <div className="tl-safety-note-sub">{tr('Riskmotor och säkerhetsmotor kan inte kringgås. actions_allowed=false alltid.')}</div>
       </div>
     </div>
   );
@@ -1764,6 +1772,155 @@ const MARKET_OPTIONS = [
   { value: 'all', label: 'Alla' },
 ];
 const TIMEFRAME_OPTIONS = ['1m', '2m', '5m', '15m', '30m', '1h'];
+const SCANNER_STRATEGY_IDS = new Set([
+  'crypto_momentum_scalper',
+  'ema_pullback_continuation',
+  'narrow_breakout',
+  'narrow_state_expansion_long',
+  'trend_continuation',
+  'vwap_failed_breakout_short',
+  'vwap_volume_breakout_long',
+]);
+const PAPER_RUNTIME_HINTS = {
+  crypto_fast_momentum: { label: 'Inte kopplad', tone: 'blocked', reason: 'Paper-test är inte kopplat för denna strategi.' },
+  crypto_momentum_scalper: { label: 'Delvis automatiserad', tone: 'partial', reason: 'Krypto kräver rätt signaltyp och färsk marknadsdata.' },
+  ema_pullback_continuation: { label: 'Pausad', tone: 'paused', reason: 'EMA paper-test är pausat om inte systemet uttryckligen tillåter EMA-test.' },
+  index_confirmed_long: { label: 'Delvis automatiserad', tone: 'partial', reason: 'Kräver QQQ/SPY-bekräftelse och marknadskompass.' },
+  index_confirmed_short: { label: 'Delvis automatiserad', tone: 'partial', reason: 'Kräver QQQ/SPY-bekräftelse och marknadskompass.' },
+  index_supported_momentum_long: { label: 'Delvis automatiserad', tone: 'partial', reason: 'Kräver QQQ/SPY-bekräftelse.' },
+  narrow_breakout: { label: 'Delvis automatiserad', tone: 'partial', reason: 'Kräver Narrow State-data och tydlig bull/bear-entry.' },
+  narrow_state_expansion_long: { label: 'Delvis automatiserad', tone: 'partial', reason: 'Kräver Narrow State-data och tydligt uppåtutbrott.' },
+  narrow_state_fakeout_reversal: { label: 'Delvis automatiserad', tone: 'partial', reason: 'Kräver Narrow State-data och fakeout-läge.' },
+  news_volatility_watch: { label: 'Pausad', tone: 'paused', reason: 'Kräver nyhetsdata och är observation/test.' },
+  opening_range_breakout: { label: 'Delvis automatiserad', tone: 'partial', reason: 'Kräver opening range-data från marknadsöppningen.' },
+  opening_range_fakeout: { label: 'Delvis automatiserad', tone: 'partial', reason: 'Kräver opening range-data från marknadsöppningen.' },
+  opening_range_retest_long: { label: 'Delvis automatiserad', tone: 'partial', reason: 'Kräver opening range-data och retest.' },
+  trend_continuation: { label: 'Delvis automatiserad', tone: 'partial', reason: 'Kan hittas av scannern men är inte alltid direkt paper-entry.' },
+  vwap_failed_breakout_short: { label: 'Aktiv', tone: 'active', reason: 'Kan hittas av scannern och kopplas till paper-test när säkerhetsfilter tillåter test.' },
+  vwap_momentum_long: { label: 'Aktiv', tone: 'active', reason: 'VWAP-signal kan kopplas till paper-test när säkerhetsfilter tillåter test.' },
+  vwap_rejection_short: { label: 'Aktiv', tone: 'active', reason: 'VWAP-avvisning kan kopplas till paper-test när säkerhetsfilter tillåter test.' },
+  vwap_volume_breakout_long: { label: 'Aktiv', tone: 'active', reason: 'Kan hittas av scannern och kopplas till paper-test när säkerhetsfilter tillåter test.' },
+};
+const STRATEGY_DATA_NEEDS = {
+  index_confirmed_long: ['QQQ/SPY-bekräftelse', 'marknadskompass'],
+  index_confirmed_short: ['QQQ/SPY-bekräftelse', 'marknadskompass'],
+  index_supported_momentum_long: ['QQQ/SPY-bekräftelse'],
+  news_volatility_watch: ['nyhetsdata', 'spreadkontroll'],
+  opening_range_breakout: ['opening range-data'],
+  opening_range_fakeout: ['opening range-data'],
+  opening_range_retest_long: ['opening range-data'],
+  crypto_fast_momentum: ['kryptodata', 'volymdata'],
+  crypto_momentum_scalper: ['kryptodata', 'volymdata'],
+};
+const SIMPLE_SLIDER_EXPLANATIONS = {
+  stop_loss: 'Max förlust = var testet stoppas om det går fel.',
+  take_profit: 'Vinstmål = nivån där testet räknas som lyckat.',
+  confidence_threshold: 'Minsta signalstyrka = hur stark signalen måste vara.',
+  holding_time: 'Max tid i trade = hur länge ett simulerat test får vara öppet.',
+  cooldown: 'Paus mellan trades = väntetid innan nästa test.',
+  volume_filter: 'Minsta volym = hur mycket aktivitet som krävs.',
+  vwap_distance: 'Avstånd till VWAP = hur nära priset är en viktig VWAP-linje.',
+  ema_distance: 'Avstånd till EMA = hur nära priset är en viktig EMA-linje.',
+  narrow_sensitivity: 'Narrow-känslighet = hur strikt systemet tolkar lugn marknad.',
+};
+const LAB_COPY = {
+  sv: {
+    yes: 'Ja',
+    no: 'Nej',
+    partly: 'Delvis',
+    runsAutomatically: 'Kör automatiskt',
+    manualSafeTest: 'Manuellt säkert test',
+    needsMoreData: 'Behöver mer data',
+    automationRules: 'Automatik & regler',
+    scanner: 'Automatisk scanner',
+    paperTest: 'Paper-test',
+    batch: 'Batch med många tester',
+    replay: 'Replay på gammal data',
+    learning: 'Learning aktiv',
+    why: 'Varför',
+    market: 'Marknad',
+    timeframe: 'Timeframe',
+    direction: 'Riktning',
+    stopLoss: 'Stop loss',
+    target: 'Mål',
+    maxHold: 'Max hålltid',
+    dataNeeds: 'Behöver data',
+    entryIdea: 'Entry-idé',
+    exitIdea: 'Exit-idé',
+    technicalDetails: 'Tekniska detaljer',
+    safeSimulation: 'Ja',
+    testButton: 'Starta säkert labbtest',
+    testingButton: 'Startar säkert labbtest...',
+    testHelp: 'Endast simulering. Inga riktiga pengar.',
+    exitPlain: 'Systemet stänger testet om målet nås, stop loss träffas eller maxtiden tar slut.',
+    noRules: 'Regler saknas i katalogen.',
+    notFullyConnected: 'Inte helt kopplad ännu',
+    tabs: {
+      strategier: 'Strategier',
+      batch: 'Kör historisk testanalys',
+      marknader: 'Marknader',
+      sliders: 'Sliders',
+      exits: 'Exits',
+      replay: 'Visa historisk replay',
+      ai_agent: 'Skapa testförslag',
+      agent_debate: 'Beslutsråd',
+      adaptive: 'Visa lärande från tester',
+      review: 'Graf',
+      candidates: 'Kandidater',
+      signaler: 'Signaler',
+      blockerare: 'Blockerare',
+      presets: 'Presets',
+    },
+  },
+  en: {
+    yes: 'Yes',
+    no: 'No',
+    partly: 'Partly',
+    runsAutomatically: 'Runs automatically',
+    manualSafeTest: 'Manual safe test',
+    needsMoreData: 'Needs more data',
+    automationRules: 'Automation & rules',
+    scanner: 'Automatic scanner',
+    paperTest: 'Paper test',
+    batch: 'Batch with many tests',
+    replay: 'Replay on historical data',
+    learning: 'Learning active',
+    why: 'Why',
+    market: 'Market',
+    timeframe: 'Timeframe',
+    direction: 'Direction',
+    stopLoss: 'Stop loss',
+    target: 'Target',
+    maxHold: 'Max hold',
+    dataNeeds: 'Needs data',
+    entryIdea: 'Entry idea',
+    exitIdea: 'Exit idea',
+    technicalDetails: 'Technical details',
+    safeSimulation: 'Yes',
+    testButton: 'Start safe lab test',
+    testingButton: 'Starting safe lab test...',
+    testHelp: 'Simulation only. No real money.',
+    exitPlain: 'The system closes the test when the target is reached, stop loss is hit, or max time runs out.',
+    noRules: 'No catalog rules found.',
+    notFullyConnected: 'Not fully connected yet',
+    tabs: {
+      strategier: 'Strategies',
+      batch: 'Run historical test analysis',
+      marknader: 'Markets',
+      sliders: 'Sliders',
+      exits: 'Exits',
+      replay: 'Show historical replay',
+      ai_agent: 'Create test ideas',
+      agent_debate: 'Decision panel',
+      adaptive: 'Show learning from tests',
+      review: 'Chart',
+      candidates: 'Candidates',
+      signaler: 'Signals',
+      blockerare: 'Blockers',
+      presets: 'Presets',
+    },
+  },
+};
 
 function pctText(v) {
   if (v == null || Number.isNaN(Number(v))) return 'Ingen data ännu';
@@ -1799,6 +1956,224 @@ function catalogStatusTone(status) {
 
 function capabilityText(label, value) {
   return `${label}: ${value === true ? 'Ja' : 'Nej'}`;
+}
+
+function yesNo(value) {
+  return value === true ? 'Ja' : 'Nej';
+}
+
+function labCopy(language) {
+  return LAB_COPY[language] || LAB_COPY.sv;
+}
+
+function localizedYesNo(value, copy) {
+  return value === true ? copy.yes : copy.no;
+}
+
+function localizedPaperLabel(paperInfo = {}, copy, language = 'sv') {
+  const label = String(paperInfo.label || '');
+  if (label === 'Inte helt kopplad ännu') return copy.notFullyConnected;
+  if (language !== 'en') return label;
+  return {
+    'Aktiv': 'Active',
+    'Delvis automatiserad': 'Partly automated',
+    'Pausad': 'Paused',
+    'Endast manuell': 'Manual only',
+    'Inte kopplad': 'Not connected',
+  }[label] || label;
+}
+
+function strategyMarketLabel(strategy = {}) {
+  const market = String(strategy.market_label || strategy.market || strategy.market_group || 'all').toLowerCase();
+  if (market === 'crypto') return 'Krypto';
+  if (market === 'stocks') return 'Aktier';
+  if (market === 'all' || market === 'alla') return 'Alla';
+  return strategy.market_label || strategy.market || strategy.market_group || 'Alla';
+}
+
+function strategyDirectionLabel(strategy = {}) {
+  const direction = String(strategy.direction || '').toLowerCase();
+  if (direction === 'long') return 'Uppåt';
+  if (direction === 'short') return 'Nedåt';
+  if (direction === 'both') return 'Båda riktningar';
+  return 'Ej angiven';
+}
+
+function getStrategyRules(strategy = {}) {
+  return (strategy.signal_rules?.length ? strategy.signal_rules : strategy.engines_used || [])
+    .map(rule => String(rule || '').replace(/_/g, ' '))
+    .filter(Boolean);
+}
+
+function inferDataNeeds(strategy = {}) {
+  const needs = new Set(STRATEGY_DATA_NEEDS[strategy.id] || ['prisdata', 'volymdata']);
+  for (const rule of getStrategyRules(strategy)) {
+    const r = rule.toLowerCase();
+    if (r.includes('vwap')) needs.add('VWAP');
+    if (r.includes('ema')) needs.add('EMA');
+    if (r.includes('volume') || r.includes('volym')) needs.add('volymdata');
+    if (r.includes('narrow')) needs.add('Narrow State-data');
+    if (r.includes('opening range')) needs.add('opening range-data');
+    if (r.includes('qqq') || r.includes('spy') || r.includes('index')) needs.add('QQQ/SPY-bekräftelse');
+    if (r.includes('news')) needs.add('nyhetsdata');
+    if (r.includes('support') || r.includes('resistance')) needs.add('stöd/motstånd-data');
+  }
+  return [...needs].slice(0, 6);
+}
+
+function paperAutomationInfo(strategy = {}) {
+  const directStatus = strategy.runtime_status || strategy.runtimeStatus || strategy.paper_runtime_status || strategy.paperRuntimeStatus;
+  if (directStatus) {
+    const status = String(directStatus).toLowerCase();
+    if (status === 'active') return { label: 'Aktiv', tone: 'active', reason: strategy.runtime_comment_sv || 'Paper-test är kopplat.' };
+    if (status === 'partial') return { label: 'Delvis automatiserad', tone: 'partial', reason: strategy.runtime_comment_sv || 'Behöver mer data eller rätt signal.' };
+    if (status === 'paused') return { label: 'Pausad', tone: 'paused', reason: strategy.runtime_comment_sv || 'Paper-runtime är pausad.' };
+    if (status === 'disabled' || status === 'blocked') return { label: 'Inte kopplad', tone: 'blocked', reason: strategy.runtime_comment_sv || 'Paper-test är inte kopplat.' };
+  }
+  if (PAPER_RUNTIME_HINTS[strategy.id]) return PAPER_RUNTIME_HINTS[strategy.id];
+  return {
+    label: strategy.supportsPaper === true ? 'Inte helt kopplad ännu' : 'Endast manuell',
+    tone: strategy.supportsPaper === true ? 'unknown' : 'manual',
+    reason: strategy.supportsPaper === true
+      ? 'Katalogen säger paper-stöd, men UI:t har ingen säker runtime-kontroll för automatisk paper-test.'
+      : 'Endast manuell/replay/batch just nu.',
+  };
+}
+
+function automationReason(strategy = {}, paperInfo = paperAutomationInfo(strategy)) {
+  if (paperInfo.reason) return paperInfo.reason;
+  if (strategy.supportsScanner === true || SCANNER_STRATEGY_IDS.has(strategy.id)) return 'Kan hittas av scannern.';
+  return 'Scanner är inte kopplad för denna strategi.';
+}
+
+function automaticSummary(scannerEnabled, paperInfo, copy) {
+  if (paperInfo.tone === 'active' || (scannerEnabled && paperInfo.tone !== 'partial' && paperInfo.tone !== 'paused' && paperInfo.tone !== 'blocked' && paperInfo.tone !== 'manual')) {
+    return { label: copy.yes, tone: 'active' };
+  }
+  if (scannerEnabled || paperInfo.tone === 'partial' || paperInfo.tone === 'unknown' || paperInfo.tone === 'paused') {
+    return { label: copy.partly, tone: 'partial' };
+  }
+  return { label: copy.no, tone: 'muted' };
+}
+
+function needsMoreData(strategy = {}, paperInfo = paperAutomationInfo(strategy), dataNeeds = []) {
+  if (paperInfo.tone === 'partial' || paperInfo.tone === 'unknown') return true;
+  return dataNeeds.some((need) => /QQQ|SPY|opening|nyhets|Narrow/i.test(String(need)));
+}
+
+function runtimeAutomaticLabel(status) {
+  return {
+    fullyAutomatic: 'Fully automatic',
+    partlyAutomatic: 'Partly automatic',
+    manualOnly: 'Manual only',
+    pausedOrBlocked: 'Paused/blocked',
+  }[status] || 'Unknown';
+}
+
+function runtimeAutomaticTone(status) {
+  return {
+    fullyAutomatic: 'active',
+    partlyAutomatic: 'partial',
+    manualOnly: 'unlinked',
+    pausedOrBlocked: 'paused',
+  }[status] || 'unlinked';
+}
+
+function runtimePaperLabel(status) {
+  return String(status || 'unknown').replace(/_/g, ' ');
+}
+
+function runtimeRecommendationLabel(value) {
+  return {
+    do_not_automate_yet: 'Do not automate yet',
+    reduce_priority_or_review: 'Reduce priority or review',
+    safe_to_monitor_more_closely_in_paper_only: 'Monitor more closely in paper only',
+    good_candidate_for_more_manual_replay_or_batch: 'Good candidate for more manual replay or batch',
+    collect_more_paper_replay_data: 'Collect more paper/replay data',
+    manual_lab_replay_batch_only: 'Manual lab/replay/batch only',
+    monitor_in_paper_only: 'Monitor in paper only',
+  }[value] || textOr(value, 'No recommendation exposed');
+}
+
+function runtimeResultLabel(row) {
+  return textOr(row?.resultSummary?.status, 'needs_more_data').replace(/_/g, ' ');
+}
+
+function strategyRuntimeFromMatrix(strategy = {}, runtimeRow = null) {
+  if (!runtimeRow) return null;
+  const paperInfo = {
+    label: runtimePaperLabel(runtimeRow.paperRuntimeStatus),
+    tone: runtimeAutomaticTone(runtimeRow.automaticStatus),
+    reason: runtimeRecommendationLabel(runtimeRow.recommendation),
+  };
+  return {
+    scannerEnabled: runtimeRow.scannerEnabled === true,
+    paperInfo,
+    automaticStatus: runtimeRow.automaticStatus,
+    automaticLabel: runtimeAutomaticLabel(runtimeRow.automaticStatus),
+    automaticTone: runtimeAutomaticTone(runtimeRow.automaticStatus),
+    needsMoreData: runtimeRow.needsMoreData === true,
+    strongCandidate: runtimeRow.strongCandidate === true,
+    weakCandidate: runtimeRow.weakCandidate === true,
+    blockers: Array.isArray(runtimeRow.blockers) ? runtimeRow.blockers : [],
+    recommendation: runtimeRecommendationLabel(runtimeRow.recommendation),
+    resultStatus: runtimeResultLabel(runtimeRow),
+    requiredData: Array.isArray(runtimeRow.requiredData) ? runtimeRow.requiredData : [],
+    paperRuntimeStatus: runtimePaperLabel(runtimeRow.paperRuntimeStatus),
+  };
+}
+
+function plainEntryIdea(strategy = {}, rules = [], language = 'sv') {
+  const text = rules.join(' ').toLowerCase();
+  const english = language === 'en';
+  if (text.includes('vwap') && (text.includes('break') || text.includes('reclaim') || text.includes('above'))) {
+    return english
+      ? 'The system waits for price to move above VWAP while volume becomes strong.'
+      : 'Systemet väntar på att priset rör sig över VWAP samtidigt som volymen blir stark.';
+  }
+  if (text.includes('vwap') && (text.includes('reject') || text.includes('failed') || text.includes('rejection'))) {
+    return english
+      ? 'The system watches for price to fail near VWAP and turn down.'
+      : 'Systemet letar efter att priset misslyckas vid VWAP och vänder ned.';
+  }
+  if (text.includes('ema')) {
+    return english
+      ? 'The system looks for a pullback toward EMA and then a move back with the trend.'
+      : 'Systemet letar efter en rekyl mot EMA och sedan en fortsättning med trenden.';
+  }
+  if (text.includes('narrow')) {
+    return english
+      ? 'The system waits for a quiet, compressed market and then looks for a clear break or fakeout.'
+      : 'Systemet väntar på en lugn och ihoptryckt marknad och letar sedan efter ett tydligt utbrott eller fakeout.';
+  }
+  if (text.includes('opening range')) {
+    return english
+      ? 'The system uses the first range after market open and tests breaks, retests, or failures around it.'
+      : 'Systemet använder första intervallet efter öppning och testar utbrott, retest eller misslyckanden runt det.';
+  }
+  if (text.includes('index') || text.includes('qqq') || text.includes('spy')) {
+    return english
+      ? 'The system checks that the broader market supports the trade before testing it.'
+      : 'Systemet kontrollerar att marknaden i stort stödjer testet innan det startar.';
+  }
+  if (text.includes('volume')) {
+    return english
+      ? 'The system waits for unusually strong activity before testing the move.'
+      : 'Systemet väntar på ovanligt stark aktivitet innan rörelsen testas.';
+  }
+  if (text.includes('support')) {
+    return english
+      ? 'The system looks for price to hold near support and bounce.'
+      : 'Systemet letar efter att priset håller vid stöd och studsar.';
+  }
+  if (text.includes('resistance')) {
+    return english
+      ? 'The system looks for price to fail near resistance and turn down.'
+      : 'Systemet letar efter att priset misslyckas vid motstånd och vänder ned.';
+  }
+  return english
+    ? 'The system waits until the catalog rules line up before starting a safe simulated test.'
+    : 'Systemet väntar tills katalogens regler stämmer innan ett säkert simulerat test startar.';
 }
 
 function defaultBatchStrategyIds(catalog = []) {
@@ -1856,7 +2231,9 @@ function StrategyMiniSlider({ label, value, min, max, step, format, onChange }) 
   );
 }
 
-function StrategyCard({ strategy, performance, settings, onSettingsChange, onTest }) {
+function StrategyCard({ strategy, performance, settings, runtimeRow, onSettingsChange, onTest }) {
+  const { language } = useLanguage();
+  const copy = labCopy(language);
   const [open, setOpen] = React.useState(false);
   const [testing, setTesting] = React.useState(false);
   const [lastResult, setLastResult] = React.useState(null);
@@ -1871,6 +2248,20 @@ function StrategyCard({ strategy, performance, settings, onSettingsChange, onTes
     capabilityText('Paper', strategy.supportsPaper),
     capabilityText('Learning', strategy.supportsLearning),
   ];
+  const runtimeTruth = strategyRuntimeFromMatrix(strategy, runtimeRow);
+  const scannerEnabled = runtimeTruth ? runtimeTruth.scannerEnabled : strategy.supportsScanner === true || SCANNER_STRATEGY_IDS.has(strategy.id);
+  const paperInfo = runtimeTruth?.paperInfo || paperAutomationInfo(strategy);
+  const dataNeeds = runtimeTruth?.requiredData?.length ? runtimeTruth.requiredData : inferDataNeeds(strategy);
+  const rules = getStrategyRules(strategy);
+  const timeframes = strategy.default_timeframes?.length ? strategy.default_timeframes.join(', ') : settings.timeframe || '2m';
+  const stopLoss = strategy.default_stop_loss_pct ?? strategy.default_sl ?? settings.sl;
+  const takeProfit = strategy.default_take_profit_r ?? strategy.default_tp ?? settings.tp;
+  const holdTime = strategy.default_holding_time_min ?? strategy.default_holding_time ?? settings.holding_time;
+  const autoSummary = runtimeTruth
+    ? { label: runtimeTruth.automaticLabel, tone: runtimeTruth.automaticTone }
+    : automaticSummary(scannerEnabled, paperInfo, copy);
+  const moreDataNeeded = runtimeTruth ? runtimeTruth.needsMoreData : needsMoreData(strategy, paperInfo, dataNeeds);
+  const entryPlain = plainEntryIdea(strategy, rules, language);
 
   async function testStrategy() {
     setTesting(true);
@@ -1898,14 +2289,38 @@ function StrategyCard({ strategy, performance, settings, onSettingsChange, onTes
         <ConfigScopeBadge scope="test" />
         <div className="strat-controls">
           <button className="strat-test-btn" onClick={testStrategy} disabled={testing} type="button">
-            {testing ? 'Kör Lab-test...' : 'Kör Lab-test'}
+            {testing ? copy.testingButton : copy.testButton}
           </button>
+          <div className="strat-test-help">{copy.testHelp}</div>
           <button className="strat-expand" onClick={() => setOpen(v => !v)} type="button">{open ? '▲' : '▼'}</button>
         </div>
       </div>
       <div className="strat-desc">{strategy.simple_explanation_sv || strategy.description_sv || strategy.explanation}</div>
+      <div className="strat-summary-badges">
+        <span className={`strat-summary-badge strat-summary-${autoSummary.tone}`}>
+          {copy.runsAutomatically}: {autoSummary.label}
+        </span>
+        <span className="strat-summary-badge strat-summary-manual">
+          {copy.manualSafeTest}: {copy.safeSimulation}
+        </span>
+        <span className={`strat-summary-badge ${moreDataNeeded ? 'strat-summary-data' : 'strat-summary-ok'}`}>
+          {copy.needsMoreData}: {moreDataNeeded ? copy.yes : copy.no}
+        </span>
+      </div>
       <div className="strat-runtime-note">
         Katalogstatus: {statusLabel} · {supportBadges.join(' · ')}
+      </div>
+      <div className={`dt-runtime-box dt-runtime-${runtimeTruth ? runtimeTruth.automaticTone : 'unlinked'}`}>
+        {runtimeTruth ? (
+          <>
+            <div className="dt-runtime-row"><span>Runtime truth</span><strong>{runtimeTruth.automaticLabel}</strong></div>
+            <div className="dt-runtime-row"><span>Paper runtime</span><strong>{runtimeTruth.paperRuntimeStatus}</strong></div>
+            <div className="dt-runtime-row"><span>Result status</span><strong>{runtimeTruth.resultStatus}</strong></div>
+            <div className="dt-runtime-comment">{runtimeTruth.recommendation}</div>
+          </>
+        ) : (
+          <div className="dt-runtime-comment">Runtime truth not exposed yet.</div>
+        )}
       </div>
       <div className="strat-result-row">
         <span>Historisk vinstprocent: <strong>{perf ? pctText(perf.win_rate) : 'Ingen data ännu'}</strong></span>
@@ -1914,8 +2329,64 @@ function StrategyCard({ strategy, performance, settings, onSettingsChange, onTes
       </div>
       {open && (
         <div className="strat-details">
-          <div className="strat-rules">
-            {(strategy.engines_used?.length ? strategy.engines_used : strategy.signal_rules || []).map(rule => <span key={rule}>{String(rule).replace(/_/g, ' ')}</span>)}
+          <div className="strat-automation-panel">
+            <div className="strat-section-title">{copy.automationRules}</div>
+        <div className="strat-badge-grid">
+          <span className={`strat-auto-badge ${scannerEnabled ? 'strat-auto-active' : 'strat-auto-muted'}`}>
+            {copy.scanner}: {localizedYesNo(scannerEnabled, copy)}
+          </span>
+          <span className={`strat-auto-badge strat-auto-${paperInfo.tone}`}>
+            {copy.paperTest}: {localizedPaperLabel(paperInfo, copy, language)}
+          </span>
+          <span className="strat-auto-badge strat-auto-manual">{copy.manualSafeTest}: {copy.safeSimulation}</span>
+          <span className={`strat-auto-badge ${strategy.supportsBatch !== false ? 'strat-auto-purple' : 'strat-auto-muted'}`}>
+            {copy.batch}: {localizedYesNo(strategy.supportsBatch !== false, copy)}
+          </span>
+          <span className={`strat-auto-badge ${strategy.supportsReplay !== false ? 'strat-auto-purple' : 'strat-auto-muted'}`}>
+            {copy.replay}: {localizedYesNo(strategy.supportsReplay !== false, copy)}
+          </span>
+          <span className={`strat-auto-badge ${strategy.supportsLearning !== false ? 'strat-auto-purple' : 'strat-auto-muted'}`}>
+            {copy.learning}: {localizedYesNo(strategy.supportsLearning !== false, copy)}
+          </span>
+        </div>
+        <div className="strat-why-row">
+          <strong>{copy.why}:</strong> {runtimeTruth
+            ? `${runtimeTruth.recommendation}.`
+            : `${scannerEnabled ? 'Kan hittas av scannern. ' : 'Scanner är inte kopplad för denna strategi. '}${automationReason(strategy, paperInfo)}`}
+        </div>
+        {runtimeTruth ? (
+          <div className="strat-data-needs">
+            <span>Runtime blockers:</span>
+            {runtimeTruth.blockers.length
+              ? runtimeTruth.blockers.slice(0, 6).map(blocker => <strong key={blocker}>{blocker}</strong>)
+              : <strong>None exposed</strong>}
+            {runtimeTruth.strongCandidate ? <strong>Strong candidate</strong> : null}
+            {runtimeTruth.weakCandidate ? <strong>Weak candidate</strong> : null}
+            {runtimeTruth.needsMoreData ? <strong>Needs more data</strong> : null}
+          </div>
+        ) : null}
+        <div className="strat-rule-summary">
+          <div><span>{copy.market}</span><strong>{strategyMarketLabel(strategy)}</strong></div>
+          <div><span>{copy.timeframe}</span><strong>{timeframes}</strong></div>
+          <div><span>{copy.direction}</span><strong>{strategyDirectionLabel(strategy)}</strong></div>
+          <div><span>{copy.stopLoss}</span><strong>{stopLoss}%</strong></div>
+          <div><span>{copy.target}</span><strong>{takeProfit}R</strong></div>
+          <div><span>{copy.maxHold}</span><strong>{holdTime} min</strong></div>
+        </div>
+        <div className="strat-data-needs">
+          <span>{copy.dataNeeds}:</span>
+          {dataNeeds.map(need => <strong key={need}>{need}</strong>)}
+        </div>
+        <div className="strat-entry-exit">
+          <div><span>{copy.entryIdea}</span>{entryPlain}</div>
+          <div><span>{copy.exitIdea}</span>{copy.exitPlain}</div>
+        </div>
+            <div className="strat-technical-details">
+              <span>{copy.technicalDetails}</span>
+              <div className="strat-rules">
+                {rules.length ? rules.map(rule => <span key={rule}>{rule}</span>) : <span>{copy.noRules}</span>}
+              </div>
+            </div>
           </div>
           <div className="strat-param-grid">
             <StrategyMiniSlider label="Stop loss" value={settings.sl} min={0.05} max={2} step={0.01} format={v => `${Number(v).toFixed(2)}%`} onChange={v => onSettingsChange({ sl: v })} />
@@ -1952,9 +2423,173 @@ function StrategyCard({ strategy, performance, settings, onSettingsChange, onTes
   );
 }
 
+function RuntimeTruthSummary({ matrix, loading, plan, approvals }) {
+  const summary = matrix?.summary || {};
+  const rows = Array.isArray(matrix?.strategies) ? matrix.strategies : [];
+  const approvedIds = Array.isArray(approvals?.approvedStrategyIds) ? approvals.approvedStrategyIds : [];
+  const rejectedIds = Array.isArray(approvals?.rejectedStrategyIds) ? approvals.rejectedStrategyIds : [];
+  const waitingForApproval = Array.isArray(approvals?.waitingForApproval) ? approvals.waitingForApproval : [];
+  const laterApprovalCandidates = rows
+    .filter((row) => row.strongCandidate || row.automaticStatus === 'fullyAutomatic')
+    .slice(0, 8);
+  const planRecommended = Array.isArray(plan?.recommendedPaperCandidates) ? plan.recommendedPaperCandidates : [];
+  const planBlocked = Array.isArray(plan?.blockedStrategies) ? plan.blockedStrategies : [];
+  const planNeedsData = Array.isArray(plan?.needsMoreData) ? plan.needsMoreData : [];
+  const planWeak = Array.isArray(plan?.weakStrategies) ? plan.weakStrategies : [];
+  const cards = [
+    ['Fully automatic', summary.fullyAutomatic],
+    ['Partly automatic', summary.partlyAutomatic],
+    ['Manual only', summary.manualOnly],
+    ['Paused/blocked', summary.pausedOrBlocked],
+    ['Needs more data', summary.needsMoreData],
+    ['Strong candidates', summary.strongCandidates],
+    ['Weak candidates', summary.weakCandidates],
+  ];
+
+  return (
+    <div className="dt-runtime-truth-panel">
+      <div className="dt-runtime-truth-head">
+        <div>
+          <h3>Strategy runtime truth</h3>
+          <p>This shows what is really connected in the system. Catalog support does not always mean automatic runtime.</p>
+        </div>
+        <span className="badge badge-gray">Read-only</span>
+      </div>
+      {loading ? <div className="dt-runtime-comment">Loading runtime truth...</div> : null}
+      {!loading && !matrix ? <div className="dt-inline-error">Runtime truth not exposed yet.</div> : null}
+      <div className="dt-runtime-summary">
+        {cards.map(([label, value]) => (
+          <div key={label}>
+            <strong>{value ?? '–'}</strong>
+            <span>{label}</span>
+          </div>
+        ))}
+      </div>
+      <div className="dt-automation-readiness">
+        <div className="dt-automation-readiness-copy">
+          <strong>Automation readiness</strong>
+          <span>Foundation only. No strategies are approved for paper-only automation here, and no tests start automatically.</span>
+        </div>
+        <div className="dt-automation-readiness-grid">
+          <div><strong>{summary.fullyAutomatic ?? '–'}</strong><span>Fully automatic strategies</span></div>
+          <div><strong>{summary.strongCandidates ?? '–'}</strong><span>Strong candidates</span></div>
+          <div><strong>{summary.weakCandidates ?? '–'}</strong><span>Weak candidates</span></div>
+          <div><strong>{summary.needsMoreData ?? '–'}</strong><span>Need more data</span></div>
+        </div>
+        <div className="dt-automation-candidates">
+          <span>Could later be approved for paper-only testing:</span>
+          {laterApprovalCandidates.length ? laterApprovalCandidates.map(row => (
+            <strong key={row.id}>{row.name || row.id}</strong>
+          )) : <strong>Runtime candidates not exposed yet</strong>}
+        </div>
+        <div className="dt-automation-readonly-note">Read-only placeholder: approval controls are not enabled.</div>
+      </div>
+      <div className="dt-automation-plan">
+        <div className="dt-automation-plan-head">
+          <strong>Automation Plan</strong>
+          <span className="badge badge-gray">Dry-run · Read-only</span>
+        </div>
+        <p className="dt-automation-plan-note">This is only a plan. No tests start automatically.</p>
+        <div className="dt-automation-plan-cols">
+          <div className="dt-automation-plan-col dt-plan-good">
+            <span className="dt-automation-plan-col-title">Recommended for future paper-only testing ({planRecommended.length})</span>
+            {planRecommended.length ? planRecommended.map(c => (
+              <div key={c.id} className="dt-automation-plan-item">
+                <strong>{c.name || c.id}</strong>
+                <em>confidence: {c.confidence || 'unknown'}</em>
+                <span>{c.reason}</span>
+              </div>
+            )) : <span className="dt-automation-plan-empty">Not exposed yet</span>}
+          </div>
+          <div className="dt-automation-plan-col dt-plan-warn">
+            <span className="dt-automation-plan-col-title">Blocked ({planBlocked.length})</span>
+            {planBlocked.length ? planBlocked.map(c => (
+              <div key={c.id} className="dt-automation-plan-item"><strong>{c.name || c.id}</strong><span>{c.reason}</span></div>
+            )) : <span className="dt-automation-plan-empty">None</span>}
+          </div>
+          <div className="dt-automation-plan-col">
+            <span className="dt-automation-plan-col-title">Needs more data ({planNeedsData.length})</span>
+            {planNeedsData.length ? planNeedsData.slice(0, 8).map(c => (
+              <div key={c.id} className="dt-automation-plan-item"><strong>{c.name || c.id}</strong></div>
+            )) : <span className="dt-automation-plan-empty">None</span>}
+          </div>
+          <div className="dt-automation-plan-col">
+            <span className="dt-automation-plan-col-title">Weak ({planWeak.length})</span>
+            {planWeak.length ? planWeak.map(c => (
+              <div key={c.id} className="dt-automation-plan-item"><strong>{c.name || c.id}</strong><span>{c.reason}</span></div>
+            )) : <span className="dt-automation-plan-empty">None</span>}
+          </div>
+        </div>
+      </div>
+      <div className="dt-automation-approvals">
+        <div className="dt-automation-plan-head">
+          <strong>Manual approval status</strong>
+          <span className="badge badge-gray">Read-only</span>
+        </div>
+        <p className="dt-automation-plan-note">Approval does not mean tests start automatically. Godkännande betyder inte att tester startas automatiskt.</p>
+        <div className="dt-automation-plan-cols">
+          <div className="dt-automation-plan-col dt-plan-good">
+            <span className="dt-automation-plan-col-title">Approved for future paper-only testing ({approvedIds.length})</span>
+            {approvedIds.length ? approvedIds.map(id => (
+              <div key={id} className="dt-automation-plan-item"><strong>{id}</strong></div>
+            )) : <span className="dt-automation-plan-empty">None approved yet</span>}
+          </div>
+          <div className="dt-automation-plan-col">
+            <span className="dt-automation-plan-col-title">Waiting for approval ({waitingForApproval.length})</span>
+            {waitingForApproval.length ? waitingForApproval.map(c => (
+              <div key={c.id} className="dt-automation-plan-item"><strong>{c.name || c.id}</strong><em>confidence: {c.confidence || 'unknown'}</em></div>
+            )) : <span className="dt-automation-plan-empty">None waiting</span>}
+          </div>
+          <div className="dt-automation-plan-col dt-plan-warn">
+            <span className="dt-automation-plan-col-title">Rejected ({rejectedIds.length})</span>
+            {rejectedIds.length ? rejectedIds.map(id => (
+              <div key={id} className="dt-automation-plan-item"><strong>{id}</strong></div>
+            )) : <span className="dt-automation-plan-empty">None</span>}
+          </div>
+        </div>
+        <div className="dt-automation-readonly-note">Approval is paper-only and never starts a test, batch, replay, scheduler or order.</div>
+      </div>
+      <div className="dt-runtime-matrix-table-wrap">
+        <table className="dt-runtime-matrix-table">
+          <thead>
+            <tr>
+              <th>Strategy</th>
+              <th>Automatic status</th>
+              <th>Paper runtime</th>
+              <th>Scanner</th>
+              <th>Result</th>
+              <th>Recommendation</th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.length ? rows.map(row => (
+              <tr key={row.id}>
+                <td>{row.name || row.id}</td>
+                <td><span className={`dt-runtime-tag dt-runtime-${runtimeAutomaticTone(row.automaticStatus)}`}>{runtimeAutomaticLabel(row.automaticStatus)}</span></td>
+                <td>{runtimePaperLabel(row.paperRuntimeStatus)}</td>
+                <td>{yesNo(row.scannerEnabled)}</td>
+                <td>{runtimeResultLabel(row)}</td>
+                <td>{runtimeRecommendationLabel(row.recommendation)}</td>
+              </tr>
+            )) : (
+              <tr>
+                <td colSpan="6">Runtime truth not exposed yet.</td>
+              </tr>
+            )}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
 function StrategiesTab() {
   const [catalog, setCatalog] = React.useState(null);
   const [performance, setPerformance] = React.useState({});
+  const [runtimeMatrix, setRuntimeMatrix] = React.useState(null);
+  const [automationPlan, setAutomationPlan] = React.useState(null);
+  const [automationApprovals, setAutomationApprovals] = React.useState(null);
+  const [runtimeLoading, setRuntimeLoading] = React.useState(true);
   const [settings, setSettings] = React.useState(() => loadStrategySettings());
   const [loading, setLoading] = React.useState(true);
 
@@ -1973,11 +2608,18 @@ function StrategiesTab() {
     Promise.all([
       fetch('/api/daytrading-strategies/catalog').then(r => r.ok ? r.json() : null).catch(() => null),
       fetch('/api/daytrading-strategies/performance').then(r => r.ok ? r.json() : null).catch(() => null),
-    ]).then(([cat, perf]) => {
+      fetch('/api/strategies/runtime-matrix').then(r => r.ok ? r.json() : null).catch(() => null),
+      fetch('/api/automation/plan').then(r => r.ok ? r.json() : null).catch(() => null),
+      fetch('/api/automation/approvals').then(r => r.ok ? r.json() : null).catch(() => null),
+    ]).then(([cat, perf, matrix, plan, approvals]) => {
       setCatalog(cat);
       const map = {};
       (perf?.strategies || []).forEach(p => { map[p.strategy_id] = p; });
       setPerformance(map);
+      setRuntimeMatrix(matrix?.ok ? matrix : null);
+      setAutomationPlan(plan?.ok ? plan : null);
+      setAutomationApprovals(approvals?.ok ? approvals : null);
+      setRuntimeLoading(false);
       setLoading(false);
     });
   }, []);
@@ -2014,6 +2656,7 @@ function StrategiesTab() {
 
   if (loading) return <div className="tl-tab-content"><div className="tl-loading">Laddar strategikatalog...</div></div>;
   const strategies = catalog?.strategies || [];
+  const runtimeById = new Map((runtimeMatrix?.strategies || []).map(row => [row.id, row]));
   const statusCounts = strategies.reduce((acc, strategy) => {
     const key = catalogStatusKey(strategy);
     acc[key] = (acc[key] || 0) + 1;
@@ -2040,6 +2683,7 @@ function StrategiesTab() {
         </div>
         <Link className="strat-test-btn" to="/daytrading">Öppna Daytrading-kontroll</Link>
       </div>
+      <RuntimeTruthSummary matrix={runtimeMatrix} loading={runtimeLoading} plan={automationPlan} approvals={automationApprovals} />
       <div className="strat-list">
         {strategies.map(strategy => (
           <StrategyCard
@@ -2047,6 +2691,7 @@ function StrategiesTab() {
             strategy={strategy}
             performance={performance}
             settings={getSettings(strategy)}
+            runtimeRow={runtimeById.get(strategy.id)}
             onSettingsChange={patch => patchSettings(strategy.id, patch)}
             onTest={testStrategy}
           />
@@ -2125,7 +2770,7 @@ function buildAutoBatchName(form, comboCount) {
 // Returnerar { key, emoji, label, tone, sentence, busy }.
 function getBatchUiStatus(batch) {
   if (!batch || !batch.id) {
-    return { key: 'none', emoji: '', label: 'Ingen batch', tone: 'none', sentence: 'Skapa och kör en batch för att börja.', busy: false };
+    return { key: 'none', emoji: '', label: 'Ingen batch', tone: 'none', sentence: 'Skapa och kör en paper/replay-batch för att börja.', busy: false };
   }
   const status = String(batch.status || '').toLowerCase();
   const total = Number(batch.progress?.total || 0);
@@ -2166,7 +2811,7 @@ function getBatchUiStatus(batch) {
       sentence: `Batchen hann bara köra ${completed}/${total} tester. Resultatet är inte färdigt och ska bara ses som tidig indikation.` };
   }
   return { key: 'waiting', emoji: '⚪', label: 'Väntar', tone: 'waiting', busy: false,
-    sentence: 'Batch väntar på att startas. Klicka "Starta batch" när du är redo.' };
+    sentence: 'Batch väntar på att startas. Klicka "Starta paper/replay-batch" när du är redo.' };
 }
 
 // En batch räknas som "upptagen" (systemet arbetar) om den förbereder, ligger i kö eller kör.
@@ -2702,7 +3347,7 @@ function BatchTestTab() {
 
       <div className="batch-actions">
         <button type="button" onClick={createBatch} disabled={batchBlocked || anyBatchBusy}>Skapa batch</button>
-        <button type="button" onClick={() => runBatch()} disabled={comboCount > 500 || batchBlocked || anyBatchBusy}>Starta batch</button>
+        <button type="button" onClick={() => runBatch()} disabled={comboCount > 500 || batchBlocked || anyBatchBusy}>Starta paper/replay-batch</button>
         <button type="button" onClick={pauseBatch} disabled={!activeBatch}>Pausa</button>
         <button type="button" onClick={stopBatch} disabled={!activeBatch}>Stoppa</button>
         <button type="button" onClick={() => loadCompare()} disabled={!activeBatch}>Uppdatera resultat</button>
@@ -3381,21 +4026,23 @@ function AgentDebateTab() {
 
 // ── Tab bar ───────────────────────────────────────────────────────────────────
 const TABS = [
-  { key: 'strategier',    label: 'Strategier',    icon: '🧩' },
-  { key: 'batch',         label: 'Kör historiskt batch-test',     icon: '🧪' },
-  { key: 'marknader',     label: 'Marknader',     icon: '🌍' },
-  { key: 'sliders',       label: 'Sliders',        icon: '🎚️' },
-  { key: 'exits',         label: 'Exits',         icon: '↘️' },
-  { key: 'replay',        label: 'Spela upp historiska signaler',        icon: '▶️' },
-  { key: 'ai_agent',      label: 'Föreslå testplan',      icon: '🤖' },
-  { key: 'agent_debate',  label: 'Beslutsråd', icon: '💡' },
-  { key: 'adaptive',      label: 'Visa lärande från tester', icon: '🧠' },
-  { key: 'review',        label: 'Graf',          icon: '⌁' },
-  { key: 'candidates',    label: 'Kandidater',    icon: '◎' },
+  { key: 'strategier',    icon: '🧩' },
+  { key: 'batch',         icon: '🧪' },
+  { key: 'marknader',     icon: '🌍' },
+  { key: 'sliders',       icon: '🎚️' },
+  { key: 'exits',         icon: '↘️' },
+  { key: 'replay',        icon: '▶️' },
+  { key: 'ai_agent',      icon: '🤖' },
+  { key: 'agent_debate',  icon: '💡' },
+  { key: 'adaptive',      icon: '🧠' },
+  { key: 'review',        icon: '⌁' },
+  { key: 'candidates',    icon: '◎' },
 ];
 
 // ── Main page ─────────────────────────────────────────────────────────────────
 export default function TradingLabPage() {
+  const { language, tr } = useLanguage();
+  const copy = labCopy(language);
   const [searchParams, setSearchParams] = useSearchParams();
   const {
     test,
@@ -3448,14 +4095,14 @@ export default function TradingLabPage() {
         <div className="tl-page-title-row">
           <h1 className="tl-page-title">🧪 LAB</h1>
           <div className="tl-page-meta">
-            <span className="tl-active-count">{activeSignalCount} aktiva motorer</span>
+            <span className="tl-active-count">{activeSignalCount} {tr('aktiva motorer')}</span>
             <ConfigScopeBadge scope="test" />
             <AdvancedModeToggle value={advancedMode} onChange={setAdvancedMode} />
-            <button className="tl-reset-btn" onClick={resetAll} type="button">Återställ</button>
+            <button className="tl-reset-btn" onClick={resetAll} type="button">{tr('Återställ')}</button>
           </div>
         </div>
         <p className="tl-page-sub">
-          Lab påverkar inte vilka strategier som kör paper trades. Här kör du bara test, replay, batch, parametrar och analys.
+          {tr('Lab påverkar inte paper-runtime och kan aldrig skapa riktiga order. Här visas bara test, replay, batch, parametrar och analys.')}
         </p>
       </div>
 
@@ -3464,15 +4111,15 @@ export default function TradingLabPage() {
 
       {/* Tab bar */}
       <div className="tl-tabs">
-        {TABS.map(t => (
+        {TABS.map(tabItem => (
           <button
-            key={t.key}
-            className={`tl-tab${tab === t.key ? ' tl-tab-active' : ''}`}
-            onClick={() => changeTab(t.key)}
+            key={tabItem.key}
+            className={`tl-tab${tab === tabItem.key ? ' tl-tab-active' : ''}`}
+            onClick={() => changeTab(tabItem.key)}
             type="button"
           >
-            <span>{t.icon}</span>
-            <span>{t.label}</span>
+            <span>{tabItem.icon}</span>
+            <span>{copy.tabs[tabItem.key] || tabItem.key}</span>
           </button>
         ))}
       </div>
@@ -3522,7 +4169,7 @@ export default function TradingLabPage() {
               />
             ))}
           </div>
-          <div className="tl-prot-note">Riskmotor och Säkerhetsmotor kan inte stängas av.</div>
+          <div className="tl-prot-note">{tr('Riskmotor och Säkerhetsmotor kan inte stängas av.')}</div>
         </div>
       )}
 
@@ -3533,27 +4180,27 @@ export default function TradingLabPage() {
         <div className="tl-tab-content">
           <GroupHeader icon="🎯" title="Testinställningar" />
           <p className="tl-sliders-intro">
-            Här kan du ändra hur systemet testar signaler. Detta påverkar bara test, paper och replay - inte riktiga trades.
+            {tr('Här kan du ändra hur systemet testar signaler. Detta påverkar bara test, paper och replay - inte riktiga trades.')}
           </p>
 
           <div className="tl-howto-box">
             <div>
-              <h2>Så använder du sliders</h2>
-              <p>En slider är bara ett reglage som gör systemet mer försiktigt eller mer aggressivt.</p>
+              <h2>{tr('Så använder du sliders')}</h2>
+              <p>{tr('En slider är bara ett reglage som gör systemet mer försiktigt eller mer aggressivt.')}</p>
             </div>
             <ol>
-              <li>Börja med små ändringar.</li>
-              <li>Testa en sak i taget.</li>
-              <li>Kör batch-test efter ändring.</li>
-              <li>Jämför resultat före och efter.</li>
-              <li>Använd inte höga riskvärden utan mycket testdata.</li>
+              <li>{tr('Börja med små ändringar.')}</li>
+              <li>{tr('Testa en sak i taget.')}</li>
+              <li>{tr('Kör batch-test efter ändring.')}</li>
+              <li>{tr('Jämför resultat före och efter.')}</li>
+              <li>{tr('Använd inte höga riskvärden utan mycket testdata.')}</li>
             </ol>
           </div>
 
           <div className="tl-test-safe-box">
             <div>
-              <h2>Säkert testläge</h2>
-              <p>Inga riktiga köp eller sälj görs. Dessa reglage används bara för analys och låtsastrading.</p>
+              <h2>{tr('Säkert testläge')}</h2>
+              <p>{tr('Inga riktiga köp eller sälj görs. Dessa reglage används bara för analys och låtsastrading.')}</p>
             </div>
             <div className="tl-tech-flags">
               <span>actions_allowed=false</span>
@@ -3583,7 +4230,7 @@ export default function TradingLabPage() {
         <div className="tl-tab-content">
           <GroupHeader icon="↘️" title="Exitstrategier" />
           <p className="tl-exits-intro">
-            Välj vilka exit-metoder som ska användas. Flera kan kombineras.
+            {tr('Välj vilka exit-metoder som ska användas. Flera kan kombineras.')}
           </p>
           <div className="tl-exits-grid">
             {EXIT_TYPES.map(item => (
@@ -3597,13 +4244,13 @@ export default function TradingLabPage() {
           </div>
 
           <div className="tl-exits-active">
-            <div className="tl-exits-active-title">Aktiva exits:</div>
+            <div className="tl-exits-active-title">{tr('Aktiva exits:')}</div>
             <div className="tl-exits-active-list">
               {EXIT_TYPES.filter(e => exits[e.key]).map(e => (
                 <span key={e.key} className="tl-exits-active-chip">{e.label}</span>
               ))}
               {EXIT_TYPES.filter(e => exits[e.key]).length === 0 && (
-                <span className="tl-exits-none">Inga exits valda</span>
+                <span className="tl-exits-none">{tr('Inga exits valda')}</span>
               )}
             </div>
           </div>
@@ -3615,7 +4262,7 @@ export default function TradingLabPage() {
         <div className="tl-tab-content">
           <GroupHeader icon="🧬" title="Signalkombinationer" />
           <p className="tl-combo-intro">
-            Fördefinierade kombinationer av signalmotorer för analys i Lab.
+            {tr('Fördefinierade kombinationer av signalmotorer för analys i Lab.')}
           </p>
           <div className="tl-combo-grid">
             {COMBOS.map((combo, i) => (
@@ -3626,10 +4273,9 @@ export default function TradingLabPage() {
           <div className="tl-ai-opt-banner">
             <div className="tl-ai-opt-icon">🤖</div>
             <div>
-              <div className="tl-ai-opt-title">Optimering — kommer snart</div>
+              <div className="tl-ai-opt-title">{tr('Optimering — kommer snart')}</div>
               <div className="tl-ai-opt-sub">
-                Optimeringsmotorn kommer analysera bästa kombinationer baserat på historisk data.
-                Konfigurationen du bygger här är grunden för det.
+                {tr('Optimeringsmotorn kommer analysera bästa kombinationer baserat på historisk data. Konfigurationen du bygger här är grunden för det.')}
               </div>
             </div>
           </div>
@@ -3669,7 +4315,13 @@ export default function TradingLabPage() {
       {tab === 'agent_debate' && <AgentDebateTab />}
 
       {tab === 'replay' && (
-        <div className="tl-embedded-page"><ReplayPage /></div>
+        <div className="tl-embedded-page">
+          <div className="tl-replay-explain">
+            <strong>Historisk replay</strong>
+            <span>Testar på gammal marknadsdata. Det är inte riktig handel och påverkar inte paper-runtime.</span>
+          </div>
+          <ReplayPage />
+        </div>
       )}
 
       {tab === 'review' && (
@@ -3682,9 +4334,9 @@ export default function TradingLabPage() {
 
       {/* Bottom nav */}
       <div className="tl-bottom-nav">
-        <Link to="/live" className="tl-bottom-link">❤️ LIVE</Link>
-        <Link to="/insikter" className="tl-bottom-link">📊 INSIKTER</Link>
-        <Link to="/system?tab=safety" className="tl-bottom-link">🛡️ SYSTEM</Link>
+        <Link to="/live" className="tl-bottom-link">❤️ {tr('SIGNALER')}</Link>
+        <Link to="/insikter" className="tl-bottom-link">📊 {tr('RESULTATARKIV')}</Link>
+        <Link to="/system?tab=safety" className="tl-bottom-link">🛡️ {tr('SYSTEM & SAFETY')}</Link>
       </div>
     </div>
   );

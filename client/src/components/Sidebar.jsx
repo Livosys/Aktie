@@ -2,17 +2,18 @@ import React, { useState, useEffect } from 'react';
 import { Link, useLocation } from 'react-router-dom';
 import { useAlerts } from '../alertContext.jsx';
 import { applyTheme, getTheme } from './ThemeToggle.jsx';
+import { useLanguage } from '../i18n/LanguageContext.jsx';
 
 const NAV_GROUPS = [
       {
         id: 'main',
         label: null,
         items: [
-          { path: '/supervisor', label: 'Trading OS', icon: '🧭', match: ['/supervisor', '/oversikt'], accent: 'blue' },
-          { path: '/live',       label: 'Live / Signaler', icon: '♥', match: ['/', '/live', '/signalpuls', '/scanner', '/signaler', '/aktier', '/krypto', '/nasdaq'], accent: 'blue' },
-          { path: '/lab',        label: 'Lärdomar',        icon: 'L', match: ['/lab', '/trading-lab', '/strategy-lab', '/replay', '/review-chart', '/intelligence', '/machine'], accent: 'orange' },
-          { path: '/insikter',   label: 'Historik',        icon: 'I', match: ['/insikter', '/resultat', '/setup-performance', '/historik', '/paper-trading'], accent: 'green' },
-          { path: '/system',     label: 'Teknik',          icon: 'S', match: ['/system', '/system-health', '/alerts', '/sakerhet', '/risk', '/risk-engine', '/safety', '/execution-safety'], accent: 'purple' },
+          { path: '/supervisor', labelKey: 'nav.supervisor', label: 'Trading OS', icon: '🧭', match: ['/supervisor', '/overview', '/oversikt'], accent: 'blue' },
+          { path: '/live',       labelKey: 'nav.live',       label: 'Live',       icon: '♥', match: ['/', '/live', '/signalpuls', '/scanner', '/signaler', '/aktier', '/krypto', '/nasdaq'], accent: 'blue' },
+          { path: '/lab',        labelKey: 'nav.lab',        label: 'Lab',        icon: 'L', match: ['/lab', '/trading-lab', '/strategy-lab', '/replay', '/review-chart', '/intelligence', '/machine'], accent: 'orange' },
+          { path: '/insikter',   labelKey: 'nav.insights',   label: 'Insikter',   icon: 'I', match: ['/insikter', '/resultat', '/setup-performance', '/historik', '/paper-trading'], accent: 'green' },
+          { path: '/system',     labelKey: 'nav.system',     label: 'System',     icon: 'S', match: ['/system', '/system-health', '/alerts', '/sakerhet', '/risk', '/risk-engine', '/safety', '/execution-safety'], accent: 'purple' },
         ],
       },
 ];
@@ -34,6 +35,7 @@ function isActive(item, pathname) {
 function NavItem({ item, onClose }) {
   const { pathname } = useLocation();
   const { heroToasts } = useAlerts();
+  const { t } = useLanguage();
   const active = isActive(item, pathname);
   const hasAlerts = item.path === '/alerts' && (heroToasts?.length ?? 0) > 0;
   const iconCls = active ? `sb-icon ${ACCENT_CLASS[item.accent] || 'sb-icon-blue'} sb-icon-active` : `sb-icon ${ACCENT_CLASS[item.accent] || 'sb-icon-blue'}`;
@@ -45,7 +47,7 @@ function NavItem({ item, onClose }) {
       onClick={onClose}
     >
       <span className={iconCls}>{item.icon}</span>
-      <span className="sb-link-label">{item.label}</span>
+      <span className="sb-link-label">{t(item.labelKey, item.label)}</span>
       {hasAlerts && <span className="sb-alert-pip" />}
       {active && <span className="sb-active-bar" />}
     </Link>
@@ -54,6 +56,7 @@ function NavItem({ item, onClose }) {
 
 function ThemeToggle() {
   const [theme, setThemeState] = useState(getTheme);
+  const { t } = useLanguage();
 
   useEffect(() => {
     function handler(e) { setThemeState(e.detail); }
@@ -73,18 +76,19 @@ function ThemeToggle() {
       <span className="sb-theme-track">
         <span className={`sb-theme-thumb ${isDark ? 'thumb-dark' : 'thumb-light'}`} />
       </span>
-      <span className="sb-theme-label">{isDark ? '☾ Mörkt läge' : '☀ Ljust läge'}</span>
+      <span className="sb-theme-label">{isDark ? `☾ ${t('sidebar.darkMode', 'Mörkt läge')}` : `☀ ${t('sidebar.lightMode', 'Ljust läge')}`}</span>
     </button>
   );
 }
 
 export default function Sidebar({ open, onClose }) {
+  const { t } = useLanguage();
   return (
     <>
       {open && (
         <button
           className="premium-sidebar-backdrop"
-          aria-label="Stäng meny"
+          aria-label={t('sidebar.closeMenu', 'Stäng meny')}
           onClick={onClose}
         />
       )}
@@ -95,12 +99,12 @@ export default function Sidebar({ open, onClose }) {
           <img src="/evin.png" alt="" className="sb-brand-logo" />
           <div className="sb-brand-text">
             <strong>Trading OS</strong>
-            <small>Översikt · test · läsning</small>
+            <small>{t('sidebar.subtitle', 'Kontrollrum · test · säkerhet')}</small>
           </div>
         </Link>
 
         {/* Nav */}
-        <nav className="sb-nav" aria-label="Huvudnavigation">
+        <nav className="sb-nav" aria-label={t('sidebar.mainNav', 'Huvudnavigation')}>
           {NAV_GROUPS.map((group) => (
             <div key={group.id} className="sb-group">
               {group.label && (
@@ -124,7 +128,7 @@ export default function Sidebar({ open, onClose }) {
           <ThemeToggle />
           <div className="sb-footer-meta">
             <span>Trading OS</span>
-            <span>Inga affärer utförs</span>
+            <span>{t('sidebar.noTrades', 'Inga affärer utförs')}</span>
           </div>
         </div>
 

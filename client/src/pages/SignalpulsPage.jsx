@@ -5,6 +5,7 @@ import { SignalAge, SignalImportanceTimes, TradingViewLink } from '../shared.jsx
 import { AdvancedModeToggle, ConfigScopeBadge, PlatformEmptyState, PlatformSafetyBar, useAdvancedMode } from '../components/PlatformControls.jsx';
 import TradeReplayPanel from '../components/TradeReplayPanel.jsx';
 import { useUnifiedConfig } from '../hooks/useUnifiedConfig.js';
+import { useLanguage } from '../i18n/LanguageContext.jsx';
 
 const REFRESH_MS = 15_000;
 
@@ -104,16 +105,16 @@ function pulseStatus(r) {
   if (!r) return 'VÄNTA';
   const sig = r.signal || '';
   if (isAvoidSignal(r)) return 'VARNING';
-  if (sig.startsWith('LONG_TRIGGERED')) return 'KÖP';
-  if (sig.startsWith('SHORT_TRIGGERED')) return 'SÄLJ';
+  if (sig.startsWith('LONG_TRIGGERED')) return 'UPPÅTSIGNAL';
+  if (sig.startsWith('SHORT_TRIGGERED')) return 'NEDÅTSIGNAL';
   if (sig.startsWith('LONG') || r.momentumBias === 'bullish') return 'BULLISH';
   if (sig.startsWith('SHORT') || r.momentumBias === 'bearish') return 'BEARISH';
   return 'VÄNTA';
 }
 
 function pulseStatusClass(status) {
-  if (status === 'KÖP') return 'sp-buy';
-  if (status === 'SÄLJ') return 'sp-sell';
+  if (status === 'UPPÅTSIGNAL') return 'sp-upsignal';
+  if (status === 'NEDÅTSIGNAL') return 'sp-downsignal';
   if (status === 'BULLISH') return 'sp-bullish';
   if (status === 'BEARISH') return 'sp-bearish';
   if (status === 'VARNING') return 'sp-warning';
@@ -294,9 +295,9 @@ function AuditActivityPanel({ summary }) {
         <strong>Systemet jobbar</strong>
         <span>Senaste scan: {secondsLabel(summary?.last_scan_seconds_ago)}</span>
         <span>Kandidater senaste 15 min: {summary?.candidates_last_15m ?? 0}</span>
-        <span>Trades senaste 15 min: {summary?.trades_last_15m ?? 0}</span>
+        <span>Simulerade testhändelser senaste 15 min: {summary?.trades_last_15m ?? 0}</span>
         <span>Batchar idag: {summary?.batches_today ?? 0}</span>
-        <span>Senaste trade-tid: {summary?.latest_trade_at ? fmtAuditTime(summary.latest_trade_at) : '–'}</span>
+        <span>Senaste simulerade test: {summary?.latest_trade_at ? fmtAuditTime(summary.latest_trade_at) : '–'}</span>
       </div>
 
       {rows.length > 0 ? (
@@ -308,14 +309,14 @@ function AuditActivityPanel({ summary }) {
               <em>{event.message || event.type}</em>
               {isPaperTradeEvent(event) && (
                 <button className="sp-mini-action" type="button" onClick={() => setSelectedTradeId(replayIdForEvent(event))}>
-                  Visa trade
+                  Visa simulerat test
                 </button>
               )}
             </div>
           ))}
         </div>
       ) : (
-        <div className="sp-activity-empty">Inga nya trades ännu. Systemet väntar på bättre signaler.</div>
+        <div className="sp-activity-empty">Inga nya simulerade testhändelser ännu. Systemet väntar på bättre signaler.</div>
       )}
       <TradeReplayPanel tradeId={selectedTradeId} onClose={() => setSelectedTradeId('')} />
     </div>
@@ -521,9 +522,9 @@ function PulsingHeart({ active }) {
   );
 }
 
-// ── Live dot ──────────────────────────────────────────────────────────────────
+// ── Data dot ──────────────────────────────────────────────────────────────────
 function LiveDot() {
-  return <span className="sp-live-dot" title="Live data" />;
+  return <span className="sp-live-dot" title="Aktuell marknadsdata" />;
 }
 
 function DataCoverageBadge({ coverage }) {
@@ -748,6 +749,7 @@ const MARKET_FILTERS = [
 ];
 
 function MarketFilterBar({ filter, onChange }) {
+  const { tr } = useLanguage();
   return (
     <div className="sp-filter-bar">
       {MARKET_FILTERS.map(f => (
@@ -758,7 +760,7 @@ function MarketFilterBar({ filter, onChange }) {
           type="button"
         >
           <span>{f.icon}</span>
-          <span>{f.label}</span>
+          <span>{tr(f.label)}</span>
         </button>
       ))}
     </div>
@@ -766,19 +768,20 @@ function MarketFilterBar({ filter, onChange }) {
 }
 
 function QuickActions({ onFilter, topSetups }) {
+  const { tr } = useLanguage();
   return (
-    <div className="sp-quick-actions" aria-label="Snabba filter">
-      <button type="button" onClick={() => onFilter('focus')}>Visa bara högsta fokus</button>
-      <button type="button" onClick={() => onFilter('bullish')}>Visa bara bullish</button>
-      <button type="button" onClick={() => onFilter('bearish')}>Visa bara bearish</button>
-      <button type="button" onClick={() => onFilter('low_timeout')}>Visa låg timeout-risk</button>
-      <button type="button" onClick={() => onFilter('nasdaq')}>Visa bara Nasdaq</button>
-      <button type="button" onClick={() => onFilter('crypto')}>Visa bara krypto</button>
-      <button type="button" onClick={() => onFilter('strong_setup')}>Visa starka setups</button>
-      <button type="button" onClick={() => onFilter('volatility')}>Visa timeout-problem</button>
-      <Link to="/insikter?tab=setups">Visa starkaste mönster</Link>
-      <Link to="/insikter?tab=setups">Visa svaga strategier</Link>
-      {topSetups?.[0] && <Link to={`/lab?tab=strategier&setup=${encodeURIComponent(topSetups[0].setup_id || topSetups[0].label)}`}>Öppna LAB med detta mönster</Link>}
+    <div className="sp-quick-actions" aria-label={tr('Snabba filter')}>
+      <button type="button" onClick={() => onFilter('focus')}>{tr('Visa bara högsta fokus')}</button>
+      <button type="button" onClick={() => onFilter('bullish')}>{tr('Visa bara bullish')}</button>
+      <button type="button" onClick={() => onFilter('bearish')}>{tr('Visa bara bearish')}</button>
+      <button type="button" onClick={() => onFilter('low_timeout')}>{tr('Visa låg timeout-risk')}</button>
+      <button type="button" onClick={() => onFilter('nasdaq')}>{tr('Visa bara Nasdaq')}</button>
+      <button type="button" onClick={() => onFilter('crypto')}>{tr('Visa bara krypto')}</button>
+      <button type="button" onClick={() => onFilter('strong_setup')}>{tr('Visa starka setups')}</button>
+      <button type="button" onClick={() => onFilter('volatility')}>{tr('Visa timeout-problem')}</button>
+      <Link to="/insikter?tab=setups">{tr('Visa starkaste mönster')}</Link>
+      <Link to="/insikter?tab=setups">{tr('Visa svaga strategier')}</Link>
+      {topSetups?.[0] && <Link to={`/lab?tab=strategier&setup=${encodeURIComponent(topSetups[0].setup_id || topSetups[0].label)}`}>{tr('Öppna LAB med detta mönster')}</Link>}
     </div>
   );
 }
@@ -915,10 +918,11 @@ function PriorityCard({ item, rank, tone = 'focus', timeline, lastUpdate }) {
 }
 
 function PrioritySections({ priority, timeline, lastUpdateBySymbol = {} }) {
+  const { tr } = useLanguage();
   if (!priority) return (
     <div className="sp-priority-loading">
       <div className="sp-loading-dot" />
-      <span>Prioriterar signaler...</span>
+      <span>{tr('Prioriterar signaler...')}</span>
     </div>
   );
 
@@ -931,8 +935,8 @@ function PrioritySections({ priority, timeline, lastUpdateBySymbol = {} }) {
     <div className="sp-priority-panel">
       <div className="sp-priority-head">
         <div>
-          <h2>🎯 Fokus just nu</h2>
-          <p>Max 1-3 signaler med bäst kvalitet, marknadsstöd och låg timeout-risk.</p>
+          <h2>🎯 {tr('Fokus just nu')}</h2>
+          <p>{tr('Max 1-3 signaler med bäst kvalitet, marknadsstöd och låg timeout-risk.')}</p>
         </div>
         <ConfigScopeBadge scope="test" />
       </div>
@@ -1016,8 +1020,8 @@ function pickCryptoCandidate(cryptoResp) {
 
 function cryptoDecisionLabel(r) {
   const sig = String(r?.signal || '');
-  if (sig.startsWith('LONG_TRIGGERED')) return { text: 'Köp-läge (long triggad)', cls: 'sp-buy' };
-  if (sig.startsWith('SHORT_TRIGGERED')) return { text: 'Sälj-läge (short triggad)', cls: 'sp-sell' };
+  if (sig.startsWith('LONG_TRIGGERED')) return { text: 'Uppåtsignal hittad', cls: 'sp-upsignal' };
+  if (sig.startsWith('SHORT_TRIGGERED')) return { text: 'Nedåtsignal hittad', cls: 'sp-downsignal' };
   if (sig === 'NO_TRADE' || r?.scoreLabel === 'Avoid') return { text: 'Undvik', cls: 'sp-warning' };
   if (sig.startsWith('LONG')) return { text: 'Bevakar long', cls: 'sp-bullish' };
   if (sig.startsWith('SHORT')) return { text: 'Bevakar short', cls: 'sp-bearish' };
@@ -1131,6 +1135,7 @@ function tlFor(timeline, symbol) {
 
 // ── Main page ─────────────────────────────────────────────────────────────────
 export default function SignalpulsPage() {
+  const { tr } = useLanguage();
   const [params, setParams] = useSearchParams();
   const { signals, loading, lastFetch, meta } = useAllSignals();
   const ls = useLearningSummary();
@@ -1273,24 +1278,25 @@ export default function SignalpulsPage() {
       <div className="sp-page-header">
         <h1 className="sp-page-title">
           <PulsingHeart active={!loading && !!bestSignal} />
-          LIVE
+          {tr('Signaler just nu')}
         </h1>
+        <p className="sp-page-sub">{tr('Detta är bara visualisering och kandidater. Ingen riktig handel sker.')}</p>
         <div className="sp-page-meta">
           <ConfigScopeBadge scope="ui" />
           <AdvancedModeToggle value={advancedMode} onChange={setAdvancedMode} />
           {lastFetch && (
             <span className="sp-last-update">
-              Uppdaterad {lastFetch.toLocaleTimeString('sv-SE', { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
+              {tr('Uppdaterad')} {lastFetch.toLocaleTimeString('sv-SE', { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
             </span>
           )}
           {/* Ärlig datakälle-ålder per marknad (skiljer på fryst aktie-helg vs färsk crypto) */}
           {(meta.stocks || meta.crypto) && (
             <span className="sp-feed-ages">
               {meta.stocks && (() => { const a = feedAgeInfo(meta.stocks); return (
-                <span className={`sp-feed-chip${a.stale ? ' stale' : ''}`} title="Aktiernas datakälla">Aktier: {a.label}</span>
+                <span className={`sp-feed-chip${a.stale ? ' stale' : ''}`} title={tr('Aktiernas datakälla')}>{tr('Aktier')}: {a.label}</span>
               ); })()}
               {meta.crypto && (() => { const a = feedAgeInfo(meta.crypto); return (
-                <span className={`sp-feed-chip${a.stale ? ' stale' : ''}`} title="Kryptons datakälla">Krypto: {a.label}</span>
+                <span className={`sp-feed-chip${a.stale ? ' stale' : ''}`} title={tr('Kryptons datakälla')}>{tr('Krypto')}: {a.label}</span>
               ); })()}
             </span>
           )}
@@ -1301,14 +1307,14 @@ export default function SignalpulsPage() {
       {/* DEL 1: Vad händer just nu — signalerna ligger nu överst på sidan */}
       <div className="sp-section-label">
         <span>DEL 1</span>
-        <span className="sp-section-title">Vad händer JUST NU?</span>
+        <span className="sp-section-title">{tr('Marknad och kandidater just nu')}</span>
       </div>
 
       {/* Hero signal (= toppsignalen, visas inte igen i listan nedan) */}
       {loading ? (
         <div className="sp-loading">
           <div className="sp-loading-dot" />
-          <span>Hämtar signaler...</span>
+          <span>{tr('Hämtar signaler...')}</span>
         </div>
       ) : (
         <HeroSignal signal={bestSignal} score={bestScore} ls={ls} coverage={dataCoverageMap[String(bestSignal?.symbol || '').toUpperCase()]} timeline={timeline} />
@@ -1320,9 +1326,9 @@ export default function SignalpulsPage() {
       {/* Top 20 — listan startar på #2 eftersom #1 visas som Hero ovan */}
       <div className="sp-top20-header">
         <h2 className="sp-section-h2">
-          {marketFilter === 'all' ? 'Top 20 signaler just nu' : `Top 20 — ${MARKET_FILTERS.find(f => f.key === marketFilter)?.label}`}
+          {marketFilter === 'all' ? tr('Top 20 signaler just nu') : `Top 20 - ${tr(MARKET_FILTERS.find(f => f.key === marketFilter)?.label || '')}`}
         </h2>
-        <span className="sp-top20-count">{top20.length} st</span>
+      <span className="sp-top20-count">{top20.length}</span>
       </div>
 
       {top20.length === 0 && !loading ? (
@@ -1366,19 +1372,19 @@ export default function SignalpulsPage() {
 
       <div className="sp-section-label">
         <span>DEL 2</span>
-        <span className="sp-section-title">Vad fungerar HISTORISKT?</span>
+        <span className="sp-section-title">{tr('Vad fungerar HISTORISKT?')}</span>
       </div>
 
       <div className="sp-perf-header">
-        <h2 className="sp-section-h2">Mönsterhistorik</h2>
-        <Link to="/insikter" className="sp-perf-link">Se alla resultat →</Link>
+        <h2 className="sp-section-h2">{tr('Mönsterhistorik')}</h2>
+        <Link to="/insikter" className="sp-perf-link">{tr('Se alla resultat')} →</Link>
       </div>
 
       {advancedMode && setupData ? (
         <>
           {topSetups.length > 0 && (
             <div className="sp-setup-section">
-              <div className="sp-setup-section-label">Bästa mönster</div>
+              <div className="sp-setup-section-label">{tr('Bästa mönster')}</div>
               <div className="sp-setup-grid">
                 {topSetups.map(s => <MiniSetupCard key={s.setup_id} setup={s} />)}
               </div>
@@ -1386,7 +1392,7 @@ export default function SignalpulsPage() {
           )}
           {poorSetups.length > 0 && (
             <div className="sp-setup-section">
-              <div className="sp-setup-section-label sp-poor-label">Undvik för tillfället</div>
+              <div className="sp-setup-section-label sp-poor-label">{tr('Undvik för tillfället')}</div>
               <div className="sp-setup-grid">
                 {poorSetups.map(s => <MiniSetupCard key={s.setup_id} setup={s} />)}
               </div>
@@ -1397,11 +1403,11 @@ export default function SignalpulsPage() {
       ) : advancedMode ? (
         <div className="sp-loading">
           <div className="sp-loading-dot" />
-          <span>Laddar historik...</span>
+          <span>{tr('Laddar historik...')}</span>
         </div>
       ) : (
         <div className="sp-compact-history">
-          Historik och detaljerad mönsterstatistik visas i Advanced Mode eller på Resultat-sidan.
+          {tr('Historik och detaljerad mönsterstatistik visas i Advanced Mode eller på Resultat-sidan.')}
         </div>
       )}
 
@@ -1409,7 +1415,7 @@ export default function SignalpulsPage() {
       <div className="sp-quick-nav">
         <Link to="/lab" className="sp-quick-btn sp-qb-lab">🧪 LAB</Link>
         <Link to="/insikter" className="sp-quick-btn sp-qb-results">📊 INSIKTER</Link>
-        <Link to="/system?tab=safety" className="sp-quick-btn sp-qb-safety">🛡️ SYSTEM Safety</Link>
+        <Link to="/system?tab=safety" className="sp-quick-btn sp-qb-safety">🛡️ System & Safety</Link>
       </div>
     </div>
   );

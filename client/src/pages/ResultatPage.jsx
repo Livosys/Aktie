@@ -1,20 +1,19 @@
 import React, { useState, useEffect } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
-import { PlatformEmptyState, PlatformSafetyBar } from '../components/PlatformControls.jsx';
+import { AdvancedModeToggle, PlatformEmptyState, PlatformSafetyBar, useAdvancedMode } from '../components/PlatformControls.jsx';
 import TradeReplayPanel from '../components/TradeReplayPanel.jsx';
 import { useUnifiedConfig } from '../hooks/useUnifiedConfig.js';
+import { useLanguage } from '../i18n/LanguageContext.jsx';
 
 const TABS = [
-  { key: 'oversikt',     label: 'Översikt',       icon: '📊' },
-  { key: 'setups',       label: 'Mönsterresultat', icon: '🎯' },
-  { key: 'ai',          label: 'AI-resultat',     icon: '🤖' },
-  { key: 'replay',      label: 'Replay-resultat', icon: '▶️' },
-  { key: 'paper',       label: 'Låtsastrading',   icon: '🧪' },
-  { key: 'activity',    label: 'Aktivitet',       icon: '◷' },
-  { key: 'daytrading',  label: 'Daytrading-strategier', icon: '🧩' },
-  { key: 'memory',      label: 'Historiskt minne', icon: '📚' },
-  { key: 'candidates',  label: 'Kandidater',      icon: '◎' },
-  { key: 'data-center', label: 'Data Center',     icon: '▣' },
+  { key: 'oversikt',   labelKey: 'insights.overview',     label: 'Översikt',     icon: '📊' },
+  { key: 'batch',      labelKey: 'insights.batchTests',   label: 'Batchtester',  icon: '🧱' },
+  { key: 'replay',     labelKey: 'insights.replayTests',  label: 'Replaytester', icon: '▶️' },
+  { key: 'paper',      labelKey: 'insights.paperTests',   label: 'Låtsastester', icon: '🧪' },
+  { key: 'data',       labelKey: 'insights.data',         label: 'Data',         icon: '▣' },
+  { key: 'ai',         labelKey: 'insights.aiSummary',    label: 'AI-slutsats',  icon: '🤖' },
+  { key: 'activity',   labelKey: 'insights.activity',     label: 'Aktivitet',    icon: '◷' },
+  { key: 'candidates', labelKey: 'insights.candidates',   label: 'Kandidater',   icon: '◎' },
 ];
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -22,6 +21,13 @@ function fmtPct(v) {
   if (v == null || Number.isNaN(Number(v))) return '–';
   const n = Number(v);
   return `${n > 0 ? '+' : ''}${n.toFixed(2)}%`;
+}
+
+function fmtRate(v) {
+  if (v == null || Number.isNaN(Number(v))) return '–';
+  const n = Number(v);
+  const pct = n > 1 ? n : n * 100;
+  return `${pct.toFixed(pct >= 10 ? 1 : 2)}%`;
 }
 
 function safeText(value, fallback = 'För lite data') {
@@ -68,20 +74,66 @@ function fmtDate(value) {
   return d.toLocaleDateString('sv-SE', { year: 'numeric', month: 'short', day: 'numeric' });
 }
 
+function fmtSchedule(auto) {
+  if (!auto) return 'Schema saknas';
+  if (auto.enabled === false) return 'Avstängd just nu';
+  const minutes = Number(auto.intervalMinutes || auto.interval_minutes);
+  if (Number.isFinite(minutes) && minutes > 0) {
+    if (minutes === 60) return 'Varje timme';
+    if (minutes % 60 === 0) return `Var ${minutes / 60}:e timme`;
+    return `Var ${minutes}:e minut`;
+  }
+  return safeText(auto.schedule || auto.cron || auto.status, 'Schema saknas');
+}
+
+function fmtAge(seconds) {
+  const n = Number(seconds);
+  if (!Number.isFinite(n) || n < 0) return '–';
+  if (n < 60) return `${Math.round(n)} sek`;
+  if (n < 3600) return `${Math.round(n / 60)} min`;
+  if (n < 86400) return `${Math.round(n / 3600)} tim`;
+  return `${Math.round(n / 86400)} dagar`;
+}
+
+function resultLabel(value, t = null) {
+  const label = (key, fallback) => (typeof t === 'function' ? t(key, fallback) : fallback);
+  const raw = String(value || '').toUpperCase();
+  if (raw === 'WIN') return label('insights.resultWin', 'Vinst i test');
+  if (raw === 'LOSS') return label('insights.resultLoss', 'Förlust i test');
+  if (raw === 'STOP_HIT' || raw === 'STOP_LOSS' || raw === 'STOPLOSS') return label('insights.resultStopHit', 'Stop-nivå träffades');
+  if (raw === 'EXIT_ENGINE_TARGET_HIT' || raw === 'TARGET_HIT' || raw === 'TAKE_PROFIT') return label('insights.resultTargetHit', 'Systemets mål träffades');
+  if (raw === 'TIMEOUT' || raw === 'TIME_EXIT' || raw === 'TIME_LIMIT') return label('insights.resultTimeout', 'Avslutades på maxtid');
+  if (raw === 'SKIPPED') return label('insights.resultSkipped', 'Hoppades över');
+  if (raw === 'BLOCKED' || raw === 'SAFETY_BLOCKED') return label('insights.resultBlocked', 'Blockerades av säkerhetsregel');
+  if (raw === 'MANUAL' || raw === 'MANUAL_EXIT') return 'Manuell stängning';
+  if (raw === 'EXIT_ENGINE' || raw === 'EXIT_SIGNAL') return 'Exitmotor stängde';
+  if (raw === 'TRAILING_STOP') return 'Trailing stop träffades';
+  return safeText(value, 'Saknas');
+}
+
+function compactList(value, limit = 6) {
+  const list = Array.isArray(value) ? value.filter(Boolean) : [];
+  if (!list.length) return 'Saknas';
+  const visible = list.slice(0, limit).join(', ');
+  return list.length > limit ? `${visible} +${list.length - limit}` : visible;
+}
+
 function MetricCard({ icon, value, label, sub, color }) {
+  const { tr } = useLanguage();
   const c = color === 'green' ? '#22c55e' : color === 'red' ? '#ef4444' : color === 'yellow' ? '#f59e0b' : '#93c5fd';
   return (
     <div className="res-metric-card">
       {icon && <div className="res-metric-icon">{icon}</div>}
-      <div className="res-metric-value" style={{ color: c }}>{value ?? '–'}</div>
-      <div className="res-metric-label">{label}</div>
-      {sub && <div className="res-metric-sub">{sub}</div>}
+      <div className="res-metric-value" style={{ color: c }}>{tr(value ?? '–')}</div>
+      <div className="res-metric-label">{tr(label)}</div>
+      {sub && <div className="res-metric-sub">{tr(sub)}</div>}
     </div>
   );
 }
 
 function WinBar({ wr }) {
-  if (wr == null) return <span className="res-no-data">Ingen data</span>;
+  const { tr } = useLanguage();
+  if (wr == null) return <span className="res-no-data">{tr('Ingen data')}</span>;
   const pct = Math.max(0, Math.min(100, wr));
   const color = pct >= 58 ? '#22c55e' : pct >= 45 ? '#f59e0b' : '#ef4444';
   return (
@@ -95,68 +147,89 @@ function WinBar({ wr }) {
 }
 
 function SafetyBanner() {
+  const { tr } = useLanguage();
   return (
     <div className="res-safety-banner">
       <span>🔒</span>
-      <span className="res-safety-green">Riktig handel är avstängd</span>
-      <span className="res-safety-muted">· Bara analys · Inga riktiga orders</span>
+      <span className="res-safety-green">{tr('Riktig handel är avstängd')}</span>
+      <span className="res-safety-muted">{tr('· Bara analys · Inga riktiga orders')}</span>
     </div>
   );
 }
 
 function DailyReportCard({ title, rows, conclusion }) {
+  const { tr } = useLanguage();
   return (
     <div className="res-daily-card">
-      <div className="res-daily-card-title">{title}</div>
+      <div className="res-daily-card-title">{tr(title)}</div>
       <div className="res-daily-rows">
         {rows.map((row) => (
           <div key={row.label} className="res-daily-row">
-            <span>{row.label}</span>
-            <strong>{safeText(row.value, row.fallback || 'För lite data')}</strong>
+            <span>{tr(row.label)}</span>
+            <strong>{tr(safeText(row.value, row.fallback || 'För lite data'))}</strong>
           </div>
         ))}
       </div>
-      {conclusion && <div className="res-daily-conclusion">{safeText(conclusion)}</div>}
+      {conclusion && <div className="res-daily-conclusion">{tr(safeText(conclusion))}</div>}
     </div>
   );
 }
 
 function DailySystemReport() {
+  const { t, tr } = useLanguage();
+  const [advancedMode, setAdvancedMode] = useAdvancedMode();
+  const [overview, setOverview] = useState(null);
   const [report, setReport] = useState(null);
   const [status, setStatus] = useState(null);
   const [recent, setRecent] = useState([]);
+  const [batchStatus, setBatchStatus] = useState(null);
+  const [batchAuto, setBatchAuto] = useState(null);
+  const [replayAuto, setReplayAuto] = useState(null);
+  const [replayStatus, setReplayStatus] = useState(null);
+  const [dataJobs, setDataJobs] = useState(null);
+  const [paperStatus, setPaperStatus] = useState(null);
+  const [liveActivity, setLiveActivity] = useState(null);
+  const [aiStatus, setAiStatus] = useState(null);
+  const [aiLatest, setAiLatest] = useState(null);
   const [loading, setLoading] = useState(true);
-  const [running, setRunning] = useState(false);
-  const [message, setMessage] = useState('');
 
   const load = React.useCallback(() => {
     setLoading(true);
     Promise.all([
+      fetch('/api/supervisor/overview').then(r => r.ok ? r.json() : null).catch(() => null),
       fetch('/api/results/daily-intelligence').then(r => r.ok ? r.json() : null).catch(() => null),
       fetch('/api/pipeline/daily/status').then(r => r.ok ? r.json() : null).catch(() => null),
       fetch('/api/pipeline/daily/recent?limit=5').then(r => r.ok ? r.json() : null).catch(() => null),
-    ]).then(([daily, st, rec]) => {
+      fetch('/api/status/batches').then(r => r.ok ? r.json() : null).catch(() => null),
+      fetch('/api/status/batch-autopilot').then(r => r.ok ? r.json() : null).catch(() => null),
+      fetch('/api/status/replay-autopilot').then(r => r.ok ? r.json() : null).catch(() => null),
+      fetch('/api/status/replay').then(r => r.ok ? r.json() : null).catch(() => null),
+      fetch('/api/status/data-jobs').then(r => r.ok ? r.json() : null).catch(() => null),
+      fetch('/api/status/paper-trading').then(r => r.ok ? r.json() : null).catch(() => null),
+      fetch('/api/status/live-activity?limit=20').then(r => r.ok ? r.json() : null).catch(() => null),
+      fetch('/api/ai/analyst/status').then(r => r.ok ? r.json() : null).catch(() => null),
+      fetch('/api/ai/analyst/latest').then(r => r.ok ? r.json() : null).catch(() => null),
+    ]).then(([supervisor, daily, st, rec, batches, batchAutoStatus, replayAutoStatus, replayReadOnly, jobs, paperTrading, activity, analystStatus, analystLatest]) => {
+      setOverview(supervisor);
       setReport(daily);
       setStatus(st);
       setRecent(rec?.runs || []);
+      setBatchStatus(batches);
+      setBatchAuto(batchAutoStatus);
+      setReplayAuto(replayAutoStatus);
+      setReplayStatus(replayReadOnly);
+      setDataJobs(jobs);
+      setPaperStatus(paperTrading);
+      setLiveActivity(activity);
+      setAiStatus(analystStatus);
+      setAiLatest(analystLatest);
       setLoading(false);
     }).catch(() => setLoading(false));
   }, []);
 
   useEffect(() => { load(); }, [load]);
 
-  async function postAction(url, runningLabel) {
-    setMessage('');
-    setRunning(true);
-    const res = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ actions_allowed: false, can_place_orders: false, live_trading_enabled: false }) })
-      .then(async r => ({ ok: r.ok, body: await r.json().catch(() => null) }))
-      .catch(e => ({ ok: false, body: { error: e.message } }));
-    setRunning(false);
-    setMessage(res.body?.error || runningLabel || (res.ok ? 'Klart.' : 'Kunde inte köra åtgärden.'));
-    load();
-  }
-
-  if (loading) return <div className="res-loading">Laddar daglig systemrapport...</div>;
+  if (loading) return <div className="res-loading">{tr('Laddar daglig systemrapport...')}</div>;
   const data = report || {};
   const cfg = status?.config || {};
   const dataFetch = data.data_fetch || {};
@@ -165,21 +238,152 @@ function DailySystemReport() {
   const paper = data.paper || {};
   const ai = data.ai_summary || {};
   const safety = data.safety || {};
+  const latestBatch = batchStatus?.latestBatch || batchStatus?.latestCompletedBatch || overview?.batchSummary?.latestBatch || null;
+  const bestOutcome = batchStatus?.bestOutcome || latestBatch?.bestOutcome || {};
+  const hourlyImport = dataJobs?.hourlyImport || {};
+  const weeklyBackfill = dataJobs?.weeklyBackfill || {};
+  const latestImport = hourlyImport.latestImport || {};
+  const latestBackfill = weeklyBackfill.latestBackfill || {};
+  const cache = dataJobs?.cacheStatus || {};
+  const quality = dataJobs?.dataQuality || {};
+  const provider = dataJobs?.providerStatus?.alpaca?.provider || latestImport.provider || 'Alpaca';
+  const latestPaper = paperStatus?.latestPaperTrade && paperStatus.latestPaperTrade.id ? paperStatus.latestPaperTrade : null;
+  const paperSummary = paperStatus?.summary || {};
+  const latestAiOutput = aiLatest?.latest?.output || aiLatest?.output || aiLatest?.latest || {};
+  const analystProvider = aiStatus?.provider === 'anthropic' ? 'Claude' : aiStatus?.provider === 'openai' ? 'OpenAI' : 'Disabled';
+  const replayWithActivity = (replayStatus?.recentReplays || []).find((item) => Number(item?.totalEvents) > 0) || replayStatus?.latestReplay || overview?.replaySummary?.latestReplay || null;
+  const replayPeriod = replayWithActivity?.period || {};
+  const latestImportPeriod = latestImport.from && latestImport.to ? `${fmtDate(latestImport.from)} - ${fmtDate(latestImport.to)}` : 'Saknas';
+  const aiRisks = Array.isArray(latestAiOutput.risks) ? latestAiOutput.risks.slice(0, 2).join(' · ') : '';
+  const aiNext = Array.isArray(latestAiOutput.next_recommended_tests) ? latestAiOutput.next_recommended_tests.slice(0, 2).join(' · ') : '';
 
   return (
     <div className="res-daily-panel">
       <div className="res-section-header">
         <div>
-          <h2 className="res-section-h2">Daglig systemrapport</h2>
-          <p className="res-section-sub">Historik och analys för data, replay, batch och lärande. Inte live trading och inte runtime.</p>
+          <h2 className="res-section-h2">{tr('Riktiga resultat just nu')}</h2>
+          <p className="res-section-sub">{tr('Senaste riktiga resultat från batch, låtsastester, replay, data och AI. Resultat först — systemrapport och pipeline ligger längre ner.')}</p>
         </div>
-        <button className="res-mini-action" type="button" onClick={load}>Uppdatera</button>
+        <div className="res-daily-actions">
+          <button className="res-mini-action" type="button" onClick={load}>{tr('Uppdatera')}</button>
+        </div>
       </div>
 
-      <div className="res-daily-control">
+      <div className="res-daily-grid">
+        <DailyReportCard
+          title="Bästa batchresultat"
+          rows={[
+            { label: 'Strategi', value: bestOutcome.strategy || 'För lite data' },
+            { label: 'Symbol', value: bestOutcome.symbol || 'För lite data' },
+            { label: 'Timeframe', value: bestOutcome.timeframe || latestBatch?.timeframe || 'För lite data' },
+            { label: 'Score', value: bestOutcome.score ?? 'För lite data' },
+            { label: 'Win rate', value: bestOutcome.winRate != null ? fmtRate(bestOutcome.winRate) : 'För lite data' },
+            { label: 'Avg P/L', value: bestOutcome.avgResult != null ? fmtPct(bestOutcome.avgResult) : 'För lite data' },
+            { label: 'Total P/L', value: bestOutcome.totalPnl != null ? fmtPct(bestOutcome.totalPnl) : 'För lite data' },
+            { label: 'Antal trades', value: safeNumber(bestOutcome.trades, 'För lite data') },
+            { label: 'Senaste batch', value: latestBatch?.id || 'Saknas' },
+            { label: 'Batchstatus', value: latestBatch?.status || batchStatus?.status || 'Saknas' },
+            { label: 'Schema', value: `${fmtSchedule(batchAuto)}${batchAuto?.intervalMinutes ? ` (intervalMinutes=${batchAuto.intervalMinutes})` : ''}` },
+            { label: 'Idag / nästa', value: `${safeNumber(batchAuto?.todayRunCount, 0)} / ${fmtActivityTime(batchAuto?.nextRun)}` },
+          ]}
+          conclusion="Batch kör just nu var 6:e timme. Ingen riktig handel sker."
+        />
+        <DailyReportCard
+          title="Senaste låtsastest / paper-resultat"
+          rows={[
+            { label: 'Antal tester', value: safeNumber(paperStatus?.count || paperSummary.totalTrades, 0) },
+            { label: 'Win rate', value: paperSummary.winRate != null ? fmtRate(paperSummary.winRate) : 'För lite data' },
+            { label: 'Decisive win rate', value: paperSummary.decisiveWinRate != null ? fmtRate(paperSummary.decisiveWinRate) : 'För lite data' },
+            { label: 'Snitt P/L', value: paperSummary.avgPnl != null ? fmtPct(paperSummary.avgPnl) : 'För lite data' },
+            { label: 'Total P/L', value: paperSummary.totalPnl != null ? fmtPct(paperSummary.totalPnl) : 'För lite data' },
+            { label: 'Bästa strategi', value: paperSummary.bestStrategy?.strategy || 'För lite data' },
+            { label: 'Senaste symbol', value: latestPaper?.symbol || 'Saknas' },
+            { label: 'Senaste strategi', value: latestPaper?.strategyLabel || latestPaper?.strategy || 'Saknas' },
+            { label: 'Senaste resultat', value: resultLabel(latestPaper?.result, t) },
+            { label: 'P/L', value: latestPaper?.pnl != null ? fmtPct(latestPaper.pnl) : 'Saknas' },
+            { label: 'Exit reason', value: resultLabel(latestPaper?.exitReason, t) },
+            { label: 'Lärdom', value: latestPaper?.lesson || 'För lite data' },
+          ]}
+          conclusion="Låtsastester är simulering. Inga riktiga pengar används."
+        />
+        <DailyReportCard
+          title="Replay med aktivitet"
+          rows={[
+            { label: 'Run id', value: replayWithActivity?.runId || 'Saknas' },
+            { label: 'Period', value: replayPeriod.from && replayPeriod.to ? `${fmtDate(replayPeriod.from)} - ${fmtDate(replayPeriod.to)}` : 'Saknas' },
+            { label: 'Symboler', value: compactList(replayWithActivity?.symbols, 8) },
+            { label: 'Timeframe', value: replayWithActivity?.timeframe || compactList(replayStatus?.timeframes, 3) },
+            { label: 'Total candles', value: safeNumber(replayWithActivity?.totalCandles, 0) },
+            { label: 'Total events', value: safeNumber(replayWithActivity?.totalEvents, 0) },
+            { label: 'Avg trade score', value: safeNumber(replayWithActivity?.avgTradeScore, 0) },
+            { label: 'Bästa symbol', value: replayWithActivity?.bestSymbol?.symbol || 'För lite data' },
+            { label: 'Replaystatus', value: replayStatus?.status || 'Saknas' },
+            { label: 'Kunde inte läsa', value: safeNumber(replayStatus?.unreadableRuns, 0) },
+          ]}
+          conclusion={replayStatus?.status === 'degraded'
+            ? `Replay är degraded eftersom vissa körningar inte kunde läsas${replayStatus?.unreadableRuns != null ? ` (${replayStatus.unreadableRuns})` : ''}, men replay-data med aktivitet finns.`
+            : 'Replay visar historisk testaktivitet. Ingen riktig handel sker.'}
+        />
+        <DailyReportCard
+          title="Alpaca-data"
+          rows={[
+            { label: 'Provider', value: 'Alpaca' },
+            { label: 'Configured', value: dataJobs?.alpacaConfigured === true ? 'true' : 'false' },
+            { label: 'Senaste importtid', value: fmtActivityTime(hourlyImport.lastRun || latestImport.completedAt) },
+            { label: 'Importperiod', value: latestImportPeriod },
+            { label: 'Timeframe', value: latestImport.timeframe || 'För lite data' },
+            { label: 'Symbols updated', value: compactList(hourlyImport.symbolsUpdated, 8) },
+            { label: 'Candles imported', value: safeNumber(hourlyImport.candlesImported || latestImport.candlesImported, 0) },
+            { label: 'Latest symbol import', value: latestImport.symbol || 'Saknas' },
+            { label: 'Backfill status', value: weeklyBackfill.status || 'Saknas' },
+            { label: 'Missing data count', value: safeNumber(weeklyBackfill.missingDataCount || quality.missingCandles, 0) },
+            { label: 'Cache exists', value: cache.cacheExists === true ? 'true' : 'false' },
+            { label: 'Cache age', value: fmtAge(cache.cacheAgeSeconds) },
+            { label: 'Cached symbols', value: safeNumber(cache.symbolsCached, 0) },
+            { label: 'Files seen', value: safeNumber(cache.filesSeen, 0) },
+          ]}
+          conclusion="10 års historisk täckning är inte exponerad i status-API ännu."
+        />
+        <DailyReportCard
+          title="AI-slutsats"
+          rows={[
+            { label: 'Provider', value: analystProvider },
+            { label: 'Model', value: aiStatus?.model || 'Saknas' },
+            { label: 'Status', value: aiStatus?.status || aiStatus?.readiness || 'Saknas' },
+            { label: 'Senaste analys', value: fmtActivityTime(aiLatest?.latest?.generatedAt || aiLatest?.latest?.createdAt || aiStatus?.latestTimestamp) },
+            { label: 'Summary', value: latestAiOutput.summary || 'För lite data' },
+            { label: 'Bästa strategi', value: latestAiOutput.best_strategy || 'För lite data' },
+            { label: 'Risker', value: aiRisks || 'För lite data' },
+            { label: 'Nästa rekommenderade test', value: aiNext || 'För lite data' },
+          ]}
+          conclusion="AI kan bara läsa och sammanfatta. Den kan inte handla, ändra risk eller aktivera strategier."
+        />
+        <DailyReportCard
+          title="Safety"
+          rows={[
+            { label: 'Inga riktiga orders', value: 'Ja' },
+            { label: 'actions_allowed', value: String(safety.actions_allowed === true) },
+            { label: 'can_place_orders', value: String(safety.can_place_orders === true) },
+            { label: 'live_trading_enabled', value: String(safety.live_trading_enabled === true) },
+          ]}
+          conclusion="All automation är test, replay, batch, paper och analys only. Inga riktiga order läggs."
+        />
+      </div>
+
+      <div className="res-section-header res-daily-report-header">
+        <div>
+          <h2 className="res-section-h2">Daglig systemrapport</h2>
+          <p className="res-section-sub">Historik och analys för data, replay, batch och lärande. Arkivet visar vad som hänt, inte operativa kontroller.</p>
+        </div>
+        <div className="res-daily-actions">
+          <AdvancedModeToggle value={advancedMode} onChange={setAdvancedMode} />
+        </div>
+      </div>
+
+      {advancedMode && <div className="res-daily-control">
         <div>
           <div className="res-subsection-title">Avancerad pipeline / datajobb</div>
-          <div className="res-daily-muted">Detta är en test- och data pipeline, inte live trading. Operativ kontroll hör hemma i Daytrading och safety i System → Safety.</div>
+          <div className="res-daily-muted">Read-only i Resultatarkiv. Pipelinekontroller är avstängda här för att huvudvyn ska vara historik och lärdomar.</div>
         </div>
         <div className="res-daily-status">
           <span className={status?.enabled ? 'res-daily-on' : 'res-daily-off'}>{status?.enabled ? 'På' : 'Av'}</span>
@@ -187,14 +391,13 @@ function DailySystemReport() {
           <span>Nästa: {fmtActivityTime(status?.next_run_at)}</span>
         </div>
         <div className="res-daily-actions">
-          <button type="button" onClick={() => postAction('/api/pipeline/daily/run-now', 'Daglig pipeline körd.')} disabled={running || status?.daily_pipeline_running}>
-            {running || status?.daily_pipeline_running ? 'Kör...' : 'Kör avancerad pipeline nu'}
+          <button type="button" disabled title="Read-only i Resultatarkiv">
+            Visa pipeline-status
           </button>
-          <button type="button" onClick={() => postAction('/api/pipeline/daily/enable', 'Automatisk körning aktiverad.')} disabled={running || status?.enabled}>Aktivera pipeline-körning</button>
-          <button type="button" onClick={() => postAction('/api/pipeline/daily/disable', 'Automatisk körning avstängd.')} disabled={running || !status?.enabled}>Stäng av pipeline-körning</button>
+          <button type="button" disabled title="Read-only i Resultatarkiv">Automatik visas bara</button>
+          <button type="button" disabled title="Read-only i Resultatarkiv">Inga ändringar här</button>
         </div>
-      </div>
-      {message && <div className="res-daily-message">{message}</div>}
+      </div>}
 
       <div className="res-daily-grid">
         <DailyReportCard
@@ -212,7 +415,7 @@ function DailySystemReport() {
           rows={[
             { label: 'Senaste replay', value: replay.session_id || 'Ingen replay körd' },
             { label: 'Händelser', value: safeNumber(replay.events_total, 0) },
-            { label: 'Simulerade trades', value: safeNumber(replay.trades_total, 0) },
+            { label: 'Simulerade testhändelser', value: safeNumber(replay.trades_total, 0) },
             { label: 'P/L', value: replay.pnl === '' ? 'För lite data' : fmtPct(replay.pnl) },
             { label: 'Win rate', value: replay.win_rate === '' ? 'För lite data' : `${safeNumber(replay.win_rate, 0)}%` },
           ]}
@@ -232,12 +435,12 @@ function DailySystemReport() {
         <DailyReportCard
           title="Paper Trading"
           rows={[
-            { label: 'Låtsastrades idag', value: safeNumber(paper.trades_today, 0) },
-            { label: 'Total win rate', value: paper.win_rate === '' ? 'Inga låtsastrades ännu' : `${safeNumber(paper.win_rate, 0)}%` },
-            { label: 'Snitt P/L', value: paper.avg_pnl === '' ? 'Inga låtsastrades ännu' : fmtPct(paper.avg_pnl) },
+            { label: 'Låtsastester idag', value: safeNumber(paper.trades_today, 0) },
+            { label: 'Total win rate', value: paper.win_rate === '' ? 'Inga låtsastester ännu' : `${safeNumber(paper.win_rate, 0)}%` },
+            { label: 'Snitt P/L', value: paper.avg_pnl === '' ? 'Inga låtsastester ännu' : fmtPct(paper.avg_pnl) },
             { label: 'Öppna positioner', value: safeNumber(paper.open_positions, 0) },
           ]}
-          conclusion={paper.conclusion_sv || 'Inga låtsastrades ännu'}
+          conclusion={paper.conclusion_sv || 'Inga låtsastester ännu'}
         />
         <DailyReportCard
           title="AI-slutsats"
@@ -260,6 +463,65 @@ function DailySystemReport() {
         />
       </div>
 
+      <div className="res-daily-grid">
+        <DailyReportCard
+          title="Automatiska batchtester"
+          rows={[
+            { label: 'Status', value: batchStatus?.status || batchAuto?.status || 'Saknas' },
+            { label: 'Schema', value: fmtSchedule(batchAuto) },
+            { label: 'Nästa batch', value: fmtActivityTime(batchAuto?.nextRun || batchAuto?.next_run_at) },
+            { label: 'Idag', value: safeNumber(batchAuto?.todayRunCount, 0) },
+            { label: 'Totalt', value: safeNumber(batchStatus?.totalBatches, 0) },
+            { label: 'Klara / misslyckade / pågår', value: `${safeNumber(batchStatus?.completedBatches, 0)} / ${safeNumber(batchStatus?.failedBatches, 0)} / ${safeNumber(batchStatus?.runningBatches, 0)}` },
+            { label: 'Bästa strategi', value: bestOutcome.strategy || batch.best_strategy || 'För lite data' },
+            { label: 'Bästa symbol', value: bestOutcome.symbol || batch.best_symbol || 'För lite data' },
+            { label: 'Score', value: bestOutcome.score ?? batch.best_score ?? 'För lite data' },
+            { label: 'Timeframe', value: bestOutcome.timeframe || latestBatch?.timeframe || 'För lite data' },
+          ]}
+          conclusion="Visar bara aktuell batchstatus och schedule. Ingen scheduler ändras här."
+        />
+        <DailyReportCard
+          title="Historisk Alpaca-data"
+          rows={[
+            { label: 'Provider', value: provider },
+            { label: 'Tidigaste data', value: fmtDate(weeklyBackfill.dateRange?.from || latestBackfill.dateRange?.from || data.date_range?.first_date) },
+            { label: 'Senaste data', value: fmtDate(latestImport.to || weeklyBackfill.dateRange?.to || latestBackfill.dateRange?.to || data.date_range?.latest_date) },
+            { label: 'Candles', value: safeNumber(hourlyImport.candlesImported || latestImport.candlesImported || dataFetch.candles_loaded, 0) },
+            { label: 'Symboler', value: safeNumber(hourlyImport.symbolsUpdated || latestImport.symbolsUpdated || dataFetch.symbols_loaded, 0) },
+            { label: 'Timeframes', value: latestImport.timeframe || hourlyImport.timeframes?.join?.(', ') || 'För lite data' },
+            { label: 'Backfill', value: weeklyBackfill.status || 'Saknas' },
+            { label: 'Saknad data', value: safeNumber(quality.missingDataCount || quality.missingCandles || weeklyBackfill.missingDataCount, 0) },
+            { label: 'Cache age', value: fmtAge(cache.cacheAgeSeconds) },
+          ]}
+          conclusion="Data hämtas och sparas för tester. Inga datajobb startas från Resultat & Learning."
+        />
+        <DailyReportCard
+          title="Live testing / låtsastester"
+          rows={[
+            { label: 'Senaste simulerade test', value: latestPaper ? fmtActivityTime(latestPaper.exitTime || latestPaper.timestamp || latestPaper.createdAt) : 'Saknas' },
+            { label: 'Antal låtsastester', value: safeNumber(paperStatus?.count || paperSummary.totalTrades || paper.trades_today, 0) },
+            { label: 'Win rate', value: paperSummary.winRate != null ? fmtRate(paperSummary.winRate) : (paper.win_rate === '' ? 'För lite data' : fmtRate(paper.win_rate)) },
+            { label: 'Snitt P/L', value: paperSummary.avgPnl != null ? fmtPct(paperSummary.avgPnl) : (paper.avg_pnl === '' ? 'För lite data' : fmtPct(paper.avg_pnl)) },
+            { label: 'Öppna positioner', value: safeNumber(paperSummary.openPositions || paper.open_positions, 0) },
+            { label: 'Senaste resultat', value: resultLabel(latestPaper?.result, t) },
+            { label: 'Avslutades därför att', value: resultLabel(latestPaper?.exitReason || latestPaper?.reason, t) },
+            { label: 'Lärdom', value: latestPaper?.lesson || latestPaper?.reason || paper.conclusion_sv || 'För lite data' },
+          ]}
+          conclusion="Låtsastester är simulering. Ingen riktig handel sker."
+        />
+        <DailyReportCard
+          title="Fråga systemet"
+          rows={[
+            { label: 'AI-provider', value: analystProvider },
+            { label: 'Model', value: aiStatus?.model || 'Saknas' },
+            { label: 'Status', value: aiStatus?.status || aiStatus?.readiness || 'Saknas' },
+            { label: 'Senaste analys', value: fmtActivityTime(aiLatest?.latest?.createdAt || aiLatest?.createdAt || aiLatest?.latestTimestamp) },
+            { label: 'Senaste slutsats', value: latestAiOutput.summary || latestAiOutput.main_conclusion_sv || ai.main_conclusion_sv || 'För lite data' },
+          ]}
+          conclusion="Ställ frågor om systemets tester, data, strategier och resultat. AI kan bara läsa och sammanfatta. Den kan inte handla, ändra risk eller aktivera strategier. Chat-backend byggs inte i detta steg."
+        />
+      </div>
+
       {recent.length > 0 && (
         <div className="res-daily-recent">
           <div className="res-subsection-title">Senaste resultat</div>
@@ -273,13 +535,14 @@ function DailySystemReport() {
           ))}
         </div>
       )}
-      <div className="res-daily-muted">Config: {cfg.cron || '0 2 * * *'} · {cfg.timezone || 'Europe/Stockholm'} · notifications off · live trading off</div>
+      <div className="res-daily-muted">Config: {cfg.cron || '0 2 * * *'} · {cfg.timezone || 'Europe/Stockholm'} · aviseringar av · riktig handel av</div>
     </div>
   );
 }
 
 // ── Tab: Översikt ─────────────────────────────────────────────────────────────
 function OversiktTab() {
+  const { tr } = useLanguage();
   const { test } = useUnifiedConfig('results');
   const perf = test.setupPerformance;
   const paper = test.paperPerformance;
@@ -307,12 +570,12 @@ function OversiktTab() {
   return (
     <div className="res-tab-content">
       <DailySystemReport />
-      <h2 className="res-section-h2">Systemöversikt</h2>
+      <h2 className="res-section-h2">{tr('Systemöversikt')}</h2>
       <div className="res-metrics-row">
         <MetricCard icon="📊" value={overallWR != null ? `${overallWR}%` : '–'} label="Total träffsäkerhet" sub={`${totalSignals} signaler totalt`} color={overallWR >= 55 ? 'green' : overallWR >= 45 ? 'yellow' : 'red'} />
         <MetricCard icon="🎯" value={topSetups} label="Bra mönster" sub="Historiskt lönsamma" color="green" />
         <MetricCard icon="⚠️" value={poorSetups} label="Svaga mönster" sub="Undvik just nu" color="red" />
-        <MetricCard icon="🧪" value={paperTrades} label="Låtsastrades" sub="Paper trading totalt" color="blue" />
+        <MetricCard icon="🧪" value={paperTrades} label="Låtsastester" sub="Simulerade resultat totalt" color="blue" />
         {paperWR != null && <MetricCard icon="💰" value={`${paperWR}%`} label="Paper träffsäkerhet" sub={paperPnl != null ? fmtPct(paperPnl) + ' snitt P/L' : ''} color={paperWR >= 55 ? 'green' : 'yellow'} />}
       </div>
 
@@ -320,249 +583,272 @@ function OversiktTab() {
         <Link to="/daytrading" className="res-quick-btn">◉ DAYTRADING — operativ kontroll</Link>
         <Link to="/lab" className="res-quick-btn">🧪 LAB — analys &amp; test</Link>
         <Link to="/system?tab=safety" className="res-quick-btn">🛡️ SYSTEM — safety &amp; skyddsstatus</Link>
-        <Link to="/insikter?tab=data-center" className="res-quick-btn">▣ Data Center — all historik</Link>
+        <Link to="/insikter?tab=data" className="res-quick-btn">▣ Data — all historik</Link>
       </div>
     </div>
   );
 }
 
-// ── Tab: Mönsterresultat ──────────────────────────────────────────────────────
-function SetupsTab() {
-  const { test, meta } = useUnifiedConfig('results');
-  const data = test.setupPerformance;
-  const loading = meta.loading && !data;
-
-  if (loading) return <div className="res-loading">Laddar mönsterresultat...</div>;
-  if (!data) return <div className="res-empty">Kunde inte hämta data.</div>;
-
-  const allSetups = [
-    ...(data.topSetups || []),
-    ...(data.poorSetups || []),
-    ...(data.neutralSetups || []),
-  ].sort((a, b) => (b.win_rate ?? 0) - (a.win_rate ?? 0));
-
-  if (!allSetups.length) return <div className="res-empty">Inga mönster ännu. Kör historisk analys för att fylla på.</div>;
-
-  return (
-    <div className="res-tab-content">
-      <div className="res-section-header">
-        <h2 className="res-section-h2">Mönsterresultat</h2>
-        <span className="res-count">{allSetups.length} mönster</span>
-      </div>
-      <div className="res-setup-list">
-        {allSetups.map(s => (
-          <div key={s.setup_id} className={`res-setup-card res-setup-${s.category}`}>
-            <div className="res-setup-header">
-              <div>
-                <div className="res-setup-label">{s.label}</div>
-                <div className={`res-setup-badge res-badge-${s.category}`}>{s.label_sv || s.category}</div>
-              </div>
-              <div className="res-setup-pnl">
-                <div className={`res-pnl-big ${(s.avg_pnl_pct ?? 0) >= 0 ? 'res-pnl-pos' : 'res-pnl-neg'}`}>
-                  {fmtPct(s.avg_pnl_pct)}
-                </div>
-                <div className="res-pnl-label">snitt P/L</div>
-              </div>
-            </div>
-            <WinBar wr={s.win_rate} />
-            <div className="res-setup-meta">
-              <span>{s.total_trades} trades</span>
-              <span className="res-wins">{s.wins} vinn</span>
-              <span className="res-losses">{s.losses} förlust</span>
-              <span className="res-ties">{s.ties ?? 0} timeout</span>
-              {s.best_symbol && <span className="res-sym">Bäst: {s.best_symbol}</span>}
-            </div>
-          </div>
-        ))}
-      </div>
-    </div>
-  );
-}
-
-// ── Tab: AI-resultat ──────────────────────────────────────────────────────────
+// ── Tab: AI-slutsats ──────────────────────────────────────────────────────────
 function AiTab() {
+  const { tr } = useLanguage();
   const [status, setStatus] = useState(null);
-  const [agents, setAgents] = useState(null);
+  const [latest, setLatest] = useState(null);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
     Promise.all([
-      fetch('/api/intelligence/status').then(r => r.ok ? r.json() : null).catch(() => null),
-      fetch('/api/tradingagents/results/status').then(r => r.ok ? r.json() : null).catch(() => null),
-    ]).then(([s, a]) => {
+      fetch('/api/ai/analyst/status').then(r => r.ok ? r.json() : null).catch(() => null),
+      fetch('/api/ai/analyst/latest').then(r => r.ok ? r.json() : null).catch(() => null),
+    ]).then(([s, l]) => {
       setStatus(s);
-      setAgents(a);
+      setLatest(l);
       setLoading(false);
-    });
+    }).catch(() => setLoading(false));
   }, []);
 
-  if (loading) return <div className="res-loading">Laddar AI-data...</div>;
+  if (loading) return <div className="res-loading">{tr('Laddar AI-slutsats...')}</div>;
+
+  const out = latest?.latest?.output || latest?.output || latest?.latest || {};
+  const provider = status?.provider === 'anthropic' ? 'Claude'
+    : status?.provider === 'openai' ? 'OpenAI'
+    : (status?.provider || 'Disabled');
+  const risks = Array.isArray(out.risks) ? out.risks.join(' · ') : '';
+  const next = Array.isArray(out.next_recommended_tests) ? out.next_recommended_tests.join(' · ') : '';
+  const lastAnalysis = fmtActivityTime(latest?.latest?.generatedAt || latest?.latest?.createdAt || status?.latestTimestamp);
 
   return (
     <div className="res-tab-content">
-      <h2 className="res-section-h2">AI-resultat</h2>
-
-      {status && (
-        <div className="res-ai-section">
-          <div className="res-subsection-title">Intelligensmotor</div>
-          <div className="res-metrics-row">
-            <MetricCard value={status.analysisCount ?? '–'} label="Analyser totalt" />
-            <MetricCard value={status.symbolsAnalyzed ?? '–'} label="Symboler analyserade" />
-            {status.avgConfidence != null && (
-              <MetricCard
-                value={`${Math.round(status.avgConfidence * 100)}%`}
-                label="Snitt AI-styrka"
-                color={status.avgConfidence >= 0.7 ? 'green' : 'yellow'}
-              />
-            )}
-          </div>
+      <div className="res-section-header">
+        <div>
+          <h2 className="res-section-h2">{tr('AI-slutsats')}</h2>
+          <p className="res-section-sub">{tr('Senaste AI-analys av tester och data. AI kan bara läsa och sammanfatta — inte handla, ändra risk eller aktivera strategier.')}</p>
         </div>
-      )}
-
-      {agents && (
-        <div className="res-ai-section">
-          <div className="res-subsection-title">Tradingagenter</div>
-          <div className="res-metrics-row">
-            <MetricCard value={agents.totalAnalyses ?? '–'} label="Agentanalyser" />
-            <MetricCard value={agents.symbolsCovered ?? '–'} label="Symboler täckta" />
-          </div>
-        </div>
-      )}
-
-      {!status && !agents && (
-        <div className="res-empty">Ingen AI-data tillgänglig ännu.</div>
-      )}
-
-      <div className="res-ai-nav">
-        <Link to="/intelligence" className="res-ai-link">🧠 Gå till Intelligens →</Link>
       </div>
+
+      <div className="res-daily-grid">
+        <DailyReportCard
+          title="Senaste AI-analys"
+          rows={[
+            { label: 'Provider', value: provider },
+            { label: 'Model', value: status?.model || 'Saknas' },
+            { label: 'Status', value: status?.status || status?.readiness || 'Saknas' },
+            { label: 'Senaste analys', value: lastAnalysis },
+            { label: 'Summary', value: out.summary || 'För lite data' },
+            { label: 'Bästa strategi', value: out.best_strategy || 'För lite data' },
+            { label: 'Risker', value: risks || 'För lite data' },
+            { label: 'Nästa rekommenderade test', value: next || 'För lite data' },
+          ]}
+          conclusion="AI kan bara läsa och sammanfatta. Den kan inte handla, ändra risk eller aktivera strategier."
+        />
+        <DailyReportCard
+          title="Fråga systemet"
+          rows={[
+            { label: 'Status', value: 'Inte aktiv ännu' },
+            { label: 'Senaste AI-analys', value: lastAnalysis },
+          ]}
+          conclusion="Kommer senare som read-only system-QA. Chat-backend byggs inte i detta steg."
+        />
+      </div>
+
+      {!status && !latest?.latest && (
+        <div className="res-empty">
+          {tr('AI-slutsats visas här när systemet har kört en analys. AI kan bara läsa och sammanfatta, inte handla eller ändra risk.')}
+        </div>
+      )}
     </div>
   );
 }
 
-// ── Tab: Replay ───────────────────────────────────────────────────────────────
+// ── Tab: Replaytester ─────────────────────────────────────────────────────────
 function ReplayTab() {
-  const [runs, setRuns] = useState([]);
+  const { tr } = useLanguage();
+  const [replayStatus, setReplayStatus] = useState(null);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    fetch('/api/replay/runs')
+    fetch('/api/status/replay')
       .then(r => r.ok ? r.json() : null)
-      .then(d => {
-        const list = d?.runs || d || [];
-        setRuns(Array.isArray(list) ? list.slice(0, 10) : []);
-        setLoading(false);
-      })
+      .then(d => { setReplayStatus(d); setLoading(false); })
       .catch(() => setLoading(false));
   }, []);
 
-  if (loading) return <div className="res-loading">Laddar replay...</div>;
+  if (loading) return <div className="res-loading">{tr('Laddar replaytester...')}</div>;
+
+  const recent = Array.isArray(replayStatus?.recentReplays) ? replayStatus.recentReplays : [];
+  const withActivity = recent.find((item) => Number(item?.totalEvents) > 0) || replayStatus?.latestReplay || null;
+  const latest = replayStatus?.latestReplay || recent[0] || null;
+  const period = withActivity?.period || {};
+  const totalReplays = replayStatus?.totalReplays ?? replayStatus?.totalRuns ?? recent.length;
+  const isDegraded = replayStatus?.status === 'degraded';
+
+  if (!replayStatus || (!recent.length && !latest)) {
+    return (
+      <div className="res-tab-content">
+        <div className="res-section-header">
+          <h2 className="res-section-h2">{tr('Replaytester')}</h2>
+          <Link to="/replay" className="res-nav-link">{tr('Öppna Replay')} →</Link>
+        </div>
+        <div className="res-empty">{tr('Inga replaytester med data ännu. Replay-historik visas här när körningar finns.')}</div>
+      </div>
+    );
+  }
 
   return (
     <div className="res-tab-content">
       <div className="res-section-header">
-        <h2 className="res-section-h2">Historiska tester (Replay)</h2>
-        <Link to="/replay" className="res-nav-link">Öppna Replay →</Link>
+        <div>
+          <h2 className="res-section-h2">{tr('Replaytester')}</h2>
+          <p className="res-section-sub">{tr('Historiska replay-körningar. Bara läsning — inga riktiga order.')}</p>
+        </div>
+        <Link to="/replay" className="res-nav-link">{tr('Öppna Replay')} →</Link>
       </div>
 
-      {runs.length === 0 ? (
-        <div className="res-empty">Inga replay-sessioner ännu. Gå till Replay för att starta ett test.</div>
-      ) : (
-        <div className="res-replay-list">
-          {runs.map((run, i) => (
-            <div key={run.runId || i} className="res-replay-card">
-              <div className="res-replay-header">
-                <span className="res-replay-id">{run.runId || `Run ${i + 1}`}</span>
-                <span className="res-replay-date">
-                  {run.startTime ? new Date(run.startTime).toLocaleDateString('sv-SE') : ''}
-                </span>
-              </div>
-              <div className="res-replay-meta">
-                {run.totalSignals != null && <span>{run.totalSignals} signaler</span>}
-                {run.winRate != null && <span className="res-wins">{Math.round(run.winRate * 100)}% träffsäkerhet</span>}
-                {run.avgPnl != null && <span className={run.avgPnl >= 0 ? 'res-wins' : 'res-losses'}>{fmtPct(run.avgPnl)}</span>}
-              </div>
-            </div>
-          ))}
-        </div>
-      )}
+      <div className="res-daily-grid">
+        <DailyReportCard
+          title="Replaystatus"
+          rows={[
+            { label: 'Status', value: replayStatus?.status || 'Saknas' },
+            { label: 'Total replay', value: safeNumber(totalReplays, 0) },
+            { label: 'Senaste replay', value: latest?.runId || 'Saknas' },
+            { label: 'Senaste replay med aktivitet', value: withActivity?.runId || 'För lite data' },
+            { label: 'Kunde inte läsa (unreadableRuns)', value: safeNumber(replayStatus?.unreadableRuns, 0) },
+          ]}
+          conclusion={isDegraded
+            ? `Replay är degraded eftersom vissa körningar inte kunde läsas${replayStatus?.unreadableRuns != null ? ` (${replayStatus.unreadableRuns} st)` : ''}. Replay-data med aktivitet visas ändå nedan.`
+            : 'Replay visar historisk testaktivitet. Ingen riktig handel sker.'}
+        />
+        <DailyReportCard
+          title="Senaste replay med aktivitet"
+          rows={[
+            { label: 'Run id', value: withActivity?.runId || 'Saknas' },
+            { label: 'Period', value: period.from && period.to ? `${fmtDate(period.from)} - ${fmtDate(period.to)}` : 'Saknas' },
+            { label: 'Symboler', value: compactList(withActivity?.symbols, 8) },
+            { label: 'Timeframe', value: withActivity?.timeframe || compactList(replayStatus?.timeframes, 3) },
+            { label: 'Total events', value: safeNumber(withActivity?.totalEvents, 0) },
+            { label: 'Total candles', value: safeNumber(withActivity?.totalCandles, 0) },
+            { label: 'Avg trade score', value: safeNumber(withActivity?.avgTradeScore, 0) },
+            { label: 'Bästa symbol', value: withActivity?.bestSymbol?.symbol || 'För lite data' },
+          ]}
+          conclusion="Replay simulerar historik. Inga riktiga pengar och inga riktiga order."
+        />
+      </div>
     </div>
   );
 }
 
-// ── Tab: Låtsastrades ─────────────────────────────────────────────────────────
+// ── Tab: Låtsastester ─────────────────────────────────────────────────────────
 function PaperTab() {
-  const { test, meta } = useUnifiedConfig('results');
-  const data = test.paperPerformance;
+  const { t, tr } = useLanguage();
+  const [paperStatus, setPaperStatus] = useState(null);
   const [trades, setTrades] = useState([]);
-  const [tradesLoading, setTradesLoading] = useState(true);
+  const [loading, setLoading] = useState(true);
   const [selectedTradeId, setSelectedTradeId] = useState('');
 
   useEffect(() => {
-    fetch('/api/paper-trading/trades').then(r => r.ok ? r.json() : null).then((tr) => {
+    Promise.all([
+      fetch('/api/status/paper-trading').then(r => r.ok ? r.json() : null).catch(() => null),
+      fetch('/api/paper-trading/trades').then(r => r.ok ? r.json() : null).catch(() => null),
+    ]).then(([status, tr]) => {
+      setPaperStatus(status);
       const list = tr?.trades || tr || [];
       setTrades(Array.isArray(list) ? list.slice(0, 20) : []);
-      setTradesLoading(false);
-    }).catch(() => setTradesLoading(false));
+      setLoading(false);
+    }).catch(() => setLoading(false));
   }, []);
 
-  const loading = (meta.loading && !data) || tradesLoading;
-  if (loading) return <div className="res-loading">Laddar låtsastrades...</div>;
+  if (loading) return <div className="res-loading">{tr('Laddar låtsastester...')}</div>;
+
+  const summary = paperStatus?.summary || {};
+  const latest = paperStatus?.latestPaperTrade && paperStatus.latestPaperTrade.id ? paperStatus.latestPaperTrade : null;
+  const total = paperStatus?.count ?? summary.totalTrades ?? 0;
+  // Normalisera win rate till procent oavsett om källan ger 0-1 eller 0-100 (fixar "4800%"-buggen).
+  const wrNorm = summary.winRate != null ? (summary.winRate > 1 ? summary.winRate : summary.winRate * 100) : null;
+
+  if (!total && !trades.length) {
+    return (
+      <div className="res-tab-content">
+        <div className="res-section-header">
+          <h2 className="res-section-h2">{tr('Låtsastester')}</h2>
+          <Link to="/paper-trading" className="res-nav-link">{tr('Gå till Låtsastrading')} →</Link>
+        </div>
+        <div className="res-empty">Inga låtsastester ännu. Simulerade testhändelser visas här när de skapats.</div>
+      </div>
+    );
+  }
 
   return (
     <div className="res-tab-content">
       <div className="res-section-header">
-        <h2 className="res-section-h2">Historiska paper trades</h2>
-        <Link to="/paper-trading" className="res-nav-link">Gå till Låtsastrading →</Link>
-      </div>
-      <div className="res-daily-muted">Det här är historik över redan skapade paper trades. Nya val för runtime och paper görs i Daytrading. Gamla trades kan bära äldre strateginamn och äldre routingregler.</div>
-
-      {data && (
-        <div className="res-metrics-row">
-          <MetricCard value={data.totalTrades ?? '–'} label="Trades totalt" />
-          {data.winRate != null && (
-            <MetricCard
-              value={`${Math.round(data.winRate * 100)}%`}
-              label="Träffsäkerhet"
-              color={data.winRate >= 0.55 ? 'green' : 'yellow'}
-            />
-          )}
-          {data.totalPnlPct != null && (
-            <MetricCard
-              value={fmtPct(data.totalPnlPct)}
-              label="Total P/L"
-              color={data.totalPnlPct >= 0 ? 'green' : 'red'}
-            />
-          )}
-          {data.avgPnlPct != null && (
-            <MetricCard
-              value={fmtPct(data.avgPnlPct)}
-              label="Snitt P/L"
-              color={data.avgPnlPct >= 0 ? 'green' : 'red'}
-            />
-          )}
+        <div>
+          <h2 className="res-section-h2">{tr('Låtsastester')}</h2>
+          <p className="res-section-sub">{tr('Simulerade testhändelser. Inga riktiga pengar, inga riktiga order.')}</p>
         </div>
-      )}
+        <Link to="/paper-trading" className="res-nav-link">{tr('Gå till Låtsastrading')} →</Link>
+      </div>
+
+      <div className="res-metrics-row">
+        <MetricCard value={safeNumber(total, 0)} label="Antal tester" />
+        {wrNorm != null && (
+          <MetricCard value={fmtRate(summary.winRate)} label="Win rate" color={wrNorm >= 55 ? 'green' : wrNorm >= 45 ? 'yellow' : 'red'} />
+        )}
+        {summary.decisiveWinRate != null && (
+          <MetricCard value={fmtRate(summary.decisiveWinRate)} label="Decisive win rate" sub="Exkl. timeout" />
+        )}
+        {summary.avgPnl != null && (
+          <MetricCard value={fmtPct(summary.avgPnl)} label="Snitt P/L" color={summary.avgPnl >= 0 ? 'green' : 'red'} />
+        )}
+        {summary.totalPnl != null && (
+          <MetricCard value={fmtPct(summary.totalPnl)} label="Total P/L" color={summary.totalPnl >= 0 ? 'green' : 'red'} />
+        )}
+      </div>
+
+      <div className="res-daily-grid">
+        <DailyReportCard
+          title="Sammanfattning"
+          rows={[
+            { label: 'Antal tester', value: safeNumber(total, 0) },
+            { label: 'Win rate', value: summary.winRate != null ? fmtRate(summary.winRate) : 'För lite data' },
+            { label: 'Decisive win rate', value: summary.decisiveWinRate != null ? fmtRate(summary.decisiveWinRate) : 'För lite data' },
+            { label: 'Snitt P/L', value: summary.avgPnl != null ? fmtPct(summary.avgPnl) : 'För lite data' },
+            { label: 'Total P/L', value: summary.totalPnl != null ? fmtPct(summary.totalPnl) : 'För lite data' },
+            { label: 'Bästa strategi', value: summary.bestStrategy?.strategy || 'För lite data' },
+          ]}
+          conclusion="Win rate räknar alla tester. Decisive win rate exkluderar timeout."
+        />
+        <DailyReportCard
+          title="Senaste låtsastest"
+          rows={[
+            { label: 'Symbol', value: latest?.symbol || 'Saknas' },
+            { label: 'Strategi', value: latest?.strategyLabel || latest?.strategy || 'Saknas' },
+            { label: 'Resultat', value: resultLabel(latest?.result, t) },
+            { label: 'P/L', value: latest?.pnl != null ? fmtPct(latest.pnl) : 'Saknas' },
+            { label: 'Exit reason', value: resultLabel(latest?.exitReason || latest?.reason, t) },
+            { label: 'Lärdom', value: latest?.lesson || 'För lite data' },
+          ]}
+          conclusion="Låtsastester är simulering. Ingen riktig handel sker."
+        />
+      </div>
 
       {trades.length > 0 && (
         <>
-          <div className="res-subsection-title">Senaste trades</div>
+          <div className="res-subsection-title">Senaste tester</div>
           <div className="res-trade-list">
-            {trades.map((t, i) => (
-              <div key={t.tradeId || i} className="res-trade-row">
-                <span className="res-trade-sym">{t.symbol || '–'}</span>
-                <span className={`res-trade-type ${['LONG', 'UP', 'BUY'].includes(t.direction || t.type) ? 'res-long' : 'res-short'}`}>
-                  {t.direction || t.type || '–'}
+            {trades.map((trade, i) => (
+              <div key={trade.tradeId || i} className="res-trade-row">
+                <span className="res-trade-sym">{trade.symbol || '–'}</span>
+                <span className={`res-trade-type ${['LONG', 'UP', 'BUY'].includes(trade.direction || trade.type) ? 'res-long' : 'res-short'}`}>
+                  {trade.direction || trade.type || '–'}
                 </span>
-                <span className={`res-trade-pnl ${(t.pnlPct ?? t.pnl ?? 0) >= 0 ? 'res-pnl-pos' : 'res-pnl-neg'}`}>
-                  {fmtPct(t.pnlPct ?? t.pnl)}
+                <span className={`res-trade-pnl ${(trade.pnlPct ?? trade.pnl ?? 0) >= 0 ? 'res-pnl-pos' : 'res-pnl-neg'}`}>
+                  {fmtPct(trade.pnlPct ?? trade.pnl)}
                 </span>
+                <span>{resultLabel(trade.exitReason || trade.reason, t)}</span>
                 <span className="res-trade-date">
-                  {fmtActivityTime(t.closed_at || t.closedAt || t.exitTime || t.opened_at || t.entryTime)}
+                  {fmtActivityTime(trade.closed_at || trade.closedAt || trade.exitTime || trade.opened_at || trade.entryTime)}
                 </span>
-                <span className="res-trade-date">{t.duration_label || '–'}</span>
-                <button className="res-mini-action" type="button" onClick={() => setSelectedTradeId(t.tradeId || t.trade_id)}>
-                  Analysera trade
+                <button className="res-mini-action" type="button" onClick={() => setSelectedTradeId(trade.tradeId || trade.trade_id)}>
+                  Visa simulerat test
                 </button>
               </div>
             ))}
@@ -570,24 +856,21 @@ function PaperTab() {
           <TradeReplayPanel tradeId={selectedTradeId} onClose={() => setSelectedTradeId('')} />
         </>
       )}
-
-      {!data && trades.length === 0 && (
-        <div className="res-empty">Inga låtsastrades ännu. Starta paper trading för att börja.</div>
-      )}
     </div>
   );
 }
 
 function ActivityTab() {
+  const { t } = useLanguage();
   const [filter, setFilter] = useState('all');
   const [events, setEvents] = useState([]);
   const [loading, setLoading] = useState(true);
   const [selectedTradeId, setSelectedTradeId] = useState('');
   const filters = [
     { key: 'all', label: 'Alla' },
-    { key: 'trades', label: 'Trades' },
+    { key: 'trades', label: 'Testhändelser' },
     { key: 'batches', label: 'Batch' },
-    { key: 'candidates', label: 'Kandidater' },
+    { key: 'candidates', label: t('insights.candidates', 'Kandidater') },
     { key: 'blockers', label: 'Blockers' },
   ];
 
@@ -642,7 +925,7 @@ function ActivityTab() {
               <em>{event.details?.duration_label || (event.details?.progress?.pct != null ? `${event.details.progress.pct}%` : event.source)}</em>
               {isPaperTradeEvent(event) && (
                 <button className="res-mini-action" type="button" onClick={() => setSelectedTradeId(replayIdForEvent(event))}>
-                  Analysera trade
+                  Visa simulerat test
                 </button>
               )}
             </div>
@@ -656,77 +939,8 @@ function ActivityTab() {
   );
 }
 
-// ── Tab: Inlärning ────────────────────────────────────────────────────────────
-function LarningTab() {
-  const [ls, setLs] = useState(null);
-  const [loading, setLoading] = useState(true);
-
-  useEffect(() => {
-    fetch('/api/history/learning-summary')
-      .then(r => r.ok ? r.json() : null)
-      .then(d => { setLs(d); setLoading(false); })
-      .catch(() => setLoading(false));
-  }, []);
-
-  if (loading) return <div className="res-loading">Laddar inlärningsdata...</div>;
-  if (!ls) return <div className="res-empty">Ingen inlärningsdata tillgänglig. Kör historisk analys.</div>;
-
-  const bySymbol = Object.entries(ls.bySymbol || {})
-    .filter(([, v]) => v.samples >= 3)
-    .sort(([, a], [, b]) => (b.winRate ?? 0) - (a.winRate ?? 0))
-    .slice(0, 20);
-
-  const overallWR = ls.overallWinRate != null ? Math.round(ls.overallWinRate * 100) : null;
-
-  return (
-    <div className="res-tab-content">
-      <h2 className="res-section-h2">Inlärning</h2>
-
-      <div className="res-metrics-row">
-        {overallWR != null && (
-          <MetricCard
-            icon="📊"
-            value={`${overallWR}%`}
-            label="Total träffsäkerhet"
-            sub={`${ls.totalSignals ?? 0} signaler`}
-            color={overallWR >= 55 ? 'green' : overallWR >= 45 ? 'yellow' : 'red'}
-          />
-        )}
-        {ls.worstSymbols?.length > 0 && (
-          <MetricCard icon="⚠️" value={ls.worstSymbols.length} label="Svaga symboler" sub="Undvik" color="red" />
-        )}
-      </div>
-
-      {bySymbol.length > 0 && (
-        <>
-          <div className="res-subsection-title">Bäst presterande symboler</div>
-          <div className="res-learn-list">
-            {bySymbol.map(([sym, stats]) => (
-              <div key={sym} className="res-learn-row">
-                <span className="res-learn-sym">{sym}</span>
-                <WinBar wr={stats.winRate != null ? Math.round(stats.winRate * 100) : null} />
-                <span className="res-learn-count">{stats.samples} st</span>
-              </div>
-            ))}
-          </div>
-        </>
-      )}
-
-      {ls.worstSymbols?.length > 0 && (
-        <>
-          <div className="res-subsection-title res-poor-label">Undvik dessa symboler just nu</div>
-          <div className="res-worst-chips">
-            {ls.worstSymbols.map(s => (
-              <span key={s.key || s} className="res-worst-chip">{s.key || s}</span>
-            ))}
-          </div>
-        </>
-      )}
-    </div>
-  );
-}
-
 function CandidatesTab() {
+  const { t, tr } = useLanguage();
   const [stats, setStats] = useState(null);
   const [recent, setRecent] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -746,15 +960,17 @@ function CandidatesTab() {
 
   return (
     <div className="res-tab-content">
-      <h2 className="res-section-h2">Kandidater</h2>
+      <h2 className="res-section-h2">{t('insights.candidates', 'Kandidater')}</h2>
       <div className="res-metrics-row">
-        <MetricCard value={stats?.total ?? recent.length} label="Kandidater" />
-        <MetricCard value={stats?.last24h ?? '–'} label="Senaste 24h" />
-        <MetricCard value="Nej" label="Kan lägga orders" color="red" />
+        <MetricCard value={stats?.total ?? recent.length} label={t('insights.candidates', 'Kandidater')} />
+        <MetricCard value={stats?.last24h ?? '–'} label="Kandidater senaste 24h" />
+        <MetricCard value="Nej" label="Kan lägga order" color="red" />
       </div>
       {recent.length === 0 ? (
         <PlatformEmptyState title="Inga kandidater loggade" text="Kandidater visas när scanner, riskmotor och låtsastrading har testdata." />
       ) : (
+        <>
+        <div className="res-subsection-title">Senaste kandidater</div>
         <div className="res-trade-list">
           {recent.map((c, i) => (
             <div key={`${c.symbol || 'candidate'}-${c.timestamp || i}`} className="res-trade-row">
@@ -764,59 +980,154 @@ function CandidatesTab() {
             </div>
           ))}
         </div>
+        </>
       )}
     </div>
   );
 }
 
-function StrategyPerfRow({ strategy, tone }) {
-  if (!strategy) return null;
-  const badge = strategy.performance_badge;
-  return (
-    <div className={`res-setup-card res-setup-${tone || (badge?.tone === 'bad' ? 'poor' : 'top')}`}>
-      <div className="res-setup-header">
-        <div>
-          <div className="res-setup-label">{strategy.strategy_name}</div>
-          <div className={`res-setup-badge res-badge-${badge?.tone || 'neutral'}`}>{badge?.label || 'Ingen badge'}</div>
+// ── Tab: Batchtester ──────────────────────────────────────────────────────────
+function BatchTab() {
+  const { tr } = useLanguage();
+  const [batchStatus, setBatchStatus] = useState(null);
+  const [batchAuto, setBatchAuto] = useState(null);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    Promise.all([
+      fetch('/api/status/batches').then(r => r.ok ? r.json() : null).catch(() => null),
+      fetch('/api/status/batch-autopilot').then(r => r.ok ? r.json() : null).catch(() => null),
+    ]).then(([b, a]) => {
+      setBatchStatus(b);
+      setBatchAuto(a);
+      setLoading(false);
+    }).catch(() => setLoading(false));
+  }, []);
+
+  if (loading) return <div className="res-loading">{tr('Laddar batchtester...')}</div>;
+
+  const latestBatch = batchStatus?.latestBatch || batchStatus?.latestCompletedBatch || null;
+  const bestOutcome = batchStatus?.bestOutcome || latestBatch?.bestOutcome || {};
+  const maxPerDay = batchAuto?.maxPerDay ?? batchAuto?.maxRunsPerDay ?? batchAuto?.maxRuns ?? null;
+
+  if (!batchStatus && !batchAuto) {
+    return (
+      <div className="res-tab-content">
+        <div className="res-section-header">
+          <h2 className="res-section-h2">{tr('Batchtester')}</h2>
+          <Link to="/lab" className="res-nav-link">{tr('Öppna Lab')} →</Link>
         </div>
-        <div className="res-setup-pnl">
-          <div className={`res-pnl-big ${(strategy.avg_pnl ?? 0) >= 0 ? 'res-pnl-pos' : 'res-pnl-neg'}`}>
-            {fmtPct(strategy.avg_pnl)}
-          </div>
-          <div className="res-pnl-label">snitt P/L</div>
-        </div>
+        <div className="res-empty">Inga batchtester ännu. Batchresultat visas här när autopiloten kört.</div>
       </div>
-      <WinBar wr={strategy.win_rate} />
-      <div className="res-setup-meta">
-        <span>{strategy.trades} trades</span>
-        <span className="res-wins">{strategy.wins} vinn</span>
-        <span className="res-losses">{strategy.losses} förlust</span>
-        <span className="res-ties">{strategy.timeouts} timeout</span>
-        {strategy.best_market && <span>Bästa marknad: {strategy.best_market.market_group}</span>}
-        {strategy.best_params && <span>Bäst: {strategy.best_params.label}</span>}
+    );
+  }
+
+  return (
+    <div className="res-tab-content">
+      <div className="res-section-header">
+        <div>
+          <h2 className="res-section-h2">{tr('Batchtester')}</h2>
+          <p className="res-section-sub">{tr('Automatiska batchkörningar och bästa resultat. Bara läsning — schemat ändras inte här.')}</p>
+        </div>
+        <Link to="/lab" className="res-nav-link">{tr('Öppna Lab')} →</Link>
+      </div>
+
+      <div className="res-daily-grid">
+        <DailyReportCard
+          title="Batch-autopilot"
+          rows={[
+            { label: 'Status', value: batchAuto?.status || batchStatus?.status || 'Saknas' },
+            { label: 'Schema', value: fmtSchedule(batchAuto) },
+            { label: 'Körningar idag', value: safeNumber(batchAuto?.todayRunCount, 0) },
+            { label: 'Max per dag', value: maxPerDay != null ? safeNumber(maxPerDay, '–') : 'Saknas' },
+            { label: 'Nästa körning', value: fmtActivityTime(batchAuto?.nextRun || batchAuto?.next_run_at) },
+            { label: 'Totalt antal batchar', value: safeNumber(batchStatus?.totalBatches, 0) },
+            { label: 'Klara / misslyckade', value: `${safeNumber(batchStatus?.completedBatches, 0)} / ${safeNumber(batchStatus?.failedBatches, 0)}` },
+            { label: 'Pågår / pausade', value: `${safeNumber(batchStatus?.runningBatches, 0)} / ${safeNumber(batchStatus?.pausedBatches, 0)}` },
+          ]}
+          conclusion="Batch kör just nu var 6:e timme. Visar bara status och schema — ingen scheduler ändras."
+        />
+        <DailyReportCard
+          title="Bästa batchresultat"
+          rows={[
+            { label: 'Strategi', value: bestOutcome.strategy || 'För lite data' },
+            { label: 'Symbol', value: bestOutcome.symbol || 'För lite data' },
+            { label: 'Timeframe', value: bestOutcome.timeframe || latestBatch?.timeframe || 'För lite data' },
+            { label: 'Score', value: bestOutcome.score ?? 'För lite data' },
+            { label: 'Win rate', value: bestOutcome.winRate != null ? fmtRate(bestOutcome.winRate) : 'För lite data' },
+            { label: 'Avg P/L', value: bestOutcome.avgResult != null ? fmtPct(bestOutcome.avgResult) : 'För lite data' },
+            { label: 'Total P/L', value: bestOutcome.totalPnl != null ? fmtPct(bestOutcome.totalPnl) : 'För lite data' },
+            { label: 'Trades', value: safeNumber(bestOutcome.trades, 'För lite data') },
+            { label: 'Senaste batch-id', value: latestBatch?.id || 'Saknas' },
+            { label: 'Batchstatus', value: latestBatch?.status || batchStatus?.status || 'Saknas' },
+          ]}
+          conclusion="Bästa batchresultat hittills. Detta är testdata, inte bevisad trading-edge."
+        />
       </div>
     </div>
   );
 }
 
-function DaytradingStrategiesTab() {
+// ── Tab: Data ─────────────────────────────────────────────────────────────────
+function AlpacaStatusPanel() {
+  const [dataJobs, setDataJobs] = useState(null);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    fetch('/api/status/data-jobs')
+      .then(r => r.ok ? r.json() : null)
+      .then(d => { setDataJobs(d); setLoading(false); })
+      .catch(() => setLoading(false));
+  }, []);
+
+  if (loading) return <div className="res-loading">Laddar Alpaca-data...</div>;
+
+  const hourlyImport = dataJobs?.hourlyImport || {};
+  const weeklyBackfill = dataJobs?.weeklyBackfill || {};
+  const latestImport = hourlyImport.latestImport || {};
+  const cache = dataJobs?.cacheStatus || {};
+  const quality = dataJobs?.dataQuality || {};
+  const importPeriod = latestImport.from && latestImport.to ? `${fmtDate(latestImport.from)} - ${fmtDate(latestImport.to)}` : 'Saknas';
+
   return (
     <div className="res-tab-content">
       <div className="res-section-header">
-        <h2 className="res-section-h2">Daytrading-strategier</h2>
-      </div>
-      <div className="dt-moved-notice">
-        <div className="dt-moved-icon">📡</div>
-        <div className="dt-moved-body">
-          <div className="dt-moved-title">Daytrading-strategier har flyttats till en egen live-sida.</div>
-          <div className="dt-moved-text">
-            Den nya sidan Daytrading Control Center ger livekontroll för strategier, signaler, pipeline och paper trades.
-            Insikter fokuserar på historik och lärande.
-          </div>
-          <Link to="/daytrading" className="dt-moved-btn">Öppna Daytrading Control Center</Link>
+        <div>
+          <h2 className="res-section-h2">Data</h2>
+          <p className="res-section-sub">Alpaca-status och historisk datatäckning. Bara läsning — inga datajobb startas härifrån.</p>
         </div>
       </div>
+      <div className="res-daily-grid">
+        <DailyReportCard
+          title="Alpaca-data"
+          rows={[
+            { label: 'Provider', value: 'Alpaca' },
+            { label: 'Configured', value: dataJobs?.alpacaConfigured === true ? 'true' : 'false' },
+            { label: 'Senaste import', value: fmtActivityTime(hourlyImport.lastRun || latestImport.completedAt) },
+            { label: 'Importperiod', value: importPeriod },
+            { label: 'Timeframe', value: latestImport.timeframe || 'För lite data' },
+            { label: 'Symbols updated', value: compactList(hourlyImport.symbolsUpdated, 8) },
+            { label: 'Candles imported', value: safeNumber(hourlyImport.candlesImported || latestImport.candlesImported, 0) },
+            { label: 'Backfill status', value: weeklyBackfill.status || 'Saknas' },
+            { label: 'Missing data', value: safeNumber(weeklyBackfill.missingDataCount || quality.missingCandles, 0) },
+            { label: 'Cache age', value: fmtAge(cache.cacheAgeSeconds) },
+            { label: 'Cached symbols', value: safeNumber(cache.symbolsCached, 0) },
+            { label: 'Files seen', value: safeNumber(cache.filesSeen, 0) },
+          ]}
+          conclusion="10 års historisk täckning är inte exponerad i status-API ännu."
+        />
+      </div>
     </div>
+  );
+}
+
+function DataTab() {
+  const { tr } = useLanguage();
+  return (
+    <>
+      <AlpacaStatusPanel />
+      <DataCenterTab />
+    </>
   );
 }
 
@@ -850,7 +1161,6 @@ function DataCenterTab() {
   const [coverageMarkets, setCoverageMarkets] = useState([]);
   const [backfillPlan, setBackfillPlan] = useState([]);
   const [backfillJobs, setBackfillJobs] = useState([]);
-  const [coverageMessage, setCoverageMessage] = useState('');
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
 
@@ -886,8 +1196,20 @@ function DataCenterTab() {
 
   useEffect(() => { load(); }, [load]);
 
-  if (loading) return <div className="res-loading">Laddar Data Center...</div>;
-  if (error || !data) return <div className="res-empty">Kunde inte hämta Data Center. {error}</div>;
+  if (loading) {
+    return (
+      <div className="res-empty">
+        Data Center kommer senare. Just nu visas historisk Alpaca-data i Översikt.
+      </div>
+    );
+  }
+  if (error || !data) {
+    return (
+      <div className="res-empty">
+        Data Center kommer senare. Just nu visas historisk Alpaca-data i Översikt.
+      </div>
+    );
+  }
 
   const counts = data.counts || {};
   const health = data.health || {};
@@ -904,44 +1226,12 @@ function DataCenterTab() {
   const weakMarkets = coverageMarkets.filter((m) => m.missing_count > 0 || m.weak_count > 0).slice(0, 6);
   const activeJobs = backfillJobs.filter((job) => ['created', 'running', 'paused'].includes(job.status)).slice(0, 8);
 
-  async function postCoverage(url, body) {
-    setCoverageMessage('');
-    const res = await fetch(url, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: body ? JSON.stringify(body) : undefined,
-    }).then(async r => ({ ok: r.ok, body: await r.json().catch(() => null) })).catch(e => ({ ok: false, body: { error: e.message } }));
-    setCoverageMessage(res.body?.message_sv || res.body?.error || (res.ok ? 'Klart.' : 'Kunde inte utföra åtgärden.'));
-    await load();
-    return res;
-  }
-
-  async function createPlanJob(rows = backfillPlan.slice(0, 10)) {
-    const selected = rows.map((row) => row.symbol).filter(Boolean);
-    if (!selected.length) return;
-    await postCoverage('/api/data-coverage/backfill', {
-      symbols: selected,
-      timeframes: ['2m'],
-      from_date: rows[0]?.suggested_from_date,
-      to_date: rows[0]?.suggested_to_date,
-      provider: 'auto',
-      actions_allowed: false,
-      can_place_orders: false,
-      live_trading_enabled: false,
-    });
-  }
-
-  async function createSymbolJob(symbol) {
-    if (!symbol) return;
-    await createPlanJob([{ symbol, suggested_from_date: new Date(Date.now() - 30 * 86400000).toISOString().slice(0, 10), suggested_to_date: new Date().toISOString().slice(0, 10) }]);
-  }
-
   return (
     <div className="res-tab-content dc-panel">
       <div className="res-section-header">
         <div>
-          <h2 className="res-section-h2">Data Center</h2>
-          <p className="res-section-sub">All historisk data systemet hittar i storage. Bara läsning.</p>
+          <h2 className="res-section-h2">{tr('Detaljerad historik & täckning')}</h2>
+          <p className="res-section-sub">{tr('All historisk data systemet hittar i storage. Bara läsning.')}</p>
         </div>
         <button className="res-mini-action" type="button" onClick={load}>Uppdatera</button>
       </div>
@@ -956,7 +1246,7 @@ function DataCenterTab() {
 
       <div className="dc-card-grid">
         <DataCenterCard label="Replay candles" value={fmtInt(counts.replay_candles)} sub={`${fmtInt(replay.runs)} replay-runs`} tone={counts.replay_candles > 0 ? 'green' : 'red'} />
-        <DataCenterCard label="Paper trades" value={fmtInt(counts.paper_trades)} sub="Låtsastrading totalt" tone={counts.paper_trades > 0 ? 'green' : 'red'} />
+        <DataCenterCard label="Låtsastester" value={fmtInt(counts.paper_trades)} sub="Simulerade resultat totalt" tone={counts.paper_trades > 0 ? 'green' : 'red'} />
         <DataCenterCard label="Audit events" value={fmtInt(counts.audit_events)} sub="Audit trail" tone={counts.audit_events > 0 ? 'green' : 'red'} />
         <DataCenterCard label="Batch tests" value={fmtInt(counts.batch_tests)} sub={`${fmtInt(counts.strategy_batch_result_rows)} resultat-rader`} tone={counts.batch_tests > 0 ? 'green' : 'yellow'} />
         <DataCenterCard label="Strategy tests" value={fmtInt(counts.strategy_tests)} sub={`${fmtInt(strategy.unique_strategies)} strategier`} tone={counts.strategy_tests > 0 ? 'green' : 'yellow'} />
@@ -1013,7 +1303,7 @@ function DataCenterTab() {
             <DataTone tone={row.data_quality === 'good' ? 'green' : row.data_quality === 'missing' || row.data_quality === 'missing_provider' ? 'red' : 'yellow'} label={row.status_sv || 'Lite data'} />
             <span>{row.usable_for_replay ? 'Ja' : 'Nej'}</span>
             <span>{row.usable_for_batch ? 'Ja' : 'Nej'}</span>
-            <button type="button" className="res-mini-action" onClick={() => createSymbolJob(row.symbol)}>Fyll på data</button>
+            <button type="button" className="res-mini-action" disabled title="Read-only i Resultatarkiv">Visa datalucka</button>
           </div>
         ))}
       </div>
@@ -1026,12 +1316,11 @@ function DataCenterTab() {
             {(backfillPlan || []).slice(0, 10).map((row, i) => (
               <span key={row.symbol}>{i + 1}. {row.symbol} · {row.status_sv || 'Behöver backfill'} · {row.reason}</span>
             ))}
-            <button type="button" className="res-mini-action" onClick={() => createPlanJob()}>Skapa datajobb (backfill)</button>
+            <button type="button" className="res-mini-action" disabled title="Read-only i Resultatarkiv">Visa backfill-förslag</button>
           </div>
         </div>
         <div>
           <div className="res-subsection-title">Datajobb / backfill</div>
-          {coverageMessage && <div className="res-daily-message">{coverageMessage}</div>}
           <DataCenterList
             rows={activeJobs}
             empty="Inga aktiva backfill-jobb."
@@ -1043,9 +1332,9 @@ function DataCenterTab() {
                 <span>{fmtInt(job.candles_downloaded)} candles</span>
                 <span>{fmtInt(job.errors?.length)} fel</span>
                 <div className="dc-job-actions">
-                  <button type="button" onClick={() => postCoverage(`/api/data-coverage/backfill/${job.job_id}/run`)}>Starta datajobb</button>
-                  <button type="button" onClick={() => postCoverage(`/api/data-coverage/backfill/${job.job_id}/pause`)}>Pausa datajobb</button>
-                  <button type="button" onClick={() => postCoverage(`/api/data-coverage/backfill/${job.job_id}/stop`)}>Stoppa datajobb</button>
+                  <button type="button" disabled title="Read-only i Resultatarkiv">Visa jobb</button>
+                  <button type="button" disabled title="Read-only i Resultatarkiv">Paus ej tillgänglig här</button>
+                  <button type="button" disabled title="Read-only i Resultatarkiv">Stopp ej tillgängligt här</button>
                 </div>
               </div>
             )}
@@ -1069,14 +1358,14 @@ function DataCenterTab() {
           />
         </div>
         <div>
-          <div className="res-subsection-title">Top traded symbols</div>
+          <div className="res-subsection-title">Mest testade symboler</div>
           <DataCenterList
             rows={data.top_traded_symbols || []}
-            empty="Inga paper trades ännu."
+            empty="Inga låtsastester ännu."
             render={(row) => (
               <div key={row.symbol} className="dc-row">
                 <strong>{row.symbol}</strong>
-                <span>{fmtInt(row.count)} trades</span>
+                <span>{fmtInt(row.count)} testhändelser</span>
               </div>
             )}
           />
@@ -1204,6 +1493,7 @@ function DataCenterTab() {
 // ── Main page ─────────────────────────────────────────────────────────────────
 export default function ResultatPage() {
   const [params, setParams] = useSearchParams();
+  const { t } = useLanguage();
   const requested = params.get('tab') || 'oversikt';
   const tab = TABS.some(t => t.key === requested) ? requested : 'oversikt';
 
@@ -1216,35 +1506,33 @@ export default function ResultatPage() {
       <PlatformSafetyBar />
 
       <div className="res-page-header">
-        <h1 className="res-page-title">📊 RESULTAT &amp; HISTORIK</h1>
-        <p className="res-page-sub">Sammanfattning och historik för mönster, AI, replay, paper och inlärning. För operativ kontroll: Daytrading. För safety: System → Safety.</p>
-        <div className="res-daily-muted">Historiska trades kan visa äldre strateginamn och äldre routingregler. Resultat visar historik och analys, inte runtime eller paper-val.</div>
+        <h1 className="res-page-title">📊 {t('insights.title', 'Resultat & Learning')}</h1>
+        <p className="res-page-sub">{t('insights.subtitle', 'Huvudplats för resultat, learning, batch, replay, historisk data, låtsastester och AI-frågor. Sidan är read-only.')}</p>
+        <div className="res-daily-muted">{t('insights.readOnlyNote', 'Ingen riktig handel sker. Historiska testhändelser kan visa äldre strateginamn och äldre routingregler, men arkivet ändrar inte runtime eller val för låtsashandel.')}</div>
       </div>
 
       <div className="res-tabs">
-        {TABS.map(t => (
+        {TABS.map(tabItem => (
           <button
-            key={t.key}
-            className={`res-tab${tab === t.key ? ' res-tab-active' : ''}`}
-            onClick={() => changeTab(t.key)}
+            key={tabItem.key}
+            className={`res-tab${tab === tabItem.key ? ' res-tab-active' : ''}`}
+            onClick={() => changeTab(tabItem.key)}
             type="button"
           >
-            <span>{t.icon}</span>
-            <span>{t.label}</span>
+            <span>{tabItem.icon}</span>
+            <span>{t(tabItem.labelKey, tabItem.label)}</span>
           </button>
         ))}
       </div>
 
       {tab === 'oversikt'  && <OversiktTab />}
-      {tab === 'setups'    && <SetupsTab />}
-      {tab === 'ai'        && <AiTab />}
+      {tab === 'batch'     && <BatchTab />}
       {tab === 'replay'    && <ReplayTab />}
       {tab === 'paper'     && <PaperTab />}
+      {tab === 'data'      && <DataTab />}
+      {tab === 'ai'        && <AiTab />}
       {tab === 'activity'  && <ActivityTab />}
-      {tab === 'daytrading' && <DaytradingStrategiesTab />}
-      {tab === 'memory'    && <LarningTab />}
       {tab === 'candidates' && <CandidatesTab />}
-      {tab === 'data-center' && <DataCenterTab />}
     </div>
   );
 }
