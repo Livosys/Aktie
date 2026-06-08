@@ -1,7 +1,14 @@
 import React, { useEffect, useMemo, useState } from 'react';
+import { Link, useLocation } from 'react-router-dom';
 import GlossaryTooltip from '../components/tradingos/GlossaryTooltip.jsx';
 
 const REFRESH_MS = 15000;
+const SUPERVISOR_SECTIONS = [
+  { id: 'overview', label: 'Översikt', path: '/supervisor/overview' },
+  { id: 'research', label: 'Research Autopilot', path: '/supervisor/research' },
+  { id: 'narrow', label: 'Narrow State', path: '/supervisor/narrow' },
+];
+const SUPERVISOR_SECTION_IDS = new Set(SUPERVISOR_SECTIONS.map((section) => section.id));
 
 const STRATEGY_META = {
   narrow_breakout_v1: {
@@ -22,7 +29,7 @@ const STRATEGY_META = {
 };
 
 const BAND_LABELS = {
-  not_narrow: 'Inte narrow',
+  not_narrow: 'Ej giltigt narrow-test',
   weak_narrow: 'Svag narrow',
   confirmed_narrow: 'Bekräftad narrow',
   strong_compression: 'Stark compression',
@@ -58,6 +65,14 @@ const TERMS = [
   ['Paper', 'Testläge utan riktiga order eller riktiga pengar.'],
   ['Confidence', 'Hur säkert systemet känner sig med slutsatsen.'],
 ];
+
+function tabFromPath(pathname) {
+  const parts = String(pathname || '').split('/').filter(Boolean);
+  if (parts[0] !== 'supervisor') return { active: 'overview', unknown: false };
+  const section = parts[1] || 'overview';
+  if (SUPERVISOR_SECTION_IDS.has(section)) return { active: section, unknown: false };
+  return { active: 'overview', unknown: parts.length > 1 };
+}
 
 function apiJson(url) {
   return fetch(url, { credentials: 'same-origin' })
@@ -322,6 +337,10 @@ function SummaryCard({ title, item, emptyText }) {
 function BandRow({ band, data, maxTrades }) {
   const width = maxTrades > 0 ? Math.max(6, Math.round(((data?.trades || 0) / maxTrades) * 100)) : 8;
   const tone = BAND_TONES[band] || 'neutral';
+  const recommendationText = band === 'not_narrow'
+    ? 'Används bara som baslinje'
+    : text(data?.recommendation, 'För lite data ännu');
+  const recommendationTone = band === 'not_narrow' ? 'neutral' : tone;
   return (
     <div className={`sup-brain-band sup-brain-band-${tone}`}>
       <div className="sup-brain-band-top">
@@ -331,7 +350,7 @@ function BandRow({ band, data, maxTrades }) {
             {band === 'not_narrow' ? '0–39' : band === 'weak_narrow' ? '40–59' : band === 'confirmed_narrow' ? '60–79' : '80–100'}
           </div>
         </div>
-        <Badge tone={tone}>{text(data?.recommendation, 'För lite data ännu')}</Badge>
+        <Badge tone={recommendationTone}>{recommendationText}</Badge>
       </div>
       <div className="sup-brain-band-bar" aria-hidden="true">
         <span style={{ width: `${width}%` }} />
@@ -341,6 +360,11 @@ function BandRow({ band, data, maxTrades }) {
         <InfoChip label="Win rate" value={data?.winRate != null ? formatPct(data.winRate, 1) : '—'} tone={tone === 'good' ? 'good' : 'neutral'} />
         <InfoChip label="Avg result" value={data?.avgPnl != null ? formatSignedPct(data.avgPnl, 3) : '—'} tone={tone === 'good' ? 'good' : 'warning'} />
       </div>
+      {band === 'not_narrow' ? (
+        <div className="sup-brain-band-reco">
+          Används bara som baslinje. Systemet ska inte välja detta som Narrow-test.
+        </div>
+      ) : null}
     </div>
   );
 }
@@ -414,6 +438,11 @@ function formatRecommendation(rec) {
 }
 
 export default function SupervisorBrainPage() {
+  const location = useLocation();
+  const { active: activeSection, unknown: unknownSection } = useMemo(
+    () => tabFromPath(location.pathname),
+    [location.pathname],
+  );
   const { narrow, learning, autopilot, loading, refreshing, error, lastUpdated } = useSupervisorData();
 
   const narrowState = narrow?.narrowState || {};
@@ -606,6 +635,33 @@ export default function SupervisorBrainPage() {
           </aside>
         </header>
 
+        <section className="sup-brain-section sup-brain-section-nav">
+          <div className="sup-brain-nav-head">
+            <div>
+              <div className="sup-brain-eyebrow">Supervisor navigation</div>
+              <h2>Säkra läsvyer</h2>
+              <p>Supervisor är uppdelad i säkra läsvyer. Här kan du granska systemet, men inte starta handel eller ändra risk.</p>
+            </div>
+          </div>
+          <div className="sup-brain-nav-tabs" role="tablist" aria-label="Supervisor sections">
+            {SUPERVISOR_SECTIONS.map((section) => (
+              <Link
+                key={section.id}
+                to={section.path}
+                className={`sup-brain-nav-tab${activeSection === section.id ? ' active' : ''}`}
+              >
+                {section.label}
+              </Link>
+            ))}
+          </div>
+          {unknownSection ? (
+            <div className="sup-brain-banner">
+              Den här vyn är inte byggd ännu. Visar översikt i stället.
+            </div>
+          ) : null}
+        </section>
+
+        {activeSection === 'overview' ? (
         <section className="sup-brain-section sup-brain-section-safety">
           <SectionTitle
             eyebrow="1. Systemstatus"
@@ -626,7 +682,9 @@ export default function SupervisorBrainPage() {
             text="Ansluten betyder att data går att läsa. Aktiv betyder att systemet hittar något att analysera. Skydd aktivt betyder att live trading är låst och att inga riktiga order kan skickas."
           />
         </section>
+        ) : null}
 
+        {activeSection === 'research' ? (
         <section className="sup-brain-section">
           <SectionTitle
             eyebrow="2. Research Autopilot"
@@ -666,7 +724,9 @@ export default function SupervisorBrainPage() {
             <div className="sup-brain-empty">Status kunde inte läsas.</div>
           )}
         </section>
+        ) : null}
 
+        {activeSection === 'overview' ? (
         <section className="sup-brain-section">
           <SectionTitle
             eyebrow="3. AI-lärande"
@@ -695,7 +755,9 @@ export default function SupervisorBrainPage() {
             />
           </div>
         </section>
+        ) : null}
 
+        {activeSection === 'narrow' ? (
         <section className="sup-brain-section">
           <SectionTitle
             eyebrow="4. Narrow State"
@@ -762,7 +824,9 @@ export default function SupervisorBrainPage() {
             text="Narrow State betyder att priset är ihoptryckt och rör sig lugnare än vanligt. Det kan föregå breakout, fakeout eller mean reversion."
           />
         </section>
+        ) : null}
 
+        {activeSection === 'overview' ? (
         <section className="sup-brain-section">
           <SectionTitle
             eyebrow="5. Strategimätning"
@@ -780,7 +844,9 @@ export default function SupervisorBrainPage() {
             text="Varje strategi visar hur många testresultat den har, hur ofta den vinner och om den verkar lovande, svag eller behöver mer data. Inga köp eller sälj görs här."
           />
         </section>
+        ) : null}
 
+        {activeSection === 'overview' ? (
         <section className="sup-brain-section">
           <SectionTitle
             eyebrow="6. Beslutsstöd"
@@ -823,7 +889,9 @@ export default function SupervisorBrainPage() {
             </Card>
           </div>
         </section>
+        ) : null}
 
+        {activeSection === 'research' ? (
         <section className="sup-brain-section">
           <SectionTitle
             eyebrow="6b. Autopilot"
@@ -995,7 +1063,9 @@ export default function SupervisorBrainPage() {
             />
           </div>
         </section>
+        ) : null}
 
+        {activeSection === 'narrow' ? (
         <section className="sup-brain-section">
           <SectionTitle
             eyebrow="7. Score-band"
@@ -1010,7 +1080,9 @@ export default function SupervisorBrainPage() {
             {!scoreBands.length ? <div className="sup-brain-empty">För lite data ännu</div> : null}
           </div>
         </section>
+        ) : null}
 
+        {activeSection === 'narrow' ? (
         <section className="sup-brain-section">
           <SectionTitle
             eyebrow="8. Confirmations"
@@ -1033,7 +1105,9 @@ export default function SupervisorBrainPage() {
             ))}
           </div>
         </section>
+        ) : null}
 
+        {activeSection === 'overview' ? (
         <section className="sup-brain-section">
           <SectionTitle
             eyebrow="8. Varningar"
@@ -1050,7 +1124,9 @@ export default function SupervisorBrainPage() {
             ))}
           </div>
         </section>
+        ) : null}
 
+        {activeSection === 'overview' ? (
         <section className="sup-brain-section">
           <SectionTitle
             eyebrow="9. Handlingsplan"
@@ -1066,7 +1142,9 @@ export default function SupervisorBrainPage() {
             <StepCard index="5" title="Skicka lärdomar till Supervisor" text="När data blir bättre ska nästa test föreslås tydligare och lugnare." />
           </div>
         </section>
+        ) : null}
 
+        {activeSection === 'overview' ? (
         <section className="sup-brain-section">
           <SectionTitle
             eyebrow="10. Begrepp"
@@ -1080,6 +1158,7 @@ export default function SupervisorBrainPage() {
             ))}
           </div>
         </section>
+        ) : null}
 
         <footer className="sup-brain-footer">
           Trading OS är en analys- och forskningsplattform. Den lägger inga riktiga order. Alla resultat är från paper, replay eller batch-testning.
