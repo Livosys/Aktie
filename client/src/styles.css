@@ -6501,6 +6501,9 @@ tbody td {
   flex-direction: column;
   gap: 16px;
 }
+.sup-brain-shell-lab {
+  max-width: 1580px;
+}
 .sup-brain-hero {
   display: grid;
   grid-template-columns: minmax(0, 1.6fr) minmax(320px, .9fr);
@@ -6641,6 +6644,27 @@ tbody td {
   gap: 8px;
   margin-top: 14px;
 }
+.sup-brain-nav-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1.4fr) minmax(260px, .6fr);
+  gap: 12px;
+  align-items: start;
+}
+.sup-brain-nav-copy {
+  margin-top: 14px;
+  min-height: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  justify-content: center;
+  padding: 14px 16px;
+  border-radius: 18px;
+  border: 1px solid rgba(148,163,184,.18);
+  background: rgba(255,255,255,.03);
+  color: rgba(203,213,225,.84);
+  font-size: 13px;
+  line-height: 1.55;
+}
 .sup-brain-nav-tab {
   display: inline-flex;
   align-items: center;
@@ -6655,6 +6679,9 @@ tbody td {
   font-weight: 800;
   text-decoration: none;
   transition: background-color .15s ease, border-color .15s ease, color .15s ease, transform .15s ease;
+}
+.sup-brain-nav-tab-label {
+  display: inline-block;
 }
 .sup-brain-nav-tab:hover {
   border-color: rgba(59,130,246,.28);
@@ -7140,6 +7167,23 @@ tbody td {
   display: grid;
   gap: 10px;
 }
+.sup-brain-placeholder-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+.sup-brain-placeholder-card {
+  min-height: 100%;
+}
+.sup-brain-api-list {
+  margin: 0;
+  padding-left: 18px;
+  display: grid;
+  gap: 8px;
+  color: rgba(203,213,225,.84);
+  font-size: 12px;
+  line-height: 1.55;
+}
 .sup-brain-warning-item {
   display: flex;
   align-items: flex-start;
@@ -7219,6 +7263,9 @@ tbody td {
   .sup-brain-queue-panel {
     grid-template-columns: 1fr;
   }
+  .sup-brain-nav-layout {
+    grid-template-columns: 1fr;
+  }
   .sup-brain-hero {
     grid-template-columns: 1fr;
   }
@@ -7237,7 +7284,8 @@ tbody td {
   .sup-brain-grid-4,
   .sup-brain-grid-3,
   .sup-brain-band-stats,
-  .sup-brain-confirmation-grid {
+  .sup-brain-confirmation-grid,
+  .sup-brain-placeholder-grid {
     grid-template-columns: 1fr;
   }
   .sup-brain-nav-tabs {
