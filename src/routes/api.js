@@ -88,6 +88,12 @@ const priorityEngine    = require('../services/priorityEngineService');
 const dailyIntelligencePipeline = require('../services/dailyIntelligencePipelineService');
 const historicalDataCenter = require('../services/historicalDataCenterService');
 const dataCoverageExpansion = require('../services/dataCoverageExpansionService');
+// Ported legacy read-only status services (GET-only, paper_only). batch/replay
+// autopilot services are pulled in transitively by strategyRuntimeMatrixService.
+const strategyRuntimeMatrixService = require('../services/strategyRuntimeMatrixService');
+const automationPlanService        = require('../services/automationPlanService');
+const automationApprovalService    = require('../services/automationApprovalService');
+const paperAllowlistService        = require('../services/paperAllowlistService');
 const daytradingControl = require('../services/daytradingControlService');
 const daytradingLearning = require('../services/daytradingLearningEngineService');
 const supervisorOverviewService = require('../services/supervisorOverviewService');
@@ -3758,6 +3764,51 @@ router.get('/priority/summary', async (req, res) => {
 router.get('/priority/market-context', async (req, res) => {
   try { res.json(await priorityEngine.buildMarketContextResponse()); }
   catch (err) { res.status(500).json({ ok: false, error: err.message, ...priorityEngine.SAFETY }); }
+});
+
+// ── Ported legacy read-only status endpoints ──────────────────────────────────
+// GET-only. These NEVER place orders, start tests/batch/replay, mutate the
+// allowlist/approvals/risk/broker, or enable live trading. On any error or
+// missing data they return HTTP 200 with ok:true and an empty paper_only
+// fallback so the UI shows a safe empty state instead of 404/500.
+const LEGACY_STATUS_SAFETY = Object.freeze({
+  mode: 'paper_only',
+  actions_allowed: false,
+  can_place_orders: false,
+  live_trading_enabled: false,
+  broker_enabled: false,
+});
+
+router.get('/strategies/runtime-matrix', (req, res) => {
+  try {
+    res.status(200).json(strategyRuntimeMatrixService.getStrategyRuntimeMatrix());
+  } catch (err) {
+    res.status(200).json({ ok: true, status: 'unavailable', reason: err.message, strategies: [], ...LEGACY_STATUS_SAFETY, safety: LEGACY_STATUS_SAFETY });
+  }
+});
+
+router.get('/automation/plan', (req, res) => {
+  try {
+    res.status(200).json(automationPlanService.getAutomationPlan());
+  } catch (err) {
+    res.status(200).json({ ok: true, status: 'unavailable', reason: err.message, plan: [], ...LEGACY_STATUS_SAFETY, safety: LEGACY_STATUS_SAFETY });
+  }
+});
+
+router.get('/automation/approvals', (req, res) => {
+  try {
+    res.status(200).json(automationApprovalService.getAutomationApprovals());
+  } catch (err) {
+    res.status(200).json({ ok: true, status: 'unavailable', reason: err.message, approvals: [], ...LEGACY_STATUS_SAFETY, safety: LEGACY_STATUS_SAFETY });
+  }
+});
+
+router.get('/automation/paper-allowlist/status', (req, res) => {
+  try {
+    res.status(200).json(paperAllowlistService.getPaperAllowlistStatus());
+  } catch (err) {
+    res.status(200).json({ ok: true, status: 'unavailable', reason: err.message, allowlist: [], ...LEGACY_STATUS_SAFETY, safety: LEGACY_STATUS_SAFETY });
+  }
 });
 
 // ── API 404 — never return HTML for unknown /api/* paths ──────────────────────
