@@ -18,7 +18,9 @@ const service = require('./supervisorOverviewService');
     },
     schedulerStatus: {
       ok: true,
-      queueEnabled: true,
+      queueAvailable: true,
+      queueEnabled: false,
+      queueExecutionEnabled: false,
       executionEnabled: false,
       schedulerActive: true,
       lastQueuedTest: { plan: { id: 'plan_1' } },
@@ -32,7 +34,9 @@ const service = require('./supervisorOverviewService');
   });
 
   assert.equal(summary.planningEnabled, true, 'planning status exposed');
-  assert.equal(summary.queueEnabled, true, 'queue status exposed');
+  assert.equal(summary.queueAvailable, true, 'queue availability exposed');
+  assert.equal(summary.queueEnabled, false, 'queue status reflects execution gate');
+  assert.equal(summary.queueExecutionEnabled, false, 'queue execution status exposed');
   assert.equal(summary.executionEnabled, false, 'execution remains disabled');
   assert.equal(summary.lastBlockedReason, 'execution_disabled', 'blocked reason exposed');
   assert.equal(summary.actions_allowed, false, 'actions safety false');

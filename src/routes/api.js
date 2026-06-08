@@ -90,6 +90,7 @@ const historicalDataCenter = require('../services/historicalDataCenterService');
 const dataCoverageExpansion = require('../services/dataCoverageExpansionService');
 const daytradingControl = require('../services/daytradingControlService');
 const daytradingLearning = require('../services/daytradingLearningEngineService');
+const supervisorOverviewService = require('../services/supervisorOverviewService');
 const supervisorOperationsAdvisorService = require('../services/supervisorOperationsAdvisorService');
 const TEST_LIVE_SEND_COOLDOWN_MS = 5 * 60 * 1000;
 let testLiveSendLastAt = 0;
@@ -2102,6 +2103,19 @@ router.post('/learning/rebuild', (req, res) => {
 
 // ── Supervisor Operations Advisor ─────────────────────────────────────────────
 // Read-only summary over existing learning, runtime, paper and gate histories.
+
+router.get('/supervisor/overview', (req, res) => {
+  try {
+    res.json(supervisorOverviewService.buildSupervisorOverview());
+  } catch (err) {
+    res.status(500).json({
+      ok: false,
+      error: err.message,
+      ...supervisorOverviewService.SAFETY,
+      narrowAutopilot: null,
+    });
+  }
+});
 
 router.get('/supervisor/operations-advisor', (req, res) => {
   try {
