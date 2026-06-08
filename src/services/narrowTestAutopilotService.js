@@ -273,6 +273,46 @@ function readAlreadyTestedWindows({ timeframe = '2m', symbols = DEFAULT_SYMBOLS 
   return windows.sort((a, b) => `${a.dateFrom}:${a.dateTo}`.localeCompare(`${b.dateFrom}:${b.dateTo}`));
 }
 
+function getResearchDuplicateGuard(plan = {}) {
+  const selectedWindow = plan?.dateWindowSelected || null;
+  const timeframe = selectedWindow?.timeframe || uniqueStrings(plan?.timeframes)[0] || '2m';
+  const symbols = uniqueStrings(plan?.symbols || DEFAULT_SYMBOLS, { upper: true });
+  const reasons = [];
+
+  if (!selectedWindow?.dateFrom || !selectedWindow?.dateTo) {
+    reasons.push('duplicate_guard_missing_date_window');
+  }
+
+  const testedWindows = readAlreadyTestedWindows({ symbols, timeframe });
+  const priorWindow = selectedWindow?.dateFrom && selectedWindow?.dateTo
+    ? testedWindows.find((window) => (
+      window.dateFrom === selectedWindow.dateFrom
+      && window.dateTo === selectedWindow.dateTo
+      && window.timeframe === timeframe
+    ))
+    : null;
+
+  if (selectedWindow?.alreadyTested === true || priorWindow) {
+    reasons.push('identical_window_already_tested');
+  }
+
+  return {
+    ok: reasons.length === 0,
+    blocked: reasons.length > 0,
+    reasons: [...new Set(reasons)],
+    timeframe,
+    symbols,
+    selectedWindow: selectedWindow ? {
+      dateFrom: selectedWindow.dateFrom || null,
+      dateTo: selectedWindow.dateTo || null,
+      alreadyTested: Boolean(selectedWindow.alreadyTested),
+    } : null,
+    priorWindow: priorWindow || null,
+    checkedWindows: testedWindows.length,
+    ...SAFETY,
+  };
+}
+
 function makeEmptyWindowBandAvailability() {
   return { confirmed_narrow: 0, weak_narrow: 0, strong_compression: 0, not_narrow: 0 };
 }
@@ -815,6 +855,9 @@ function validateNarrowAutopilotPlan(plan = {}) {
   if (plan.selectedNarrowScoreBand === 'not_narrow' || plan.filters?.narrowScoreBand === 'not_narrow') {
     reasons.push('not_narrow_not_allowed_for_narrow_strategy');
   }
+  if (plan.dateWindowSelected?.alreadyTested === true) {
+    reasons.push('identical_window_already_tested');
+  }
 
   // 7) Limits must be sane.
   const limits = plan.limits || {};
@@ -856,6 +899,42 @@ function validateNarrowAutopilotPlan(plan = {}) {
   };
 
   return { ok: !blocked, blocked, reasons, warnings, normalizedPlan };
+}
+
+function validateResearchQueueEligibility(plan = {}, validation = null) {
+  const checked = validation || validateNarrowAutopilotPlan(plan);
+  const normalizedPlan = checked.normalizedPlan || plan;
+  const reasons = Array.isArray(checked.reasons) ? [...checked.reasons] : [];
+
+  if (!normalizedPlan || typeof normalizedPlan !== 'object') reasons.push('plan_missing');
+  if (checked.blocked) reasons.push('dry_run_plan_blocked');
+  if (normalizedPlan.mode !== MODE) reasons.push(`mode_not_paper_only:${normalizedPlan.mode}`);
+
+  const safety = normalizedPlan.safety || {};
+  for (const key of Object.keys(SAFETY)) {
+    if (safety[key] !== false) reasons.push(`safety_flag_not_false:${key}`);
+  }
+
+  const selectedBand = normalizedPlan.selectedNarrowScoreBand || normalizedPlan.filters?.narrowScoreBand || null;
+  if (!ALLOWED_TEST_BANDS.includes(selectedBand)) reasons.push(`invalid_selected_band:${selectedBand || 'missing'}`);
+  if (selectedBand === 'not_narrow') reasons.push('not_narrow_not_allowed_for_narrow_strategy');
+  if (!normalizedPlan.dateWindowSelected) reasons.push('no_selected_date_window');
+  if (normalizedPlan.dateWindowSelected?.alreadyTested === true) reasons.push('identical_window_already_tested');
+  const duplicateGuard = getResearchDuplicateGuard(normalizedPlan);
+  if (duplicateGuard.blocked) reasons.push(...duplicateGuard.reasons);
+
+  const blockedIntent = findBlockedIntent(normalizedPlan);
+  if (blockedIntent) reasons.push(`blocked_intent:${blockedIntent}`);
+
+  return {
+    ok: reasons.length === 0,
+    blocked: reasons.length > 0,
+    reasons: [...new Set(reasons)],
+    normalizedPlan,
+    duplicateGuard,
+    mode: MODE,
+    ...SAFETY,
+  };
 }
 
 // ── history ──────────────────────────────────────────────────────────────────
@@ -1053,6 +1132,7 @@ function getNarrowAutopilotStatus() {
       executionRequiresExplicitFlag: true,
       currentPlan: validation ? validation.normalizedPlan : plan,
       planValidation: validation ? { ok: validation.ok, blocked: validation.blocked, reasons: validation.reasons } : null,
+      researchQueueEligibility: validation ? validateResearchQueueEligibility(validation.normalizedPlan, validation) : null,
       recommendedNextTest,
       lastEvent: lastPlanEvent || (history.length ? history[history.length - 1] : null),
       recentEvents: history.slice(-10),
@@ -1070,6 +1150,8 @@ module.exports = {
   HARD_LIMITS,
   buildNarrowAutopilotPlan,
   validateNarrowAutopilotPlan,
+  validateResearchQueueEligibility,
+  getResearchDuplicateGuard,
   runNarrowAutopilotOnce,
   getNarrowAutopilotStatus,
   readNarrowAutopilotHistory,

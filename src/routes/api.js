@@ -65,6 +65,7 @@ const daytradingStrategyCatalog = require('../services/daytradingStrategyCatalog
 const narrowStateEngine = require('../services/narrowStateEngineService');
 const narrowPerformanceLearning = require('../services/narrowPerformanceLearningService');
 const narrowTestAutopilot = require('../services/narrowTestAutopilotService');
+const narrowAutopilotScheduler = require('../jobs/narrowAutopilotScheduler');
 const strategyRegistry   = require('../services/strategyRegistryService');
 const strategyScore      = require('../services/strategyScoreService');
 const strategyHistory    = require('../services/strategyHistoryService');
@@ -2277,9 +2278,10 @@ const AUTOPILOT_SAFETY = {
 router.get('/autopilot/narrow/status', (req, res) => {
   try {
     const status = narrowTestAutopilot.getNarrowAutopilotStatus();
-    res.json({ ok: true, ...AUTOPILOT_SAFETY, autopilot: status.autopilot });
+    const scheduler = narrowAutopilotScheduler.getNarrowAutopilotSchedulerStatus();
+    res.json({ ok: true, ...AUTOPILOT_SAFETY, autopilot: status.autopilot, scheduler });
   } catch (err) {
-    res.json({ ok: false, error: err.message, ...AUTOPILOT_SAFETY, autopilot: null });
+    res.json({ ok: false, error: err.message, ...AUTOPILOT_SAFETY, autopilot: null, scheduler: null });
   }
 });
 
