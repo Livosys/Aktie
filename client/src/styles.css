@@ -6620,6 +6620,52 @@ tbody td {
   box-shadow: 0 20px 70px rgba(0,0,0,.16);
   backdrop-filter: blur(14px);
 }
+.sup-brain-section-nav {
+  padding-bottom: 16px;
+}
+.sup-brain-nav-head h2 {
+  font-size: 18px;
+  font-weight: 900;
+  letter-spacing: -0.03em;
+}
+.sup-brain-nav-head p {
+  margin-top: 4px;
+  color: rgba(203,213,225,.82);
+  font-size: 13px;
+  line-height: 1.5;
+  max-width: 760px;
+}
+.sup-brain-nav-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 14px;
+}
+.sup-brain-nav-tab {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 38px;
+  padding: 0 14px;
+  border-radius: 999px;
+  border: 1px solid rgba(148,163,184,.18);
+  background: rgba(255,255,255,.04);
+  color: #cbd5e1;
+  font-size: 12px;
+  font-weight: 800;
+  text-decoration: none;
+  transition: background-color .15s ease, border-color .15s ease, color .15s ease, transform .15s ease;
+}
+.sup-brain-nav-tab:hover {
+  border-color: rgba(59,130,246,.28);
+  background: rgba(59,130,246,.08);
+  color: #dbeafe;
+}
+.sup-brain-nav-tab.active {
+  border-color: rgba(34,197,94,.30);
+  background: rgba(34,197,94,.10);
+  color: #bbf7d0;
+}
 .sup-brain-section-head {
   display: flex;
   align-items: flex-start;
@@ -7194,6 +7240,15 @@ tbody td {
   .sup-brain-confirmation-grid {
     grid-template-columns: 1fr;
   }
+  .sup-brain-nav-tabs {
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    padding-bottom: 4px;
+  }
+  .sup-brain-nav-tab {
+    white-space: nowrap;
+    flex: 0 0 auto;
+  }
   .sup-brain-safety-sticky {
     position: sticky;
     top: 10px;
@@ -7230,6 +7285,21 @@ tbody td {
     radial-gradient(circle at 14% 8%, rgba(59,130,246,.08), transparent 30%),
     linear-gradient(180deg, rgba(255,255,255,.96), rgba(248,250,252,.98));
   box-shadow: 0 14px 42px rgba(15,23,42,.08);
+}
+[data-theme="light"] .sup-brain-nav-tab {
+  background: rgba(255,255,255,.86);
+  border-color: rgba(15,23,42,.10);
+  color: #475569;
+}
+[data-theme="light"] .sup-brain-nav-tab:hover {
+  border-color: rgba(37,99,235,.24);
+  background: rgba(37,99,235,.08);
+  color: #1d4ed8;
+}
+[data-theme="light"] .sup-brain-nav-tab.active {
+  border-color: rgba(22,163,74,.24);
+  background: rgba(22,163,74,.10);
+  color: #166534;
 }
 
 [data-theme="light"] .sup-brain-card,
