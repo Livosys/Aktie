@@ -580,6 +580,10 @@ export default function SupervisorBrainPage() {
                 <Badge tone="neutral">INGA RIKTIGA ORDER</Badge>
               </div>
               <div className="sup-brain-safety-banner">{mobileSafetyText}</div>
+              <div className="sup-brain-safety-autopilot">
+                <span>Autopilot</span>
+                <strong>{autopilotFlagsLocked ? 'Safety låst · paper only' : 'Kontrollera safety'}</strong>
+              </div>
               <div className="sup-brain-safety-flags">
                 <span>actions_allowed={String(narrowFlags.actions_allowed)}</span>
                 <span>can_place_orders={String(narrowFlags.can_place_orders)}</span>
@@ -772,7 +776,7 @@ export default function SupervisorBrainPage() {
           </div>
         </section>
 
-        <section className="sup-brain-section">
+        <section className="sup-brain-section sup-brain-section-autopilot">
           <SectionTitle
             eyebrow="5b. Autopilot"
             title="🤖 Narrow Test Autopilot"
