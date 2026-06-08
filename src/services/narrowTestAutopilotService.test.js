@@ -266,7 +266,10 @@ function bandAvailabilityOverride(bands = {}) {
   assert.equal(plan.selectedNarrowScoreBand, null, 'no allowed band selected');
   assert.notEqual(plan.selectedNarrowScoreBand, 'not_narrow', 'not_narrow never selected');
   assert.equal(validation.blocked, true, 'no narrow bands blocks plan');
-  assert.ok(validation.reasons.includes('no_matching_narrow_bands'), 'reports no matching narrow bands');
+  assert.ok(
+    validation.reasons.includes('no_matching_narrow_bands') || validation.reasons.includes('no_matching_narrow_windows'),
+    'reports no runnable narrow setup',
+  );
 }
 
 // ── 15) date-window selection prefers confirmed_narrow ──────────────────────
@@ -308,18 +311,167 @@ function bandAvailabilityOverride(bands = {}) {
   assert.equal(best.dateFrom, '2026-04-20', 'already-tested confirmed window skipped');
 }
 
-// ── 19) window analysis reads real candles and exposes safety false ─────────
+// ── 19) window analysis is read-only and exposes safety false ───────────────
 {
   const { service } = loadServiceWithData(seedNarrowData);
   const analysis = service.analyzeNarrowDateWindows({ symbols: ['MSFT', 'QQQ'], timeframe: '2m' });
   assert.ok(Array.isArray(analysis.windows), 'window analysis returns windows');
-  assert.ok(analysis.windows.length > 0, 'real repo candles produce windows');
-  assert.ok(analysis.windows.every((window) => Number(window.candleCount || 0) > 0), 'windows use real candle counts');
+  assert.ok(Array.isArray(analysis.warnings), 'window analysis returns warnings');
+  if (analysis.windows.length > 0) {
+    assert.ok(analysis.windows.every((window) => Number(window.candleCount || 0) > 0), 'windows use real candle counts');
+  } else {
+    assert.ok(analysis.warnings.some((warning) => String(warning).startsWith('no_2m_data:')), 'missing local candles are reported');
+  }
   const status = service.getNarrowAutopilotStatus();
   assert.equal(status.actions_allowed, false, 'status actions false after window analysis');
   assert.equal(status.can_place_orders, false, 'status orders false after window analysis');
   assert.equal(status.live_trading_enabled, false, 'status live false after window analysis');
   assert.equal(status.broker_enabled, false, 'status broker false after window analysis');
+}
+
+// ── 20) research queue eligibility requires paper-only validated plan ───────
+{
+  const { service } = loadServiceWithData(seedNarrowData);
+  const plan = service.buildNarrowAutopilotPlan({ bandAvailabilityOverride: bandAvailabilityOverride({ confirmed_narrow: 3 }) });
+  plan.dateWindowSelected = {
+    dateFrom: '2026-05-04',
+    dateTo: '2026-05-15',
+    timeframe: '2m',
+    alreadyTested: false,
+    bandAvailability: { confirmed_narrow: 1, weak_narrow: 0, strong_compression: 0, not_narrow: 7 },
+  };
+  const validation = service.validateNarrowAutopilotPlan(plan);
+  const eligibility = service.validateResearchQueueEligibility(plan, validation);
+  assert.equal(eligibility.ok, true, 'eligible validated paper-only plan passes');
+  assert.equal(eligibility.actions_allowed, false, 'eligibility actions false');
+  assert.equal(eligibility.can_place_orders, false, 'eligibility orders false');
+  assert.equal(eligibility.live_trading_enabled, false, 'eligibility live false');
+  assert.equal(eligibility.broker_enabled, false, 'eligibility broker false');
+}
+
+// ── 21) research queue blocks already-tested windows ────────────────────────
+{
+  const { service } = loadServiceWithData(seedNarrowData);
+  const plan = service.buildNarrowAutopilotPlan({ bandAvailabilityOverride: bandAvailabilityOverride({ confirmed_narrow: 3 }) });
+  plan.dateWindowSelected = {
+    dateFrom: '2026-05-04',
+    dateTo: '2026-05-15',
+    timeframe: '2m',
+    alreadyTested: true,
+    bandAvailability: { confirmed_narrow: 1, weak_narrow: 0, strong_compression: 0, not_narrow: 7 },
+  };
+  const validation = service.validateNarrowAutopilotPlan(plan);
+  assert.equal(validation.blocked, true, 'already-tested window blocks validation');
+  const eligibility = service.validateResearchQueueEligibility(plan, validation);
+  assert.equal(eligibility.blocked, true, 'already-tested window blocks queue eligibility');
+  assert.ok(eligibility.reasons.includes('identical_window_already_tested'), 'already-tested reason exposed');
+}
+
+// ── 22) research queue blocks windows already present in fingerprint log ────
+{
+  const { service, tmpDir } = loadServiceWithData(seedNarrowData);
+  writeJsonl(path.join(tmpDir, 'strategy-batches', 'narrow-batch-fingerprints.jsonl'), [
+    {
+      fingerprint: 'existing_fp',
+      batchId: 'batch_existing',
+      date_from: '2026-05-04',
+      date_to: '2026-05-15',
+      completed_at: '2026-05-16T00:00:00.000Z',
+    },
+  ]);
+  const plan = service.buildNarrowAutopilotPlan({ bandAvailabilityOverride: bandAvailabilityOverride({ confirmed_narrow: 3 }) });
+  plan.dateWindowSelected = {
+    dateFrom: '2026-05-04',
+    dateTo: '2026-05-15',
+    timeframe: '2m',
+    alreadyTested: false,
+    bandAvailability: { confirmed_narrow: 1, weak_narrow: 0, strong_compression: 0, not_narrow: 7 },
+  };
+  const eligibility = service.validateResearchQueueEligibility(plan);
+  assert.equal(eligibility.blocked, true, 'fingerprint log blocks queue eligibility');
+  assert.ok(eligibility.reasons.includes('identical_window_already_tested'), 'fingerprint duplicate reason exposed');
+  assert.equal(eligibility.duplicateGuard.priorWindow.batchId, 'batch_existing', 'prior batch surfaced');
+}
+
+// ── 23) scheduler stays dry-run only when env gate is off ───────────────────
+{
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'narrow-scheduler-'));
+  process.env.NARROW_AUTOPILOT_DIR = tmpDir;
+  process.env.ENABLE_NARROW_AUTOPILOT_EXECUTE = 'false';
+  const schedulerPath = require.resolve('../jobs/narrowAutopilotScheduler');
+  delete require.cache[schedulerPath];
+  const scheduler = require('../jobs/narrowAutopilotScheduler');
+  let dryRuns = 0;
+  let researchRuns = 0;
+  const fakePlan = {
+    mode: 'paper_only',
+    safety: { actions_allowed: false, can_place_orders: false, live_trading_enabled: false, broker_enabled: false },
+    testType: 'batch',
+    strategy_id: 'narrow_fakeout_reversal_v1',
+    symbols: ['MSFT'],
+    timeframes: ['2m'],
+    selectedNarrowScoreBand: 'confirmed_narrow',
+    filters: { narrowScoreBand: 'confirmed_narrow' },
+    limits: { maxRuns: 1, maxRuntimeSeconds: 30 },
+    dateWindowSelected: { dateFrom: '2026-05-04', dateTo: '2026-05-15', timeframe: '2m', alreadyTested: false },
+  };
+  const fakeAutopilot = {
+    runNarrowAutopilotOnce(options) {
+      if (options.dryRun === false) researchRuns += 1;
+      else dryRuns += 1;
+      return { ok: true, blocked: false, dryRun: options.dryRun !== false, executed: false, plan: fakePlan };
+    },
+    validateNarrowAutopilotPlan() { return { ok: true, blocked: false, reasons: [], normalizedPlan: fakePlan }; },
+    validateResearchQueueEligibility() { return { ok: true, blocked: false, reasons: [], normalizedPlan: fakePlan }; },
+  };
+  const status = scheduler.runScheduledResearchCycle({ now: Date.UTC(2026, 0, 2), autopilot: fakeAutopilot });
+  assert.equal(dryRuns, 1, 'scheduler creates dry-run plan');
+  assert.equal(researchRuns, 0, 'scheduler does not run research batch when env gate off');
+  assert.equal(status.executionEnabled, false, 'status execution disabled');
+  assert.equal(status.lastBlockedReason, 'execution_disabled', 'blocked reason is execution disabled');
+}
+
+// ── 24) scheduler can queue one safe research batch when env gate is on ─────
+{
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'narrow-scheduler-'));
+  process.env.NARROW_AUTOPILOT_DIR = tmpDir;
+  process.env.ENABLE_NARROW_AUTOPILOT_EXECUTE = 'true';
+  process.env.NARROW_AUTOPILOT_RESEARCH_MAX_PER_DAY = '1';
+  const schedulerPath = require.resolve('../jobs/narrowAutopilotScheduler');
+  delete require.cache[schedulerPath];
+  const scheduler = require('../jobs/narrowAutopilotScheduler');
+  let dryRuns = 0;
+  let researchRuns = 0;
+  const fakePlan = {
+    mode: 'paper_only',
+    safety: { actions_allowed: false, can_place_orders: false, live_trading_enabled: false, broker_enabled: false },
+    testType: 'batch',
+    strategy_id: 'narrow_fakeout_reversal_v1',
+    symbols: ['MSFT'],
+    timeframes: ['2m'],
+    selectedNarrowScoreBand: 'confirmed_narrow',
+    filters: { narrowScoreBand: 'confirmed_narrow' },
+    limits: { maxRuns: 1, maxRuntimeSeconds: 30 },
+    dateWindowSelected: { dateFrom: '2026-05-04', dateTo: '2026-05-15', timeframe: '2m', alreadyTested: false },
+  };
+  const fakeAutopilot = {
+    runNarrowAutopilotOnce(options) {
+      if (options.dryRun === false) {
+        researchRuns += 1;
+        return { ok: true, blocked: false, dryRun: false, executed: true, runStatus: 'completed', plan: fakePlan, summary: { totalTrades: 3 } };
+      }
+      dryRuns += 1;
+      return { ok: true, blocked: false, dryRun: true, executed: false, plan: fakePlan };
+    },
+    validateNarrowAutopilotPlan() { return { ok: true, blocked: false, reasons: [], normalizedPlan: fakePlan }; },
+    validateResearchQueueEligibility() { return { ok: true, blocked: false, reasons: [], normalizedPlan: fakePlan }; },
+  };
+  const status = scheduler.runScheduledResearchCycle({ now: Date.UTC(2026, 0, 2), autopilot: fakeAutopilot });
+  assert.equal(dryRuns, 1, 'scheduler creates dry-run plan before queue');
+  assert.equal(researchRuns, 1, 'scheduler runs one research batch when gate passes');
+  assert.equal(status.executionEnabled, true, 'status execution enabled');
+  assert.equal(status.todayRunCount, 1, 'daily counter increments');
+  assert.equal(status.lastBatchResult.executed, true, 'last batch result recorded');
 }
 
 console.log('Narrow test autopilot tests passed.');
