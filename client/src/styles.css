@@ -6501,6 +6501,9 @@ tbody td {
   flex-direction: column;
   gap: 16px;
 }
+.sup-brain-shell-lab {
+  max-width: 1580px;
+}
 .sup-brain-hero {
   display: grid;
   grid-template-columns: minmax(0, 1.6fr) minmax(320px, .9fr);
@@ -6641,6 +6644,27 @@ tbody td {
   gap: 8px;
   margin-top: 14px;
 }
+.sup-brain-nav-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1.4fr) minmax(260px, .6fr);
+  gap: 12px;
+  align-items: start;
+}
+.sup-brain-nav-copy {
+  margin-top: 14px;
+  min-height: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  justify-content: center;
+  padding: 14px 16px;
+  border-radius: 18px;
+  border: 1px solid rgba(148,163,184,.18);
+  background: rgba(255,255,255,.03);
+  color: rgba(203,213,225,.84);
+  font-size: 13px;
+  line-height: 1.55;
+}
 .sup-brain-nav-tab {
   display: inline-flex;
   align-items: center;
@@ -6655,6 +6679,9 @@ tbody td {
   font-weight: 800;
   text-decoration: none;
   transition: background-color .15s ease, border-color .15s ease, color .15s ease, transform .15s ease;
+}
+.sup-brain-nav-tab-label {
+  display: inline-block;
 }
 .sup-brain-nav-tab:hover {
   border-color: rgba(59,130,246,.28);
@@ -7140,6 +7167,23 @@ tbody td {
   display: grid;
   gap: 10px;
 }
+.sup-brain-placeholder-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+.sup-brain-placeholder-card {
+  min-height: 100%;
+}
+.sup-brain-api-list {
+  margin: 0;
+  padding-left: 18px;
+  display: grid;
+  gap: 8px;
+  color: rgba(203,213,225,.84);
+  font-size: 12px;
+  line-height: 1.55;
+}
 .sup-brain-warning-item {
   display: flex;
   align-items: flex-start;
@@ -7219,6 +7263,9 @@ tbody td {
   .sup-brain-queue-panel {
     grid-template-columns: 1fr;
   }
+  .sup-brain-nav-layout {
+    grid-template-columns: 1fr;
+  }
   .sup-brain-hero {
     grid-template-columns: 1fr;
   }
@@ -7237,7 +7284,8 @@ tbody td {
   .sup-brain-grid-4,
   .sup-brain-grid-3,
   .sup-brain-band-stats,
-  .sup-brain-confirmation-grid {
+  .sup-brain-confirmation-grid,
+  .sup-brain-placeholder-grid {
     grid-template-columns: 1fr;
   }
   .sup-brain-nav-tabs {
@@ -18875,3 +18923,40 @@ body {
 .ns-perf h2 { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
 .ns-perf-tag { font-size: 11px; font-weight: 600; opacity: 0.6; padding: 2px 8px; border-radius: 999px; background: rgba(148,163,184,0.12); }
 .ns-perf-note { font-size: 12.5px; opacity: 0.8; margin: 0 0 12px; line-height: 1.5; }
+
+/* ── Language toggle (restored old app shell) ─────────────────────────────── */
+.language-toggle {
+  height: 34px;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  flex: 0 0 auto;
+  padding: 0 8px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface2);
+  color: var(--muted2);
+  font-size: 11px;
+  font-weight: 850;
+  letter-spacing: 0;
+}
+
+.language-toggle button {
+  height: 24px;
+  min-width: 28px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+
+.language-toggle button.active {
+  background: var(--primary);
+  color: #fff;
+}
+
+.language-toggle span {
+  color: var(--border);
+}

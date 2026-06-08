@@ -1,15 +1,17 @@
 import React from 'react';
 import { Link, useLocation } from 'react-router-dom';
+import { useLanguage } from './i18n/LanguageContext.jsx';
 
 export default function MobileBottomNav() {
   const { pathname } = useLocation();
+  const { t } = useLanguage();
 
   const tabs = [
-    { id: 'supervisor', label: 'Trading OS', icon: '🧭', active: pathname.startsWith('/supervisor') || pathname.startsWith('/oversikt'), to: '/supervisor' },
-    { id: 'live',       label: 'Live',       icon: '♥', active: pathname === '/' || pathname.startsWith('/live') || pathname.startsWith('/signalpuls'), to: '/live' },
-    { id: 'lab',        label: 'Lärdomar',   icon: 'L', active: pathname.startsWith('/lab') || pathname.startsWith('/trading-lab'), to: '/lab' },
-    { id: 'insikter',   label: 'Historik',   icon: 'I', active: pathname.startsWith('/insikter') || pathname.startsWith('/resultat'), to: '/insikter' },
-    { id: 'system',     label: 'Teknik',     icon: 'S', active: pathname.startsWith('/system') || pathname.startsWith('/sakerhet'), to: '/system' },
+    { id: 'supervisor', label: t('nav.supervisor', 'Trading OS'), icon: '🧭', active: pathname.startsWith('/supervisor') || pathname.startsWith('/overview') || pathname.startsWith('/oversikt'), to: '/supervisor' },
+    { id: 'live',       label: t('nav.live', 'Live'),             icon: '♥', active: pathname === '/' || pathname.startsWith('/live') || pathname.startsWith('/signalpuls'), to: '/live' },
+    { id: 'lab',        label: t('nav.lab', 'Lab'),               icon: 'L', active: pathname.startsWith('/lab') || pathname.startsWith('/trading-lab'), to: '/lab' },
+    { id: 'insikter',   label: t('nav.insights', 'Insikter'),     icon: 'I', active: pathname.startsWith('/insikter') || pathname.startsWith('/resultat'), to: '/insikter' },
+    { id: 'system',     label: t('nav.system', 'System'),         icon: 'S', active: pathname.startsWith('/system') || pathname.startsWith('/sakerhet'), to: '/system' },
   ];
 
   return (

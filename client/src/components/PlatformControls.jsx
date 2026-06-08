@@ -1,5 +1,6 @@
 import React from 'react';
 import { configScope, CONFIG_SCOPES, useUnifiedConfig } from '../hooks/useUnifiedConfig.js';
+import { useLanguage } from '../i18n/LanguageContext.jsx';
 
 export const ADVANCED_MODE_KEY = 'platform_advanced_mode_v1';
 
@@ -13,6 +14,7 @@ export function useAdvancedModeListener() {
 }
 
 export function AdvancedModeToggle({ value, onChange }) {
+  const { tr } = useLanguage();
   return (
     <button
       type="button"
@@ -23,16 +25,17 @@ export function AdvancedModeToggle({ value, onChange }) {
     >
       <span>🧠</span>
       <span>Advanced Mode</span>
-      <strong>{value ? 'PÅ' : 'AV'}</strong>
+      <strong>{value ? tr('PÅ') : tr('AV')}</strong>
     </button>
   );
 }
 
 export function PlatformSafetyBar({ className = '' }) {
+  const { t } = useLanguage();
   return (
     <div className={`platform-safety-bar ${className}`.trim()}>
       <span>🔒</span>
-      <strong>{CONFIG_SCOPES.SAFETY.label}</strong>
+      <strong>{t('safety.paperOnly', CONFIG_SCOPES.SAFETY.label)}</strong>
       <span>actions_allowed=false</span>
       <span>can_place_orders=false</span>
       <span>live_trading_enabled=false</span>
@@ -51,10 +54,11 @@ export function ConfigScopeBadge({ scope = 'ui', className = '' }) {
 }
 
 export function PlatformEmptyState({ title, text, action }) {
+  const { tr } = useLanguage();
   return (
     <div className="platform-empty-state">
-      <div className="platform-empty-title">{title || 'Ingen data ännu'}</div>
-      <div className="platform-empty-text">{text || 'Systemet väntar på ny analysdata.'}</div>
+      <div className="platform-empty-title">{tr(title || 'Ingen data ännu')}</div>
+      <div className="platform-empty-text">{tr(text || 'Systemet väntar på ny analysdata.')}</div>
       {action}
     </div>
   );
