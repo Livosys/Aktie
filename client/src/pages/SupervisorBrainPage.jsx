@@ -452,12 +452,24 @@ export default function SupervisorBrainPage() {
 
   // Narrow Test Autopilot (Goal 6) — read-only planner status.
   const autopilotInfo = autopilot?.autopilot || null;
+  const autopilotScheduler = autopilot?.scheduler || null;
   const autopilotPlan = autopilotInfo?.currentPlan || null;
   const autopilotValidation = autopilotInfo?.planValidation || null;
   const autopilotEvents = safeArray(autopilotInfo?.recentEvents).slice(-5).reverse();
   const autopilotFlagsLocked = autopilot
     ? [autopilot.actions_allowed, autopilot.can_place_orders, autopilot.live_trading_enabled, autopilot.broker_enabled].every((value) => value === false)
     : true;
+  const researchQueueAvailable = autopilotScheduler?.queueAvailable === true;
+  const researchQueueEnabled = autopilotScheduler?.queueEnabled === true;
+  const researchQueueExecutionEnabled = autopilotScheduler?.queueExecutionEnabled === true;
+  const researchExecutionEnabled = autopilotScheduler?.executionEnabled === true;
+  const researchDryRunOnly = autopilotScheduler?.dryRunOnly !== false;
+  const researchPaperOnly = autopilot?.mode === 'paper_only' || autopilotScheduler?.mode === 'paper_only';
+  const researchBlockedReason = text(autopilotScheduler?.lastBlockedReason, 'saknas');
+  const researchStatusTitle = researchExecutionEnabled ? 'Research execution aktiv' : 'Automatisk körning är avstängd';
+  const researchStatusText = researchExecutionEnabled
+    ? 'Systemet kan fortfarande bara köra research i paper_only-läge. Inga riktiga order kan skickas.'
+    : 'Systemet kan planera nästa research-test, men automatisk körning är avstängd.';
   const autopilotBandAvailability = autopilotPlan?.bandAvailability || {};
   const autopilotAvailableBands = autopilotBandAvailability.availableBands || {};
   const autopilotBandSelection = autopilotPlan?.bandSelection || {};
@@ -617,7 +629,47 @@ export default function SupervisorBrainPage() {
 
         <section className="sup-brain-section">
           <SectionTitle
-            eyebrow="2. AI-lärande"
+            eyebrow="2. Research Autopilot"
+            title="Research Autopilot"
+            subtitle="Read-only status för research queue och säkerhetsläget."
+            helper="Planering utan automatisk körning"
+          />
+          {autopilotScheduler ? (
+            <div className="sup-brain-queue-panel">
+              <Card className="sup-brain-next sup-brain-queue-summary">
+                <div className="sup-brain-summary-title">Research queue</div>
+                <div className="sup-brain-summary-main">{researchStatusTitle}</div>
+                <div className="sup-brain-summary-sub">{researchStatusText}</div>
+                <div className="sup-brain-queue-badges">
+                  <Badge tone={researchQueueAvailable ? 'good' : 'neutral'}>Research queue: {researchQueueAvailable ? 'Finns' : 'Saknas'}</Badge>
+                  <Badge tone={researchExecutionEnabled ? 'warning' : 'good'}>Automatisk körning: {researchExecutionEnabled ? 'På' : 'Av'}</Badge>
+                  <Badge tone={researchDryRunOnly ? 'good' : 'warning'}>Dry-run only: {researchDryRunOnly ? 'Ja' : 'Nej'}</Badge>
+                  <Badge tone={researchPaperOnly ? 'good' : 'danger'}>Paper only: {researchPaperOnly ? 'Ja' : 'Kontrollera'}</Badge>
+                </div>
+              </Card>
+              <Card className="sup-brain-next">
+                <div className="sup-brain-summary-title">Säkerhetsstatus</div>
+                <div className="sup-brain-card-stats">
+                  <InfoChip label="Senaste stopporsak" value={researchBlockedReason} tone={researchBlockedReason === 'execution_disabled' ? 'good' : 'warning'} />
+                  <InfoChip label="Queue enabled" value={researchQueueEnabled ? 'Ja' : 'Nej'} tone={researchQueueEnabled ? 'warning' : 'good'} />
+                  <InfoChip label="Queue execution" value={researchQueueExecutionEnabled ? 'Ja' : 'Nej'} tone={researchQueueExecutionEnabled ? 'warning' : 'good'} />
+                  <InfoChip label="Broker" value={autopilot?.broker_enabled === false ? 'Av' : 'Kontrollera'} tone={autopilot?.broker_enabled === false ? 'good' : 'danger'} />
+                  <InfoChip label="Live trading" value={autopilot?.live_trading_enabled === false ? 'Av' : 'Kontrollera'} tone={autopilot?.live_trading_enabled === false ? 'good' : 'danger'} />
+                  <InfoChip label="Riktiga order" value={autopilot?.can_place_orders === false ? 'Blockerade' : 'Kontrollera'} tone={autopilot?.can_place_orders === false ? 'good' : 'danger'} />
+                </div>
+                <div className="sup-brain-learning-text">
+                  Statusraden visar att research queue finns, men att faktisk research-körning är stoppad tills en separat execute-gate uttryckligen öppnas. Den här sidan kan inte ändra det läget.
+                </div>
+              </Card>
+            </div>
+          ) : (
+            <div className="sup-brain-empty">Status kunde inte läsas.</div>
+          )}
+        </section>
+
+        <section className="sup-brain-section">
+          <SectionTitle
+            eyebrow="3. AI-lärande"
             title="Vad AI lärde sig"
             subtitle="Detta är bara testresultat från replay, batch och paper."
             helper={CONFIDENCE_LABELS[dataConfidence] ? `Datatillit: ${CONFIDENCE_LABELS[dataConfidence]}` : 'Datatillit'}
@@ -646,7 +698,7 @@ export default function SupervisorBrainPage() {
 
         <section className="sup-brain-section">
           <SectionTitle
-            eyebrow="3. Narrow State"
+            eyebrow="4. Narrow State"
             title="📉 Narrow State just nu"
             subtitle="Marknaden rör sig trångt. Systemet letar efter compression före breakout, fakeout eller återgång mot VWAP."
             helper="Vad betyder detta?"
@@ -713,7 +765,7 @@ export default function SupervisorBrainPage() {
 
         <section className="sup-brain-section">
           <SectionTitle
-            eyebrow="4. Strategimätning"
+            eyebrow="5. Strategimätning"
             title="📈 Strategier som systemet mäter"
             subtitle="Tre Narrow State-strategier testas i paper/replay/batch."
             helper="Testresultat"
@@ -731,7 +783,7 @@ export default function SupervisorBrainPage() {
 
         <section className="sup-brain-section">
           <SectionTitle
-            eyebrow="5. Beslutsstöd"
+            eyebrow="6. Beslutsstöd"
             title="Bästa / Svagaste / Nästa test"
             subtitle="Här ser du vad systemet tycker är bäst just nu och vad som bör testas härnäst. Baserat på testdata, inte investeringsråd."
             helper="Rekommendationer"
@@ -774,7 +826,7 @@ export default function SupervisorBrainPage() {
 
         <section className="sup-brain-section">
           <SectionTitle
-            eyebrow="5b. Autopilot"
+            eyebrow="6b. Autopilot"
             title="🤖 Narrow Test Autopilot"
             subtitle="Autopiloten läser rekommendationen och bygger en säker testplan. Den kan bara planera och köra batch/replay/paper-tester — aldrig lägga riktiga order."
             helper="Säker planerare"
@@ -946,7 +998,7 @@ export default function SupervisorBrainPage() {
 
         <section className="sup-brain-section">
           <SectionTitle
-            eyebrow="6. Score-band"
+            eyebrow="7. Score-band"
             title="🎯 Vilket Narrow Score fungerar bäst?"
             subtitle="Högre score betyder mer compression. Här visas vilken styrka som verkar bäst."
             helper="Score-band"
@@ -961,7 +1013,7 @@ export default function SupervisorBrainPage() {
 
         <section className="sup-brain-section">
           <SectionTitle
-            eyebrow="7. Confirmations"
+            eyebrow="8. Confirmations"
             title="✅ Vilka bekräftelser hjälper?"
             subtitle="En bekräftelse är extra bevis innan en strategi räknas som stark."
             helper="Jämförelse"
