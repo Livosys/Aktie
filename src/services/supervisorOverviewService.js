@@ -26,7 +26,9 @@ function summarizeNarrowAutopilot({ autopilotStatus = null, schedulerStatus = nu
     ok: Boolean(autopilotStatus?.ok !== false && schedulerStatus?.ok !== false),
     planningEnabled: Boolean(autopilot?.enabled),
     dryRunDefault: autopilot ? Boolean(autopilot.dryRunDefault) : true,
+    queueAvailable: scheduler ? Boolean(scheduler.queueAvailable) : false,
     queueEnabled: scheduler ? Boolean(scheduler.queueEnabled) : false,
+    queueExecutionEnabled: scheduler ? Boolean(scheduler.queueExecutionEnabled) : false,
     executionEnabled: scheduler ? Boolean(scheduler.executionEnabled) : false,
     schedulerActive: scheduler ? Boolean(scheduler.schedulerActive) : false,
     lastQueuedTest: scheduler?.lastQueuedTest || null,
@@ -51,7 +53,7 @@ function buildSupervisorOverview() {
   );
   const schedulerStatus = safeCall(
     () => narrowAutopilotScheduler.getNarrowAutopilotSchedulerStatus(),
-    { ok: false, queueEnabled: false, executionEnabled: false, ...SAFETY },
+    { ok: false, queueAvailable: false, queueEnabled: false, queueExecutionEnabled: false, executionEnabled: false, ...SAFETY },
   );
 
   return {

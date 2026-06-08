@@ -43,10 +43,13 @@ function clampInt(value, fallback, min, max) {
 
 function config() {
   const intervalMinutes = clampInt(process.env.NARROW_AUTOPILOT_SCHEDULER_INTERVAL_MINUTES, 360, 15, 24 * 60);
+  const executionEnabled = bool(process.env.ENABLE_NARROW_AUTOPILOT_EXECUTE, false);
   return {
     schedulerEnabled: bool(process.env.NARROW_AUTOPILOT_SCHEDULER_ENABLED, true),
-    queueEnabled: true,
-    executionEnabled: bool(process.env.ENABLE_NARROW_AUTOPILOT_EXECUTE, false),
+    queueAvailable: true,
+    queueEnabled: executionEnabled,
+    queueExecutionEnabled: executionEnabled,
+    executionEnabled,
     intervalMinutes,
     cooldownMinutes: clampInt(process.env.NARROW_AUTOPILOT_RESEARCH_COOLDOWN_MINUTES, intervalMinutes, 15, 24 * 60),
     startupDelaySeconds: clampInt(process.env.NARROW_AUTOPILOT_SCHEDULER_STARTUP_DELAY_SECONDS, 60, 10, 60 * 60),
@@ -131,7 +134,9 @@ function baseStatus(now = Date.now()) {
     ok: true,
     schedulerEnabled: cfg.schedulerEnabled,
     schedulerActive: timer !== null,
+    queueAvailable: cfg.queueAvailable,
     queueEnabled: cfg.queueEnabled,
+    queueExecutionEnabled: cfg.queueExecutionEnabled,
     executionEnabled: cfg.executionEnabled,
     dryRunOnly: !cfg.executionEnabled,
     intervalMinutes: cfg.intervalMinutes,

@@ -427,6 +427,9 @@ function bandAvailabilityOverride(bands = {}) {
   const status = scheduler.runScheduledResearchCycle({ now: Date.UTC(2026, 0, 2), autopilot: fakeAutopilot });
   assert.equal(dryRuns, 1, 'scheduler creates dry-run plan');
   assert.equal(researchRuns, 0, 'scheduler does not run research batch when env gate off');
+  assert.equal(status.queueAvailable, true, 'queue feature remains available');
+  assert.equal(status.queueEnabled, false, 'queue is not enabled when execution gate is off');
+  assert.equal(status.queueExecutionEnabled, false, 'queue execution status remains off');
   assert.equal(status.executionEnabled, false, 'status execution disabled');
   assert.equal(status.lastBlockedReason, 'execution_disabled', 'blocked reason is execution disabled');
 }
@@ -469,6 +472,9 @@ function bandAvailabilityOverride(bands = {}) {
   const status = scheduler.runScheduledResearchCycle({ now: Date.UTC(2026, 0, 2), autopilot: fakeAutopilot });
   assert.equal(dryRuns, 1, 'scheduler creates dry-run plan before queue');
   assert.equal(researchRuns, 1, 'scheduler runs one research batch when gate passes');
+  assert.equal(status.queueAvailable, true, 'queue feature remains available');
+  assert.equal(status.queueEnabled, true, 'queue is enabled when execution gate passes');
+  assert.equal(status.queueExecutionEnabled, true, 'queue execution status exposed');
   assert.equal(status.executionEnabled, true, 'status execution enabled');
   assert.equal(status.todayRunCount, 1, 'daily counter increments');
   assert.equal(status.lastBatchResult.executed, true, 'last batch result recorded');
