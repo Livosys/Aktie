@@ -30,6 +30,7 @@ export default function App() {
           {/* Trading OS v2 */}
           <Route path="/"             element={<Navigate to="/supervisor" replace />} />
           <Route path="/supervisor/*" element={<SupervisorBrainPage />} />
+          <Route path="/overview"     element={<Navigate to="/supervisor" replace />} />
           <Route path="/narrow"       element={<NarrowStateLabPage />} />
           <Route path="/narrow-state" element={<Navigate to="/narrow" replace />} />
           <Route path="/oversikt"     element={<Navigate to="/supervisor" replace />} />
