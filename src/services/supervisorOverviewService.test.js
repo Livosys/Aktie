@@ -14,6 +14,8 @@ const REQUIRED_OVERVIEW_KEYS = [
   'aiRecommendations',
   'lossFeedbackQueue',
   'nextRecommendedActions',
+  'riskSummary',
+  'technical',
   'safety',
 ];
 
@@ -136,6 +138,18 @@ async function withPatchedMethod(modPath, methodName, replacement, fn) {
     assert.ok(o.blocks[b].source, `block ${b} has source`);
   }
   assert.ok(Array.isArray(o.risks) && o.risks.some((r) => r.code === 'paper_only'));
+  assert.ok(o.riskSummary && typeof o.riskSummary === 'object', 'riskSummary present');
+  assert.ok(['ok', 'empty', 'degraded', 'missing'].includes(o.riskSummary.status), 'riskSummary status valid');
+  assert.ok(Array.isArray(o.riskSummary.moneyRisks), 'riskSummary.moneyRisks array');
+  assert.ok(Array.isArray(o.riskSummary.systemRisks), 'riskSummary.systemRisks array');
+  assert.ok(Array.isArray(o.riskSummary.warnings), 'riskSummary.warnings array');
+  assert.ok(Array.isArray(o.riskSummary.recommendations), 'riskSummary.recommendations array');
+  assert.ok(o.riskSummary.source, 'riskSummary.source present');
+  assert.ok(o.technical && typeof o.technical === 'object', 'technical present');
+  assert.ok(['ok', 'empty', 'degraded', 'missing'].includes(o.technical.status), 'technical status valid');
+  assert.ok(o.technical.source, 'technical.source present');
+  assert.ok(o.technical.counts && typeof o.technical.counts === 'object', 'technical.counts present');
+  assert.ok(o.technical.sourceMarkers && typeof o.technical.sourceMarkers === 'object', 'technical.sourceMarkers present');
   assert.ok(Array.isArray(o.actionPlan) && o.actionPlan.length >= 1);
   assertOverviewContract(o, 'overview');
 
@@ -153,6 +167,8 @@ async function withPatchedMethod(modPath, methodName, replacement, fn) {
   assert.ok(Array.isArray(o.strategyRanking.strategiesNeedingMoreData || []), 'strategyRanking.strategiesNeedingMoreData array');
   assert.ok(typeof o.strategyRanking.message === 'string', 'strategyRanking.message string');
   assert.ok(Object.prototype.hasOwnProperty.call(o.strategyRanking, 'emptyReason'), 'strategyRanking.emptyReason present');
+  assert.ok(Object.prototype.hasOwnProperty.call(o, 'riskSummary'), 'riskSummary present');
+  assert.ok(Object.prototype.hasOwnProperty.call(o, 'technical'), 'technical present');
   assert.ok(o.batchSummary && typeof o.batchSummary === 'object', 'batchSummary present');
   assert.ok(['ok', 'empty', 'degraded', 'error'].includes(o.batchSummary.status), 'batchSummary status valid');
   assert.equal(o.batchSummary.source, 'strategyBatchTestService');

@@ -1976,14 +1976,35 @@ function AiAnalystSummary({ status, latest, learningStatus, nextRecommendedActio
   );
 }
 
-function RiskBlockerCard({ risks, dataJobs, batches, activity, dataStatus }) {
+function riskTone(level) {
+  const s = String(level || '').toLowerCase();
+  if (s === 'low') return 'good';
+  if (s === 'medium') return 'warning';
+  if (s === 'high' || s === 'critical') return 'danger';
+  return 'neutral';
+}
+
+function RiskBlockerCard({ risks, riskSummary, dataJobs, batches, activity, dataStatus }) {
   const providerErrors = arr(dataJobs?.dataQuality?.providerErrors).concat(
     Object.entries(dataStatus?.providerStatus || {})
       .filter(([, row]) => row && row.ok === false)
       .map(([provider, row]) => ({ message: row.message || `${provider} rapporterade fel.` })),
   );
   const degradedSources = arr(activity?.sources).filter((source) => source.status === 'degraded');
+  const summaryCards = riskSummary ? [
+    {
+      tone: riskTone(riskSummary.moneyRiskLevel),
+      title: 'Pengarrisk',
+      message: `${riskSummary.moneyRiskLevel || 'okänt'} · ${arr(riskSummary.moneyRisks).length} signaler`,
+    },
+    {
+      tone: riskTone(riskSummary.systemRiskLevel),
+      title: 'Systemrisk',
+      message: `${riskSummary.systemRiskLevel || 'okänt'} · ${arr(riskSummary.systemRisks).length} signaler`,
+    },
+  ] : [];
   const combined = [
+    ...summaryCards,
     ...arr(risks).map((risk) => ({ tone: toneForStatus(risk.level), title: text(risk.code, 'Risk'), message: text(risk.message_sv, 'Saknas') })),
     ...providerErrors.map((err) => ({ tone: 'warning', title: 'Providerfel', message: text(err.message, 'Datakälla rapporterade fel.') })),
     ...degradedSources.map((source) => ({ tone: 'warning', title: 'Källa saknar data', message: `${source.name} svarade delvis.` })),
@@ -2462,7 +2483,7 @@ export default function SupervisorBrainPage() {
               <span><b>Automation off</b>{deriveAutomationMode(data).key === 'off' ? 'Ja' : 'Nej'}</span>
             </div>
           </Card>
-          <RiskBlockerCard risks={overview.risks} dataJobs={data.dataJobs} batches={batchSummary} activity={data.activity} dataStatus={dataStatus} />
+          <RiskBlockerCard risks={overview.risks} riskSummary={overview.riskSummary} dataJobs={data.dataJobs} batches={batchSummary} activity={data.activity} dataStatus={dataStatus} />
         </section>
         ) : null}
 

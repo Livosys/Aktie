@@ -1629,62 +1629,173 @@ function buildBatchSummary(batchService = lazy('./strategyBatchTestService')) {
 }
 
 // ── risk + action-plan derivation (read-only, derived from the blocks) ────────
-function deriveRisks(blocks, canonical) {
-  const risks = [];
-  const safety = blocks.safety || null;
+function riskRank(level) {
+  return ({ low: 0, medium: 1, high: 2, critical: 3 }[String(level || 'low').toLowerCase()]) ?? 0;
+}
+
+function riskItem(level, code, message_sv, source, extra = {}) {
+  return {
+    level,
+    code,
+    message_sv,
+    source,
+    ...extra,
+  };
+}
+
+function buildRiskSummary(blocks, canonical) {
+  const safety = blocks.safety || SAFETY;
+  const moneyRisks = [];
+  const systemRisks = [];
+  const warnings = [];
+  const recommendations = [];
+  const paperOnly = safety.mode === 'paper_only'
+    && safety.actions_allowed === false
+    && safety.can_place_orders === false
+    && safety.live_trading_enabled === false
+    && safety.broker_enabled === false;
+
+  if (paperOnly) {
+    moneyRisks.push(riskItem('low', 'paper_only', 'Systemet kör i paper_only. Inga riktiga order kan läggas.', 'safety'));
+    moneyRisks.push(riskItem('low', 'orders_blocked', 'Orderexekvering är avstängd.', 'safety'));
+    moneyRisks.push(riskItem('low', 'broker_off', 'Broker är avstängd.', 'safety'));
+    moneyRisks.push(riskItem('low', 'live_trading_off', 'Livehandel är avstängd.', 'safety'));
+  } else {
+    moneyRisks.push(riskItem('high', 'money_risk_exposed', 'Safety-läget är inte låst till paper_only.', 'safety'));
+    warnings.push('Safety-läget är inte fullt låst till paper_only.');
+  }
+
+  const blockList = [
+    ['data_status', blocks.data_status, 'Datatäckning har problem.'],
+    ['batch_status', blocks.batch_status, 'Batchhistoriken har problem.'],
+    ['replay_status', blocks.replay_status, 'Replayhistoriken har problem.'],
+    ['paper_status', blocks.paper_status, 'Låtsashandeln har problem.'],
+    ['learning_status', blocks.learning_status, 'Lärandeblocket har problem.'],
+    ['strategy_ranking', blocks.strategy_ranking, 'Strategirankingen saknar komplett underlag.'],
+  ];
+
+  for (const [name, block, message] of blockList) {
+    if (!block) {
+      systemRisks.push(riskItem('medium', `${name}_missing`, `${message} Blocket saknas.`, name));
+      warnings.push(`${name} saknas.`);
+      continue;
+    }
+    if (block.status === 'missing') {
+      systemRisks.push(riskItem('medium', `${name}_missing`, `${message} Blocket saknas.`, block.source || name));
+      warnings.push(`${name} saknas.`);
+      continue;
+    }
+    if (block.status === 'empty') {
+      systemRisks.push(riskItem('medium', `${name}_empty`, `${message} Inga data hittades.`, block.source || name, { emptyReason: block.emptyReason || null }));
+      warnings.push(`${name} är tomt.`);
+      continue;
+    }
+    if (block.status === 'degraded' || block.status === 'error') {
+      systemRisks.push(riskItem(block.status === 'error' ? 'high' : 'medium', `${name}_${block.status}`, `${message} Status är ${block.status}.`, block.source || name, { emptyReason: block.emptyReason || null }));
+      warnings.push(`${name} är ${block.status}.`);
+    }
+  }
 
   const sh = blocks.system_health;
   if (sh && sh.status === 'ok' && sh.summary) {
     const os = (sh.summary.overallStatus || '').toUpperCase();
-    if (os === 'CRITICAL') risks.push({ level: 'critical', code: 'system_health_critical', message_sv: sh.summary.summarySv || 'Systemhälsa kritisk.' });
-    else if (os === 'WARNING' || os === 'DEGRADED') risks.push({ level: 'warning', code: 'system_health_degraded', message_sv: sh.summary.summarySv || 'Systemhälsa försämrad.' });
-    if (sh.summary.criticalAlerts > 0) risks.push({ level: 'critical', code: 'critical_alerts', message_sv: `${sh.summary.criticalAlerts} kritiska larm aktiva.` });
-  }
-
-  if (canonical) {
-    if (canonical.avgPnl !== null && canonical.avgPnl < 0) {
-      risks.push({ level: 'warning', code: 'negative_avg_pnl', message_sv: `Genomsnittlig P/L är negativ (${canonical.avgPnl}). Detta är testdata, ingen bevisad edge.` });
-    }
-    if (canonical.timeoutRate !== null && canonical.timeoutRate >= 15) {
-      risks.push({ level: 'warning', code: 'high_timeout_rate', message_sv: `Hög timeout-andel (${canonical.timeoutRate}%): många trades avgörs av maxtid, inte target/stop.` });
-    }
+    if (os === 'CRITICAL') systemRisks.push(riskItem('critical', 'system_health_critical', sh.summary.summarySv || 'Systemhälsa kritisk.', 'systemHealth'));
+    else if (os === 'WARNING' || os === 'DEGRADED') systemRisks.push(riskItem('medium', 'system_health_degraded', sh.summary.summarySv || 'Systemhälsa försämrad.', 'systemHealth'));
+    if (sh.summary.criticalAlerts > 0) systemRisks.push(riskItem('critical', 'critical_alerts', `${sh.summary.criticalAlerts} kritiska larm aktiva.`, 'systemHealth'));
   }
 
   const ap = blocks.autopilot;
   if (ap && ap.status === 'ok' && ap.summary && ap.summary.blockedReason) {
-    risks.push({ level: 'info', code: 'autopilot_blocked', message_sv: `Autopilot pausad/blockerad: ${ap.summary.blockedReason}.` });
+    systemRisks.push(riskItem('low', 'autopilot_blocked', `Autopilot pausad/blockerad: ${ap.summary.blockedReason}.`, 'autopilot'));
   }
 
-  const data = blocks.data_status;
-  if (data && data.status && data.status !== 'ok') {
-    risks.push({ level: 'warning', code: 'data_degraded', message_sv: `Datalagret är ${data.status}. ${data.message || 'Vissa menyer får ofullständig historik.'}` });
+  const totalTrades = canonical?.totalTrades ?? null;
+  const avgPnl = canonical?.avgPnl ?? null;
+  const timeoutRate = canonical?.timeoutRate ?? null;
+  if (totalTrades !== null && totalTrades < 5) {
+    systemRisks.push(riskItem('medium', 'too_few_tests', `Endast ${totalTrades} tester finns. Underlaget är tunt.`, 'tradeStatsService'));
+    warnings.push('Det finns för få tester för stark slutsats.');
   }
-  const batch = blocks.batch_status;
-  if (batch && batch.status && batch.status !== 'ok') {
-    risks.push({ level: 'warning', code: 'batch_degraded', message_sv: `Batchhistoriken är ${batch.status}. ${batch.message || 'Batchmenyn kan visa tomma sammanfattningar.'}` });
+  if (avgPnl !== null && avgPnl < 0) {
+    systemRisks.push(riskItem('medium', 'negative_avg_pnl', `Genomsnittlig P/L är negativ (${avgPnl}).`, 'tradeStatsService'));
+    recommendations.push('Samla mer testdata innan starkare slutsatser dras.');
   }
-  const replay = blocks.replay_status;
-  if (replay && replay.status && replay.status !== 'ok') {
-    risks.push({ level: 'warning', code: 'replay_degraded', message_sv: `Replayhistoriken är ${replay.status}. ${replay.message || 'Replaymenyn kan vara delvis tom.'}` });
-  }
-  const paper = blocks.paper_status;
-  if (paper && paper.status && paper.status !== 'ok') {
-    risks.push({ level: 'warning', code: 'paper_degraded', message_sv: `Paperstatus är ${paper.status}. ${paper.message || 'Paper-menyn kan sakna senaste trades.'}` });
+  if (timeoutRate !== null && timeoutRate >= 15) {
+    systemRisks.push(riskItem('medium', 'high_timeout_rate', `Maxtidsandel är hög (${timeoutRate}%).`, 'tradeStatsService'));
+    recommendations.push('Testa starkare entry-filter eller längre holdingregler i paper/replay.');
   }
 
-  for (const [name, b] of Object.entries(blocks)) {
-    if (b && b.status === 'error') {
-      risks.push({ level: 'warning', code: `block_error:${name}`, message_sv: `Block "${name}" kunde inte läsas: ${b.error || 'okänt fel'}.` });
+  const ranking = blocks.strategy_ranking;
+  const needingMoreData = Array.isArray(ranking?.strategiesNeedingMoreData) ? ranking.strategiesNeedingMoreData.length : null;
+  const weakStrategies = Array.isArray(ranking?.weakStrategies) ? ranking.weakStrategies.length : null;
+  if (ranking && ranking.status !== 'missing' && ranking.status !== 'empty') {
+    if (needingMoreData !== null && needingMoreData > 0) {
+      systemRisks.push(riskItem('medium', 'strategies_need_more_data', `${needingMoreData} strategier behöver mer data.`, 'strategyRanking'));
+      warnings.push('Flera strategier saknar testunderlag.');
+    }
+    if (weakStrategies !== null && weakStrategies > 0) {
+      systemRisks.push(riskItem('medium', 'weak_strategies', `${weakStrategies} strategier är svaga just nu.`, 'strategyRanking'));
     }
   }
 
-  if (!safety || safety.mode === 'paper_only') {
-    risks.push({ level: 'info', code: 'paper_only', message_sv: 'Systemet är i paper_only. Inga riktiga order, broker eller live-trading är aktiva.' });
+  const allowlistApproved = num(blocks.paper_status?.allowlist?.totalApproved);
+  if (allowlistApproved === 0) {
+    systemRisks.push(riskItem('medium', 'allowlist_empty', 'Paper allowlist är tom. Inga strategier är godkända för paper runtime.', 'paperStatus'));
+    warnings.push('Paper allowlist är tom.');
   }
-  risks.push({ level: 'info', code: 'no_live_trading', message_sv: 'Live trading är avstängt.' });
-  risks.push({ level: 'info', code: 'no_broker', message_sv: 'Broker är avstängd.' });
-  risks.push({ level: 'info', code: 'no_orders', message_sv: 'Orderexekvering är avstängd.' });
-  return risks;
+
+  const aiRecommendationCount = Array.isArray(blocks.ai_recommendations?.items) ? blocks.ai_recommendations.items.length : null;
+  if (aiRecommendationCount !== null && aiRecommendationCount === 0) {
+    systemRisks.push(riskItem('low', 'ai_recommendations_empty', 'AI rekommenderar ännu inget nytt test.', 'aiRecommendations'));
+  }
+
+  const blockErrors = Object.entries(blocks)
+    .filter(([, block]) => block && block.status === 'error')
+    .map(([name, block]) => riskItem('high', `block_error:${name}`, `Block "${name}" kunde inte läsas.`, block.source || name, { error: block.error || null }));
+  systemRisks.push(...blockErrors);
+
+  const allRisks = [...moneyRisks, ...systemRisks];
+  const hasMaterialSystemRisk = systemRisks.some((risk) => riskRank(risk.level) >= riskRank('medium'));
+  const status = blockErrors.length || hasMaterialSystemRisk
+    ? 'degraded'
+    : allRisks.length
+      ? 'ok'
+      : 'empty';
+
+  return {
+    status,
+    source: 'supervisorOverviewService',
+    emptyReason: allRisks.length ? null : 'no_risk_signals',
+    moneyRiskLevel: moneyRisks.some((risk) => risk.level === 'high' || risk.level === 'critical')
+      ? 'high'
+      : moneyRisks.some((risk) => risk.level === 'medium')
+        ? 'medium'
+        : 'low',
+    systemRiskLevel: systemRisks.some((risk) => risk.level === 'high' || risk.level === 'critical')
+      ? 'high'
+      : systemRisks.some((risk) => risk.level === 'medium')
+        ? 'medium'
+        : 'low',
+    moneyRisks,
+    systemRisks,
+    warnings: [...new Set(warnings)],
+    recommendations: [...new Set(recommendations)],
+    message: status === 'degraded'
+      ? 'Risker och degraded-lägen kräver uppmärksamhet.'
+      : 'Pengarrisk är avstängd och systemriskerna är lästa i read-only läge.',
+    paperOnly,
+    ...SAFETY,
+  };
+}
+
+function deriveRisks(blocks, canonical) {
+  const summary = buildRiskSummary(blocks, canonical);
+  return [
+    ...summary.moneyRisks,
+    ...summary.systemRisks,
+    ...summary.warnings.map((message_sv, index) => ({ level: 'info', code: `warning:${index}`, message_sv })),
+    ...summary.recommendations.map((message_sv, index) => ({ level: 'info', code: `recommendation:${index}`, message_sv })),
+  ];
 }
 
 function deriveActionPlan(blocks) {
