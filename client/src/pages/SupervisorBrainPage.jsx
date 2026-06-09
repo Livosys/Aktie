@@ -418,12 +418,15 @@ function pipelineSummary(block, fallbackSummary, fallbackHelp) {
 
 function dataPipelineSummary(block) {
   const ready = Math.max(Number(block?.readyForBatch || 0), Number(block?.readyForReplay || 0));
+  const missing = Number(block?.missingData || 0);
   return pipelineSummary(
     block,
-    ready > 0 || Number(block?.missingData || 0) > 0
-      ? `${fmtNumber(ready)} symboler redo, ${fmtNumber(block?.missingData || 0)} saknar data`
+    ready > 0 || missing > 0
+      ? `${ready === 0 ? '0 symboler är redo just nu' : `${fmtNumber(ready)} symboler är redo`}${missing > 0 ? `, ${fmtNumber(missing)} symboler saknar tillräckligt testdata` : ''}`
       : 'Ingen datatäckning ännu',
-    'Data betyder historisk marknadsdata som systemet kan testa mot.',
+    missing > 0
+      ? 'Data behöver fyllas på innan fler tester kan köras.'
+      : 'Data betyder historisk marknadsdata som systemet kan testa mot.',
   );
 }
 
@@ -438,7 +441,7 @@ function batchPipelineSummary(block) {
 function replayPipelineSummary(block) {
   return pipelineSummary(
     block,
-    Number(block?.totalReplayRuns || 0) > 0 ? `${fmtNumber(block?.totalReplayRuns || 0)} replay-runs` : 'Inga replaytester ännu',
+    Number(block?.totalReplayRuns || 0) > 0 ? `${fmtNumber(block?.totalReplayRuns || 0)} replaytester` : 'Inga replaytester ännu',
     'Replay betyder att systemet spelar upp gammal marknadsdata som om det hände live.',
   );
 }
@@ -446,8 +449,8 @@ function replayPipelineSummary(block) {
 function paperPipelineSummary(block) {
   return pipelineSummary(
     block,
-    Number(block?.count || 0) > 0 ? `${fmtNumber(block?.count || 0)} paper trades` : 'Ingen låtsashandel ännu',
-    'Paper trading betyder låtsashandel. Inga riktiga pengar används.',
+    Number(block?.count || 0) > 0 ? `${fmtNumber(block?.count || 0)} låtsasaffärer` : 'Ingen låtsashandel ännu',
+    'Låtsashandel betyder simulerad handel. Inga riktiga pengar används.',
   );
 }
 
@@ -460,8 +463,8 @@ function learningPipelineSummary(block) {
       ? 'Ingen learning-data ännu'
       : reliable
         ? `Aktiv, källa: ${reliable}`
-        : 'Learning saknar tydlig huvudkälla',
-    help: block?.message || 'Learning sammanfattar testresultat och föreslår nästa säkra steg.',
+        : 'Inlärning saknar tydlig huvudkälla',
+    help: block?.message || 'Inlärning sammanfattar testresultat och föreslår nästa säkra steg.',
   };
 }
 
@@ -471,8 +474,8 @@ function SystemPipeline({ overview }) {
     ['Data', dataPipelineSummary(overview?.dataStatus)],
     ['Batch', batchPipelineSummary(overview?.batchStatus)],
     ['Replay', replayPipelineSummary(overview?.replayStatus)],
-    ['Paper', paperPipelineSummary(overview?.paperStatus)],
-    ['Learning', learningPipelineSummary(overview?.learningStatus)],
+    ['Låtsashandel', paperPipelineSummary(overview?.paperStatus)],
+    ['Inlärning', learningPipelineSummary(overview?.learningStatus)],
   ];
   return (
     <div className="research-pipeline">
@@ -481,12 +484,27 @@ function SystemPipeline({ overview }) {
           <span>{index + 1}</span>
           <strong>{tr(title)}</strong>
           <small>{tr(text(info.summary, 'Saknas'))}</small>
-          <Badge tone={info.tone}>{info.status}</Badge>
+          <Badge tone={info.tone}>{statusLabelSv(info.status)}</Badge>
           <small>{tr(text(info.help, 'Saknas'))}</small>
         </div>
       ))}
     </div>
   );
+}
+
+function statusLabelSv(status) {
+  const s = String(status || '').toLowerCase();
+  if (s === 'ok') return 'OK';
+  if (s === 'degraded') return 'Begränsad';
+  if (s === 'empty') return 'Tomt / ingen data ännu';
+  if (s === 'missing') return 'Saknas';
+  if (s === 'error') return 'Fel';
+  if (s === 'running') return 'Pågår';
+  if (s === 'active') return 'Aktiv';
+  if (s === 'completed') return 'Klart';
+  if (s === 'blocked') return 'Blockerad';
+  if (s === 'waiting') return 'Väntar';
+  return status ? String(status) : 'Saknas';
 }
 
 function RankingList({ items, tone, emptyText }) {
@@ -573,13 +591,13 @@ function OverviewAiSection({ aiRecommendations, lossFeedbackQueue, nextRecommend
       />
       <div className="research-grid research-grid-3">
         <Card>
-          <div className="research-card-title"><strong>AI-rekommendationer</strong><Badge tone={toneForStatus(aiRecommendations?.status)}>{text(aiRecommendations?.status, 'empty')}</Badge></div>
+          <div className="research-card-title"><strong>AI-rekommendationer</strong><Badge tone={toneForStatus(aiRecommendations?.status)}>{statusLabelSv(aiRecommendations?.status)}</Badge></div>
           {aiRecommendations?.status === 'empty'
             ? <p>AI-rekommendationer är inte samlade ännu. Backend-strukturen finns, men en tydlig AI-källa är inte vald.</p>
             : <RecommendationList items={aiRecommendations?.items} emptyText="Inga AI-rekommendationer hittades ännu." />}
         </Card>
         <Card>
-          <div className="research-card-title"><strong>Loss feedback queue</strong><Badge tone={toneForStatus(lossFeedbackQueue?.status)}>{text(lossFeedbackQueue?.status, 'empty')}</Badge></div>
+          <div className="research-card-title"><strong>Förlust-feedbackkö</strong><Badge tone={toneForStatus(lossFeedbackQueue?.status)}>{statusLabelSv(lossFeedbackQueue?.status)}</Badge></div>
           {lossFeedbackQueue?.status === 'empty'
             ? <p>Förlust-feedback är inte aktiverad ännu. Senare ska svaga paper-resultat skickas tillbaka till batch/replay.</p>
             : <RecommendationList items={lossFeedbackQueue?.items} emptyText="Ingen loss feedback finns ännu." />}
@@ -608,7 +626,7 @@ function activityLabel(event) {
   if (event.type === 'batch') return 'Batchtest uppdaterades';
   if (event.type === 'data_job') return 'Datahämtning uppdaterades';
   if (event.type === 'ai') return 'AI-analys uppdaterades';
-  if (event.type === 'learning') return 'Learning uppdaterades';
+  if (event.type === 'learning') return 'Inlärning uppdaterades';
   return simpleEventLabel(event.type);
 }
 
@@ -936,7 +954,7 @@ function hasObjectKeys(value) {
 }
 
 function blockSourceLabel(source) {
-  return source === 'overview' ? 'overview' : source === 'fallback' ? 'fallback' : 'saknas';
+  return source === 'overview' ? 'Supervisor-översikt' : source === 'fallback' ? 'fallback' : 'saknas';
 }
 
 function sourceTone(source) {
@@ -1265,8 +1283,8 @@ function AutomationModePanel({ data }) {
             <span><b>Batch autopilot</b>{text(batchAuto.status, 'Saknas')} · dryRunOnly={String(batchAuto.dryRunOnly === true)}</span>
             <span><b>Replay autopilot</b>{text(replayAuto.status, 'Saknas')} · dryRunOnly={String(replayAuto.dryRunOnly === true)}</span>
             <span><b>Narrow autopilot</b>{text(narrowScheduler.status || narrowScheduler.blockedReason, 'Saknas')} · dryRunOnly={String(narrowScheduler.dryRunOnly === true)}</span>
-            <span><b>Paper agent</b>{paperAgent.count || paperAgent.enabled ? 'Paper status active' : 'Saknas'} · mode={text(paperAgent.mode, 'paper_only')}</span>
-            <span><b>Scheduler</b>{scheduler.schedulerActive ? 'Active' : 'Inactive'} · interval={fmtNumber(scheduler.intervalMinutes || 0)} min</span>
+            <span><b>Låtsaagent</b>{paperAgent.count || paperAgent.enabled ? 'Låtsastatus aktiv' : 'Saknas'} · mode={text(paperAgent.mode, 'paper_only')}</span>
+            <span><b>Scheduler</b>{scheduler.schedulerActive ? 'Aktiv' : 'Inaktiv'} · interval={fmtNumber(scheduler.intervalMinutes || 0)} min</span>
             <span><b>Execution</b>{mode.key === 'off' ? 'Automation är avstängd. Sidan visar bara status.' : anyPlannerText(batchAuto, replayAuto, narrowScheduler)}</span>
           </div>
         </Card>
@@ -1296,7 +1314,7 @@ function confidenceTone(value) {
 
 function planEvidenceText(evidence = {}) {
   const parts = [];
-  if (evidence.paperTrades) parts.push(`Paper ${evidence.paperWinRate ?? '–'}% / ${evidence.paperTrades} trades`);
+  if (evidence.paperTrades) parts.push(`Låtsa ${evidence.paperWinRate ?? '–'}% / ${evidence.paperTrades} tester`);
   if (evidence.simTrades) parts.push(`Sim ${evidence.simWinRate ?? '–'}% / ${evidence.simTrades} trades`);
   parts.push(`Runtime: ${runtimeAutomaticLabel(evidence.runtimeStatus)}`);
   return parts.join(' · ');
@@ -1438,8 +1456,8 @@ function ManualApprovalPanel({ plan }) {
       setError(err?.data?.error || err?.message || 'Åtgärden kunde inte sparas.');
     } finally {
       setBusyId('');
-    }
   }
+}
 
   const recommended = Array.isArray(plan?.recommendedPaperCandidates) ? plan.recommendedPaperCandidates : [];
   const approvedIds = Array.isArray(approvals?.approvedStrategyIds) ? approvals.approvedStrategyIds : [];
@@ -2054,7 +2072,7 @@ function TechnicalDetailsPanel({ data, technical }) {
           <div className="research-tech-grid">
             <MetricCard label="Overview byggd" value={timeText(tech.generatedAt)} tone={toneForStatus(tech.status)} />
             <MetricCard label="Cacheålder" value={tech.cacheAgeMs !== null && tech.cacheAgeMs !== undefined ? `${fmtNumber(tech.cacheAgeMs)} ms` : '—'} tone="blue" />
-            <MetricCard label="Block ok/degraded/missing" value={`${fmtNumber(tech.counts?.ok || 0)} / ${fmtNumber(tech.counts?.degraded || 0)} / ${fmtNumber(tech.counts?.missing || 0)}`} tone={toneForStatus(tech.status)} />
+            <MetricCard label="Block OK/begränsad/saknas" value={`${fmtNumber(tech.counts?.ok || 0)} / ${fmtNumber(tech.counts?.degraded || 0)} / ${fmtNumber(tech.counts?.missing || 0)}`} tone={toneForStatus(tech.status)} />
             <MetricCard label="Warnings" value={tech.warnings?.length ? fmtNumber(tech.warnings.length) : '0'} tone={tech.warnings?.length ? 'warning' : 'good'} />
           </div>
           <Card className="research-wide">
@@ -2238,7 +2256,7 @@ export default function SupervisorBrainPage() {
             <MetricCard label={t('supervisor.systemIsSafe', 'Systemet är säkert')} value={safetyLocked ? t('supervisor.yes', 'Ja') : t('supervisor.check', 'Kontrollera')} help={`${t('safety.noRealOrders', 'Inga riktiga order')}. ${t('safety.liveTradingOff', 'Ingen livehandel')}.`} tone={safetyLocked ? 'good' : 'danger'} />
             <MetricCard label={t('supervisor.mode', 'Läge')} value={t('supervisor.paperMode', 'Endast låtsasläge')} help={t('safety.noRealMoney', 'Systemet använder inga riktiga pengar')} tone="good" />
             <MetricCard label={t('supervisor.whatSystemDoes', 'Vad systemet gör')} value={autopilot.schedulerActive ? t('supervisor.scanningTesting', 'Scannar och testar') : t('supervisor.resting', 'Vilar')} help="Systemet analyserar testdata i bakgrunden." tone={autopilot.schedulerActive ? 'blue' : 'warning'} />
-            <MetricCard label="Totalt testade händelser" value={totalTestEvents !== null ? fmtNumber(totalTestEvents) : '—'} help={totalTestEvents !== null ? `Summerat read-only från batch, replay och paper. Källa: ${[batchView.source, replayView.source, paperView.source].join(' / ')}.` : 'Saknas i samlad vy. Fallbackar gav ingen säker totalsiffra.'} tone={totalTestEvents !== null ? 'blue' : 'warning'} />
+            <MetricCard label="Totalt testade händelser" value={totalTestEvents !== null ? fmtNumber(totalTestEvents) : '—'} help={totalTestEvents !== null ? `Summerat read-only från batch, replay och låtsashandel. Källa: ${(() => { const sources = [batchView.source, replayView.source, paperView.source].filter(Boolean); return sources.length && sources.every((src) => src === sources[0]) ? blockSourceLabel(sources[0]) : sources.map(blockSourceLabel).join(' / '); })()}.` : 'Saknas i samlad vy. Fallbackar gav ingen säker totalsiffra.'} tone={totalTestEvents !== null ? 'blue' : 'warning'} />
             <MetricCard label={t('supervisor.latestEvent', 'Senaste händelse')} value={latestActivity ? simpleEventLabel(latestActivity.title || latestActivity.type, t('insights.activity', 'Aktivitet')) : 'Saknas'} help={latestActivity ? timeText(latestActivity.timestamp) : 'Ingen aktivitet ännu'} tone={latestActivity ? 'blue' : 'warning'} />
             <MetricCard label={t('supervisor.latestTest', 'Senaste test')} value={latestKnown ? simpleEventLabel(latestKnown.type, 'Testhändelse') : '—'} help={latestKnown ? `${text(latestKnown.symbol, 'Saknas')} · ${timeText(latestKnown.timestamp)}` : (hasAnyStructuredHistory ? 'Ingen samlad recentTests-feed ännu, men batch/replay/paper-resultat finns.' : 'Inget test ännu')} tone={latestKnown?.blockedReason ? 'warning' : hasAnyStructuredHistory ? 'blue' : 'warning'} />
             <MetricCard label={t('supervisor.aiStatus', 'AI-status')} value={text(learningStatus?.status, aiReadiness(aiStatusForReadiness).label)} help="AI och learning läser och sammanfattar. De kan inte handla." tone={learningStatus?.status ? toneForStatus(learningStatus.status) : aiReadiness(aiStatusForReadiness).tone} />
@@ -2256,14 +2274,14 @@ export default function SupervisorBrainPage() {
             eyebrow="Systemets kedja"
             title="Data till nästa rekommendation"
             subtitle="Det här är den read-only kedja som visar om systemet har data nog för att analysera, testa och lära sig."
-            aside={<Badge tone="good">Overview</Badge>}
+            aside={<Badge tone="good">Översikt</Badge>}
           />
           <div className="research-grid research-grid-4">
             <MetricCard label="Data" value={dataPipelineSummary(dataStatus).summary} help={dataPipelineSummary(dataStatus).help} tone={dataPipelineSummary(dataStatus).tone} />
             <MetricCard label="Batch" value={batchPipelineSummary(batchStatus).summary} help={batchPipelineSummary(batchStatus).help} tone={batchPipelineSummary(batchStatus).tone} />
             <MetricCard label="Replay" value={replayPipelineSummary(replayStatus).summary} help={replayPipelineSummary(replayStatus).help} tone={replayPipelineSummary(replayStatus).tone} />
-            <MetricCard label="Paper" value={paperPipelineSummary(paperStatus).summary} help={paperPipelineSummary(paperStatus).help} tone={paperPipelineSummary(paperStatus).tone} />
-            <MetricCard label="Learning" value={learningPipelineSummary(learningStatus).summary} help={learningPipelineSummary(learningStatus).help} tone={learningPipelineSummary(learningStatus).tone} />
+            <MetricCard label="Låtsashandel" value={paperPipelineSummary(paperStatus).summary} help={paperPipelineSummary(paperStatus).help} tone={paperPipelineSummary(paperStatus).tone} />
+            <MetricCard label="Inlärning" value={learningPipelineSummary(learningStatus).summary} help={learningPipelineSummary(learningStatus).help} tone={learningPipelineSummary(learningStatus).tone} />
           </div>
         </section>
         <Card className="research-wide">
@@ -2272,8 +2290,8 @@ export default function SupervisorBrainPage() {
             <span><b>Data</b>{safeString(dataPipelineSummary(dataStatus).summary)}</span>
             <span><b>Batch</b>{safeString(batchPipelineSummary(batchStatus).summary)}</span>
             <span><b>Replay</b>{safeString(replayPipelineSummary(replayStatus).summary)}</span>
-            <span><b>Paper</b>{safeString(paperPipelineSummary(paperStatus).summary)}</span>
-            <span><b>Learning</b>{safeString(learningPipelineSummary(learningStatus).summary)}</span>
+            <span><b>Låtsashandel</b>{safeString(paperPipelineSummary(paperStatus).summary)}</span>
+            <span><b>Inlärning</b>{safeString(learningPipelineSummary(learningStatus).summary)}</span>
           </div>
         </Card>
           </>
@@ -2289,7 +2307,7 @@ export default function SupervisorBrainPage() {
             aside={<Badge tone={toneForStatus(first(overview.liveActivitySummary?.status, data.activity?.status))}>{safeString(first(overview.liveActivitySummary?.status, data.activity?.status), 'Saknas')}</Badge>}
           />
           <div className="research-grid research-grid-4">
-            <MetricCard label="Källa" value={overview.liveActivitySummary ? 'overview' : data.activity?.ok ? 'fallback' : '—'} help={overview.liveActivitySummary ? 'Samlad översiktssummering.' : data.activity?.ok ? 'Fallback: /api/status/live-activity' : 'Ingen live-feed hittades.'} tone={overview.liveActivitySummary ? 'good' : data.activity?.ok ? 'warning' : 'neutral'} />
+            <MetricCard label="Källa" value={overview.liveActivitySummary ? 'Supervisor-översikt' : data.activity?.ok ? 'fallback' : '—'} help={overview.liveActivitySummary ? 'Samlad översiktssummering från Supervisor.' : data.activity?.ok ? 'Fallback: /api/status/live-activity' : 'Ingen live-feed hittades.'} tone={overview.liveActivitySummary ? 'good' : data.activity?.ok ? 'warning' : 'neutral'} />
             <MetricCard label="Senaste aktivitet" value={events[0] ? simpleEventLabel(events[0].title || events[0].type, 'Aktivitet') : '—'} help={events[0] ? timeText(events[0].timestamp) : 'Ingen live-feed hittades, men systemstatus kan ändå vara aktiv.'} tone={events[0] ? 'blue' : 'warning'} />
             <MetricCard label="Händelser i feeden" value={events.length ? fmtNumber(events.length) : '—'} help="Visar senaste händelser som read-only." tone={events.length ? 'blue' : 'neutral'} />
             <MetricCard label="Säkerhet" value="paper_only" help="Inga riktiga order eller brokerkopplingar används." tone="good" />
@@ -2398,7 +2416,7 @@ export default function SupervisorBrainPage() {
             <MetricCard label="Antal replaytester" value={replayView.count !== null ? fmtNumber(replayView.count) : '—'} help={replayView.count !== null ? `Källa: ${replayView.source}` : 'Saknas i samlad vy'} tone={replayView.count !== null ? 'blue' : 'warning'} />
             <MetricCard label="Senaste replay" value={replayView.latest?.runId || '—'} help={replayView.latest ? timeText(replayView.latest.createdAt) : 'Ingen replaydetalj hittades'} tone={replayView.latest ? 'blue' : 'warning'} />
             <MetricCard label="Bästa symbol" value={safeString(replayView.latest?.bestSymbol?.symbol, '—')} help={replayView.latest?.bestSymbol?.avgScore != null ? `Score ${fmtNumber(replayView.latest.bestSymbol.avgScore)}` : 'Saknas i denna vy'} tone="blue" />
-            <MetricCard label="Status" value={safeString(replayView.status, '—')} help={replayView.source === 'fallback' ? 'Fallback används eftersom overview saknar replayblock.' : 'Read-only status'} tone={toneForStatus(replayView.status)} />
+            <MetricCard label="Status" value={statusLabelSv(replayView.status)} help={replayView.source === 'fallback' ? 'Fallback används eftersom overview saknar replayblock.' : 'Read-only status'} tone={toneForStatus(replayView.status)} />
           </div>
           <Card className="research-wide">
             <div className="research-card-title"><strong>Replay med aktivitet</strong><Badge tone="blue">Prioriterad</Badge></div>
@@ -2422,7 +2440,7 @@ export default function SupervisorBrainPage() {
             aside={<Badge tone={sourceTone(dataCoverage.source)}>{blockSourceLabel(dataCoverage.source)}</Badge>}
           />
           <div className="research-grid research-grid-4">
-            <MetricCard label="Data status" value={safeString(dataCoverage.status, '—')} help={dataCoverage.note || 'Read-only datastatus'} tone={toneForStatus(dataCoverage.status)} />
+            <MetricCard label="Data status" value={statusLabelSv(dataCoverage.status)} help={dataCoverage.note || 'Read-only datastatus'} tone={toneForStatus(dataCoverage.status)} />
             <MetricCard label="Symboler totalt" value={dataCoverage.totalSymbols !== null ? fmtNumber(dataCoverage.totalSymbols) : '—'} help="Totalt antal symboler i den tillgängliga vyn." tone={dataCoverage.totalSymbols !== null ? 'blue' : 'neutral'} />
             <MetricCard label="Redo för tester" value={dataCoverage.ready !== null ? fmtNumber(dataCoverage.ready) : '—'} help="Redo för batch/replay i samlad vy." tone={dataCoverage.ready !== null ? 'good' : 'neutral'} />
             <MetricCard label="Saknar data" value={dataCoverage.missing !== null ? fmtNumber(dataCoverage.missing) : '—'} help="Visas bara när overview exponerar det." tone={dataCoverage.missing !== null ? 'warning' : 'neutral'} />
@@ -2461,7 +2479,7 @@ export default function SupervisorBrainPage() {
             <MetricCard label="Avgörs ofta av maxtid" value={canonical.timeoutRate != null ? fmtPct(canonical.timeoutRate) : '—'} help="Hög andel betyder att rörelsen ofta inte hann komma igång." tone={Number(canonical.timeoutRate) >= 20 ? 'warning' : 'blue'} />
           </div>
           <Card className="research-wide">
-            <div className="research-card-title"><strong>Kort sammanfattning</strong><Badge tone="purple">Learning</Badge></div>
+            <div className="research-card-title"><strong>Kort sammanfattning</strong><Badge tone="purple">Inlärning</Badge></div>
             <p>{lossReasonText}</p>
             <p className="research-muted">Allt detta bygger på testdata, inte bevisad handelsvinst. Systemet använder lärdomarna för att föreslå nästa säkra test.</p>
           </Card>
@@ -2501,8 +2519,8 @@ export default function SupervisorBrainPage() {
           <Card className="research-wide">
             <div className="research-card-title"><strong>Read-only risker</strong><Badge tone="warning">Översikt</Badge></div>
             <div className="research-mini-grid">
-              <span><b>Replay degraded</b>{replayDegraded ? 'Ja' : 'Nej / okänt'}</span>
-              <span><b>Learning degraded</b>{learningView.source === 'missing' ? 'Ja' : 'Nej / fallback'}</span>
+              <span><b>Replay begränsad</b>{replayDegraded ? 'Ja' : 'Nej / okänt'}</span>
+              <span><b>Inlärning begränsad</b>{learningView.source === 'missing' ? 'Ja' : 'Nej / fallback'}</span>
               <span><b>Få tester</b>{totalTestEvents !== null && totalTestEvents < 5 ? 'Ja' : totalTestEvents === null ? 'Okänt' : 'Nej'}</span>
               <span><b>Allowlist tom</b>{allowlist ? (allowlist.totalApproved > 0 ? 'Nej' : 'Ja') : 'Okänt'}</span>
               <span><b>Automation off</b>{deriveAutomationMode(data).key === 'off' ? 'Ja' : 'Nej'}</span>
@@ -2531,7 +2549,7 @@ export default function SupervisorBrainPage() {
             <Card><strong>Overview-block</strong><span>{Object.keys(overview).length ? Object.keys(overview).join(', ') : 'saknas'}</span></Card>
             <Card><strong>Batch-källa</strong><span>{blockSourceLabel(batchView.source)}</span></Card>
             <Card><strong>Replay-källa</strong><span>{blockSourceLabel(replayView.source)}</span></Card>
-            <Card><strong>Paper-källa</strong><span>{blockSourceLabel(paperView.source)}</span></Card>
+            <Card><strong>Låtsashandel-källa</strong><span>{blockSourceLabel(paperView.source)}</span></Card>
           </div>
         </section>
 
