@@ -3,6 +3,61 @@
 const assert = require('assert/strict');
 const overview = require('./supervisorOverviewService');
 
+const REQUIRED_OVERVIEW_KEYS = [
+  'dataStatus',
+  'batchStatus',
+  'replayStatus',
+  'paperStatus',
+  'learningStatus',
+  'strategyRanking',
+  'recentTests',
+  'aiRecommendations',
+  'lossFeedbackQueue',
+  'nextRecommendedActions',
+  'safety',
+];
+
+function assertSafety(obj, label = 'safety') {
+  assert.deepEqual(obj, {
+    mode: 'paper_only',
+    actions_allowed: false,
+    can_place_orders: false,
+    live_trading_enabled: false,
+    broker_enabled: false,
+  }, `${label} exact match`);
+}
+
+function assertReadOnlyStatus(status, label) {
+  assert.ok(status && ['ok', 'empty', 'degraded', 'error'].includes(status.status), `${label} status valid`);
+  assert.equal(status.mode, 'paper_only', `${label} mode`);
+  assert.equal(status.actions_allowed, false, `${label} actions_allowed`);
+  assert.equal(status.can_place_orders, false, `${label} can_place_orders`);
+  assert.equal(status.live_trading_enabled, false, `${label} live_trading_enabled`);
+  assert.equal(status.broker_enabled, false, `${label} broker_enabled`);
+}
+
+function assertOverviewContract(o, label = 'overview') {
+  for (const key of REQUIRED_OVERVIEW_KEYS) {
+    assert.ok(Object.prototype.hasOwnProperty.call(o, key), `${label}: has ${key}`);
+  }
+  assertSafety(o.safety, `${label}.safety`);
+  assert.ok(Array.isArray(o.recentTests), `${label}: recentTests array`);
+  assert.ok(Array.isArray(o.nextRecommendedActions), `${label}: nextRecommendedActions array`);
+  assertReadOnlyStatus(o.dataStatus, `${label}.dataStatus`);
+  assertReadOnlyStatus(o.batchStatus, `${label}.batchStatus`);
+  assertReadOnlyStatus(o.replayStatus, `${label}.replayStatus`);
+  assertReadOnlyStatus(o.paperStatus, `${label}.paperStatus`);
+  assertReadOnlyStatus(o.learningStatus, `${label}.learningStatus`);
+  assertReadOnlyStatus(o.strategyRanking, `${label}.strategyRanking`);
+  assert.ok(o.aiRecommendations && ['ok', 'empty', 'degraded', 'error'].includes(o.aiRecommendations.status), `${label}: aiRecommendations status valid`);
+  assert.ok(Array.isArray(o.aiRecommendations.items), `${label}: aiRecommendations.items array`);
+  assert.ok(o.lossFeedbackQueue && ['ok', 'empty', 'degraded', 'error'].includes(o.lossFeedbackQueue.status), `${label}: lossFeedbackQueue status valid`);
+  assert.ok(Array.isArray(o.lossFeedbackQueue.items), `${label}: lossFeedbackQueue.items array`);
+  assert.ok(Array.isArray(o.strategyRanking.topStrategies || []), `${label}: strategyRanking.topStrategies array`);
+  assert.ok(Array.isArray(o.strategyRanking.weakStrategies || []), `${label}: strategyRanking.weakStrategies array`);
+  assert.ok(Array.isArray(o.strategyRanking.strategiesNeedingMoreData || []), `${label}: strategyRanking.strategiesNeedingMoreData array`);
+}
+
 // ── 1. safeBlock never throws and maps outcomes correctly ─────────────────────
 (async () => {
   const ok = await overview.safeBlock({ scope: 's', source: 'x' }, () => ({ a: 1 }));
@@ -67,33 +122,20 @@ const overview = require('./supervisorOverviewService');
   }
   assert.ok(Array.isArray(o.risks) && o.risks.some((r) => r.code === 'paper_only'));
   assert.ok(Array.isArray(o.actionPlan) && o.actionPlan.length >= 1);
-  assert.deepEqual(o.safety, {
-    mode: 'paper_only',
-    actions_allowed: false,
-    can_place_orders: false,
-    live_trading_enabled: false,
-    broker_enabled: false,
-  });
+  assertOverviewContract(o, 'overview');
 
   // ── 6. overview exposes recentTests array + status (real data) ──────────────
   assert.ok(Array.isArray(o.recentTests), 'recentTests is an array');
   assert.ok(o.recentTestsStatus && ['ok', 'empty', 'degraded', 'error'].includes(o.recentTestsStatus.status), 'recentTestsStatus valid');
   assert.ok(o.recentTestsStatus.source, 'recentTestsStatus source present');
-  assert.ok(o.dataStatus && ['ok', 'empty', 'degraded', 'error'].includes(o.dataStatus.status), 'dataStatus valid');
-  assert.ok(o.batchStatus && ['ok', 'empty', 'degraded', 'error'].includes(o.batchStatus.status), 'batchStatus valid');
-  assert.ok(o.replayStatus && ['ok', 'empty', 'degraded', 'error'].includes(o.replayStatus.status), 'replayStatus valid');
-  assert.ok(o.paperStatus && ['ok', 'empty', 'degraded', 'error'].includes(o.paperStatus.status), 'paperStatus valid');
-  assert.ok(o.learningStatus && ['ok', 'empty', 'degraded', 'error'].includes(o.learningStatus.status), 'learningStatus valid');
-  assert.ok(o.strategyRanking && ['ok', 'empty', 'degraded', 'error'].includes(o.strategyRanking.status), 'strategyRanking valid');
-  assert.ok(o.aiRecommendations && ['ok', 'empty', 'degraded', 'error'].includes(o.aiRecommendations.status), 'aiRecommendations valid');
-  assert.ok(o.lossFeedbackQueue && ['ok', 'empty', 'degraded', 'error'].includes(o.lossFeedbackQueue.status), 'lossFeedbackQueue valid');
+  assert.ok(Array.isArray(o.aiRecommendations.items), 'aiRecommendations.items is an array');
+  assert.ok(Array.isArray(o.lossFeedbackQueue.items), 'lossFeedbackQueue.items is an array');
   assert.ok(Array.isArray(o.nextRecommendedActions), 'nextRecommendedActions is an array');
-  assert.equal(o.dataStatus.mode, 'paper_only');
-  assert.equal(o.batchStatus.mode, 'paper_only');
-  assert.equal(o.replayStatus.mode, 'paper_only');
-  assert.equal(o.paperStatus.mode, 'paper_only');
-  assert.equal(o.learningStatus.mode, 'paper_only');
-  assert.equal(o.strategyRanking.mode, 'paper_only');
+  assert.equal(o.aiRecommendations.status, 'empty', 'aiRecommendations default to empty until unified source exists');
+  assert.equal(o.lossFeedbackQueue.status, 'empty', 'lossFeedbackQueue default to empty');
+  assert.ok(Array.isArray(o.strategyRanking.topStrategies || []), 'strategyRanking.topStrategies array');
+  assert.ok(Array.isArray(o.strategyRanking.weakStrategies || []), 'strategyRanking.weakStrategies array');
+  assert.ok(Array.isArray(o.strategyRanking.strategiesNeedingMoreData || []), 'strategyRanking.strategiesNeedingMoreData array');
   assert.ok(o.batchSummary && typeof o.batchSummary === 'object', 'batchSummary present');
   assert.ok(['ok', 'empty', 'degraded', 'error'].includes(o.batchSummary.status), 'batchSummary status valid');
   assert.equal(o.batchSummary.source, 'strategyBatchTestService');
@@ -229,7 +271,17 @@ const overview = require('./supervisorOverviewService');
   assert.equal(nullCtl.status, 'empty');
   assert.equal(nullCtl.live_trading_enabled, false);
 
-  // ── 9. empty / broken history never crashes; overview stays ok (HTTP 200) ───
+  // ── 9. learningStatus marks split/legacy learning clearly when relevant ────
+  if (o.learningStatus.daytradingLearning
+    && o.learningStatus.daytradingLearning.tradesTotal === 0
+    && o.learningStatus.daytradingLearning.skippedTotal > 1000) {
+    assert.equal(o.learningStatus.status, 'degraded', 'legacy split learning degrades learningStatus');
+    assert.ok(Array.isArray(o.learningStatus.legacySources), 'legacySources array present');
+    assert.ok(o.learningStatus.legacySources.some((row) => row.source === 'daytradingLearningEngineService'), 'daytrading learning marked as legacy');
+    assert.equal(o.learningStatus.mostReliableSource, 'narrowPerformanceLearningService', 'narrow learning preferred as reliable source');
+  }
+
+  // ── 10. empty / broken history never crashes; overview stays ok (HTTP 200) ──
   const fs = require('fs'); const os = require('os'); const path = require('path');
   function withHistory(content) {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'sov-hist-'));
@@ -261,15 +313,40 @@ const overview = require('./supervisorOverviewService');
   assert.equal(o2.live_trading_enabled, false);
   assert.equal(o2.can_place_orders, false);
   assert.ok(Array.isArray(o2.recentTests));
+  assertOverviewContract(o2, 'overview broken history');
 
   delete process.env.NARROW_AUTOPILOT_DIR;
   delete require.cache[require.resolve('./narrowTestAutopilotService')];
 
-  // ── 10. short cache: second call within TTL is served from cache ────────────
+  // ── 11. one failing source degrades one block only; contract survives ───────
+  const dataCoverage = require('./dataCoverageExpansionService');
+  const originalCoverageStatus = dataCoverage.getCoverageStatus;
+  overview.resetOverviewCache();
+  try {
+    dataCoverage.getCoverageStatus = () => { throw new Error('coverage exploded'); };
+    const degraded = await overview.buildOverview();
+    assert.equal(degraded.ok, true, 'overview survives data source failure');
+    assertOverviewContract(degraded, 'overview degraded source');
+    assert.equal(degraded.dataStatus.status, 'error', 'failing data source maps to error block');
+    assert.ok(Array.isArray(degraded.recentTests), 'other blocks still present');
+    assert.ok(degraded.batchStatus, 'batchStatus still present');
+    assert.ok(degraded.replayStatus, 'replayStatus still present');
+    assert.ok(degraded.paperStatus, 'paperStatus still present');
+    assert.ok(degraded.learningStatus, 'learningStatus still present');
+    assert.ok(degraded.strategyRanking, 'strategyRanking still present');
+    assert.equal(degraded.aiRecommendations.status, 'empty', 'aiRecommendations still present');
+    assert.equal(degraded.lossFeedbackQueue.status, 'empty', 'lossFeedbackQueue still present');
+  } finally {
+    dataCoverage.getCoverageStatus = originalCoverageStatus;
+    overview.resetOverviewCache();
+  }
+
+  // ── 12. short cache: second call within TTL is served from cache ────────────
   overview.resetOverviewCache();
   const c1 = await overview.getCachedOverview();
   assert.equal(c1.cached, false, 'first call rebuilds');
   assert.equal(c1.ok, true);
+  assertOverviewContract(c1, 'cached overview first');
   const c2 = await overview.getCachedOverview();
   assert.equal(c2.cached, true, 'second call within TTL is cached');
   // Safety flags survive the cache untouched.
@@ -277,9 +354,11 @@ const overview = require('./supervisorOverviewService');
   assert.equal(c2.live_trading_enabled, false);
   assert.equal(c2.can_place_orders, false);
   assert.equal(c2.broker_enabled, false);
+  assertOverviewContract(c2, 'cached overview second');
   // force bypasses the cache (so errors can never be hidden permanently).
   const c3 = await overview.getCachedOverview({ force: true });
   assert.equal(c3.cached, false, 'force rebuilds');
+  assertOverviewContract(c3, 'cached overview forced');
   overview.resetOverviewCache();
 
   console.log('# supervisorOverviewService tests passed.');
