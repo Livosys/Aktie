@@ -130,6 +130,17 @@ function text(value, fallback = 'Saknas') {
   return fallback;
 }
 
+function overviewSafety(overview = {}) {
+  const safety = overview?.safety || {};
+  return {
+    mode: safety.mode || overview.mode || 'paper_only',
+    actions_allowed: safety.actions_allowed === true || overview.actions_allowed === true,
+    can_place_orders: safety.can_place_orders === true || overview.can_place_orders === true,
+    live_trading_enabled: safety.live_trading_enabled === true || overview.live_trading_enabled === true,
+    broker_enabled: safety.broker_enabled === true || overview.broker_enabled === true,
+  };
+}
+
 const SIMPLE_EVENT_LABELS = {
   run_completed: 'Test klart',
   run_blocked: 'Test stoppat',
@@ -322,13 +333,7 @@ function MetricCard({ label, value, help, tone = 'neutral' }) {
 
 function SafetyStatusBar({ overview }) {
   const { t } = useLanguage();
-  const safety = {
-    mode: overview?.mode || 'paper_only',
-    actions_allowed: overview?.actions_allowed === true,
-    can_place_orders: overview?.can_place_orders === true,
-    live_trading_enabled: overview?.live_trading_enabled === true,
-    broker_enabled: overview?.broker_enabled === true,
-  };
+  const safety = overviewSafety(overview);
   const locked = safety.mode === 'paper_only'
     && !safety.actions_allowed
     && !safety.can_place_orders
@@ -350,25 +355,193 @@ function SafetyStatusBar({ overview }) {
   );
 }
 
-function SystemPipeline() {
+function pipelineSummary(block, fallbackSummary, fallbackHelp) {
+  const status = text(block?.status, 'empty').toLowerCase();
+  return {
+    status,
+    tone: toneForStatus(status),
+    summary: fallbackSummary,
+    help: block?.message || fallbackHelp,
+  };
+}
+
+function dataPipelineSummary(block) {
+  const ready = Math.max(Number(block?.readyForBatch || 0), Number(block?.readyForReplay || 0));
+  return pipelineSummary(
+    block,
+    ready > 0 || Number(block?.missingData || 0) > 0
+      ? `${fmtNumber(ready)} symboler redo, ${fmtNumber(block?.missingData || 0)} saknar data`
+      : 'Ingen datatäckning ännu',
+    'Data betyder historisk marknadsdata som systemet kan testa mot.',
+  );
+}
+
+function batchPipelineSummary(block) {
+  return pipelineSummary(
+    block,
+    Number(block?.totalBatches || 0) > 0 ? `${fmtNumber(block?.totalBatches || 0)} batchtester` : 'Inga batchtester ännu',
+    'Batchtest betyder att systemet testar en strategi på många historiska datapunkter.',
+  );
+}
+
+function replayPipelineSummary(block) {
+  return pipelineSummary(
+    block,
+    Number(block?.totalReplayRuns || 0) > 0 ? `${fmtNumber(block?.totalReplayRuns || 0)} replay-runs` : 'Inga replaytester ännu',
+    'Replay betyder att systemet spelar upp gammal marknadsdata som om det hände live.',
+  );
+}
+
+function paperPipelineSummary(block) {
+  return pipelineSummary(
+    block,
+    Number(block?.count || 0) > 0 ? `${fmtNumber(block?.count || 0)} paper trades` : 'Ingen låtsashandel ännu',
+    'Paper trading betyder låtsashandel. Inga riktiga pengar används.',
+  );
+}
+
+function learningPipelineSummary(block) {
+  const reliable = text(block?.mostReliableSource, '');
+  return {
+    status: String(block?.status || 'empty').toLowerCase(),
+    tone: toneForStatus(block?.status),
+    summary: block?.status === 'empty'
+      ? 'Ingen learning-data ännu'
+      : reliable
+        ? `Aktiv, källa: ${reliable}`
+        : 'Learning saknar tydlig huvudkälla',
+    help: block?.message || 'Learning sammanfattar testresultat och föreslår nästa säkra steg.',
+  };
+}
+
+function SystemPipeline({ overview }) {
   const { tr } = useLanguage();
   const steps = [
-    ['Data', 'Marknadsdata hämtas och sparas.'],
-    ['Test', 'Systemet gör säkra låtsas-, replay- och batchtester.'],
-    ['Resultat', 'Utfallet sparas som testdata.'],
-    ['AI lär sig', 'Learning Engine och AI sammanfattar mönster.'],
-    ['Nästa test', 'Systemet föreslår nästa säkra research-steg.'],
+    ['Data', dataPipelineSummary(overview?.dataStatus)],
+    ['Batch', batchPipelineSummary(overview?.batchStatus)],
+    ['Replay', replayPipelineSummary(overview?.replayStatus)],
+    ['Paper', paperPipelineSummary(overview?.paperStatus)],
+    ['Learning', learningPipelineSummary(overview?.learningStatus)],
   ];
   return (
     <div className="research-pipeline">
-      {steps.map(([title, body], index) => (
-        <div key={title} className="research-pipeline-step">
+      {steps.map(([title, info], index) => (
+        <div key={title} className={`research-pipeline-step research-pipeline-step-${info.tone}`}>
           <span>{index + 1}</span>
           <strong>{tr(title)}</strong>
-          <small>{tr(body)}</small>
+          <small>{tr(text(info.summary, 'Saknas'))}</small>
+          <Badge tone={info.tone}>{info.status}</Badge>
+          <small>{tr(text(info.help, 'Saknas'))}</small>
         </div>
       ))}
     </div>
+  );
+}
+
+function RankingList({ items, tone, emptyText }) {
+  const list = arr(items);
+  if (!list.length) return <EmptyState title="Ingen data ännu">{emptyText}</EmptyState>;
+  return (
+    <div className="research-strategy-group">
+      {list.map((item, index) => (
+        <StrategyCard
+          key={`${text(item.key || item.strategy || item.strategy_id || item.name, 'strategy')}-${index}`}
+          item={item}
+          tone={tone}
+          note={tone === 'good' ? 'Starkast just nu' : tone === 'warning' ? 'Svagast just nu' : 'Behöver mer data'}
+        />
+      ))}
+    </div>
+  );
+}
+
+function StrategyRankingSection({ ranking }) {
+  return (
+    <section className="research-section supervisor-section supervisor-section-ranking">
+      <SectionHeader
+        eyebrow="Strategier"
+        title="Strategiranking"
+        subtitle="Här ser du vilka strategier som ser starkast ut, vilka som är svagare och vilka som behöver mer testdata."
+        aside={<Badge tone={toneForStatus(ranking?.status)}>{text(ranking?.status, 'Saknas')}</Badge>}
+      />
+      <div className="research-grid research-grid-4">
+        <MetricCard label="Strategier totalt" value={fmtNumber(ranking?.totalStrategies || 0)} help="Alla kända strategier i registry." tone="blue" />
+        <MetricCard label="Aktiva strategier" value={fmtNumber(ranking?.activeStrategies || 0)} help="Kan användas i researchflödet." tone="good" />
+        <MetricCard label="Inaktiva strategier" value={fmtNumber(ranking?.inactiveStrategies || 0)} help="Pausade, paper_only eller avstängda." tone="warning" />
+        <MetricCard label="Behöver mer data" value={fmtNumber(arr(ranking?.strategiesNeedingMoreData).length)} help="För få tester för säker slutsats." tone="blue" />
+      </div>
+      <div className="research-grid research-grid-3">
+        <Card>
+          <div className="research-card-title"><strong>Bästa strategier just nu</strong><Badge tone="good">{fmtNumber(arr(ranking?.topStrategies).length)}</Badge></div>
+          <RankingList items={ranking?.topStrategies} tone="good" emptyText="Inga tydliga toppstrategier hittades ännu." />
+        </Card>
+        <Card>
+          <div className="research-card-title"><strong>Svagaste strategier</strong><Badge tone="warning">{fmtNumber(arr(ranking?.weakStrategies).length)}</Badge></div>
+          <RankingList items={ranking?.weakStrategies} tone="warning" emptyText="Inga tydligt svaga strategier hittades ännu." />
+        </Card>
+        <Card>
+          <div className="research-card-title"><strong>Strategier som behöver mer data</strong><Badge tone="blue">{fmtNumber(arr(ranking?.strategiesNeedingMoreData).length)}</Badge></div>
+          <RankingList items={ranking?.strategiesNeedingMoreData} tone="neutral" emptyText="Alla visade strategier har redan viss testdata." />
+        </Card>
+      </div>
+    </section>
+  );
+}
+
+function RecommendationList({ items, emptyText }) {
+  const list = arr(items);
+  if (!list.length) return <EmptyState title="Ingen data ännu">{emptyText}</EmptyState>;
+  return (
+    <div className="research-list">
+      {list.map((item, index) => (
+        <span key={`${text(item.title || item.strategyId || item.strategy_id || item.problem || item.recommendedNextTest, 'item')}-${index}`}>
+          <strong><SafeText value={item.title || item.problem || item.strategyId || item.strategy_id || 'Förslag'} /></strong>
+          {' · '}
+          <SafeText value={item.reason || item.evidence || item.suggestedChange || item.recommendedNextTest || 'Saknas'} />
+        </span>
+      ))}
+    </div>
+  );
+}
+
+function OverviewAiSection({ aiRecommendations, lossFeedbackQueue, nextRecommendedActions, learningStatus }) {
+  const reliable = text(learningStatus?.mostReliableSource, 'Saknas');
+  const narrowRec = learningStatus?.narrowLearning?.recommendedNextTest || null;
+  return (
+    <section className="research-section supervisor-section supervisor-section-overview-ai">
+      <SectionHeader
+        eyebrow="Nästa steg"
+        title="AI, feedback och nästa rekommendation"
+        subtitle="Det här är read-only förslag. Systemet ändrar inte strategier automatiskt."
+        aside={<Badge tone="purple">Read-only</Badge>}
+      />
+      <div className="research-grid research-grid-3">
+        <Card>
+          <div className="research-card-title"><strong>AI-rekommendationer</strong><Badge tone={toneForStatus(aiRecommendations?.status)}>{text(aiRecommendations?.status, 'empty')}</Badge></div>
+          {aiRecommendations?.status === 'empty'
+            ? <p>AI-rekommendationer är inte samlade ännu. Backend-strukturen finns, men en tydlig AI-källa är inte vald.</p>
+            : <RecommendationList items={aiRecommendations?.items} emptyText="Inga AI-rekommendationer hittades ännu." />}
+        </Card>
+        <Card>
+          <div className="research-card-title"><strong>Loss feedback queue</strong><Badge tone={toneForStatus(lossFeedbackQueue?.status)}>{text(lossFeedbackQueue?.status, 'empty')}</Badge></div>
+          {lossFeedbackQueue?.status === 'empty'
+            ? <p>Förlust-feedback är inte aktiverad ännu. Senare ska svaga paper-resultat skickas tillbaka till batch/replay.</p>
+            : <RecommendationList items={lossFeedbackQueue?.items} emptyText="Ingen loss feedback finns ännu." />}
+        </Card>
+        <Card>
+          <div className="research-card-title"><strong>Nästa rekommenderade steg</strong><Badge tone="blue">{fmtNumber(arr(nextRecommendedActions).length)}</Badge></div>
+          {narrowRec ? (
+            <div className="research-next-action">
+              <strong><SafeText value={narrowRec.title} fallback="Nästa rekommenderade test" /></strong>
+              <p><SafeText value={narrowRec.reason} fallback="Narrow learning gav nästa rekommenderade test." /></p>
+              <small>Mest tillförlitlig learning-källa: <SafeText value={reliable} /></small>
+            </div>
+          ) : (
+            <RecommendationList items={nextRecommendedActions} emptyText="Inga rekommenderade steg finns ännu." />
+          )}
+        </Card>
+      </div>
+    </section>
   );
 }
 
@@ -1385,15 +1558,16 @@ function RiskBlockerCard({ risks, dataJobs, batches, activity }) {
 }
 
 function TechnicalDetailsPanel({ data }) {
+  const safety = overviewSafety(data.overview || {});
   return (
     <details className="research-tech">
       <summary>Visa tekniska detaljer</summary>
       <div className="research-tech-grid">
-        <MetricCard label="mode" value={data.overview?.mode || 'paper_only'} tone="good" />
-        <MetricCard label="actions_allowed" value={String(data.overview?.actions_allowed === true ? true : false)} tone="good" />
-        <MetricCard label="can_place_orders" value={String(data.overview?.can_place_orders === true ? true : false)} tone="good" />
-        <MetricCard label="live_trading_enabled" value={String(data.overview?.live_trading_enabled === true ? true : false)} tone="good" />
-        <MetricCard label="broker_enabled" value={String(data.overview?.broker_enabled === true ? true : false)} tone="good" />
+        <MetricCard label="mode" value={safety.mode || 'paper_only'} tone="good" />
+        <MetricCard label="actions_allowed" value={String(safety.actions_allowed === true)} tone="good" />
+        <MetricCard label="can_place_orders" value={String(safety.can_place_orders === true)} tone="good" />
+        <MetricCard label="live_trading_enabled" value={String(safety.live_trading_enabled === true)} tone="good" />
+        <MetricCard label="broker_enabled" value={String(safety.broker_enabled === true)} tone="good" />
         <MetricCard label="AI cache" value={data.aiStatus?.cacheEnabled ? 'På' : 'Av'} help={`${fmtNumber(data.aiStatus?.cacheTtlMs || 0)} ms`} tone="purple" />
         <MetricCard label="Batch API" value={text(data.batches?.status, 'Saknas')} tone={toneForStatus(data.batches?.status)} />
         <MetricCard label="Batch autopilot" value={text(data.batchAuto?.status, 'Saknas')} help={`dryRunOnly=${String(data.batchAuto?.dryRunOnly === true)}`} tone={toneForStatus(data.batchAuto?.status)} />
@@ -1421,12 +1595,22 @@ export default function SupervisorBrainPage() {
   const replayAuto = data.replayAuto || overview.replayAutopilotSummary || null;
   const aiStatusForReadiness = data.aiStatus || overview.aiAnalystStatus || null;
   const aiOutput = data.aiLatest?.latest?.output || data.aiLatest?.output || {};
-
-  const safetyLocked = (overview.mode || 'paper_only') === 'paper_only'
-    && overview.actions_allowed !== true
-    && overview.can_place_orders !== true
-    && overview.live_trading_enabled !== true
-    && overview.broker_enabled !== true;
+  const safety = overviewSafety(overview);
+  const safetyLocked = safety.mode === 'paper_only'
+    && !safety.actions_allowed
+    && !safety.can_place_orders
+    && !safety.live_trading_enabled
+    && !safety.broker_enabled;
+  const dataStatus = overview.dataStatus || {};
+  const batchStatus = overview.batchStatus || {};
+  const replayStatus = overview.replayStatus || {};
+  const paperStatus = overview.paperStatus || {};
+  const learningStatus = overview.learningStatus || {};
+  const strategyRanking = overview.strategyRanking || {};
+  const overviewRecentTests = arr(overview.recentTests);
+  const aiRecommendations = overview.aiRecommendations || { status: 'empty', items: [] };
+  const lossFeedbackQueue = overview.lossFeedbackQueue || { status: 'empty', items: [] };
+  const nextRecommendedActions = arr(overview.nextRecommendedActions);
 
   const events = useMemo(() => arr(data.activity?.events), [data.activity]);
   const recentPaper = useMemo(() => arr(data.paperTrading?.recentPaperTrades), [data.paperTrading]);
@@ -1477,11 +1661,12 @@ export default function SupervisorBrainPage() {
   })();
 
   // Recommended next test — narrow learning first, then the system action plan.
+  const nextOverviewAction = nextRecommendedActions[0] || null;
   const recTitle = normalizeRecommendationTitle(
-    first(narrow.recommendedNextTest?.title, arr(overview.actionPlan)[0]?.title_sv, 'Vänta in mer data'),
+    first(learningStatus?.narrowLearning?.recommendedNextTest?.title, nextOverviewAction?.title, narrow.recommendedNextTest?.title, arr(overview.actionPlan)[0]?.title_sv, 'Vänta in mer data'),
   );
   const recReason = text(
-    first(narrow.recommendedNextTest?.reason, arr(overview.actionPlan)[0]?.detail_sv),
+    first(learningStatus?.narrowLearning?.recommendedNextTest?.reason, nextOverviewAction?.reason, narrow.recommendedNextTest?.reason, arr(overview.actionPlan)[0]?.detail_sv),
     'Systemet samlar fortfarande testdata innan det rekommenderar ett tydligt nästa steg.',
   );
 
@@ -1527,16 +1712,53 @@ export default function SupervisorBrainPage() {
             <MetricCard label={t('supervisor.mode', 'Läge')} value={t('supervisor.paperMode', 'Endast låtsasläge')} help={t('safety.noRealMoney', 'Systemet använder inga riktiga pengar')} tone="good" />
             <MetricCard label={t('supervisor.whatSystemDoes', 'Vad systemet gör')} value={autopilot.schedulerActive ? t('supervisor.scanningTesting', 'Scannar och testar') : t('supervisor.resting', 'Vilar')} help="Systemet analyserar testdata i bakgrunden." tone={autopilot.schedulerActive ? 'blue' : 'warning'} />
             <MetricCard label={t('supervisor.latestEvent', 'Senaste händelse')} value={latestActivity ? simpleEventLabel(latestActivity.title || latestActivity.type, t('insights.activity', 'Aktivitet')) : 'Saknas'} help={latestActivity ? timeText(latestActivity.timestamp) : 'Ingen aktivitet ännu'} tone={latestActivity ? 'blue' : 'warning'} />
-            <MetricCard label={t('supervisor.latestTest', 'Senaste test')} value={latestPaper ? paperResultLabel(latestPaper.result, t) : 'Saknas'} help={latestPaper ? `${text(latestPaper.symbol)} · ${timeText(latestPaper.timestamp)}` : 'Inget test ännu'} tone={latestPaper ? paperResultTone(latestPaper.result) : 'warning'} />
-            <MetricCard label={t('supervisor.aiStatus', 'AI-status')} value={aiReadiness(aiStatusForReadiness).label} help="AI läser och sammanfattar. Den kan inte handla." tone={aiReadiness(aiStatusForReadiness).tone} />
+            <MetricCard label={t('supervisor.latestTest', 'Senaste test')} value={overviewRecentTests[0] ? simpleEventLabel(overviewRecentTests[0].type, 'Testhändelse') : 'Saknas'} help={overviewRecentTests[0] ? `${text(overviewRecentTests[0].symbol, 'Saknas')} · ${timeText(overviewRecentTests[0].timestamp)}` : 'Inget test ännu'} tone={overviewRecentTests[0]?.blockedReason ? 'warning' : 'blue'} />
+            <MetricCard label={t('supervisor.aiStatus', 'AI-status')} value={text(learningStatus?.status, aiReadiness(aiStatusForReadiness).label)} help="AI och learning läser och sammanfattar. De kan inte handla." tone={learningStatus?.status ? toneForStatus(learningStatus.status) : aiReadiness(aiStatusForReadiness).tone} />
           </div>
           <Card className="research-wide">
             <div className="research-card-title"><strong>{t('supervisor.nextCheck', 'Nästa rekommenderade kontroll')}</strong><Badge tone="blue">{t('supervisor.suggestion', 'Förslag')}</Badge></div>
             <p><SafeText value={recTitle} fallback={t('supervisor.waitMoreData', 'Vänta in mer data')} /></p>
             <p className="research-muted"><SafeText value={recReason} /></p>
           </Card>
-          <SystemPipeline />
+          <SystemPipeline overview={overview} />
         </section>
+
+        <section className="research-section supervisor-section supervisor-section-chain">
+          <SectionHeader
+            eyebrow="Systemets kedja"
+            title="Data till nästa rekommendation"
+            subtitle="Det här är den read-only kedja som visar om systemet har data nog för att analysera, testa och lära sig."
+            aside={<Badge tone="good">Overview</Badge>}
+          />
+          <div className="research-grid research-grid-4">
+            <MetricCard label="Data" value={dataPipelineSummary(dataStatus).summary} help={dataPipelineSummary(dataStatus).help} tone={dataPipelineSummary(dataStatus).tone} />
+            <MetricCard label="Batch" value={batchPipelineSummary(batchStatus).summary} help={batchPipelineSummary(batchStatus).help} tone={batchPipelineSummary(batchStatus).tone} />
+            <MetricCard label="Replay" value={replayPipelineSummary(replayStatus).summary} help={replayPipelineSummary(replayStatus).help} tone={replayPipelineSummary(replayStatus).tone} />
+            <MetricCard label="Paper" value={paperPipelineSummary(paperStatus).summary} help={paperPipelineSummary(paperStatus).help} tone={paperPipelineSummary(paperStatus).tone} />
+            <MetricCard label="Learning" value={learningPipelineSummary(learningStatus).summary} help={learningPipelineSummary(learningStatus).help} tone={learningPipelineSummary(learningStatus).tone} />
+          </div>
+        </section>
+
+        <StrategyRankingSection ranking={strategyRanking} />
+
+        <section className="research-section supervisor-section supervisor-section-recent-tests">
+          <SectionHeader
+            eyebrow="Senaste tester"
+            title="Senaste tester och stopp"
+            subtitle="Här syns de senaste batch-, replay-, paper- och autopilot-händelserna i en gemensam tidslinje."
+            aside={<Badge tone={toneForStatus(overview.recentTestsStatus?.status)}>{text(overview.recentTestsStatus?.status, 'Saknas')}</Badge>}
+          />
+          {overviewRecentTests.length
+            ? <HistoryTimeline tests={overviewRecentTests} limit={12} />
+            : <EmptyState title="Inga senaste tester hittades ännu.">När systemet har färska batch-, replay- eller paperresultat syns de här.</EmptyState>}
+        </section>
+
+        <OverviewAiSection
+          aiRecommendations={aiRecommendations}
+          lossFeedbackQueue={lossFeedbackQueue}
+          nextRecommendedActions={nextRecommendedActions}
+          learningStatus={learningStatus}
+        />
 
         <AutomationModePanel data={data} />
 
