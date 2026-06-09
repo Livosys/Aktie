@@ -57,23 +57,57 @@ function useResearchLabData(limit) {
 
   useEffect(() => {
     let cancelled = false;
+
+    function overviewHasBlock(overview, key) {
+      return Boolean(overview && typeof overview === 'object' && overview[key]);
+    }
+
     async function load() {
       if (!cancelled) {
         setState((prev) => ({ ...prev, loading: !prev.lastUpdated, refreshing: Boolean(prev.lastUpdated), error: '' }));
       }
-      const [overview, activity, batches, batchAuto, replayAuto, replay, dataJobs, aiStatus, aiLatest, paperTrading, paperAgent, schedulerStatus, runtimeMatrix, automationPlan] = await Promise.all([
-        apiJson('/api/supervisor/overview').catch(() => null),
+      const overview = await apiJson('/api/supervisor/overview').catch(() => null);
+
+      const needsBatches = !overviewHasBlock(overview, 'batchSummary');
+      const needsBatchAuto = !overviewHasBlock(overview, 'batchAutopilotSummary');
+      const needsReplayAuto = !overviewHasBlock(overview, 'replayAutopilotSummary');
+      const needsDataJobs = !overviewHasBlock(overview, 'dataStatus');
+      const needsAiStatus = !overviewHasBlock(overview, 'aiAnalystStatus');
+      const needsPaperAgent = !overviewHasBlock(overview, 'paperStatus');
+      const needsSchedulerStatus = !overviewHasBlock(overview, 'batchAutopilotSummary') || !overviewHasBlock(overview, 'replayAutopilotSummary');
+
+      // Keep these fetches as deliberate fallbacks/details:
+      // - activity: live feed needs richer event details than overview summary
+      // - replay: replay list still uses richer recent replay rows
+      // - aiLatest: AI detail card still uses latest output details
+      // - paperTrading: paper list still uses richer trade details
+      // - runtimeMatrix / automationPlan: not unified in overview yet
+      const [
+        activity,
+        batches,
+        batchAuto,
+        replayAuto,
+        replay,
+        dataJobs,
+        aiStatus,
+        aiLatest,
+        paperTrading,
+        paperAgent,
+        schedulerStatus,
+        runtimeMatrix,
+        automationPlan,
+      ] = await Promise.all([
         apiJson(`/api/status/live-activity?limit=${limit}`).catch(() => null),
-        apiJson('/api/status/batches').catch(() => null),
-        apiJson('/api/status/batch-autopilot').catch(() => null),
-        apiJson('/api/status/replay-autopilot').catch(() => null),
+        needsBatches ? apiJson('/api/status/batches').catch(() => null) : Promise.resolve(null),
+        needsBatchAuto ? apiJson('/api/status/batch-autopilot').catch(() => null) : Promise.resolve(null),
+        needsReplayAuto ? apiJson('/api/status/replay-autopilot').catch(() => null) : Promise.resolve(null),
         apiJson('/api/status/replay').catch(() => null),
-        apiJson('/api/status/data-jobs').catch(() => null),
-        apiJson('/api/ai/analyst/status').catch(() => null),
+        needsDataJobs ? apiJson('/api/status/data-jobs').catch(() => null) : Promise.resolve(null),
+        needsAiStatus ? apiJson('/api/ai/analyst/status').catch(() => null) : Promise.resolve(null),
         apiJson('/api/ai/analyst/latest').catch(() => null),
         apiJson('/api/status/paper-trading').catch(() => null),
-        apiJson('/api/paper-trading/status').catch(() => null),
-        apiJson('/api/system/scheduler-status').catch(() => null),
+        needsPaperAgent ? apiJson('/api/paper-trading/status').catch(() => null) : Promise.resolve(null),
+        needsSchedulerStatus ? apiJson('/api/system/scheduler-status').catch(() => null) : Promise.resolve(null),
         apiJson('/api/strategies/runtime-matrix').catch(() => null),
         apiJson('/api/automation/plan').catch(() => null),
       ]);
@@ -770,6 +804,48 @@ function paperResultTone(result) {
   return 'blue';
 }
 
+function normalizeOverviewPaperTest(item) {
+  if (!item || item.type !== 'paper') return null;
+  const pnl = Number(item.avgResult);
+  const hasPnl = Number.isFinite(pnl);
+  let result = 'SKIPPED';
+  if (hasPnl && pnl > 0) result = 'WIN';
+  else if (hasPnl && pnl < 0) result = 'LOSS';
+  else if (String(item.reason || '').toUpperCase().includes('TIMEOUT')) result = 'TIMEOUT';
+  return {
+    id: item.id || null,
+    timestamp: item.timestamp || null,
+    symbol: item.symbol || null,
+    timeframe: item.timeframe || null,
+    strategy: item.strategy || null,
+    strategyLabel: item.strategy || null,
+    result,
+    pnl: hasPnl ? pnl : null,
+    exitReason: item.reason || item.status || null,
+    lesson: item.reason || null,
+    entryReason: item.recommendation || null,
+    mode: 'paper_only',
+  };
+}
+
+function normalizeOverviewReplayTest(item) {
+  if (!item || item.type !== 'replay') return null;
+  return {
+    runId: item.id || null,
+    createdAt: item.timestamp || null,
+    symbols: text(item.symbol, '') ? String(item.symbol).split(',').map((s) => s.trim()).filter(Boolean) : [],
+    symbolCount: text(item.symbol, '') ? String(item.symbol).split(',').map((s) => s.trim()).filter(Boolean).length : 0,
+    timeframe: item.timeframe || null,
+    totalEvents: Number(item.tradesCount) || 0,
+    totalCandles: 0,
+    avgTradeScore: Number.isFinite(Number(item.avgResult)) ? Number(item.avgResult) : null,
+    bestSymbol: text(item.recommendation, '') ? { symbol: item.recommendation } : null,
+    replayMode: 'overview_recent_tests',
+    outcome: item.reason || item.status || null,
+    period: {},
+  };
+}
+
 function runtimeAutomaticLabel(status) {
   return {
     fullyAutomatic: 'fully automatic',
@@ -793,13 +869,14 @@ function runtimeRecommendationLabel(value) {
 
 function automationSafetyFrom(data = {}) {
   const overview = data.overview || {};
+  const baseSafety = overviewSafety(overview);
   const matrixSafety = data.runtimeMatrix?.safety || {};
   return {
-    mode: overview.mode || matrixSafety.mode || 'paper_only',
-    actions_allowed: overview.actions_allowed === true || matrixSafety.actions_allowed === true,
-    can_place_orders: overview.can_place_orders === true || matrixSafety.can_place_orders === true,
-    live_trading_enabled: overview.live_trading_enabled === true || matrixSafety.live_trading_enabled === true,
-    broker_enabled: overview.broker_enabled === true || matrixSafety.broker_enabled === true,
+    mode: baseSafety.mode || matrixSafety.mode || 'paper_only',
+    actions_allowed: baseSafety.actions_allowed === true || matrixSafety.actions_allowed === true,
+    can_place_orders: baseSafety.can_place_orders === true || matrixSafety.can_place_orders === true,
+    live_trading_enabled: baseSafety.live_trading_enabled === true || matrixSafety.live_trading_enabled === true,
+    broker_enabled: baseSafety.broker_enabled === true || matrixSafety.broker_enabled === true,
   };
 }
 
@@ -815,7 +892,11 @@ function deriveAutomationMode(data = {}) {
   const safety = automationSafetyFrom(data);
   const safe = isAutomationSafetyLocked(safety);
   const narrowSummary = data.overview?.blocks?.autopilot?.summary || null;
-  const planners = [data.batchAuto, data.replayAuto, narrowSummary].filter(Boolean);
+  const planners = [
+    data.overview?.batchAutopilotSummary || data.batchAuto,
+    data.overview?.replayAutopilotSummary || data.replayAuto,
+    narrowSummary,
+  ].filter(Boolean);
   const anyExecution = planners.some((item) => item.executionEnabled === true || item.dryRunOnly === false);
   const anyPlanner = planners.some((item) => item.enabled === true || item.schedulerActive === true);
   if (!safe) {
@@ -833,16 +914,27 @@ function deriveAutomationMode(data = {}) {
 function AutomationModePanel({ data }) {
   const mode = deriveAutomationMode(data);
   const matrix = data.runtimeMatrix || {};
+  const overviewRanking = data.overview?.strategyRanking || {};
   const strategies = Array.isArray(matrix.strategies) ? matrix.strategies : [];
-  const candidateRows = strategies
+  const candidateRows = strategies.length ? strategies
     .filter((row) => row.strongCandidate || row.automaticStatus === 'fullyAutomatic')
-    .slice(0, 6);
+    .slice(0, 6) : arr(overviewRanking.topStrategies).slice(0, 6).map((row, index) => ({
+      id: row.key || row.strategy || `top-${index}`,
+      name: row.key || row.strategy || row.name || null,
+      automaticStatus: 'manualOnly',
+      strongCandidate: true,
+      recommendation: 'collect_more_paper_replay_data',
+    }));
   const approvedStrategyIds = [];
-  const batchAuto = data.batchAuto || {};
-  const replayAuto = data.replayAuto || {};
+  const batchAuto = data.overview?.batchAutopilotSummary || data.batchAuto || {};
+  const replayAuto = data.overview?.replayAutopilotSummary || data.replayAuto || {};
   const narrowScheduler = data.overview?.blocks?.autopilot?.summary || {};
-  const paperAgent = data.paperAgent || {};
-  const scheduler = data.schedulerStatus || {};
+  const paperStatus = data.overview?.paperStatus || {};
+  const paperAgent = data.paperAgent || paperStatus || {};
+  const scheduler = data.schedulerStatus || {
+    schedulerActive: batchAuto.enabled === true || replayAuto.enabled === true || narrowScheduler.schedulerActive === true,
+    intervalMinutes: batchAuto.intervalMinutes || replayAuto.intervalMinutes || null,
+  };
 
   return (
     <section className="research-section supervisor-section supervisor-section-mode">
@@ -874,7 +966,7 @@ function AutomationModePanel({ data }) {
             <span><b>Batch autopilot</b>{text(batchAuto.status, 'Saknas')} · dryRunOnly={String(batchAuto.dryRunOnly === true)}</span>
             <span><b>Replay autopilot</b>{text(replayAuto.status, 'Saknas')} · dryRunOnly={String(replayAuto.dryRunOnly === true)}</span>
             <span><b>Narrow autopilot</b>{text(narrowScheduler.status || narrowScheduler.blockedReason, 'Saknas')} · dryRunOnly={String(narrowScheduler.dryRunOnly === true)}</span>
-            <span><b>Paper agent</b>{paperAgent.enabled ? 'Paper status active' : 'Saknas'} · mode={text(paperAgent.mode, 'unknown')}</span>
+            <span><b>Paper agent</b>{paperAgent.count || paperAgent.enabled ? 'Paper status active' : 'Saknas'} · mode={text(paperAgent.mode, 'paper_only')}</span>
             <span><b>Scheduler</b>{scheduler.schedulerActive ? 'Active' : 'Inactive'} · interval={fmtNumber(scheduler.intervalMinutes || 0)} min</span>
             <span><b>Execution</b>No automatic test execution enabled by this panel.</span>
           </div>
@@ -1489,11 +1581,21 @@ function DataPipelineCard({ dataJobs }) {
   );
 }
 
-function AiAnalystSummary({ status, latest, onRefresh, refreshing }) {
+function AiAnalystSummary({ status, latest, learningStatus, nextRecommendedActions, ranking }) {
   const latestPayload = latest?.latest || latest || {};
   const output = latestPayload.output || {};
-  const provider = status?.provider || latestPayload.provider || 'disabled';
+  const provider = status?.provider || learningStatus?.aiAnalystStatus?.provider || latestPayload.provider || 'disabled';
   const disabled = provider === 'disabled' || latestPayload.status === 'disabled' || status?.enabled === false;
+  const bestStrategy = first(arr(ranking?.topStrategies)[0]?.key, learningStatus?.narrowLearning?.bestStrategy, output.best_strategy);
+  const weakStrategy = first(arr(ranking?.weakStrategies)[0]?.key, learningStatus?.narrowLearning?.worstStrategy, output.weakest_strategy);
+  const recommendedTests = arr(nextRecommendedActions).length
+    ? arr(nextRecommendedActions).map((item) => item.title || item.reason).filter(Boolean)
+    : arr(output.next_recommended_tests);
+  const summaryText = first(
+    learningStatus?.message,
+    output.summary,
+    disabled ? 'AI Analyst är avstängd. Systemet fungerar ändå med intern learning.' : 'Ingen AI-analys sparad ännu.',
+  );
   return (
     <div className="research-grid research-grid-2">
       <Card className="research-ai-card">
@@ -1505,14 +1607,14 @@ function AiAnalystSummary({ status, latest, onRefresh, refreshing }) {
         <div className="research-mini-grid">
           <span><b>Leverantör</b>{provider}</span>
           <span><b>Model</b>{text(status?.model, 'Saknas')}</span>
-          <span><b>Senast</b>{timeText(status?.latestTimestamp || latestPayload.generatedAt)}</span>
+          <span><b>Senast</b>{timeText(status?.latestTimestamp || learningStatus?.connectorSummary?.generatedAt || latestPayload.generatedAt)}</span>
           <span><b>Confidence</b>{output.confidence != null ? fmtPct(Number(output.confidence) * 100) : '—'}</span>
         </div>
         <p className="research-muted">Uppdateras automatiskt. AI kan bara läsa och sammanfatta — aldrig handla eller ändra något.</p>
       </Card>
       <Card className="research-ai-card">
         <div className="research-card-title"><strong>Senaste sammanfattning</strong><Badge tone="purple">AI</Badge></div>
-        <p><SafeText value={output.summary} fallback={disabled ? 'AI Analyst är avstängd. Systemet fungerar ändå med intern learning.' : 'Ingen AI-analys sparad ännu.'} /></p>
+        <p><SafeText value={summaryText} fallback="Ingen data hittades ännu." /></p>
         <div className="research-list">
           <strong>Vad AI lärde sig</strong>
           {arr(output.what_ai_learned).length ? arr(output.what_ai_learned).slice(0, 4).map((item) => <span key={item}><SafeText value={item} /></span>) : <span>Ingen AI-lärdom sparad ännu.</span>}
@@ -1521,22 +1623,26 @@ function AiAnalystSummary({ status, latest, onRefresh, refreshing }) {
       <Card>
         <div className="research-card-title"><strong>Strategier enligt AI</strong><Badge tone="purple">Analys</Badge></div>
         <div className="research-mini-grid">
-          <span><b>Bäst</b>{simpleStrategyLabel(output.best_strategy, 'Saknas')}</span>
-          <span><b>Svagast</b>{simpleStrategyLabel(output.weakest_strategy, 'Saknas')}</span>
+          <span><b>Bäst</b>{simpleStrategyLabel(bestStrategy, 'Saknas')}</span>
+          <span><b>Svagast</b>{simpleStrategyLabel(weakStrategy, 'Saknas')}</span>
         </div>
       </Card>
       <Card>
         <div className="research-card-title"><strong>Nästa rekommenderade tester</strong><Badge tone="blue">Förslag</Badge></div>
         <div className="research-list">
-          {arr(output.next_recommended_tests).length ? arr(output.next_recommended_tests).slice(0, 5).map((item) => <span key={item}><SafeText value={item} /></span>) : <span>Vänta in mer testdata eller uppdatera AI-analysen.</span>}
+          {recommendedTests.length ? recommendedTests.slice(0, 5).map((item) => <span key={item}><SafeText value={item} /></span>) : <span>AI-rekommendationer är inte samlade ännu.</span>}
         </div>
       </Card>
     </div>
   );
 }
 
-function RiskBlockerCard({ risks, dataJobs, batches, activity }) {
-  const providerErrors = arr(dataJobs?.dataQuality?.providerErrors);
+function RiskBlockerCard({ risks, dataJobs, batches, activity, dataStatus }) {
+  const providerErrors = arr(dataJobs?.dataQuality?.providerErrors).concat(
+    Object.entries(dataStatus?.providerStatus || {})
+      .filter(([, row]) => row && row.ok === false)
+      .map(([provider, row]) => ({ message: row.message || `${provider} rapporterade fel.` })),
+  );
   const degradedSources = arr(activity?.sources).filter((source) => source.status === 'degraded');
   const combined = [
     ...arr(risks).map((risk) => ({ tone: toneForStatus(risk.level), title: text(risk.code, 'Risk'), message: text(risk.message_sv, 'Saknas') })),
@@ -1559,6 +1665,7 @@ function RiskBlockerCard({ risks, dataJobs, batches, activity }) {
 
 function TechnicalDetailsPanel({ data }) {
   const safety = overviewSafety(data.overview || {});
+  const overview = data.overview || {};
   return (
     <details className="research-tech">
       <summary>Visa tekniska detaljer</summary>
@@ -1568,15 +1675,15 @@ function TechnicalDetailsPanel({ data }) {
         <MetricCard label="can_place_orders" value={String(safety.can_place_orders === true)} tone="good" />
         <MetricCard label="live_trading_enabled" value={String(safety.live_trading_enabled === true)} tone="good" />
         <MetricCard label="broker_enabled" value={String(safety.broker_enabled === true)} tone="good" />
-        <MetricCard label="AI cache" value={data.aiStatus?.cacheEnabled ? 'På' : 'Av'} help={`${fmtNumber(data.aiStatus?.cacheTtlMs || 0)} ms`} tone="purple" />
-        <MetricCard label="Batch API" value={text(data.batches?.status, 'Saknas')} tone={toneForStatus(data.batches?.status)} />
-        <MetricCard label="Batch autopilot" value={text(data.batchAuto?.status, 'Saknas')} help={`dryRunOnly=${String(data.batchAuto?.dryRunOnly === true)}`} tone={toneForStatus(data.batchAuto?.status)} />
-        <MetricCard label="Replay autopilot" value={text(data.replayAuto?.status, 'Saknas')} help={`dryRunOnly=${String(data.replayAuto?.dryRunOnly === true)}`} tone={toneForStatus(data.replayAuto?.status)} />
-        <MetricCard label="Replay API" value={text(data.replay?.status, 'Saknas')} help={`${fmtNumber(data.replay?.totalReplayTests || 0)} replaytester`} tone={toneForStatus(data.replay?.status)} />
-        <MetricCard label="Data API" value={text(data.dataJobs?.status, 'Saknas')} tone={toneForStatus(data.dataJobs?.status)} />
+        <MetricCard label="AI cache" value={(overview.aiAnalystStatus || data.aiStatus)?.cacheEnabled ? 'På' : 'Av'} help={`${fmtNumber((overview.aiAnalystStatus || data.aiStatus)?.cacheTtlMs || 0)} ms`} tone="purple" />
+        <MetricCard label="Batch API" value={text(overview.batchStatus?.status || data.batches?.status, 'Saknas')} tone={toneForStatus(overview.batchStatus?.status || data.batches?.status)} />
+        <MetricCard label="Batch autopilot" value={text(overview.batchAutopilotSummary?.status || data.batchAuto?.status, 'Saknas')} help={`dryRunOnly=${String((overview.batchAutopilotSummary?.dryRunOnly || data.batchAuto?.dryRunOnly) === true)}`} tone={toneForStatus(overview.batchAutopilotSummary?.status || data.batchAuto?.status)} />
+        <MetricCard label="Replay autopilot" value={text(overview.replayAutopilotSummary?.status || data.replayAuto?.status, 'Saknas')} help={`dryRunOnly=${String((overview.replayAutopilotSummary?.dryRunOnly || data.replayAuto?.dryRunOnly) === true)}`} tone={toneForStatus(overview.replayAutopilotSummary?.status || data.replayAuto?.status)} />
+        <MetricCard label="Replay API" value={text(overview.replayStatus?.status || data.replay?.status, 'Saknas')} help={`${fmtNumber(overview.replayStatus?.totalReplayRuns || data.replay?.totalReplayTests || 0)} replaytester`} tone={toneForStatus(overview.replayStatus?.status || data.replay?.status)} />
+        <MetricCard label="Data API" value={text(overview.dataStatus?.status || data.dataJobs?.status, 'Saknas')} tone={toneForStatus(overview.dataStatus?.status || data.dataJobs?.status)} />
         <MetricCard label="Activity API" value={text(data.activity?.status, 'Saknas')} tone={toneForStatus(data.activity?.status)} />
-        <MetricCard label="Provider" value={text(data.aiStatus?.provider || data.dataJobs?.providerStatus?.alpaca?.provider, 'Saknas')} tone="neutral" />
-        <MetricCard label="scheduler status" value={text([data.batchAuto?.status, data.replayAuto?.status].filter(Boolean), 'Saknas')} tone="blue" />
+        <MetricCard label="Provider" value={text(overview.aiAnalystStatus?.provider || data.aiStatus?.provider || data.dataJobs?.providerStatus?.alpaca?.provider, 'Saknas')} tone="neutral" />
+        <MetricCard label="scheduler status" value={text([overview.batchAutopilotSummary?.status, overview.replayAutopilotSummary?.status, data.batchAuto?.status, data.replayAuto?.status].filter(Boolean), 'Saknas')} tone="blue" />
       </div>
     </details>
   );
@@ -1591,9 +1698,9 @@ export default function SupervisorBrainPage() {
   const autopilot = blocks.autopilot?.summary || {};
   const canonical = overview.canonicalStats || {};
   const narrow = blocks.narrow?.summary || {};
-  const batchAuto = data.batchAuto || overview.batchAutopilotSummary || null;
-  const replayAuto = data.replayAuto || overview.replayAutopilotSummary || null;
-  const aiStatusForReadiness = data.aiStatus || overview.aiAnalystStatus || null;
+  const batchAuto = overview.batchAutopilotSummary || data.batchAuto || null;
+  const replayAuto = overview.replayAutopilotSummary || data.replayAuto || null;
+  const aiStatusForReadiness = overview.aiAnalystStatus || data.aiStatus || null;
   const aiOutput = data.aiLatest?.latest?.output || data.aiLatest?.output || {};
   const safety = overviewSafety(overview);
   const safetyLocked = safety.mode === 'paper_only'
@@ -1613,8 +1720,16 @@ export default function SupervisorBrainPage() {
   const nextRecommendedActions = arr(overview.nextRecommendedActions);
 
   const events = useMemo(() => arr(data.activity?.events), [data.activity]);
-  const recentPaper = useMemo(() => arr(data.paperTrading?.recentPaperTrades), [data.paperTrading]);
-  const recentReplays = useMemo(() => arr(data.replay?.recentReplays), [data.replay]);
+  const overviewPaperTests = useMemo(() => overviewRecentTests.map(normalizeOverviewPaperTest).filter(Boolean), [overviewRecentTests]);
+  const overviewReplayTests = useMemo(() => overviewRecentTests.map(normalizeOverviewReplayTest).filter(Boolean), [overviewRecentTests]);
+  const recentPaper = useMemo(
+    () => (overviewPaperTests.length ? overviewPaperTests : arr(data.paperTrading?.recentPaperTrades)),
+    [overviewPaperTests, data.paperTrading],
+  );
+  const recentReplays = useMemo(
+    () => (overviewReplayTests.length ? overviewReplayTests : arr(data.replay?.recentReplays)),
+    [overviewReplayTests, data.replay],
+  );
 
   // Anchor the 14-day window to the freshest data we have, so the view never
   // looks empty just because the wall clock differs from the dataset.
@@ -1639,10 +1754,10 @@ export default function SupervisorBrainPage() {
   }), [replays14]);
   const events14 = useMemo(() => events.filter((e) => withinDays(e.timestamp, 14, nowRef)), [events, nowRef]);
 
-  const latestActivity = events[0] || null;
-  const batchSummary = data.batches || overview.batchSummary || {};
-  const paperSummary = data.paperTrading?.summary || {};
-  const latestPaper = data.paperTrading?.latestPaperTrade?.id ? data.paperTrading.latestPaperTrade : null;
+  const latestActivity = events[0] || overviewRecentTests[0] || null;
+  const batchSummary = overview.batchSummary || data.batches || {};
+  const paperSummary = paperStatus.summary || data.paperTrading?.summary || {};
+  const latestPaper = paperStatus.latestPaperTrade?.id ? paperStatus.latestPaperTrade : (data.paperTrading?.latestPaperTrade?.id ? data.paperTrading.latestPaperTrade : null);
   const batchRuns14 = useMemo(() => batchRunsFromStatus(batchSummary, overview).filter((batch) => withinDays(first(batch.completedAt, batch.startedAt, batch.createdAt), 14, nowRef)), [batchSummary, overview, nowRef]);
 
   // Failed/losing tests in the window, with a plain-language root-cause read.
@@ -1671,12 +1786,14 @@ export default function SupervisorBrainPage() {
   );
 
   // Plain-Swedish headline for the strongest batch outcome.
-  const bestBatch = batchSummary.bestOutcome || batchSummary.latestBatch?.bestOutcome || null;
+  const bestBatch = batchSummary.bestOutcome || batchSummary.latestBatch?.bestOutcome || batchStatus.latestBatch?.bestOutcome || null;
   const batchHeadline = bestBatch?.strategy
     ? `Batchtestet visade att ${simpleStrategyLabel(bestBatch.strategy)} på ${text(bestBatch.symbol, 'en symbol')} var bäst i den körningen (träff ${fmtPct(bestBatch.winRate)}).`
     : 'Ingen tydlig batchvinnare ännu — systemet behöver fler körningar.';
 
-  const replayDegraded = String(data.replay?.status || '').toLowerCase() === 'degraded';
+  const replayDegraded = String(replayStatus?.status || data.replay?.status || '').toLowerCase() === 'degraded';
+  const bestStrategyNow = first(arr(strategyRanking.topStrategies)[0]?.key, learningStatus?.narrowLearning?.bestStrategy, narrow.bestStrategy, aiOutput.best_strategy);
+  const weakStrategyNow = first(arr(strategyRanking.weakStrategies)[0]?.key, learningStatus?.narrowLearning?.worstStrategy, narrow.worstStrategy, aiOutput.weakest_strategy);
 
   return (
     <div className="research-lab-page">
@@ -1785,10 +1902,10 @@ export default function SupervisorBrainPage() {
             eyebrow={t('supervisor.last14Days', 'Senaste 14 dagarna')}
             title={t('supervisor.paperTests14', 'Låtsastester senaste 14 dagar')}
             subtitle={t('supervisor.paperTestsSubtitle', 'Simulerade tester. Klicka på en rad för mer detaljer. Inga riktiga pengar används.')}
-            aside={<Badge tone="purple">{fmtNumber(paper14.length)} {t('supervisor.latest', 'senaste')}</Badge>}
+            aside={<Badge tone="purple">{fmtNumber(paper14.length || paperStatus.count || 0)} {t('supervisor.latest', 'senaste')}</Badge>}
           />
           <div className="research-grid research-grid-4">
-            <MetricCard label="Tester totalt" value={fmtNumber(data.paperTrading?.count || paperSummary.totalTrades || 0)} help="Alla låtsastester hittills." tone="blue" />
+            <MetricCard label="Tester totalt" value={fmtNumber(paperStatus.count || data.paperTrading?.count || paperSummary.totalTrades || 0)} help="Alla låtsastester hittills." tone="blue" />
             <MetricCard label="Andel lyckade" value={fmtPct(paperSummary.winRate)} help="Hur ofta testerna gick plus." tone="good" />
             <MetricCard label="Snittresultat" value={paperSummary.avgPnl != null ? fmtSigned(paperSummary.avgPnl) : '—'} help="Genomsnitt per test. Testdata, ingen bevisad vinst." tone="blue" />
             <MetricCard label="Starkast strategi" value={simpleStrategyLabel(paperSummary.bestStrategy?.strategy, 'Samla mer data')} help={paperSummary.bestStrategy?.winRate != null ? `Träff ${fmtPct(paperSummary.bestStrategy.winRate)}` : 'För lite data ännu'} tone="purple" />
@@ -1825,7 +1942,7 @@ export default function SupervisorBrainPage() {
             eyebrow={t('supervisor.last14Days', 'Senaste 14 dagarna')}
             title={t('supervisor.replayTests', 'Replaytester')}
             subtitle={t('supervisor.replaySubtitle', 'Systemet spelar upp gammal marknad igen för att se vad som hade hänt.')}
-            aside={<Badge tone="purple">{fmtNumber(replays14.length)} {t('supervisor.latest', 'senaste')}</Badge>}
+            aside={<Badge tone="purple">{fmtNumber(replays14.length || replayStatus.totalReplayRuns || 0)} {t('supervisor.latest', 'senaste')}</Badge>}
           />
           {replayDegraded ? (
             <DegradedState title="Replay fungerade delvis">
@@ -1853,8 +1970,8 @@ export default function SupervisorBrainPage() {
             aside={<Badge tone="purple">{t('supervisor.analysis', 'Analys')}</Badge>}
           />
           <div className="research-grid research-grid-3">
-            <MetricCard label="Bästa strategi just nu" value={simpleStrategyLabel(first(narrow.bestStrategy, aiOutput.best_strategy), 'Samla mer data')} help="Ser bäst ut i testerna hittills." tone="good" />
-            <MetricCard label="Mest riskabel signal" value={simpleStrategyLabel(first(narrow.worstStrategy, aiOutput.weakest_strategy), 'Samla mer data')} help="Presterar svagast just nu." tone="warning" />
+            <MetricCard label="Bästa strategi just nu" value={simpleStrategyLabel(bestStrategyNow, 'Samla mer data')} help="Ser bäst ut i testerna hittills." tone="good" />
+            <MetricCard label="Mest riskabel signal" value={simpleStrategyLabel(weakStrategyNow, 'Samla mer data')} help="Presterar svagast just nu." tone="warning" />
             <MetricCard label="Avgörs ofta av maxtid" value={canonical.timeoutRate != null ? fmtPct(canonical.timeoutRate) : '—'} help="Hög andel betyder att rörelsen ofta inte hann komma igång." tone={Number(canonical.timeoutRate) >= 20 ? 'warning' : 'blue'} />
           </div>
           <Card className="research-wide">
@@ -1862,7 +1979,13 @@ export default function SupervisorBrainPage() {
             <p>{lossReasonText}</p>
             <p className="research-muted">Allt detta bygger på testdata, inte bevisad handelsvinst. Systemet använder lärdomarna för att föreslå nästa säkra test.</p>
           </Card>
-          <AiAnalystSummary status={aiStatusForReadiness} latest={data.aiLatest} />
+          <AiAnalystSummary
+            status={aiStatusForReadiness}
+            latest={data.aiLatest}
+            learningStatus={learningStatus}
+            nextRecommendedActions={nextRecommendedActions}
+            ranking={strategyRanking}
+          />
         </section>
 
         {/* 7. Misslyckade tester — vad lärde vi oss? */}
@@ -1884,7 +2007,7 @@ export default function SupervisorBrainPage() {
             <p className="research-muted">Flera tester som avslutas på stop-nivå kan betyda att entry-regeln behöver starkare bekräftelse innan en signal räknas som stark.</p>
           </Card>
           <PaperTradeList trades={losing} limit={8} />
-          <RiskBlockerCard risks={overview.risks} dataJobs={data.dataJobs} batches={batchSummary} activity={data.activity} />
+          <RiskBlockerCard risks={overview.risks} dataJobs={data.dataJobs} batches={batchSummary} activity={data.activity} dataStatus={dataStatus} />
         </section>
 
         {/* 8. Gå vidare */}
