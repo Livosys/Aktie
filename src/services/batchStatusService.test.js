@@ -63,10 +63,16 @@ const svc = require('./batchStatusService');
   assert.equal(ok.worstOutcome.strategy, 'narrow_vwap_mean_reversion_v1');
   assert.equal(ok.recentBatchEvents.length, 1);
   assert.equal(ok.recentBatchEvents[0].can_place_orders, false);
+  assert.ok(ok.summary && typeof ok.summary === 'object');
+  assert.equal(ok.summary.status, 'ok');
+  assert.equal(ok.summary.batchCount, 2);
+  assert.equal(ok.summary.latestBatchId, 'batch-2');
+  assert.equal(ok.summary.failedCount, 0);
 
   const missing = svc.buildBatchStatus({ batchService: null, eventLogService: null });
   assert.equal(missing.ok, false);
-  assert.equal(missing.status, 'error');
+  assert.equal(missing.status, 'missing');
+  assert.equal(missing.emptyReason, 'batch_service_missing');
   assert.equal(missing.can_place_orders, false);
 
   const degraded = svc.buildBatchStatus({
@@ -81,6 +87,8 @@ const svc = require('./batchStatusService');
   assert.equal(degraded.totalBatches, 1);
   assert.equal(degraded.can_place_orders, false);
   assert.ok(degraded.warnings.length >= 1);
+  assert.equal(degraded.summary.status, 'degraded');
+  assert.equal(degraded.summary.emptyReason, 'batch_results_degraded');
 
   // Service surface is read-only: no start/pause/stop methods are exported.
   assert.equal(typeof svc.runBatchTest, 'undefined');

@@ -162,6 +162,7 @@ function buildBatchStatus(options = {}) {
   const base = {
     ok: true,
     status: 'empty',
+    emptyReason: 'no_batch_tests',
     isRunning: false,
     activeBatch: null,
     latestBatch: null,
@@ -177,13 +178,34 @@ function buildBatchStatus(options = {}) {
     bestOutcome: null,
     worstOutcome: null,
     recentBatchEvents: [],
+    summary: null,
     source,
     updatedAt: nowIso(),
     ...SAFETY,
   };
 
   if (!batchService || typeof batchService.listBatchTests !== 'function') {
-    return { ...base, status: 'error', ok: false, message: 'Batchservice kunde inte läsas.' };
+    return {
+      ...base,
+      status: 'missing',
+      emptyReason: 'batch_service_missing',
+      summary: {
+        status: 'missing',
+        source,
+        message: 'Batchservice kunde inte läsas.',
+        emptyReason: 'batch_service_missing',
+        batchCount: 0,
+        latestBatchId: null,
+        bestBatchId: null,
+        worstBatchId: null,
+        activeBatchId: null,
+        failedCount: 0,
+        queuedCount: 0,
+        paperOnly: true,
+      },
+      ok: false,
+      message: 'Batchservice kunde inte läsas.',
+    };
   }
 
   const warnings = [];
@@ -205,10 +227,35 @@ function buildBatchStatus(options = {}) {
     const bestOutcome = results.top[0] || arr(comparison?.best_overall)[0] || comparison?.recommended_config || null;
     const worstOutcome = results.worst[0] || arr(comparison?.worst_overall)[0] || null;
     const status = warnings.length ? 'degraded' : (batches.length ? 'ok' : 'empty');
+    const emptyReason = !batches.length
+      ? 'no_batch_tests'
+      : warnings.length
+        ? 'batch_results_degraded'
+        : null;
+    const summary = {
+      status,
+      source,
+      message: warnings.length ? 'Batchstatus lästes delvis.' : (batches.length ? 'Batchstatus läst.' : 'Inga batchtester hittades.'),
+      emptyReason,
+      batchCount: batches.length,
+      completedCount: batches.filter((b) => lower(b?.status) === 'completed').length,
+      runningCount: batches.filter((b) => lower(b?.status) === 'running').length,
+      pausedCount: batches.filter((b) => lower(b?.status) === 'paused').length,
+      failedCount: batches.filter((b) => ['failed', 'error', 'stopped'].includes(lower(b?.status))).length,
+      queuedCount: batches.filter((b) => ['created', 'queued', 'pending'].includes(lower(b?.status))).length,
+      latestBatchId: latest?.id || null,
+      latestCompletedBatchId: latestCompleted?.id || null,
+      latestFailedBatchId: latestFailed?.id || null,
+      bestBatchId: latestCompleted?.id || latest?.id || null,
+      worstBatchId: latestFailed?.id || null,
+      activeBatchId: active?.id || null,
+      paperOnly: true,
+    };
 
     return {
       ...base,
       status,
+      emptyReason,
       isRunning: Boolean(active && lower(active.status) === 'running') || Number(listed?.active_count || 0) > 0,
       activeBatch: normalizeBatch(active, { bestOutcome, worstOutcome, latestResult: results.latestResult, combinationsTested: results.count }),
       latestBatch: normalizeBatch(latest, { bestOutcome, worstOutcome, latestResult: results.latestResult, combinationsTested: results.count }),
@@ -224,14 +271,30 @@ function buildBatchStatus(options = {}) {
       bestOutcome: normalizeOutcome(bestOutcome),
       worstOutcome: normalizeOutcome(worstOutcome),
       recentBatchEvents: events.events,
+      summary,
       warnings,
-      message: warnings.length ? 'Batchstatus lästes delvis.' : (batches.length ? 'Batchstatus läst.' : 'Inga batchtester hittades.'),
+      message: summary.message,
     };
   } catch (err) {
     return {
       ...base,
       ok: false,
-      status: 'error',
+      status: 'degraded',
+      emptyReason: 'batch_status_error',
+      summary: {
+        status: 'degraded',
+        source,
+        message: err && err.message ? err.message : String(err),
+        emptyReason: 'batch_status_error',
+        batchCount: 0,
+        latestBatchId: null,
+        bestBatchId: null,
+        worstBatchId: null,
+        activeBatchId: null,
+        failedCount: 0,
+        queuedCount: 0,
+        paperOnly: true,
+      },
       message: err && err.message ? err.message : String(err),
     };
   }
@@ -241,6 +304,7 @@ function buildSupervisorBatchSummary() {
   const full = buildBatchStatus();
   return {
     status: full.status,
+    emptyReason: full.emptyReason || full.summary?.emptyReason || null,
     isRunning: full.isRunning,
     activeBatch: full.activeBatch,
     latestBatch: full.latestBatch,
@@ -254,6 +318,22 @@ function buildSupervisorBatchSummary() {
     worstOutcome: full.worstOutcome,
     recentEventCount: full.recentBatchEvents.length,
     source: 'batchStatusService',
+    message: full.message || full.summary?.message || null,
+    summary: full.summary || {
+      status: full.status,
+      source: 'strategyBatchTestService',
+      message: full.message || null,
+      emptyReason: full.emptyReason || null,
+      batchCount: full.totalBatches,
+      latestBatchId: full.latestBatch?.id || null,
+      latestCompletedBatchId: full.latestCompletedBatch?.id || null,
+      bestBatchId: full.bestOutcome?.strategy || null,
+      worstBatchId: full.worstOutcome?.strategy || null,
+      activeBatchId: full.activeBatch?.id || null,
+      failedCount: full.failedBatches,
+      queuedCount: full.queuedBatches || 0,
+      paperOnly: true,
+    },
     updatedAt: full.updatedAt,
     ...SAFETY,
   };
