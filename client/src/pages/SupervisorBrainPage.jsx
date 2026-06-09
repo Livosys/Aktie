@@ -515,6 +515,9 @@ function StrategyRankingSection({ ranking }) {
         subtitle="Här ser du vilka strategier som ser starkast ut, vilka som är svagare och vilka som behöver mer testdata."
         aside={<Badge tone={sourceTone(ranking?.source || 'missing')}>{blockSourceLabel(ranking?.source || 'missing')}</Badge>}
       />
+      <p className="research-muted supervisor-help-note">
+        En strategi som behöver mer data är inte trasig. Det betyder bara att systemet behöver fler tester innan den kan jämföras rättvist.
+      </p>
       <div className="research-grid research-grid-4">
         <MetricCard label="Strategier totalt" value={ranking?.totalStrategies != null ? fmtNumber(ranking.totalStrategies) : '—'} help="Alla kända strategier i registry." tone="blue" />
         <MetricCard label="Aktiva strategier" value={ranking?.activeStrategies != null ? fmtNumber(ranking.activeStrategies) : '—'} help="Kan användas i researchflödet." tone="good" />
@@ -1241,10 +1244,10 @@ function AutomationModePanel({ data }) {
         aside={<Badge tone={mode.tone}>{mode.label}</Badge>}
       />
       <div className="research-grid research-grid-4">
-        <MetricCard label="Current mode" value={mode.label} help={mode.meaning} tone={mode.tone} />
-        <MetricCard label="Approved strategies" value={allowlistLoaded ? fmtNumber(approvedStrategyCount || 0) : '—'} help={allowlistLoaded ? `Läst från approved-listan i read-only läge. Källa: ${allowlistMeta.source}.` : 'Allowlist-status saknas i denna vy.'} tone={allowlistLoaded ? 'good' : 'warning'} />
-        <MetricCard label="Safety status" value={isAutomationSafetyLocked(mode.safety) ? 'Locked' : 'Check'} help="paper_only, no broker, no live trading." tone={isAutomationSafetyLocked(mode.safety) ? 'good' : 'danger'} />
-        <MetricCard label="Paper-only automation" value="Not active" help="Foundation only. No paper-only automation is enabled here." tone="warning" />
+        <MetricCard label="Nuvarande läge" value={mode.label} help={mode.meaning} tone={mode.tone} />
+        <MetricCard label="Godkända strategier" value={allowlistLoaded ? fmtNumber(approvedStrategyCount || 0) : '—'} help={allowlistLoaded ? `Läst från godkända listan i read-only läge. Källa: ${allowlistMeta.source}.` : 'Status för godkända strategier saknas i denna vy.'} tone={allowlistLoaded ? 'good' : 'warning'} />
+        <MetricCard label="Säkerhetsstatus" value={isAutomationSafetyLocked(mode.safety) ? 'Låst' : 'Kontrollera'} help="paper_only, ingen broker och ingen livehandel." tone={isAutomationSafetyLocked(mode.safety) ? 'good' : 'danger'} />
+        <MetricCard label="Låtsaautomation" value="Ej aktiv" help="Endast grundläge. Ingen låtsaautomation är aktiverad här." tone="warning" />
       </div>
       <div className="automation-mode-grid">
         <Card>
@@ -1253,7 +1256,7 @@ function AutomationModePanel({ data }) {
             <span className={mode.key === 'off' ? 'automation-mode-active' : ''}><b>Off</b>No automation. Only manual safe tests.</span>
             <span className={mode.key === 'dry_run' ? 'automation-mode-active' : ''}><b>Dry-run</b>System can plan and suggest tests, but does not run them automatically.</span>
             <span className={mode.key === 'manual_approval' ? 'automation-mode-active' : ''}><b>Manual approval</b>System suggests a test, but user must approve before it runs.</span>
-            <span className={mode.key === 'paper_only' ? 'automation-mode-active' : ''}><b>Paper-only automation</b>Future mode for approved safe paper/replay/batch tests only.</span>
+            <span className={mode.key === 'paper_only' ? 'automation-mode-active' : ''}><b>Låtsaautomation</b>Framtida läge för godkända säkra paper-, replay- och batchtester.</span>
           </div>
         </Card>
         <Card>
@@ -1268,7 +1271,7 @@ function AutomationModePanel({ data }) {
           </div>
         </Card>
         <Card>
-          <div className="research-card-title"><strong>Top strategy candidates</strong><Badge tone="purple">{fmtNumber(candidateRows.length)}</Badge></div>
+          <div className="research-card-title"><strong>Toppkandidater för strategi</strong><Badge tone="purple">{fmtNumber(candidateRows.length)}</Badge></div>
           <div className="supervisor-runtime-list">
             {candidateRows.length ? candidateRows.map((row) => (
               <div key={row.id} className="supervisor-runtime-row">
@@ -1503,12 +1506,12 @@ function ManualApprovalPanel({ plan }) {
       </Card>
       <Card>
         <div className="research-card-title">
-          <strong>Paper Allowlist</strong>
+          <strong>Godkända låtsasstrategier</strong>
           <Badge tone={allowlistKnown ? 'good' : 'warning'}>{allowlistKnown ? 'Ja' : 'Saknas'}</Badge>
         </div>
         <div className="research-mini-grid">
-          <span><b>Läser approved-lista</b>{allowlistKnown ? 'Ja' : 'Allowlist-status saknas i denna vy'}</span>
-          <span><b>Approved som paper runtime får testa</b>{allowlistKnown ? `${fmtNumber(allowlistReadyForPaperRuntime)} / ${fmtNumber(allowlistTotalApproved)}` : '—'}</span>
+          <span><b>Läser godkända strategier</b>{allowlistKnown ? 'Ja' : 'Status saknas i denna vy'}</span>
+          <span><b>Godkända för låtsastester</b>{allowlistKnown ? `${fmtNumber(allowlistReadyForPaperRuntime)} / ${fmtNumber(allowlistTotalApproved)}` : '—'}</span>
           <span><b>Källa</b>{allowlistKnown ? 'endpoint' : 'saknas'}</span>
         </div>
         <div className="supervisor-runtime-list">
@@ -1517,29 +1520,29 @@ function ManualApprovalPanel({ plan }) {
               <strong>{simpleStrategyLabel(row.name || row.id)}</strong>
               <span>{row.readyForPaperRuntime ? 'Redo för paper runtime' : 'Godkänd men väntar på runtime-koppling'}</span>
             </div>
-          )) : <span className="research-muted">{allowlistKnown ? (allowlistTotalApproved > 0 ? 'Approved-strategier finns, men strateginamn exponeras inte i denna vy.' : 'Approved-listan är tom just nu.') : 'Allowlist-status saknas i denna vy'}</span>}
+          )) : <span className="research-muted">{allowlistKnown ? (allowlistTotalApproved > 0 ? 'Godkända strategier finns, men strateginamn exponeras inte i denna vy.' : 'Listan över godkända strategier är tom just nu.') : 'Status för godkända strategier saknas i denna vy'}</span>}
         </div>
       </Card>
       <div className="supervisor-runtime-columns">
         <Card>
-          <div className="research-card-title"><strong>{t('supervisor.approvedList')} ({fmtNumber(approvedIds.length)})</strong><Badge tone="good">Paper-only</Badge></div>
+          <div className="research-card-title"><strong>Godkända strategier ({fmtNumber(approvedIds.length)})</strong><Badge tone="good">Paper-only</Badge></div>
           <div className="supervisor-runtime-list">
             {approvedIds.length ? approvedIds.map((id) => (
               <div key={id} className="supervisor-runtime-row">
                 <strong>{simpleStrategyLabel(id)}</strong>
-                {withBlockers.has(id) ? <span className="approval-drift">⚠ Har nu blockers</span>
+                {withBlockers.has(id) ? <span className="approval-drift">⚠ Har nu blockeringar</span>
                   : noLongerRec.has(id) ? <span className="approval-drift">⚠ Inte längre rekommenderad</span>
-                  : <span>{t('supervisor.approvedNote')}</span>}
+                  : <span>Godkänd för vidare testning</span>}
               </div>
             )) : <span className="research-muted">Inga godkända strategier kunde läsas från denna vy.</span>}
           </div>
         </Card>
         <Card>
-          <div className="research-card-title"><strong>{t('supervisor.rejectedList')} ({fmtNumber(rejectedIds.length)})</strong><Badge tone="neutral">Read-only</Badge></div>
+          <div className="research-card-title"><strong>Avvisade strategier ({fmtNumber(rejectedIds.length)})</strong><Badge tone="neutral">Read-only</Badge></div>
           <div className="supervisor-runtime-list">
             {rejectedIds.length ? rejectedIds.map((id) => (
-              <div key={id} className="supervisor-runtime-row"><strong>{simpleStrategyLabel(id)}</strong><span>{t('supervisor.rejected')}</span></div>
-            )) : <span className="research-muted">{t('supervisor.noRejected')}</span>}
+              <div key={id} className="supervisor-runtime-row"><strong>{simpleStrategyLabel(id)}</strong><span>Avvisad</span></div>
+            )) : <span className="research-muted">Inga avvisade strategier kunde läsas från denna vy.</span>}
           </div>
         </Card>
       </div>
@@ -2327,17 +2330,17 @@ export default function SupervisorBrainPage() {
             aside={<Badge tone={sourceTone(paperView.source)}>{blockSourceLabel(paperView.source)}</Badge>}
           />
           <div className="research-grid research-grid-4">
-            <MetricCard label="Tester totalt" value={paperView.count !== null ? fmtNumber(paperView.count) : '—'} help={paperView.count !== null ? `Källa: ${paperView.source}` : 'Saknas i samlad vy'} tone={paperView.count !== null ? 'blue' : 'warning'} />
+            <MetricCard label="Låtsasaffärer totalt" value={paperView.count !== null ? fmtNumber(paperView.count) : '—'} help={paperView.count !== null ? `Källa: ${paperView.source}` : 'Saknas i samlad vy'} tone={paperView.count !== null ? 'blue' : 'warning'} />
             <MetricCard label="Andel lyckade" value={fmtPct(paperSummary.winRate)} help="Hur ofta testerna gick plus." tone="good" />
             <MetricCard label="Snittresultat" value={paperSummary.avgPnl != null ? fmtSignedPct(paperSummary.avgPnl) : '—'} help="Genomsnitt per test. Testdata, ingen bevisad vinst." tone="blue" />
             <MetricCard label="Starkast strategi" value={simpleStrategyLabel(paperSummary.bestStrategy?.strategy, 'Samla mer data')} help={paperSummary.bestStrategy?.winRate != null ? `Träff ${fmtPct(paperSummary.bestStrategy.winRate)}` : 'För lite data ännu'} tone="purple" />
           </div>
           <Card className="research-wide">
-            <div className="research-card-title"><strong>Paper Allowlist</strong><Badge tone={allowlist ? 'good' : 'warning'}>{allowlist ? blockSourceLabel(allowlistSource) : 'saknas'}</Badge></div>
+            <div className="research-card-title"><strong>Godkända låtsasstrategier</strong><Badge tone={allowlist ? 'good' : 'warning'}>{allowlist ? blockSourceLabel(allowlistSource) : 'saknas'}</Badge></div>
             <div className="research-mini-grid">
-              <span><b>Läser approved-lista</b>{allowlist ? 'Ja' : 'Allowlist-status saknas i denna vy'}</span>
-              <span><b>Approved som paper runtime får testa</b>{allowlist ? `${fmtNumber(allowlist.readyForPaperRuntime || 0)} / ${fmtNumber(allowlist.totalApproved || 0)}` : '—'}</span>
-              <span><b>Kommentar</b>{allowlist ? (allowlist.totalApproved > 0 ? 'Approved-strategier finns.' : 'Approved-listan är tom just nu.') : 'Saknas i samlad vy'}</span>
+              <span><b>Läser godkända strategier</b>{allowlist ? 'Ja' : 'Status saknas i denna vy'}</span>
+              <span><b>Godkända för låtsastester</b>{allowlist ? `${fmtNumber(allowlist.readyForPaperRuntime || 0)} / ${fmtNumber(allowlist.totalApproved || 0)}` : '—'}</span>
+              <span><b>Kommentar</b>{allowlist ? (allowlist.totalApproved > 0 ? 'Godkända strategier finns.' : 'Listan över godkända strategier är tom just nu.') : 'Saknas i samlad vy'}</span>
             </div>
             <p className="research-muted">Låtsashandel använder inga riktiga pengar.</p>
           </Card>
@@ -2364,7 +2367,7 @@ export default function SupervisorBrainPage() {
             <p className="research-muted">Batch planeras ungefär var sjätte timme i säkert testläge. En full 14-dagarslista kräver en separat read-only sammanfattning senare.</p>
           </Card>
           <div className="research-grid research-grid-4">
-            <MetricCard label="Batch count" value={batchView.count !== null ? fmtNumber(batchView.count) : '—'} help={batchView.count !== null ? `Källa: ${batchView.source}` : 'Saknas i samlad vy'} tone={batchView.count !== null ? 'blue' : 'warning'} />
+            <MetricCard label="Antal batchtester" value={batchView.count !== null ? fmtNumber(batchView.count) : '—'} help={batchView.count !== null ? `Källa: ${batchView.source}` : 'Saknas i samlad vy'} tone={batchView.count !== null ? 'blue' : 'warning'} />
             <MetricCard label="Senaste batch" value={batchView.latest?.id || batchView.latest?.batchId || '—'} help={batchView.latest ? timeText(first(batchView.latest.completedAt, batchView.latest.startedAt, batchView.latest.createdAt)) : 'Ingen batchdetalj hittades'} tone={batchView.latest ? 'blue' : 'warning'} />
             <MetricCard label="Bästa batch" value={simpleStrategyLabel(batchView.best?.strategy, '—')} help={batchView.best?.symbol ? `Bäst på ${batchView.best.symbol}` : 'Bästa utfall saknas'} tone="good" />
             <MetricCard label="Svagaste batch" value={simpleStrategyLabel(batchView.worst?.strategy, '—')} help={batchView.worst?.symbol ? `Svagast på ${batchView.worst.symbol}` : 'Svagaste utfall saknas'} tone="warning" />
@@ -2392,7 +2395,7 @@ export default function SupervisorBrainPage() {
             </DegradedState>
           ) : null}
           <div className="research-grid research-grid-4">
-            <MetricCard label="Replay count" value={replayView.count !== null ? fmtNumber(replayView.count) : '—'} help={replayView.count !== null ? `Källa: ${replayView.source}` : 'Saknas i samlad vy'} tone={replayView.count !== null ? 'blue' : 'warning'} />
+            <MetricCard label="Antal replaytester" value={replayView.count !== null ? fmtNumber(replayView.count) : '—'} help={replayView.count !== null ? `Källa: ${replayView.source}` : 'Saknas i samlad vy'} tone={replayView.count !== null ? 'blue' : 'warning'} />
             <MetricCard label="Senaste replay" value={replayView.latest?.runId || '—'} help={replayView.latest ? timeText(replayView.latest.createdAt) : 'Ingen replaydetalj hittades'} tone={replayView.latest ? 'blue' : 'warning'} />
             <MetricCard label="Bästa symbol" value={safeString(replayView.latest?.bestSymbol?.symbol, '—')} help={replayView.latest?.bestSymbol?.avgScore != null ? `Score ${fmtNumber(replayView.latest.bestSymbol.avgScore)}` : 'Saknas i denna vy'} tone="blue" />
             <MetricCard label="Status" value={safeString(replayView.status, '—')} help={replayView.source === 'fallback' ? 'Fallback används eftersom overview saknar replayblock.' : 'Read-only status'} tone={toneForStatus(replayView.status)} />
@@ -2482,6 +2485,9 @@ export default function SupervisorBrainPage() {
             subtitle="Visar degraded-lägen, få tester, saknade block och andra read-only riskindikatorer."
             aside={<Badge tone={losing.length ? 'warning' : 'good'}>{fmtNumber(losing.length)} förluster</Badge>}
           />
+          <p className="research-muted supervisor-help-note">
+            Pengarrisk är avstängd eftersom systemet kör paper only. Systemrisk handlar om datakvalitet, testunderlag och saknade signaler.
+          </p>
           <div className="research-grid research-grid-3">
             <MetricCard label="Förluster (14 dagar)" value={fmtNumber(losing.length)} help="Antal låtsastester som gick minus." tone={losing.length ? 'warning' : 'good'} />
             <MetricCard label="Stop-nivå träffades" value={fmtNumber(stopLosses.length)} help="Priset vände ner till skyddsnivån." tone="warning" />
@@ -2518,6 +2524,9 @@ export default function SupervisorBrainPage() {
             title="Tekniska källor och status"
             subtitle="Debug och källa per block. Inga farliga knappar visas här."
           />
+          <p className="research-muted supervisor-help-note">
+            Den här delen är främst för felsökning och visar var datan kommer från.
+          </p>
           <div className="research-grid research-grid-4">
             <Card><strong>Overview-block</strong><span>{Object.keys(overview).length ? Object.keys(overview).join(', ') : 'saknas'}</span></Card>
             <Card><strong>Batch-källa</strong><span>{blockSourceLabel(batchView.source)}</span></Card>
