@@ -15,6 +15,9 @@
  * never blank the page or throw out of buildOverview().
  */
 
+const fs = require('fs');
+const path = require('path');
+
 const tradeStats = require('./tradeStatsService');
 
 const SAFETY = Object.freeze({
@@ -59,6 +62,33 @@ function arr(v) {
 
 function firstValue(...values) {
   return values.find((value) => value !== undefined && value !== null && value !== '') ?? null;
+}
+
+function bool(value) {
+  return value === true;
+}
+
+function text(value, fallback = null) {
+  if (value === null || value === undefined) return fallback;
+  const out = String(value).trim();
+  return out || fallback;
+}
+
+function statusBlock(status, source, extra = {}) {
+  return { status, source, ...extra };
+}
+
+function listStoredTimeframes() {
+  try {
+    const root = path.resolve(__dirname, '../../data/market-data');
+    if (!fs.existsSync(root)) return [];
+    return fs.readdirSync(root)
+      .filter((name) => /^candles-/.test(name))
+      .map((name) => name.replace(/^candles-/, ''))
+      .sort();
+  } catch (_) {
+    return [];
+  }
 }
 
 // ── per-block summarizers (condense, never dump full payloads) ────────────────
@@ -235,6 +265,365 @@ function summarizeAiAnalystStatus(status) {
     lastError: status.lastError || null,
     ...SAFETY,
   };
+}
+
+function summarizeDataStatus(dataCoverage, marketDataStore) {
+  const source = 'dataCoverageExpansionService|marketDataStore';
+  if (!dataCoverage || typeof dataCoverage.getCoverageStatus !== 'function') {
+    return statusBlock('error', source, { message: 'Datatäckning kunde inte läsas.' });
+  }
+  try {
+    const coverage = dataCoverage.getCoverageStatus();
+    const timeframes = listStoredTimeframes();
+    const symbols = marketDataStore && typeof marketDataStore.listSymbols === 'function'
+      ? arr(marketDataStore.listSymbols())
+      : [];
+    const providerStatus = coverage.provider_status || (typeof dataCoverage.getProviderStatus === 'function' ? dataCoverage.getProviderStatus() : {});
+    const providerIssues = Object.values(providerStatus).filter((row) => row && row.ok === false).length;
+    const status = coverage.symbols_total > 0
+      ? (coverage.symbols_missing_data > 0 || providerIssues > 0 ? 'degraded' : 'ok')
+      : 'empty';
+    return statusBlock(status, source, {
+      symbolsTotal: num(coverage.symbols_total) || 0,
+      storedSymbols: symbols.length,
+      readyForReplay: num(coverage.symbols_ready_for_replay) || 0,
+      readyForBatch: num(coverage.symbols_ready_for_batch) || 0,
+      readyForAiLearning: num(coverage.symbols_ready_for_ai_learning) || 0,
+      missingData: num(coverage.symbols_missing_data) || 0,
+      goodData: num(coverage.symbols_good_data) || 0,
+      weakData: num(coverage.symbols_weak_data) || 0,
+      totalCoverageScore: num(coverage.total_coverage_score),
+      activeBackfillJobs: num(coverage.active_backfill_jobs) || 0,
+      availableTimeframes: timeframes,
+      providerStatus,
+      updatedAt: coverage.generated_at || null,
+      message: status === 'empty'
+        ? 'Ingen datatäckning hittades ännu.'
+        : (status === 'degraded'
+          ? 'Datatäckning finns men vissa symboler/provider saknas.'
+          : 'Datatäckning och lagrade timeframes lästa.'),
+      ...SAFETY,
+    });
+  } catch (err) {
+    return statusBlock('error', source, { message: err && err.message ? err.message : String(err), ...SAFETY });
+  }
+}
+
+function summarizeBatchStatus(batchStatusService) {
+  const source = 'batchStatusService';
+  if (!batchStatusService || typeof batchStatusService.buildBatchStatus !== 'function') {
+    return statusBlock('error', source, { message: 'Batchstatus kunde inte läsas.', ...SAFETY });
+  }
+  try {
+    const batch = batchStatusService.buildBatchStatus();
+    return statusBlock(batch.status || 'error', source, {
+      totalBatches: num(batch.totalBatches) || 0,
+      latestBatch: batch.latestBatch || null,
+      latestCompletedBatch: batch.latestCompletedBatch || null,
+      latestResult: batch.latestResult || null,
+      hasBatchResults: !!batch.latestResult,
+      recentBatchEvents: arr(batch.recentBatchEvents).slice(0, 10),
+      updatedAt: batch.updatedAt || null,
+      message: batch.message || null,
+      ...SAFETY,
+    });
+  } catch (err) {
+    return statusBlock('error', source, { message: err && err.message ? err.message : String(err), ...SAFETY });
+  }
+}
+
+function summarizeReplayStatusBlock(replayStatusService, replayIntelligenceService) {
+  const source = 'replayStatusService|replayIntelligenceService';
+  if (!replayStatusService || typeof replayStatusService.buildReplayStatus !== 'function') {
+    return statusBlock('error', source, { message: 'Replaystatus kunde inte läsas.', ...SAFETY });
+  }
+  try {
+    const replay = replayStatusService.buildReplayStatus();
+    const sessions = replayIntelligenceService && typeof replayIntelligenceService.listReplaySessions === 'function'
+      ? arr(replayIntelligenceService.listReplaySessions())
+      : [];
+    return statusBlock(replay.status || 'error', source, {
+      totalReplayRuns: num(replay.totalReplayTests) || 0,
+      latestReplay: replay.latestReplay || null,
+      latestResult: replay.latestResult || null,
+      recentReplays: arr(replay.recentReplays).slice(0, 10),
+      hasReplayData: (num(replay.totalReplayTests) || 0) > 0,
+      replayIntelligenceSessions: sessions.length,
+      timeframes: arr(replay.timeframes),
+      symbols: arr(replay.symbols).slice(0, 20),
+      updatedAt: replay.updatedAt || null,
+      message: replay.message || null,
+      ...SAFETY,
+    });
+  } catch (err) {
+    return statusBlock('error', source, { message: err && err.message ? err.message : String(err), ...SAFETY });
+  }
+}
+
+function summarizePaperStatus(paperTradingStatusService) {
+  const source = 'paperTradingStatusService|tradeStatsService';
+  if (!paperTradingStatusService || typeof paperTradingStatusService.buildPaperTradingStatus !== 'function') {
+    return statusBlock('error', source, { message: 'Paperstatus kunde inte läsas.', ...SAFETY });
+  }
+  try {
+    const paper = paperTradingStatusService.buildPaperTradingStatus();
+    const groups = typeof tradeStats.computeStatsByGroup === 'function'
+      ? tradeStats.computeStatsByGroup(tradeStats.loadPaperTrades(), undefined, { deriveFromPnl: true })
+      : [];
+    const ranked = groups.filter((row) => num(row.totalTrades) > 0);
+    const bestStrategy = ranked[0] ? {
+      strategy: ranked[0].key,
+      winRate: ranked[0].winRate,
+      decisiveWinRate: ranked[0].decisiveWinRate,
+      totalTrades: ranked[0].totalTrades,
+      avgPnl: ranked[0].avgPnl,
+    } : null;
+    const worstStrategy = ranked.length ? {
+      strategy: ranked[ranked.length - 1].key,
+      winRate: ranked[ranked.length - 1].winRate,
+      decisiveWinRate: ranked[ranked.length - 1].decisiveWinRate,
+      totalTrades: ranked[ranked.length - 1].totalTrades,
+      avgPnl: ranked[ranked.length - 1].avgPnl,
+    } : null;
+    return statusBlock(paper.status || 'error', source, {
+      count: num(paper.count) || 0,
+      summary: paper.summary || null,
+      latestPaperTrade: paper.latestPaperTrade || null,
+      bestStrategy,
+      worstStrategy,
+      updatedAt: paper.updatedAt || null,
+      message: paper.message || null,
+      ...SAFETY,
+    });
+  } catch (err) {
+    return statusBlock('error', source, { message: err && err.message ? err.message : String(err), ...SAFETY });
+  }
+}
+
+function summarizeLearningStatus(learningConnector, narrowPerf, daytradingLearning, aiAnalyst) {
+  const source = 'narrowPerformanceLearningService|learningConnectorService|daytradingLearningEngineService|aiAnalystService';
+  try {
+    const connector = learningConnector && typeof learningConnector.loadLatestSummary === 'function'
+      ? learningConnector.loadLatestSummary()
+      : null;
+    const narrow = narrowPerf && typeof narrowPerf.buildSupervisorNarrowLearning === 'function'
+      ? narrowPerf.buildSupervisorNarrowLearning()
+      : null;
+    const day = daytradingLearning && typeof daytradingLearning.getLearningSummary === 'function'
+      ? daytradingLearning.getLearningSummary({ hours: 168, limit: 200 })
+      : null;
+    const analyst = aiAnalyst && typeof aiAnalyst.getStatus === 'function'
+      ? summarizeAiAnalystStatus(aiAnalyst.getStatus())
+      : null;
+
+    const daySummary = day && day.summary ? day.summary : {};
+    const dayLooksLegacy = (num(daySummary.trades_total) || 0) === 0 && (num(daySummary.skipped_total) || 0) > 1000;
+    const mostReliableSource = narrow && text(narrow.status) && text(narrow.dataConfidence) !== 'none'
+      ? 'narrowPerformanceLearningService'
+      : (connector ? 'learningConnectorService' : (day ? 'daytradingLearningEngineService' : null));
+    let status = 'empty';
+    if (narrow || connector || day || analyst) status = 'ok';
+    if (dayLooksLegacy) status = 'degraded';
+    if (!narrow && !connector && !day && !analyst) status = 'empty';
+
+    return statusBlock(status, source, {
+      narrowLearning: narrow || null,
+      connectorSummary: connector ? summarizeLearning(connector) : null,
+      aiAnalystStatus: analyst,
+      mostReliableSource,
+      legacySources: dayLooksLegacy ? [{
+        source: 'daytradingLearningEngineService',
+        status: 'degraded',
+        reason: 'zero_trades_with_many_skipped_signals',
+      }] : [],
+      daytradingLearning: day ? {
+        status: dayLooksLegacy ? 'degraded' : (day.ok === false ? 'error' : 'ok'),
+        tradesTotal: num(daySummary.trades_total) || 0,
+        skippedTotal: num(daySummary.skipped_total) || 0,
+        wins: num(daySummary.wins) || 0,
+        losses: num(daySummary.losses) || 0,
+        timeout: num(daySummary.timeout) || 0,
+        bestStrategy: daySummary.best_strategy || null,
+        worstStrategy: daySummary.worst_strategy || null,
+      } : null,
+      message: dayLooksLegacy
+        ? 'Narrow learning är mest tillförlitlig. Daytrading learning markeras som legacy/degraded.'
+        : (mostReliableSource
+          ? `Learning-status läst. Mest tillförlitlig källa: ${mostReliableSource}.`
+          : 'Ingen samlad learning-källa hittades ännu.'),
+      ...SAFETY,
+    });
+  } catch (err) {
+    return statusBlock('error', source, { message: err && err.message ? err.message : String(err), ...SAFETY });
+  }
+}
+
+function summarizeStrategyRanking(strategyRegistry, strategyRead, strategyScore) {
+  const source = 'strategyRegistryService|strategyPerformanceReadService|strategyScoreService';
+  if (!strategyRegistry || typeof strategyRegistry.getStatus !== 'function') {
+    return statusBlock('error', source, { message: 'Strategiranking kunde inte läsas.', ...SAFETY });
+  }
+  try {
+    const registry = strategyRegistry.getStatus();
+    const perfTop = strategyRead && typeof strategyRead.getTopStrategies === 'function'
+      ? arr(strategyRead.getTopStrategies(5).strategies)
+      : [];
+    const perfWorst = strategyRead && typeof strategyRead.getWorstStrategies === 'function'
+      ? arr(strategyRead.getWorstStrategies(5).strategies)
+      : [];
+    const scoreRows = strategyScore && strategyScore.defaultStrategyScoreService && typeof strategyScore.defaultStrategyScoreService.getStrategyScores === 'function'
+      ? strategyScore.defaultStrategyScoreService.getStrategyScores()
+      : null;
+    const strategies = arr(scoreRows && scoreRows.strategies);
+    const strategiesNeedingMoreData = strategies.filter((row) => (num(row.sample_size) || 0) < 10).slice(0, 10);
+    const topStrategies = strategies.length
+      ? arr(scoreRows.top_strategies).slice(0, 5)
+      : perfTop.slice(0, 5);
+    const weakStrategies = strategies.length
+      ? arr(scoreRows.weak_strategies).slice(0, 5)
+      : perfWorst.slice(0, 5);
+    const status = num(registry.total_strategies) > 0 ? 'ok' : 'empty';
+    return statusBlock(status, source, {
+      totalStrategies: num(registry.total_strategies) || 0,
+      activeStrategies: num(registry.active_strategies) || 0,
+      inactiveStrategies: Math.max(0, (num(registry.total_strategies) || 0) - (num(registry.active_strategies) || 0)),
+      paperOnlyStrategies: num(registry.paper_only_strategies) || 0,
+      pausedStrategies: num(registry.paused_strategies) || 0,
+      tradingviewStrategies: num(registry.tradingview_strategies) || 0,
+      topStrategies,
+      weakStrategies,
+      strategiesNeedingMoreData,
+      latestBlockedReason: registry.latest_blocked_reason || null,
+      message: status === 'empty' ? 'Inga strategier hittades ännu.' : 'Strategiregistry och ranking lästa.',
+      ...SAFETY,
+    });
+  } catch (err) {
+    return statusBlock('error', source, { message: err && err.message ? err.message : String(err), ...SAFETY });
+  }
+}
+
+function normalizeExternalRecentTest(row, kind) {
+  if (!row || typeof row !== 'object') return null;
+  if (kind === 'batch') {
+    return {
+      id: row.id || null,
+      timestamp: row.completedAt || row.startedAt || null,
+      type: 'batch',
+      source: 'batch_status',
+      strategy: row.strategy || null,
+      symbol: arr(row.symbols).join(', ') || null,
+      timeframe: row.timeframe || null,
+      scoreBand: null,
+      tradesCount: num(row.combinationsTested),
+      winRate: num(row.winRate),
+      avgResult: num(row.avgResult),
+      dryRun: true,
+      executed: false,
+      accepted: null,
+      blockedReason: null,
+      reason: row.status || null,
+      recommendation: row.bestOutcome ? row.bestOutcome.strategy || null : null,
+      status: row.status || null,
+    };
+  }
+  if (kind === 'replay') {
+    return {
+      id: row.runId || null,
+      timestamp: row.createdAt || null,
+      type: 'replay',
+      source: 'replay_status',
+      strategy: null,
+      symbol: arr(row.symbols).join(', ') || null,
+      timeframe: row.timeframe || null,
+      scoreBand: null,
+      tradesCount: num(row.totalEvents),
+      winRate: null,
+      avgResult: num(row.avgTradeScore),
+      dryRun: null,
+      executed: true,
+      accepted: null,
+      blockedReason: null,
+      reason: row.outcome || null,
+      recommendation: row.bestSymbol ? row.bestSymbol.symbol || null : null,
+      status: 'completed',
+    };
+  }
+  if (kind === 'paper') {
+    return {
+      id: row.id || null,
+      timestamp: row.timestamp || null,
+      type: 'paper',
+      source: 'paper_status',
+      strategy: row.strategy || null,
+      symbol: row.symbol || null,
+      timeframe: row.timeframe || null,
+      scoreBand: null,
+      tradesCount: 1,
+      winRate: null,
+      avgResult: num(row.pnl),
+      dryRun: false,
+      executed: true,
+      accepted: null,
+      blockedReason: null,
+      reason: row.lesson || row.result || null,
+      recommendation: null,
+      status: row.status || null,
+    };
+  }
+  return null;
+}
+
+function buildUnifiedRecentTests(recentTests, batchStatus, replayStatusBlock, paperStatus) {
+  const items = []
+    .concat(arr(recentTests))
+    .concat(batchStatus && batchStatus.latestBatch ? [normalizeExternalRecentTest(batchStatus.latestBatch, 'batch')] : [])
+    .concat(replayStatusBlock && replayStatusBlock.latestReplay ? [normalizeExternalRecentTest(replayStatusBlock.latestReplay, 'replay')] : [])
+    .concat(paperStatus && paperStatus.latestPaperTrade ? [normalizeExternalRecentTest(paperStatus.latestPaperTrade, 'paper')] : [])
+    .filter(Boolean)
+    .sort((a, b) => String(b.timestamp || '').localeCompare(String(a.timestamp || '')))
+    .slice(0, 25);
+  return items;
+}
+
+function buildAiRecommendations(aiAnalystStatus) {
+  return statusBlock('empty', 'aiAnalystService', {
+    items: [],
+    reason: aiAnalystStatus && aiAnalystStatus.latestExists === true
+      ? 'latest_ai_output_exists_but_not_exposed_as_unified_recommendations_yet'
+      : 'no_unified_ai_recommendation_source_yet',
+    ...SAFETY,
+  });
+}
+
+function buildLossFeedbackQueue() {
+  return statusBlock('empty', 'supervisor_overview', {
+    items: [],
+    reason: 'loss_feedback_queue_not_implemented_yet',
+    ...SAFETY,
+  });
+}
+
+function buildNextRecommendedActions(learningStatus) {
+  const actions = [];
+  const narrowRec = learningStatus && learningStatus.narrowLearning && learningStatus.narrowLearning.recommendedNextTest;
+  if (narrowRec) {
+    actions.push({
+      title: narrowRec.title || 'Run recommended narrow test',
+      reason: narrowRec.reason || null,
+      strategy_id: narrowRec.strategy_id || null,
+      priority: narrowRec.priority || 'low',
+      source: 'narrowPerformanceLearningService',
+      ...SAFETY,
+    });
+  } else {
+    actions.push(
+      { title: 'Improve supervisor visibility', reason: 'Unify read-only system status in Supervisor.', source: 'supervisor_overview', priority: 'low', ...SAFETY },
+      { title: 'Validate data coverage', reason: 'Confirm which symbols are ready for replay/batch.', source: 'dataCoverageExpansionService', priority: 'low', ...SAFETY },
+      { title: 'Run dry-run batch planner later', reason: 'Keep batch planning manual-first and paper-only.', source: 'batchAutopilotService', priority: 'low', ...SAFETY },
+      { title: 'Keep paper_only', reason: 'No live trading, broker, or order paths should be enabled.', source: 'safety', priority: 'high', ...SAFETY },
+    );
+  }
+  return actions.slice(0, 5);
 }
 
 function normalizeBatchOutcome(row) {
@@ -564,7 +953,10 @@ async function buildOverview() {
   const systemHealth = lazy('../systemHealth');
   const learningConnector = lazy('./learningConnectorService');
   const strategyRead = lazy('./strategyPerformanceReadService');
+  const strategyRegistry = lazy('./strategyRegistryService');
+  const strategyScore = lazy('./strategyScoreService');
   const narrowPerf = lazy('./narrowPerformanceLearningService');
+  const daytradingLearning = lazy('./daytradingLearningEngineService');
   const autopilot = lazy('./narrowTestAutopilotService');
   const scheduler = lazy('../jobs/narrowAutopilotScheduler');
   const marketRegime = lazy('./marketRegimeService');
@@ -575,9 +967,13 @@ async function buildOverview() {
   const strategyBatch = lazy('./strategyBatchTestService');
   const aiAnalyst = lazy('./aiAnalystService');
   const dataJobsStatus = lazy('./dataJobsStatusService');
+  const dataCoverage = lazy('./dataCoverageExpansionService');
+  const marketDataStore = lazy('../data/marketDataStore');
   const liveActivity = lazy('./liveActivityService');
   const batchAutopilot = lazy('./batchAutopilotService');
+  const batchStatusService = lazy('./batchStatusService');
   const replayAutopilot = lazy('./replayAutopilotService');
+  const replayIntelligence = lazy('./replayIntelligenceService');
   const replayStatus = lazy('./replayStatusService');
   const paperTradingStatus = lazy('./paperTradingStatusService');
 
@@ -594,7 +990,7 @@ async function buildOverview() {
     safeBlock({ scope: 'narrow_only', source: '/api/supervisor/narrow-state' },
       () => summarizeNarrow(narrowPerf.buildSupervisorNarrowLearning())),
     safeBlock({ scope: 'narrow_only', source: '/api/autopilot/narrow/status' },
-      () => summarizeAutopilot(autopilot.getNarrowAutopilotStatus(), scheduler.getNarrowAutopilotSchedulerStatus())),
+      () => summarizeAutopilot(null, scheduler.getNarrowAutopilotSchedulerStatus())),
     safeBlock({ scope: 'system_wide', source: '/api/market-regime/status' },
       () => summarizeRegime(marketRegime.buildRegimeSummary(false))),
     safeBlock({ scope: 'system_wide', source: '/api/priority/summary' },
@@ -724,14 +1120,50 @@ async function buildOverview() {
     paperTradingSummary = { status: 'error', count: 0, latestPaperTrade: null, message: err && err.message ? err.message : 'unavailable', ...SAFETY };
   }
 
+  const dataStatus = summarizeDataStatus(dataCoverage, marketDataStore);
+  const batchStatus = summarizeBatchStatus(batchStatusService);
+  const replayStatusBlock = summarizeReplayStatusBlock(replayStatus, replayIntelligence);
+  const paperStatus = summarizePaperStatus(paperTradingStatus);
+  const learningStatus = summarizeLearningStatus(learningConnector, narrowPerf, daytradingLearning, aiAnalyst);
+  const strategyRanking = summarizeStrategyRanking(strategyRegistry, strategyRead, strategyScore);
+  const combinedRecentTests = buildUnifiedRecentTests(recentTests, batchStatus, replayStatusBlock, paperStatus);
+  const unifiedRecentTestsStatus = statusBlock(
+    combinedRecentTests.length ? (recentTestsStatus.status === 'error' ? 'degraded' : 'ok') : recentTestsStatus.status,
+    'narrowTestAutopilotService|batchStatusService|replayStatusService|paperTradingStatusService',
+    {
+      count: combinedRecentTests.length,
+      message: combinedRecentTests.length ? 'Senaste tester från autopilot, batch, replay och paper.' : recentTestsStatus.message,
+      ...SAFETY,
+    },
+  );
+  const aiRecommendations = buildAiRecommendations(aiAnalystStatus);
+  const lossFeedbackQueue = buildLossFeedbackQueue();
+  const nextRecommendedActions = buildNextRecommendedActions(learningStatus);
+
   return {
     ok: true,
     generatedAt: new Date().toISOString(),
     ...SAFETY,
+    safety: {
+      mode: SAFETY.mode,
+      actions_allowed: SAFETY.actions_allowed,
+      can_place_orders: SAFETY.can_place_orders,
+      live_trading_enabled: SAFETY.live_trading_enabled,
+      broker_enabled: SAFETY.broker_enabled,
+    },
     canonicalStats,
     blocks,
-    recentTests,
-    recentTestsStatus,
+    dataStatus,
+    batchStatus,
+    replayStatus: replayStatusBlock,
+    paperStatus,
+    learningStatus,
+    strategyRanking,
+    recentTests: combinedRecentTests,
+    recentTestsStatus: unifiedRecentTestsStatus,
+    aiRecommendations,
+    lossFeedbackQueue,
+    nextRecommendedActions,
     batchSummary,
     batchAutopilotSummary,
     replayAutopilotSummary,

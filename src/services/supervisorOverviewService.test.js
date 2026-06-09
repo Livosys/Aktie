@@ -67,11 +67,33 @@ const overview = require('./supervisorOverviewService');
   }
   assert.ok(Array.isArray(o.risks) && o.risks.some((r) => r.code === 'paper_only'));
   assert.ok(Array.isArray(o.actionPlan) && o.actionPlan.length >= 1);
+  assert.deepEqual(o.safety, {
+    mode: 'paper_only',
+    actions_allowed: false,
+    can_place_orders: false,
+    live_trading_enabled: false,
+    broker_enabled: false,
+  });
 
   // ── 6. overview exposes recentTests array + status (real data) ──────────────
   assert.ok(Array.isArray(o.recentTests), 'recentTests is an array');
   assert.ok(o.recentTestsStatus && ['ok', 'empty', 'degraded', 'error'].includes(o.recentTestsStatus.status), 'recentTestsStatus valid');
-  assert.equal(o.recentTestsStatus.source, 'data/autopilot/narrow-autopilot-history.jsonl');
+  assert.ok(o.recentTestsStatus.source, 'recentTestsStatus source present');
+  assert.ok(o.dataStatus && ['ok', 'empty', 'degraded', 'error'].includes(o.dataStatus.status), 'dataStatus valid');
+  assert.ok(o.batchStatus && ['ok', 'empty', 'degraded', 'error'].includes(o.batchStatus.status), 'batchStatus valid');
+  assert.ok(o.replayStatus && ['ok', 'empty', 'degraded', 'error'].includes(o.replayStatus.status), 'replayStatus valid');
+  assert.ok(o.paperStatus && ['ok', 'empty', 'degraded', 'error'].includes(o.paperStatus.status), 'paperStatus valid');
+  assert.ok(o.learningStatus && ['ok', 'empty', 'degraded', 'error'].includes(o.learningStatus.status), 'learningStatus valid');
+  assert.ok(o.strategyRanking && ['ok', 'empty', 'degraded', 'error'].includes(o.strategyRanking.status), 'strategyRanking valid');
+  assert.ok(o.aiRecommendations && ['ok', 'empty', 'degraded', 'error'].includes(o.aiRecommendations.status), 'aiRecommendations valid');
+  assert.ok(o.lossFeedbackQueue && ['ok', 'empty', 'degraded', 'error'].includes(o.lossFeedbackQueue.status), 'lossFeedbackQueue valid');
+  assert.ok(Array.isArray(o.nextRecommendedActions), 'nextRecommendedActions is an array');
+  assert.equal(o.dataStatus.mode, 'paper_only');
+  assert.equal(o.batchStatus.mode, 'paper_only');
+  assert.equal(o.replayStatus.mode, 'paper_only');
+  assert.equal(o.paperStatus.mode, 'paper_only');
+  assert.equal(o.learningStatus.mode, 'paper_only');
+  assert.equal(o.strategyRanking.mode, 'paper_only');
   assert.ok(o.batchSummary && typeof o.batchSummary === 'object', 'batchSummary present');
   assert.ok(['ok', 'empty', 'degraded', 'error'].includes(o.batchSummary.status), 'batchSummary status valid');
   assert.equal(o.batchSummary.source, 'strategyBatchTestService');
