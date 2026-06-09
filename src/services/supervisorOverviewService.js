@@ -1850,6 +1850,71 @@ function deriveActionPlan(blocks) {
   return plan;
 }
 
+function buildTechnicalStatus(blocks, generatedAt, meta = {}) {
+  const overviewBlocks = Object.entries(blocks)
+    .filter(([name]) => name !== 'safety')
+    .map(([name, block]) => ({
+      key: name,
+      status: block?.status || 'missing',
+      source: block?.source || null,
+      emptyReason: block?.emptyReason || null,
+    }));
+  const counts = overviewBlocks.reduce((acc, block) => {
+    const status = block.status || 'missing';
+    acc.total += 1;
+    acc[status] = (acc[status] || 0) + 1;
+    return acc;
+  }, { total: 0, ok: 0, empty: 0, degraded: 0, missing: 0, error: 0 });
+  const warnings = [];
+  if (counts.degraded > 0) warnings.push(`${counts.degraded} block är degraded.`);
+  if (counts.missing > 0) warnings.push(`${counts.missing} block saknas.`);
+  if (counts.error > 0) warnings.push(`${counts.error} block hade error.`);
+  const status = counts.error > 0 || counts.degraded > 0 || counts.missing > 0
+    ? 'degraded'
+    : counts.empty > 0
+      ? 'empty'
+      : 'ok';
+  return {
+    status,
+    source: 'supervisorOverviewService',
+    generatedAt: generatedAt || null,
+    cacheAgeMs: null,
+    paperOnly: true,
+    counts,
+    sourceMarkers: {
+      dataStatus: { source: blocks.data_status?.source || null, status: blocks.data_status?.status || 'missing' },
+      batchStatus: { source: blocks.batch_status?.source || null, status: blocks.batch_status?.status || 'missing' },
+      replayStatus: { source: blocks.replay_status?.source || null, status: blocks.replay_status?.status || 'missing' },
+      paperStatus: { source: blocks.paper_status?.source || null, status: blocks.paper_status?.status || 'missing' },
+      learningStatus: { source: blocks.learning_status?.source || null, status: blocks.learning_status?.status || 'missing' },
+      strategyRanking: { source: blocks.strategy_ranking?.source || null, status: blocks.strategy_ranking?.status || 'missing' },
+      aiRecommendations: { source: 'supervisorOverviewService', status: meta.aiRecommendations?.status || 'missing' },
+      lossFeedbackQueue: { source: 'supervisorOverviewService', status: meta.lossFeedbackQueue?.status || 'missing' },
+      nextRecommendedActions: { source: 'supervisorOverviewService', status: meta.nextRecommendedActions?.status || 'missing' },
+      recentTestsStatus: { source: 'supervisorOverviewService', status: meta.recentTestsStatus?.status || 'missing' },
+      batchSummary: { source: meta.batchSummary?.source || 'strategyBatchTestService', status: meta.batchSummary?.status || 'missing' },
+      replaySummary: { source: meta.replaySummary?.source || 'replayStatusService', status: meta.replaySummary?.status || 'missing' },
+      paperTradingSummary: { source: meta.paperTradingSummary?.source || 'paperTradingStatusService', status: meta.paperTradingSummary?.status || 'missing' },
+      dataJobsSummary: { source: meta.dataJobsSummary?.source || 'dataJobsStatusService', status: meta.dataJobsSummary?.status || 'missing' },
+      liveActivitySummary: { source: meta.liveActivitySummary?.source || 'liveActivityService', status: meta.liveActivitySummary?.status || 'missing' },
+      aiAnalystStatus: { source: blocks.aiAnalystStatus?.source || 'aiAnalystService', status: meta.aiAnalystStatus?.status || 'missing' },
+    },
+    overviewBlocks,
+    okBlocks: overviewBlocks.filter((block) => block.status === 'ok').map((block) => block.key),
+    emptyBlocks: overviewBlocks.filter((block) => block.status === 'empty').map((block) => block.key),
+    degradedBlocks: overviewBlocks.filter((block) => block.status === 'degraded').map((block) => block.key),
+    missingBlocks: overviewBlocks.filter((block) => block.status === 'missing').map((block) => block.key),
+    errorBlocks: overviewBlocks.filter((block) => block.status === 'error').map((block) => block.key),
+    warnings,
+    message: status === 'degraded'
+      ? 'Översikten innehåller degraded eller saknade block.'
+      : status === 'empty'
+        ? 'Översikten är läst, men flera block är tomma.'
+        : 'Alla viktiga overview-block ser friska ut.',
+    emptyReason: overviewBlocks.length ? null : 'no_overview_blocks',
+  };
+}
+
 // ── recent tests (read-only autopilot history) ───────────────────────────────
 const RECENT_TESTS_SOURCE = 'data/autopilot/narrow-autopilot-history.jsonl';
 
@@ -2298,10 +2363,19 @@ async function buildOverview() {
     batchStatus,
     paperStatus,
   });
+  const generatedAt = new Date().toISOString();
+  const riskSummary = buildRiskSummary(blocks, canonicalStats);
+  const technical = buildTechnicalStatus(blocks, generatedAt, {
+    aiRecommendations,
+    lossFeedbackQueue,
+    nextRecommendedActions,
+    recentTestsStatus: unifiedRecentTestsStatus,
+    aiAnalystStatus,
+  });
 
   return {
     ok: true,
-    generatedAt: new Date().toISOString(),
+    generatedAt,
     ...SAFETY,
     safety: {
       mode: SAFETY.mode,
@@ -2332,6 +2406,8 @@ async function buildOverview() {
     dataJobsSummary,
     liveActivitySummary,
     risks: deriveRisks(blocks, canonicalStats),
+    riskSummary,
+    technical,
     actionPlan: deriveActionPlan(blocks),
   };
 }
@@ -2347,11 +2423,26 @@ let overviewCache = { at: 0, value: null };
 async function getCachedOverview({ force = false } = {}) {
   const now = Date.now();
   if (!force && overviewCache.value && (now - overviewCache.at) < OVERVIEW_TTL_MS) {
-    return { ...overviewCache.value, cached: true, cacheAgeMs: now - overviewCache.at };
+    const cacheAgeMs = now - overviewCache.at;
+    return {
+      ...overviewCache.value,
+      technical: overviewCache.value.technical
+        ? { ...overviewCache.value.technical, cacheAgeMs }
+        : overviewCache.value.technical,
+      cached: true,
+      cacheAgeMs,
+    };
   }
   const fresh = await buildOverview();
   overviewCache = { at: now, value: fresh };
-  return { ...fresh, cached: false, cacheAgeMs: 0 };
+  return {
+    ...fresh,
+    technical: fresh.technical
+      ? { ...fresh.technical, cacheAgeMs: 0 }
+      : fresh.technical,
+    cached: false,
+    cacheAgeMs: 0,
+  };
 }
 
 function resetOverviewCache() {

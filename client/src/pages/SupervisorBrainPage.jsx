@@ -2023,9 +2023,10 @@ function RiskBlockerCard({ risks, riskSummary, dataJobs, batches, activity, data
   );
 }
 
-function TechnicalDetailsPanel({ data }) {
+function TechnicalDetailsPanel({ data, technical }) {
   const safety = overviewSafety(data.overview || {});
   const overview = data.overview || {};
+  const tech = technical || overview.technical || null;
   return (
     <details className="research-tech">
       <summary>Visa tekniska detaljer</summary>
@@ -2045,6 +2046,24 @@ function TechnicalDetailsPanel({ data }) {
         <MetricCard label="Provider" value={text(overview.aiAnalystStatus?.provider || data.aiStatus?.provider || data.dataJobs?.providerStatus?.alpaca?.provider, 'Saknas')} tone="neutral" />
         <MetricCard label="scheduler status" value={text([overview.batchAutopilotSummary?.status, overview.replayAutopilotSummary?.status, data.batchAuto?.status, data.replayAuto?.status].filter(Boolean), 'Saknas')} tone="blue" />
       </div>
+      {tech ? (
+        <>
+          <div className="research-tech-grid">
+            <MetricCard label="Overview byggd" value={timeText(tech.generatedAt)} tone={toneForStatus(tech.status)} />
+            <MetricCard label="Cacheålder" value={tech.cacheAgeMs !== null && tech.cacheAgeMs !== undefined ? `${fmtNumber(tech.cacheAgeMs)} ms` : '—'} tone="blue" />
+            <MetricCard label="Block ok/degraded/missing" value={`${fmtNumber(tech.counts?.ok || 0)} / ${fmtNumber(tech.counts?.degraded || 0)} / ${fmtNumber(tech.counts?.missing || 0)}`} tone={toneForStatus(tech.status)} />
+            <MetricCard label="Warnings" value={tech.warnings?.length ? fmtNumber(tech.warnings.length) : '0'} tone={tech.warnings?.length ? 'warning' : 'good'} />
+          </div>
+          <Card className="research-wide">
+            <div className="research-card-title"><strong>Source markers</strong><Badge tone={toneForStatus(tech.status)}>{safeString(tech.status, 'Saknas')}</Badge></div>
+            <div className="research-mini-grid">
+              {Object.entries(tech.sourceMarkers || {}).slice(0, 12).map(([key, marker]) => (
+                <span key={key}><b>{key}</b>{`${safeString(marker.status, '—')} · ${safeString(marker.source, 'saknas')}`}</span>
+              ))}
+            </div>
+          </Card>
+        </>
+      ) : null}
     </details>
   );
 }
@@ -2507,7 +2526,7 @@ export default function SupervisorBrainPage() {
           </div>
         </section>
 
-        <TechnicalDetailsPanel data={data} />
+        <TechnicalDetailsPanel data={data} technical={overview.technical} />
           </>
         ) : null}
       </main>
