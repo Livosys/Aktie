@@ -456,6 +456,7 @@ function summarizeBatchStatus(batchStatusService) {
       : arr(fileFallback.recentBatchResults).slice(0, 10);
     return statusBlock(batch.status || 'error', source, {
       totalBatches: num(batch.totalBatches) || 0,
+      emptyReason: batch.emptyReason || batch.summary?.emptyReason || null,
       latestBatch: batch.latestBatch || null,
       latestCompletedBatch: batch.latestCompletedBatch || null,
       latestResult: batch.latestResult || null,
@@ -470,12 +471,14 @@ function summarizeBatchStatus(batchStatusService) {
       recentBatchEvents: mergedRecent,
       updatedAt: batch.updatedAt || null,
       message: batch.message || fileFallback.message || null,
+      summary: batch.summary || null,
       ...SAFETY,
     });
   } catch (err) {
     const fileFallback = buildBatchHistoryFallback();
     return statusBlock(fileFallback.batchCount ? 'degraded' : 'error', source, {
       totalBatches: fileFallback.batchCount || 0,
+      emptyReason: fileFallback.batchCount ? 'batch_history_degraded' : 'batch_summary_error',
       latestBatch: fileFallback.latestBatch || null,
       latestCompletedBatch: fileFallback.latestBatch || null,
       latestResult: fileFallback.latestResult || null,
@@ -491,6 +494,23 @@ function summarizeBatchStatus(batchStatusService) {
       message: fileFallback.batchCount
         ? fileFallback.message
         : (err && err.message ? err.message : String(err)),
+      summary: {
+        status: fileFallback.batchCount ? 'degraded' : 'error',
+        source: fileFallback.source,
+        emptyReason: fileFallback.batchCount ? 'batch_history_degraded' : 'batch_summary_error',
+        message: fileFallback.batchCount
+          ? fileFallback.message
+          : (err && err.message ? err.message : String(err)),
+        batchCount: fileFallback.batchCount || 0,
+        latestBatchId: fileFallback.latestBatch?.id || null,
+        latestCompletedBatchId: fileFallback.latestBatch?.id || null,
+        bestBatchId: fileFallback.bestBatch?.id || null,
+        worstBatchId: fileFallback.worstBatch?.id || null,
+        activeBatchId: null,
+        failedCount: fileFallback.failedCount || 0,
+        queuedCount: 0,
+        paperOnly: true,
+      },
       ...SAFETY,
     });
   }
@@ -509,6 +529,7 @@ function summarizeReplayStatusBlock(replayStatusService, replayIntelligenceServi
     const ranked = arr(replay.recentReplays).slice().sort((a, b) => (num(b.avgTradeScore) || -Infinity) - (num(a.avgTradeScore) || -Infinity));
     return statusBlock(replay.status || 'error', source, {
       totalReplayRuns: num(replay.totalReplayTests) || 0,
+      emptyReason: replay.emptyReason || replay.summary?.emptyReason || null,
       latestReplay: replay.latestReplay || null,
       latestResult: replay.latestResult || null,
       recentReplays: arr(replay.recentReplays).slice(0, 10),
@@ -522,10 +543,29 @@ function summarizeReplayStatusBlock(replayStatusService, replayIntelligenceServi
       sourceFiles: ['data/replay/runs', 'data/replay-intelligence'],
       updatedAt: replay.updatedAt || null,
       message: replay.message || null,
+      summary: replay.summary || null,
       ...SAFETY,
     });
   } catch (err) {
-    return statusBlock('error', source, { message: err && err.message ? err.message : String(err), ...SAFETY });
+    return statusBlock('error', source, {
+      emptyReason: 'replay_status_error',
+      message: err && err.message ? err.message : String(err),
+      summary: {
+        status: 'error',
+        source: 'data/replay/runs',
+        emptyReason: 'replay_status_error',
+        message: err && err.message ? err.message : String(err),
+        replayCount: 0,
+        latestRunId: null,
+        latestSymbol: null,
+        latestTimeframe: '2m',
+        bestSymbol: null,
+        worstSymbol: null,
+        totalEvents: 0,
+        paperOnly: true,
+      },
+      ...SAFETY,
+    });
   }
 }
 
@@ -560,16 +600,21 @@ function summarizePaperStatus(paperTradingStatusService) {
     } : null;
     return statusBlock(paper.status || 'error', source, {
       count: num(paper.count) || 0,
+      emptyReason: paper.emptyReason || paper.summary?.emptyReason || null,
       summary: paper.summary || null,
       latestPaperTrade: paper.latestPaperTrade || null,
       bestStrategy,
       worstStrategy,
       allowlist: allowlistStatus ? {
+        source: allowlistStatus.source || 'paperAllowlistService|automationApprovalService',
         totalApproved: allowlistStatus.totalApproved || 0,
         readyForPaperRuntime: allowlistStatus.readyForPaperRuntime || 0,
         pendingRuntimeConnection: allowlistStatus.pendingRuntimeConnection || 0,
         approvedStrategyIds: arr(allowlistStatus.allowlist).map((row) => row.id).filter(Boolean),
         waitingForApproval: arr(allowlistStatus.waitingForApproval).slice(0, 10),
+        approvedCount: allowlistStatus.approvedCount || 0,
+        rejectedCount: allowlistStatus.rejectedCount || 0,
+        blockedCount: allowlistStatus.blockedCount || 0,
         note: allowlistStatus.note || null,
       } : null,
       recentPaperTrades: arr(paper.recentPaperTrades).slice(0, 10),
@@ -578,7 +623,48 @@ function summarizePaperStatus(paperTradingStatusService) {
       ...SAFETY,
     });
   } catch (err) {
-    return statusBlock('error', source, { message: err && err.message ? err.message : String(err), ...SAFETY });
+    return statusBlock('error', source, {
+      emptyReason: 'paper_status_error',
+      message: err && err.message ? err.message : String(err),
+      summary: {
+        status: 'error',
+        source: 'data/paper-trading/trades.jsonl',
+        emptyReason: 'paper_status_error',
+        message: err && err.message ? err.message : String(err),
+        totalTrades: 0,
+        win: null,
+        loss: null,
+        timeout: null,
+        breakeven: null,
+        winRate: null,
+        decisiveWinRate: null,
+        avgPnl: null,
+        totalPnl: null,
+        bestPnl: null,
+        worstPnl: null,
+        bestStrategy: null,
+        latestPaperTradeId: null,
+        allowlistApprovedCount: 0,
+        allowlistRejectedCount: 0,
+        allowlistBlockedCount: 0,
+        allowlistReadyCount: 0,
+        allowlistPendingCount: 0,
+        paperOnly: true,
+      },
+      allowlist: {
+        source: 'paperAllowlistService|automationApprovalService',
+        totalApproved: 0,
+        readyForPaperRuntime: 0,
+        pendingRuntimeConnection: 0,
+        approvedStrategyIds: [],
+        waitingForApproval: [],
+        approvedCount: 0,
+        rejectedCount: 0,
+        blockedCount: 0,
+        note: 'Allowlist kunde inte läsas.',
+      },
+      ...SAFETY,
+    });
   }
 }
 
@@ -1839,6 +1925,7 @@ async function buildOverview() {
   } catch (err) {
     batchSummary = {
       status: 'error',
+      emptyReason: 'batch_summary_error',
       totalBatches: 0,
       completedBatches: 0,
       runningBatches: 0,
@@ -1938,7 +2025,29 @@ async function buildOverview() {
         : null;
     }
   } catch (err) {
-    replaySummary = { status: 'error', totalReplayTests: 0, latestReplay: null, message: err && err.message ? err.message : 'unavailable', ...SAFETY };
+    replaySummary = {
+      status: 'error',
+      emptyReason: 'replay_summary_error',
+      totalReplayTests: 0,
+      latestReplay: null,
+      message: err && err.message ? err.message : 'unavailable',
+      source: 'replayStatusService',
+      summary: {
+        status: 'error',
+        source: 'data/replay/runs',
+        emptyReason: 'replay_summary_error',
+        message: err && err.message ? err.message : 'unavailable',
+        replayCount: 0,
+        latestRunId: null,
+        latestSymbol: null,
+        latestTimeframe: '2m',
+        bestSymbol: null,
+        worstSymbol: null,
+        totalEvents: 0,
+        paperOnly: true,
+      },
+      ...SAFETY,
+    };
   }
 
   let paperTradingSummary = null;
@@ -1947,7 +2056,46 @@ async function buildOverview() {
       ? getCachedReadOnly('paper_trading_summary', signatureOf(paperTradingStatus.buildSupervisorPaperSummary), () => paperTradingStatus.buildSupervisorPaperSummary())
       : null;
   } catch (err) {
-    paperTradingSummary = { status: 'error', count: 0, latestPaperTrade: null, message: err && err.message ? err.message : 'unavailable', ...SAFETY };
+    paperTradingSummary = {
+      status: 'error',
+      emptyReason: 'paper_summary_error',
+      count: 0,
+      latestPaperTrade: null,
+      message: err && err.message ? err.message : 'unavailable',
+      source: 'paperTradingStatusService',
+      summary: {
+        status: 'error',
+        source: 'data/paper-trading/trades.jsonl',
+        emptyReason: 'paper_summary_error',
+        message: err && err.message ? err.message : 'unavailable',
+        totalTrades: 0,
+        win: null,
+        loss: null,
+        timeout: null,
+        breakeven: null,
+        winRate: null,
+        decisiveWinRate: null,
+        avgPnl: null,
+        totalPnl: null,
+        bestPnl: null,
+        worstPnl: null,
+        bestStrategy: null,
+        paperOnly: true,
+      },
+      allowlist: {
+        source: 'paperAllowlistService|automationApprovalService',
+        totalApproved: 0,
+        readyForPaperRuntime: 0,
+        pendingRuntimeConnection: 0,
+        approvedStrategyIds: [],
+        waitingForApproval: [],
+        approvedCount: 0,
+        rejectedCount: 0,
+        blockedCount: 0,
+        note: 'Allowlist kunde inte läsas.',
+      },
+      ...SAFETY,
+    };
   }
 
   const preloadedCoverageStatus = getCachedReadOnly('data_coverage_status', dataCoverage.getCoverageStatus, () => dataCoverage.getCoverageStatus());
