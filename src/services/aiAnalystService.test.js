@@ -104,6 +104,9 @@ function assertSafety(obj) {
   assert.equal(status.latestStatus, 'disabled');
   assert.equal(status.latestProvider, 'disabled');
   assert.equal(typeof status.latestDurationMs, 'number');
+  assert.ok(status.latestOutputSummary && typeof status.latestOutputSummary === 'object');
+  assert.ok(Array.isArray(status.latestOutputSummary.next_recommended_tests));
+  assert.ok(typeof status.latestLearnedCount === 'number');
   assert.equal(status.logPathExists, true);
   assert.ok(status.logEventCount >= 1);
   assert.equal(status.broker_enabled, false);

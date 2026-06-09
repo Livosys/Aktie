@@ -259,6 +259,20 @@ function outputMetadata(output) {
   };
 }
 
+function summarizeLatestOutput(output) {
+  const o = output || {};
+  return {
+    summary: text(o.summary, null),
+    what_ai_learned: arr(o.what_ai_learned).slice(0, 5),
+    best_strategy: text(o.best_strategy, null),
+    weakest_strategy: text(o.weakest_strategy, null),
+    risks: arr(o.risks).slice(0, 5),
+    next_recommended_tests: arr(o.next_recommended_tests).slice(0, 5),
+    questions_for_user: arr(o.questions_for_user).slice(0, 5),
+    confidence: Number.isFinite(Number(o.confidence)) ? Number(o.confidence) : null,
+  };
+}
+
 function safeErrorMessage(value) {
   return text(value, '').replace(/Bearer\s+[A-Za-z0-9._~+/=-]+/g, 'Bearer <redacted>');
 }
@@ -460,6 +474,7 @@ function getStatus() {
     }
   }
   const latestPayload = latest.latest || null;
+  const latestOutput = latestPayload?.output || null;
   const latestTimestamp = latestPayload?.generatedAt || latestPayload?.timestamp || null;
   const lastError = latestPayload?.error
     ? safeErrorMessage(latestPayload.error).slice(0, 300)
@@ -481,6 +496,12 @@ function getStatus() {
     latestStatus: latest.status,
     latestProvider: latestPayload?.provider || null,
     latestDurationMs: latestPayload?.durationMs ?? null,
+    latestOutputSummary: latestOutput ? summarizeLatestOutput(latestOutput) : null,
+    latestLearnedCount: arr(latestOutput?.what_ai_learned).length,
+    latestRiskCount: arr(latestOutput?.risks).length,
+    latestNextTestCount: arr(latestOutput?.next_recommended_tests).length,
+    latestQuestionCount: arr(latestOutput?.questions_for_user).length,
+    latestConfidence: Number.isFinite(Number(latestOutput?.confidence)) ? Number(latestOutput.confidence) : null,
     logPathExists: fileExists(eventsFile()),
     logEventCount: lineCount(eventsFile()),
     lastError,

@@ -1918,6 +1918,7 @@ function DataPipelineCard({ dataJobs }) {
 function AiAnalystSummary({ status, latest, learningStatus, nextRecommendedActions, ranking }) {
   const latestPayload = latest?.latest || latest || {};
   const output = latestPayload.output || {};
+  const latestOutputSummary = status?.latestOutputSummary || latestPayload.outputSummary || null;
   const provider = status?.provider || learningStatus?.aiAnalystStatus?.provider || latestPayload.provider || 'disabled';
   const disabled = provider === 'disabled' || latestPayload.status === 'disabled' || status?.enabled === false;
   const bestStrategy = first(arr(ranking?.topStrategies)[0]?.key, learningStatus?.narrowLearning?.bestStrategy, output.best_strategy);
@@ -1943,6 +1944,9 @@ function AiAnalystSummary({ status, latest, learningStatus, nextRecommendedActio
           <span><b>Model</b>{text(status?.model, 'Saknas')}</span>
           <span><b>Senast</b>{timeText(status?.latestTimestamp || learningStatus?.connectorSummary?.generatedAt || latestPayload.generatedAt)}</span>
           <span><b>Confidence</b>{output.confidence != null ? fmtPct(Number(output.confidence) * 100) : '—'}</span>
+          <span><b>Lärdomar</b>{fmtNumber(status?.latestLearnedCount ?? arr(latestOutputSummary?.what_ai_learned).length ?? 0)}</span>
+          <span><b>Nästa tester</b>{fmtNumber(status?.latestNextTestCount ?? arr(latestOutputSummary?.next_recommended_tests).length ?? 0)}</span>
+          <span><b>Risker</b>{fmtNumber(status?.latestRiskCount ?? arr(latestOutputSummary?.risks).length ?? 0)}</span>
         </div>
         <p className="research-muted">Uppdateras automatiskt. AI kan bara läsa och sammanfatta — aldrig handla eller ändra något.</p>
       </Card>
