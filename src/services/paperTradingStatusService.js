@@ -179,6 +179,10 @@ function buildSummary(rows) {
     bestStrategy = null;
   }
   return {
+    status: rows.length ? 'ok' : 'empty',
+    source: 'data/paper-trading/trades.jsonl',
+    emptyReason: rows.length ? null : 'no_paper_trades',
+    message: rows.length ? `${rows.length} låtsastester lästa (read-only simulering).` : 'Det finns inga låtsastester att visa ännu.',
     totalTrades: stats ? stats.totalTrades : rows.length,
     win: stats ? stats.win : null,
     loss: stats ? stats.loss : null,
@@ -212,29 +216,82 @@ function emptyResult(extra) {
 
 function buildPaperTradingStatus(options = {}) {
   const file = options.tradesFile || DEFAULT_TRADES_FILE;
+  const allowlistService = options.allowlistService || null;
+  const approvalsService = options.approvalsService || null;
   try {
+    const allowlistStatus = allowlistService && typeof allowlistService.getPaperAllowlistStatus === 'function'
+      ? allowlistService.getPaperAllowlistStatus()
+      : null;
+    const approvals = approvalsService && typeof approvalsService.getAutomationApprovals === 'function'
+      ? approvalsService.getAutomationApprovals()
+      : null;
+    const allowlist = allowlistStatus ? {
+      source: 'paperAllowlistService|automationApprovalService',
+      totalApproved: allowlistStatus.totalApproved || 0,
+      readyForPaperRuntime: allowlistStatus.readyForPaperRuntime || 0,
+      pendingRuntimeConnection: allowlistStatus.pendingRuntimeConnection || 0,
+      approvedStrategyIds: Array.isArray(allowlistStatus.allowlist) ? allowlistStatus.allowlist.map((row) => row.id).filter(Boolean) : [],
+      waitingForApproval: Array.isArray(allowlistStatus.waitingForApproval) ? allowlistStatus.waitingForApproval.slice(0, 10) : [],
+      approvedCount: num(approvals?.approvedCount) || 0,
+      rejectedCount: Array.isArray(approvals?.rejectedStrategyIds) ? approvals.rejectedStrategyIds.length : 0,
+      blockedCount: Array.isArray(approvals?.approvedWithBlockers) ? approvals.approvedWithBlockers.length : 0,
+      note: allowlistStatus.note || null,
+    } : {
+      source: 'paperAllowlistService|automationApprovalService',
+      totalApproved: 0,
+      readyForPaperRuntime: 0,
+      pendingRuntimeConnection: 0,
+      approvedStrategyIds: [],
+      waitingForApproval: [],
+      approvedCount: num(approvals?.approvedCount) || 0,
+      rejectedCount: Array.isArray(approvals?.rejectedStrategyIds) ? approvals.rejectedStrategyIds.length : 0,
+      blockedCount: Array.isArray(approvals?.approvedWithBlockers) ? approvals.approvedWithBlockers.length : 0,
+      note: 'Allowlist saknas i denna miljö.',
+    };
     const exists = fs.existsSync(file) || file === DEFAULT_TRADES_FILE;
     const rows = readTrades(file);
     if (!rows.length) {
+      const summary = {
+        ...buildSummary([]),
+        latestPaperTradeId: null,
+        allowlistApprovedCount: allowlist.approvedCount,
+        allowlistRejectedCount: allowlist.rejectedCount,
+        allowlistBlockedCount: allowlist.blockedCount,
+        allowlistReadyCount: allowlist.readyForPaperRuntime,
+        allowlistPendingCount: allowlist.pendingRuntimeConnection,
+      };
       return emptyResult({
         status: exists ? 'empty' : 'empty',
         message: 'Det finns inga låtsastester att visa ännu.',
         fileExists: fs.existsSync(file),
+        emptyReason: 'no_paper_trades',
+        allowlist,
+        summary,
       });
     }
 
     const sorted = sortNewestFirst(rows);
     const recent = sorted.slice(0, MAX_RECENT).map(normalizeTrade).filter(Boolean);
     const latest = recent[0] || {};
-    const summary = buildSummary(rows);
+    const summary = {
+      ...buildSummary(rows),
+      latestPaperTradeId: latest.id || null,
+      allowlistApprovedCount: allowlist.approvedCount,
+      allowlistRejectedCount: allowlist.rejectedCount,
+      allowlistBlockedCount: allowlist.blockedCount,
+      allowlistReadyCount: allowlist.readyForPaperRuntime,
+      allowlistPendingCount: allowlist.pendingRuntimeConnection,
+    };
 
     return {
       ok: true,
       status: 'ok',
+      emptyReason: null,
       count: rows.length,
       latestPaperTrade: latest,
       recentPaperTrades: recent,
       summary,
+      allowlist,
       source: 'data/paper-trading/trades.jsonl',
       updatedAt: nowIso(),
       message: `${rows.length} låtsastester lästa (read-only simulering).`,
@@ -244,10 +301,34 @@ function buildPaperTradingStatus(options = {}) {
     return {
       ok: false,
       status: 'error',
+      emptyReason: 'paper_status_error',
       count: 0,
       latestPaperTrade: {},
       recentPaperTrades: [],
-      summary: buildSummary([]),
+      summary: {
+        ...buildSummary([]),
+        status: 'error',
+        emptyReason: 'paper_status_error',
+        message: safeError(err),
+        latestPaperTradeId: null,
+        allowlistApprovedCount: 0,
+        allowlistRejectedCount: 0,
+        allowlistBlockedCount: 0,
+        allowlistReadyCount: 0,
+        allowlistPendingCount: 0,
+      },
+      allowlist: {
+        source: 'paperAllowlistService|automationApprovalService',
+        totalApproved: 0,
+        readyForPaperRuntime: 0,
+        pendingRuntimeConnection: 0,
+        approvedStrategyIds: [],
+        waitingForApproval: [],
+        approvedCount: 0,
+        rejectedCount: 0,
+        blockedCount: 0,
+        note: 'Allowlist kunde inte läsas.',
+      },
       source: 'data/paper-trading/trades.jsonl',
       updatedAt: nowIso(),
       message: safeError(err),
@@ -262,11 +343,14 @@ function buildSupervisorPaperSummary(options = {}) {
   const full = buildPaperTradingStatus(options);
   return {
     status: full.status,
+    emptyReason: full.emptyReason || full.summary?.emptyReason || null,
     count: full.count,
     latestPaperTrade: full.latestPaperTrade && full.latestPaperTrade.id ? full.latestPaperTrade : null,
     summary: full.summary,
+    allowlist: full.allowlist,
     updatedAt: full.updatedAt,
-    message: full.message || null,
+    message: full.message || full.summary?.message || null,
+    source: 'paperTradingStatusService',
     ...SAFETY,
   };
 }

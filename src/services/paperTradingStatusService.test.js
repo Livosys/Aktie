@@ -26,11 +26,15 @@ function assertSafety(obj) {
   const empty = svc.buildPaperTradingStatus({ tradesFile: path.join(emptyDir, 'missing.jsonl') });
   assert.equal(empty.ok, true);
   assert.equal(empty.status, 'empty');
+  assert.equal(empty.emptyReason, 'no_paper_trades');
   assert.equal(empty.count, 0);
   assert.deepEqual(empty.recentPaperTrades, []);
   assert.deepEqual(empty.latestPaperTrade, {});
   assertSafety(empty);
   assertSafety(empty.summary);
+  assert.ok(empty.allowlist && typeof empty.allowlist === 'object');
+  assert.equal(empty.summary.latestPaperTradeId, null);
+  assert.ok(typeof empty.summary.allowlistApprovedCount === 'number');
 
   // ── ok: real-shaped trades, newest-first selection + normalization ──────────
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'paper-runs-'));
@@ -59,6 +63,7 @@ function assertSafety(obj) {
   const ok = svc.buildPaperTradingStatus({ tradesFile: file });
   assert.equal(ok.ok, true);
   assert.equal(ok.status, 'ok');
+  assert.equal(ok.emptyReason, null);
   assert.equal(ok.count, 2);
   // newest-first: BTCUSDT (Jun 1) before AAPL (May 30)
   assert.equal(ok.latestPaperTrade.id, 'pt_new_002');
@@ -89,6 +94,10 @@ function assertSafety(obj) {
   assert.equal(ok.summary.winRate, 50);
   assert.ok(ok.summary.avgPnl !== null);
   assert.ok(ok.summary.bestStrategy && ok.summary.bestStrategy.strategy === 'vwap_volume_breakout_long');
+  assert.ok(ok.allowlist && typeof ok.allowlist === 'object');
+  assert.equal(ok.summary.latestPaperTradeId, 'pt_new_002');
+  assert.ok(typeof ok.summary.allowlistApprovedCount === 'number');
+  assert.ok(typeof ok.summary.allowlistRejectedCount === 'number');
   assertSafety(ok);
   assertSafety(ok.summary);
 
@@ -113,12 +122,15 @@ function assertSafety(obj) {
   assert.equal(sup.latestPaperTrade.id, 'pt_new_002');
   assert.equal(sup.summary.winRate, 50);
   assert.equal(sup.recentPaperTrades, undefined);
+  assert.ok(sup.allowlist && typeof sup.allowlist === 'object');
+  assert.ok(sup.summary.latestPaperTradeId === 'pt_new_002');
   assertSafety(sup);
 
   // empty supervisor summary → latestPaperTrade null, not crash
   const supEmpty = svc.buildSupervisorPaperSummary({ tradesFile: path.join(emptyDir, 'missing.jsonl') });
   assert.equal(supEmpty.latestPaperTrade, null);
   assert.equal(supEmpty.count, 0);
+  assert.equal(supEmpty.emptyReason, 'no_paper_trades');
   assertSafety(supEmpty);
 
   // cleanup
