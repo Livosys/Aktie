@@ -702,10 +702,10 @@ function summarizeLearningStatus(learningConnector, narrowPerf, daytradingLearni
   }
 }
 
-function summarizeStrategyRanking(strategyRegistry, strategyRead, strategyScore) {
-  const source = 'strategyRegistryService|strategyPerformanceReadService|strategyScoreService';
+function summarizeStrategyRanking(strategyRegistry, strategyRead, strategyScore, strategyRuntimeMatrix = null) {
+  const source = 'strategyRegistryService|strategyPerformanceReadService|strategyScoreService|strategyRuntimeMatrixService';
   if (!strategyRegistry || typeof strategyRegistry.getStatus !== 'function') {
-    return statusBlock('error', source, {
+    return statusBlock('missing', source, {
       totalStrategies: 0,
       activeStrategies: 0,
       inactiveStrategies: 0,
@@ -715,14 +715,23 @@ function summarizeStrategyRanking(strategyRegistry, strategyRead, strategyScore)
       topStrategies: [],
       weakStrategies: [],
       strategiesNeedingMoreData: [],
+      strategiesWithoutTests: [],
+      bestJustNow: null,
+      weakestJustNow: null,
       latestBlockedReason: null,
-      message: 'Strategiranking kunde inte läsas.',
+      emptyReason: 'strategy_registry_missing',
+      message: 'Strategiregistry kunde inte läsas.',
       ...SAFETY,
     });
   }
   try {
     const registry = strategyRegistry.getStatus();
     const strategyMap = new Map(arr(registry.strategies).map((row) => [row.strategy_id, row]));
+    const runtimeMatrixSummary = strategyRuntimeMatrix && typeof strategyRuntimeMatrix.getStrategyRuntimeMatrix === 'function'
+      ? strategyRuntimeMatrix.getStrategyRuntimeMatrix()
+      : null;
+    const runtimeMatrixRows = arr(runtimeMatrixSummary?.strategies);
+    const runtimeMatrixMap = new Map(runtimeMatrixRows.map((row) => [row.id || row.strategy_id, row]));
     const perfTop = strategyRead && typeof strategyRead.getTopStrategies === 'function'
       ? arr(strategyRead.getTopStrategies(5).strategies)
       : [];
@@ -735,24 +744,34 @@ function summarizeStrategyRanking(strategyRegistry, strategyRead, strategyScore)
     const strategies = arr(scoreRows && scoreRows.strategies);
     const mapRow = (row) => {
       const registryRow = strategyMap.get(row.strategy_id) || {};
+      const runtimeRow = runtimeMatrixMap.get(row.strategy_id) || {};
+      const sampleSize = num(row.sample_size);
+      const trades = num(row.sample_size ?? row.paper_trades ?? row.candidate_count ?? runtimeRow.trades ?? runtimeRow.simulationSummary?.trades ?? runtimeRow.paperSummary?.totalTrades);
+      const winRate = num(row.win_rate ?? row.performance_summary?.win_rate ?? registryRow.performance_summary?.win_rate ?? runtimeRow.winRate ?? runtimeRow.simulationSummary?.winRate ?? runtimeRow.paperSummary?.winRate);
+      const avgPnl = num(row.avg_pnl ?? row.performance_summary?.avg_pnl ?? registryRow.performance_summary?.avg_pnl ?? runtimeRow.avgPnl ?? runtimeRow.simulationSummary?.avgPnl ?? runtimeRow.paperSummary?.avgPnl);
+      const lastTested = firstValue(row.last_tested, row.lastTested, runtimeRow.lastTested, runtimeRow.simulationSummary?.lastTested, runtimeRow.paperSummary?.lastTested);
       return {
         id: row.strategy_id,
         key: row.strategy_id,
-        name: registryRow.strategy_name || registryRow.strategy_id || row.strategy_id,
-        source: row.source || registryRow.source || 'internal',
-        status: row.status || registryRow.status || null,
+        name: registryRow.strategy_name || registryRow.strategy_id || runtimeRow.name || row.strategy_id,
+        source: row.source || registryRow.source || runtimeRow.source || 'internal',
+        status: row.status || registryRow.status || runtimeRow.catalogStatus || runtimeRow.paperRuntimeStatus || null,
         score: num(row.score),
         confidence: num(row.confidence),
-        sampleSize: num(row.sample_size),
-        trades: num(row.sample_size ?? row.paper_trades ?? row.candidate_count),
-        winRate: num(row.win_rate ?? row.performance_summary?.win_rate ?? registryRow.performance_summary?.win_rate),
-        avgPnl: num(row.avg_pnl ?? row.performance_summary?.avg_pnl ?? registryRow.performance_summary?.avg_pnl),
-        paperTrades: num(row.paper_trades),
-        candidateCount: num(row.candidate_count),
+        sampleSize,
+        trades,
+        testCount: trades,
+        winRate,
+        avgPnl,
+        paperTrades: num(row.paper_trades ?? runtimeRow.paperSummary?.totalTrades),
+        candidateCount: num(row.candidate_count ?? runtimeRow.candidateCount),
+        lastTested,
         recommendedAction: row.recommended_action || null,
         strengths: arr(row.strengths).slice(0, 4),
         weaknesses: arr(row.weaknesses).slice(0, 4),
-        needsMoreData: (num(row.sample_size) || 0) < 10 || (num(row.confidence) || 0) < 50,
+        needsMoreData: (sampleSize || 0) < 10 || (num(row.confidence) || 0) < 50 || (!trades && runtimeRow.needsMoreData === true),
+        emptyReason: !trades ? 'no_test_data' : null,
+        runtimeStatus: runtimeRow.automaticStatus || null,
         ...SAFETY,
       };
     };
@@ -766,31 +785,86 @@ function summarizeStrategyRanking(strategyRegistry, strategyRead, strategyScore)
       confidence: num(row.confidence),
       sampleSize: num(row.sample_size),
       trades: num(row.trades),
+      testCount: num(row.trades),
       winRate: num(row.win_rate),
       avgPnl: num(row.avg_pnl),
       paperTrades: num(row.paper_trades),
       candidateCount: num(row.candidate_count),
+      lastTested: row.last_tested || null,
       recommendedAction: row.recommended_action || null,
       strengths: arr(row.strengths).slice(0, 4),
       weaknesses: arr(row.weaknesses).slice(0, 4),
       needsMoreData: (num(row.sample_size) || 0) < 10 || (num(row.confidence) || 0) < 50,
+      emptyReason: !num(row.trades) ? 'no_test_data' : null,
+      runtimeStatus: null,
       ...SAFETY,
     }));
-    const topStrategies = ranked.slice(0, 5);
-    const weakStrategies = ranked.slice(-5).reverse();
-    const strategiesNeedingMoreData = ranked.filter((row) => row.needsMoreData).slice(0, 10);
+    const runtimeOnlyRows = runtimeMatrixRows
+      .filter((row) => row && !ranked.some((rankedRow) => rankedRow.id === row.id))
+      .map((row) => ({
+        id: row.id || row.strategy_id || null,
+        key: row.id || row.strategy_id || null,
+        name: row.name || row.id || row.strategy_id || null,
+        source: row.source || 'strategyRuntimeMatrixService',
+        status: row.status || row.catalogStatus || row.paperRuntimeStatus || null,
+        score: null,
+        confidence: null,
+        sampleSize: num(row.sampleSize ?? row.simulationSummary?.trades ?? row.paperSummary?.totalTrades),
+        trades: num(row.trades ?? row.simulationSummary?.trades ?? row.paperSummary?.totalTrades),
+        testCount: num(row.trades ?? row.simulationSummary?.trades ?? row.paperSummary?.totalTrades),
+        winRate: num(row.winRate ?? row.simulationSummary?.winRate ?? row.paperSummary?.winRate),
+        avgPnl: num(row.avgPnl ?? row.simulationSummary?.avgPnl ?? row.paperSummary?.avgPnl),
+        paperTrades: num(row.paperSummary?.totalTrades),
+        candidateCount: num(row.candidateCount),
+        lastTested: row.lastTested || row.simulationSummary?.lastTested || row.paperSummary?.lastTested || null,
+        recommendedAction: row.recommendation || null,
+        strengths: [],
+        weaknesses: [],
+        needsMoreData: true,
+        emptyReason: 'no_test_data',
+        runtimeStatus: row.automaticStatus || null,
+        ...SAFETY,
+      }));
+    const combined = [...ranked, ...runtimeOnlyRows];
+    const scored = combined.filter((row) => Number.isFinite(Number(row.score)));
+    const topStrategies = scored.slice().sort((a, b) => (num(b.score) || -Infinity) - (num(a.score) || -Infinity)).slice(0, 5);
+    const weakStrategies = scored.slice().sort((a, b) => (num(a.score) || Infinity) - (num(b.score) || Infinity)).slice(0, 5);
+    const strategiesNeedingMoreData = combined.filter((row) => row.needsMoreData).slice(0, 10);
     const bestStrategies = topStrategies;
     const weakestStrategies = weakStrategies;
-    const strategiesWithoutTests = ranked.filter((row) => (num(row.sampleSize) || 0) === 0).slice(0, 10);
-    const status = num(registry.total_strategies) > 0 ? 'ok' : 'empty';
+    const strategiesWithoutTests = combined.filter((row) => (num(row.sampleSize) || 0) === 0).slice(0, 10);
+    const totalStrategies = num(registry.total_strategies) || combined.length || runtimeMatrixSummary?.summary?.total || 0;
+    const activeStrategies = num(registry.active_strategies) || runtimeMatrixSummary?.summary?.activeStrategies || 0;
+    const inactiveStrategies = Math.max(0, totalStrategies - activeStrategies);
+    const status = !strategyRegistry || !registry
+      ? 'missing'
+      : totalStrategies <= 0
+        ? 'empty'
+        : !topStrategies.length
+          ? 'degraded'
+          : 'ok';
+    const emptyReason = status === 'missing'
+      ? 'strategy_registry_missing'
+      : status === 'empty'
+        ? 'no_strategies_registered'
+        : status === 'degraded'
+          ? 'no_rankable_test_data'
+          : null;
+    const message = status === 'missing'
+      ? 'Strategiregistry kunde inte läsas.'
+      : status === 'empty'
+        ? 'Inga strategier hittades ännu.'
+        : status === 'degraded'
+          ? 'Strategier finns, men det saknas tillräckligt testunderlag för en stabil ranking.'
+          : 'Strategiregistry, testdata och runtime-matris lästa i read-only läge.';
     return statusBlock(status, source, {
-      totalStrategies: num(registry.total_strategies) || 0,
-      activeStrategies: num(registry.active_strategies) || 0,
-      inactiveStrategies: Math.max(0, (num(registry.total_strategies) || 0) - (num(registry.active_strategies) || 0)),
+      totalStrategies,
+      activeStrategies,
+      inactiveStrategies,
       paperOnlyStrategies: num(registry.paper_only_strategies) || 0,
       pausedStrategies: num(registry.paused_strategies) || 0,
       tradingviewStrategies: num(registry.tradingview_strategies) || 0,
-      activeStrategiesWithEvidence: ranked.filter((row) => row.status === 'active' && (num(row.sampleSize) || 0) > 0).length,
+      activeStrategiesWithEvidence: combined.filter((row) => row.status === 'active' && (num(row.sampleSize) || 0) > 0).length,
       strategiesWithoutTests: strategiesWithoutTests,
       strategiesNeedingMoreDataCount: strategiesNeedingMoreData.length,
       topStrategies,
@@ -801,11 +875,21 @@ function summarizeStrategyRanking(strategyRegistry, strategyRead, strategyScore)
       bestJustNow: topStrategies[0] || null,
       weakestJustNow: weakStrategies[0] || null,
       latestBlockedReason: registry.latest_blocked_reason || null,
-      message: status === 'empty' ? 'Inga strategier hittades ännu.' : 'Strategiregistry och ranking lästa.',
+      message,
+      emptyReason,
+      runtimeMatrixSummary: runtimeMatrixSummary
+        ? {
+            status: runtimeMatrixSummary.status || runtimeMatrixSummary.summary?.status || 'empty',
+            message: runtimeMatrixSummary.message || runtimeMatrixSummary.summary?.message || null,
+            source: runtimeMatrixSummary.source || runtimeMatrixSummary.summary?.source || 'strategyRuntimeMatrixService',
+            total: runtimeMatrixSummary.summary?.total || 0,
+            needsMoreData: runtimeMatrixSummary.summary?.needsMoreData || 0,
+          }
+        : null,
       ...SAFETY,
     });
   } catch (err) {
-    return statusBlock('error', source, {
+    return statusBlock('degraded', source, {
       totalStrategies: 0,
       activeStrategies: 0,
       inactiveStrategies: 0,
@@ -819,6 +903,7 @@ function summarizeStrategyRanking(strategyRegistry, strategyRead, strategyScore)
       weakestStrategies: [],
       strategiesWithoutTests: [],
       latestBlockedReason: null,
+      emptyReason: 'strategy_ranking_error',
       message: err && err.message ? err.message : String(err),
       ...SAFETY,
     });
@@ -1644,6 +1729,7 @@ async function buildOverview() {
   const strategyRead = lazy('./strategyPerformanceReadService');
   const strategyRegistry = lazy('./strategyRegistryService');
   const strategyScore = lazy('./strategyScoreService');
+  const strategyRuntimeMatrix = lazy('./strategyRuntimeMatrixService');
   const narrowPerf = lazy('./narrowPerformanceLearningService');
   const daytradingLearning = lazy('./daytradingLearningEngineService');
   const autopilot = lazy('./narrowTestAutopilotService');
@@ -1892,8 +1978,8 @@ async function buildOverview() {
   );
   const strategyRanking = getCachedReadOnly(
     'overview_strategy_ranking',
-    signatureOf(strategyRegistry.getStatus, strategyRead.getTopStrategies, strategyRead.getWorstStrategies, strategyScore.defaultStrategyScoreService && strategyScore.defaultStrategyScoreService.getStrategyScores),
-    () => summarizeStrategyRanking(strategyRegistry, strategyRead, strategyScore),
+    signatureOf(strategyRegistry.getStatus, strategyRead.getTopStrategies, strategyRead.getWorstStrategies, strategyScore.defaultStrategyScoreService && strategyScore.defaultStrategyScoreService.getStrategyScores, strategyRuntimeMatrix && strategyRuntimeMatrix.getStrategyRuntimeMatrix),
+    () => summarizeStrategyRanking(strategyRegistry, strategyRead, strategyScore, strategyRuntimeMatrix),
   );
   const blocks = {
     system_health, learning, strategies, narrow, autopilot: autopilotBlock,

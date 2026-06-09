@@ -28,7 +28,7 @@ function assertSafety(obj, label = 'safety') {
 }
 
 function assertReadOnlyStatus(status, label) {
-  assert.ok(status && ['ok', 'empty', 'degraded', 'error'].includes(status.status), `${label} status valid`);
+  assert.ok(status && ['ok', 'empty', 'degraded', 'error', 'missing'].includes(status.status), `${label} status valid`);
   assert.equal(status.mode, 'paper_only', `${label} mode`);
   assert.equal(status.actions_allowed, false, `${label} actions_allowed`);
   assert.equal(status.can_place_orders, false, `${label} can_place_orders`);
@@ -56,6 +56,8 @@ function assertOverviewContract(o, label = 'overview') {
   assert.ok(Array.isArray(o.strategyRanking.topStrategies || []), `${label}: strategyRanking.topStrategies array`);
   assert.ok(Array.isArray(o.strategyRanking.weakStrategies || []), `${label}: strategyRanking.weakStrategies array`);
   assert.ok(Array.isArray(o.strategyRanking.strategiesNeedingMoreData || []), `${label}: strategyRanking.strategiesNeedingMoreData array`);
+  assert.ok(typeof o.strategyRanking.message === 'string', `${label}: strategyRanking.message string`);
+  assert.ok(Object.prototype.hasOwnProperty.call(o.strategyRanking, 'emptyReason'), `${label}: strategyRanking.emptyReason present`);
 }
 
 async function withPatchedMethod(modPath, methodName, replacement, fn) {
@@ -149,6 +151,8 @@ async function withPatchedMethod(modPath, methodName, replacement, fn) {
   assert.ok(Array.isArray(o.strategyRanking.topStrategies || []), 'strategyRanking.topStrategies array');
   assert.ok(Array.isArray(o.strategyRanking.weakStrategies || []), 'strategyRanking.weakStrategies array');
   assert.ok(Array.isArray(o.strategyRanking.strategiesNeedingMoreData || []), 'strategyRanking.strategiesNeedingMoreData array');
+  assert.ok(typeof o.strategyRanking.message === 'string', 'strategyRanking.message string');
+  assert.ok(Object.prototype.hasOwnProperty.call(o.strategyRanking, 'emptyReason'), 'strategyRanking.emptyReason present');
   assert.ok(o.batchSummary && typeof o.batchSummary === 'object', 'batchSummary present');
   assert.ok(['ok', 'empty', 'degraded', 'error'].includes(o.batchSummary.status), 'batchSummary status valid');
   assert.equal(o.batchSummary.source, 'strategyBatchTestService');
@@ -360,7 +364,7 @@ async function withPatchedMethod(modPath, methodName, replacement, fn) {
     const degraded = await overview.buildOverview();
     assert.equal(degraded.ok, true, 'overview survives strategy source failure');
     assertOverviewContract(degraded, 'overview degraded strategy source');
-    assert.equal(degraded.strategyRanking.status, 'error', 'strategyRanking marked error');
+    assert.equal(degraded.strategyRanking.status, 'degraded', 'strategyRanking marked degraded');
     assert.deepEqual(degraded.strategyRanking.topStrategies, [], 'strategyRanking topStrategies empty fallback');
     assert.deepEqual(degraded.strategyRanking.weakStrategies, [], 'strategyRanking weakStrategies empty fallback');
     assert.deepEqual(degraded.strategyRanking.strategiesNeedingMoreData, [], 'strategyRanking strategiesNeedingMoreData empty fallback');

@@ -345,7 +345,15 @@ function getStrategyRuntimeMatrix() {
   });
 
   const summary = {
+    source: 'strategyRuntimeMatrixService',
+    status: rows.length ? 'ok' : 'empty',
+    emptyReason: rows.length ? null : 'no_strategies_in_catalog',
+    message: rows.length
+      ? 'Strategiruntime läst i read-only läge.'
+      : 'Inga strategier hittades ännu i runtime-matrisen.',
     total: rows.length,
+    activeStrategies: rows.filter((row) => row.catalogStatus === 'active').length,
+    inactiveStrategies: rows.filter((row) => row.catalogStatus !== 'active').length,
     fullyAutomatic: rows.filter((row) => row.automaticStatus === 'fullyAutomatic').length,
     partlyAutomatic: rows.filter((row) => row.automaticStatus === 'partlyAutomatic').length,
     manualOnly: rows.filter((row) => row.automaticStatus === 'manualOnly').length,
@@ -353,10 +361,15 @@ function getStrategyRuntimeMatrix() {
     needsMoreData: rows.filter((row) => row.needsMoreData).length,
     strongCandidates: rows.filter((row) => row.strongCandidate).length,
     weakCandidates: rows.filter((row) => row.weakCandidate).length,
+    paperOnly: true,
   };
 
   return {
     ok: true,
+    status: summary.status,
+    source: summary.source,
+    message: summary.message,
+    emptyReason: summary.emptyReason,
     generated_at: new Date().toISOString(),
     strategies: rows,
     summary,
