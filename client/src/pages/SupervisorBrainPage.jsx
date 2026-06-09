@@ -1870,6 +1870,8 @@ function DataPipelineCard({ dataJobs }) {
   const weekly = dataJobs?.weeklyBackfill || {};
   const cache = dataJobs?.cacheStatus || {};
   const quality = dataJobs?.dataQuality || {};
+  const coverage = dataJobs?.coverageSummary || {};
+  const summary = dataJobs?.summary || {};
   const latestImport = hourly.latestImport || {};
   const latestBackfill = weekly.latestBackfill || {};
   return (
@@ -1903,7 +1905,11 @@ function DataPipelineCard({ dataJobs }) {
           <span><b>Senaste data</b>{text(latestImport.to || weekly.dateRange?.to || latestBackfill.dateRange?.to, 'Saknas')}</span>
           <span><b>Tidsramar</b>{text(latestImport.timeframe || latestBackfill.timeframe || latestBackfill.timeframes, 'Saknas')}</span>
           <span><b>Cache-symboler</b>{fmtNumber(cache.symbolsCached || 0)}</span>
+          <span><b>Redo för tester</b>{fmtNumber(summary.readyForTests ?? 0)}</span>
+          <span><b>Coverage-ready</b>{fmtNumber((coverage.readyForReplay || 0) + (coverage.readyForBatch || 0))}</span>
+          <span><b>Saknar historik</b>{fmtNumber(arr(coverage.missingSymbols).length)}</span>
         </div>
+        <p className="research-muted">{safeString(summary.note, 'Datajobb-status saknas.')}</p>
       </Card>
     </>
   );

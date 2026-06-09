@@ -323,6 +323,51 @@ function buildDataJobsStatus(options = {}) {
     const cacheStatus = collectMarketDataCache(marketDataRoot, store);
     const recentDataEvents = readRecentDataEvents(logService);
     const dataQuality = buildDataQuality(cacheStatus, weeklyBackfill, recentDataEvents);
+    let coverageStatus = null;
+    let coverageDetails = null;
+    try {
+      if (coverageService && typeof coverageService.getCoverageStatus === 'function') {
+        coverageStatus = coverageService.getCoverageStatus();
+      }
+    } catch (err) {
+      warnings.push(`coverage_status_error:${safeError(err)}`);
+    }
+    try {
+      if (coverageService && typeof coverageService.getAllSymbolCoverage === 'function') {
+        const rawCoverage = coverageService.getAllSymbolCoverage();
+        const symbols = arr(rawCoverage?.symbols);
+        const readySymbols = symbols.filter((row) => row && (row.usable_for_replay || row.usable_for_batch));
+        const missingSymbols = symbols.filter((row) => row && ['weak', 'medium', 'missing', 'missing_provider'].includes(String(row.data_quality || '').toLowerCase()));
+        coverageDetails = {
+          status: coverageStatus?.status || (symbols.length ? 'ok' : 'empty'),
+          source: 'dataCoverageExpansionService',
+          symbolsTotal: num(coverageStatus?.symbols_total) || symbols.length,
+          readyForReplay: num(coverageStatus?.symbols_ready_for_replay) || readySymbols.filter((row) => row.usable_for_replay).length,
+          readyForBatch: num(coverageStatus?.symbols_ready_for_batch) || readySymbols.filter((row) => row.usable_for_batch).length,
+          readyForAiLearning: num(coverageStatus?.symbols_ready_for_ai_learning) || 0,
+          missingData: num(coverageStatus?.symbols_missing_data) || missingSymbols.length,
+          readySymbols: readySymbols.slice(0, 10).map((row) => ({
+            symbol: row.symbol,
+            marketGroup: row.market_group || null,
+            coverageScore: row.coverage_score ?? null,
+            daysCovered: row.days_covered ?? null,
+          })),
+          missingSymbols: missingSymbols.slice(0, 10).map((row) => ({
+            symbol: row.symbol,
+            marketGroup: row.market_group || null,
+            quality: row.data_quality || null,
+            reason: row.reason || null,
+            provider: row.provider || null,
+          })),
+          providerStatus: coverageStatus?.provider_status || null,
+          generatedAt: coverageStatus?.generated_at || null,
+          updatedAt: coverageStatus?.generated_at || null,
+        };
+      }
+    } catch (err) {
+      warnings.push(`coverage_details_error:${safeError(err)}`);
+      coverageDetails = null;
+    }
     if (hourlyImport.status === 'degraded') warnings.push('alpaca_import_manifest_degraded');
     if (!hourlyImport.manifestExists) warnings.push('alpaca_import_manifest_missing');
     if (!weeklyBackfill.jobsFileExists) warnings.push('backfill_jobs_file_missing');
@@ -330,6 +375,21 @@ function buildDataJobsStatus(options = {}) {
 
     const hasAnyHistory = hourlyImport.manifestExists || weeklyBackfill.jobsFileExists || cacheStatus.cacheExists || recentDataEvents.length > 0;
     const status = warnings.some((w) => /degraded/.test(w)) ? 'degraded' : (hasAnyHistory ? 'ok' : 'empty');
+    const readyForTests = (coverageDetails?.readyForReplay || 0) + (coverageDetails?.readyForBatch || 0);
+    const summary = {
+      status,
+      readyForTests,
+      missingSymbols: coverageDetails?.missingSymbols || [],
+      readySymbols: coverageDetails?.readySymbols || [],
+      recentDataEventCount: recentDataEvents.length,
+      latestImportAt: hourlyImport.lastRun || null,
+      latestBackfillAt: weeklyBackfill.lastRun || null,
+      cacheAgeSeconds: cacheStatus.cacheAgeSeconds ?? null,
+      providerIssues: Object.values(providerStatus || {}).filter((row) => row && row.ok === false).length,
+      note: hasAnyHistory
+        ? (coverageDetails?.missingSymbols?.length ? 'Datajobb finns, men några symboler behöver mer historik.' : 'Datajobb och cache ser tillräckliga ut för read-only tester.')
+        : 'Ingen tydlig datajobs-historik hittades ännu.',
+    };
     return {
       ok: true,
       status,
@@ -339,8 +399,10 @@ function buildDataJobsStatus(options = {}) {
       weeklyBackfill,
       cacheStatus,
       dataQuality,
+      coverageSummary: coverageDetails,
       recentDataEvents,
       warnings,
+      summary,
       source: ['alpaca-2m-imports.jsonl', 'backfill-jobs-v1.json', 'market-data-cache', 'eventLogService'],
       updatedAt: nowIso(),
       message: hasAnyHistory ? 'Datajobb-status läst.' : 'Ingen tydlig datajobs-historik hittades ännu.',
@@ -371,6 +433,7 @@ function buildSupervisorDataJobsSummary() {
     status: full.status,
     alpacaConfigured: full.alpacaConfigured,
     providerStatus: full.providerStatus,
+    summary: full.summary,
     hourlyImport: full.hourlyImport ? {
       status: full.hourlyImport.status,
       lastRun: full.hourlyImport.lastRun,
@@ -386,7 +449,10 @@ function buildSupervisorDataJobsSummary() {
     } : null,
     cacheStatus: full.cacheStatus,
     dataQuality: full.dataQuality,
+    coverageSummary: full.coverageSummary,
     recentEventCount: full.recentDataEvents.length,
+    recentDataEvents: full.recentDataEvents.slice(0, 8),
+    warnings: full.warnings,
     updatedAt: full.updatedAt,
     ...SAFETY,
   };

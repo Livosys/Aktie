@@ -84,6 +84,21 @@ function appendJsonl(file, rows) {
     marketDataRoot: marketRoot,
     alpacaDataService: { hasCredentials: () => true, isEnabled: () => true },
     dataCoverageExpansion: {
+      getCoverageStatus: () => ({
+        status: 'ok',
+        symbols_total: 2,
+        symbols_ready_for_replay: 1,
+        symbols_ready_for_batch: 1,
+        symbols_ready_for_ai_learning: 0,
+        symbols_missing_data: 1,
+        generated_at: '2026-06-01T09:03:00.000Z',
+      }),
+      getAllSymbolCoverage: () => ({
+        symbols: [
+          { symbol: 'MSFT', usable_for_replay: true, usable_for_batch: true, data_quality: 'good', coverage_score: 98, days_covered: 20 },
+          { symbol: 'QQQ', usable_for_replay: false, usable_for_batch: false, data_quality: 'missing', reason: 'needs_more_data', provider: 'alpaca' },
+        ],
+      }),
       getProviderStatus: () => ({
         alpaca: { provider: 'alpaca', configured: true, enabled: true, ok: true },
         binance: { provider: 'binance', configured: true, enabled: true, ok: true },
@@ -106,6 +121,10 @@ function appendJsonl(file, rows) {
   assert.equal(ok.cacheStatus.symbolsCached, 1);
   assert.equal(ok.recentDataEvents.length, 1);
   assert.equal(ok.recentDataEvents[0].can_place_orders, false);
+  assert.ok(ok.coverageSummary);
+  assert.equal(ok.coverageSummary.symbolsTotal, 2);
+  assert.equal(ok.summary.readyForTests, 2);
+  assert.equal(ok.summary.recentDataEventCount, 1);
 
   const masked = svc.buildDataJobsStatus({
     importManifestFile: path.join(root, 'missing.jsonl'),
