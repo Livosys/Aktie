@@ -10881,7 +10881,8 @@ body {
 }
 
 
-.sb-theme-toggle {
+.sb-theme-toggle,
+.sb-theme-status {
   display: flex;
   align-items: center;
   gap: 10px;
@@ -10890,14 +10891,18 @@ body {
   border: none;
   border-radius: 8px;
   padding: 6px 8px;
-  cursor: pointer;
   color: var(--muted);
   font-size: 0.78rem;
   transition: background 0.12s, color 0.12s;
   justify-content: center;
 }
 
+.sb-theme-toggle {
+  cursor: pointer;
+}
+
 .premium-sidebar:hover .sb-theme-toggle { justify-content: flex-start; }
+.premium-sidebar:hover .sb-theme-status { justify-content: flex-start; }
 
 .sb-theme-toggle:hover { background: var(--surface2); color: var(--text); }
 

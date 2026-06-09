@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { Link, useLocation } from 'react-router-dom';
 import { useAlerts } from '../alertContext.jsx';
-import { applyTheme, getTheme } from './ThemeToggle.jsx';
+import { getTheme } from './ThemeToggle.jsx';
 
 const NAV_GROUPS = [
       {
@@ -10,9 +10,9 @@ const NAV_GROUPS = [
         items: [
           { path: '/supervisor', label: 'Trading OS', icon: '🧭', match: ['/supervisor', '/oversikt'], accent: 'blue' },
           { path: '/live',       label: 'Live / Signaler', icon: '♥', match: ['/', '/live', '/signalpuls', '/scanner', '/signaler', '/aktier', '/krypto', '/nasdaq'], accent: 'blue' },
-          { path: '/lab',        label: 'Lärdomar',        icon: 'L', match: ['/lab', '/trading-lab', '/strategy-lab', '/replay', '/review-chart', '/intelligence', '/machine'], accent: 'orange' },
-          { path: '/insikter',   label: 'Historik',        icon: 'I', match: ['/insikter', '/resultat', '/setup-performance', '/historik', '/paper-trading'], accent: 'green' },
-          { path: '/system',     label: 'Teknik',          icon: 'S', match: ['/system', '/system-health', '/alerts', '/sakerhet', '/risk', '/risk-engine', '/safety', '/execution-safety'], accent: 'purple' },
+          { path: '/lab',        label: 'Lärdomar',        icon: '🧪', match: ['/lab', '/trading-lab', '/strategy-lab', '/replay', '/review-chart', '/intelligence', '/machine'], accent: 'orange' },
+          { path: '/insikter',   label: 'Historik',        icon: '📊', match: ['/insikter', '/resultat', '/setup-performance', '/historik', '/paper-trading'], accent: 'green' },
+          { path: '/system',     label: 'Teknik',          icon: '🛡️', match: ['/system', '/system-health', '/alerts', '/sakerhet', '/risk', '/risk-engine', '/safety', '/execution-safety'], accent: 'purple' },
         ],
       },
 ];
@@ -52,7 +52,7 @@ function NavItem({ item, onClose }) {
   );
 }
 
-function ThemeToggle() {
+function ThemeStatus() {
   const [theme, setThemeState] = useState(getTheme);
 
   useEffect(() => {
@@ -61,20 +61,14 @@ function ThemeToggle() {
     return () => window.removeEventListener('themechange', handler);
   }, []);
 
-  function toggle() {
-    const next = theme === 'dark' ? 'light' : 'dark';
-    applyTheme(next);
-    setThemeState(next);
-  }
-
   const isDark = theme === 'dark';
   return (
-    <button className="sb-theme-toggle" onClick={toggle} type="button">
+    <div className="sb-theme-status" aria-label="Temastatus">
       <span className="sb-theme-track">
         <span className={`sb-theme-thumb ${isDark ? 'thumb-dark' : 'thumb-light'}`} />
       </span>
-      <span className="sb-theme-label">{isDark ? '☾ Mörkt läge' : '☀ Ljust läge'}</span>
-    </button>
+      <span className="sb-theme-label">Tema: {isDark ? 'Mörkt läge' : 'Ljust läge'}</span>
+    </div>
   );
 }
 
@@ -121,7 +115,7 @@ export default function Sidebar({ open, onClose }) {
 
         {/* Footer */}
         <div className="sb-footer">
-          <ThemeToggle />
+          <ThemeStatus />
           <div className="sb-footer-meta">
             <span>Trading OS</span>
             <span>Inga affärer utförs</span>
