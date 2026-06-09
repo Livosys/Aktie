@@ -58,6 +58,19 @@ function assertOverviewContract(o, label = 'overview') {
   assert.ok(Array.isArray(o.strategyRanking.strategiesNeedingMoreData || []), `${label}: strategyRanking.strategiesNeedingMoreData array`);
 }
 
+async function withPatchedMethod(modPath, methodName, replacement, fn) {
+  const mod = require(modPath);
+  const original = mod[methodName];
+  mod[methodName] = replacement;
+  overview.resetOverviewCache();
+  try {
+    return await fn(mod, original);
+  } finally {
+    mod[methodName] = original;
+    overview.resetOverviewCache();
+  }
+}
+
 // ── 1. safeBlock never throws and maps outcomes correctly ─────────────────────
 (async () => {
   const ok = await overview.safeBlock({ scope: 's', source: 'x' }, () => ({ a: 1 }));
@@ -341,7 +354,80 @@ function assertOverviewContract(o, label = 'overview') {
     overview.resetOverviewCache();
   }
 
-  // ── 12. short cache: second call within TTL is served from cache ────────────
+  // ── 12. strategy ranking source failure stays isolated ──────────────────────
+  await withPatchedMethod('./strategyRegistryService', 'getStatus', () => { throw new Error('registry exploded'); }, async () => {
+    const degraded = await overview.buildOverview();
+    assert.equal(degraded.ok, true, 'overview survives strategy source failure');
+    assertOverviewContract(degraded, 'overview degraded strategy source');
+    assert.equal(degraded.strategyRanking.status, 'error', 'strategyRanking marked error');
+    assert.deepEqual(degraded.strategyRanking.topStrategies, [], 'strategyRanking topStrategies empty fallback');
+    assert.deepEqual(degraded.strategyRanking.weakStrategies, [], 'strategyRanking weakStrategies empty fallback');
+    assert.deepEqual(degraded.strategyRanking.strategiesNeedingMoreData, [], 'strategyRanking strategiesNeedingMoreData empty fallback');
+    assert.ok(degraded.dataStatus, 'dataStatus still present');
+    assert.ok(degraded.replayStatus, 'replayStatus still present');
+    assert.ok(degraded.learningStatus, 'learningStatus still present');
+    assertSafety(degraded.safety, 'strategy failure safety');
+  });
+
+  // ── 13. daytrading learning failure degrades learningStatus only ────────────
+  await withPatchedMethod('./daytradingLearningEngineService', 'getLearningSummary', () => { throw new Error('day learning exploded'); }, async () => {
+    const degraded = await overview.buildOverview();
+    assert.equal(degraded.ok, true, 'overview survives daytrading learning failure');
+    assertOverviewContract(degraded, 'overview degraded day learning');
+    assert.ok(['degraded', 'error'].includes(degraded.learningStatus.status), 'learningStatus degraded or error');
+    assert.ok(degraded.learningStatus, 'learningStatus still present');
+    assert.ok(degraded.strategyRanking, 'strategyRanking still present');
+    assert.ok(degraded.replayStatus, 'replayStatus still present');
+    assertSafety(degraded.safety, 'day learning failure safety');
+  });
+
+  // ── 14. narrow learning failure still preserves next actions array ──────────
+  await withPatchedMethod('./narrowPerformanceLearningService', 'buildSupervisorNarrowLearning', () => { throw new Error('narrow exploded'); }, async () => {
+    const degraded = await overview.buildOverview();
+    assert.equal(degraded.ok, true, 'overview survives narrow learning failure');
+    assertOverviewContract(degraded, 'overview degraded narrow learning');
+    assert.ok(['degraded', 'error'].includes(degraded.learningStatus.status), 'learningStatus degraded or error when narrow fails');
+    assert.ok(Array.isArray(degraded.nextRecommendedActions), 'nextRecommendedActions still an array');
+    assert.ok(degraded.dataStatus, 'dataStatus still present');
+    assert.ok(degraded.strategyRanking, 'strategyRanking still present');
+  });
+
+  // ── 15. replay status failure stays isolated and keeps recentTests valid ────
+  await withPatchedMethod('./replayStatusService', 'buildReplayStatus', () => { throw new Error('replay exploded'); }, async () => {
+    const degraded = await overview.buildOverview();
+    assert.equal(degraded.ok, true, 'overview survives replay status failure');
+    assertOverviewContract(degraded, 'overview degraded replay source');
+    assert.ok(['degraded', 'error'].includes(degraded.replayStatus.status), 'replayStatus degraded or error');
+    assert.ok(Array.isArray(degraded.recentTests), 'recentTests still array after replay failure');
+    assert.ok(degraded.paperStatus, 'paperStatus still present');
+    assert.ok(degraded.learningStatus, 'learningStatus still present');
+  });
+
+  // ── 16. combined source failures still keep contract intact ─────────────────
+  const coverageMod = require('./dataCoverageExpansionService');
+  const dayLearningMod = require('./daytradingLearningEngineService');
+  const originalCoverage = coverageMod.getCoverageStatus;
+  const originalDayLearning = dayLearningMod.getLearningSummary;
+  overview.resetOverviewCache();
+  try {
+    coverageMod.getCoverageStatus = () => { throw new Error('coverage exploded twice'); };
+    dayLearningMod.getLearningSummary = () => { throw new Error('day learning exploded twice'); };
+    const degraded = await overview.buildOverview();
+    assert.equal(degraded.ok, true, 'overview survives combined failures');
+    assertOverviewContract(degraded, 'overview combined failures');
+    assert.equal(degraded.dataStatus.status, 'error', 'dataStatus error on coverage failure');
+    assert.ok(['degraded', 'error'].includes(degraded.learningStatus.status), 'learningStatus degrades on learning failure');
+    assert.ok(degraded.batchStatus, 'batchStatus still present');
+    assert.ok(degraded.replayStatus, 'replayStatus still present');
+    assert.ok(degraded.strategyRanking, 'strategyRanking still present');
+    assertSafety(degraded.safety, 'combined failure safety');
+  } finally {
+    coverageMod.getCoverageStatus = originalCoverage;
+    dayLearningMod.getLearningSummary = originalDayLearning;
+    overview.resetOverviewCache();
+  }
+
+  // ── 17. short cache: second call within TTL is served from cache ────────────
   overview.resetOverviewCache();
   const c1 = await overview.getCachedOverview();
   assert.equal(c1.cached, false, 'first call rebuilds');

@@ -461,7 +461,20 @@ function summarizeLearningStatus(learningConnector, narrowPerf, daytradingLearni
 function summarizeStrategyRanking(strategyRegistry, strategyRead, strategyScore) {
   const source = 'strategyRegistryService|strategyPerformanceReadService|strategyScoreService';
   if (!strategyRegistry || typeof strategyRegistry.getStatus !== 'function') {
-    return statusBlock('error', source, { message: 'Strategiranking kunde inte läsas.', ...SAFETY });
+    return statusBlock('error', source, {
+      totalStrategies: 0,
+      activeStrategies: 0,
+      inactiveStrategies: 0,
+      paperOnlyStrategies: 0,
+      pausedStrategies: 0,
+      tradingviewStrategies: 0,
+      topStrategies: [],
+      weakStrategies: [],
+      strategiesNeedingMoreData: [],
+      latestBlockedReason: null,
+      message: 'Strategiranking kunde inte läsas.',
+      ...SAFETY,
+    });
   }
   try {
     const registry = strategyRegistry.getStatus();
@@ -498,7 +511,20 @@ function summarizeStrategyRanking(strategyRegistry, strategyRead, strategyScore)
       ...SAFETY,
     });
   } catch (err) {
-    return statusBlock('error', source, { message: err && err.message ? err.message : String(err), ...SAFETY });
+    return statusBlock('error', source, {
+      totalStrategies: 0,
+      activeStrategies: 0,
+      inactiveStrategies: 0,
+      paperOnlyStrategies: 0,
+      pausedStrategies: 0,
+      tradingviewStrategies: 0,
+      topStrategies: [],
+      weakStrategies: [],
+      strategiesNeedingMoreData: [],
+      latestBlockedReason: null,
+      message: err && err.message ? err.message : String(err),
+      ...SAFETY,
+    });
   }
 }
 
