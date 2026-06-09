@@ -386,6 +386,56 @@ function pinPaperTrades(sortedDesc, limit) {
   return [...pinned, ...rest].slice(0, limit);
 }
 
+function summarizeLiveActivity(events, sources, warnings) {
+  const bySource = {};
+  const byType = {};
+  const byStatus = {};
+  let pinnedPaperCount = 0;
+  for (const event of events) {
+    const sourceKey = event?.source || 'unknown';
+    const typeKey = event?.type || 'unknown';
+    const statusKey = event?.status || 'unknown';
+    bySource[sourceKey] = (bySource[sourceKey] || 0) + 1;
+    byType[typeKey] = (byType[typeKey] || 0) + 1;
+    byStatus[statusKey] = (byStatus[statusKey] || 0) + 1;
+    if (event?.pinned) pinnedPaperCount += 1;
+  }
+  const sourceBreakdown = sources.map((s) => ({
+    name: s.name,
+    status: s.status,
+    count: s.events.length,
+    latestAt: s.events[0]?.timestamp || null,
+    latestType: s.events[0]?.type || null,
+  }));
+  const latestEvent = events[0] || null;
+  const latestByType = {};
+  for (const event of events) {
+    if (event?.type && !latestByType[event.type]) latestByType[event.type] = event;
+  }
+  return {
+    status: warnings.length ? 'degraded' : (events.length ? 'ok' : 'empty'),
+    totalEvents: events.length,
+    sourceCount: sources.length,
+    pinnedPaperCount,
+    latestAt: latestEvent?.timestamp || null,
+    latestType: latestEvent?.type || null,
+    latestSource: latestEvent?.source || null,
+    sourceBreakdown,
+    countsBySource: bySource,
+    countsByType: byType,
+    countsByStatus: byStatus,
+    latestByType,
+    hasPaperTrades: Boolean(bySource.paper),
+    hasReplayRuns: Boolean(bySource.replay),
+    hasBatchData: Boolean(bySource.batch || bySource.batch_results),
+    warnings: warnings.map((row) => `${row.source}:${row.error}`),
+    note: events.length
+      ? (warnings.length ? 'Livefeed finns, men vissa källor är degraderade.' : 'Livefeed är komplett och read-only.')
+      : 'Ingen liveaktivitet hittades ännu.',
+    updatedAt: nowIso(),
+  };
+}
+
 function buildLiveActivity(options = {}) {
   const files = { ...DEFAULT_FILES, ...(options.files || {}) };
   const limit = limitFromQuery(options.limit);
@@ -404,13 +454,21 @@ function buildLiveActivity(options = {}) {
   const sorted = dedupeEvents(sources.flatMap((s) => s.events))
     .sort((a, b) => b.timestamp.localeCompare(a.timestamp));
   const events = pinPaperTrades(sorted, limit);
-  const status = warnings.length ? 'degraded' : (events.length ? 'ok' : 'empty');
+  const summary = summarizeLiveActivity(events, sources, warnings);
+  const status = summary.status;
   return {
     ok: true,
     status,
     count: events.length,
     events,
-    sources: sources.map((s) => ({ name: s.name, status: s.status, count: s.events.length })),
+    summary,
+    sources: sources.map((s) => ({
+      name: s.name,
+      status: s.status,
+      count: s.events.length,
+      latestAt: s.events[0]?.timestamp || null,
+      latestType: s.events[0]?.type || null,
+    })),
     warnings,
     updatedAt: nowIso(),
     ...SAFETY,
@@ -424,7 +482,17 @@ function buildSupervisorLiveActivitySummary() {
     count: full.count,
     latestEvents: full.events.slice(0, 5),
     sourceCount: full.sources.length,
+    summary: full.summary,
+    sourceBreakdown: full.summary?.sourceBreakdown || full.sources,
+    pinnedPaperCount: full.summary?.pinnedPaperCount || 0,
+    countsBySource: full.summary?.countsBySource || {},
+    countsByType: full.summary?.countsByType || {},
+    countsByStatus: full.summary?.countsByStatus || {},
+    latestAt: full.summary?.latestAt || null,
+    latestType: full.summary?.latestType || null,
+    latestSource: full.summary?.latestSource || null,
     degradedSources: full.sources.filter((s) => s.status === 'degraded').map((s) => s.name),
+    warnings: full.warnings,
     updatedAt: full.updatedAt,
     ...SAFETY,
   };
@@ -443,5 +511,6 @@ module.exports = {
     displayTimeFor,
     resultFor,
     pinPaperTrades,
+    summarizeLiveActivity,
   },
 };

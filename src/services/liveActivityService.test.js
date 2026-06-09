@@ -94,6 +94,12 @@ function appendJsonl(file, rows) {
   assert.ok(ok.events.some((event) => event.type === 'ai'));
   assert.ok(ok.events.some((event) => event.type === 'learning'));
   assert.equal(ok.sources.length, 8);
+  assert.ok(ok.summary && typeof ok.summary === 'object');
+  assert.equal(ok.summary.totalEvents, 3);
+  assert.equal(ok.summary.sourceCount, 8);
+  assert.equal(ok.summary.pinnedPaperCount, 1);
+  assert.ok(ok.summary.countsBySource.paper >= 1);
+  assert.ok(Array.isArray(ok.summary.sourceBreakdown));
   // Replay run summaries surface as read-only "Replaytest klart" events.
   const replaySource = ok.sources.find((s) => s.name === 'replay');
   assert.ok(replaySource && replaySource.count === 1);
@@ -114,6 +120,11 @@ function appendJsonl(file, rows) {
   assert.equal(paperEvent.pinned, true);
   assert.equal(allEvents[0].type, 'paper'); // pinned to the very top
   assert.ok(paperEvent.result && paperEvent.result.includes('P/L +0.4%'));
+  const overviewSummary = svc.buildSupervisorLiveActivitySummary();
+  assert.ok(overviewSummary.summary && typeof overviewSummary.summary === 'object');
+  assert.equal(overviewSummary.summary.totalEvents, 10);
+  assert.ok(Array.isArray(overviewSummary.sourceBreakdown));
+  assert.ok(overviewSummary.latestEvents.length <= 5);
 
   const maxed = svc.buildLiveActivity({ limit: 999, files });
   assert.ok(maxed.count <= 200);
@@ -168,6 +179,8 @@ function appendJsonl(file, rows) {
   assert.equal(degraded.status, 'degraded');
   assert.ok(degraded.warnings.length >= 1);
   assert.equal(degraded.can_place_orders, false);
+  assert.ok(degraded.summary && degraded.summary.status === 'degraded');
+  assert.ok(Array.isArray(degraded.summary.warnings));
 
   // ── pinPaperTrades: newest paper trades are pinned to the top of the feed ────
   const mk = (id, ts, source) => ({ id, timestamp: ts, type: source === 'paper' ? 'paper' : 'system', source });
