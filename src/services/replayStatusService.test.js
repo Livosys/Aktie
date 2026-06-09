@@ -19,6 +19,7 @@ function writeRun(runsDir, runId, summary) {
   const empty = svc.buildReplayStatus({ runsDir: path.join(emptyDir, 'missing') });
   assert.equal(empty.ok, true);
   assert.equal(empty.status, 'empty');
+  assert.equal(empty.emptyReason, 'no_replay_runs');
   assert.equal(empty.totalReplayTests, 0);
   assert.equal(empty.latestReplay, null);
 
@@ -77,6 +78,11 @@ function writeRun(runsDir, runId, summary) {
   assert.equal(ok.earliestPeriod, '2026-05-15');
   assert.equal(ok.latestPeriod, '2026-06-06');
   assert.ok(ok.symbols.includes('AAPL') && ok.symbols.includes('NVDA'));
+  assert.ok(ok.summary && typeof ok.summary === 'object');
+  assert.equal(ok.summary.status, 'ok');
+  assert.equal(ok.summary.replayCount, 2);
+  assert.equal(ok.summary.latestRunId, 'run_zzz_999');
+  assert.equal(ok.summary.latestTimeframe, '2m');
   // never trades
   assert.equal(ok.can_place_orders, false);
   assert.equal(ok.live_trading_enabled, false);
@@ -90,6 +96,9 @@ function writeRun(runsDir, runId, summary) {
   assert.equal(degraded.status, 'degraded');
   assert.equal(degraded.unreadableRuns, 1);
   assert.equal(degraded.totalReplayTests, 2);
+  assert.equal(degraded.emptyReason, 'replay_runs_degraded');
+  assert.equal(degraded.summary.status, 'degraded');
+  assert.equal(degraded.summary.replayCount, 2);
 
   // ── supervisor summary mirrors latest + safety ──────────────────────────────
   const sup = svc.buildSupervisorReplaySummary({ runsDir });
@@ -97,6 +106,8 @@ function writeRun(runsDir, runId, summary) {
   assert.equal(sup.latestReplay.runId, 'run_zzz_999');
   assert.equal(sup.broker_enabled, false);
   assert.deepEqual(sup.timeframes, ['2m']);
+  assert.equal(sup.summary.replayCount, 2);
+  assert.equal(sup.summary.latestRunId, 'run_zzz_999');
 
   // cleanup
   fs.rmSync(emptyDir, { recursive: true, force: true });

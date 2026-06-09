@@ -116,9 +116,11 @@ function buildReplayStatus(options = {}) {
     }
 
     if (!runs.length) {
+      const emptyReason = runIds.length ? 'replay_runs_unreadable' : 'no_replay_runs';
       return {
         ok: true,
         status: runIds.length ? 'degraded' : 'empty',
+        emptyReason,
         totalReplayTests: 0,
         latestReplay: null,
         latestCompletedReplay: null,
@@ -135,6 +137,22 @@ function buildReplayStatus(options = {}) {
         message: runIds.length
           ? 'Replay-körningar finns men kunde inte läsas.'
           : 'Ingen replayhistorik hittades ännu.',
+        summary: {
+          status: runIds.length ? 'degraded' : 'empty',
+          source: 'data/replay/runs',
+          emptyReason,
+          message: runIds.length
+            ? 'Replay-körningar finns men kunde inte läsas.'
+            : 'Ingen replayhistorik hittades ännu.',
+          replayCount: 0,
+          latestRunId: null,
+          latestSymbol: null,
+          latestTimeframe: REPLAY_TIMEFRAME,
+          bestSymbol: null,
+          worstSymbol: null,
+          totalEvents: 0,
+          paperOnly: true,
+        },
         ...SAFETY,
       };
     }
@@ -145,10 +163,28 @@ function buildReplayStatus(options = {}) {
     const symbols = [...new Set(runs.flatMap((r) => r.symbols))].sort();
     const froms = runs.map((r) => r.period.from).filter(Boolean).sort();
     const tos = runs.map((r) => r.period.to).filter(Boolean).sort();
+    const bestReplay = [...runs].sort((a, b) => (num(b.avgTradeScore) || -Infinity) - (num(a.avgTradeScore) || -Infinity))[0] || latest;
+    const worstReplay = [...runs].sort((a, b) => (num(a.avgTradeScore) || Infinity) - (num(b.avgTradeScore) || Infinity))[0] || latest;
+    const emptyReason = unreadable ? 'replay_runs_degraded' : null;
+    const summary = {
+      status: unreadable ? 'degraded' : 'ok',
+      source: 'data/replay/runs',
+      emptyReason,
+      message: `${runs.length} replay-körningar lästa (read-only, scan/paper).`,
+      replayCount: runs.length,
+      latestRunId: latest.runId || null,
+      latestSymbol: latest.symbols[0] || null,
+      latestTimeframe: REPLAY_TIMEFRAME,
+      bestSymbol: bestReplay?.bestSymbol || null,
+      worstSymbol: worstReplay?.worstSymbol || null,
+      totalEvents: runs.reduce((sum, row) => sum + (num(row.totalEvents) || 0), 0),
+      paperOnly: true,
+    };
 
     return {
       ok: true,
       status: unreadable ? 'degraded' : 'ok',
+      emptyReason,
       totalReplayTests: runs.length,
       latestReplay: latest,
       latestCompletedReplay: latestCompleted,
@@ -173,13 +209,15 @@ function buildReplayStatus(options = {}) {
       unreadableRuns: unreadable,
       source: 'data/replay/runs',
       updatedAt: nowIso(),
-      message: `${runs.length} replay-körningar lästa (read-only, scan/paper).`,
+      message: summary.message,
+      summary,
       ...SAFETY,
     };
   } catch (err) {
     return {
       ok: false,
       status: 'error',
+      emptyReason: 'replay_status_error',
       totalReplayTests: 0,
       latestReplay: null,
       latestCompletedReplay: null,
@@ -192,6 +230,20 @@ function buildReplayStatus(options = {}) {
       source: 'data/replay/runs',
       updatedAt: nowIso(),
       message: safeError(err),
+      summary: {
+        status: 'error',
+        source: 'data/replay/runs',
+        emptyReason: 'replay_status_error',
+        message: safeError(err),
+        replayCount: 0,
+        latestRunId: null,
+        latestSymbol: null,
+        latestTimeframe: REPLAY_TIMEFRAME,
+        bestSymbol: null,
+        worstSymbol: null,
+        totalEvents: 0,
+        paperOnly: true,
+      },
       ...SAFETY,
     };
   }
@@ -201,6 +253,7 @@ function buildSupervisorReplaySummary(options = {}) {
   const full = buildReplayStatus(options);
   return {
     status: full.status,
+    emptyReason: full.emptyReason || full.summary?.emptyReason || null,
     totalReplayTests: full.totalReplayTests,
     latestReplay: full.latestReplay ? {
       runId: full.latestReplay.runId,
@@ -219,7 +272,22 @@ function buildSupervisorReplaySummary(options = {}) {
     earliestPeriod: full.earliestPeriod,
     latestPeriod: full.latestPeriod,
     updatedAt: full.updatedAt,
-    message: full.message,
+    message: full.message || full.summary?.message || null,
+    source: 'replayStatusService',
+    summary: full.summary || {
+      status: full.status,
+      source: 'data/replay/runs',
+      emptyReason: full.emptyReason || null,
+      message: full.message || null,
+      replayCount: full.totalReplayTests,
+      latestRunId: full.latestReplay?.runId || null,
+      latestSymbol: full.latestReplay?.symbols?.[0] || null,
+      latestTimeframe: full.latestReplay?.timeframe || REPLAY_TIMEFRAME,
+      bestSymbol: full.latestResult?.bestSymbol || null,
+      worstSymbol: null,
+      totalEvents: full.latestResult?.totalEvents || 0,
+      paperOnly: true,
+    },
     ...SAFETY,
   };
 }
