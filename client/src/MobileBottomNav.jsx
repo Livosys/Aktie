@@ -5,8 +5,8 @@ export default function MobileBottomNav() {
   const { pathname } = useLocation();
 
   const tabs = [
-    { id: 'supervisor', label: 'Trading OS', icon: '🧭', active: pathname.startsWith('/supervisor') || pathname.startsWith('/oversikt'), to: '/supervisor' },
-    { id: 'live',       label: 'Live',       icon: '♥', active: pathname === '/' || pathname.startsWith('/live') || pathname.startsWith('/signalpuls'), to: '/live' },
+    { id: 'home',       label: 'Översikt',   icon: '🧭', active: pathname === '/' || pathname.startsWith('/control-room') || pathname.startsWith('/supervisor') || pathname.startsWith('/overview') || pathname.startsWith('/oversikt'), to: '/' },
+    { id: 'live',       label: 'Live',       icon: '♥', active: pathname.startsWith('/live') || pathname.startsWith('/signalpuls'), to: '/live' },
     { id: 'lab',        label: 'Lärdomar',   icon: 'L', active: pathname.startsWith('/lab') || pathname.startsWith('/trading-lab'), to: '/lab' },
     { id: 'insikter',   label: 'Historik',   icon: 'I', active: pathname.startsWith('/insikter') || pathname.startsWith('/resultat'), to: '/insikter' },
     { id: 'system',     label: 'Teknik',     icon: 'S', active: pathname.startsWith('/system') || pathname.startsWith('/sakerhet'), to: '/system' },
