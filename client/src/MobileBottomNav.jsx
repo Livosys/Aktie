@@ -5,10 +5,10 @@ export default function MobileBottomNav() {
   const { pathname } = useLocation();
 
   const tabs = [
-    { id: 'supervisor', label: 'Kontrollrum', icon: '🧭', active: pathname.startsWith('/supervisor'), to: '/supervisor' },
+    { id: 'supervisor', label: 'Control Room', icon: '🧭', active: pathname.startsWith('/supervisor'), to: '/supervisor' },
     { id: 'live', label: 'Live', icon: '♥', active: pathname.startsWith('/live'), to: '/live' },
-    { id: 'paper', label: 'Låtsashandel', icon: '◌', active: pathname.startsWith('/paper-trading'), to: '/paper-trading' },
-    { id: 'lab', label: 'Testlab', icon: '🧪', active: pathname.startsWith('/lab'), to: '/lab' },
+    { id: 'paper', label: 'Paper Trading', icon: '◌', active: pathname.startsWith('/paper-trading'), to: '/paper-trading' },
+    { id: 'lab', label: 'Test Lab', icon: '🧪', active: pathname.startsWith('/lab'), to: '/lab' },
     { id: 'system', label: 'System', icon: '🛡️', active: pathname.startsWith('/system'), to: '/system' },
   ];
 

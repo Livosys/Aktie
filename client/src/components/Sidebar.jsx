@@ -7,16 +7,16 @@ const NAV_GROUPS = [
     id: 'pipeline',
     label: 'Trading OS',
     items: [
-      { path: '/paper-trading', label: 'Låtsashandel', subtitle: 'Paper trades', icon: '◌', match: ['/paper-trading'], accent: 'green' },
+      { path: '/paper-trading', label: 'Paper Trading', subtitle: 'Paper trades', icon: '◌', match: ['/paper-trading'], accent: 'green' },
       { path: '/daytrading', label: 'Daytrading', subtitle: 'Research', icon: '◔', match: ['/daytrading'], accent: 'orange' },
-      { path: '/supervisor', label: 'Kontrollrum', subtitle: 'Översikt', icon: '🧭', match: ['/supervisor'], accent: 'blue' },
-      { path: '/narrow', label: 'Narrow State', subtitle: 'Smala lägen', icon: '◐', match: ['/narrow'], accent: 'teal' },
+      { path: '/supervisor', label: 'Control Room', subtitle: 'Overview', icon: '🧭', match: ['/supervisor'], accent: 'blue' },
+      { path: '/narrow', label: 'Narrow State', subtitle: 'Narrow conditions', icon: '◐', match: ['/narrow'], accent: 'teal' },
       { path: '/system', label: 'System', subtitle: 'Safety', icon: '🛡️', match: ['/system'], accent: 'purple', searchMatch: [] },
-      { path: '/lab', label: 'Testlab', subtitle: 'Replay & batch', icon: '🧪', match: ['/lab'], accent: 'orange' },
-      { path: '/live', label: 'Live', subtitle: 'Signaler', icon: '♥', match: ['/live'], accent: 'blue' },
+      { path: '/lab', label: 'Test Lab', subtitle: 'Replay & batch', icon: '🧪', match: ['/lab'], accent: 'orange' },
+      { path: '/live', label: 'Live', subtitle: 'Signals', icon: '♥', match: ['/live'], accent: 'blue' },
       { path: '/insikter?tab=data-center', label: 'Data Center', subtitle: 'Data', icon: '◍', match: ['/insikter'], accent: 'teal', searchMatch: ['tab=data-center'] },
-      { path: '/system?tab=logs', label: 'Loggar', subtitle: 'Systemloggar', icon: '◈', match: ['/system'], accent: 'purple', searchMatch: ['tab=logs'] },
-      { path: '/system?tab=health', label: 'Hälsa', subtitle: 'Systemstatus', icon: '◎', match: ['/system'], accent: 'purple', searchMatch: ['tab=health'] },
+      { path: '/system?tab=logs', label: 'Logs', subtitle: 'System logs', icon: '◈', match: ['/system'], accent: 'purple', searchMatch: ['tab=logs'] },
+      { path: '/system?tab=health', label: 'Health', subtitle: 'System status', icon: '◎', match: ['/system'], accent: 'purple', searchMatch: ['tab=health'] },
     ],
   },
 ];
@@ -77,7 +77,7 @@ function ThemeStatus() {
       <span className="sb-theme-track">
         <span className={`sb-theme-thumb ${isDark ? 'thumb-dark' : 'thumb-light'}`} />
       </span>
-      <span className="sb-theme-label">Tema: {isDark ? 'Mörkt läge' : 'Ljust läge'}</span>
+      <span className="sb-theme-label">Theme: {isDark ? 'Dark mode' : 'Light mode'}</span>
     </div>
   );
 }
@@ -88,7 +88,7 @@ export default function Sidebar({ open, onClose }) {
       {open && (
         <button
           className="premium-sidebar-backdrop"
-          aria-label="Stäng meny"
+          aria-label="Close menu"
           onClick={onClose}
         />
       )}
@@ -104,7 +104,7 @@ export default function Sidebar({ open, onClose }) {
         </Link>
 
         {/* Nav */}
-        <nav className="sb-nav" aria-label="Huvudnavigation">
+        <nav className="sb-nav" aria-label="Main navigation">
           {NAV_GROUPS.map((group) => (
             <div key={group.id} className="sb-group">
               {group.label && (
@@ -128,7 +128,7 @@ export default function Sidebar({ open, onClose }) {
           <ThemeStatus />
           <div className="sb-footer-meta">
             <span>Trading OS</span>
-            <span>Inga affärer utförs</span>
+            <span>No trades executed</span>
           </div>
         </div>
 
