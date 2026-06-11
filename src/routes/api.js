@@ -76,6 +76,7 @@ const strategyPerformance = require('../services/strategyPerformanceService');
 const strategyPerformanceRead = require('../services/strategyPerformanceReadService');
 const strategyBatchTest = require('../services/strategyBatchTestService');
 const strategyRuntimeMatrix = require('../services/strategyRuntimeMatrixService');
+const strategyIdNormalizer = require('../services/strategyIdNormalizerService');
 const automationPlanService = require('../services/automationPlanService');
 const automationApprovalService = require('../services/automationApprovalService');
 const strategyTestAutopilot = require('../services/strategyTestAutopilotService');
@@ -3819,6 +3820,26 @@ router.get('/strategies/registry/status', (req, res) => {
     res.json({ ok: true, ...strategyRegistry.getStatus() });
   } catch (err) {
     res.status(500).json({ ok: false, error: err.message, ...strategyRegistry.SAFETY });
+  }
+});
+
+// Read-only: legacy_key -> canonical_strategy_id normalization report.
+// Pure data; registers nothing, changes no allowlist, starts no tests.
+router.get('/strategies/normalization-report', (req, res) => {
+  try {
+    const report = strategyIdNormalizer.buildStrategyNormalizationReport();
+    res.json({
+      ok: true,
+      mode: 'paper_only',
+      safety: report.safety,
+      canonicalSource: report.canonicalSource,
+      registryRole: report.registryRole,
+      legacyRole: report.legacyRole,
+      summary: report.summary,
+      mappings: report.mappings,
+    });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message, ...strategyIdNormalizer.SAFETY });
   }
 });
 
