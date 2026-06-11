@@ -434,7 +434,7 @@ function AiTab() {
       )}
 
       <div className="res-ai-nav">
-        <Link to="/intelligence" className="res-ai-link">🧠 Gå till Intelligens →</Link>
+        <Link to="/insikter?tab=ai" className="res-ai-link">🧠 Gå till Learning →</Link>
       </div>
     </div>
   );
@@ -462,7 +462,7 @@ function ReplayTab() {
     <div className="res-tab-content">
       <div className="res-section-header">
         <h2 className="res-section-h2">Historiska tester (Replay)</h2>
-        <Link to="/replay" className="res-nav-link">Öppna Replay →</Link>
+        <Link to="/lab?tab=replay" className="res-nav-link">Öppna Replay i Testlab →</Link>
       </div>
 
       {runs.length === 0 ? (

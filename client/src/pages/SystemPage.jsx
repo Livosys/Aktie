@@ -139,7 +139,7 @@ function DebugTab() {
       <PlatformEmptyState
         title="Avancerad debug är dold"
         text="Rå JSON och interna testverktyg ska bara öppnas vid felsökning. Systemet visar först hälsa, providers och safety."
-        action={<Link className="sys-debug-link" to="/system-health">Öppna äldre systemhälsa</Link>}
+        action={<Link className="sys-debug-link" to="/system?tab=health">Öppna systemhälsa</Link>}
       />
     </div>
   );
