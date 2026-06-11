@@ -43,7 +43,20 @@ const DATA_FILES = Object.freeze({
 
 const BATCH_HISTORY_FALLBACK_TTL_MS = 60 * 1000;
 let batchHistoryFallbackCache = { at: 0, value: null };
-const READONLY_SOURCE_CACHE_TTL_MS = 60 * 1000;
+function resolveReadOnlySourceCacheTtlMs() {
+  const raw = Number(process.env.READONLY_SOURCE_CACHE_TTL_MS);
+  if (Number.isFinite(raw) && raw > 0) return raw;
+  const isLikelyTestRuntime = process.env.NODE_ENV === 'test'
+    || process.argv.some((arg) => /\.test\.js$/i.test(String(arg || '')));
+  // Default raised 60s -> 300s: buildOverview() rebuilds all read-only sources
+  // synchronously (~10s cold), which blocks the event loop. A longer TTL means
+  // that expensive rebuild lands on a user request far less often. Override with
+  // READONLY_SOURCE_CACHE_TTL_MS. Safety flags are recomputed every rebuild and
+  // are never affected by this value.
+  return isLikelyTestRuntime ? 10 * 60 * 1000 : 5 * 60 * 1000;
+}
+
+const READONLY_SOURCE_CACHE_TTL_MS = resolveReadOnlySourceCacheTtlMs();
 let readonlySourceCache = new Map();
 
 // Lazy require so a load error in one source module cannot break the whole file.
@@ -194,6 +207,46 @@ async function getCachedReadOnlyAsync(key, fnRef, producer, ttlMs = READONLY_SOU
   }
 }
 
+function buildSafeLiveActivityPlaceholder(message = 'Live activity summary unavailable.') {
+  return {
+    status: 'empty',
+    count: 0,
+    latestEvents: [],
+    sourceCount: 0,
+    summary: null,
+    sourceBreakdown: [],
+    pinnedPaperCount: 0,
+    countsBySource: {},
+    countsByType: {},
+    countsByStatus: {},
+    latestAt: null,
+    latestType: null,
+    latestSource: null,
+    degradedSources: [],
+    warnings: [],
+    updatedAt: null,
+    message,
+    ...SAFETY,
+  };
+}
+
+function readDataCenterStrategyCounters(dataCenterSummary) {
+  const counts = safeObjectValue(dataCenterSummary?.counts) || {};
+  const coverage = safeObjectValue(dataCenterSummary?.strategy_coverage) || {};
+  const strategyTests = num(firstValue(counts.strategy_tests, coverage.strategy_tests)) || 0;
+  const uniqueStrategies = num(firstValue(coverage.unique_strategies, counts.unique_strategies)) || 0;
+  const batchResultRows = num(firstValue(counts.strategy_batch_result_rows, coverage.batch_result_rows)) || 0;
+  const hasHistoricalStrategyCoverage = strategyTests > 0 || uniqueStrategies > 0 || batchResultRows > 0;
+  return {
+    strategyTests,
+    uniqueStrategies,
+    batchResultRows,
+    hasHistoricalStrategyCoverage,
+    source: 'historicalDataCenterService',
+    message: hasHistoricalStrategyCoverage ? 'Strategihistorik hittad från Data Center.' : null,
+  };
+}
+
 // ── per-block summarizers (condense, never dump full payloads) ────────────────
 function summarizeSystemHealth(h) {
   if (!h) return null;
@@ -225,6 +278,9 @@ function summarizeLearning(latest, canonicalOverride = null) {
       generatedAt: latest.generatedAt || latest.generated_at || null,
       strategiesTracked: Array.isArray(latest.strategies) ? latest.strategies.length
         : (latest.strategyCount || latest.strategies_tracked || null),
+      totalEvents: num(latest.connector?.total_events ?? latest.total_events),
+      bySource: safeObjectValue(latest.connector?.by_source) || safeObjectValue(latest.by_source) || null,
+      coreLearningPresent: latest.core_learning_present === true,
     } : null,
   };
 }
@@ -350,6 +406,7 @@ function summarizeAutopilotControl(status, kind) {
 function summarizeAiAnalystStatus(status) {
   if (!status) return null;
   return {
+    status: status.status || null,
     provider: status.provider || null,
     enabled: status.enabled === true,
     providerAvailable: status.providerAvailable === true,
@@ -365,6 +422,13 @@ function summarizeAiAnalystStatus(status) {
     latestStatus: status.latestStatus || null,
     latestProvider: status.latestProvider || null,
     latestDurationMs: num(status.latestDurationMs),
+    latestGeneratedAt: status.latestGeneratedAt || null,
+    latestOutputSummary: status.latestOutputSummary || null,
+    latestLearnedCount: num(status.latestLearnedCount),
+    latestRiskCount: num(status.latestRiskCount),
+    latestNextTestCount: num(status.latestNextTestCount),
+    latestQuestionCount: num(status.latestQuestionCount),
+    latestConfidence: num(status.latestConfidence),
     logPathExists: status.logPathExists === true,
     logEventCount: num(status.logEventCount),
     lastError: status.lastError || null,
@@ -442,40 +506,62 @@ function summarizeDataStatus(dataCoverage, marketDataStore, preloaded = {}) {
   }
 }
 
-function summarizeBatchStatus(batchStatusService) {
+function summarizeBatchStatus(batchStatusService, dataCenterSummary = null) {
   const source = 'batchStatusService';
   if (!batchStatusService || typeof batchStatusService.buildBatchStatus !== 'function') {
     return statusBlock('error', source, { message: 'Batchstatus kunde inte läsas.', ...SAFETY });
   }
   try {
     const batch = batchStatusService.buildBatchStatus();
+    const dataCenterCounters = readDataCenterStrategyCounters(dataCenterSummary);
     const fileFallback = buildBatchHistoryFallback();
-    const batchHistoryAvailable = Boolean((num(batch.totalBatches) || 0) > 0 || fileFallback.batchCount > 0);
+    const listBatchCount = num(batch.totalBatches) || 0;
+    const batchHistoryAvailable = Boolean(listBatchCount > 0 || fileFallback.batchCount > 0);
     const mergedRecent = arr(batch.recentBatchEvents).length
       ? arr(batch.recentBatchEvents).slice(0, 10)
       : arr(fileFallback.recentBatchResults).slice(0, 10);
-    return statusBlock(batch.status || 'error', source, {
-      totalBatches: num(batch.totalBatches) || 0,
-      emptyReason: batch.emptyReason || batch.summary?.emptyReason || null,
-      latestBatch: batch.latestBatch || null,
-      latestCompletedBatch: batch.latestCompletedBatch || null,
-      latestResult: batch.latestResult || null,
-      hasBatchResults: !!batch.latestResult,
+    // Consistency guard: batchStatusService only reads the batch *list*. When the
+    // list is empty but result-files exist on disk (same source buildBatchSummary
+    // upgrades from), do not report a bare "empty/no_batch_tests" that contradicts
+    // batchSummary. Surface a degraded status with an explicit reason instead.
+    const rawStatus = batch.status || 'error';
+    const listEmptyWithResults = listBatchCount === 0
+      && fileFallback.batchCount > 0
+      && ['empty', 'missing'].includes(rawStatus);
+    const effectiveStatus = listEmptyWithResults ? 'degraded' : rawStatus;
+    const effectiveTotalBatches = listEmptyWithResults ? fileFallback.batchCount : listBatchCount;
+    const effectiveEmptyReason = listEmptyWithResults
+      ? 'ok_with_partial_source'
+      : (batch.emptyReason || batch.summary?.emptyReason || null);
+    const effectiveMessage = listEmptyWithResults
+      ? 'Batchlista saknas men batchresultat finns i data/strategy-batches/results.'
+      : (batch.message || fileFallback.message || null);
+    return statusBlock(effectiveStatus, source, {
+      totalBatches: effectiveTotalBatches,
+      emptyReason: effectiveEmptyReason,
+      latestBatch: batch.latestBatch || (listEmptyWithResults ? fileFallback.latestBatch : null) || null,
+      latestCompletedBatch: batch.latestCompletedBatch || (listEmptyWithResults ? fileFallback.latestBatch : null) || null,
+      latestResult: batch.latestResult || (listEmptyWithResults ? fileFallback.latestResult : null) || null,
+      hasBatchResults: !!(batch.latestResult || (listEmptyWithResults ? fileFallback.latestResult : null)),
       bestOutcome: batch.bestOutcome || fileFallback.bestOutcome || null,
       worstOutcome: batch.worstOutcome || fileFallback.worstOutcome || null,
       bestBatch: batch.bestBatch || fileFallback.bestBatch || null,
       worstBatch: batch.worstBatch || fileFallback.worstBatch || null,
       batchHistoryAvailable,
       batchHistorySource: batch.batchHistorySource || fileFallback.source || source,
+      batchResultRows: dataCenterCounters.batchResultRows,
       recentBatchResults: arr(batch.recentBatchResults).length ? arr(batch.recentBatchResults).slice(0, 8) : arr(fileFallback.recentBatchResults).slice(0, 8),
       recentBatchEvents: mergedRecent,
       updatedAt: batch.updatedAt || null,
-      message: batch.message || fileFallback.message || null,
-      summary: batch.summary || null,
+      message: effectiveMessage,
+      summary: listEmptyWithResults
+        ? { ...(batch.summary || {}), status: 'degraded', emptyReason: 'ok_with_partial_source', message: effectiveMessage, batchCount: fileFallback.batchCount, batchResultRows: dataCenterCounters.batchResultRows, source: fileFallback.source, paperOnly: true }
+        : (batch.summary ? { ...batch.summary, batchResultRows: dataCenterCounters.batchResultRows } : null),
       ...SAFETY,
     });
   } catch (err) {
     const fileFallback = buildBatchHistoryFallback();
+    const dataCenterCounters = readDataCenterStrategyCounters(dataCenterSummary);
     return statusBlock(fileFallback.batchCount ? 'degraded' : 'error', source, {
       totalBatches: fileFallback.batchCount || 0,
       emptyReason: fileFallback.batchCount ? 'batch_history_degraded' : 'batch_summary_error',
@@ -489,6 +575,7 @@ function summarizeBatchStatus(batchStatusService) {
       worstBatch: fileFallback.worstBatch || null,
       batchHistoryAvailable: fileFallback.batchCount > 0,
       batchHistorySource: fileFallback.source,
+      batchResultRows: dataCenterCounters.batchResultRows,
       recentBatchResults: fileFallback.recentBatchResults || [],
       recentBatchEvents: fileFallback.recentBatchResults || [],
       message: fileFallback.batchCount
@@ -502,6 +589,7 @@ function summarizeBatchStatus(batchStatusService) {
           ? fileFallback.message
           : (err && err.message ? err.message : String(err)),
         batchCount: fileFallback.batchCount || 0,
+        batchResultRows: dataCenterCounters.batchResultRows,
         latestBatchId: fileFallback.latestBatch?.id || null,
         latestCompletedBatchId: fileFallback.latestBatch?.id || null,
         bestBatchId: fileFallback.bestBatch?.id || null,
@@ -610,6 +698,8 @@ function summarizePaperStatus(paperTradingStatusService) {
         totalApproved: allowlistStatus.totalApproved || 0,
         readyForPaperRuntime: allowlistStatus.readyForPaperRuntime || 0,
         pendingRuntimeConnection: allowlistStatus.pendingRuntimeConnection || 0,
+        paperRuntimeReady: Boolean(allowlistStatus.paperRuntimeReady),
+        runtimeConnectionStatus: allowlistStatus.runtimeConnectionStatus || 'unknown',
         approvedStrategyIds: arr(allowlistStatus.allowlist).map((row) => row.id).filter(Boolean),
         waitingForApproval: arr(allowlistStatus.waitingForApproval).slice(0, 10),
         approvedCount: allowlistStatus.approvedCount || 0,
@@ -656,6 +746,8 @@ function summarizePaperStatus(paperTradingStatusService) {
         totalApproved: 0,
         readyForPaperRuntime: 0,
         pendingRuntimeConnection: 0,
+        paperRuntimeReady: false,
+        runtimeConnectionStatus: 'unknown',
         approvedStrategyIds: [],
         waitingForApproval: [],
         approvedCount: 0,
@@ -788,8 +880,9 @@ function summarizeLearningStatus(learningConnector, narrowPerf, daytradingLearni
   }
 }
 
-function summarizeStrategyRanking(strategyRegistry, strategyRead, strategyScore, strategyRuntimeMatrix = null) {
+function summarizeStrategyRanking(strategyRegistry, strategyRead, strategyScore, strategyRuntimeMatrix = null, dataCenterSummary = null) {
   const source = 'strategyRegistryService|strategyPerformanceReadService|strategyScoreService|strategyRuntimeMatrixService';
+  const dataCenterCounters = readDataCenterStrategyCounters(dataCenterSummary);
   if (!strategyRegistry || typeof strategyRegistry.getStatus !== 'function') {
     return statusBlock('missing', source, {
       totalStrategies: 0,
@@ -802,6 +895,9 @@ function summarizeStrategyRanking(strategyRegistry, strategyRead, strategyScore,
       weakStrategies: [],
       strategiesNeedingMoreData: [],
       strategiesWithoutTests: [],
+      strategyTests: dataCenterCounters.strategyTests,
+      uniqueStrategies: dataCenterCounters.uniqueStrategies,
+      batchResultRows: dataCenterCounters.batchResultRows,
       bestJustNow: null,
       weakestJustNow: null,
       latestBlockedReason: null,
@@ -836,6 +932,7 @@ function summarizeStrategyRanking(strategyRegistry, strategyRead, strategyScore,
       const winRate = num(row.win_rate ?? row.performance_summary?.win_rate ?? registryRow.performance_summary?.win_rate ?? runtimeRow.winRate ?? runtimeRow.simulationSummary?.winRate ?? runtimeRow.paperSummary?.winRate);
       const avgPnl = num(row.avg_pnl ?? row.performance_summary?.avg_pnl ?? registryRow.performance_summary?.avg_pnl ?? runtimeRow.avgPnl ?? runtimeRow.simulationSummary?.avgPnl ?? runtimeRow.paperSummary?.avgPnl);
       const lastTested = firstValue(row.last_tested, row.lastTested, runtimeRow.lastTested, runtimeRow.simulationSummary?.lastTested, runtimeRow.paperSummary?.lastTested);
+      const hasHistoricalEvidence = dataCenterCounters.hasHistoricalStrategyCoverage && (winRate !== null || avgPnl !== null || !!lastTested || !!trades);
       return {
         id: row.strategy_id,
         key: row.strategy_id,
@@ -855,8 +952,8 @@ function summarizeStrategyRanking(strategyRegistry, strategyRead, strategyScore,
         recommendedAction: row.recommended_action || null,
         strengths: arr(row.strengths).slice(0, 4),
         weaknesses: arr(row.weaknesses).slice(0, 4),
-        needsMoreData: (sampleSize || 0) < 10 || (num(row.confidence) || 0) < 50 || (!trades && runtimeRow.needsMoreData === true),
-        emptyReason: !trades ? 'no_test_data' : null,
+        needsMoreData: (sampleSize || 0) < 10 || (num(row.confidence) || 0) < 50 || (!trades && runtimeRow.needsMoreData === true && !hasHistoricalEvidence),
+        emptyReason: !trades && !hasHistoricalEvidence ? 'no_test_data' : null,
         runtimeStatus: runtimeRow.automaticStatus || null,
         ...SAFETY,
       };
@@ -881,7 +978,7 @@ function summarizeStrategyRanking(strategyRegistry, strategyRead, strategyScore,
       strengths: arr(row.strengths).slice(0, 4),
       weaknesses: arr(row.weaknesses).slice(0, 4),
       needsMoreData: (num(row.sample_size) || 0) < 10 || (num(row.confidence) || 0) < 50,
-      emptyReason: !num(row.trades) ? 'no_test_data' : null,
+      emptyReason: !num(row.trades) && !(dataCenterCounters.hasHistoricalStrategyCoverage && (num(row.win_rate) !== null || num(row.avg_pnl) !== null || row.last_tested)) ? 'no_test_data' : null,
       runtimeStatus: null,
       ...SAFETY,
     }));
@@ -943,6 +1040,9 @@ function summarizeStrategyRanking(strategyRegistry, strategyRead, strategyScore,
         : status === 'degraded'
           ? 'Strategier finns, men det saknas tillräckligt testunderlag för en stabil ranking.'
           : 'Strategiregistry, testdata och runtime-matris lästa i read-only läge.';
+    const strategyMessage = dataCenterCounters.message
+      ? `${message} ${dataCenterCounters.message}`
+      : message;
     return statusBlock(status, source, {
       totalStrategies,
       activeStrategies,
@@ -950,6 +1050,10 @@ function summarizeStrategyRanking(strategyRegistry, strategyRead, strategyScore,
       paperOnlyStrategies: num(registry.paper_only_strategies) || 0,
       pausedStrategies: num(registry.paused_strategies) || 0,
       tradingviewStrategies: num(registry.tradingview_strategies) || 0,
+      strategyTests: dataCenterCounters.strategyTests,
+      uniqueStrategies: dataCenterCounters.uniqueStrategies,
+      batchResultRows: dataCenterCounters.batchResultRows,
+      historicalCoverageSource: dataCenterCounters.source,
       activeStrategiesWithEvidence: combined.filter((row) => row.status === 'active' && (num(row.sampleSize) || 0) > 0).length,
       strategiesWithoutTests: strategiesWithoutTests,
       strategiesNeedingMoreDataCount: strategiesNeedingMoreData.length,
@@ -961,7 +1065,7 @@ function summarizeStrategyRanking(strategyRegistry, strategyRead, strategyScore,
       bestJustNow: topStrategies[0] || null,
       weakestJustNow: weakStrategies[0] || null,
       latestBlockedReason: registry.latest_blocked_reason || null,
-      message,
+      message: strategyMessage,
       emptyReason,
       runtimeMatrixSummary: runtimeMatrixSummary
         ? {
@@ -988,6 +1092,9 @@ function summarizeStrategyRanking(strategyRegistry, strategyRead, strategyScore,
       bestStrategies: [],
       weakestStrategies: [],
       strategiesWithoutTests: [],
+      strategyTests: dataCenterCounters.strategyTests,
+      uniqueStrategies: dataCenterCounters.uniqueStrategies,
+      batchResultRows: dataCenterCounters.batchResultRows,
       latestBlockedReason: null,
       emptyReason: 'strategy_ranking_error',
       message: err && err.message ? err.message : String(err),
@@ -1464,8 +1571,9 @@ function buildBatchHistoryFallback({ force = false } = {}) {
   return value;
 }
 
-function buildBatchSummary(batchService = lazy('./strategyBatchTestService')) {
+function buildBatchSummary(batchService = lazy('./strategyBatchTestService'), dataCenterSummary = null) {
   const source = 'strategyBatchTestService';
+  const dataCenterCounters = readDataCenterStrategyCounters(dataCenterSummary);
   const safety = {
     mode: 'paper_only',
     paperOnly: true,
@@ -1486,6 +1594,7 @@ function buildBatchSummary(batchService = lazy('./strategyBatchTestService')) {
       latestCompletedBatch: null,
       latestResult: null,
       activeBatch: null,
+      batchResultRows: dataCenterCounters.batchResultRows,
       source,
       message: 'Batchservice kunde inte laddas.',
       ...safety,
@@ -1525,6 +1634,7 @@ function buildBatchSummary(batchService = lazy('./strategyBatchTestService')) {
         latestCompletedBatch: fallbackLatest,
         latestResult: fileFallback.latestResult,
         activeBatch: null,
+        batchResultRows: dataCenterCounters.batchResultRows,
         bestOutcome: fileFallback.bestOutcome || fallbackLatest?.bestOutcome || null,
         worstOutcome: fileFallback.worstOutcome || fallbackLatest?.worstOutcome || null,
         bestBatch: fileFallback.bestBatch || fallbackLatest,
@@ -1540,6 +1650,7 @@ function buildBatchSummary(batchService = lazy('./strategyBatchTestService')) {
       return {
         status: fileFallback.batchCount ? 'degraded' : 'empty',
         ...base,
+        batchResultRows: dataCenterCounters.batchResultRows,
         batchHistorySource: fileFallback.source,
         batchHistoryAvailable: fileFallback.batchCount > 0,
         bestBatch: fileFallback.bestBatch || null,
@@ -1600,6 +1711,7 @@ function buildBatchSummary(batchService = lazy('./strategyBatchTestService')) {
       latestCompletedBatch: normalizeBatch(latestCompleted, { bestOutcome, worstOutcome, latestResult, resultsCount }),
       latestResult: normalizeBatchResult(latestResult),
       activeBatch: normalizeBatch(active),
+      batchResultRows: dataCenterCounters.batchResultRows,
       bestOutcome: normalizeBatchOutcome(bestOutcome),
       worstOutcome: normalizeBatchOutcome(worstOutcome),
       bestBatch: normalizeBatch(latestCompleted || latest, { bestOutcome, worstOutcome, latestResult, resultsCount }),
@@ -1621,6 +1733,7 @@ function buildBatchSummary(batchService = lazy('./strategyBatchTestService')) {
       latestCompletedBatch: null,
       latestResult: null,
       activeBatch: null,
+      batchResultRows: dataCenterCounters.batchResultRows,
       source,
       message: err && err.message ? err.message : String(err),
       ...safety,
@@ -1895,6 +2008,7 @@ function buildTechnicalStatus(blocks, generatedAt, meta = {}) {
       batchSummary: { source: meta.batchSummary?.source || 'strategyBatchTestService', status: meta.batchSummary?.status || 'missing' },
       replaySummary: { source: meta.replaySummary?.source || 'replayStatusService', status: meta.replaySummary?.status || 'missing' },
       paperTradingSummary: { source: meta.paperTradingSummary?.source || 'paperTradingStatusService', status: meta.paperTradingSummary?.status || 'missing' },
+      tradingViewPreviewStatus: { source: meta.tradingViewPreviewStatus?.source || 'tradingViewPaperReplayPreviewService', status: meta.tradingViewPreviewStatus?.status || 'missing' },
       dataJobsSummary: { source: meta.dataJobsSummary?.source || 'dataJobsStatusService', status: meta.dataJobsSummary?.status || 'missing' },
       liveActivitySummary: { source: meta.liveActivitySummary?.source || 'liveActivityService', status: meta.liveActivitySummary?.status || 'missing' },
       aiAnalystStatus: { source: blocks.aiAnalystStatus?.source || 'aiAnalystService', status: meta.aiAnalystStatus?.status || 'missing' },
@@ -2013,6 +2127,10 @@ async function buildOverview() {
   const replayIntelligence = lazy('./replayIntelligenceService');
   const replayStatus = lazy('./replayStatusService');
   const paperTradingStatus = lazy('./paperTradingStatusService');
+  const tradingViewPreview = lazy('./tradingViewPaperReplayPreviewService');
+  const historicalDataCenter = lazy('./historicalDataCenterService');
+  const marketRegimeDetector = lazy('./marketRegimeDetectorService');
+  const strategyResearchManager = lazy('./strategyResearchManagerService');
 
   let preloadedLearningSummary = null;
   try {
@@ -2044,6 +2162,15 @@ async function buildOverview() {
     };
   } catch (_) {
     preloadedCanonicalStats = null;
+  }
+
+  let preloadedDataCenterSummary = null;
+  try {
+    preloadedDataCenterSummary = historicalDataCenter && typeof historicalDataCenter.getSummary === 'function'
+      ? await getCachedReadOnlyAsync('historical_data_center_summary', historicalDataCenter.getSummary, () => historicalDataCenter.getSummary())
+      : null;
+  } catch (_) {
+    preloadedDataCenterSummary = null;
   }
 
   const preloadedDayLearning = getCachedReadOnly('day_learning_summary', daytradingLearning.getLearningSummary, () => daytradingLearning.getLearningSummary({ hours: 168, limit: 200 }));
@@ -2095,8 +2222,8 @@ async function buildOverview() {
   try {
     batchSummary = getCachedReadOnly(
       'overview_batch_summary',
-      signatureOf(strategyBatch.listBatchTests, strategyBatch.getBatchTestResults, strategyBatch.getLatestBatchComparison),
-      () => buildBatchSummary(strategyBatch),
+      signatureOf(strategyBatch.listBatchTests, strategyBatch.getBatchTestResults, strategyBatch.getLatestBatchComparison, historicalDataCenter && historicalDataCenter.getSummary, preloadedDataCenterSummary?.generated_at),
+      () => buildBatchSummary(strategyBatch, preloadedDataCenterSummary),
     );
   } catch (err) {
     batchSummary = {
@@ -2153,15 +2280,14 @@ async function buildOverview() {
 
   let liveActivitySummary = null;
   try {
-    liveActivitySummary = {
-      status: 'empty',
-      count: 0,
-      latestEvents: [],
-      message: 'Live activity summary deferred.',
-      ...SAFETY,
-    };
+    liveActivitySummary = liveActivity && typeof liveActivity.buildSupervisorLiveActivitySummary === 'function'
+      ? liveActivity.buildSupervisorLiveActivitySummary()
+      : buildSafeLiveActivityPlaceholder('Live activity summary deferred.');
   } catch (err) {
-    liveActivitySummary = { status: 'error', count: 0, latestEvents: [], message: err && err.message ? err.message : 'unavailable', ...SAFETY };
+    liveActivitySummary = {
+      ...buildSafeLiveActivityPlaceholder(err && err.message ? err.message : 'unavailable'),
+      status: 'error',
+    };
   }
 
   let batchAutopilotSummary = null;
@@ -2184,7 +2310,123 @@ async function buildOverview() {
     replayAutopilotSummary = { status: 'error', message: err && err.message ? err.message : 'unavailable', ...SAFETY };
   }
 
+  // NOTE: replaySummary is derived from replayStatusBlock (declared further down)
+  // so it MUST be computed after that const exists — see the assignment block
+  // right after the replayStatusBlock declaration. Declaring the binding here
+  // (without reading replayStatusBlock) keeps the return object ordering stable.
   let replaySummary = null;
+
+  let paperTradingSummary = null;
+  try {
+    paperTradingSummary = paperTradingStatus && typeof paperTradingStatus.buildSupervisorPaperSummary === 'function'
+      ? getCachedReadOnly('paper_trading_summary', signatureOf(paperTradingStatus.buildSupervisorPaperSummary), () => paperTradingStatus.buildSupervisorPaperSummary())
+      : null;
+  } catch (err) {
+    paperTradingSummary = {
+      status: 'error',
+      emptyReason: 'paper_summary_error',
+      count: 0,
+      latestPaperTrade: null,
+      message: err && err.message ? err.message : 'unavailable',
+      source: 'paperTradingStatusService',
+      summary: {
+        status: 'error',
+        source: 'data/paper-trading/trades.jsonl',
+        emptyReason: 'paper_summary_error',
+        message: err && err.message ? err.message : 'unavailable',
+        totalTrades: 0,
+        win: null,
+        loss: null,
+        timeout: null,
+        breakeven: null,
+        winRate: null,
+        decisiveWinRate: null,
+        avgPnl: null,
+        totalPnl: null,
+        bestPnl: null,
+        worstPnl: null,
+        bestStrategy: null,
+        paperOnly: true,
+      },
+      allowlist: {
+        source: 'paperAllowlistService|automationApprovalService',
+        totalApproved: 0,
+        readyForPaperRuntime: 0,
+        pendingRuntimeConnection: 0,
+        paperRuntimeReady: false,
+        runtimeConnectionStatus: 'unknown',
+        approvedStrategyIds: [],
+        waitingForApproval: [],
+        approvedCount: 0,
+        rejectedCount: 0,
+        blockedCount: 0,
+        note: 'Allowlist kunde inte läsas.',
+      },
+      ...SAFETY,
+    };
+  }
+
+  let tradingViewPreviewStatus = null;
+  try {
+    tradingViewPreviewStatus = tradingViewPreview && typeof tradingViewPreview.buildTradingViewPreviewStatus === 'function'
+      ? getCachedReadOnly('tradingview_preview_status', signatureOf(tradingViewPreview.buildTradingViewPreviewStatus), () => tradingViewPreview.buildTradingViewPreviewStatus())
+      : null;
+  } catch (err) {
+    tradingViewPreviewStatus = {
+      ok: false,
+      status: 'error',
+      emptyReason: 'tradingview_preview_status_error',
+      enabled: false,
+      previewReady: false,
+      forwardingEnabled: false,
+      replayQueueEnabled: false,
+      authConfigured: false,
+      latestPreview: null,
+      blockedCount: 0,
+      message: err && err.message ? err.message : 'unavailable',
+      source: 'tradingViewPaperReplayPreviewService',
+      summary: {
+        status: 'error',
+        source: 'tradingViewPaperReplayPreviewService',
+        emptyReason: 'tradingview_preview_status_error',
+        enabled: false,
+        previewReady: false,
+        forwardingEnabled: false,
+        replayQueueEnabled: false,
+        authConfigured: false,
+        latestPreview: null,
+        blockedCount: 0,
+        message: err && err.message ? err.message : 'unavailable',
+        paperOnly: true,
+      },
+      ...SAFETY,
+    };
+  }
+
+  const preloadedCoverageStatus = getCachedReadOnly('data_coverage_status', dataCoverage.getCoverageStatus, () => dataCoverage.getCoverageStatus());
+  const preloadedAllCoverage = getCachedReadOnly('data_coverage_all', dataCoverage.getAllSymbolCoverage, () => dataCoverage.getAllSymbolCoverage());
+  const dataStatus = getCachedReadOnly(
+    'overview_data_status',
+    signatureOf(dataCoverage.getCoverageStatus, dataCoverage.getAllSymbolCoverage, marketDataStore.listSymbols),
+    () => summarizeDataStatus(dataCoverage, marketDataStore, {
+      coverage: preloadedCoverageStatus,
+      allCoverage: preloadedAllCoverage,
+    }),
+  );
+  const batchStatus = getCachedReadOnly(
+    'overview_batch_status',
+    signatureOf(batchStatusService.buildBatchStatus, historicalDataCenter && historicalDataCenter.getSummary, preloadedDataCenterSummary?.generated_at),
+    () => summarizeBatchStatus(batchStatusService, preloadedDataCenterSummary),
+  );
+  const replayStatusBlock = getCachedReadOnly(
+    'overview_replay_status',
+    signatureOf(replayStatus.buildReplayStatus, replayIntelligence.listReplaySessions),
+    () => summarizeReplayStatusBlock(replayStatus, replayIntelligence),
+  );
+  // replaySummary is built from the already-computed replayStatusBlock (same
+  // read-only source). When replayStatus is ok, fall back to the dedicated
+  // supervisor replay summary; otherwise mirror the block's status verbatim so
+  // an ok replayStatus can never surface as a replaySummary error.
   try {
     if (replayStatusBlock && replayStatusBlock.status && replayStatusBlock.status !== 'ok') {
       replaySummary = {
@@ -2225,75 +2467,6 @@ async function buildOverview() {
       ...SAFETY,
     };
   }
-
-  let paperTradingSummary = null;
-  try {
-    paperTradingSummary = paperTradingStatus && typeof paperTradingStatus.buildSupervisorPaperSummary === 'function'
-      ? getCachedReadOnly('paper_trading_summary', signatureOf(paperTradingStatus.buildSupervisorPaperSummary), () => paperTradingStatus.buildSupervisorPaperSummary())
-      : null;
-  } catch (err) {
-    paperTradingSummary = {
-      status: 'error',
-      emptyReason: 'paper_summary_error',
-      count: 0,
-      latestPaperTrade: null,
-      message: err && err.message ? err.message : 'unavailable',
-      source: 'paperTradingStatusService',
-      summary: {
-        status: 'error',
-        source: 'data/paper-trading/trades.jsonl',
-        emptyReason: 'paper_summary_error',
-        message: err && err.message ? err.message : 'unavailable',
-        totalTrades: 0,
-        win: null,
-        loss: null,
-        timeout: null,
-        breakeven: null,
-        winRate: null,
-        decisiveWinRate: null,
-        avgPnl: null,
-        totalPnl: null,
-        bestPnl: null,
-        worstPnl: null,
-        bestStrategy: null,
-        paperOnly: true,
-      },
-      allowlist: {
-        source: 'paperAllowlistService|automationApprovalService',
-        totalApproved: 0,
-        readyForPaperRuntime: 0,
-        pendingRuntimeConnection: 0,
-        approvedStrategyIds: [],
-        waitingForApproval: [],
-        approvedCount: 0,
-        rejectedCount: 0,
-        blockedCount: 0,
-        note: 'Allowlist kunde inte läsas.',
-      },
-      ...SAFETY,
-    };
-  }
-
-  const preloadedCoverageStatus = getCachedReadOnly('data_coverage_status', dataCoverage.getCoverageStatus, () => dataCoverage.getCoverageStatus());
-  const preloadedAllCoverage = getCachedReadOnly('data_coverage_all', dataCoverage.getAllSymbolCoverage, () => dataCoverage.getAllSymbolCoverage());
-  const dataStatus = getCachedReadOnly(
-    'overview_data_status',
-    signatureOf(dataCoverage.getCoverageStatus, dataCoverage.getAllSymbolCoverage, marketDataStore.listSymbols),
-    () => summarizeDataStatus(dataCoverage, marketDataStore, {
-      coverage: preloadedCoverageStatus,
-      allCoverage: preloadedAllCoverage,
-    }),
-  );
-  const batchStatus = getCachedReadOnly(
-    'overview_batch_status',
-    signatureOf(batchStatusService.buildBatchStatus),
-    () => summarizeBatchStatus(batchStatusService),
-  );
-  const replayStatusBlock = getCachedReadOnly(
-    'overview_replay_status',
-    signatureOf(replayStatus.buildReplayStatus, replayIntelligence.listReplaySessions),
-    () => summarizeReplayStatusBlock(replayStatus, replayIntelligence),
-  );
   const paperStatus = getCachedReadOnly(
     'overview_paper_status',
     signatureOf(paperTradingStatus.buildPaperTradingStatus, tradeStats.buildPaperTradeStats),
@@ -2316,9 +2489,60 @@ async function buildOverview() {
   );
   const strategyRanking = getCachedReadOnly(
     'overview_strategy_ranking',
-    signatureOf(strategyRegistry.getStatus, strategyRead.getTopStrategies, strategyRead.getWorstStrategies, strategyScore.defaultStrategyScoreService && strategyScore.defaultStrategyScoreService.getStrategyScores, strategyRuntimeMatrix && strategyRuntimeMatrix.getStrategyRuntimeMatrix),
-    () => summarizeStrategyRanking(strategyRegistry, strategyRead, strategyScore, strategyRuntimeMatrix),
+    signatureOf(strategyRegistry.getStatus, strategyRead.getTopStrategies, strategyRead.getWorstStrategies, strategyScore.defaultStrategyScoreService && strategyScore.defaultStrategyScoreService.getStrategyScores, strategyRuntimeMatrix && strategyRuntimeMatrix.getStrategyRuntimeMatrix, historicalDataCenter && historicalDataCenter.getSummary, preloadedDataCenterSummary?.generated_at),
+    () => summarizeStrategyRanking(strategyRegistry, strategyRead, strategyScore, strategyRuntimeMatrix, preloadedDataCenterSummary),
   );
+  // ── Strategy Research Manager + Market Regime (read-only, additive) ──────────
+  // Fault-isolated: a failure here can never blank the rest of the overview.
+  // Both are pure read/derive layers — no orders, no broker, no live trading.
+  let marketRegimeDetection = null;
+  try {
+    marketRegimeDetection = marketRegimeDetector && typeof marketRegimeDetector.buildMarketRegimeDetection === 'function'
+      ? getCachedReadOnly('overview_market_regime_detection', signatureOf(marketRegimeDetector.buildMarketRegimeDetection), () => marketRegimeDetector.buildMarketRegimeDetection())
+      : null;
+  } catch (_) { marketRegimeDetection = null; }
+  if (!marketRegimeDetection) {
+    marketRegimeDetection = { ok: false, status: 'empty', source: 'marketRegimeDetectorService', regime: null, message: 'Marknadsregim kunde inte läsas.', safety: SAFETY };
+  }
+
+  let strategyResearch = null;
+  try {
+    strategyResearch = strategyResearchManager && typeof strategyResearchManager.buildStrategyResearch === 'function'
+      ? getCachedReadOnly('overview_strategy_research', signatureOf(strategyResearchManager.buildStrategyResearch), () => strategyResearchManager.buildStrategyResearch())
+      : null;
+  } catch (_) { strategyResearch = null; }
+  if (!strategyResearch) {
+    strategyResearch = {
+      ok: false, status: 'empty', mode: 'dry_run', lastRun: new Date().toISOString(),
+      marketRegime: marketRegimeDetection, stagnation: { detected: false, reason: null }, recommendations: [],
+      topRecommendation: null, requiresApprovalCount: 0, paperEligibleCount: 0, blockedReasons: [],
+      nextRecommendedAction: '', source: 'strategyResearchManagerService',
+      message: 'Forskningsplan kunde inte byggas.', safety: SAFETY,
+    };
+  }
+
+  // Paper-trading-facing summary that joins paper results, the allowlist and the
+  // research recommendations. Pure read/derive — never starts a paper trade.
+  const researchBlockedStrategies = arr(strategyResearch.recommendations)
+    .filter((r) => r && r.type === 'pause_strategy')
+    .map((r) => ({ id: r.strategyId, reason: r.blockedReason || r.reason || null }))
+    .filter((r) => r.id);
+  const paperSummary = {
+    status: paperStatus && paperStatus.status ? paperStatus.status : 'empty',
+    tradeCount: num(paperStatus && paperStatus.count) || 0,
+    latestTrades: arr(paperStatus && paperStatus.recentPaperTrades).slice(0, 10),
+    latestEvents: arr(liveActivitySummary && liveActivitySummary.latestEvents).slice(0, 10),
+    approvedStrategies: arr(paperStatus && paperStatus.allowlist && paperStatus.allowlist.approvedStrategyIds),
+    blockedStrategies: researchBlockedStrategies,
+    blockedReasons: arr(strategyResearch.blockedReasons),
+    paperEligibleRecommendations: arr(strategyResearch.recommendations).filter((r) => r && r.paperEligible),
+    requiresApprovalRecommendations: arr(strategyResearch.recommendations).filter((r) => r && r.requiresUserApproval),
+    allowlist: (paperStatus && paperStatus.allowlist) || null,
+    source: 'supervisorOverviewService(paperStatus|strategyResearch|liveActivity)',
+    message: 'Sammanställd låtsashandel: simulering, allowlist och forskningsrekommendationer. Inga riktiga order.',
+    ...SAFETY,
+  };
+
   const blocks = {
     system_health, learning, strategies, narrow, autopilot: autopilotBlock,
     market_regime, priority: priorityBlock, daily_pipeline, ai_optimization, operations_advisor,
@@ -2327,8 +2551,12 @@ async function buildOverview() {
     batch_status: batchStatus,
     replay_status: replayStatusBlock,
     paper_status: paperStatus,
+    trading_view_preview_status: tradingViewPreviewStatus,
     learning_status: learningStatus,
     strategy_ranking: strategyRanking,
+    strategy_research: strategyResearch,
+    market_regime_detection: marketRegimeDetection,
+    paper_summary: paperSummary,
   };
   const combinedRecentTests = buildUnifiedRecentTests(recentTests, batchStatus, replayStatusBlock, paperStatus);
   const unifiedRecentTestsStatus = statusBlock(
@@ -2370,6 +2598,7 @@ async function buildOverview() {
     lossFeedbackQueue,
     nextRecommendedActions,
     recentTestsStatus: unifiedRecentTestsStatus,
+    tradingViewPreviewStatus,
     aiAnalystStatus,
   });
 
@@ -2402,6 +2631,10 @@ async function buildOverview() {
     replayAutopilotSummary,
     replaySummary,
     paperTradingSummary,
+    paperSummary,
+    strategyResearch,
+    marketRegime: marketRegimeDetection,
+    tradingViewPreviewStatus,
     aiAnalystStatus,
     dataJobsSummary,
     liveActivitySummary,
@@ -2417,7 +2650,10 @@ async function buildOverview() {
 // builds take several seconds). A brief TTL keeps repeated dashboard polls fast
 // without ever hiding stale errors for long: error/degraded block states clear
 // on the next rebuild after TTL. Safety flags are never affected.
-const OVERVIEW_TTL_MS = 45 * 1000;
+// Raised 45s -> 300s so the ~10s synchronous cold rebuild (which blocks the
+// event loop and freezes all concurrent requests, including static assets)
+// lands on a user request far less often. Data is at most 5 min stale.
+const OVERVIEW_TTL_MS = 5 * 60 * 1000;
 let overviewCache = { at: 0, value: null };
 
 async function getCachedOverview({ force = false } = {}) {

@@ -120,11 +120,14 @@ function appendJsonl(file, rows) {
   assert.equal(paperEvent.pinned, true);
   assert.equal(allEvents[0].type, 'paper'); // pinned to the very top
   assert.ok(paperEvent.result && paperEvent.result.includes('P/L +0.4%'));
-  const overviewSummary = svc.buildSupervisorLiveActivitySummary();
+  const overviewSummary = svc.buildSupervisorLiveActivitySummary({ files, limit: 50, eventLimit: 5 });
   assert.ok(overviewSummary.summary && typeof overviewSummary.summary === 'object');
-  assert.equal(overviewSummary.summary.totalEvents, 10);
+  assert.ok(overviewSummary.count >= 7);
+  assert.equal(overviewSummary.summary.totalEvents, overviewSummary.count);
   assert.ok(Array.isArray(overviewSummary.sourceBreakdown));
   assert.ok(overviewSummary.latestEvents.length <= 5);
+  assert.equal(overviewSummary.latestEvents[0].type, 'paper');
+  assert.equal(typeof overviewSummary.message, 'string');
 
   const maxed = svc.buildLiveActivity({ limit: 999, files });
   assert.ok(maxed.count <= 200);

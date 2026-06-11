@@ -67,8 +67,8 @@ function warningsFor(row, evidence) {
 
 function reasonFor(row, evidence) {
   const parts = [];
-  if (row.automaticStatus === 'fullyAutomatic') parts.push('Scanner och paper-runtime är kopplade (fully automatic).');
-  else if (row.automaticStatus === 'partlyAutomatic') parts.push('Delvis kopplad (partly automatic).');
+  if (row.automaticStatus === 'fullyAutomatic') parts.push('Scanner och paper-simulationens runtime är aktiva (paper-only, ingen broker eller live trading).');
+  else if (row.automaticStatus === 'partlyAutomatic') parts.push('Delvis kopplad paper-simulation (partly automatic, paper-only).');
   if (row.strongCandidate) parts.push('Stark resultatdata.');
   if (evidence.paperTrades >= 10 && (num(evidence.paperWinRate) || 0) >= 50) {
     parts.push(`Paper: ${evidence.paperWinRate}% vinst på ${evidence.paperTrades} trades.`);

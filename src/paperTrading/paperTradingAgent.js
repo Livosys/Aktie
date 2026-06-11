@@ -44,6 +44,7 @@ const auditTrail                                = require('../services/auditTrai
 const eventLogService                           = require('../services/eventLogService');
 const notificationEngineV2                      = require('../alerts/notificationEngineV2');
 const strategyRuntimeConnector                  = require('../services/strategyRuntimeConnectorService');
+const paperApprovalGate                         = require('../services/paperApprovalGateService');
 const marketUniverse                            = require('../services/marketUniverseService');
 const learningConnector                         = require('../services/learningConnectorService');
 const learningEngine                            = require('../services/daytradingLearningEngineService');
@@ -124,7 +125,19 @@ function saveState(state) {
 
 function appendTrade(trade) {
   ensureDir();
-  fs.appendFileSync(TRADES_FILE, JSON.stringify(trade) + '\n', 'utf8');
+  // Stamp the locked paper-only safety contract on every persisted paper trade so
+  // each row in trades.jsonl is unambiguously a SIMULATION — no broker, no live
+  // trading, no real order — regardless of which code path produced it.
+  const stamped = {
+    ...trade,
+    paperOnly: true,
+    mode: 'paper_only',
+    actions_allowed: false,
+    can_place_orders: false,
+    live_trading_enabled: false,
+    broker_enabled: false,
+  };
+  fs.appendFileSync(TRADES_FILE, JSON.stringify(stamped) + '\n', 'utf8');
 }
 
 function loadJsonl(file) {
@@ -462,14 +475,22 @@ function appendEvent(input) {
 
 // ── Entry validation ──────────────────────────────────────────────────────────
 
-function qualifiesForEntry(c, state) {
+function qualifiesForEntry(c, state, opts = {}) {
+  // When the candidate's strategy is already on the approved allowlist, the
+  // strategy-IDENTITY filters below (EMA pause, allowed-family, subtype-direction)
+  // are treated as diagnostic only — the approved allowlist is the source of truth
+  // for which strategies may run. All other RISK checks (freshness, market open,
+  // volume, conflict, position limits, cooldown, dedup) still apply to everyone.
+  const isApproved = opts.isApproved === true;
+
   // ── Market & freshness ────────────────────────────────────────────────────
   if (c.dataFreshness !== 'LIVE')                    return { ok: false, reason: `dataFreshness=${c.dataFreshness}` };
   if (c.marketClosed)                                return { ok: false, reason: 'market closed' };
 
   // Paper-only experiment: pause EMA entries before other entry checks so the
-  // event log clearly shows the active filter.
-  if (!ALLOW_EMA_PAPER_TRADES && c.signalFamily === 'EMA_TREND_PULLBACK')
+  // event log clearly shows the active filter. Bypassed for approved strategies
+  // (e.g. ema_pullback_continuation) per the approved-allowlist-first rule.
+  if (!isApproved && !ALLOW_EMA_PAPER_TRADES && c.signalFamily === 'EMA_TREND_PULLBACK')
     return { ok: false, reason: 'EMA paused in paper test' };
 
   // ── Decision status ───────────────────────────────────────────────────────
@@ -492,7 +513,9 @@ function qualifiesForEntry(c, state) {
   if (!['UP', 'DOWN'].includes(c.nextMoveBias))      return { ok: false, reason: `nextMoveBias=${c.nextMoveBias}` };
 
   // ── Signal family ─────────────────────────────────────────────────────────
-  if (!ALLOWED_FAMILIES.has(c.signalFamily))         return { ok: false, reason: `signalFamily=${c.signalFamily}` };
+  // Diagnostic-only for approved strategies (the allowlist already validated the
+  // strategy identity via the runtime-connector mapping).
+  if (!isApproved && !ALLOWED_FAMILIES.has(c.signalFamily)) return { ok: false, reason: `signalFamily=${c.signalFamily}` };
 
   // ── Subtype per direction ─────────────────────────────────────────────────
   const sub  = rawSub;
@@ -501,12 +524,12 @@ function qualifiesForEntry(c, state) {
     const ok = sub === 'VWAP_RECLAIM_UP' ||
                sub === 'EMA_PULLBACK_UP' ||
                (c.signalFamily === 'NARROW_COMPRESSION' && sub.toUpperCase().includes('BULL'));
-    if (!ok) return { ok: false, reason: `UP subtype not allowed: ${sub}` };
+    if (!isApproved && !ok) return { ok: false, reason: `UP subtype not allowed: ${sub}` };
   } else {
     const ok = sub === 'VWAP_REJECTION_DOWN' ||
                sub === 'EMA_PULLBACK_DOWN' ||
                (c.signalFamily === 'NARROW_COMPRESSION' && sub.toUpperCase().includes('BEAR'));
-    if (!ok) return { ok: false, reason: `DOWN subtype not allowed: ${sub}` };
+    if (!isApproved && !ok) return { ok: false, reason: `DOWN subtype not allowed: ${sub}` };
   }
 
   // ── Crypto safety rules (v3) ──────────────────────────────────────────────
@@ -1821,7 +1844,40 @@ async function runTick() {
           continue;
         }
 
-        const check = qualifiesForEntry(c, state);
+        // ── Approved-strategy allowlist gate (PRIMARY) ──────────────────────────
+        // Only strategies on the approved allowlist may open a SIMULATED paper
+        // trade. Non-approved candidates are blocked here with a stable reason and
+        // logged for visibility. This is the hard gate; the family/subtype filter
+        // in qualifiesForEntry below acts only as an additional safety filter and
+        // is bypassed for approved strategies where it would conflict (e.g. EMA
+        // pause), per the supervisor's "prefer the approved allowlist" rule.
+        const runtimeStrategyForGate = runtimeDecision.strategy || {};
+        const resolvedStrategyId = runtimeStrategyForGate.strategy_id
+          || runtimeStrategyForGate.strategyId
+          || paperApprovalGate.resolveStrategyId(c);
+        const isApproved = paperApprovalGate.isApprovedStrategyId(resolvedStrategyId);
+        if (!isApproved) {
+          _bump('qualifiesRejected', null);
+          _recentRejections = [{
+            type:          'APPROVED_ALLOWLIST_BLOCKED',
+            symbol:        c.symbol,
+            marketGroup:   getMarketGroup(c.symbol) || c.marketGroup || 'UNKNOWN',
+            signalSubtype: c.signalSubtype || null,
+            strategyId:    resolvedStrategyId || null,
+            reason:        paperApprovalGate.NOT_APPROVED_REASON,
+            timestamp:     new Date().toISOString(),
+          }, ..._recentRejections].slice(0, 100);
+          appendEvent({
+            ...eventFromCandidate('GATE_BLOCKED', c, 'Blockerad: strategin är inte på den godkända allowlist:en (endast paper-only research-kandidater tillåts).', 'blocked'),
+            blockedReason: paperApprovalGate.NOT_APPROVED_REASON,
+            runtimeStatus: runtimeStrategyForGate.runtime_status || null,
+            strategyId:    resolvedStrategyId || null,
+            strategyName:  runtimeStrategyForGate.strategy_name || null,
+          });
+          continue;
+        }
+
+        const check = qualifiesForEntry(c, state, { isApproved });
         if (!check.ok) {
           _bump('qualifiesRejected', null);
           // Lightweight rejection entry for pipeline analysis

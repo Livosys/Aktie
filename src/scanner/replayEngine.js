@@ -302,6 +302,29 @@ async function runReplay({ symbols, start, end, mode = 'scan_only' }) {
     console.warn('[ReplayEngine] Insights failed:', err.message);
   }
 
+  // Feed the learning connector's replay channel. scan_only runs have no trade
+  // outcomes, so we report session metadata (window, symbols, event/score totals)
+  // without fabricating pnl/win_rate. Lazy-required and fault-isolated so a
+  // connector failure can never break a replay run. Deduped per runId.
+  try {
+    const learningConnector = require('../services/learningConnectorService');
+    if (learningConnector && typeof learningConnector.recordReplayResult === 'function') {
+      learningConnector.recordReplayResult({
+        session_id: runId,
+        source: 'replayEngine',
+        symbols: summary.symbols,
+        timeframe: '2m',
+        replay_window: `${start} → ${end}`,
+        total_trades: summary.totalEvents,
+        avg_trade_score: summary.avgTradeScore,
+        replay_ready: summary.coverage.replay_ready,
+        mode,
+      });
+    }
+  } catch (err) {
+    console.warn('[ReplayEngine] learning connector forward failed:', err.message);
+  }
+
   console.log(`[ReplayEngine] Run ${runId} done — ${summary.totalEvents} events, ${summary.totalCandles} candles`);
   return { runId, summary };
 }

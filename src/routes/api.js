@@ -102,6 +102,8 @@ const batchAutopilotService = require('../services/batchAutopilotService');
 const replayAutopilotService = require('../services/replayAutopilotService');
 const replayStatusService = require('../services/replayStatusService');
 const paperTradingStatusService = require('../services/paperTradingStatusService');
+const tradingViewPaperReplayPreviewService = require('../services/tradingViewPaperReplayPreviewService');
+const tradingViewPreviewLogService = require('../services/tradingViewPreviewLogService');
 const TEST_LIVE_SEND_COOLDOWN_MS = 5 * 60 * 1000;
 let testLiveSendLastAt = 0;
 const auditScanLastAt = new Map();
@@ -2537,6 +2539,68 @@ router.post('/autopilot/narrow/run-once', (req, res) => {
   }
 });
 
+// ── Manual dry-run triggers (test only — never executes, never places orders) ──
+// These routes only build a plan-preview via the autopilot services, which are
+// dry-run-only by design (executed:false always). Three guard layers:
+//   1. findBlockedIntent rejects any live/order intent in the body.
+//   2. service evaluateGate blocks unless dryRunOnly.
+//   3. route spreads AUTOPILOT_SAFETY + hard-codes executed:false last.
+router.post('/batch-autopilot/dry-run', (req, res) => {
+  try {
+    const body = req.body && typeof req.body === 'object' ? req.body : {};
+    const blockedIntent = narrowTestAutopilot.findBlockedIntent(body);
+    if (blockedIntent) {
+      return res.json({
+        ok: false, blocked: true, executed: false, dryRun: true,
+        ...AUTOPILOT_SAFETY,
+        reasons: [`blocked_intent:${blockedIntent}`],
+        message_sv: 'Förfrågan innehöll otillåten live/order-intent och blockerades.',
+      });
+    }
+    const result = batchAutopilotService.runOnce({ trigger: 'manual_dry_run_button' });
+    res.json({
+      ok: result.ok,
+      ...AUTOPILOT_SAFETY,
+      dryRun: true,
+      executed: false,
+      blocked: Boolean(result.blocked),
+      blockedReason: result.blockedReason || null,
+      plan: result.plan || null,
+      note: 'Endast test. Ingen batch startas. Inga riktiga order.',
+    });
+  } catch (err) {
+    res.json({ ok: false, executed: false, error: err.message, ...AUTOPILOT_SAFETY });
+  }
+});
+
+router.post('/replay-autopilot/dry-run', (req, res) => {
+  try {
+    const body = req.body && typeof req.body === 'object' ? req.body : {};
+    const blockedIntent = narrowTestAutopilot.findBlockedIntent(body);
+    if (blockedIntent) {
+      return res.json({
+        ok: false, blocked: true, executed: false, dryRun: true,
+        ...AUTOPILOT_SAFETY,
+        reasons: [`blocked_intent:${blockedIntent}`],
+        message_sv: 'Förfrågan innehöll otillåten live/order-intent och blockerades.',
+      });
+    }
+    const result = replayAutopilotService.runOnce({ trigger: 'manual_dry_run_button' });
+    res.json({
+      ok: result.ok,
+      ...AUTOPILOT_SAFETY,
+      dryRun: true,
+      executed: false,
+      blocked: Boolean(result.blocked),
+      blockedReason: result.blockedReason || null,
+      plan: result.plan || null,
+      note: 'Endast test. Ingen replay startas. Inga riktiga order.',
+    });
+  } catch (err) {
+    res.json({ ok: false, executed: false, error: err.message, ...AUTOPILOT_SAFETY });
+  }
+});
+
 // ── GET /api/history/learning-summary ────────────────────────────────────────
 router.get('/history/learning-summary', (req, res) => {
   try {
@@ -3352,6 +3416,22 @@ router.post('/paper-trading/stop', (req, res) => {
   catch (err) { res.status(500).json({ ok: false, error: err.message }); }
 });
 
+// READ-ONLY dry-run preview of the approved-strategy gate. Shows, per live
+// scanner candidate, whether it WOULD be accepted as an approved paper-only
+// simulation or blocked (with strategyId, symbol/timeframe and blockedReason).
+// Writes nothing, starts nothing, places no order. Safe to call any time.
+router.get('/paper-trading/approval-preview', (req, res) => {
+  try {
+    const gate = require('../services/paperApprovalGateService');
+    let candidates = [];
+    try { candidates = getLatestResults(); } catch (_) { candidates = []; }
+    if (!Array.isArray(candidates)) candidates = [];
+    res.json(gate.previewCandidates(candidates));
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
 router.get('/paper-trading/calibration-report', (req, res) => {
   try { res.json(paperTrading.getCalibrationReport()); }
   catch (err) { res.status(500).json({ ok: false, error: err.message }); }
@@ -3872,6 +3952,25 @@ router.get('/tradingview/status', (req, res) => {
     res.json(tradingViewConnector.defaultConnector.getStatus());
   } catch (err) {
     res.status(500).json({ ok: false, enabled: false, error: err.message, ...tradingViewConnector.SAFETY });
+  }
+});
+
+router.post('/tradingview/paper-replay/preview', (req, res) => {
+  try {
+    const result = tradingViewPaperReplayPreviewService.defaultTradingViewPaperReplayPreviewService.previewTradingViewSignal(req.body || {});
+    // Read-only debugging history. If logging fails the preview must still
+    // respond safely — never create a trade/queue/order from this path.
+    let logWritten = false;
+    try {
+      const logResult = tradingViewPreviewLogService.appendPreview(result);
+      logWritten = logResult && logResult.logWritten === true;
+    } catch (_) {
+      logWritten = false;
+    }
+    const status = result.ok === false ? 500 : 200;
+    res.status(status).json({ ...result, logWritten });
+  } catch (err) {
+    res.status(500).json({ ok: false, accepted: false, dryRun: true, logWritten: false, blockedReason: 'preview_service_error', error: err.message, ...tradingViewPaperReplayPreviewService.SAFETY });
   }
 });
 

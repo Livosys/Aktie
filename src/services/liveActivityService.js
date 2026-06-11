@@ -475,12 +475,15 @@ function buildLiveActivity(options = {}) {
   };
 }
 
-function buildSupervisorLiveActivitySummary() {
-  const full = buildLiveActivity({ limit: 10 });
+function buildSupervisorLiveActivitySummary(options = {}) {
+  const full = buildLiveActivity({
+    limit: options.limit || 50,
+    files: options.files || undefined,
+  });
   return {
     status: full.status,
     count: full.count,
-    latestEvents: full.events.slice(0, 5),
+    latestEvents: full.events.slice(0, Math.max(1, Math.min(Number(options.eventLimit) || 5, 10))),
     sourceCount: full.sources.length,
     summary: full.summary,
     sourceBreakdown: full.summary?.sourceBreakdown || full.sources,
@@ -494,6 +497,7 @@ function buildSupervisorLiveActivitySummary() {
     degradedSources: full.sources.filter((s) => s.status === 'degraded').map((s) => s.name),
     warnings: full.warnings,
     updatedAt: full.updatedAt,
+    message: full.summary?.note || null,
     ...SAFETY,
   };
 }

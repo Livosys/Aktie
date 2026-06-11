@@ -15,6 +15,7 @@ const REQUIRED_OVERVIEW_KEYS = [
   'lossFeedbackQueue',
   'nextRecommendedActions',
   'riskSummary',
+  'tradingViewPreviewStatus',
   'technical',
   'safety',
 ];
@@ -145,6 +146,13 @@ async function withPatchedMethod(modPath, methodName, replacement, fn) {
   assert.ok(Array.isArray(o.riskSummary.warnings), 'riskSummary.warnings array');
   assert.ok(Array.isArray(o.riskSummary.recommendations), 'riskSummary.recommendations array');
   assert.ok(o.riskSummary.source, 'riskSummary.source present');
+  assert.ok(o.tradingViewPreviewStatus && typeof o.tradingViewPreviewStatus === 'object', 'tradingViewPreviewStatus present');
+  assert.ok(['ok', 'empty', 'degraded', 'error', 'missing'].includes(o.tradingViewPreviewStatus.status), 'tradingViewPreviewStatus status valid');
+  assert.equal(o.tradingViewPreviewStatus.mode, 'paper_only');
+  assert.equal(o.tradingViewPreviewStatus.actions_allowed, false);
+  assert.equal(o.tradingViewPreviewStatus.can_place_orders, false);
+  assert.equal(o.tradingViewPreviewStatus.live_trading_enabled, false);
+  assert.equal(o.tradingViewPreviewStatus.broker_enabled, false);
   assert.ok(o.technical && typeof o.technical === 'object', 'technical present');
   assert.ok(['ok', 'empty', 'degraded', 'missing'].includes(o.technical.status), 'technical status valid');
   assert.ok(o.technical.source, 'technical.source present');
@@ -152,6 +160,36 @@ async function withPatchedMethod(modPath, methodName, replacement, fn) {
   assert.ok(o.technical.sourceMarkers && typeof o.technical.sourceMarkers === 'object', 'technical.sourceMarkers present');
   assert.ok(Array.isArray(o.actionPlan) && o.actionPlan.length >= 1);
   assertOverviewContract(o, 'overview');
+
+  // ── 5b. Strategy Research Manager + Market Regime + paperSummary (additive) ──
+  assert.ok(o.strategyResearch && typeof o.strategyResearch === 'object', 'strategyResearch present');
+  assert.ok(['ok', 'empty', 'degraded', 'error'].includes(o.strategyResearch.status), 'strategyResearch status valid');
+  assert.equal(o.strategyResearch.mode, 'dry_run', 'strategyResearch mode dry_run');
+  assert.ok(Array.isArray(o.strategyResearch.recommendations), 'strategyResearch.recommendations array');
+  assert.equal(typeof o.strategyResearch.requiresApprovalCount, 'number', 'strategyResearch.requiresApprovalCount number');
+  assert.equal(typeof o.strategyResearch.paperEligibleCount, 'number', 'strategyResearch.paperEligibleCount number');
+  assertSafety(o.strategyResearch.safety, 'strategyResearch');
+  for (const rec of o.strategyResearch.recommendations) {
+    // No recommendation may be paper-eligible while still requiring approval.
+    if (rec.paperEligible) assert.equal(rec.requiresUserApproval, false, 'paperEligible rec needs no approval');
+    assert.deepEqual(rec.safety, { paperOnly: true, canPlaceOrders: false, brokerEnabled: false }, 'rec safety');
+  }
+  assert.ok(o.marketRegime && typeof o.marketRegime === 'object', 'marketRegime present');
+  assert.ok(['ok', 'empty', 'degraded', 'error'].includes(o.marketRegime.status), 'marketRegime status valid');
+  assertSafety(o.marketRegime.safety, 'marketRegime');
+  assert.ok(o.paperSummary && typeof o.paperSummary === 'object', 'paperSummary present');
+  assert.ok(Array.isArray(o.paperSummary.latestTrades), 'paperSummary.latestTrades array');
+  assert.ok(Array.isArray(o.paperSummary.approvedStrategies), 'paperSummary.approvedStrategies array');
+  assert.ok(Array.isArray(o.paperSummary.blockedStrategies), 'paperSummary.blockedStrategies array');
+  assertSafety({
+    mode: o.paperSummary.mode,
+    actions_allowed: o.paperSummary.actions_allowed,
+    can_place_orders: o.paperSummary.can_place_orders,
+    live_trading_enabled: o.paperSummary.live_trading_enabled,
+    broker_enabled: o.paperSummary.broker_enabled,
+  }, 'paperSummary');
+  // strategy_research + paper_summary must also appear inside blocks (additive).
+  assert.ok(o.blocks.strategy_research && o.blocks.paper_summary && o.blocks.market_regime_detection, 'new blocks present');
 
   // ── 6. overview exposes recentTests array + status (real data) ──────────────
   assert.ok(Array.isArray(o.recentTests), 'recentTests is an array');
@@ -168,6 +206,7 @@ async function withPatchedMethod(modPath, methodName, replacement, fn) {
   assert.ok(typeof o.strategyRanking.message === 'string', 'strategyRanking.message string');
   assert.ok(Object.prototype.hasOwnProperty.call(o.strategyRanking, 'emptyReason'), 'strategyRanking.emptyReason present');
   assert.ok(Object.prototype.hasOwnProperty.call(o, 'riskSummary'), 'riskSummary present');
+  assert.ok(Object.prototype.hasOwnProperty.call(o, 'tradingViewPreviewStatus'), 'tradingViewPreviewStatus present');
   assert.ok(Object.prototype.hasOwnProperty.call(o, 'technical'), 'technical present');
   assert.ok(o.batchSummary && typeof o.batchSummary === 'object', 'batchSummary present');
   assert.ok(['ok', 'empty', 'degraded', 'error'].includes(o.batchSummary.status), 'batchSummary status valid');

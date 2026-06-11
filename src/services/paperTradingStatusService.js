@@ -230,6 +230,8 @@ function buildPaperTradingStatus(options = {}) {
       totalApproved: allowlistStatus.totalApproved || 0,
       readyForPaperRuntime: allowlistStatus.readyForPaperRuntime || 0,
       pendingRuntimeConnection: allowlistStatus.pendingRuntimeConnection || 0,
+      paperRuntimeReady: Boolean(allowlistStatus.paperRuntimeReady),
+      runtimeConnectionStatus: allowlistStatus.runtimeConnectionStatus || 'unknown',
       approvedStrategyIds: Array.isArray(allowlistStatus.allowlist) ? allowlistStatus.allowlist.map((row) => row.id).filter(Boolean) : [],
       waitingForApproval: Array.isArray(allowlistStatus.waitingForApproval) ? allowlistStatus.waitingForApproval.slice(0, 10) : [],
       approvedCount: num(approvals?.approvedCount) || 0,
@@ -241,6 +243,8 @@ function buildPaperTradingStatus(options = {}) {
       totalApproved: 0,
       readyForPaperRuntime: 0,
       pendingRuntimeConnection: 0,
+      paperRuntimeReady: false,
+      runtimeConnectionStatus: 'unknown',
       approvedStrategyIds: [],
       waitingForApproval: [],
       approvedCount: num(approvals?.approvedCount) || 0,
@@ -322,6 +326,8 @@ function buildPaperTradingStatus(options = {}) {
         totalApproved: 0,
         readyForPaperRuntime: 0,
         pendingRuntimeConnection: 0,
+        paperRuntimeReady: false,
+        runtimeConnectionStatus: 'unknown',
         approvedStrategyIds: [],
         waitingForApproval: [],
         approvedCount: 0,
@@ -340,7 +346,16 @@ function buildPaperTradingStatus(options = {}) {
 // Compact summary for embedding in /api/supervisor/overview. Carries the
 // headline numbers + the single latest paper trade, never the full list.
 function buildSupervisorPaperSummary(options = {}) {
-  const full = buildPaperTradingStatus(options);
+  // Wire the read-only allowlist/approval services by default so the supervisor
+  // summary's allowlist is populated (previously it was always empty because no
+  // services were passed). Lazy-required so a load error can never break this.
+  const allowlistService = options.allowlistService || (() => {
+    try { return require('./paperAllowlistService'); } catch (_) { return null; }
+  })();
+  const approvalsService = options.approvalsService || (() => {
+    try { return require('./automationApprovalService'); } catch (_) { return null; }
+  })();
+  const full = buildPaperTradingStatus({ ...options, allowlistService, approvalsService });
   return {
     status: full.status,
     emptyReason: full.emptyReason || full.summary?.emptyReason || null,
