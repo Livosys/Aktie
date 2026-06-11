@@ -19,7 +19,21 @@ const dailyIntelligencePipeline = require('./src/services/dailyIntelligencePipel
 
 const app = express();
 const PORT = process.env.PORT || 3001;
-const ENABLE_CRYPTO_SCANNER = process.env.ENABLE_CRYPTO_SCANNER !== 'false';
+
+function envEnabled(name, defaultValue = true) {
+  const raw = process.env[name];
+  if (raw === undefined) return defaultValue;
+  return String(raw).toLowerCase() !== 'false';
+}
+
+const ENABLE_STOCK_SCANNER = envEnabled('ENABLE_STOCK_SCANNER', true);
+const ENABLE_CRYPTO_SCANNER = envEnabled('ENABLE_CRYPTO_SCANNER', true);
+const ENABLE_AUTO_MACHINE_SCHEDULER = envEnabled('ENABLE_AUTO_MACHINE_SCHEDULER', true);
+const ENABLE_NARROW_AUTOPILOT_SCHEDULER = envEnabled('ENABLE_NARROW_AUTOPILOT_SCHEDULER', true);
+const ENABLE_BATCH_AUTOPILOT_SCHEDULER = envEnabled('ENABLE_BATCH_AUTOPILOT_SCHEDULER', true);
+const ENABLE_REPLAY_AUTOPILOT_SCHEDULER = envEnabled('ENABLE_REPLAY_AUTOPILOT_SCHEDULER', true);
+const ENABLE_DAILY_INTELLIGENCE_SCHEDULER = envEnabled('ENABLE_DAILY_INTELLIGENCE_SCHEDULER', true);
+const ENABLE_PAPER_TRADING_INIT = envEnabled('ENABLE_PAPER_TRADING_INIT', true);
 app.set('trust proxy', 'loopback');
 
 // ── Basic Auth middleware ─────────────────────────────────────────────────────
@@ -146,19 +160,29 @@ app.listen(PORT, '127.0.0.1', () => {
     const m = process.memoryUsage();
     console.log(`[Memory] heap=${Math.round(m.heapUsed / 1024 / 1024)}MB rss=${Math.round(m.rss / 1024 / 1024)}MB ext=${Math.round(m.external / 1024 / 1024)}MB`);
   }, 5 * 60 * 1000);
-  startScheduler();
+  if (ENABLE_STOCK_SCANNER) {
+    startScheduler();
+  } else {
+    console.log('[Server] Stock scanner disabled via ENABLE_STOCK_SCANNER=false');
+  }
   if (ENABLE_CRYPTO_SCANNER) {
     console.log('[Server] Crypto scanner enabled for paper/test mode only');
     startCryptoScheduler();
   } else {
     console.log('[Server] Crypto scanner disabled via ENABLE_CRYPTO_SCANNER=false');
   }
-  startAutoMachineScheduler();
-  startNarrowAutopilotScheduler();
-  startBatchAutopilotScheduler();
-  startReplayAutopilotScheduler();
-  dailyIntelligencePipeline.startScheduler();
-  initPaperTrading();
+  if (ENABLE_AUTO_MACHINE_SCHEDULER) startAutoMachineScheduler();
+  else console.log('[Server] Auto Machine scheduler disabled via ENABLE_AUTO_MACHINE_SCHEDULER=false');
+  if (ENABLE_NARROW_AUTOPILOT_SCHEDULER) startNarrowAutopilotScheduler();
+  else console.log('[Server] Narrow autopilot scheduler disabled via ENABLE_NARROW_AUTOPILOT_SCHEDULER=false');
+  if (ENABLE_BATCH_AUTOPILOT_SCHEDULER) startBatchAutopilotScheduler();
+  else console.log('[Server] Batch autopilot scheduler disabled via ENABLE_BATCH_AUTOPILOT_SCHEDULER=false');
+  if (ENABLE_REPLAY_AUTOPILOT_SCHEDULER) startReplayAutopilotScheduler();
+  else console.log('[Server] Replay autopilot scheduler disabled via ENABLE_REPLAY_AUTOPILOT_SCHEDULER=false');
+  if (ENABLE_DAILY_INTELLIGENCE_SCHEDULER) dailyIntelligencePipeline.startScheduler();
+  else console.log('[Server] Daily intelligence scheduler disabled via ENABLE_DAILY_INTELLIGENCE_SCHEDULER=false');
+  if (ENABLE_PAPER_TRADING_INIT) initPaperTrading();
+  else console.log('[Server] Paper trading init disabled via ENABLE_PAPER_TRADING_INIT=false');
   redisService.connect().then((connected) => {
     console.log(`[Redis] ${connected ? 'connected' : 'fallback mode'} (${redisService.status().clientStatus})`);
   }).catch((err) => {

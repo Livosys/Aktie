@@ -17,6 +17,7 @@
 
 const fs = require('fs');
 const path = require('path');
+const { fork } = require('child_process');
 
 const tradeStats = require('./tradeStatsService');
 
@@ -58,6 +59,8 @@ function resolveReadOnlySourceCacheTtlMs() {
 
 const READONLY_SOURCE_CACHE_TTL_MS = resolveReadOnlySourceCacheTtlMs();
 let readonlySourceCache = new Map();
+const OVERVIEW_WORKER_TIMEOUT_MS = 20_000;
+const OVERVIEW_WORKER_FILE = path.join(__dirname, 'buildOverviewWorker.js');
 
 // Lazy require so a load error in one source module cannot break the whole file.
 function lazy(modPath) {
@@ -2127,6 +2130,7 @@ async function buildOverview() {
   const replayIntelligence = lazy('./replayIntelligenceService');
   const replayStatus = lazy('./replayStatusService');
   const paperTradingStatus = lazy('./paperTradingStatusService');
+  const paperTradingRuntime = lazy('./paperTradingRuntimeService');
   const tradingViewPreview = lazy('./tradingViewPaperReplayPreviewService');
   const historicalDataCenter = lazy('./historicalDataCenterService');
   const marketRegimeDetector = lazy('./marketRegimeDetectorService');
@@ -2366,6 +2370,26 @@ async function buildOverview() {
     };
   }
 
+  let paperRuntimeSummary = null;
+  try {
+    paperRuntimeSummary = paperTradingRuntime && typeof paperTradingRuntime.buildSupervisorPaperRuntimeSummary === 'function'
+      ? getCachedReadOnly('paper_runtime_summary', signatureOf(paperTradingRuntime.buildSupervisorPaperRuntimeSummary), () => paperTradingRuntime.buildSupervisorPaperRuntimeSummary())
+      : null;
+  } catch (err) {
+    paperRuntimeSummary = {
+      status: 'error',
+      summary: { openCount: 0, closedCount: 0, eventCount: 0, blockedCount: 0, latestEventAt: null },
+      latestClosedTrades: [],
+      latestOpenTrades: [],
+      latestBlockedCandidates: [],
+      strategies: [],
+      warnings: [err && err.message ? err.message : 'unavailable'],
+      updatedAt: null,
+      source: 'paperTradingRuntimeService',
+      ...SAFETY,
+    };
+  }
+
   let tradingViewPreviewStatus = null;
   try {
     tradingViewPreviewStatus = tradingViewPreview && typeof tradingViewPreview.buildTradingViewPreviewStatus === 'function'
@@ -2532,6 +2556,10 @@ async function buildOverview() {
     tradeCount: num(paperStatus && paperStatus.count) || 0,
     latestTrades: arr(paperStatus && paperStatus.recentPaperTrades).slice(0, 10),
     latestEvents: arr(liveActivitySummary && liveActivitySummary.latestEvents).slice(0, 10),
+    runtimeSummary: paperRuntimeSummary && paperRuntimeSummary.summary ? paperRuntimeSummary.summary : null,
+    runtimeOpenTrades: arr(paperRuntimeSummary && paperRuntimeSummary.latestOpenTrades).slice(0, 5),
+    runtimeClosedTrades: arr(paperRuntimeSummary && paperRuntimeSummary.latestClosedTrades).slice(0, 5),
+    runtimeBlockedCandidates: arr(paperRuntimeSummary && paperRuntimeSummary.latestBlockedCandidates).slice(0, 5),
     approvedStrategies: arr(paperStatus && paperStatus.allowlist && paperStatus.allowlist.approvedStrategyIds),
     blockedStrategies: researchBlockedStrategies,
     blockedReasons: arr(strategyResearch.blockedReasons),
@@ -2557,6 +2585,7 @@ async function buildOverview() {
     strategy_research: strategyResearch,
     market_regime_detection: marketRegimeDetection,
     paper_summary: paperSummary,
+    paper_runtime: paperRuntimeSummary,
   };
   const combinedRecentTests = buildUnifiedRecentTests(recentTests, batchStatus, replayStatusBlock, paperStatus);
   const unifiedRecentTestsStatus = statusBlock(
@@ -2631,6 +2660,7 @@ async function buildOverview() {
     replayAutopilotSummary,
     replaySummary,
     paperTradingSummary,
+    paperRuntimeSummary,
     paperSummary,
     strategyResearch,
     marketRegime: marketRegimeDetection,
@@ -2655,34 +2685,231 @@ async function buildOverview() {
 // lands on a user request far less often. Data is at most 5 min stale.
 const OVERVIEW_TTL_MS = 5 * 60 * 1000;
 let overviewCache = { at: 0, value: null };
+let overviewRefreshPromise = null;
+let buildOverviewOverride = null;
+
+function withOverviewCacheMeta(value, cacheAgeMs, cached) {
+  return {
+    ...value,
+    technical: value.technical
+      ? { ...value.technical, cacheAgeMs }
+      : value.technical,
+    cached,
+    cacheAgeMs,
+  };
+}
+
+function buildOverviewPlaceholder(reason = 'overview_refresh_in_background') {
+  const generatedAt = new Date().toISOString();
+  let paperRuntimeSummary = {
+    status: 'degraded',
+    summary: { openCount: 0, closedCount: 0, eventCount: 0, blockedCount: 0, latestEventAt: null, returnedCount: 0, limit: 50 },
+    latestClosedTrades: [],
+    latestOpenTrades: [],
+    latestBlockedCandidates: [],
+    strategies: [],
+    warnings: [reason],
+    source: 'paperTradingRuntimeService',
+    ...SAFETY,
+  };
+  try {
+    const paperTradingRuntime = lazy('./paperTradingRuntimeService');
+    if (paperTradingRuntime && typeof paperTradingRuntime.buildSupervisorPaperRuntimeSummary === 'function') {
+      const hydratedPaperRuntimeSummary = paperTradingRuntime.buildSupervisorPaperRuntimeSummary({ limit: 50 });
+      paperRuntimeSummary = {
+        ...hydratedPaperRuntimeSummary,
+        status: 'degraded',
+        warnings: [...new Set([...(arr(hydratedPaperRuntimeSummary.warnings)), reason])],
+      };
+    }
+  } catch (_) {
+    // Keep degraded fallback; overview must never block or crash on placeholder build.
+  }
+  const placeholderBlock = (source) => ({
+    status: 'degraded',
+    scope: 'system_wide',
+    source,
+    summary: null,
+    message: 'Översikten byggs i bakgrunden. Returnerar read-only degraded svar direkt för att inte blockera UI.',
+    ...SAFETY,
+  });
+  const blocks = {
+    system_health: placeholderBlock('/api/system/health'),
+    learning: placeholderBlock('/api/learning/latest-summary'),
+    strategies: placeholderBlock('/api/daytrading-strategies/top|worst'),
+    narrow: placeholderBlock('/api/supervisor/narrow-state'),
+    autopilot: placeholderBlock('/api/autopilot/narrow/status'),
+    market_regime: placeholderBlock('/api/market-regime/status'),
+    priority: placeholderBlock('/api/priority/summary'),
+    daily_pipeline: placeholderBlock('/api/pipeline/daily/status'),
+    ai_optimization: placeholderBlock('/api/optimization/summary'),
+    operations_advisor: placeholderBlock('/api/supervisor/operations-advisor'),
+    safety: SAFETY,
+    data_status: { status: 'degraded', source: 'dataCoverageExpansionService', message: 'Datastatus laddas.', ...SAFETY },
+    batch_status: { status: 'degraded', source: 'batchStatusService', message: 'Batchstatus laddas.', ...SAFETY },
+    replay_status: { status: 'degraded', source: 'replayStatusService', message: 'Replaystatus laddas.', ...SAFETY },
+    paper_status: { status: 'degraded', source: 'paperTradingStatusService', message: 'Paperstatus laddas.', ...SAFETY },
+    trading_view_preview_status: { status: 'degraded', source: 'tradingViewPaperReplayPreviewService', message: 'TradingView preview laddas.', ...SAFETY },
+    learning_status: { status: 'degraded', source: 'learningConnectorService', message: 'Learningstatus laddas.', ...SAFETY },
+    strategy_ranking: { status: 'degraded', source: 'strategyScoreService', message: 'Strategiranking laddas.', topStrategies: [], weakStrategies: [], strategiesNeedingMoreData: [], ...SAFETY },
+    strategy_research: { status: 'degraded', source: 'strategyResearchManagerService', message: 'Researchstatus laddas.', recommendations: [], blockedReasons: [], ...SAFETY },
+    market_regime_detection: { status: 'degraded', source: 'marketRegimeDetectorService', message: 'Marknadsregim laddas.', ...SAFETY },
+    paper_summary: { status: 'degraded', source: 'supervisorOverviewService', message: 'Papersammanfattning laddas.', ...SAFETY },
+    paper_runtime: paperRuntimeSummary,
+  };
+  return {
+    ok: true,
+    generatedAt,
+    ...SAFETY,
+    safety: { ...SAFETY },
+    canonicalStats: { totalTrades: 0, winRate: null, decisiveWinRate: null, timeoutRate: null, avgPnl: null },
+    blocks,
+    dataStatus: blocks.data_status,
+    batchStatus: blocks.batch_status,
+    replayStatus: blocks.replay_status,
+    paperStatus: blocks.paper_status,
+    learningStatus: blocks.learning_status,
+    strategyRanking: blocks.strategy_ranking,
+    recentTests: [],
+    recentTestsStatus: { status: 'degraded', source: 'supervisorOverviewService', count: 0, message: 'Historik laddas.', ...SAFETY },
+    aiRecommendations: { status: 'degraded', items: [], source: 'supervisorOverviewService', message: 'AI-rekommendationer laddas.', ...SAFETY },
+    lossFeedbackQueue: { status: 'degraded', items: [], source: 'supervisorOverviewService', message: 'Loss-feedback laddas.', ...SAFETY },
+    nextRecommendedActions: [],
+    batchSummary: { status: 'degraded', source: 'strategyBatchTestService', message: 'Batch summary laddas.', mode: 'paper_only', canPlaceOrders: false, liveTradingEnabled: false, brokerEnabled: false },
+    batchAutopilotSummary: { status: 'degraded', message: 'Batch autopilot laddas.', ...SAFETY },
+    replayAutopilotSummary: { status: 'degraded', message: 'Replay autopilot laddas.', ...SAFETY },
+    replaySummary: { status: 'degraded', message: 'Replay summary laddas.', ...SAFETY },
+    paperTradingSummary: { status: 'degraded', message: 'Paper trading summary laddas.', ...SAFETY },
+    paperRuntimeSummary,
+    paperSummary: { status: 'degraded', tradeCount: 0, latestTrades: [], latestEvents: [], runtimeSummary: paperRuntimeSummary.summary || null, runtimeOpenTrades: arr(paperRuntimeSummary.latestOpenTrades).slice(0, 5), runtimeClosedTrades: arr(paperRuntimeSummary.latestClosedTrades).slice(0, 5), runtimeBlockedCandidates: arr(paperRuntimeSummary.latestBlockedCandidates).slice(0, 5), approvedStrategies: [], blockedStrategies: [], blockedReasons: [], paperEligibleRecommendations: [], requiresApprovalRecommendations: [], allowlist: null, source: 'supervisorOverviewService', message: 'Papersammanfattning laddas.', ...SAFETY },
+    strategyResearch: { status: 'degraded', recommendations: [], blockedReasons: [], requiresApprovalCount: 0, paperEligibleCount: 0, source: 'strategyResearchManagerService', mode: 'dry_run', safety: { paperOnly: true, canPlaceOrders: false, brokerEnabled: false }, ...SAFETY },
+    marketRegime: { ok: false, status: 'degraded', source: 'marketRegimeDetectorService', regime: null, message: 'Marknadsregim laddas.', safety: SAFETY },
+    tradingViewPreviewStatus: { status: 'degraded', source: 'tradingViewPaperReplayPreviewService', message: 'TradingView preview laddas.', ...SAFETY },
+    aiAnalystStatus: { status: 'degraded', provider: null, enabled: false, source: 'aiAnalystService', message: 'AI-analys laddas.', ...SAFETY },
+    dataJobsSummary: { status: 'degraded', message: 'Datajobb laddas.', ...SAFETY },
+    liveActivitySummary: { status: 'degraded', count: 0, latestEvents: [], sourceCount: 0, summary: null, sourceBreakdown: [], pinnedPaperCount: 0, countsBySource: {}, countsByType: {}, countsByStatus: {}, latestAt: null, latestType: null, latestSource: null, degradedSources: [], warnings: [reason], updatedAt: generatedAt, message: 'Live activity laddas.', ...SAFETY },
+    risks: [{ code: 'paper_only', severity: 'info', title_sv: 'Endast låtsashandel', detail_sv: 'Systemet kör read-only medan overview byggs i bakgrunden.', source: 'supervisorOverviewService' }],
+    riskSummary: { status: 'degraded', moneyRisks: [], systemRisks: [], warnings: ['Översikten byggs i bakgrunden.'], recommendations: ['Ladda om om några sekunder för full overview.'], source: 'supervisorOverviewService', ...SAFETY },
+    technical: {
+      status: 'degraded',
+      source: 'supervisorOverviewService',
+      generatedAt,
+      counts: { total: 0, ok: 0, empty: 0, degraded: 1, missing: 0, error: 0 },
+      sourceMarkers: {},
+      overviewBlocks: [],
+      okBlocks: [],
+      emptyBlocks: [],
+      degradedBlocks: ['cold_start_placeholder'],
+      missingBlocks: [],
+      errorBlocks: [],
+      warnings: ['Översikten byggs i bakgrunden.'],
+      message: 'Degraded placeholder returnerad direkt för att undvika timeout under kallstart.',
+      emptyReason: reason,
+      ...SAFETY,
+    },
+    actionPlan: [{ priority: 'low', title_sv: 'Vänta på overview-refresh', detail_sv: 'Bakgrundsrefresh pågår. Ladda om om några sekunder.', source: 'supervisorOverviewService' }],
+  };
+}
+
+async function refreshOverviewCache() {
+  const producer = typeof buildOverviewOverride === 'function'
+    ? buildOverviewOverride
+    : (process.env.NODE_ENV === 'test' ? buildOverview : buildOverviewIsolated);
+  const fresh = await producer();
+  overviewCache = { at: Date.now(), value: fresh };
+  return fresh;
+}
+
+function buildOverviewIsolated() {
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    const child = fork(OVERVIEW_WORKER_FILE, [], {
+      cwd: ROOT,
+      env: { ...process.env, OVERVIEW_BUILD_WORKER: '1' },
+      stdio: ['ignore', 'ignore', 'ignore', 'ipc'],
+    });
+    const done = (err, payload) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      child.removeAllListeners();
+      if (err) {
+        try { child.kill('SIGKILL'); } catch (_) { /* ignore */ }
+        reject(err);
+        return;
+      }
+      resolve(payload);
+    };
+    const timer = setTimeout(() => done(new Error('overview_worker_timeout')), OVERVIEW_WORKER_TIMEOUT_MS);
+    child.on('message', (msg) => {
+      if (!msg || msg.type !== 'overview_result') return;
+      if (msg.ok) done(null, msg.payload);
+      else done(new Error(msg.error || 'overview_worker_failed'));
+    });
+    child.on('error', (err) => done(err));
+    child.on('exit', (code, signal) => {
+      if (!settled) done(new Error(`overview_worker_exit_${signal || code}`));
+    });
+  });
+}
 
 async function getCachedOverview({ force = false } = {}) {
   const now = Date.now();
-  if (!force && overviewCache.value && (now - overviewCache.at) < OVERVIEW_TTL_MS) {
-    const cacheAgeMs = now - overviewCache.at;
+  const hasCache = Boolean(overviewCache.value);
+  const cacheAgeMs = hasCache ? (now - overviewCache.at) : null;
+  const cacheFresh = hasCache && cacheAgeMs < OVERVIEW_TTL_MS;
+
+  if (!force && cacheFresh) {
+    return withOverviewCacheMeta(overviewCache.value, cacheAgeMs, true);
+  }
+
+  if (hasCache && !force) {
+    if (!overviewRefreshPromise) {
+      overviewRefreshPromise = refreshOverviewCache()
+        .catch(() => null)
+        .finally(() => { overviewRefreshPromise = null; });
+    }
     return {
-      ...overviewCache.value,
-      technical: overviewCache.value.technical
-        ? { ...overviewCache.value.technical, cacheAgeMs }
-        : overviewCache.value.technical,
-      cached: true,
-      cacheAgeMs,
+      ...withOverviewCacheMeta(overviewCache.value, cacheAgeMs, true),
+      staleWhileRevalidate: true,
     };
   }
-  const fresh = await buildOverview();
-  overviewCache = { at: now, value: fresh };
-  return {
-    ...fresh,
-    technical: fresh.technical
-      ? { ...fresh.technical, cacheAgeMs: 0 }
-      : fresh.technical,
-    cached: false,
-    cacheAgeMs: 0,
-  };
+
+  if (!hasCache && !force) {
+    if (!overviewRefreshPromise) {
+      overviewRefreshPromise = new Promise((resolve) => {
+        setTimeout(() => {
+          refreshOverviewCache()
+            .then(resolve)
+            .catch(() => resolve(null))
+            .finally(() => { overviewRefreshPromise = null; });
+        }, 0);
+      });
+    }
+    return {
+      ...withOverviewCacheMeta(buildOverviewPlaceholder(), 0, false),
+      staleWhileRevalidate: true,
+    };
+  }
+
+  if (force && overviewRefreshPromise) {
+    const fresh = await overviewRefreshPromise;
+    if (fresh) return withOverviewCacheMeta(fresh, 0, false);
+  }
+
+  overviewRefreshPromise = refreshOverviewCache()
+    .catch((err) => {
+      if (hasCache) return overviewCache.value;
+      throw err;
+    })
+    .finally(() => { overviewRefreshPromise = null; });
+  const fresh = await overviewRefreshPromise;
+  return withOverviewCacheMeta(fresh, 0, false);
 }
 
 function resetOverviewCache() {
   overviewCache = { at: 0, value: null };
+  overviewRefreshPromise = null;
 }
 
 module.exports = {
@@ -2703,4 +2930,9 @@ module.exports = {
   normalizeBatchResult,
   summarizeAiAnalystStatus,
   summarizeAutopilotControl,
+  _internal: {
+    setBuildOverviewOverride(fn) {
+      buildOverviewOverride = typeof fn === 'function' ? fn : null;
+    },
+  },
 };

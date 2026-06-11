@@ -11,6 +11,7 @@ import TradingLabPage   from './pages/TradingLabPage.jsx';
 import ResultatPage     from './pages/ResultatPage.jsx';
 import SystemPage       from './pages/SystemPage.jsx';
 import DaytradingPage   from './pages/DaytradingPage.jsx';
+import PaperTradingPage from './pages/PaperTradingPage.jsx';
 import SupervisorBrainPage from './pages/SupervisorBrainPage.jsx';
 import NarrowStateLabPage from './pages/NarrowStateLabPage.jsx';
 
@@ -35,6 +36,7 @@ export default function App() {
           <Route path="/narrow-state" element={<Navigate to="/narrow" replace />} />
           <Route path="/oversikt"     element={<Navigate to="/supervisor" replace />} />
           <Route path="/live"         element={<SignalpulsPage />} />
+          <Route path="/paper-trading" element={<PaperTradingPage />} />
           <Route path="/lab"          element={<TradingLabPage />} />
           <Route path="/insikter"     element={<ResultatPage />} />
           <Route path="/system"       element={<SystemPage />} />
@@ -76,7 +78,6 @@ export default function App() {
           <Route path="/review-chart"      element={<RedirectWithSearch to="/lab?tab=review" />} />
           <Route path="/system-health"     element={<Navigate to="/system?tab=health" replace />} />
           <Route path="/quality"           element={<Navigate to="/insikter?tab=ai" replace />} />
-          <Route path="/paper-trading"     element={<Navigate to="/insikter?tab=paper" replace />} />
           <Route path="/risk-engine"       element={<Navigate to="/system?tab=safety" replace />} />
           <Route path="/exit-engine"       element={<Navigate to="/lab?tab=exits" replace />} />
           {/* Legacy alias: canonical safety lives at /system?tab=safety */}

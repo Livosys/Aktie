@@ -103,6 +103,7 @@ const batchAutopilotService = require('../services/batchAutopilotService');
 const replayAutopilotService = require('../services/replayAutopilotService');
 const replayStatusService = require('../services/replayStatusService');
 const paperTradingStatusService = require('../services/paperTradingStatusService');
+const paperTradingRuntimeService = require('../services/paperTradingRuntimeService');
 const tradingViewPaperReplayPreviewService = require('../services/tradingViewPaperReplayPreviewService');
 const tradingViewPreviewLogService = require('../services/tradingViewPreviewLogService');
 const TEST_LIVE_SEND_COOLDOWN_MS = 5 * 60 * 1000;
@@ -3389,6 +3390,16 @@ router.get('/paper-trading/live-state', async (req, res) => {
     });
   } catch (err) {
     res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+router.get('/paper-trading/runtime', (req, res) => {
+  try {
+    res.json(paperTradingRuntimeService.buildPaperTradingRuntime({
+      limit: req.query.limit || req.query.n,
+    }));
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message, ...paperTradingRuntimeService.SAFETY });
   }
 });
 
