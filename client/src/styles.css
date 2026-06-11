@@ -10809,6 +10809,15 @@ body {
   color: var(--text);
 }
 
+.sb-link-copy {
+  min-width: 0;
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  overflow: hidden;
+}
 
 .sb-link-active { font-weight: 600; }
 
@@ -10823,8 +10832,8 @@ body {
 }
 
 .sb-link-label {
-  flex: 1;
   min-width: 0;
+  width: 100%;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -10833,6 +10842,22 @@ body {
 }
 
 .premium-sidebar:hover .sb-link-label { opacity: 1; }
+
+.sb-link-subtitle {
+  display: block;
+  min-width: 0;
+  width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 0.7rem;
+  line-height: 1.15;
+  color: var(--muted);
+  opacity: 0;
+  transition: opacity 0.15s ease 0.08s;
+}
+
+.premium-sidebar:hover .sb-link-subtitle { opacity: 1; }
 
 /* ── Icons ───────────────────────────────────────────────────────────────────── */
 .sb-icon {
