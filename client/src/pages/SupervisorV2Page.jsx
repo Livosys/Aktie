@@ -3867,6 +3867,171 @@ function SupGroupDivider({ index, title, question }) {
   );
 }
 
+const RESULT_TABS = [
+  { id: 'overview', label: 'Översikt' },
+  { id: 'paper', label: 'Paper Trading' },
+  { id: 'allowlist', label: 'Allowlist' },
+  { id: 'strategies', label: 'Strategier' },
+  { id: 'blocked', label: 'Blockeringar' },
+  { id: 'learning', label: 'Learning' },
+  { id: 'technical', label: 'Teknisk diagnostik' },
+];
+
+function pnlToneClass(value) {
+  const n = toNumber(value);
+  if (n == null || n === 0) return 'pnl-neutral';
+  return n > 0 ? 'pnl-positive' : 'pnl-negative';
+}
+
+function winRateToneClass(value) {
+  const n = toNumber(value);
+  if (n == null) return 'metric-neutral';
+  return n >= 50 ? 'metric-good' : 'metric-bad';
+}
+
+function PaperTradingResultPanel({ resources, summary }) {
+  const perf = unwrap(resources.paperPerformance) || {};
+  const status = unwrap(resources.paperStatus) || {};
+  const openTrades = normalizeArray(status.openTrades);
+  const closedTrades = normalizeArray(status.recentPaperTrades || status.closedPaperTrades || status.closedTrades);
+  const openCount = toNumber(summary?.openCount) ?? openTrades.length;
+  const closedCount = toNumber(summary?.closedCount) ?? closedTrades.length;
+  const blockedCount = toNumber(summary?.blockedCount) ?? 0;
+  const winRate = perf?.winRate;
+  const avgPnl = perf?.avgPnlPct;
+  const wins = toNumber(perf?.wins) ?? 0;
+  const losses = toNumber(perf?.losses) ?? 0;
+  const timeouts = toNumber(perf?.timeouts) ?? 0;
+  const hasTrades = openCount > 0 || closedCount > 0 || (toNumber(perf?.totalTrades) ?? 0) > 0;
+  const resultTone = wins > losses ? 'metric-good' : losses > wins ? 'metric-bad' : 'metric-neutral';
+
+  return (
+    <section className="sup-section">
+      <div className="sup-section-head">
+        <div>
+          <h2>Paper Trading-resultat</h2>
+          <p>Färgkodad sammanfattning av låtsasaffärer. Grön = vinst eller redo, orange = varning eller blockering, röd = förlust eller fel, blå/grå = neutral och read-only.</p>
+        </div>
+        <SafetyTag />
+      </div>
+
+      <div className="result-metric-grid">
+        <article className="result-metric metric-neutral">
+          <span className="result-metric-title">Öppna låtsasaffärer</span>
+          <strong className="result-metric-value">{formatInt(openCount, '0')}</strong>
+          <span className="result-metric-note">Trades som fortfarande är igång.</span>
+        </article>
+        <article className="result-metric metric-neutral">
+          <span className="result-metric-title">Stängda låtsasaffärer</span>
+          <strong className="result-metric-value">{formatInt(closedCount, '0')}</strong>
+          <span className="result-metric-note">Trades som är avslutade.</span>
+        </article>
+        <article className={`result-metric ${resultTone}`}>
+          <span className="result-metric-title">Vinst / förlust</span>
+          <strong className="result-metric-value">{wins + losses + timeouts > 0 ? `${formatInt(wins, '0')} vinst · ${formatInt(losses, '0')} förlust` : 'Ingen data'}</strong>
+          <span className="result-metric-note">{timeouts > 0 ? `${formatInt(timeouts, '0')} timeouts` : 'Avslutade trades plus eller minus.'}</span>
+        </article>
+        <article className={`result-metric ${winRateToneClass(winRate)}`}>
+          <span className="result-metric-title">Win rate</span>
+          <strong className="result-metric-value">{winRate == null ? 'Ingen data' : formatPct(winRate, 0)}</strong>
+          <span className="result-metric-note">Hur många avslutade trades som slutade plus.</span>
+        </article>
+        <article className={`result-metric ${pnlToneClass(avgPnl)}`}>
+          <span className="result-metric-title">Average P/L</span>
+          <strong className="result-metric-value">{avgPnl == null ? 'Ingen data' : formatSignedPct(avgPnl, 2)}</strong>
+          <span className="result-metric-note">Snittresultat per avslutad trade.</span>
+        </article>
+        <article className={`result-metric ${blockedCount > 0 ? 'metric-warn' : 'metric-neutral'}`}>
+          <span className="result-metric-title">Blockerade paper-events</span>
+          <strong className="result-metric-value">{formatInt(blockedCount, '0')}</strong>
+          <span className="result-metric-note">Stoppade innan en trade hann skapas.</span>
+        </article>
+        <article className="result-metric metric-neutral">
+          <span className="result-metric-title">Senaste paper-event</span>
+          <strong className="result-metric-value">{summary?.latestEventAt ? formatDateTime(summary.latestEventAt) : 'Ingen ännu'}</strong>
+          <span className="result-metric-note">{summary?.latestEventAt ? ageText(summary.latestEventAt) : 'Systemet väntar på nya signaler.'}</span>
+        </article>
+      </div>
+
+      {!hasTrades && (
+        <div className="sup-safety-copy" style={{ marginTop: 12 }}>
+          Inga paper trades har öppnats ännu. Systemet är redo, men saknar godkända kandidater just nu.
+        </div>
+      )}
+
+      <div style={{ marginTop: 14 }}>
+        <div style={{ fontWeight: 800, marginBottom: 8 }}>Öppna låtsasaffärer</div>
+        {openTrades.length > 0 ? (
+          <div style={{ overflowX: 'auto' }}>
+            <table className="result-trade-table">
+              <thead>
+                <tr>{['Tid', 'Symbol', 'Strategi', 'Entry', 'Nuvarande pris', 'Orealiserad P/L', 'P/L %', 'Status', 'Signal/orsak'].map((label) => <th key={label}>{label}</th>)}</tr>
+              </thead>
+              <tbody>
+                {openTrades.map((t, i) => {
+                  const plPct = t?.unrealizedPnlPct ?? t?.pnlPct;
+                  return (
+                    <tr key={t?.id || `${t?.symbol}-${i}`}>
+                      <td>{(t?.timestamp || t?.openedAt) ? formatDateTime(t.timestamp || t.openedAt) : '–'}</td>
+                      <td>{textValue(t?.symbol, '–')}</td>
+                      <td>{textValue(t?.strategyName || t?.strategy_name || t?.strategyId || t?.strategy_id, '–')}</td>
+                      <td>{textValue(t?.entryPrice ?? t?.entry, '–')}</td>
+                      <td>{textValue(t?.currentPrice ?? t?.lastPrice, '–')}</td>
+                      <td className={pnlToneClass(t?.unrealizedPnl ?? plPct)}>{textValue(t?.unrealizedPnl, '–')}</td>
+                      <td className={pnlToneClass(plPct)}>{plPct == null ? '–' : formatSignedPct(plPct, 2)}</td>
+                      <td>{textValue(t?.status, 'Öppen')}</td>
+                      <td>{textValue(t?.reason || t?.signal || t?.entryReason, '–')}</td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        ) : (
+          <div className="sup-safety-copy">Ingen trade-historik tillgänglig ännu.</div>
+        )}
+      </div>
+
+      <div style={{ marginTop: 14 }}>
+        <div style={{ fontWeight: 800, marginBottom: 8 }}>Stängda låtsasaffärer</div>
+        {closedTrades.length > 0 ? (
+          <div style={{ overflowX: 'auto' }}>
+            <table className="result-trade-table">
+              <thead>
+                <tr>{['Öppnad', 'Stängd', 'Symbol', 'Strategi', 'Entry', 'Exit', 'Realiserad P/L', 'P/L %', 'Resultat', 'Exit reason'].map((label) => <th key={label}>{label}</th>)}</tr>
+              </thead>
+              <tbody>
+                {closedTrades.map((t, i) => {
+                  const plPct = t?.pnlPct ?? t?.realizedPnlPct;
+                  const plRef = toNumber(plPct) ?? toNumber(t?.pnl) ?? 0;
+                  const isWin = plRef > 0;
+                  const isLoss = plRef < 0;
+                  return (
+                    <tr key={t?.id || `${t?.symbol}-${i}`}>
+                      <td>{(t?.openedAt || t?.entryTime) ? formatDateTime(t.openedAt || t.entryTime) : '–'}</td>
+                      <td>{(t?.closedAt || t?.exitTime) ? formatDateTime(t.closedAt || t.exitTime) : '–'}</td>
+                      <td>{textValue(t?.symbol, '–')}</td>
+                      <td>{textValue(t?.strategyName || t?.strategy_name || t?.strategyId || t?.strategy_id, '–')}</td>
+                      <td>{textValue(t?.entryPrice ?? t?.entry, '–')}</td>
+                      <td>{textValue(t?.exitPrice ?? t?.exit, '–')}</td>
+                      <td className={pnlToneClass(t?.pnl ?? plPct)}>{textValue(t?.pnl, '–')}</td>
+                      <td className={pnlToneClass(plPct)}>{plPct == null ? '–' : formatSignedPct(plPct, 2)}</td>
+                      <td className={isWin ? 'pnl-positive' : isLoss ? 'pnl-negative' : 'pnl-neutral'}>{isWin ? 'Vinst' : isLoss ? 'Förlust' : textValue(t?.result || t?.status, '–')}</td>
+                      <td>{textValue(t?.exitReason || t?.closeReason, '–')}</td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        ) : (
+          <div className="sup-safety-copy">Ingen trade-historik tillgänglig ännu.</div>
+        )}
+      </div>
+    </section>
+  );
+}
+
 export default function SupervisorV2Page() {
   const [resources, setResources] = useState({});
   const [loading, setLoading] = useState(true);
@@ -3889,6 +4054,7 @@ export default function SupervisorV2Page() {
   const [queueBusyId, setQueueBusyId] = useState('');
   const [queueView, setQueueView] = useState('pending');
   const [helpOpen, setHelpOpen] = useState(false);
+  const [activeResultTab, setActiveResultTab] = useState('overview');
 
   useEffect(() => {
     let cancelled = false;
@@ -4227,6 +4393,50 @@ export default function SupervisorV2Page() {
         </div>
       </div>
 
+      <nav className="result-tabs" role="tablist" aria-label="Resultatflikar">
+        {RESULT_TABS.map((tab) => (
+          <button
+            key={tab.id}
+            type="button"
+            role="tab"
+            aria-selected={activeResultTab === tab.id}
+            className={`result-tab${activeResultTab === tab.id ? ' result-tab-active' : ''}`}
+            onClick={() => setActiveResultTab(tab.id)}
+          >
+            {tab.label}
+          </button>
+        ))}
+      </nav>
+
+      {activeResultTab === 'overview' && (
+        <section className="sup-section">
+          <div className="sup-section-head">
+            <div>
+              <h2>Översikt</h2>
+              <p>Det viktigaste först. Allt är read-only och i testläge.</p>
+            </div>
+            <SafetyTag />
+          </div>
+          <div className="sup-pill-grid sup-v2-pill-grid" style={{ display: 'grid', gap: 12, gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))' }}>
+            <div className="sup-pill sup-pill-good"><span>Säkerhetsläge</span><strong>paper_only</strong></div>
+            <div className="sup-pill sup-pill-neutral"><span>Alla strategier</span><strong>{formatInt(resultSummary.totalCount, '0')}</strong></div>
+            <div className="sup-pill sup-pill-good"><span>Aktiva</span><strong>{formatInt(resultSummary.activeCount, '0')}</strong></div>
+            <div className="sup-pill sup-pill-neutral"><span>Tekniskt paper-kopplade</span><strong>{formatInt(resultSummary.technicalPaperCount, '0')}</strong></div>
+            <div className="sup-pill sup-pill-warning"><span>Godkända i allowlist</span><strong>{formatInt(resultSummary.allowlistApprovedCount, '0')}</strong></div>
+            <div className="sup-pill sup-pill-neutral"><span>Kandidater nu</span><strong>{formatInt(resultSummary.candidatesCount, '0')}</strong></div>
+            <div className={`sup-pill ${resultSummary.blockedCount > 0 ? 'sup-pill-warning' : 'sup-pill-neutral'}`}><span>Blockerade</span><strong>{formatInt(resultSummary.blockedCount, '0')}</strong></div>
+          </div>
+          <div className="sup-safety-copy" style={{ marginTop: 12 }}>
+            <strong>Varför inga paper trades just nu?</strong> {resultSummary.explanation?.[0] || 'Systemet är redo och väntar på godkända kandidater.'}
+          </div>
+          <div className="sup-safety-copy" style={{ marginTop: 8 }}>
+            Inga riktiga köp eller sälj görs. actions_allowed=false · can_place_orders=false · live_trading_enabled=false.
+          </div>
+        </section>
+      )}
+
+      {activeResultTab === 'paper' && (
+      <>
       <section className="sup-section">
         <div className="sup-section-head">
           <div>
@@ -4257,9 +4467,14 @@ export default function SupervisorV2Page() {
         </div>
       </section>
 
-      <ResultWhyNoTradesPanel resources={resources} model={model} />
-      <PaperAllowlistPanel resources={resources} model={model} />
+      <PaperTradingResultPanel resources={resources} summary={resultSummary} />
+      </>
+      )}
 
+      {activeResultTab === 'blocked' && <ResultWhyNoTradesPanel resources={resources} model={model} />}
+      {activeResultTab === 'allowlist' && <PaperAllowlistPanel resources={resources} model={model} />}
+
+      {activeResultTab === 'technical' && (
       <section className="sup-section sup-intro-section">
         <div className="sup-section-head">
           <div>
@@ -4282,7 +4497,9 @@ export default function SupervisorV2Page() {
           <GlossaryTooltip term="Testkö" help="En lista med tester som kan granskas manuellt." />
         </div>
       </section>
+      )}
 
+      {activeResultTab === 'overview' && (<>
       <section className="sup-section">
         <div className="sup-section-head">
           <div>
@@ -4329,7 +4546,9 @@ export default function SupervisorV2Page() {
           ))}
         </div>
       </section>
+      </>)}
 
+      {activeResultTab === 'strategies' && (<>
       <section className="sup-section">
         <div className="sup-section-head">
           <div>
@@ -4462,7 +4681,9 @@ export default function SupervisorV2Page() {
           TradingView används bara för signaler och strategi-test, inte live orders.
         </div>
       </section>
+      </>)}
 
+      {activeResultTab === 'learning' && (<>
       <section className="sup-section">
         <div className="sup-section-head">
           <div>
@@ -4577,7 +4798,9 @@ export default function SupervisorV2Page() {
           ) : null}
         </section>
       )}
+      </>)}
 
+      {activeResultTab === 'technical' && (
       <details className="sup-advanced" style={{ marginTop: 16 }}>
         <summary>Visa teknisk diagnostik</summary>
         <div className="sup-safety-copy" style={{ marginTop: 12 }}>
@@ -4636,6 +4859,7 @@ export default function SupervisorV2Page() {
           }, null, 2)}
         </pre>
       </details>
+      )}
       <QuickHelpModal open={helpOpen} onClose={() => setHelpOpen(false)} />
     </div>
   );
