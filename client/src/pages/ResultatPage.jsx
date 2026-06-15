@@ -529,7 +529,7 @@ function PaperTab() {
     <div className="res-tab-content">
       <div className="res-section-header">
         <h2 className="res-section-h2">Historiska paper trades</h2>
-        <Link to="/paper-trading" className="res-nav-link">Gå till Låtsastrading →</Link>
+        <Link to="/paper-trading" className="res-nav-link">Gå till Paper Trading →</Link>
       </div>
       <div className="res-daily-muted">Det här är historik över redan skapade paper trades. Nya val för runtime och paper görs i Daytrading. Gamla trades kan bära äldre strateginamn och äldre routingregler.</div>
 
@@ -1294,9 +1294,9 @@ export default function ResultatPage() {
       {tab === 'paper' && (
         <LegacyTabNotice
           title="Paper Trading har en egen sida"
-          text="Paper Trading finns kvar som separat runtime-vy och nås via huvudnavigationen."
+          text="Paper Trading finns kvar som separat read-only runtime-vy och nås via direktlänken /paper-trading."
           linkTo="/paper-trading"
-          linkLabel="Öppna Paper Trading"
+          linkLabel="Öppna /paper-trading"
         />
       )}
     </div>
