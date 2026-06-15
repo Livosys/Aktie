@@ -249,6 +249,9 @@ function eventFromCandidate(type, c, reasonSv, decision = 'skipped') {
     dataFreshness:  c?.dataFreshness || null,
     confidenceScore: c?.confidenceScore ?? null,
     volumeState:    c?.volumeState   || null,
+    hardBlockers:      c?.hardBlockers      || [],
+    extensionLevel:    c?.extensionLevel    || null,
+    twoMinuteConflict: c?.twoMinuteConflict === true,
     strategyId: meta.strategyId || meta.resolvedStrategyId || meta.sourceStrategyId || null,
     strategyName: meta.strategyName || meta.resolvedStrategyName || meta.sourceStrategyName || null,
     sourceStrategyId: meta.sourceStrategyId,
@@ -386,6 +389,9 @@ function appendEvent(input) {
     exitReasonCode: input.exitReasonCode || null,
     exitSource: input.exitSource || null,
     exitEngineDecision: safeEventValue(input.exitEngineDecision || null),
+    hardBlockers:      input.hardBlockers      || [],
+    extensionLevel:    input.extensionLevel    || null,
+    twoMinuteConflict: input.twoMinuteConflict === true,
     mode: 'paper',
   };
 
