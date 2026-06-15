@@ -60,7 +60,7 @@ button, a, [role="button"] { touch-action: manipulation; }
   --yellow-bg: #2a2200; --green-bg: #002a12; --red-bg: #2a0000;
   --gray: #57637e; --gray-bg: #1a1c24; --purple-bg: #1e0a30;
   --blue-bg: #001a3a; --orange-bg: #2a1200;
-  --sidebar-w: 60px;
+  --sidebar-w: 228px;
   --sidebar-expanded-w: 228px;
   --topbar-h: 68px;
 }
@@ -10707,7 +10707,7 @@ body {
   display: flex;
   flex-direction: column;
   gap: 2px;
-  opacity: 0;
+  opacity: 1;
   white-space: nowrap;
   transition: opacity 0.16s ease 0.06s;
 }
@@ -10754,8 +10754,8 @@ body {
   height: 1px;
   background: var(--border);
   border-radius: 1px;
-  flex-shrink: 0;
-  width: 8px;
+  flex: 1;
+  width: auto;
   transition: flex 0.2s;
 }
 
@@ -10768,7 +10768,7 @@ body {
   text-transform: uppercase;
   color: var(--muted);
   white-space: nowrap;
-  opacity: 0;
+  opacity: 1;
   transition: opacity 0.15s ease 0.05s;
 }
 
@@ -10785,9 +10785,9 @@ body {
   position: relative;
   display: flex;
   align-items: center;
-  justify-content: center;
+  justify-content: flex-start;
   gap: 10px;
-  padding: 0 8px;
+  padding: 0 10px;
   height: 36px;
   border-radius: 8px;
   color: var(--muted);
@@ -10837,7 +10837,7 @@ body {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  opacity: 0;
+  opacity: 1;
   transition: opacity 0.15s ease 0.06s;
 }
 
@@ -10924,7 +10924,7 @@ body {
   color: var(--muted);
   font-size: 0.78rem;
   transition: background 0.12s, color 0.12s;
-  justify-content: center;
+  justify-content: flex-start;
 }
 
 .sb-theme-toggle {
@@ -10963,7 +10963,7 @@ body {
   flex: 1;
   text-align: left;
   white-space: nowrap;
-  opacity: 0;
+  opacity: 1;
   transition: opacity 0.15s ease 0.06s;
 }
 
@@ -10976,7 +10976,7 @@ body {
   font-size: 0.62rem;
   color: var(--muted);
   padding: 0 8px;
-  opacity: 0;
+  opacity: 1;
   white-space: nowrap;
   transition: opacity 0.15s ease 0.06s;
 }
