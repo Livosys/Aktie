@@ -5,7 +5,7 @@ module.exports = {
     {
       name: 'nasdaq-scanner',
       script: 'server.js',
-      cwd: '/var/www/nasdaq-scanner',
+      cwd: '/var/www/nasdaq-scanner-prod',
       instances: 1,
       exec_mode: 'fork',
 
