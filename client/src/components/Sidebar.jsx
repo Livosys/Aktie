@@ -7,27 +7,16 @@ const NAV_GROUPS = [
     id: 'pipeline',
     label: 'Trading OS',
     items: [
-      { path: '/paper-trading', label: 'Paper Trading', subtitle: 'Paper trades', icon: '◌', match: ['/paper-trading'], accent: 'green' },
-      { path: '/daytrading', label: 'Daytrading', subtitle: 'Research', icon: '◔', match: ['/daytrading'], accent: 'orange' },
-      { path: '/supervisor', label: 'Control Room', subtitle: 'Overview', icon: '🧭', match: ['/supervisor'], accent: 'blue' },
-      { path: '/narrow', label: 'Narrow State', subtitle: 'Narrow conditions', icon: '◐', match: ['/narrow'], accent: 'teal' },
-      { path: '/system', label: 'System', subtitle: 'Safety', icon: '🛡️', match: ['/system'], accent: 'purple', searchMatch: [] },
-      { path: '/lab', label: 'Test Lab', subtitle: 'Replay & batch', icon: '🧪', match: ['/lab'], accent: 'orange' },
-      { path: '/live', label: 'Live', subtitle: 'Signals', icon: '♥', match: ['/live'], accent: 'blue' },
-      { path: '/insikter?tab=data-center', label: 'Data Center', subtitle: 'Data', icon: '◍', match: ['/insikter'], accent: 'teal', searchMatch: ['tab=data-center'] },
-      { path: '/system?tab=logs', label: 'Logs', subtitle: 'System logs', icon: '◈', match: ['/system'], accent: 'purple', searchMatch: ['tab=logs'] },
-      { path: '/system?tab=health', label: 'Health', subtitle: 'System status', icon: '◎', match: ['/system'], accent: 'purple', searchMatch: ['tab=health'] },
+      { path: '/supervisor', label: 'Control Room', match: ['/supervisor'], accent: 'blue' },
+      { path: '/live', label: 'Live', match: ['/live'], accent: 'blue' },
+      { path: '/paper-trading', label: 'Paper Trading', match: ['/paper-trading'], accent: 'green' },
+      { path: '/lab', label: 'Test Lab', match: ['/lab'], accent: 'orange' },
+      { path: '/system', label: 'System', match: ['/system'], accent: 'purple' },
+      { path: '/insikter?tab=overview', label: 'Resultat / Data', match: ['/insikter'], accent: 'teal' },
+      { path: '/narrow', label: 'Narrow State', match: ['/narrow'], accent: 'teal' },
     ],
   },
 ];
-
-const ACCENT_CLASS = {
-  blue:   'sb-icon-blue',
-  green:  'sb-icon-green',
-  orange: 'sb-icon-orange',
-  purple: 'sb-icon-purple',
-  teal:   'sb-icon-teal',
-};
 
 function isActive(item, pathname, search) {
   const matches = (item.match || [item.path]).map((p) => p.split('?')[0]);
@@ -44,7 +33,6 @@ function isActive(item, pathname, search) {
 function NavItem({ item, onClose }) {
   const { pathname, search } = useLocation();
   const active = isActive(item, pathname, search);
-  const iconCls = active ? `sb-icon ${ACCENT_CLASS[item.accent] || 'sb-icon-blue'} sb-icon-active` : `sb-icon ${ACCENT_CLASS[item.accent] || 'sb-icon-blue'}`;
 
   return (
     <Link
@@ -52,10 +40,8 @@ function NavItem({ item, onClose }) {
       className={`sb-link${active ? ' sb-link-active' : ''}`}
       onClick={onClose}
     >
-      <span className={iconCls}>{item.icon}</span>
       <span className="sb-link-copy">
         <span className="sb-link-label">{item.label}</span>
-        {item.subtitle && <span className="sb-link-subtitle">{item.subtitle}</span>}
       </span>
       {active && <span className="sb-active-bar" />}
     </Link>
@@ -99,7 +85,6 @@ export default function Sidebar({ open, onClose }) {
           <img src="/evin.png" alt="" className="sb-brand-logo" />
           <div className="sb-brand-text">
             <strong>Trading OS</strong>
-            <small>Paper-only research pipeline</small>
           </div>
         </Link>
 
@@ -128,7 +113,6 @@ export default function Sidebar({ open, onClose }) {
           <ThemeStatus />
           <div className="sb-footer-meta">
             <span>Trading OS</span>
-            <span>No trades executed</span>
           </div>
         </div>
 

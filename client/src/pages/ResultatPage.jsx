@@ -4,18 +4,19 @@ import { PlatformEmptyState, PlatformSafetyBar } from '../components/PlatformCon
 import TradeReplayPanel from '../components/TradeReplayPanel.jsx';
 import { useUnifiedConfig } from '../hooks/useUnifiedConfig.js';
 
-const TABS = [
-  { key: 'oversikt',     label: 'Översikt',       icon: '📊' },
-  { key: 'setups',       label: 'Mönsterresultat', icon: '🎯' },
-  { key: 'ai',          label: 'AI-resultat',     icon: '🤖' },
-  { key: 'replay',      label: 'Replay-resultat', icon: '▶️' },
-  { key: 'paper',       label: 'Låtsastrading',   icon: '🧪' },
-  { key: 'activity',    label: 'Aktivitet',       icon: '◷' },
-  { key: 'daytrading',  label: 'Daytrading-strategier', icon: '🧩' },
-  { key: 'memory',      label: 'Historiskt minne', icon: '📚' },
-  { key: 'candidates',  label: 'Kandidater',      icon: '◎' },
-  { key: 'data-center', label: 'Data Center',     icon: '▣' },
+const VISIBLE_TABS = [
+  { key: 'overview', label: 'Översikt', icon: '📊' },
+  { key: 'activity', label: 'Aktivitet', icon: '◷' },
+  { key: 'data-center', label: 'Data Center', icon: '▣' },
 ];
+
+const TAB_ALIASES = {
+  oversikt: 'overview',
+  setups: 'overview',
+  ai: 'overview',
+};
+
+const LEGACY_NOTICE_TABS = ['replay', 'daytrading', 'candidates', 'memory', 'paper'];
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 function fmtPct(v) {
@@ -117,6 +118,21 @@ function DailyReportCard({ title, rows, conclusion }) {
         ))}
       </div>
       {conclusion && <div className="res-daily-conclusion">{safeText(conclusion)}</div>}
+    </div>
+  );
+}
+
+function LegacyTabNotice({ title, text, linkTo, linkLabel }) {
+  return (
+    <div className="res-tab-content">
+      <div className="dt-moved-notice">
+        <div className="dt-moved-icon">↗</div>
+        <div className="dt-moved-body">
+          <div className="dt-moved-title">{title}</div>
+          <div className="dt-moved-text">{text}</div>
+          {linkTo && <Link to={linkTo} className="dt-moved-btn">{linkLabel}</Link>}
+        </div>
+      </div>
     </div>
   );
 }
@@ -1204,11 +1220,16 @@ function DataCenterTab() {
 // ── Main page ─────────────────────────────────────────────────────────────────
 export default function ResultatPage() {
   const [params, setParams] = useSearchParams();
-  const requested = params.get('tab') || 'oversikt';
-  const tab = TABS.some(t => t.key === requested) ? requested : 'oversikt';
+  const rawRequested = params.get('tab') || 'overview';
+  const requested = TAB_ALIASES[rawRequested] || rawRequested;
+  const tab = VISIBLE_TABS.some((item) => item.key === requested)
+    ? requested
+    : LEGACY_NOTICE_TABS.includes(rawRequested)
+      ? rawRequested
+      : 'overview';
 
   function changeTab(next) {
-    setParams(next === 'oversikt' ? {} : { tab: next });
+    setParams(next === 'overview' ? {} : { tab: next });
   }
 
   return (
@@ -1217,12 +1238,12 @@ export default function ResultatPage() {
 
       <div className="res-page-header">
         <h1 className="res-page-title">📊 RESULTAT &amp; HISTORIK</h1>
-        <p className="res-page-sub">Sammanfattning och historik för mönster, AI, replay, paper och inlärning. För operativ kontroll: Daytrading. För safety: System → Safety.</p>
+        <p className="res-page-sub">Sammanfattning och historik för resultat, aktivitet och Data Center. För operativ kontroll: Daytrading. För safety: System. För replay och test: Lab.</p>
         <div className="res-daily-muted">Historiska trades kan visa äldre strateginamn och äldre routingregler. Resultat visar historik och analys, inte runtime eller paper-val.</div>
       </div>
 
       <div className="res-tabs">
-        {TABS.map(t => (
+        {VISIBLE_TABS.map(t => (
           <button
             key={t.key}
             className={`res-tab${tab === t.key ? ' res-tab-active' : ''}`}
@@ -1235,16 +1256,49 @@ export default function ResultatPage() {
         ))}
       </div>
 
-      {tab === 'oversikt'  && <OversiktTab />}
-      {tab === 'setups'    && <SetupsTab />}
-      {tab === 'ai'        && <AiTab />}
-      {tab === 'replay'    && <ReplayTab />}
-      {tab === 'paper'     && <PaperTab />}
-      {tab === 'activity'  && <ActivityTab />}
-      {tab === 'daytrading' && <DaytradingStrategiesTab />}
-      {tab === 'memory'    && <LarningTab />}
-      {tab === 'candidates' && <CandidatesTab />}
+      {tab === 'overview' && <OversiktTab />}
+      {tab === 'activity' && <ActivityTab />}
       {tab === 'data-center' && <DataCenterTab />}
+      {tab === 'replay' && (
+        <LegacyTabNotice
+          title="Replay har flyttats till Test Lab"
+          text="Replay ligger inte längre under Insikter. Öppna Test Lab för replay och batch-test."
+          linkTo="/lab?tab=replay"
+          linkLabel="Öppna Replay i Test Lab"
+        />
+      )}
+      {tab === 'daytrading' && (
+        <LegacyTabNotice
+          title="Daytrading har en egen sida"
+          text="Operativ kontroll för daytrading ligger kvar på den separata daytrading-sidan."
+          linkTo="/daytrading"
+          linkLabel="Öppna Daytrading"
+        />
+      )}
+      {tab === 'memory' && (
+        <LegacyTabNotice
+          title="Historiskt minne visas inte längre som egen tab"
+          text="Teknisk minnesstatus och närliggande systemdetaljer finns under System."
+          linkTo="/system?tab=technical"
+          linkLabel="Öppna System tekniskt"
+        />
+      )}
+      {tab === 'candidates' && (
+        <LegacyTabNotice
+          title="Kandidater visas utanför Insikter"
+          text="Kandidater hör hemma i Daytrading-flödet. Insikter visar nu översikt, aktivitet och Data Center."
+          linkTo="/daytrading"
+          linkLabel="Öppna Daytrading"
+        />
+      )}
+      {tab === 'paper' && (
+        <LegacyTabNotice
+          title="Paper Trading har en egen sida"
+          text="Paper Trading finns kvar som separat runtime-vy och nås via huvudnavigationen."
+          linkTo="/paper-trading"
+          linkLabel="Öppna Paper Trading"
+        />
+      )}
     </div>
   );
 }
