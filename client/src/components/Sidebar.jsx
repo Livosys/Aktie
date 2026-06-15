@@ -7,13 +7,13 @@ const NAV_GROUPS = [
     id: 'pipeline',
     label: 'Trading OS',
     items: [
-      { path: '/live', label: '🟢 Live', match: ['/live'] },
-      { path: '/daytrading', label: '📈 Daytrading / Paper Trading', match: ['/daytrading', '/paper-trading'] },
-      { path: '/supervisor', label: '🧠 Control Room', match: ['/supervisor'] },
-      { path: '/narrow', label: '◐ Narrow State', match: ['/narrow'] },
-      { path: '/lab', label: '🧪 Test Lab', match: ['/lab'] },
-      { path: '/system', label: '🛡️ System', match: ['/system'] },
-      { path: '/insikter?tab=overview', label: '📊 Resultat / Data', match: ['/insikter'] },
+      { path: '/live', icon: '🟢', label: 'Live', match: ['/live'] },
+      { path: '/daytrading', icon: '📈', label: 'Resultat', match: ['/daytrading', '/paper-trading'] },
+      { path: '/supervisor', icon: '🧠', label: 'Control Room', match: ['/supervisor'] },
+      { path: '/narrow', icon: '◐', label: 'Narrow State', match: ['/narrow'] },
+      { path: '/lab', icon: '🧪', label: 'Test Lab', match: ['/lab'] },
+      { path: '/system', icon: '🛡️', label: 'System', match: ['/system'] },
+      { path: '/insikter?tab=overview', icon: '📊', label: 'Data', match: ['/insikter'] },
     ],
   },
 ];
@@ -39,7 +39,9 @@ function NavItem({ item, onClose }) {
       to={item.path}
       className={`sb-link${active ? ' sb-link-active' : ''}`}
       onClick={onClose}
+      aria-label={item.label}
     >
+      <span className="sb-icon" aria-hidden="true">{item.icon}</span>
       <span className="sb-link-copy">
         <span className="sb-link-label">{item.label}</span>
       </span>

@@ -879,7 +879,7 @@ function PaperRuntimeSection({ runtimeState }) {
         <div className="sp-activity-head">
           <div>
             <h2>Kompakt paper-status</h2>
-            <span>Read-only sammanfattning. Full vy finns under Daytrading / Paper Trading.</span>
+            <span>Read-only sammanfattning. Full vy finns under Resultat, där Paper Trading visas tillsammans med daytrading-diagnos.</span>
           </div>
           <ConfigScopeBadge scope="test" />
         </div>
@@ -897,7 +897,7 @@ function PaperRuntimeSection({ runtimeState }) {
             </div>
             {shownTradeRecords < (summary.limit ?? 50) && (
               <div className="sp-activity-empty">
-                Systemet har inte skapat 50 paper records ännu. Full status finns på <Link to="/daytrading">/daytrading</Link>.
+                Systemet har inte skapat 50 paper records ännu. Full status finns på <Link to="/daytrading">Resultat</Link>.
               </div>
             )}
             {(error || runtime?.status === 'degraded') && (
@@ -913,7 +913,7 @@ function PaperRuntimeSection({ runtimeState }) {
               <span>broker_enabled=false</span>
             </div>
             <div className="sp-work-status">
-              <Link to="/daytrading">Öppna daytrading / paper trading</Link>
+              <Link to="/daytrading">Öppna Resultat och Paper Trading</Link>
               <Link to="/supervisor">Öppna supervisor</Link>
             </div>
           </>

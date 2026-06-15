@@ -38,6 +38,11 @@ const ENDPOINTS = [
   { key: 'recommendation', url: '/api/daytrading/recommendation', label: 'Rekommendation' },
   { key: 'eventsRecent', url: '/api/events/recent?n=100', label: 'Recent trading events' },
   { key: 'eventsStatus', url: '/api/events/status', label: 'Event system status' },
+  { key: 'paperAllowlistStatus', url: '/api/automation/paper-allowlist/status', label: 'Paper allowlist status' },
+  { key: 'paperEvents', url: '/api/paper-trading/events?limit=100', label: 'Paper Trading events' },
+  { key: 'candidatesRecent', url: '/api/candidates/recent', label: 'Candidates recent' },
+  { key: 'replaySessions', url: '/api/replay/sessions', label: 'Replay sessions' },
+  { key: 'dataCoverageStatus', url: '/api/data-coverage/status', label: 'Data coverage status' },
 ];
 
 const ADVISOR_WINDOWS = [
@@ -680,6 +685,103 @@ function buildEventAiConclusion(events) {
       topStrategy: topStrategy?.value || 'Ingen data ännu',
       topMarket: topMarket?.value || 'Ingen data ännu',
     },
+  };
+}
+
+function topReasonRows(events) {
+  const counts = new Map();
+  for (const event of normalizeArray(events)) {
+    const reason = firstText([
+      event?.reasonSv,
+      event?.reason_sv,
+      event?.reason,
+      event?.messageSv,
+      event?.message_sv,
+      event?.metadata?.reasonSv,
+      event?.metadata?.reason_sv,
+      event?.metadata?.reason,
+      summarizeStopReason(event),
+    ], '').trim();
+    if (!reason) continue;
+    counts.set(reason, (counts.get(reason) || 0) + 1);
+  }
+  return [...counts.entries()]
+    .map(([reason, count]) => ({ reason, count }))
+    .sort((a, b) => b.count - a.count || a.reason.localeCompare(b.reason, 'sv'))
+    .slice(0, 3);
+}
+
+function buildDaytradingResultSummary(resources) {
+  const paperStatus = unwrap(resources.paperStatus) || {};
+  const paperEventsData = unwrap(resources.paperEvents) || {};
+  const allowlist = unwrap(resources.paperAllowlistStatus) || {};
+  const candidates = unwrap(resources.candidatesRecent) || {};
+  const replay = unwrap(resources.replaySessions) || {};
+  const coverage = unwrap(resources.dataCoverageStatus) || {};
+  const paperEvents = normalizeArray(paperEventsData?.events);
+  const openCount = toNumber(paperStatus?.openCount) ?? normalizeArray(paperStatus?.openTrades).length;
+  const closedCount = toNumber(paperStatus?.closedCount)
+    ?? paperEvents.filter((event) => String(event?.type || '').toLowerCase().includes('closed')).length;
+  const blockedCount = toNumber(paperStatus?.blockedCount)
+    ?? paperEvents.filter((event) => String(event?.decision || '').toLowerCase() === 'blocked' || String(event?.type || '').toLowerCase().includes('blocked')).length;
+  const latestEventAt = firstText([
+    paperStatus?.latestEventAt,
+    paperEvents[0]?.timestamp,
+  ], '');
+  const approvedStrategies = normalizeArray(allowlist?.allowlist || allowlist?.approvedStrategies || allowlist?.strategies);
+  const candidatesCount = normalizeArray(candidates?.candidates).length;
+  const replayCount = normalizeArray(replay?.sessions).length;
+  const coverageScore = toNumber(coverage?.total_coverage_score);
+  const missingDataCount = toNumber(coverage?.symbols_missing_data);
+  const topReasons = topReasonRows(paperEvents);
+  const paperEnabled = paperStatus?.enabled === true;
+  const allowlistReady = allowlist?.paperRuntimeReady === true || allowlist?.readyForPaperRuntime > 0;
+  const primaryReason = topReasons[0]?.reason || '';
+  const explanation = [];
+
+  if (!paperEnabled) {
+    explanation.push('Systemet kör inte Paper Trading just nu.');
+  } else if (blockedCount > 0 && topReasons.length > 0) {
+    explanation.push(`Systemet kör, men inga trades skapas just nu eftersom ${topReasons[0].reason.toLowerCase()}.`);
+  } else if (openCount === 0 && closedCount === 0) {
+    explanation.push('Systemet kör, men inga trades skapas just nu eftersom inga signaler ännu har passerat hela beslutsflödet.');
+  } else {
+    explanation.push('Systemet kör och det finns underlag i Paper Trading, men flödet är fortsatt försiktigt.');
+  }
+
+  if (primaryReason.toLowerCase().includes('allowlist')) {
+    explanation.push('Strategier stoppas av allowlist.');
+  }
+  if (primaryReason.toLowerCase().includes('low_confidence') || primaryReason.toLowerCase().includes('confidence')) {
+    explanation.push('Riskmotor blockerar low_confidence.');
+  }
+  if (primaryReason.toLowerCase().includes('vänta') || primaryReason.toLowerCase().includes('jaga inte') || primaryReason.toLowerCase().includes('observe')) {
+    explanation.push('Signaler har status Vänta eller Jaga inte.');
+  }
+  if ((missingDataCount ?? 0) > 0 || (coverageScore != null && coverageScore <= 20)) {
+    explanation.push('Data och historik saknas fortfarande för stora delar av universumet.');
+  }
+  if (candidatesCount === 0 || replayCount === 0) {
+    explanation.push('Replay eller candidates saknar tillräckligt data för att driva fler förklaringar.');
+  }
+  if (!allowlistReady && paperEnabled) {
+    explanation.push('Allowlist är inte fullt ansluten till paper-runtime ännu.');
+  }
+
+  return {
+    paperEnabled,
+    openCount,
+    closedCount,
+    blockedCount,
+    latestEventAt,
+    candidatesCount,
+    replayCount,
+    coverageScore,
+    missingDataCount,
+    allowlist,
+    approvedStrategies,
+    topReasons,
+    explanation: uniqueText(explanation),
   };
 }
 
@@ -1563,6 +1665,131 @@ function StrategyHistoryDetail({ history, loading, error, onClear, plannerContex
         </article>
       )}
     </>
+  );
+}
+
+function ResultWhyNoTradesPanel({ resources }) {
+  const summary = buildDaytradingResultSummary(resources);
+  const allowlistState = endpointState(resources.paperAllowlistStatus);
+  const candidatesState = endpointState(resources.candidatesRecent);
+  const replayState = endpointState(resources.replaySessions);
+  const coverageState = endpointState(resources.dataCoverageStatus);
+
+  return (
+    <section className="sup-section">
+      <div className="sup-section-head">
+        <div>
+          <h2>Varför inga trades?</h2>
+          <p>Read-only diagnos för varför paper trades skapas, blockeras eller uteblir just nu.</p>
+        </div>
+        <SafetyTag />
+      </div>
+
+      <div className="sup-grid sup-grid-2" style={{ display: 'grid', gap: 12, gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))' }}>
+        <article className={`sup-block ${summary.paperEnabled ? 'sup-block-ok' : 'sup-block-warning'}`}>
+          <span className="sup-block-title">Paper Trading</span>
+          <strong className="sup-block-value">{summary.paperEnabled ? 'Aktivt' : 'Ej aktivt'}</strong>
+          <span className="sup-block-note">Öppna {formatInt(summary.openCount, '0')} · stängda {formatInt(summary.closedCount, '0')} · blockerade {formatInt(summary.blockedCount, '0')}</span>
+        </article>
+        <article className="sup-block sup-block-neutral">
+          <span className="sup-block-title">Senaste paper-event</span>
+          <strong className="sup-block-value">{summary.latestEventAt ? formatDateTime(summary.latestEventAt) : 'Ingen eventdata ännu'}</strong>
+          <span className="sup-block-note">{summary.latestEventAt ? ageText(summary.latestEventAt) : 'Systemet väntar på nya signaler.'}</span>
+        </article>
+        <article className={`sup-block ${allowlistState.tone === 'good' ? 'sup-block-ok' : 'sup-block-neutral'}`}>
+          <span className="sup-block-title">Allowlist</span>
+          <strong className="sup-block-value">{formatInt(summary.allowlist?.readyForPaperRuntime, '0')} redo</strong>
+          <span className="sup-block-note">{formatInt(summary.allowlist?.totalApproved, '0')} godkända · {formatInt(summary.allowlist?.pendingRuntimeConnection, '0')} väntar på runtime</span>
+        </article>
+        <article className={`sup-block ${coverageState.tone === 'good' ? 'sup-block-ok' : 'sup-block-warning'}`}>
+          <span className="sup-block-title">Data coverage</span>
+          <strong className="sup-block-value">{summary.coverageScore == null ? 'Ingen data ännu' : `${summary.coverageScore}/100`}</strong>
+          <span className="sup-block-note">{formatInt(summary.missingDataCount, '0')} symboler saknar data</span>
+        </article>
+        <article className={`sup-block ${candidatesState.tone === 'good' ? 'sup-block-neutral' : 'sup-block-warning'}`}>
+          <span className="sup-block-title">Candidates</span>
+          <strong className="sup-block-value">{formatInt(summary.candidatesCount, '0')}</strong>
+          <span className="sup-block-note">Antal aktuella kandidater i senaste GET-svaret.</span>
+        </article>
+        <article className={`sup-block ${replayState.tone === 'good' ? 'sup-block-neutral' : 'sup-block-warning'}`}>
+          <span className="sup-block-title">Replay sessions</span>
+          <strong className="sup-block-value">{formatInt(summary.replayCount, '0')}</strong>
+          <span className="sup-block-note">Används som extra diagnos för varför underlag kan saknas.</span>
+        </article>
+      </div>
+
+      <div className="sup-v2-report-lead" style={{ marginTop: 12 }}>
+        <strong>Systemet kör, men inga trades skapas just nu eftersom…</strong>
+        <div style={{ marginTop: 8, display: 'grid', gap: 6 }}>
+          {summary.explanation.map((line) => (
+            <div key={line}>{line}</div>
+          ))}
+        </div>
+      </div>
+
+      <div className="sup-v2-report-lead" style={{ marginTop: 12, marginBottom: 0 }}>
+        <strong>Vanligaste blockeringsorsaker:</strong>{' '}
+        {summary.topReasons.length > 0
+          ? summary.topReasons.map((row) => `${row.reason} (${row.count})`).join(' · ')
+          : 'Inga tydliga blockeringsorsaker ännu.'}
+      </div>
+    </section>
+  );
+}
+
+function PaperAllowlistPanel({ resource }) {
+  const state = endpointState(resource);
+  const data = unwrap(resource) || {};
+  const rows = normalizeArray(data?.allowlist || data?.approvedStrategies || data?.strategies);
+  const ready = data?.paperRuntimeReady === true || data?.runtimeConnectionStatus === 'ready';
+
+  return (
+    <section className="sup-section">
+      <div className="sup-section-head">
+        <div>
+          <h2>Allowlist för Paper Trading</h2>
+          <p>Endast strategier på allowlist får skapa paper trades. Blockerade strategier visas i Paper Trading-events.</p>
+        </div>
+        <SafetyTag />
+      </div>
+
+      {state.label === 'Problem' && !state.missing && (
+        <div className="sup-warning">Allowlist-status kunde inte läsas just nu. Panelen är read-only och visar neutral fallback.</div>
+      )}
+
+      <div className="sup-grid sup-grid-2" style={{ display: 'grid', gap: 12, gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))' }}>
+        <article className={`sup-block ${ready ? 'sup-block-ok' : 'sup-block-neutral'}`}>
+          <span className="sup-block-title">Paper runtime ready</span>
+          <strong className="sup-block-value">{ready ? 'Ja' : 'Avvaktar'}</strong>
+          <span className="sup-block-note">{textValue(data?.runtimeConnectionStatus, 'Ingen status ännu')}</span>
+        </article>
+        <article className="sup-block sup-block-neutral">
+          <span className="sup-block-title">Approved</span>
+          <strong className="sup-block-value">{formatInt(data?.totalApproved, '0')}</strong>
+          <span className="sup-block-note">{formatInt(data?.readyForPaperRuntime, '0')} redo · {formatInt(data?.pendingRuntimeConnection, '0')} väntar</span>
+        </article>
+        <article className="sup-block sup-block-neutral">
+          <span className="sup-block-title">Enabled for runtime</span>
+          <strong className="sup-block-value">{textValue(data?.enabledForPaperRuntime, 'Ej angivet')}</strong>
+          <span className="sup-block-note">automaticPaperOnlyTesting: {textValue(data?.automaticPaperOnlyTesting, 'Ej angivet')}</span>
+        </article>
+        <article className="sup-block sup-block-ok">
+          <span className="sup-block-title">Safety</span>
+          <strong className="sup-block-value">{textValue(data?.safety?.mode, 'paper_only')}</strong>
+          <span className="sup-block-note">actions_allowed=false · can_place_orders=false · live_trading_enabled=false</span>
+        </article>
+      </div>
+
+      {rows.length > 0 ? (
+        <div className="sup-v2-report-lead" style={{ marginTop: 12, marginBottom: 0 }}>
+          <strong>Godkända strategier:</strong> {rows.map((row) => `${textValue(row?.name || row?.id, 'Okänd strategi')} (${textValue(row?.paperRuntimeStatus || row?.runtimeConnectionStatus, 'okänd status')})`).join(' · ')}
+        </div>
+      ) : (
+        <div className="sup-safety-copy" style={{ marginTop: 12 }}>
+          Ingen lista över godkända strategier finns i payloaden just nu. Endpointen är fortfarande read-only och sidan förblir stabil.
+        </div>
+      )}
+    </section>
   );
 }
 
@@ -3433,24 +3660,25 @@ export default function SupervisorV2Page() {
   const keyRisk = model.systemProblems[0] || model.riskSafetyPoints[0] || 'Ingen tydlig risk just nu.';
   const beginnerCards = [
     {
-      icon: '🤖',
-      title: 'Vad systemet gör',
-      description: 'Det letar efter mönster och föreslår vad som är värt att testa vidare.',
+      icon: '📈',
+      title: 'Vad Resultat visar',
+      description: 'Här ser du daytrading, Paper Trading och varför trades öppnas eller stoppas.',
       tone: 'info',
     },
     {
       icon: '🧪',
       title: 'Vad som händer just nu',
-      description: 'Det finns rekommenderade tester, en manuell kö och en tydlig säkerhetsgräns.',
+      description: 'Paper runtime, blocked candidates och allowlist sammanfattas utan att något körs härifrån.',
       tone: 'good',
     },
     {
       icon: '🔎',
       title: 'Vad du ska titta på',
-      description: 'Börja med nästa test, öppna testkön och läs varför signaler stoppas.',
+      description: 'Börja med varför inga trades skapas, läs allowlist-status och öppna full Paper Trading-vy vid behov.',
       tone: 'warning',
     },
   ];
+  const resultSummary = useMemo(() => buildDaytradingResultSummary(resources), [resources]);
 
   const systemStatusCards = [
     {
@@ -3529,8 +3757,8 @@ export default function SupervisorV2Page() {
       <div className="sup-hero sup-v2-hero">
         <div className="sup-hero-copy">
           <div className="sup-kicker">Trading OS</div>
-          <h1>Trading OS</h1>
-          <p>En enkel vy för test, lärande och signaler. Allt körs i säkert testläge.</p>
+          <h1>Resultat</h1>
+          <p>Daytrading, Paper Trading och diagnos för varför trades skapas eller stoppas.</p>
           <div className="sup-safety-copy">Systemet är i testläge. Inga riktiga köp eller sälj görs.</div>
         </div>
         <div className="sup-hero-actions">
@@ -3541,11 +3769,44 @@ export default function SupervisorV2Page() {
         </div>
       </div>
 
+      <section className="sup-section">
+        <div className="sup-section-head">
+          <div>
+            <h2>Paper Trading</h2>
+            <p>Det här är huvudvyn för resultat, paper runtime och diagnos. Full loggbok finns kvar via direktlänken.</p>
+          </div>
+          <SafetyTag />
+        </div>
+
+        <div className="sup-grid sup-grid-2" style={{ display: 'grid', gap: 12, gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))' }}>
+          <article className={`sup-block ${resultSummary.paperEnabled ? 'sup-block-ok' : 'sup-block-warning'}`}>
+            <span className="sup-block-title">Paper Trading</span>
+            <strong className="sup-block-value">{resultSummary.paperEnabled ? 'Synligt i Resultat' : 'Avvaktar'}</strong>
+            <span className="sup-block-note">Öppna {formatInt(resultSummary.openCount, '0')} · stängda {formatInt(resultSummary.closedCount, '0')} · blockerade {formatInt(resultSummary.blockedCount, '0')}</span>
+          </article>
+          <article className="sup-block sup-block-neutral">
+            <span className="sup-block-title">Direktvy</span>
+            <strong className="sup-block-value">/paper-trading</strong>
+            <span className="sup-block-note">Separat full runtime-vy finns kvar för djupare loggbok.</span>
+          </article>
+        </div>
+
+        <div className="sup-safety-copy" style={{ marginTop: 12 }}>
+          Paper Trading är read-only här. Inga start, stop eller approve-actions finns på denna sida.
+        </div>
+        <div className="sup-v2-report-lead" style={{ marginTop: 12, marginBottom: 0 }}>
+          <Link to="/paper-trading">Öppna full Paper Trading-vy</Link>
+        </div>
+      </section>
+
+      <ResultWhyNoTradesPanel resources={resources} />
+      <PaperAllowlistPanel resource={resources.paperAllowlistStatus} />
+
       <section className="sup-section sup-intro-section">
         <div className="sup-section-head">
           <div>
-            <h2>Vad systemet gör</h2>
-            <p>En enkel introduktion för dig som inte kan aktier eller trading.</p>
+            <h2>Hur du läser Resultat</h2>
+            <p>En enkel introduktion till daytrading, Paper Trading och de vanligaste blockerarna.</p>
           </div>
         </div>
         <div className="sup-intro-grid">

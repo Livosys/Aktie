@@ -7,10 +7,10 @@ export default function MobileBottomNav() {
   const tabs = [
     { id: 'supervisor', label: 'Control Room', active: pathname.startsWith('/supervisor'), to: '/supervisor' },
     { id: 'live', label: 'Live', active: pathname.startsWith('/live'), to: '/live' },
-    { id: 'daytrading', label: 'Daytrading / Paper', active: pathname.startsWith('/daytrading') || pathname.startsWith('/paper-trading'), to: '/daytrading' },
+    { id: 'daytrading', label: 'Resultat', active: pathname.startsWith('/daytrading') || pathname.startsWith('/paper-trading'), to: '/daytrading' },
     { id: 'lab', label: 'Test Lab', active: pathname.startsWith('/lab'), to: '/lab' },
     { id: 'system', label: 'System', active: pathname.startsWith('/system'), to: '/system' },
-    { id: 'insikter', label: 'Resultat / Data', active: pathname.startsWith('/insikter'), to: '/insikter?tab=overview' },
+    { id: 'insikter', label: 'Data', active: pathname.startsWith('/insikter'), to: '/insikter?tab=overview' },
     { id: 'narrow', label: 'Narrow State', active: pathname.startsWith('/narrow'), to: '/narrow' },
   ];
 
