@@ -8,7 +8,8 @@ const NAV_GROUPS = [
     label: 'Trading OS',
     items: [
       { path: '/live', icon: '🟢', label: 'Live', match: ['/live'] },
-      { path: '/daytrading', icon: '📈', label: 'Resultat', match: ['/daytrading', '/paper-trading'] },
+      { path: '/daytrading', icon: '📈', label: 'Resultat', match: ['/daytrading'] },
+      { path: '/paper-trading', icon: '🧾', label: 'Paper Trading', match: ['/paper-trading'] },
       { path: '/supervisor', icon: '🧠', label: 'Control Room', match: ['/supervisor'] },
       { path: '/narrow', icon: '◐', label: 'Narrow State', match: ['/narrow'] },
       { path: '/lab', icon: '🧪', label: 'Test Lab', match: ['/lab'] },

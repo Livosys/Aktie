@@ -215,8 +215,92 @@ function DataTable({ title, subtitle, columns, rows, emptyText, rowKey }) {
   );
 }
 
+function usePaperAllowlist() {
+  const [state, setState] = useState({ loading: true, data: null });
+  useEffect(() => {
+    let alive = true;
+    fetchJsonWithTimeout('/api/automation/paper-allowlist/status')
+      .then((data) => { if (alive) setState({ loading: false, data }); })
+      .catch(() => { if (alive) setState({ loading: false, data: null }); });
+    return () => { alive = false; };
+  }, []);
+  return state;
+}
+
+function mostCommonReason(rows) {
+  const counts = new Map();
+  for (const row of Array.isArray(rows) ? rows : []) {
+    const reason = row?.blockedReason || row?.reasonSv || row?.reason;
+    if (!reason) continue;
+    counts.set(reason, (counts.get(reason) || 0) + 1);
+  }
+  let best = null;
+  let bestCount = 0;
+  for (const [reason, count] of counts) {
+    if (count > bestCount) { best = reason; bestCount = count; }
+  }
+  return best ? { reason: best, count: bestCount } : null;
+}
+
+function MetricCard({ label, value, tone = 'neutral', note }) {
+  const colors = { good: '#22c55e', warn: '#f59e0b', bad: '#ef4444', neutral: '#94a3b8' };
+  return (
+    <div style={{ flex: '1 1 160px', minWidth: 160, background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 12, padding: '12px 14px' }}>
+      <div style={{ fontSize: 10.5, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.05em', color: '#94a3b8' }}>{label}</div>
+      <div style={{ fontSize: 20, fontWeight: 800, color: colors[tone] || colors.neutral, marginTop: 2 }}>{value}</div>
+      {note ? <div style={{ fontSize: 11, color: '#94a3b8', marginTop: 2, lineHeight: 1.4 }}>{note}</div> : null}
+    </div>
+  );
+}
+
+function WhyNoTradesPanel({ runtime, allowlist }) {
+  const summary = runtime?.summary || {};
+  const open = Number(summary.openCount) || 0;
+  const closed = Number(summary.closedCount) || 0;
+  const blocked = Number(summary.blockedCount) || 0;
+  const blockedCandidates = Array.isArray(runtime?.blockedCandidates) ? runtime.blockedCandidates : [];
+  const approved = allowlist?.totalApproved;
+  const ready = allowlist?.readyForPaperRuntime;
+  const runtimeActive = runtime?.safety?.mode === 'paper_only' || runtime?.status === 'ok';
+  const topReason = mostCommonReason(blockedCandidates);
+  const reasonIsAllowlist = !!(topReason && /allowlist/i.test(topReason.reason));
+
+  let conclusion;
+  if (open > 0) {
+    conclusion = `Det finns ${open} öppna paper trades just nu.`;
+  } else if (closed > 0) {
+    conclusion = `Inga öppna paper trades just nu, men ${closed} stängda finns i historiken.`;
+  } else if (blocked > 0 && reasonIsAllowlist) {
+    conclusion = 'Systemet ser signaler, men de stoppas innan en paper trade skapas eftersom de kommer från strategier som inte är godkända i allowlist. Endast de godkända strategierna får skapa låtsasaffärer.';
+  } else if (blocked > 0) {
+    conclusion = 'Systemet ser signaler, men de stoppas innan en paper trade skapas av testregler, status (Vänta / Jaga inte) eller saknad mappning. De allowlist-godkända strategierna har inte gett en signal som passerat reglerna.';
+  } else {
+    conclusion = 'Inga paper-events ännu i det här fönstret. Systemet är i testläge och väntar på signaler.';
+  }
+
+  return (
+    <div style={sectionStyle()}>
+      <div style={{ fontSize: 16, fontWeight: 800, marginBottom: 4 }}>Varför finns inga paper trades?</div>
+      <div style={{ fontSize: 12, color: '#94a3b8', marginBottom: 12 }}>Read-only diagnos. Inga riktiga order, inga actions härifrån.</div>
+      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10 }}>
+        <MetricCard label="Runtime" value={runtimeActive ? 'Aktiv' : 'Avvaktar'} tone={runtimeActive ? 'good' : 'warn'} note="paper_only, read-only" />
+        <MetricCard label="Öppna trades" value={open} tone="neutral" />
+        <MetricCard label="Stängda trades" value={closed} tone="neutral" />
+        <MetricCard label="Blockerade events" value={blocked} tone={blocked > 0 ? 'warn' : 'neutral'} />
+        <MetricCard label="Godkända strategier" value={approved == null ? '–' : approved} tone="neutral" note={ready == null ? null : `${ready} redo för runtime`} />
+        <MetricCard label="Senaste event" value={fmtTime(summary.latestEventAt)} tone="neutral" />
+        <MetricCard label="Vanligaste orsak" value={topReason ? `${topReason.count}×` : '–'} tone={blocked > 0 ? 'warn' : 'neutral'} note={topReason ? topReason.reason : 'Ingen blockering i fönstret'} />
+      </div>
+      <div style={{ ...sectionStyle(), marginTop: 12, marginBottom: 0, background: 'rgba(15,23,42,0.55)' }}>
+        <strong>Slutsats:</strong> {conclusion}
+      </div>
+    </div>
+  );
+}
+
 export default function PaperTradingPage() {
   const runtimeState = usePaperRuntime(50);
+  const allowlistState = usePaperAllowlist();
   const runtime = runtimeState.data;
   const summary = runtime?.summary || {};
   const warnings = useMemo(() => {
@@ -242,6 +326,8 @@ export default function PaperTradingPage() {
       </div>
 
       <SafetyBanner safety={runtime?.safety || runtime} />
+
+      <WhyNoTradesPanel runtime={runtime} allowlist={allowlistState.data} />
 
       {runtimeState.loading && !runtime ? (
         <div style={sectionStyle()}>Hämtar paper runtime...</div>
