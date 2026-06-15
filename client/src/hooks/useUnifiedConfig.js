@@ -117,6 +117,12 @@ export const DEFAULT_TRADING_LAB_EXITS = {
 };
 
 const RESOURCE_DEFS = {
+  backendHealth: {
+    url: '/health',
+    section: 'global',
+    field: 'backendHealth',
+    intervalMs: 30_000,
+  },
   systemHealth: {
     url: '/api/system/health',
     section: 'global',
@@ -192,8 +198,8 @@ const RESOURCE_DEFS = {
 };
 
 const RESOURCE_GROUPS = {
-  core: ['systemHealth', 'scanStatus', 'riskStatus', 'riskConfig', 'safetyStatus', 'safetyConfig', 'blockerConfig', 'marketUniverse', 'marketRegime', 'setupPerformance', 'paperPerformance', 'prioritySummary'],
-  health: ['systemHealth', 'scanStatus'],
+  core: ['backendHealth', 'systemHealth', 'scanStatus', 'riskStatus', 'riskConfig', 'safetyStatus', 'safetyConfig', 'blockerConfig', 'marketUniverse', 'marketRegime', 'setupPerformance', 'paperPerformance', 'prioritySummary'],
+  health: ['backendHealth', 'systemHealth', 'scanStatus'],
   safety: ['riskStatus', 'riskConfig', 'safetyStatus', 'safetyConfig', 'blockerConfig'],
   lab: ['marketUniverse', 'blockerConfig', 'marketRegime', 'setupPerformance', 'paperPerformance', 'prioritySummary'],
   results: ['setupPerformance', 'paperPerformance'],
@@ -209,6 +215,7 @@ let initialized = false;
 
 let state = {
   global: {
+    backendHealth: null,
     riskStatus: null,
     riskConfigResponse: null,
     riskConfig: null,
