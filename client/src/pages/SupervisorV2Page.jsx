@@ -30,6 +30,7 @@ const ENDPOINTS = [
   { key: 'marketRegime', url: '/api/market-regime/status', label: 'Market Regime' },
   { key: 'paperStatus', url: '/api/paper-trading/status', label: 'Paper Trading status' },
   { key: 'paperPerformance', url: '/api/paper-trading/performance', label: 'Paper Trading performance' },
+  { key: 'supervisorOverview', url: '/api/supervisor/overview', label: 'Supervisor overview' },
   { key: 'runtimeStrategies', url: '/api/daytrading/runtime-strategies', label: 'Runtime-strategier' },
   { key: 'registryStatus', url: '/api/strategies/registry/status', label: 'Strategy Registry status' },
   { key: 'strategyScoreStatus', url: '/api/strategies/score/status', label: 'Strategy Score v1' },
@@ -711,61 +712,272 @@ function topReasonRows(events) {
     .slice(0, 3);
 }
 
-function buildDaytradingResultSummary(resources) {
+function normalizeStrategyId(...values) {
+  return firstText(values, '').trim().toLowerCase();
+}
+
+function paperEventReason(event) {
+  return firstText([
+    event?.reasonSv,
+    event?.reason_sv,
+    event?.blockedReason,
+    event?.blocked_reason,
+    event?.reason,
+    event?.messageSv,
+    event?.message_sv,
+    event?.message,
+    event?.metadata?.reasonSv,
+    event?.metadata?.reason_sv,
+    event?.metadata?.reason,
+    summarizeStopReason(event),
+  ], 'Okänd orsak');
+}
+
+function paperEventStrategyId(event) {
+  return normalizeStrategyId(
+    event?.strategyId,
+    event?.resolvedStrategyId,
+    event?.sourceStrategyId,
+    event?.strategy_id,
+    event?.strategy,
+  );
+}
+
+function paperEventStrategyName(event) {
+  return firstText([
+    event?.strategyName,
+    event?.resolvedStrategyName,
+    event?.sourceStrategyName,
+    event?.strategy_name,
+    event?.strategyLabel,
+  ], 'Okänd strategi');
+}
+
+function isPaperBlockedEvent(event) {
+  const type = String(event?.type || event?.event_type || '').toLowerCase();
+  const decision = String(event?.decision || '').toLowerCase();
+  return type.includes('blocked') || type.includes('skip') || type.includes('gate') || decision === 'blocked' || decision === 'skipped';
+}
+
+function aggregatePaperBlocks(events, allowlistIds = new Set()) {
+  const byStrategy = new Map();
+  const byReason = new Map();
+  let blockedByAllowlist = 0;
+  let blockedByOther = 0;
+
+  for (const event of normalizeArray(events)) {
+    if (!isPaperBlockedEvent(event)) continue;
+    const id = paperEventStrategyId(event);
+    const name = paperEventStrategyName(event);
+    const reason = paperEventReason(event);
+    const key = id || name || reason || `event-${byStrategy.size + 1}`;
+    const isAllowlisted = !!(id && allowlistIds.has(id));
+    const row = byStrategy.get(key) || {
+      id,
+      name,
+      count: 0,
+      latestAt: '',
+      latestDecision: '',
+      latestReason: '',
+      reasons: new Map(),
+      allowlisted: isAllowlisted,
+    };
+
+    row.count += 1;
+    row.allowlisted = row.allowlisted || isAllowlisted;
+    row.latestReason = reason || row.latestReason;
+    row.latestDecision = String(event?.decision || event?.type || '').toLowerCase() || row.latestDecision;
+    const ts = String(event?.timestamp || '');
+    if (!row.latestAt || ts > row.latestAt) row.latestAt = ts;
+    row.reasons.set(reason, (row.reasons.get(reason) || 0) + 1);
+    byStrategy.set(key, row);
+
+    byReason.set(reason, (byReason.get(reason) || 0) + 1);
+    if (reason.toLowerCase().includes('allowlist') || reason.toLowerCase().includes('approval_gate') || reason.toLowerCase().includes('not_in_allowlist')) {
+      blockedByAllowlist += 1;
+    } else {
+      blockedByOther += 1;
+    }
+  }
+
+  const strategies = [...byStrategy.values()]
+    .map((row) => ({
+      ...row,
+      commonReason: [...row.reasons.entries()]
+        .map(([reason, count]) => ({ reason, count }))
+        .sort((a, b) => b.count - a.count || a.reason.localeCompare(b.reason, 'sv'))[0]?.reason || 'Okänd orsak',
+    }))
+    .sort((a, b) => b.count - a.count || a.name.localeCompare(b.name, 'sv'));
+
+  const reasons = [...byReason.entries()]
+    .map(([reason, count]) => ({ reason, count }))
+    .sort((a, b) => b.count - a.count || a.reason.localeCompare(b.reason, 'sv'));
+
+  return {
+    totalBlocked: strategies.reduce((sum, row) => sum + row.count, 0),
+    blockedByAllowlist,
+    blockedByOther,
+    strategies,
+    reasons,
+  };
+}
+
+function buildPaperTradeDiagnostics(resources, model) {
   const paperStatus = unwrap(resources.paperStatus) || {};
   const paperEventsData = unwrap(resources.paperEvents) || {};
   const allowlist = unwrap(resources.paperAllowlistStatus) || {};
+  const supervisorOverview = unwrap(resources.supervisorOverview) || {};
+  const paperRuntimeOverview = unwrap(supervisorOverview.paperRuntimeSummary) || {};
   const candidates = unwrap(resources.candidatesRecent) || {};
+  const candidateStats = unwrap(resources.candidatesStats) || {};
   const replay = unwrap(resources.replaySessions) || {};
   const coverage = unwrap(resources.dataCoverageStatus) || {};
+  const runtimeStrategies = normalizeArray(model?.runtimeStrategies);
+  const runtimeStrategyRows = normalizeArray(paperRuntimeOverview?.strategies);
   const paperEvents = normalizeArray(paperEventsData?.events);
+  const recentTrades = normalizeArray(paperStatus?.recentPaperTrades);
+  const approvedRows = normalizeArray(allowlist?.allowlist || allowlist?.approvedStrategies || allowlist?.strategies);
+  const approvedIds = new Set(approvedRows.map((row) => normalizeStrategyId(row?.id, row?.strategyId, row?.strategy_id)));
+  const runtimeRowsById = new Map(
+    runtimeStrategyRows
+      .map((row) => [normalizeStrategyId(row?.strategy_id, row?.strategyId, row?.strategy_name, row?.strategyName), row])
+      .filter(([id]) => !!id),
+  );
+  const recentTradeByStrategy = new Map();
+  for (const trade of recentTrades) {
+    const tradeId = normalizeStrategyId(trade?.strategy_id, trade?.strategyId, trade?.strategy_name, trade?.strategyName, trade?.strategy);
+    if (!tradeId || recentTradeByStrategy.has(tradeId)) continue;
+    recentTradeByStrategy.set(tradeId, trade);
+  }
+  const blocks = aggregatePaperBlocks(paperEvents, approvedIds);
+
   const openCount = toNumber(paperStatus?.openCount) ?? normalizeArray(paperStatus?.openTrades).length;
   const closedCount = toNumber(paperStatus?.closedCount)
-    ?? paperEvents.filter((event) => String(event?.type || '').toLowerCase().includes('closed')).length;
-  const blockedCount = toNumber(paperStatus?.blockedCount)
-    ?? paperEvents.filter((event) => String(event?.decision || '').toLowerCase() === 'blocked' || String(event?.type || '').toLowerCase().includes('blocked')).length;
+    ?? recentTrades.filter((trade) => String(trade?.status || '').toLowerCase() === 'completed').length;
+  const blockedCount = toNumber(paperStatus?.blockedCount) ?? blocks.totalBlocked;
   const latestEventAt = firstText([
     paperStatus?.latestEventAt,
     paperEvents[0]?.timestamp,
+    recentTrades[0]?.timestamp,
   ], '');
-  const approvedStrategies = normalizeArray(allowlist?.allowlist || allowlist?.approvedStrategies || allowlist?.strategies);
-  const candidatesCount = normalizeArray(candidates?.candidates).length;
+  const candidatesCount = toNumber(candidateStats?.total) ?? normalizeArray(candidates?.candidates).length;
   const replayCount = normalizeArray(replay?.sessions).length;
   const coverageScore = toNumber(coverage?.total_coverage_score);
   const missingDataCount = toNumber(coverage?.symbols_missing_data);
-  const topReasons = topReasonRows(paperEvents);
   const paperEnabled = paperStatus?.enabled === true;
   const allowlistReady = allowlist?.paperRuntimeReady === true || allowlist?.readyForPaperRuntime > 0;
-  const primaryReason = topReasons[0]?.reason || '';
+  const allowlistApprovedCount = toNumber(allowlist?.totalApproved) ?? approvedRows.length;
+  const allowlistReadyCount = toNumber(allowlist?.readyForPaperRuntime) ?? approvedRows.filter((row) => row?.paperRuntimeReady !== false).length;
+  const technicalPaperCount = toNumber(model?.paperTradeCount) ?? runtimeStrategies.filter((strategy) => strategy?.can_create_paper_trade === true).length;
+  const activeCount = toNumber(model?.selectedCount) ?? runtimeStrategies.filter((strategy) => strategy?.enabled_by_user === true).length;
+  const totalCount = runtimeStrategies.length;
+  const selectedButNotRunnableCount = toNumber(model?.selectedButNotRunnableCount) ?? runtimeStrategies.filter((strategy) => strategy?.enabled_by_user === true && strategy?.can_create_paper_trade !== true).length;
+
+  const matrix = [
+    {
+      group: 'Alla strategier',
+      count: totalCount,
+      meaning: 'Alla strategier i runtime-katalogen.',
+    },
+    {
+      group: 'Aktiva strategier',
+      count: activeCount,
+      meaning: 'Strategier som är valda eller aktiva i runtime just nu.',
+    },
+    {
+      group: 'Tekniskt paper-kopplade',
+      count: technicalPaperCount,
+      meaning: 'Kan tekniskt skapa paper trades när andra regler tillåter det.',
+    },
+    {
+      group: 'Godkända i allowlist',
+      count: allowlistApprovedCount,
+      meaning: 'Får skapa paper trades enligt allowlisten.',
+    },
+    {
+      group: 'Kandidater just nu',
+      count: candidatesCount,
+      meaning: 'Aktuella kandidater som faktiskt kan bli paper trades nu.',
+    },
+    {
+      group: 'Blockerade senaste perioden',
+      count: blockedCount,
+      meaning: 'Senaste paper-events som stoppats av allowlist, risk eller testregler.',
+    },
+  ];
+
+  const approvedStrategies = approvedRows.map((row) => {
+    const id = normalizeStrategyId(row?.id, row?.strategyId, row?.strategy_id);
+    const runtimeRow = runtimeRowsById.get(id) || {};
+    const latestTrade = recentTradeByStrategy.get(id) || null;
+    const latestEventAt = firstText([
+      runtimeRow?.latestEventAt,
+      latestTrade?.timestamp,
+      row?.latestEventAt,
+    ], '');
+    const blockedCount = toNumber(runtimeRow?.blockedCount) ?? 0;
+    return {
+      id: id || textValue(row?.id, 'okänd-strategi'),
+      name: firstText([row?.name, runtimeRow?.strategy_name, runtimeRow?.strategyName, row?.id], 'Okänd strategi'),
+      status: firstText([row?.paperRuntimeStatus, runtimeRow?.paperRuntimeStatus, row?.automaticStatus], 'active'),
+      runtimeReady: row?.paperRuntimeReady === true || row?.readyForPaperRuntime === true || runtimeRow?.paperRuntimeReady === true || runtimeRow?.readyForPaperRuntime === true,
+      latestEventAt,
+      latestTradeAt: latestTrade?.timestamp || '',
+      latestActivityAt: latestTrade?.timestamp || latestEventAt,
+      latestActivityLabel: latestTrade?.timestamp
+        ? `Trade ${formatDateTime(latestTrade.timestamp)}`
+        : latestEventAt
+          ? `Event ${formatDateTime(latestEventAt)}`
+          : 'Ingen aktivitet ännu',
+      latestBlockedReason: firstText([
+        latestTrade?.blockedReason,
+        runtimeRow?.latestBlockedReason,
+        row?.latestBlockedReason,
+      ], ''),
+      blockedCount,
+      allowlistStatus: row?.hasBlockers ? 'Har blockerare' : row?.approvedForPaperTesting === true ? 'Godkänd' : 'Okänd',
+      automaticStatus: textValue(row?.automaticStatus, 'Ej angivet'),
+    };
+  });
+
+  const approvedStrategyIds = new Set(approvedStrategies.map((row) => row.id));
+  const blockedStrategies = blocks.strategies.map((row) => ({
+    id: row.id || normalizeStrategyId(row.name),
+    name: row.name || row.id || 'Okänd strategi',
+    count: row.count,
+    commonReason: row.commonReason,
+    latestAt: row.latestAt,
+    latestReason: row.latestReason,
+    allowlisted: row.allowlisted || approvedStrategyIds.has(normalizeStrategyId(row.id, row.name)),
+    allowlistStatus: row.allowlisted || approvedStrategyIds.has(normalizeStrategyId(row.id, row.name))
+      ? 'Godkänd men stoppas av annan regel'
+      : 'Ej godkänd i allowlist',
+  }));
+
   const explanation = [];
-
-  if (!paperEnabled) {
-    explanation.push('Systemet kör inte Paper Trading just nu.');
-  } else if (blockedCount > 0 && topReasons.length > 0) {
-    explanation.push(`Systemet kör, men inga trades skapas just nu eftersom ${topReasons[0].reason.toLowerCase()}.`);
-  } else if (openCount === 0 && closedCount === 0) {
-    explanation.push('Systemet kör, men inga trades skapas just nu eftersom inga signaler ännu har passerat hela beslutsflödet.');
+  if (candidatesCount === 0) {
+    explanation.push('Just nu finns inga aktuella kandidater att öppna paper trades på.');
   } else {
-    explanation.push('Systemet kör och det finns underlag i Paper Trading, men flödet är fortsatt försiktigt.');
+    explanation.push(`${candidatesCount} kandidater finns just nu.`);
   }
 
-  if (primaryReason.toLowerCase().includes('allowlist')) {
-    explanation.push('Strategier stoppas av allowlist.');
+  if (blocks.blockedByAllowlist > 0) {
+    explanation.push(`Allowlist stoppar fortfarande ${blocks.blockedByAllowlist} senaste blockeringar. Bara ${allowlistApprovedCount} strategier är godkända just nu.`);
   }
-  if (primaryReason.toLowerCase().includes('low_confidence') || primaryReason.toLowerCase().includes('confidence')) {
-    explanation.push('Riskmotor blockerar low_confidence.');
+  if (blocks.blockedByOther > 0) {
+    explanation.push('Andra stopp kommer från testregler, status Vänta eller riskmotor.');
   }
-  if (primaryReason.toLowerCase().includes('vänta') || primaryReason.toLowerCase().includes('jaga inte') || primaryReason.toLowerCase().includes('observe')) {
-    explanation.push('Signaler har status Vänta eller Jaga inte.');
+  if (missingDataCount > 0 || (coverageScore != null && coverageScore <= 20)) {
+    explanation.push('Data coverage är ett separat problem. Det betyder att historik saknas, inte att allowlisten ändras.');
   }
-  if ((missingDataCount ?? 0) > 0 || (coverageScore != null && coverageScore <= 20)) {
-    explanation.push('Data och historik saknas fortfarande för stora delar av universumet.');
+  if (replayCount === 0) {
+    explanation.push('Replay-underlag saknas ännu, så mer analys måste vänta på historisk data.');
   }
-  if (candidatesCount === 0 || replayCount === 0) {
-    explanation.push('Replay eller candidates saknar tillräckligt data för att driva fler förklaringar.');
+  if (!paperEnabled) {
+    explanation.push('Paper Trading är inte aktivt just nu.');
   }
-  if (!allowlistReady && paperEnabled) {
-    explanation.push('Allowlist är inte fullt ansluten till paper-runtime ännu.');
+  if (allowlistReady && allowlistApprovedCount > 0) {
+    explanation.push(`Allowlist är en säkerhetslista. Bara strategier på listan får skapa låtsasaffärer. ${allowlistApprovedCount} strategier är godkända och ${allowlistReadyCount} är redo för paper-runtime.`);
   }
 
   return {
@@ -779,8 +991,18 @@ function buildDaytradingResultSummary(resources) {
     coverageScore,
     missingDataCount,
     allowlist,
+    approvedRows,
+    allowlistApprovedCount,
+    allowlistReadyCount,
+    allowlistReady,
+    technicalPaperCount,
+    activeCount,
+    totalCount,
+    selectedButNotRunnableCount,
+    blocks,
+    matrix,
     approvedStrategies,
-    topReasons,
+    blockedStrategies,
     explanation: uniqueText(explanation),
   };
 }
@@ -1668,79 +1890,202 @@ function StrategyHistoryDetail({ history, loading, error, onClear, plannerContex
   );
 }
 
-function ResultWhyNoTradesPanel({ resources }) {
-  const summary = buildDaytradingResultSummary(resources);
+function ResultWhyNoTradesPanel({ resources, model }) {
+  const diagnostics = buildPaperTradeDiagnostics(resources, model);
   const allowlistState = endpointState(resources.paperAllowlistStatus);
   const candidatesState = endpointState(resources.candidatesRecent);
   const replayState = endpointState(resources.replaySessions);
   const coverageState = endpointState(resources.dataCoverageStatus);
+  const allowlistRows = diagnostics.approvedStrategies;
+  const blockedRows = diagnostics.blockedStrategies;
+  const technicalPaperCount = diagnostics.technicalPaperCount;
+  const approvedCount = diagnostics.allowlistApprovedCount;
 
   return (
     <section className="sup-section">
       <div className="sup-section-head">
         <div>
-          <h2>Varför inga trades?</h2>
-          <p>Read-only diagnos för varför paper trades skapas, blockeras eller uteblir just nu.</p>
+          <h2>Varför inga paper trades?</h2>
+          <p>Read-only diagnos som skiljer på katalog, runtime, allowlist, kandidater, blockeringar och data coverage.</p>
         </div>
         <SafetyTag />
       </div>
 
-      <div className="sup-grid sup-grid-2" style={{ display: 'grid', gap: 12, gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))' }}>
-        <article className={`sup-block ${summary.paperEnabled ? 'sup-block-ok' : 'sup-block-warning'}`}>
+      <div className="sup-safety-copy" style={{ marginTop: 8 }}>
+        <strong>Snabbtolkning:</strong>{' '}
+        {diagnostics.candidatesCount === 0
+          ? 'Just nu finns inga aktuella kandidater att öppna paper trades på.'
+          : `${diagnostics.candidatesCount} kandidater finns just nu.`}
+        <br />
+        <strong>Tydlig skillnad:</strong> {formatInt(technicalPaperCount, '0')} strategier har teknisk paper-koppling, men bara {formatInt(approvedCount, '0')} är godkända i allowlist just nu.
+        <br />
+        <strong>Allowlist:</strong> bara strategier på listan får skapa låtsasaffärer. Andra strategier kan analyseras, men stoppas innan paper trade.
+      </div>
+
+      <div className="sup-grid sup-grid-2" style={{ display: 'grid', gap: 12, gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))', marginTop: 12 }}>
+        <article className={`sup-block ${diagnostics.paperEnabled ? 'sup-block-ok' : 'sup-block-warning'}`}>
           <span className="sup-block-title">Paper Trading</span>
-          <strong className="sup-block-value">{summary.paperEnabled ? 'Aktivt' : 'Ej aktivt'}</strong>
-          <span className="sup-block-note">Öppna {formatInt(summary.openCount, '0')} · stängda {formatInt(summary.closedCount, '0')} · blockerade {formatInt(summary.blockedCount, '0')}</span>
+          <strong className="sup-block-value">{diagnostics.paperEnabled ? 'Aktivt' : 'Ej aktivt'}</strong>
+          <span className="sup-block-note">Öppna {formatInt(diagnostics.openCount, '0')} · stängda {formatInt(diagnostics.closedCount, '0')} · blockerade {formatInt(diagnostics.blockedCount, '0')}</span>
         </article>
         <article className="sup-block sup-block-neutral">
           <span className="sup-block-title">Senaste paper-event</span>
-          <strong className="sup-block-value">{summary.latestEventAt ? formatDateTime(summary.latestEventAt) : 'Ingen eventdata ännu'}</strong>
-          <span className="sup-block-note">{summary.latestEventAt ? ageText(summary.latestEventAt) : 'Systemet väntar på nya signaler.'}</span>
+          <strong className="sup-block-value">{diagnostics.latestEventAt ? formatDateTime(diagnostics.latestEventAt) : 'Ingen eventdata ännu'}</strong>
+          <span className="sup-block-note">{diagnostics.latestEventAt ? ageText(diagnostics.latestEventAt) : 'Systemet väntar på nya signaler.'}</span>
         </article>
         <article className={`sup-block ${allowlistState.tone === 'good' ? 'sup-block-ok' : 'sup-block-neutral'}`}>
           <span className="sup-block-title">Allowlist</span>
-          <strong className="sup-block-value">{formatInt(summary.allowlist?.readyForPaperRuntime, '0')} redo</strong>
-          <span className="sup-block-note">{formatInt(summary.allowlist?.totalApproved, '0')} godkända · {formatInt(summary.allowlist?.pendingRuntimeConnection, '0')} väntar på runtime</span>
+          <strong className="sup-block-value">{formatInt(diagnostics.allowlistReadyCount, '0')} redo</strong>
+          <span className="sup-block-note">{formatInt(diagnostics.allowlistApprovedCount, '0')} godkända · {formatInt(diagnostics.allowlist?.pendingRuntimeConnection, '0')} väntar på runtime</span>
         </article>
         <article className={`sup-block ${coverageState.tone === 'good' ? 'sup-block-ok' : 'sup-block-warning'}`}>
           <span className="sup-block-title">Data coverage</span>
-          <strong className="sup-block-value">{summary.coverageScore == null ? 'Ingen data ännu' : `${summary.coverageScore}/100`}</strong>
-          <span className="sup-block-note">{formatInt(summary.missingDataCount, '0')} symboler saknar data</span>
+          <strong className="sup-block-value">{diagnostics.coverageScore == null ? 'Ingen data ännu' : `${diagnostics.coverageScore}/100`}</strong>
+          <span className="sup-block-note">{formatInt(diagnostics.missingDataCount, '0')} symboler saknar data</span>
         </article>
         <article className={`sup-block ${candidatesState.tone === 'good' ? 'sup-block-neutral' : 'sup-block-warning'}`}>
           <span className="sup-block-title">Candidates</span>
-          <strong className="sup-block-value">{formatInt(summary.candidatesCount, '0')}</strong>
-          <span className="sup-block-note">Antal aktuella kandidater i senaste GET-svaret.</span>
+          <strong className="sup-block-value">{formatInt(diagnostics.candidatesCount, '0')}</strong>
+          <span className="sup-block-note">Aktuella kandidater i senaste GET-svaret.</span>
         </article>
         <article className={`sup-block ${replayState.tone === 'good' ? 'sup-block-neutral' : 'sup-block-warning'}`}>
           <span className="sup-block-title">Replay sessions</span>
-          <strong className="sup-block-value">{formatInt(summary.replayCount, '0')}</strong>
-          <span className="sup-block-note">Används som extra diagnos för varför underlag kan saknas.</span>
+          <strong className="sup-block-value">{formatInt(diagnostics.replayCount, '0')}</strong>
+          <span className="sup-block-note">Används som extra diagnos när historik saknas.</span>
         </article>
       </div>
 
-      <div className="sup-v2-report-lead" style={{ marginTop: 12 }}>
+      <div className="sup-v2-report-lead" style={{ marginTop: 12, marginBottom: 0 }}>
         <strong>Systemet kör, men inga trades skapas just nu eftersom…</strong>
         <div style={{ marginTop: 8, display: 'grid', gap: 6 }}>
-          {summary.explanation.map((line) => (
+          {diagnostics.explanation.map((line) => (
             <div key={line}>{line}</div>
           ))}
         </div>
       </div>
 
+      <div style={{ marginTop: 14 }}>
+        <div style={{ fontWeight: 800, marginBottom: 8 }}>Statusmatris</div>
+        <div style={{ overflowX: 'auto' }}>
+          <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 560 }}>
+            <thead>
+              <tr>
+                {['Grupp', 'Antal', 'Vad betyder det?'].map((label) => (
+                  <th key={label} style={{ textAlign: 'left', padding: '10px 12px', borderBottom: '1px solid rgba(148,163,184,.24)', fontSize: 13 }}>
+                    {label}
+                  </th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {diagnostics.matrix.map((row) => (
+                <tr key={row.group}>
+                  <td style={{ padding: '10px 12px', borderBottom: '1px solid rgba(148,163,184,.12)', fontWeight: 700 }}>{row.group}</td>
+                  <td style={{ padding: '10px 12px', borderBottom: '1px solid rgba(148,163,184,.12)' }}>{formatInt(row.count, '0')}</td>
+                  <td style={{ padding: '10px 12px', borderBottom: '1px solid rgba(148,163,184,.12)', lineHeight: 1.45 }}>{row.meaning}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </div>
+
       <div className="sup-v2-report-lead" style={{ marginTop: 12, marginBottom: 0 }}>
         <strong>Vanligaste blockeringsorsaker:</strong>{' '}
-        {summary.topReasons.length > 0
-          ? summary.topReasons.map((row) => `${row.reason} (${row.count})`).join(' · ')
+        {diagnostics.blocks.reasons.length > 0
+          ? diagnostics.blocks.reasons.map((row) => `${row.reason} (${row.count})`).join(' · ')
           : 'Inga tydliga blockeringsorsaker ännu.'}
+      </div>
+
+      <div style={{ marginTop: 14 }}>
+        <div style={{ fontWeight: 800, marginBottom: 8 }}>Godkända strategier på allowlist</div>
+        {allowlistRows.length > 0 ? (
+          <div style={{ overflowX: 'auto' }}>
+            <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 760 }}>
+              <thead>
+                <tr>
+                  {['Strategy id', 'Display name', 'Status', 'Runtime ready', 'Senaste aktivitet', 'Blockeringar'].map((label) => (
+                    <th key={label} style={{ textAlign: 'left', padding: '10px 12px', borderBottom: '1px solid rgba(148,163,184,.24)', fontSize: 13 }}>
+                      {label}
+                    </th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {allowlistRows.map((row) => (
+                  <tr key={row.id}>
+                    <td style={{ padding: '10px 12px', borderBottom: '1px solid rgba(148,163,184,.12)', fontWeight: 700 }}>{row.id}</td>
+                    <td style={{ padding: '10px 12px', borderBottom: '1px solid rgba(148,163,184,.12)' }}>{row.name}</td>
+                    <td style={{ padding: '10px 12px', borderBottom: '1px solid rgba(148,163,184,.12)' }}>
+                      <span className={`badge badge-${row.runtimeReady ? 'green' : 'yellow'}`}>{row.status}</span>
+                    </td>
+                    <td style={{ padding: '10px 12px', borderBottom: '1px solid rgba(148,163,184,.12)' }}>
+                      {row.runtimeReady ? 'Ja' : 'Nej'}
+                    </td>
+                    <td style={{ padding: '10px 12px', borderBottom: '1px solid rgba(148,163,184,.12)', lineHeight: 1.45 }}>
+                      {row.latestActivityAt ? `${row.latestActivityLabel} · ${ageText(row.latestActivityAt)}` : row.latestActivityLabel}
+                      {row.latestBlockedReason ? <div style={{ marginTop: 4, opacity: 0.8 }}>{row.latestBlockedReason}</div> : null}
+                    </td>
+                    <td style={{ padding: '10px 12px', borderBottom: '1px solid rgba(148,163,184,.12)' }}>
+                      {formatInt(row.blockedCount, '0')}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        ) : (
+          <div className="sup-safety-copy">Ingen lista över godkända strategier finns i payloaden just nu. Endpointen är fortfarande read-only och sidan förblir stabil.</div>
+        )}
+      </div>
+
+      <div style={{ marginTop: 14 }}>
+        <div style={{ fontWeight: 800, marginBottom: 8 }}>Blockerade strategier</div>
+        {blockedRows.length > 0 ? (
+          <div style={{ overflowX: 'auto' }}>
+            <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 760 }}>
+              <thead>
+                <tr>
+                  {['Strategy id', 'Blockeringar', 'Vanligaste blockedReason', 'Allowlist-status', 'Senaste aktivitet'].map((label) => (
+                    <th key={label} style={{ textAlign: 'left', padding: '10px 12px', borderBottom: '1px solid rgba(148,163,184,.24)', fontSize: 13 }}>
+                      {label}
+                    </th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {blockedRows.map((row) => (
+                  <tr key={`${row.id}-${row.name}`}>
+                    <td style={{ padding: '10px 12px', borderBottom: '1px solid rgba(148,163,184,.12)', fontWeight: 700 }}>
+                      {row.id || row.name}
+                      <div style={{ marginTop: 4, opacity: 0.8 }}>{row.name}</div>
+                    </td>
+                    <td style={{ padding: '10px 12px', borderBottom: '1px solid rgba(148,163,184,.12)' }}>{formatInt(row.count, '0')}</td>
+                    <td style={{ padding: '10px 12px', borderBottom: '1px solid rgba(148,163,184,.12)', lineHeight: 1.45 }}>
+                      {row.commonReason}
+                      {row.latestReason && row.latestReason !== row.commonReason ? <div style={{ marginTop: 4, opacity: 0.8 }}>Senaste: {row.latestReason}</div> : null}
+                    </td>
+                    <td style={{ padding: '10px 12px', borderBottom: '1px solid rgba(148,163,184,.12)' }}>{row.allowlistStatus}</td>
+                    <td style={{ padding: '10px 12px', borderBottom: '1px solid rgba(148,163,184,.12)' }}>{row.latestAt ? `${formatDateTime(row.latestAt)} · ${ageText(row.latestAt)}` : 'Ingen aktivitet ännu'}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        ) : (
+          <div className="sup-safety-copy">Inga blockerade strategier finns i den senaste loggen ännu.</div>
+        )}
       </div>
     </section>
   );
 }
 
-function PaperAllowlistPanel({ resource }) {
-  const state = endpointState(resource);
-  const data = unwrap(resource) || {};
-  const rows = normalizeArray(data?.allowlist || data?.approvedStrategies || data?.strategies);
+function PaperAllowlistPanel({ resources, model }) {
+  const diagnostics = buildPaperTradeDiagnostics(resources, model);
+  const state = endpointState(resources.paperAllowlistStatus);
+  const data = unwrap(resources.paperAllowlistStatus) || {};
+  const rows = diagnostics.approvedStrategies;
+  const blockedRows = diagnostics.blockedStrategies;
   const ready = data?.paperRuntimeReady === true || data?.runtimeConnectionStatus === 'ready';
 
   return (
@@ -1756,6 +2101,10 @@ function PaperAllowlistPanel({ resource }) {
       {state.label === 'Problem' && !state.missing && (
         <div className="sup-warning">Allowlist-status kunde inte läsas just nu. Panelen är read-only och visar neutral fallback.</div>
       )}
+
+      <div className="sup-safety-copy" style={{ marginBottom: 12 }}>
+        <strong>Nyckelpoäng:</strong> {formatInt(diagnostics.technicalPaperCount, '0')} strategier har teknisk paper-koppling, men bara {formatInt(diagnostics.allowlistApprovedCount, '0')} är godkända i allowlist just nu.
+      </div>
 
       <div className="sup-grid sup-grid-2" style={{ display: 'grid', gap: 12, gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))' }}>
         <article className={`sup-block ${ready ? 'sup-block-ok' : 'sup-block-neutral'}`}>
@@ -1780,15 +2129,83 @@ function PaperAllowlistPanel({ resource }) {
         </article>
       </div>
 
-      {rows.length > 0 ? (
-        <div className="sup-v2-report-lead" style={{ marginTop: 12, marginBottom: 0 }}>
-          <strong>Godkända strategier:</strong> {rows.map((row) => `${textValue(row?.name || row?.id, 'Okänd strategi')} (${textValue(row?.paperRuntimeStatus || row?.runtimeConnectionStatus, 'okänd status')})`).join(' · ')}
-        </div>
-      ) : (
-        <div className="sup-safety-copy" style={{ marginTop: 12 }}>
-          Ingen lista över godkända strategier finns i payloaden just nu. Endpointen är fortfarande read-only och sidan förblir stabil.
-        </div>
-      )}
+      <div style={{ marginTop: 14 }}>
+        <div style={{ fontWeight: 800, marginBottom: 8 }}>Godkända strategier</div>
+        {rows.length > 0 ? (
+          <div style={{ overflowX: 'auto' }}>
+            <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 840 }}>
+              <thead>
+                <tr>
+                  {['Strategy id', 'Display name', 'Status', 'Runtime ready', 'Senaste aktivitet', 'Blockeringar'].map((label) => (
+                    <th key={label} style={{ textAlign: 'left', padding: '10px 12px', borderBottom: '1px solid rgba(148,163,184,.24)', fontSize: 13 }}>
+                      {label}
+                    </th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {rows.map((row) => (
+                  <tr key={row.id}>
+                    <td style={{ padding: '10px 12px', borderBottom: '1px solid rgba(148,163,184,.12)', fontWeight: 700 }}>{row.id}</td>
+                    <td style={{ padding: '10px 12px', borderBottom: '1px solid rgba(148,163,184,.12)' }}>{row.name}</td>
+                    <td style={{ padding: '10px 12px', borderBottom: '1px solid rgba(148,163,184,.12)' }}>
+                      <span className={`badge badge-${row.runtimeReady ? 'green' : 'yellow'}`}>{row.status}</span>
+                    </td>
+                    <td style={{ padding: '10px 12px', borderBottom: '1px solid rgba(148,163,184,.12)' }}>{row.runtimeReady ? 'Ja' : 'Nej'}</td>
+                    <td style={{ padding: '10px 12px', borderBottom: '1px solid rgba(148,163,184,.12)', lineHeight: 1.45 }}>
+                      {row.latestActivityAt ? `${row.latestActivityLabel} · ${ageText(row.latestActivityAt)}` : row.latestActivityLabel}
+                      {row.latestBlockedReason ? <div style={{ marginTop: 4, opacity: 0.8 }}>{row.latestBlockedReason}</div> : null}
+                    </td>
+                    <td style={{ padding: '10px 12px', borderBottom: '1px solid rgba(148,163,184,.12)' }}>{formatInt(row.blockedCount, '0')}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        ) : (
+          <div className="sup-safety-copy" style={{ marginTop: 12 }}>
+            Ingen lista över godkända strategier finns i payloaden just nu. Endpointen är fortfarande read-only och sidan förblir stabil.
+          </div>
+        )}
+      </div>
+
+      <div style={{ marginTop: 14 }}>
+        <div style={{ fontWeight: 800, marginBottom: 8 }}>Blockerade strategier</div>
+        {blockedRows.length > 0 ? (
+          <div style={{ overflowX: 'auto' }}>
+            <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 760 }}>
+              <thead>
+                <tr>
+                  {['Strategy id', 'Blockeringar', 'Vanligaste blockedReason', 'Allowlist-status', 'Senaste aktivitet'].map((label) => (
+                    <th key={label} style={{ textAlign: 'left', padding: '10px 12px', borderBottom: '1px solid rgba(148,163,184,.24)', fontSize: 13 }}>
+                      {label}
+                    </th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {blockedRows.map((row) => (
+                  <tr key={`${row.id}-${row.name}`}>
+                    <td style={{ padding: '10px 12px', borderBottom: '1px solid rgba(148,163,184,.12)', fontWeight: 700 }}>
+                      {row.id || row.name}
+                      <div style={{ marginTop: 4, opacity: 0.8 }}>{row.name}</div>
+                    </td>
+                    <td style={{ padding: '10px 12px', borderBottom: '1px solid rgba(148,163,184,.12)' }}>{formatInt(row.count, '0')}</td>
+                    <td style={{ padding: '10px 12px', borderBottom: '1px solid rgba(148,163,184,.12)', lineHeight: 1.45 }}>
+                      {row.commonReason}
+                      {row.latestReason && row.latestReason !== row.commonReason ? <div style={{ marginTop: 4, opacity: 0.8 }}>Senaste: {row.latestReason}</div> : null}
+                    </td>
+                    <td style={{ padding: '10px 12px', borderBottom: '1px solid rgba(148,163,184,.12)' }}>{row.allowlistStatus}</td>
+                    <td style={{ padding: '10px 12px', borderBottom: '1px solid rgba(148,163,184,.12)' }}>{row.latestAt ? `${formatDateTime(row.latestAt)} · ${ageText(row.latestAt)}` : 'Ingen aktivitet ännu'}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        ) : (
+          <div className="sup-safety-copy">Inga blockerade strategier finns i den senaste loggen ännu.</div>
+        )}
+      </div>
     </section>
   );
 }
@@ -3013,6 +3430,12 @@ function buildDecisionModel(resources) {
   const learningConnectorStatus = unwrap(resources.learningConnectorStatus);
   const daytradingLearning = unwrap(resources.daytradingLearningSummary)?.data || null;
   const learningSummary = daytradingLearning?.summary || null;
+  const paperAllowlistStatus = unwrap(resources.paperAllowlistStatus);
+  const paperEvents = unwrap(resources.paperEvents);
+  const candidatesRecent = unwrap(resources.candidatesRecent);
+  const candidatesStats = unwrap(resources.candidatesStats);
+  const replaySessions = unwrap(resources.replaySessions);
+  const dataCoverageStatus = unwrap(resources.dataCoverageStatus);
   const priority = unwrap(resources.priority);
   const optimization = unwrap(resources.optimization);
   const marketRegime = unwrap(resources.marketRegime);
@@ -3029,6 +3452,18 @@ function buildDecisionModel(resources) {
   const runtimeStrategies = normalizeArray(runtime?.strategies);
   const topFocus = normalizeArray(priority?.topFocus || []);
   const avoidList = normalizeArray(priority?.avoid || []);
+  const paperAllowlistRows = normalizeArray(paperAllowlistStatus?.allowlist);
+  const allowlistApprovedCount = toNumber(paperAllowlistStatus?.totalApproved) ?? paperAllowlistRows.length;
+  const allowlistReadyCount = toNumber(paperAllowlistStatus?.readyForPaperRuntime) ?? paperAllowlistRows.filter((row) => row?.paperRuntimeReady !== false).length;
+  const candidateCount = toNumber(candidatesStats?.total) ?? normalizeArray(candidatesRecent?.candidates).length;
+  const replayCount = normalizeArray(replaySessions?.sessions).length;
+  const paperBlockCount = toNumber(paperStatus?.summary?.blockedCount) ?? normalizeArray(paperEvents?.events).filter((event) => {
+    const type = String(event?.type || event?.event_type || '').toLowerCase();
+    const decision = String(event?.decision || '').toLowerCase();
+    return type.includes('blocked') || type.includes('skip') || type.includes('gate') || decision === 'blocked' || decision === 'skipped';
+  }).length;
+  const coverageScore = toNumber(dataCoverageStatus?.total_coverage_score);
+  const missingDataCount = toNumber(dataCoverageStatus?.symbols_missing_data);
   const catalogStatusCounts = runtimeStrategies.reduce((acc, strategy) => {
     const key = strategyCatalogStatusKey(strategy);
     acc[key] = (acc[key] || 0) + 1;
@@ -3057,6 +3492,7 @@ function buildDecisionModel(resources) {
   const noEntryRule = runtimeStrategies.filter((strategy) => strategy.runtime_status === 'no_entry_rule');
   const noMapping = runtimeStrategies.filter((strategy) => strategy.runtime_status === 'not_connected');
   const selectedButNotRunnableCount = selectedButNotRunnable.length;
+  const totalCount = toNumber(runtimeSummary.total) ?? runtimeStrategies.length;
   const paperTradeCount = toNumber(runtimeSummary.can_create_paper_trade_count) ?? runnableStrategies.length;
   const selectedCount = toNumber(runtimeSummary.enabled_by_user) ?? selectedStrategies.length;
   const noEntryRuleCount = toNumber(runtimeSummary.runtime_no_entry_rule) ?? noEntryRule.length;
@@ -3118,14 +3554,19 @@ function buildDecisionModel(resources) {
     : 'Ingen strategi saknar mapping';
 
   const systemSummary = systemProblems.length === 0
-    ? `Systemet är stabilt och ${paperTradeCount} strategier kan faktiskt skapa paper trades.`
-    : `Systemet är stabilt, men endast ${paperTradeCount} strategier kan faktiskt skapa paper trades. ${selectedButNotRunnableCount} strategier är valda men saknar körbar koppling.`;
+    ? `${totalCount} strategier finns i katalogen, ${selectedCount} är aktiva, ${paperTradeCount} har teknisk paper-koppling och bara ${allowlistApprovedCount} är godkända i allowlist just nu.`
+    : `${totalCount} strategier finns i katalogen, ${selectedCount} är aktiva, ${paperTradeCount} har teknisk paper-koppling och bara ${allowlistApprovedCount} är godkända i allowlist just nu. ${selectedButNotRunnableCount} strategier är valda men saknar körbar koppling.`;
 
   const systemSummaryExtra = uniqueText([
     selectedCount > 0 ? `${selectedCount} strategier är valda.` : '',
     noEntryRuleCount > 0 ? `${noEntryRuleCount} strategier saknar entry-regel.` : '',
     noMappingCount > 0 ? `${noMappingCount} strategier saknar mapping till runtime.` : '',
-    paperTradeCount > 0 ? `${paperTradeCount} strategier kan skapa paper trades.` : 'Ingen strategi kan skapa paper trades ännu.',
+    paperTradeCount > 0 ? `${paperTradeCount} strategier har teknisk paper-koppling, men bara ${allowlistApprovedCount} är godkända i allowlist.` : 'Ingen strategi har teknisk paper-koppling ännu.',
+    allowlistApprovedCount > 0 ? `${allowlistApprovedCount} strategier är godkända i allowlist.` : 'Inga strategier är godkända i allowlist ännu.',
+    candidateCount === 0 ? 'Just nu finns inga aktuella kandidater.' : `${candidateCount} kandidater finns just nu.`,
+    replayCount === 0 ? 'Replay-underlag saknas ännu.' : `${replayCount} replay-sessioner finns.`,
+    coverageScore != null ? `Data coverage: ${coverageScore}/100.` : '',
+    missingDataCount != null && missingDataCount > 0 ? `${missingDataCount} symboler saknar data.` : '',
     daytradingLearning?.summary?.best_strategy?.key ? `Bäst i learning: ${daytradingLearning.summary.best_strategy.key}.` : '',
   ]);
 
@@ -3227,11 +3668,12 @@ function buildDecisionModel(resources) {
   ]);
 
   const problemPoints = uniqueText([
-    selectedButNotRunnableLabel,
-    entryRuleLabel,
-    mappingLabel,
-    paperTradeCount > 0 ? `${paperTradeCount} strategier kan skapa paper trades` : 'Ingen strategi kan skapa paper trades ännu',
-    systemProblems[0] || '',
+    `${totalCount} strategier i katalogen`,
+    `${selectedCount} aktiva strategier`,
+    `${paperTradeCount} tekniskt paper-kopplade`,
+    `${allowlistApprovedCount} godkända i allowlist`,
+    candidateCount === 0 ? 'Inga aktuella kandidater just nu' : `${candidateCount} kandidater just nu`,
+    paperBlockCount > 0 ? `${paperBlockCount} blockerade paper-events senaste perioden` : 'Inga blockerade paper-events senaste perioden',
   ]);
 
   const actionItems = [];
@@ -3240,6 +3682,9 @@ function buildDecisionModel(resources) {
   }
   if (selectedButNotRunnableCount > 0) {
     actionItems.push('Kontrollera Trading OS-vyn och granska rekommenderade tester.');
+  }
+  if (candidateCount === 0) {
+    actionItems.push('Det finns inga aktuella kandidater att öppna just nu. Vänta på nya signaler eller mer data.');
   }
   if (noEntryRuleCount > 0) {
     actionItems.push('Implementera entry-regler för strategier som är valda men inte körbara.');
@@ -3256,7 +3701,7 @@ function buildDecisionModel(resources) {
 
   const recommendationLabel = systemProblems.length > 0 || marketMode === 'Risk-Off'
     ? 'Undvik'
-    : bestStrategy && paperTradeCount > 0
+    : bestStrategy && candidateCount > 0 && allowlistApprovedCount > 0
       ? 'Testa'
       : 'Vänta';
 
@@ -3297,6 +3742,12 @@ function buildDecisionModel(resources) {
     marketRegime,
     paperStatus,
     paperPerformance,
+    paperAllowlistStatus,
+    paperEvents,
+    candidatesRecent,
+    candidatesStats,
+    replaySessions,
+    dataCoverageStatus,
     recommendation,
     runtime,
     runtimeSummary,
@@ -3311,6 +3762,13 @@ function buildDecisionModel(resources) {
     selectedCount,
     paperTradeCount,
     selectedButNotRunnableCount,
+    allowlistApprovedCount,
+    allowlistReadyCount,
+    candidateCount,
+    replayCount,
+    coverageScore,
+    missingDataCount,
+    paperBlockCount,
     noEntryRuleCount,
     noMappingCount,
     marketMode,
@@ -3678,7 +4136,7 @@ export default function SupervisorV2Page() {
       tone: 'warning',
     },
   ];
-  const resultSummary = useMemo(() => buildDaytradingResultSummary(resources), [resources]);
+  const resultSummary = useMemo(() => buildPaperTradeDiagnostics(resources, model), [resources, model]);
 
   const systemStatusCards = [
     {
@@ -3799,8 +4257,8 @@ export default function SupervisorV2Page() {
         </div>
       </section>
 
-      <ResultWhyNoTradesPanel resources={resources} />
-      <PaperAllowlistPanel resource={resources.paperAllowlistStatus} />
+      <ResultWhyNoTradesPanel resources={resources} model={model} />
+      <PaperAllowlistPanel resources={resources} model={model} />
 
       <section className="sup-section sup-intro-section">
         <div className="sup-section-head">
@@ -4234,9 +4692,9 @@ export default function SupervisorV2Page() {
 
         <div className="sup-grid sup-grid-5 sup-v2-metrics">
           <article className="sup-block sup-block-neutral">
-            <span className="sup-block-title">Kan köra paper trades</span>
+            <span className="sup-block-title">Tekniskt paper-kopplade</span>
             <strong className="sup-block-value">{formatInt(model.paperTradeCount, 'Ingen data ännu')}</strong>
-            <span className="sup-block-note">Strategier som faktiskt kan skapa paper trades.</span>
+            <span className="sup-block-note">Kan skapa paper trades tekniskt, men får ändå stoppas av allowlist eller andra regler.</span>
           </article>
           <article className="sup-block sup-block-neutral">
             <span className="sup-block-title">Valda men inte körbara</span>
@@ -4296,7 +4754,8 @@ export default function SupervisorV2Page() {
               badge: model.systemStatus,
               summary: model.systemConclusion,
               points: uniqueText([
-                `Kan skapa paper trades: ${formatInt(model.paperTradeCount, 'Ingen data ännu')}`,
+                `Tekniskt paper-kopplade: ${formatInt(model.paperTradeCount, 'Ingen data ännu')}`,
+                `Godkända i allowlist: ${formatInt(model.allowlistApprovedCount, 'Ingen data ännu')}`,
                 model.selectedButNotRunnableLabel,
                 model.entryRuleLabel,
                 model.mappingLabel,
