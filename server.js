@@ -94,6 +94,13 @@ function requireAuthForMutations(req, res, next) {
   if (path === '/strategies/test-queue/add' || /^\/strategies\/test-queue\/[^/]+\/cancel$/.test(path)) {
     return next();
   }
+  // Paper-only allowlist approve/reject — same UI-exposure model as the
+  // test-queue actions above. These endpoints are SAFETY-locked (paper_only and
+  // reject any live/order/broker intent in the body), so exempting them from
+  // dashboard auth never enables real trading, orders, broker or risk changes.
+  if (path === '/automation/approvals/approve' || path === '/automation/approvals/reject') {
+    return next();
+  }
   if (req.method === 'GET' || req.method === 'HEAD' || req.method === 'OPTIONS') {
     return next();
   }
