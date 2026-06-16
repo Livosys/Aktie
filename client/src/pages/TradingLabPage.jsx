@@ -873,11 +873,49 @@ function useRecommendedConfig() {
   return { data, loading, error };
 }
 
-function ApplyPanel({ toggles, params, exits, onApplyParams, onApplyToggles, onApplyExits }) {
+function usePaperOptimizationCandidates(limit = 5) {
+  const [data, setData] = React.useState(null);
+  const [loading, setLoading] = React.useState(true);
+  const [error, setError] = React.useState(null);
+
+  const load = React.useCallback(() => {
+    setLoading(true);
+    setError(null);
+    fetch(`/api/optimization/paper-candidates?limit=${limit}`)
+      .then(r => r.ok ? r.json() : null)
+      .then(d => { setData(d); setLoading(false); })
+      .catch(e => { setError(e.message); setLoading(false); });
+  }, [limit]);
+
+  React.useEffect(() => { load(); }, [load]);
+  return { data, loading, error, reload: load };
+}
+
+const PAPER_CANDIDATE_STATUS_LABELS = {
+  approved: 'Godkänd',
+  not_approved: 'Ej godkänd',
+  max_nått: 'Max nått',
+  nekad: 'Nekad',
+  needs_strategy_id: 'Saknar strategyId',
+  unknown: 'Okänd',
+};
+
+function paperCandidateStatusClass(status) {
+  return `opt-paper-candidate-${String(status || 'unknown')
+    .toLowerCase()
+    .replace(/å/g, 'a')
+    .replace(/[^a-z0-9_-]/g, '_')}`;
+}
+
+function ApplyPanel({ summary, toggles, params, exits, onApplyParams, onApplyToggles, onApplyExits }) {
   const { data, loading, error } = useRecommendedConfig();
+  const { data: paperCandidatesData, loading: paperCandidatesLoading, error: paperCandidatesError, reload: reloadPaperCandidates } = usePaperOptimizationCandidates(5);
   const [selected, setSelected] = React.useState({});
   const [applied, setApplied] = React.useState(false);
   const [hasBackup, setHasBackup] = React.useState(false);
+  const [candidateMessage, setCandidateMessage] = React.useState('');
+  const [candidateError, setCandidateError] = React.useState('');
+  const [savingCandidate, setSavingCandidate] = React.useState(false);
 
   React.useEffect(() => {
     setHasBackup(!!localStorage.getItem('tradinglab_config_v1_backup'));
@@ -896,9 +934,19 @@ function ApplyPanel({ toggles, params, exits, onApplyParams, onApplyToggles, onA
   if (!data?.changes?.length) return <div className="opt-empty">Inga rekommendationer tillgängliga ännu — kör mer paper trading.</div>;
 
   const { changes, tradeCount, hasEnoughData } = data;
+  const latestPaperCandidate = paperCandidatesData?.latest || paperCandidatesData?.candidates?.[0] || null;
 
   const impactColor = { high: '#ef4444', medium: '#f59e0b', low: '#94a3b8' };
   const impactLabel = { high: 'Hög', medium: 'Medel', low: 'Låg' };
+  const changeSelection = changes.filter(c => selected[c.id]).map((change) => ({
+    id: change.id,
+    key: change.key,
+    label: change.label,
+    type: change.type,
+    impact: change.impact,
+    recommendedValue: change.recommendedValue,
+    rationale: change.rationale,
+  }));
 
   function getCurrentValue(change) {
     if (change.type === 'param')  return params[change.key];
@@ -914,9 +962,103 @@ function ApplyPanel({ toggles, params, exits, onApplyParams, onApplyToggles, onA
     return `${val}`;
   }
 
-  function applySelected() {
+  function resolvePaperCandidateContext() {
+    const bestStrategy =
+      summary?.strategyBatchTesting?.bestStrategy?.strategy_id
+        ? summary.strategyBatchTesting.bestStrategy
+        : summary?.daytradingStrategies?.bestStrategy?.strategy_id
+          ? summary.daytradingStrategies.bestStrategy
+          : summary?.topStrategyGrid?.bestOverall?.strategy_id
+            ? summary.topStrategyGrid.bestOverall
+            : summary?.topStrategyGrid?.bestOverall?.strategy_name
+              ? summary.topStrategyGrid.bestOverall
+              : null;
+    const strategyId =
+      bestStrategy?.strategy_id
+      || bestStrategy?.id
+      || bestStrategy?.strategyId
+      || null;
+    const strategyName =
+      bestStrategy?.strategy_name
+      || bestStrategy?.name
+      || bestStrategy?.label
+      || strategyId
+      || 'Okänd strategi';
+    const sourceKind = summary?.strategyBatchTesting?.bestStrategy?.strategy_id
+      ? 'batch'
+      : summary?.daytradingStrategies?.bestStrategy?.strategy_id
+        ? 'paper'
+        : 'optimization';
+    return { bestStrategy, strategyId, strategyName, sourceKind };
+  }
+
+  function buildPaperCandidatePayload() {
+    const { strategyId, strategyName, sourceKind } = resolvePaperCandidateContext();
+    const selectedIds = changeSelection.map((change) => change.id).sort();
+    const recommendationId = [
+      summary?.generatedAt || 'summary',
+      sourceKind,
+      strategyId || 'no_strategy',
+      selectedIds.join('|') || 'no_changes',
+    ].join(':');
+    return {
+      strategyId,
+      strategyName,
+      source: 'ai_agent_batch_recommendation',
+      sourceKind,
+      sourceLabel: `AI-agent ${sourceKind}`,
+      recommendationId,
+      reason: 'manual_apply_from_ai_agent',
+      tradeCount: summary?.tradeCount ?? tradeCount ?? null,
+      replayRunCount: summary?.replayRunCount ?? null,
+      overallScore: summary?.overallScore ?? null,
+      confidence: summary?.overallScore ?? null,
+      dataVolume: summary?.tradeCount ?? null,
+      selectedChanges: changeSelection,
+      appliedConfig: { toggles, params, exits },
+      summarySnapshot: {
+        generatedAt: summary?.generatedAt || null,
+        tradeCount: summary?.tradeCount ?? null,
+        replayRunCount: summary?.replayRunCount ?? null,
+        overallScore: summary?.overallScore ?? null,
+      },
+    };
+  }
+
+  async function savePaperCandidate() {
+    const payload = buildPaperCandidatePayload();
+    if (!payload.strategyId) {
+      setCandidateError('Kunde inte spara kandidat: saknar strategyId från analysdata.');
+      return null;
+    }
+    setSavingCandidate(true);
+    setCandidateError('');
+    try {
+      const res = await fetch('/api/optimization/paper-candidates', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      const json = await res.json().catch(() => null);
+      if (!res.ok || !json?.ok) {
+        throw new Error(json?.error || 'Kunde inte spara paper-testkandidat.');
+      }
+      setCandidateMessage(json.deduped ? 'Paper-testkandidat redan sparad.' : 'Skickad till paper-testkandidater.');
+      await reloadPaperCandidates();
+      return json.candidate || null;
+    } catch (err) {
+      setCandidateError(err.message || 'Kunde inte spara paper-testkandidat.');
+      return null;
+    } finally {
+      setSavingCandidate(false);
+    }
+  }
+
+  async function applySelected() {
     localStorage.setItem('tradinglab_config_v1_backup', JSON.stringify({ toggles, params, exits }));
     setHasBackup(true);
+    setCandidateMessage('');
+    setCandidateError('');
     const paramChanges = {}, toggleChanges = {}, exitChanges = {};
     changes.forEach(c => {
       if (!selected[c.id]) return;
@@ -928,6 +1070,7 @@ function ApplyPanel({ toggles, params, exits, onApplyParams, onApplyToggles, onA
     if (Object.keys(toggleChanges).length) onApplyToggles(toggleChanges);
     if (Object.keys(exitChanges).length)   onApplyExits(exitChanges);
     setApplied(true);
+    await savePaperCandidate();
   }
 
   function undoApply() {
@@ -962,10 +1105,10 @@ function ApplyPanel({ toggles, params, exits, onApplyParams, onApplyToggles, onA
           <button
             className={`opt-apply-btn${applied ? ' opt-apply-done' : ''}`}
             onClick={applySelected}
-            disabled={selectedCount === 0}
+            disabled={selectedCount === 0 || savingCandidate}
             type="button"
           >
-            {applied ? '✓ Applicerat' : `Applicera valda (${selectedCount})`}
+            {savingCandidate ? 'Sparar kandidat...' : (applied ? '✓ Applicerat' : `Applicera valda (${selectedCount})`)}
           </button>
         </div>
       </div>
@@ -1030,6 +1173,100 @@ function ApplyPanel({ toggles, params, exits, onApplyParams, onApplyToggles, onA
           Välj alla ({changes.length})
         </label>
         <div className="opt-apply-note">🔒 Testmiljö — inga riktiga orders påverkas</div>
+      </div>
+
+      <div className="opt-paper-candidate-panel">
+        <div className="opt-paper-candidate-head">
+          <div>
+            <div className="opt-paper-candidate-title">Paper-testkandidat</div>
+            <div className="opt-paper-candidate-sub">
+              {paperCandidatesLoading
+                ? 'Läser kandidatstatus...'
+                : latestPaperCandidate
+                  ? 'Senast sparade kandidat från AI-agenten'
+                  : 'När du applicerar sparas rekommendationen som en paper-only kandidat.'}
+            </div>
+          </div>
+          {latestPaperCandidate?.allowlist?.status && (
+            <span className={`opt-paper-candidate-pill ${paperCandidateStatusClass(latestPaperCandidate.allowlist.status)}`}>
+              {PAPER_CANDIDATE_STATUS_LABELS[latestPaperCandidate.allowlist.status] || latestPaperCandidate.allowlist.status}
+            </span>
+          )}
+        </div>
+
+        {candidateMessage && <div className="opt-paper-candidate-msg opt-paper-candidate-msg-good">{candidateMessage}</div>}
+        {candidateError && <div className="opt-paper-candidate-msg opt-paper-candidate-msg-bad">{candidateError}</div>}
+        {paperCandidatesError && <div className="opt-paper-candidate-msg opt-paper-candidate-msg-bad">Kunde inte läsa paper-testkandidater: {paperCandidatesError}</div>}
+
+        {latestPaperCandidate ? (
+          <>
+            <div className="opt-paper-candidate-grid">
+              <div>
+                <span>Strategy</span>
+                <strong>{latestPaperCandidate.strategyName || latestPaperCandidate.strategyId || '–'}</strong>
+              </div>
+              <div>
+                <span>Källa</span>
+                <strong>{latestPaperCandidate.sourceKind || latestPaperCandidate.source || '–'}</strong>
+              </div>
+              <div>
+                <span>Trades analyserade</span>
+                <strong>{latestPaperCandidate.tradeCount ?? tradeCount ?? '–'}</strong>
+              </div>
+              <div>
+                <span>Score / confidence</span>
+                <strong>{latestPaperCandidate.confidence ?? latestPaperCandidate.overallScore ?? '–'}</strong>
+              </div>
+            </div>
+            <div className="opt-paper-candidate-meta">
+              <span>allowlist: {latestPaperCandidate.allowlist?.approvedCount ?? '–'} / {latestPaperCandidate.allowlist?.maxApproved ?? '–'}</span>
+              <span>{latestPaperCandidate.allowlist?.reason || '–'}</span>
+            </div>
+            <div className="opt-paper-candidate-actions">
+              <button
+                className="opt-paper-candidate-approve"
+                type="button"
+                disabled={!latestPaperCandidate.strategyId || latestPaperCandidate.allowlist?.status !== 'not_approved' || savingCandidate}
+                onClick={async () => {
+                  const strategyName = latestPaperCandidate.strategyName || latestPaperCandidate.strategyId || 'strategin';
+                  const ok = window.confirm('Detta godkänner endast låtsashandel. Inga riktiga order kan läggas.');
+                  if (!ok) return;
+                  try {
+                    const res = await fetch('/api/automation/approvals/approve', {
+                      method: 'POST',
+                      headers: { 'Content-Type': 'application/json' },
+                      body: JSON.stringify({
+                        strategyId: latestPaperCandidate.strategyId,
+                        reason: `manual_ui_from_ai_agent:${strategyName}`,
+                      }),
+                    });
+                    const json = await res.json().catch(() => null);
+                    if (!res.ok || !json?.ok) throw new Error(json?.error || 'Kunde inte lägga till i paper allowlist.');
+                    setCandidateMessage(`Lades till i paper allowlist: ${strategyName}.`);
+                    await reloadPaperCandidates();
+                  } catch (err) {
+                    setCandidateError(err.message || 'Kunde inte lägga till i paper allowlist.');
+                  }
+                }}
+              >
+                Lägg till i paper allowlist
+              </button>
+              <span>
+                {latestPaperCandidate.allowlist?.status === 'approved'
+                  ? 'Redan godkänd'
+                  : latestPaperCandidate.allowlist?.status === 'max_nått'
+                    ? `Max nått: ${latestPaperCandidate.allowlist?.reason || 'kan inte godkännas'}`
+                    : latestPaperCandidate.allowlist?.status === 'nekad'
+                      ? `Kan inte godkännas: ${latestPaperCandidate.allowlist?.reason || 'serverorsak'}`
+                      : 'Detta påverkar bara paper-only låtsashandel.'}
+              </span>
+            </div>
+          </>
+        ) : (
+          <div className="opt-paper-candidate-empty">
+            Inga sparade paper-testkandidater ännu.
+          </div>
+        )}
       </div>
     </div>
   );
@@ -1556,6 +1793,7 @@ function AiOptimizationTab({ toggles, params, exits, onApplyParams, onApplyToggl
         <div className="opt-section-content">
           <div className="opt-subsection">Auto-apply — Applicera rekommendationer</div>
           <ApplyPanel
+            summary={data}
             toggles={toggles}
             params={params}
             exits={exits}

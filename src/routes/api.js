@@ -80,6 +80,7 @@ const strategyIdNormalizer = require('../services/strategyIdNormalizerService');
 const automationPlanService = require('../services/automationPlanService');
 const automationApprovalService = require('../services/automationApprovalService');
 const paperAllowlistConfigService = require('../services/paperAllowlistConfigService');
+const aiAgentPaperCandidateService = require('../services/aiAgentPaperCandidateService');
 const strategyTestAutopilot = require('../services/strategyTestAutopilotService');
 const learningConnector = require('../services/learningConnectorService');
 const topStrategyGrid = require('../services/topStrategyGridService');
@@ -3770,6 +3771,43 @@ router.get('/optimization/recommended-config', (req, res) => {
   try {
     res.json({ ok: true, ...aiOptimizationAgent.getRecommendedConfig() });
   } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
+});
+
+router.get('/optimization/paper-candidates', (req, res) => {
+  try {
+    res.json(aiAgentPaperCandidateService.getPaperCandidateStatus(req.query.limit || req.query.n || 25));
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message, safety: aiAgentPaperCandidateService.SAFETY });
+  }
+});
+
+router.post('/optimization/paper-candidates', (req, res) => {
+  try {
+    const body = req.body && typeof req.body === 'object' ? req.body : {};
+    if (body.live_trading_enabled === true || body.can_place_orders === true || body.actions_allowed === true || body.broker_enabled === true) {
+      return res.status(400).json({ ok: false, error: 'paper_candidate_is_paper_only', safety: aiAgentPaperCandidateService.SAFETY });
+    }
+    const result = aiAgentPaperCandidateService.recordPaperCandidate({
+      strategyId: body.strategyId,
+      strategyName: body.strategyName,
+      source: body.source,
+      sourceKind: body.sourceKind,
+      sourceLabel: body.sourceLabel,
+      recommendationId: body.recommendationId,
+      appliedConfig: body.appliedConfig,
+      selectedChanges: body.selectedChanges,
+      reason: body.reason,
+      tradeCount: body.tradeCount,
+      replayRunCount: body.replayRunCount,
+      overallScore: body.overallScore,
+      confidence: body.confidence,
+      dataVolume: body.dataVolume,
+      summarySnapshot: body.summarySnapshot,
+    });
+    res.status(result.ok ? 200 : 400).json(result);
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message, safety: aiAgentPaperCandidateService.SAFETY });
+  }
 });
 
 // ── Market Universe ───────────────────────────────────────────────────────────

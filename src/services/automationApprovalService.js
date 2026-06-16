@@ -278,6 +278,7 @@ module.exports = {
   getMaxApproved,
   getAutomationApprovalsConfig,
   getAutomationApprovals,
+  canApproveStrategy: canApprove,
   approveStrategy,
   rejectStrategy,
 };
