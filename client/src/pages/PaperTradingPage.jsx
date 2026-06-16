@@ -215,15 +215,70 @@ function DataTable({ title, subtitle, columns, rows, emptyText, rowKey }) {
   );
 }
 
-function usePaperAllowlist() {
-  const [state, setState] = useState({ loading: true, data: null });
+function usePaperAllowlist(refreshKey = 0) {
+  const [state, setState] = useState({ loading: true, data: null, error: null });
   useEffect(() => {
     let alive = true;
+    setState((prev) => ({ ...prev, loading: true }));
     fetchJsonWithTimeout('/api/automation/paper-allowlist/status')
-      .then((data) => { if (alive) setState({ loading: false, data }); })
-      .catch(() => { if (alive) setState({ loading: false, data: null }); });
+      .then((data) => { if (alive) setState({ loading: false, data, error: null }); })
+      .catch((err) => {
+        if (!alive) return;
+        setState({
+          loading: false,
+          data: null,
+          error: friendlyAllowlistError(err, 'Kunde inte läsa paper allowlist-status.'),
+        });
+      });
     return () => { alive = false; };
-  }, []);
+  }, [refreshKey]);
+  return state;
+}
+
+function friendlyAllowlistError(err, fallback) {
+  const message = String(err?.message || '').trim();
+  if (/Failed to fetch|NetworkError|Load failed/i.test(message)) return fallback;
+  if (/^timeout_after_\d+ms$/i.test(message)) return `${fallback} (timeout)`;
+  return message || fallback;
+}
+
+function usePaperAllowlistConfig(refreshKey = 0) {
+  const [state, setState] = useState({ loading: true, data: null, error: null });
+  useEffect(() => {
+    let alive = true;
+    setState((prev) => ({ ...prev, loading: true }));
+    fetchJsonWithTimeout('/api/automation/paper-allowlist/config')
+      .then((data) => { if (alive) setState({ loading: false, data, error: null }); })
+      .catch((err) => {
+        if (!alive) return;
+        setState({
+          loading: false,
+          data: null,
+          error: friendlyAllowlistError(err, 'Kunde inte läsa allowlist-config.'),
+        });
+      });
+    return () => { alive = false; };
+  }, [refreshKey]);
+  return state;
+}
+
+function usePaperApprovals(refreshKey = 0) {
+  const [state, setState] = useState({ loading: true, data: null, error: null });
+  useEffect(() => {
+    let alive = true;
+    setState((prev) => ({ ...prev, loading: true }));
+    fetchJsonWithTimeout('/api/automation/approvals')
+      .then((data) => { if (alive) setState({ loading: false, data, error: null }); })
+      .catch((err) => {
+        if (!alive) return;
+        setState({
+          loading: false,
+          data: null,
+          error: friendlyAllowlistError(err, 'Kunde inte läsa approvals.'),
+        });
+      });
+    return () => { alive = false; };
+  }, [refreshKey]);
   return state;
 }
 
@@ -298,9 +353,332 @@ function WhyNoTradesPanel({ runtime, allowlist }) {
   );
 }
 
+function num(v) { const n = Number(v); return Number.isFinite(n) ? n : 0; }
+
+async function postApproval(action, strategyId) {
+  try {
+    const res = await fetch(`/api/automation/approvals/${action}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ strategyId, reason: 'manual_ui_admin' }),
+    });
+    const data = await res.json().catch(() => null);
+    if (!res.ok || !data || data.ok === false) {
+      throw new Error((data && data.error) || `HTTP ${res.status}`);
+    }
+    return data;
+  } catch (err) {
+    throw new Error(friendlyAllowlistError(err, 'Kunde inte uppdatera approvals.'));
+  }
+}
+
+async function postPaperAllowlistConfig(maxApproved) {
+  try {
+    const res = await fetch('/api/automation/paper-allowlist/config', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ maxApproved, reason: 'manual_ui_config' }),
+    });
+    const data = await res.json().catch(() => null);
+    if (!res.ok || !data || data.ok === false) {
+      throw new Error((data && data.error) || `HTTP ${res.status}`);
+    }
+    return data;
+  } catch (err) {
+    throw new Error(friendlyAllowlistError(err, 'Kunde inte spara allowlist-config.'));
+  }
+}
+
+function PaperAllowlistManager({ runtime, allowlist, refreshKey, onRefresh }) {
+  const [approvals, setApprovals] = useState(null);
+  const [config, setConfig] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [busyId, setBusyId] = useState('');
+  const [message, setMessage] = useState(null);   // { type: 'ok' | 'error', text }
+  const [confirm, setConfirm] = useState(null);    // { kind, action, id, name, maxApproved }
+  const [draftMaxApproved, setDraftMaxApproved] = useState('4');
+
+  const approvalsState = usePaperApprovals(refreshKey);
+  const configState = usePaperAllowlistConfig(refreshKey);
+
+  useEffect(() => {
+    setApprovals(approvalsState.data);
+    setConfig(configState.data);
+    setLoading(Boolean(approvalsState.loading || configState.loading));
+  }, [approvalsState.data, approvalsState.loading, configState.data, configState.loading]);
+
+  useEffect(() => {
+    if (configState.data && configState.data.maxApproved != null) {
+      setDraftMaxApproved(String(configState.data.maxApproved));
+    }
+  }, [configState.data]);
+
+  const safe = approvals?.safety || config?.safety || {};
+  const paperOnly = (safe.mode || 'paper_only') === 'paper_only'
+    && safe.actions_allowed !== true && safe.can_place_orders !== true && safe.live_trading_enabled !== true;
+
+  const approvedIds = Array.isArray(approvals?.approvedStrategyIds) ? approvals.approvedStrategyIds : [];
+  const maxApproved = num(config?.maxApproved ?? approvals?.maxApproved);
+  const hardMaxApproved = num(config?.hardMaxApproved ?? approvals?.hardMaxApproved) || 10;
+  const minApproved = num(config?.minApproved ?? approvals?.minApproved) || 1;
+  const approvedCount = approvedIds.length;
+  const slotFree = maxApproved > 0 && approvedCount < maxApproved;
+
+  const strategies = Array.isArray(runtime?.strategies) ? runtime.strategies : [];
+  const stratById = new Map(strategies.map((s) => [s.strategy_id, s]));
+  const allowRows = Array.isArray(allowlist?.allowlist) ? allowlist.allowlist : [];
+  const allowMap = new Map(allowRows.map((r) => [r.id, r]));
+
+  const approvedRows = approvedIds.map((id) => {
+    const s = stratById.get(id) || {};
+    const a = allowMap.get(id) || {};
+    return {
+      id,
+      name: a.name || s.strategy_name || id,
+      runtimeReady: a.paperRuntimeReady === true,
+      events: num(s.openCount) + num(s.closedCount) + num(s.blockedCount),
+      latestAt: s.latestEventAt || '',
+    };
+  });
+
+  const nonApproved = strategies
+    .filter((s) => !approvedIds.includes(s.strategy_id))
+    .map((s) => ({
+      id: s.strategy_id,
+      name: s.strategy_name || s.strategy_id,
+      blockedCount: num(s.blockedCount),
+      latestAt: s.latestEventAt || '',
+      reason: s.latestBlockedReason || '',
+    }))
+    .sort((a, b) => b.blockedCount - a.blockedCount);
+
+  function ask(action, id, name) { setMessage(null); setConfirm({ kind: 'strategy', action, id, name }); }
+
+  function askConfigSave() {
+    setMessage(null);
+    setConfirm({ kind: 'config', maxApproved: num(draftMaxApproved) });
+  }
+
+  async function runAction() {
+    if (!confirm) return;
+    if (confirm.kind === 'config') {
+      setBusyId('config');
+      setConfirm(null);
+      setMessage(null);
+      try {
+        const result = await postPaperAllowlistConfig(confirm.maxApproved);
+        setMessage({
+          type: 'ok',
+          text: result.changed === false
+            ? 'Max antal godkända var redan satt till samma värde.'
+            : `Max antal godkända uppdaterat till ${result.maxApproved}. Inga trades skapades.`,
+        });
+        onRefresh();
+      } catch (err) {
+        setMessage({ type: 'error', text: err?.message || 'Kunde inte spara maxgränsen.' });
+      } finally {
+        setBusyId('');
+      }
+      return;
+    }
+
+    const { action, id } = confirm;
+    setBusyId(id);
+    setConfirm(null);
+    setMessage(null);
+    try {
+      await postApproval(action, id);
+      setMessage({
+        type: 'ok',
+        text: action === 'approve'
+          ? 'Strategin är nu godkänd för paper trading. Inga riktiga order kan läggas.'
+          : 'Strategin är borttagen från paper allowlist. Inga riktiga order påverkas.',
+      });
+      onRefresh();
+    } catch (err) {
+      setMessage({ type: 'error', text: err?.message || 'Åtgärden misslyckades.' });
+    } finally {
+      setBusyId('');
+    }
+  }
+
+  const btnStyle = (disabled, tone) => ({
+    appearance: 'none',
+    cursor: disabled ? 'not-allowed' : 'pointer',
+    opacity: disabled ? 0.5 : 1,
+    border: '1px solid var(--border)',
+    background: tone === 'danger' ? 'rgba(239,68,68,0.12)' : 'rgba(34,197,94,0.12)',
+    color: tone === 'danger' ? '#ef4444' : '#22c55e',
+    fontWeight: 700,
+    fontSize: 12,
+    padding: '6px 10px',
+    borderRadius: 8,
+  });
+
+  return (
+    <div style={sectionStyle()}>
+      <div style={{ fontSize: 16, fontWeight: 800, marginBottom: 4 }}>Paper Allowlist Manager</div>
+      <div style={{ fontSize: 12, color: '#94a3b8', lineHeight: 1.5, marginBottom: 10 }}>
+        Paper allowlist styrs manuellt av dig. Systemet får inte automatiskt lägga till eller ta bort strategier — det får bara visa rekommendationer. Detta gäller endast låtsashandel/paper trading; inga riktiga order kan läggas.
+      </div>
+
+      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10, marginBottom: 12 }}>
+        <MetricCard label="Godkända" value={`${approvedCount} / ${maxApproved || '–'}`} tone={slotFree ? 'good' : 'warn'} note={slotFree ? 'Plats finns' : 'Max nått'} />
+        <MetricCard label="Max antal godkända" value={maxApproved || '–'} tone="neutral" note={`Manuell config, min ${minApproved}, max ${hardMaxApproved}`} />
+        <MetricCard label="Säkerhetsläge" value={paperOnly ? 'paper_only' : 'OKÄND'} tone={paperOnly ? 'good' : 'bad'} note="actions_allowed=false" />
+      </div>
+
+      <div style={{ ...sectionStyle(), marginTop: 12, marginBottom: 12, background: 'rgba(15,23,42,0.55)' }}>
+        <div style={{ fontWeight: 800, marginBottom: 6 }}>Styr maxgränsen manuellt</div>
+        <div style={{ fontSize: 12, color: '#94a3b8', marginBottom: 10 }}>
+          Paper allowlist styrs manuellt av dig. Systemet får inte automatiskt lägga till eller ta bort strategier. Detta ändrar bara hur många strategier som får vara godkända för låtsashandel. Det skapar inga trades.
+        </div>
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10, alignItems: 'center' }}>
+          <label style={{ display: 'flex', flexDirection: 'column', gap: 6, minWidth: 220 }}>
+            <span style={{ fontSize: 11, color: '#94a3b8', textTransform: 'uppercase', letterSpacing: '0.08em' }}>Nuvarande maxApproved</span>
+            <select
+              value={draftMaxApproved}
+              onChange={(e) => setDraftMaxApproved(e.target.value)}
+              style={{
+                border: '1px solid var(--border)',
+                borderRadius: 10,
+                background: 'var(--surface)',
+                color: 'inherit',
+                padding: '10px 12px',
+                fontSize: 14,
+              }}
+            >
+              {Array.from({ length: hardMaxApproved }, (_, index) => index + minApproved).map((value) => (
+                <option key={value} value={String(value)}>{value}</option>
+              ))}
+            </select>
+          </label>
+          <div style={{ fontSize: 12, color: '#94a3b8' }}>
+            Max tillåtet: {hardMaxApproved}. Senast sparat: {num(config?.maxApproved ?? approvals?.maxApproved) || '–'}.
+          </div>
+          <button
+            type="button"
+            disabled={busyId === 'config' || num(draftMaxApproved) === maxApproved}
+            style={btnStyle(busyId === 'config' || num(draftMaxApproved) === maxApproved, 'ok')}
+            onClick={askConfigSave}
+          >
+            Spara max
+          </button>
+        </div>
+      </div>
+
+      {message ? (
+        <div style={{ ...sectionStyle(), marginBottom: 12, borderColor: message.type === 'ok' ? 'rgba(34,197,94,0.45)' : 'rgba(239,68,68,0.45)', color: message.type === 'ok' ? '#22c55e' : '#ef4444' }}>
+          {message.text}
+        </div>
+      ) : null}
+
+      {confirm ? (
+        <div style={{ ...sectionStyle(), marginBottom: 12, borderColor: 'rgba(56,189,248,0.45)' }}>
+          <div style={{ marginBottom: 8 }}>
+            {confirm.kind === 'config'
+              ? `Detta ändrar bara hur många strategier som får vara godkända för låtsashandel. Det skapar inga trades.`
+              : confirm.action === 'approve'
+                ? `Detta godkänner ${confirm.name} för låtsashandel. Den får bara skapa paper trades om övriga regler godkänner. Inga riktiga order kan läggas.`
+                : `Detta tar bara bort ${confirm.name} från paper allowlist. Inga riktiga order påverkas.`}
+          </div>
+          <div style={{ display: 'flex', gap: 8 }}>
+            <button type="button" style={btnStyle(false, confirm.kind === 'config' ? 'ok' : (confirm.action === 'approve' ? 'ok' : 'danger'))} onClick={runAction}>Bekräfta</button>
+            <button type="button" style={btnStyle(false, 'neutral')} onClick={() => setConfirm(null)}>Avbryt</button>
+          </div>
+        </div>
+      ) : null}
+
+      {loading ? <div style={{ color: '#94a3b8' }}>Hämtar allowlist...</div> : null}
+
+      {approvalsState.error ? (
+        <div style={{ ...sectionStyle(), marginBottom: 12, borderColor: 'rgba(239,68,68,0.45)', color: '#ef4444' }}>
+          {approvalsState.error}
+        </div>
+      ) : null}
+
+      {configState.error ? (
+        <div style={{ ...sectionStyle(), marginBottom: 12, borderColor: 'rgba(239,68,68,0.45)', color: '#ef4444' }}>
+          {configState.error}
+        </div>
+      ) : null}
+
+      {config?.warning ? (
+        <div style={{ ...sectionStyle(), marginBottom: 12, borderColor: 'rgba(245, 158, 11, 0.45)', color: '#fbbf24' }}>
+          Allowlist-config saknade eller var trasig. Fallback {maxApproved || 4} används tills den sparas igen.
+        </div>
+      ) : null}
+
+      {!paperOnly && !loading ? (
+        <div style={{ ...sectionStyle(), borderColor: 'rgba(239,68,68,0.45)', color: '#ef4444' }}>
+          Säkerhetsläget kunde inte bekräftas som paper_only — åtgärder är dolda.
+        </div>
+      ) : null}
+
+      {paperOnly ? (
+        <>
+          <div style={{ fontWeight: 800, marginTop: 6, marginBottom: 6 }}>Godkända strategier ({approvedCount})</div>
+          {approvedRows.length > 0 ? (
+            <div style={{ overflowX: 'auto', marginBottom: 14 }}>
+              <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 640 }}>
+                <thead><tr>{['Strategy id', 'Namn', 'Runtime ready', 'Events (fönster)', 'Senaste aktivitet', ''].map((l) => <th key={l} style={{ ...cellStyle(), color: '#94a3b8' }}>{l}</th>)}</tr></thead>
+                <tbody>
+                  {approvedRows.map((r) => (
+                    <tr key={r.id}>
+                      <td style={cellStyle()}>{r.id}</td>
+                      <td style={cellStyle()}>{r.name}</td>
+                      <td style={cellStyle()}>{r.runtimeReady ? 'Ja' : 'Nej'}</td>
+                      <td style={cellStyle()}>{r.events}</td>
+                      <td style={cellStyle()}>{r.latestAt ? fmtTime(r.latestAt) : '–'}</td>
+                      <td style={cellStyle()}>
+                        <button type="button" disabled={busyId === r.id} style={btnStyle(busyId === r.id, 'danger')} onClick={() => ask('reject', r.id, r.name)}>Ta bort från paper allowlist</button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          ) : <div style={{ color: '#94a3b8', marginBottom: 14 }}>Inga godkända strategier ännu.</div>}
+
+          <div style={{ fontWeight: 800, marginBottom: 6 }}>Icke-godkända strategier med aktivitet</div>
+          <div style={{ fontSize: 11.5, color: '#94a3b8', marginBottom: 6 }}>
+            Sorterade efter antal blockeringar. {slotFree ? '' : 'Max antal godkända är nått — ta bort en strategi först eller höj maxgränsen. '}Om godkännande nekas visas exakt orsak från servern (t.ex. svag strategi eller maxgräns).
+          </div>
+          {nonApproved.length > 0 ? (
+            <div style={{ overflowX: 'auto' }}>
+              <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 760 }}>
+                <thead><tr>{['Strategy id', 'Namn', 'Blockeringar', 'Senaste orsak', 'Senaste aktivitet', ''].map((l) => <th key={l} style={{ ...cellStyle(), color: '#94a3b8' }}>{l}</th>)}</tr></thead>
+                <tbody>
+                  {nonApproved.map((r) => (
+                    <tr key={r.id}>
+                      <td style={cellStyle()}>{r.id}</td>
+                      <td style={cellStyle()}>{r.name}</td>
+                      <td style={cellStyle()}>{r.blockedCount}</td>
+                      <td style={{ ...cellStyle(), maxWidth: 280 }}>{r.reason || '–'}</td>
+                      <td style={cellStyle()}>{r.latestAt ? fmtTime(r.latestAt) : '–'}</td>
+                      <td style={cellStyle()}>
+                        {slotFree ? (
+                          <button type="button" disabled={busyId === r.id} style={btnStyle(busyId === r.id, 'ok')} onClick={() => ask('approve', r.id, r.name)}>Lägg till i paper allowlist</button>
+                        ) : (
+                          <span title="Max antal godkända är nått. Ta bort en strategi först eller höj maxgränsen." style={{ ...btnStyle(true, 'ok'), display: 'inline-block' }}>Max nått</span>
+                        )}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          ) : <div style={{ color: '#94a3b8' }}>Inga icke-godkända strategier med aktivitet i fönstret.</div>}
+        </>
+      ) : null}
+    </div>
+  );
+}
+
 export default function PaperTradingPage() {
+  const [refreshKey, setRefreshKey] = useState(0);
   const runtimeState = usePaperRuntime(50);
-  const allowlistState = usePaperAllowlist();
+  const allowlistState = usePaperAllowlist(refreshKey);
   const runtime = runtimeState.data;
   const summary = runtime?.summary || {};
   const warnings = useMemo(() => {
@@ -328,6 +706,8 @@ export default function PaperTradingPage() {
       <SafetyBanner safety={runtime?.safety || runtime} />
 
       <WhyNoTradesPanel runtime={runtime} allowlist={allowlistState.data} />
+
+      <PaperAllowlistManager runtime={runtime} allowlist={allowlistState.data} refreshKey={refreshKey} onRefresh={() => setRefreshKey((t) => t + 1)} />
 
       {runtimeState.loading && !runtime ? (
         <div style={sectionStyle()}>Hämtar paper runtime...</div>
