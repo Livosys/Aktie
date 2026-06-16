@@ -15814,6 +15814,12 @@ body {
 .opt-readiness-blocker em { display: block; margin-top: 4px; color: var(--text-muted); font-size: 11px; font-style: normal; }
 .opt-paper-candidate-empty { color: var(--text-muted); font-size: 12px; padding-top: 4px; }
 
+/* Shared candidate panel used in Lab and Paper Trading */
+.paper-candidate-panel { margin-top: 18px; }
+.paper-candidate-flow { overflow-x: auto; }
+.paper-candidate-flow-step { min-width: 120px; }
+.paper-candidate-list { min-width: 0; }
+
 /* ── Apply button ── */
 .opt-apply-btn        { padding: 8px 16px; border-radius: 8px; border: none; background: #3b82f6; color: #fff; font-size: 13px; font-weight: 600; cursor: pointer; transition: background 0.15s, opacity 0.15s; white-space: nowrap; }
 .opt-apply-btn:disabled { opacity: 0.45; cursor: not-allowed; }
@@ -15830,6 +15836,28 @@ body {
   .opt-paper-candidate-grid { grid-template-columns: 1fr 1fr; }
   .opt-paper-candidate-list { gap: 10px; }
   .opt-readiness-grid { grid-template-columns: 1fr 1fr; }
+  .paper-candidate-panel {
+    margin-top: 14px;
+    padding: 14px !important;
+  }
+  .paper-candidate-flow {
+    gap: 8px !important;
+    padding: 10px !important;
+  }
+  .paper-candidate-flow-step {
+    min-width: 100px;
+    flex: 1 1 100px;
+    padding: 10px 12px !important;
+  }
+  .paper-candidate-flow-arrow {
+    display: none;
+  }
+  .paper-candidate-list {
+    gap: 10px !important;
+  }
+  .paper-candidate-panel button {
+    width: 100%;
+  }
 }
 
 /* ── Market Universe (mu-*) ──────────────────────────────────────────────────── */

@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
+import PaperCandidatePanel from '../components/PaperCandidatePanel.jsx';
 
 const REFRESH_MS = 15_000;
 const FETCH_TIMEOUT_MS = 6_500;
@@ -708,6 +709,8 @@ export default function PaperTradingPage() {
       <WhyNoTradesPanel runtime={runtime} allowlist={allowlistState.data} />
 
       <PaperAllowlistManager runtime={runtime} allowlist={allowlistState.data} refreshKey={refreshKey} onRefresh={() => setRefreshKey((t) => t + 1)} />
+
+      <PaperCandidatePanel mode="paper" />
 
       {runtimeState.loading && !runtime ? (
         <div style={sectionStyle()}>Hämtar paper runtime...</div>
