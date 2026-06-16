@@ -18,7 +18,16 @@ const SAFETY = Object.freeze({
   broker_enabled: false,
 });
 
+const STATUS_CACHE_TTL_MS = 30_000;
+let _statusCache = null;
+let _statusCachedAt = 0;
+
 function getPaperAllowlistStatus() {
+  const now = Date.now();
+  if (_statusCache && (now - _statusCachedAt) < STATUS_CACHE_TTL_MS) {
+    return _statusCache;
+  }
+
   const approvals = automationApprovalService.getAutomationApprovals();
   const matrix = strategyRuntimeMatrixService.getStrategyRuntimeMatrix();
   const matrixMap = {};
@@ -60,7 +69,7 @@ function getPaperAllowlistStatus() {
     ? 'unknown'
     : (pendingCount === 0 ? 'ready' : (readyCount === 0 ? 'pending' : 'partial'));
 
-  return {
+  _statusCache = {
     ok: true,
     totalApproved: allowlist.length,
     readyForPaperRuntime: readyCount,
@@ -72,6 +81,9 @@ function getPaperAllowlistStatus() {
     note: 'Read-only. Reflects the paper-simulation runtime only — never broker or live trading. This does not start any tests or connect anything automatically.',
     safety: SAFETY,
   };
+  _statusCachedAt = now;
+
+  return _statusCache;
 }
 
 module.exports = {

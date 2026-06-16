@@ -79,6 +79,7 @@ const strategyRuntimeMatrix = require('../services/strategyRuntimeMatrixService'
 const strategyIdNormalizer = require('../services/strategyIdNormalizerService');
 const automationPlanService = require('../services/automationPlanService');
 const automationApprovalService = require('../services/automationApprovalService');
+const paperAllowlistConfigService = require('../services/paperAllowlistConfigService');
 const strategyTestAutopilot = require('../services/strategyTestAutopilotService');
 const learningConnector = require('../services/learningConnectorService');
 const topStrategyGrid = require('../services/topStrategyGridService');
@@ -988,6 +989,31 @@ router.get('/automation/plan', (req, res) => {
 // paper-only testing. It NEVER starts a test, batch, replay or paper trade,
 // never touches the scheduler, paper runtime, allowlist, risk, broker or live
 // trading. Safety is always paper_only with every action flag false.
+router.get('/automation/paper-allowlist/config', (req, res) => {
+  try {
+    res.json(paperAllowlistConfigService.getPaperAllowlistConfig());
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message, safety: paperAllowlistConfigService.SAFETY });
+  }
+});
+
+router.post('/automation/paper-allowlist/config', (req, res) => {
+  try {
+    const body = req.body && typeof req.body === 'object' ? req.body : {};
+    if (body.live_trading_enabled === true || body.can_place_orders === true || body.actions_allowed === true || body.broker_enabled === true) {
+      return res.status(400).json({ ok: false, error: 'paper_allowlist_config_is_paper_only', safety: paperAllowlistConfigService.SAFETY });
+    }
+    const result = paperAllowlistConfigService.updatePaperAllowlistConfig({
+      maxApproved: body.maxApproved,
+      reason: body.reason,
+      updatedBy: body.updatedBy,
+    });
+    res.status(result.ok ? 200 : 400).json(result);
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message, safety: paperAllowlistConfigService.SAFETY });
+  }
+});
+
 router.get('/automation/approvals', (req, res) => {
   try {
     res.json(automationApprovalService.getAutomationApprovals());
