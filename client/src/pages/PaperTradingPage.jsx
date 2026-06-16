@@ -301,7 +301,7 @@ function mostCommonReason(rows) {
 function MetricCard({ label, value, tone = 'neutral', note }) {
   const colors = { good: '#22c55e', warn: '#f59e0b', bad: '#ef4444', neutral: '#94a3b8' };
   return (
-    <div style={{ flex: '1 1 160px', minWidth: 160, background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 12, padding: '12px 14px' }}>
+    <div className={`allowlist-metric allowlist-metric-${tone}`} style={{ flex: '1 1 160px', minWidth: 160, background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 12, padding: '12px 14px' }}>
       <div style={{ fontSize: 10.5, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.05em', color: '#94a3b8' }}>{label}</div>
       <div style={{ fontSize: 20, fontWeight: 800, color: colors[tone] || colors.neutral, marginTop: 2 }}>{value}</div>
       {note ? <div style={{ fontSize: 11, color: '#94a3b8', marginTop: 2, lineHeight: 1.4 }}>{note}</div> : null}
@@ -355,6 +355,14 @@ function WhyNoTradesPanel({ runtime, allowlist }) {
 }
 
 function num(v) { const n = Number(v); return Number.isFinite(n) ? n : 0; }
+
+function allowlistTone(status) {
+  const key = String(status || 'pending').toLowerCase();
+  if (key === 'approved') return 'approved';
+  if (key === 'max_nått' || key === 'blocked') return 'blocked';
+  if (key === 'pending') return 'warning';
+  return 'neutral';
+}
 
 async function postApproval(action, strategyId) {
   try {
@@ -439,6 +447,7 @@ function PaperAllowlistManager({ runtime, allowlist, refreshKey, onRefresh }) {
       runtimeReady: a.paperRuntimeReady === true,
       events: num(s.openCount) + num(s.closedCount) + num(s.blockedCount),
       latestAt: s.latestEventAt || '',
+      allowlistStatus: 'approved',
     };
   });
 
@@ -450,6 +459,7 @@ function PaperAllowlistManager({ runtime, allowlist, refreshKey, onRefresh }) {
       blockedCount: num(s.blockedCount),
       latestAt: s.latestEventAt || '',
       reason: s.latestBlockedReason || '',
+      allowlistStatus: /max/i.test(s.latestBlockedReason || '') ? 'max_nått' : /allowlist|reject|block/i.test(s.latestBlockedReason || '') ? 'blocked' : 'pending',
     }))
     .sort((a, b) => b.blockedCount - a.blockedCount);
 
@@ -517,13 +527,13 @@ function PaperAllowlistManager({ runtime, allowlist, refreshKey, onRefresh }) {
   });
 
   return (
-    <div style={sectionStyle()}>
+    <div className="allowlist-panel" style={sectionStyle()}>
       <div style={{ fontSize: 16, fontWeight: 800, marginBottom: 4 }}>Paper Allowlist Manager</div>
       <div style={{ fontSize: 12, color: '#94a3b8', lineHeight: 1.5, marginBottom: 10 }}>
         Paper allowlist styrs manuellt av dig. Systemet får inte automatiskt lägga till eller ta bort strategier — det får bara visa rekommendationer. Detta gäller endast låtsashandel/paper trading; inga riktiga order kan läggas.
       </div>
 
-      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10, marginBottom: 12 }}>
+      <div className="allowlist-metrics" style={{ display: 'flex', flexWrap: 'wrap', gap: 10, marginBottom: 12 }}>
         <MetricCard label="Godkända" value={`${approvedCount} / ${maxApproved || '–'}`} tone={slotFree ? 'good' : 'warn'} note={slotFree ? 'Plats finns' : 'Max nått'} />
         <MetricCard label="Max antal godkända" value={maxApproved || '–'} tone="neutral" note={`Manuell config, min ${minApproved}, max ${hardMaxApproved}`} />
         <MetricCard label="Säkerhetsläge" value={paperOnly ? 'paper_only' : 'OKÄND'} tone={paperOnly ? 'good' : 'bad'} note="actions_allowed=false" />
@@ -625,7 +635,7 @@ function PaperAllowlistManager({ runtime, allowlist, refreshKey, onRefresh }) {
                 <thead><tr>{['Strategy id', 'Namn', 'Runtime ready', 'Events (fönster)', 'Senaste aktivitet', ''].map((l) => <th key={l} style={{ ...cellStyle(), color: '#94a3b8' }}>{l}</th>)}</tr></thead>
                 <tbody>
                   {approvedRows.map((r) => (
-                    <tr key={r.id}>
+                    <tr key={r.id} className={`allowlist-row allowlist-row-approved allowlist-row-${allowlistTone(r.allowlistStatus)}`}>
                       <td style={cellStyle()}>{r.id}</td>
                       <td style={cellStyle()}>{r.name}</td>
                       <td style={cellStyle()}>{r.runtimeReady ? 'Ja' : 'Nej'}</td>
@@ -651,7 +661,7 @@ function PaperAllowlistManager({ runtime, allowlist, refreshKey, onRefresh }) {
                 <thead><tr>{['Strategy id', 'Namn', 'Blockeringar', 'Senaste orsak', 'Senaste aktivitet', ''].map((l) => <th key={l} style={{ ...cellStyle(), color: '#94a3b8' }}>{l}</th>)}</tr></thead>
                 <tbody>
                   {nonApproved.map((r) => (
-                    <tr key={r.id}>
+                    <tr key={r.id} className={`allowlist-row allowlist-row-${allowlistTone(r.allowlistStatus)}`}>
                       <td style={cellStyle()}>{r.id}</td>
                       <td style={cellStyle()}>{r.name}</td>
                       <td style={cellStyle()}>{r.blockedCount}</td>
