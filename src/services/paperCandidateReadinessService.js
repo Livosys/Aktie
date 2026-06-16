@@ -137,7 +137,7 @@ function normalizeSource(source) {
   return raw || 'unknown';
 }
 
-function buildBlockers(strategyId, candidate, row, approvals, runtimeBlockers = []) {
+function buildBlockers(strategyId, candidate, row, approvals, runtimeBlockers = [], allowlistStatus = null) {
   const blockers = [];
   const seen = new Set();
   const push = (code) => {
@@ -154,8 +154,8 @@ function buildBlockers(strategyId, candidate, row, approvals, runtimeBlockers = 
     push(code);
   }
 
-  if (candidate.allowlistStatus === 'max_nått') push('allowlist:max_reached');
-  if (candidate.allowlistStatus === 'nekad' && !runtimeBlockers.length) push('allowlist:not_approved');
+  if (allowlistStatus === 'max_nått') push('allowlist:max_reached');
+  if (allowlistStatus === 'not_approved' && !runtimeBlockers.length) push('allowlist:not_approved');
 
   const approvalReason = candidate.allowlistReason || '';
   if (/max/i.test(approvalReason)) push('allowlist:max_reached');
@@ -183,6 +183,7 @@ function buildReadiness(candidate, matrixMap, approvals) {
   const strategyId = normalizeStrategyId(rawStrategyId);
   const row = strategyId ? (matrixMap.get(strategyId) || null) : null;
   const approvedIds = safeArray(approvals.approvedStrategyIds);
+  const alreadyApproved = strategyId ? approvedIds.includes(strategyId) : false;
   const canApproveResult = strategyId ? automationApprovalService.canApproveStrategy(strategyId, approvedIds) : { ok: false, reason: 'strategy_id missing' };
   const runtimeBlockers = safeArray(row && row.blockers);
   const scannerConnected = Boolean(row && row.scannerEnabled !== false && !runtimeBlockers.includes('scanner:not_connected'));
@@ -193,21 +194,24 @@ function buildReadiness(candidate, matrixMap, approvals) {
     && row.automaticStatus !== 'pausedOrBlocked'
     && runtimeBlockers.length === 0
   );
-  const allowlistStatus = deriveAllowlistStatus(candidate, approvals, canApproveResult);
-  const alreadyApproved = strategyId ? approvedIds.includes(strategyId) : false;
+  const allowlistStatus = alreadyApproved
+    ? 'approved'
+    : deriveAllowlistStatus(candidate, approvals, canApproveResult);
   const paperRunnable = Boolean(scannerConnected && runtimeReady);
-  const blockers = buildBlockers(strategyId, candidate, row, approvals, runtimeBlockers);
-  const nextAction = !strategyId
-    ? 'add_strategy_id_metadata'
-    : runtimeBlockers.includes('scanner:not_connected')
-      ? 'connect_to_scanner_runtime'
-      : runtimeBlockers.length > 0
-        ? 'resolve_runtime_blockers'
-        : !alreadyApproved
-          ? (canApproveResult.ok ? 'add_to_paper_allowlist' : 'resolve_allowlist_gate')
-          : runtimeReady
-            ? 'paper_trade_test'
-            : 'connect_to_scanner_runtime';
+  const blockers = buildBlockers(strategyId, candidate, row, approvals, runtimeBlockers, allowlistStatus)
+    .filter((blocker) => !(alreadyApproved && blocker.code === 'allowlist:not_approved'));
+  let nextAction = 'connect_to_scanner_runtime';
+  if (!strategyId) {
+    nextAction = 'add_strategy_id_metadata';
+  } else if (runtimeBlockers.includes('scanner:not_connected')) {
+    nextAction = 'connect_to_scanner_runtime';
+  } else if (runtimeBlockers.length > 0) {
+    nextAction = 'resolve_runtime_blockers';
+  } else if (alreadyApproved) {
+    nextAction = 'paper_trade_test';
+  } else if (runtimeReady) {
+    nextAction = canApproveResult.ok ? 'add_to_paper_allowlist' : 'resolve_allowlist_gate';
+  }
 
   return {
     candidateId: candidate.candidateId || candidate.recommendationId || candidate.id,
@@ -221,8 +225,8 @@ function buildReadiness(candidate, matrixMap, approvals) {
     paperRunnable,
     scannerConnected,
     alreadyApproved,
-    canApprove: Boolean(canApproveResult && canApproveResult.ok),
-    canApproveReason: canApproveResult?.ok ? null : safeString(canApproveResult?.reason, 'Kan inte godkännas just nu.'),
+    canApprove: Boolean((canApproveResult && canApproveResult.ok) || alreadyApproved),
+    canApproveReason: (canApproveResult?.ok || alreadyApproved) ? null : safeString(canApproveResult?.reason, 'Kan inte godkännas just nu.'),
     blockers,
     nextAction,
     safety: SAFETY,
