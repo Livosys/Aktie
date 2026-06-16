@@ -927,6 +927,24 @@ function useBatchReplayPaperCandidatesPreview(limit = 12) {
   return { data, loading, error, reload: load };
 }
 
+function usePaperCandidateReadiness(limit = 12) {
+  const [data, setData] = React.useState(null);
+  const [loading, setLoading] = React.useState(true);
+  const [error, setError] = React.useState(null);
+
+  const load = React.useCallback(() => {
+    setLoading(true);
+    setError(null);
+    fetch(`/api/optimization/paper-candidates/readiness?limit=${limit}`)
+      .then((r) => (r.ok ? r.json() : null))
+      .then((d) => { setData(d); setLoading(false); })
+      .catch((e) => { setError(e.message); setLoading(false); });
+  }, [limit]);
+
+  React.useEffect(() => { load(); }, [load]);
+  return { data, loading, error, reload: load };
+}
+
 const PAPER_CANDIDATE_STATUS_LABELS = {
   approved: 'Godkänd',
   not_approved: 'Ej godkänd',
@@ -940,6 +958,11 @@ const BATCH_REPLAY_DECISION_LABELS = {
   promote_to_paper: 'Promote',
   watch: 'Watch',
   reject: 'Reject',
+};
+
+const READINESS_BOOL = {
+  true: 'Ja',
+  false: 'Nej',
 };
 
 function paperCandidateStatusClass(status) {
@@ -1316,6 +1339,7 @@ function ApplyPanel({ summary, toggles, params, exits, onApplyParams, onApplyTog
 
 function BatchReplayPaperCandidatesPanel() {
   const { data: previewData, loading, error, reload } = useBatchReplayPaperCandidatesPreview(12);
+  const { data: readinessData, loading: readinessLoading, error: readinessError, reload: reloadReadiness } = usePaperCandidateReadiness(12);
   const { data: approvalsData, loading: approvalsLoading, error: approvalsError, reload: reloadApprovals } = useAutomationApprovals();
   const { data: savedData, loading: savedLoading, error: savedError, reload: reloadSaved } = usePaperOptimizationCandidates(50);
   const [busyKey, setBusyKey] = React.useState('');
@@ -1354,7 +1378,7 @@ function BatchReplayPaperCandidatesPanel() {
       const json = await res.json().catch(() => null);
       if (!res.ok || !json?.ok) throw new Error(json?.error || 'Kunde inte skapa paper-testkandidat.');
       setMessage(json.deduped ? 'Paper-testkandidat fanns redan sparad.' : 'Skickad till paper-testkandidater.');
-      await Promise.all([reload(), reloadSaved()]);
+      await Promise.all([reload(), reloadSaved(), reloadReadiness()]);
     } catch (err) {
       setPanelError(err.message || 'Kunde inte skapa paper-testkandidat.');
     } finally {
@@ -1381,7 +1405,7 @@ function BatchReplayPaperCandidatesPanel() {
       const json = await res.json().catch(() => null);
       if (!res.ok || !json?.ok) throw new Error(json?.error || 'Kunde inte lägga till i paper allowlist.');
       setMessage(`Lades till i paper allowlist: ${candidate.displayName || candidate.strategyId}.`);
-      await Promise.all([reloadApprovals(), reload()]);
+      await Promise.all([reloadApprovals(), reload(), reloadReadiness()]);
     } catch (err) {
       setPanelError(err.message || 'Kunde inte lägga till i paper allowlist.');
     } finally {
@@ -1523,6 +1547,92 @@ function BatchReplayPaperCandidatesPanel() {
           {loading || savedLoading || approvalsLoading ? 'Läser batch/replay-data...' : 'Inga batch/replay-kandidater hittades ännu.'}
         </div>
       )}
+
+      <div className="opt-paper-candidate-readiness">
+        <div className="opt-paper-candidate-head">
+          <div>
+            <div className="opt-paper-candidate-title">Runtime readiness</div>
+            <div className="opt-paper-candidate-sub">
+              Read-only bedömning av vad som saknas för att en kandidat ska bli runtime-ready, allowlist-godkännbar och sedan paper-runnable.
+            </div>
+          </div>
+          <span className="opt-paper-candidate-pill opt-paper-candidate-not_approved">
+            {readinessData?.summary?.runtimeReady ?? 0} ready · {readinessData?.summary?.paperRunnable ?? 0} runnable
+          </span>
+        </div>
+
+        {readinessError && <div className="opt-paper-candidate-msg opt-paper-candidate-msg-bad">Kunde inte läsa readiness: {readinessError}</div>}
+        {readinessData?.explanation && (
+          <div className="opt-paper-candidate-msg opt-paper-candidate-msg-good">{readinessData.explanation}</div>
+        )}
+        <div className="opt-paper-candidate-meta">
+          <span>{readinessLoading ? 'Läser readiness...' : `${readinessData?.summary?.total ?? 0} kandidater bedömda`}</span>
+          <span>runtime ready: {readinessData?.summary?.runtimeReady ?? 0}</span>
+          <span>paper runnable: {readinessData?.summary?.paperRunnable ?? 0}</span>
+          <span>scanner connected: {readinessData?.summary?.scannerConnected ?? 0}</span>
+          <span>approved: {readinessData?.summary?.alreadyApproved ?? 0}</span>
+          <span>canApprove: {readinessData?.summary?.canApprove ?? 0}</span>
+        </div>
+
+        {readinessData?.candidates?.length > 0 ? (
+          <div className="opt-readiness-list">
+            {readinessData.candidates.map((candidate) => (
+              <div key={candidate.candidateId} className="opt-readiness-card">
+                <div className="opt-readiness-card-head">
+                  <div>
+                    <div className="opt-paper-candidate-card-title">{candidate.displayName || candidate.strategyId || 'Okänd kandidat'}</div>
+                    <div className="opt-paper-candidate-sub">
+                      Källa: {candidate.source || '–'} · run {candidate.sourceRunId || '–'} · variant {candidate.variantId || '–'}
+                    </div>
+                  </div>
+                  <span className={`opt-paper-candidate-pill ${paperCandidateStatusClass(candidate.allowlistStatus)}`}>
+                    {PAPER_CANDIDATE_STATUS_LABELS[candidate.allowlistStatus] || candidate.allowlistStatus}
+                  </span>
+                </div>
+
+                <div className="opt-readiness-grid">
+                  <div><span>Strategy id</span><strong>{candidate.strategyId || '–'}</strong></div>
+                  <div><span>Runtime ready</span><strong>{READINESS_BOOL[String(!!candidate.runtimeReady)]}</strong></div>
+                  <div><span>Scanner kopplad</span><strong>{READINESS_BOOL[String(!!candidate.scannerConnected)]}</strong></div>
+                  <div><span>Paper-runnable</span><strong>{READINESS_BOOL[String(!!candidate.paperRunnable)]}</strong></div>
+                  <div><span>Allowlist</span><strong>{candidate.allowlistStatus === 'approved' ? 'Godkänd' : candidate.allowlistStatus === 'nekad' ? 'Nekad' : 'Ej godkänd'}</strong></div>
+                  <div><span>Can approve</span><strong>{READINESS_BOOL[String(!!candidate.canApprove)]}</strong></div>
+                </div>
+
+                {candidate.blockers?.length > 0 ? (
+                  <div className="opt-readiness-blockers">
+                    {candidate.blockers.map((blocker) => (
+                      <div key={blocker.code} className="opt-readiness-blocker">
+                        <strong>{blocker.label}</strong>
+                        <span>{blocker.code}</span>
+                        <p>{blocker.explanation}</p>
+                        <em>Nästa steg: {blocker.nextStep}</em>
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <div className="opt-paper-candidate-empty">Inga blockers. Kandidaten är redo för nästa steg.</div>
+                )}
+
+                <div className="opt-paper-candidate-meta">
+                  <span>Next action: {candidate.nextAction || '–'}</span>
+                  <span>{candidate.canApproveReason || 'CanApprove returnerar true eller ingen extra orsak finns.'}</span>
+                </div>
+
+                {candidate.strategyId === 'narrow_fakeout_reversal_v1' && candidate.blockers?.some((b) => b.code === 'scanner:not_connected') && (
+                  <div className="opt-paper-candidate-msg opt-paper-candidate-msg-bad">
+                    Den här strategin är testad i batch/replay men är inte kopplad till scanner/runtime ännu. Den kan därför inte läggas i paper allowlist förrän runtime-koppling finns.
+                  </div>
+                )}
+              </div>
+            ))}
+          </div>
+        ) : (
+          <div className="opt-paper-candidate-empty">
+            {readinessLoading ? 'Läser runtime readiness...' : 'Inga readiness-kandidater hittades ännu.'}
+          </div>
+        )}
+      </div>
     </div>
   );
 }

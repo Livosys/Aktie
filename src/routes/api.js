@@ -82,6 +82,7 @@ const automationApprovalService = require('../services/automationApprovalService
 const paperAllowlistConfigService = require('../services/paperAllowlistConfigService');
 const aiAgentPaperCandidateService = require('../services/aiAgentPaperCandidateService');
 const batchReplayPaperCandidateService = require('../services/batchReplayPaperCandidateService');
+const paperCandidateReadinessService = require('../services/paperCandidateReadinessService');
 const strategyTestAutopilot = require('../services/strategyTestAutopilotService');
 const learningConnector = require('../services/learningConnectorService');
 const topStrategyGrid = require('../services/topStrategyGridService');
@@ -3861,6 +3862,14 @@ router.post('/optimization/batch-replay-paper-candidates/create', (req, res) => 
     res.status(result.ok ? 200 : 400).json(result);
   } catch (err) {
     res.status(500).json({ ok: false, error: err.message, safety: batchReplayPaperCandidateService.SAFETY });
+  }
+});
+
+router.get('/optimization/paper-candidates/readiness', (req, res) => {
+  try {
+    res.json(paperCandidateReadinessService.listPaperCandidateReadiness(req.query.limit || req.query.n || 50));
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message, safety: paperCandidateReadinessService.SAFETY });
   }
 });
 

@@ -24,6 +24,7 @@ const SCANNER_EMITTER_STRATEGY_IDS = Object.freeze(new Set([
   'crypto_momentum_scalper',
   'ema_pullback_continuation',
   'narrow_breakout',
+  'narrow_fakeout_reversal_v1',
   'narrow_state_expansion_long',
   'trend_continuation',
   'vwap_failed_breakout_short',

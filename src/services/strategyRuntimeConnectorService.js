@@ -465,6 +465,16 @@ function getRuntimeStrategyMap() {
       comment_sv: 'Narrow kan skapa paper trade endast när befintlig signal tydligt är bull/bear entry.',
     }),
     runtimeEntry({
+      raw_signal: 'NARROW_FAKEOUT',
+      strategy_id: 'narrow_fakeout_reversal_v1',
+      strategy_family: 'Narrow',
+      runtime_status: 'active',
+      direction: 'UNKNOWN',
+      mapping_confidence: 'medium',
+      can_create_paper_trade: true,
+      comment_sv: 'Paper-only narrow fakeout reversal är kopplad till scanner/runtime för QQQ research.',
+    }),
+    runtimeEntry({
       raw_signal: 'EMA_PULLBACK_UP',
       strategy_id: 'ema_pullback_continuation',
       strategy_family: 'EMA Pullback',
@@ -514,6 +524,7 @@ function findMapEntry(signal = {}) {
     return map.find((entry) => entry.raw_signal === raw && entry.market === 'stocks');
   }
   if (raw === 'NARROW_WAIT') return map.find((entry) => entry.raw_signal === 'NARROW_WAIT');
+  if (raw === 'NARROW_FAKEOUT') return map.find((entry) => entry.raw_signal === 'NARROW_FAKEOUT');
   if (String(raw).includes('NARROW') || upper(signal.signalFamily).includes('NARROW')) {
     if (direction === 'DOWN' || raw.includes('BEAR')) return map.find((entry) => entry.raw_signal === 'NARROW_BEAR_ENTRY');
     if (direction === 'UP' || raw.includes('BULL')) return map.find((entry) => entry.raw_signal === 'NARROW_BULL_ENTRY');
