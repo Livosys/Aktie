@@ -891,6 +891,42 @@ function usePaperOptimizationCandidates(limit = 5) {
   return { data, loading, error, reload: load };
 }
 
+function useAutomationApprovals() {
+  const [data, setData] = React.useState(null);
+  const [loading, setLoading] = React.useState(true);
+  const [error, setError] = React.useState(null);
+
+  const load = React.useCallback(() => {
+    setLoading(true);
+    setError(null);
+    fetch('/api/automation/approvals')
+      .then((r) => (r.ok ? r.json() : null))
+      .then((d) => { setData(d); setLoading(false); })
+      .catch((e) => { setError(e.message); setLoading(false); });
+  }, []);
+
+  React.useEffect(() => { load(); }, [load]);
+  return { data, loading, error, reload: load };
+}
+
+function useBatchReplayPaperCandidatesPreview(limit = 12) {
+  const [data, setData] = React.useState(null);
+  const [loading, setLoading] = React.useState(true);
+  const [error, setError] = React.useState(null);
+
+  const load = React.useCallback(() => {
+    setLoading(true);
+    setError(null);
+    fetch(`/api/optimization/batch-replay-paper-candidates/preview?limit=${limit}`)
+      .then((r) => (r.ok ? r.json() : null))
+      .then((d) => { setData(d); setLoading(false); })
+      .catch((e) => { setError(e.message); setLoading(false); });
+  }, [limit]);
+
+  React.useEffect(() => { load(); }, [load]);
+  return { data, loading, error, reload: load };
+}
+
 const PAPER_CANDIDATE_STATUS_LABELS = {
   approved: 'Godkänd',
   not_approved: 'Ej godkänd',
@@ -898,6 +934,12 @@ const PAPER_CANDIDATE_STATUS_LABELS = {
   nekad: 'Nekad',
   needs_strategy_id: 'Saknar strategyId',
   unknown: 'Okänd',
+};
+
+const BATCH_REPLAY_DECISION_LABELS = {
+  promote_to_paper: 'Promote',
+  watch: 'Watch',
+  reject: 'Reject',
 };
 
 function paperCandidateStatusClass(status) {
@@ -1268,6 +1310,219 @@ function ApplyPanel({ summary, toggles, params, exits, onApplyParams, onApplyTog
           </div>
         )}
       </div>
+    </div>
+  );
+}
+
+function BatchReplayPaperCandidatesPanel() {
+  const { data: previewData, loading, error, reload } = useBatchReplayPaperCandidatesPreview(12);
+  const { data: approvalsData, loading: approvalsLoading, error: approvalsError, reload: reloadApprovals } = useAutomationApprovals();
+  const { data: savedData, loading: savedLoading, error: savedError, reload: reloadSaved } = usePaperOptimizationCandidates(50);
+  const [busyKey, setBusyKey] = React.useState('');
+  const [message, setMessage] = React.useState('');
+  const [panelError, setPanelError] = React.useState('');
+
+  const savedCandidates = React.useMemo(() => {
+    const rows = savedData?.candidates || [];
+    const keys = new Set();
+    rows.forEach((row) => {
+      if (row?.candidateId) keys.add(row.candidateId);
+      if (row?.recommendationId) keys.add(row.recommendationId);
+      if (row?.sourceRunId && row?.variantId) keys.add(`${row.sourceRunId}:${row.variantId}`);
+    });
+    return keys;
+  }, [savedData]);
+
+  const approvedStrategyIds = approvalsData?.approvedStrategyIds || [];
+  const approvedCount = approvalsData?.approvedCount ?? approvedStrategyIds.length ?? 0;
+  const maxApproved = approvalsData?.maxApproved ?? '–';
+
+  async function createCandidate(candidate) {
+    if (!candidate?.candidateId) return;
+    setBusyKey(candidate.candidateId);
+    setPanelError('');
+    setMessage('');
+    try {
+      const res = await fetch('/api/optimization/batch-replay-paper-candidates/create', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          candidateId: candidate.candidateId,
+          reason: 'manual_create_from_batch_replay_preview',
+        }),
+      });
+      const json = await res.json().catch(() => null);
+      if (!res.ok || !json?.ok) throw new Error(json?.error || 'Kunde inte skapa paper-testkandidat.');
+      setMessage(json.deduped ? 'Paper-testkandidat fanns redan sparad.' : 'Skickad till paper-testkandidater.');
+      await Promise.all([reload(), reloadSaved()]);
+    } catch (err) {
+      setPanelError(err.message || 'Kunde inte skapa paper-testkandidat.');
+    } finally {
+      setBusyKey('');
+    }
+  }
+
+  async function approveCandidate(candidate) {
+    if (!candidate?.strategyId) return;
+    const ok = window.confirm('Detta godkänner endast låtsashandel. Inga riktiga order kan läggas.');
+    if (!ok) return;
+    setBusyKey(candidate.candidateId || candidate.strategyId);
+    setPanelError('');
+    setMessage('');
+    try {
+      const res = await fetch('/api/automation/approvals/approve', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          strategyId: candidate.strategyId,
+          reason: `manual_ui_from_batch_replay:${candidate.displayName || candidate.strategyId}`,
+        }),
+      });
+      const json = await res.json().catch(() => null);
+      if (!res.ok || !json?.ok) throw new Error(json?.error || 'Kunde inte lägga till i paper allowlist.');
+      setMessage(`Lades till i paper allowlist: ${candidate.displayName || candidate.strategyId}.`);
+      await Promise.all([reloadApprovals(), reload()]);
+    } catch (err) {
+      setPanelError(err.message || 'Kunde inte lägga till i paper allowlist.');
+    } finally {
+      setBusyKey('');
+    }
+  }
+
+  const candidates = previewData?.candidates || [];
+
+  return (
+    <div className="opt-paper-candidate-panel opt-paper-candidate-panel-wide">
+      <div className="opt-paper-candidate-head">
+        <div>
+          <div className="opt-paper-candidate-title">Batch/Replay → Paper-kandidater</div>
+          <div className="opt-paper-candidate-sub">
+            Batch och replay får bara föreslå kandidater. Du godkänner manuellt innan paper trading.
+          </div>
+        </div>
+        <span className="opt-paper-candidate-pill opt-paper-candidate-not_approved">
+          allowlist {approvedCount} / {maxApproved}
+        </span>
+      </div>
+
+      {message && <div className="opt-paper-candidate-msg opt-paper-candidate-msg-good">{message}</div>}
+      {panelError && <div className="opt-paper-candidate-msg opt-paper-candidate-msg-bad">{panelError}</div>}
+      {error && <div className="opt-paper-candidate-msg opt-paper-candidate-msg-bad">Kunde inte läsa preview: {error}</div>}
+      {approvalsError && <div className="opt-paper-candidate-msg opt-paper-candidate-msg-bad">Kunde inte läsa approvals: {approvalsError}</div>}
+      {savedError && <div className="opt-paper-candidate-msg opt-paper-candidate-msg-bad">Kunde inte läsa sparade kandidater: {savedError}</div>}
+
+      <div className="opt-paper-candidate-meta">
+        <span>{loading ? 'Läser preview...' : `${previewData?.sourceCounts?.total ?? candidates.length} kandidater i preview`}</span>
+        <span>{previewData?.sourceCounts?.batch ?? 0} från batch</span>
+        <span>{previewData?.sourceCounts?.replay ?? 0} från replay</span>
+        <span>{previewData?.explanation || 'Read-only preview.'}</span>
+      </div>
+
+      {candidates.length > 0 ? (
+        <div className="opt-paper-candidate-list">
+          {candidates.map((candidate) => {
+            const saved = savedCandidates.has(candidate.candidateId)
+              || savedCandidates.has(candidate.recommendationId)
+              || (candidate.sourceRunId && candidate.variantId && savedCandidates.has(`${candidate.sourceRunId}:${candidate.variantId}`));
+            const allowlistStatus = candidate.allowlistStatus || 'unknown';
+            const isApproved = allowlistStatus === 'approved';
+            const canApprove = allowlistStatus === 'not_approved' && !!candidate.strategyId;
+            return (
+              <div key={candidate.candidateId} className="opt-paper-candidate-card">
+                <div className="opt-paper-candidate-card-head">
+                  <div>
+                    <div className="opt-paper-candidate-card-title">{candidate.displayName || candidate.strategyName || candidate.strategyId || 'Okänd kandidat'}</div>
+                    <div className="opt-paper-candidate-sub">
+                      Källa: {candidate.source || '–'} · run {candidate.sourceRunId || '–'} · variant {candidate.variantId || '–'}
+                    </div>
+                  </div>
+                  <span className={`opt-paper-candidate-pill ${paperCandidateStatusClass(allowlistStatus)}`}>
+                    {PAPER_CANDIDATE_STATUS_LABELS[allowlistStatus] || allowlistStatus}
+                  </span>
+                </div>
+
+                <div className="opt-paper-candidate-grid">
+                  <div>
+                    <span>Strategy</span>
+                    <strong>{candidate.strategyId || '–'}</strong>
+                  </div>
+                  <div>
+                    <span>Trades</span>
+                    <strong>{candidate.metrics?.trades ?? '–'}</strong>
+                  </div>
+                  <div>
+                    <span>Win rate</span>
+                    <strong>{candidate.metrics?.winRate ?? '–'}%</strong>
+                  </div>
+                  <div>
+                    <span>Total PnL</span>
+                    <strong>{candidate.metrics?.totalPnlPct ?? '–'}%</strong>
+                  </div>
+                  <div>
+                    <span>Drawdown</span>
+                    <strong>{candidate.metrics?.maxDrawdownPct ?? '–'}%</strong>
+                  </div>
+                  <div>
+                    <span>Score</span>
+                    <strong>{candidate.metrics?.score ?? '–'}</strong>
+                  </div>
+                  <div>
+                    <span>Confidence</span>
+                    <strong>{candidate.recommendation?.confidence || '–'}</strong>
+                  </div>
+                  <div>
+                    <span>Decision</span>
+                    <strong>{BATCH_REPLAY_DECISION_LABELS[candidate.recommendation?.decision] || candidate.recommendation?.decision || '–'}</strong>
+                  </div>
+                </div>
+
+                <div className="opt-paper-candidate-meta">
+                  <span>{candidate.explanation || candidate.recommendation?.reason || '–'}</span>
+                  <span>{saved ? 'Skickad till paper-testkandidater' : 'Inte sparad ännu'}</span>
+                </div>
+
+                <div className="opt-paper-candidate-actions">
+                  <button
+                    className="opt-paper-candidate-approve"
+                    type="button"
+                    disabled={saved || busyKey === candidate.candidateId}
+                    onClick={() => createCandidate(candidate)}
+                  >
+                    {saved ? 'Redan sparad' : busyKey === candidate.candidateId ? 'Sparar...' : 'Skapa paper-testkandidat'}
+                  </button>
+                  <button
+                    className="opt-paper-candidate-approve opt-paper-candidate-approve-secondary"
+                    type="button"
+                    disabled={!canApprove || busyKey === candidate.candidateId}
+                    onClick={() => approveCandidate(candidate)}
+                  >
+                    {isApproved
+                      ? 'Redan godkänd'
+                      : allowlistStatus === 'max_nått'
+                        ? 'Max nått'
+                        : allowlistStatus === 'nekad'
+                          ? 'Nekad av canApprove'
+                          : allowlistStatus === 'needs_strategy_id'
+                            ? 'Saknar strategyId'
+                            : 'Lägg till i paper allowlist'}
+                  </button>
+                  <span>
+                    {isApproved
+                      ? 'Redan godkänd'
+                      : candidate.strategyId
+                        ? candidate.allowlistReason || 'Detta påverkar bara paper-only låtsashandel.'
+                        : 'Saknar strategyId för allowlist-godkännande.'}
+                  </span>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      ) : (
+        <div className="opt-paper-candidate-empty">
+          {loading || savedLoading || approvalsLoading ? 'Läser batch/replay-data...' : 'Inga batch/replay-kandidater hittades ännu.'}
+        </div>
+      )}
     </div>
   );
 }
@@ -1785,6 +2040,9 @@ function AiOptimizationTab({ toggles, params, exits, onApplyParams, onApplyToggl
           ) : (
             <div className="opt-empty">Inga batch-resultat ännu. Kör Batch-test i Trading Lab för att få rekommendationer.</div>
           )}
+
+          <div className="opt-subsection" style={{ marginTop: '1.25rem' }}>Batch/Replay → Paper-kandidater</div>
+          <BatchReplayPaperCandidatesPanel />
         </div>
       )}
 

@@ -101,6 +101,11 @@ function requireAuthForMutations(req, res, next) {
   if (path === '/automation/approvals/approve' || path === '/automation/approvals/reject') {
     return next();
   }
+  // Batch/replay paper-candidate creation is also paper-only research and only
+  // appends to the candidate log. It cannot trade or touch allowlist state.
+  if (path === '/optimization/batch-replay-paper-candidates/create') {
+    return next();
+  }
   if (req.method === 'GET' || req.method === 'HEAD' || req.method === 'OPTIONS') {
     return next();
   }

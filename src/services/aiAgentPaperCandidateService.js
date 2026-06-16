@@ -49,6 +49,10 @@ function safeArray(value) {
   return Array.isArray(value) ? value.filter(Boolean) : [];
 }
 
+function stableId(seed) {
+  return crypto.createHash('sha256').update(JSON.stringify(seed)).digest('hex').slice(0, 20);
+}
+
 function readLines() {
   try {
     if (!fs.existsSync(DATA_FILE)) return [];
@@ -171,25 +175,37 @@ function decorateCandidate(candidate) {
 }
 
 function buildCandidateRecord(input = {}) {
-  const recommendationId = safeString(input.recommendationId) || stableId({
+  const candidateIdSeed = {
     strategyId: safeString(input.strategyId),
     source: safeString(input.source, 'ai_agent_batch_recommendation'),
+    sourceRunId: safeString(input.sourceRunId),
+    variantId: safeString(input.variantId),
+    recommendationId: safeString(input.recommendationId),
     selectedChanges: normalizeChanges(input.selectedChanges),
     tradeCount: safeNumber(input.tradeCount, null),
     replayRunCount: safeNumber(input.replayRunCount, null),
     overallScore: safeNumber(input.overallScore, null),
-  });
+  };
+  const candidateId = safeString(input.candidateId) || stableId(candidateIdSeed);
+  const recommendationId = safeString(input.recommendationId) || candidateId;
+  const metrics = safeObject(input.metrics);
+  const recommendation = safeObject(input.recommendation);
+  const testedConfig = safeObject(input.testedConfig);
 
   const createdAt = nowIso();
   const appliedConfig = safeObject(input.appliedConfig);
   const candidate = {
-    id: recommendationId,
+    id: candidateId,
+    candidateId,
     recommendationId,
     strategyId: safeString(input.strategyId),
     strategyName: safeString(input.strategyName) || null,
     source: safeString(input.source, 'ai_agent_batch_recommendation'),
     sourceKind: safeString(input.sourceKind, 'optimization'),
     sourceLabel: safeString(input.sourceLabel, 'AI-agent rekommendation'),
+    sourceRunId: safeString(input.sourceRunId) || null,
+    variantId: safeString(input.variantId) || null,
+    displayName: safeString(input.displayName) || null,
     paperCandidate: true,
     allowlistStatus: 'not_approved',
     allowlistReason: 'Strategin är inte godkänd ännu.',
@@ -202,6 +218,9 @@ function buildCandidateRecord(input = {}) {
     confidence: safeNumber(input.confidence, null),
     dataVolume: safeNumber(input.dataVolume, null),
     selectedChanges: normalizeChanges(input.selectedChanges),
+    testedConfig,
+    metrics: metrics || null,
+    recommendation: recommendation || null,
     appliedConfig,
     appliedConfigHash: appliedConfig ? stableId(appliedConfig) : null,
     summarySnapshot: safeObject(input.summarySnapshot),
@@ -228,7 +247,8 @@ function appendCandidate(candidate) {
 
 function recordPaperCandidate(input = {}) {
   const strategyId = safeString(input.strategyId);
-  if (!strategyId) {
+  const source = safeString(input.source, 'ai_agent_batch_recommendation');
+  if (!strategyId && !['batch', 'replay'].includes(source)) {
     return { ok: false, error: 'strategyId krävs för paper-testkandidat.', ...SAFETY };
   }
 
@@ -237,7 +257,11 @@ function recordPaperCandidate(input = {}) {
   }
 
   const candidate = buildCandidateRecord(input);
-  const existing = loadRecent(500).find((row) => row.recommendationId === candidate.recommendationId);
+  const existing = loadRecent(500).find((row) => (
+    (candidate.candidateId && row.candidateId === candidate.candidateId)
+    || (candidate.recommendationId && row.recommendationId === candidate.recommendationId)
+    || (candidate.sourceRunId && candidate.variantId && row.sourceRunId === candidate.sourceRunId && row.variantId === candidate.variantId)
+  ));
   if (existing) {
     return {
       ok: true,

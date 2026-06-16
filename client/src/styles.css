@@ -15772,6 +15772,7 @@ body {
 .opt-apply-note       { font-size: 11px; color: var(--text-muted); }
 
 .opt-paper-candidate-panel { margin: 0 16px 16px; padding: 12px; border: 1px solid rgba(56,189,248,.25); border-radius: 10px; background: rgba(56,189,248,.05); }
+.opt-paper-candidate-panel-wide { margin-top: 12px; }
 .opt-paper-candidate-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 10px; margin-bottom: 10px; flex-wrap: wrap; }
 .opt-paper-candidate-title { color: var(--text); font-size: 13px; font-weight: 900; }
 .opt-paper-candidate-sub { color: var(--text-muted); font-size: 11px; margin-top: 2px; line-height: 1.4; }
@@ -15792,6 +15793,11 @@ body {
 .opt-paper-candidate-actions { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin-top: 6px; }
 .opt-paper-candidate-approve { border: 1px solid rgba(34,197,94,.35); background: rgba(34,197,94,.12); color: #22c55e; border-radius: 8px; padding: 8px 11px; font-size: 12px; font-weight: 900; cursor: pointer; }
 .opt-paper-candidate-approve:disabled { opacity: .45; cursor: not-allowed; }
+.opt-paper-candidate-approve-secondary { border-color: rgba(56,189,248,.35); background: rgba(56,189,248,.10); color: #38bdf8; }
+.opt-paper-candidate-list { display: grid; gap: 12px; }
+.opt-paper-candidate-card { border: 1px solid rgba(56,189,248,.20); border-radius: 12px; padding: 12px; background: rgba(15, 23, 42, .18); }
+.opt-paper-candidate-card-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 10px; margin-bottom: 10px; flex-wrap: wrap; }
+.opt-paper-candidate-card-title { color: var(--text); font-size: 13px; font-weight: 900; line-height: 1.3; }
 .opt-paper-candidate-empty { color: var(--text-muted); font-size: 12px; padding-top: 4px; }
 
 /* ── Apply button ── */
@@ -15808,6 +15814,7 @@ body {
   .opt-apply-row-inner { flex-wrap: wrap; }
   .opt-paper-candidate-panel { margin: 0 10px 14px; }
   .opt-paper-candidate-grid { grid-template-columns: 1fr 1fr; }
+  .opt-paper-candidate-list { gap: 10px; }
 }
 
 /* ── Market Universe (mu-*) ──────────────────────────────────────────────────── */

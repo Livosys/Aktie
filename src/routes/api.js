@@ -81,6 +81,7 @@ const automationPlanService = require('../services/automationPlanService');
 const automationApprovalService = require('../services/automationApprovalService');
 const paperAllowlistConfigService = require('../services/paperAllowlistConfigService');
 const aiAgentPaperCandidateService = require('../services/aiAgentPaperCandidateService');
+const batchReplayPaperCandidateService = require('../services/batchReplayPaperCandidateService');
 const strategyTestAutopilot = require('../services/strategyTestAutopilotService');
 const learningConnector = require('../services/learningConnectorService');
 const topStrategyGrid = require('../services/topStrategyGridService');
@@ -3807,6 +3808,59 @@ router.post('/optimization/paper-candidates', (req, res) => {
     res.status(result.ok ? 200 : 400).json(result);
   } catch (err) {
     res.status(500).json({ ok: false, error: err.message, safety: aiAgentPaperCandidateService.SAFETY });
+  }
+});
+
+router.get('/optimization/batch-replay-paper-candidates/preview', (req, res) => {
+  try {
+    res.json(batchReplayPaperCandidateService.listBatchReplayCandidatePreview(req.query.limit || req.query.n || 25));
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message, safety: batchReplayPaperCandidateService.SAFETY });
+  }
+});
+
+router.post('/optimization/batch-replay-paper-candidates/create', (req, res) => {
+  try {
+    const body = req.body && typeof req.body === 'object' ? req.body : {};
+    const preview = batchReplayPaperCandidateService.findPreviewCandidate(
+      body.candidateId || body.recommendationId || body.sourceRunId || '',
+      body.limit || body.n || 25,
+    );
+    if (!preview) {
+      return res.status(404).json({ ok: false, error: 'candidate_not_found_in_preview', safety: batchReplayPaperCandidateService.SAFETY });
+    }
+    const result = aiAgentPaperCandidateService.recordPaperCandidate({
+      candidateId: preview.candidateId,
+      recommendationId: preview.candidateId,
+      strategyId: preview.strategyId,
+      strategyName: preview.strategyName,
+      source: preview.source,
+      sourceKind: preview.sourceLabel || 'batch_replay',
+      sourceLabel: preview.sourceLabel || 'Batch/replay kandidat',
+      sourceRunId: preview.sourceRunId,
+      variantId: preview.variantId,
+      displayName: preview.displayName,
+      appliedConfig: preview.testedConfig,
+      testedConfig: preview.testedConfig,
+      metrics: preview.metrics,
+      recommendation: preview.recommendation,
+      reason: body.reason || 'manual_create_from_batch_replay_preview',
+      tradeCount: preview.metrics?.trades ?? null,
+      replayRunCount: preview.source === 'replay' ? 1 : null,
+      overallScore: preview.metrics?.score ?? null,
+      confidence: preview.recommendation?.confidence || null,
+      dataVolume: preview.metrics?.trades ?? null,
+      summarySnapshot: {
+        source: preview.source,
+        sourceRunId: preview.sourceRunId,
+        variantId: preview.variantId,
+        recommendation: preview.recommendation,
+        metrics: preview.metrics,
+      },
+    });
+    res.status(result.ok ? 200 : 400).json(result);
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message, safety: batchReplayPaperCandidateService.SAFETY });
   }
 });
 
