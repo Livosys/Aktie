@@ -879,7 +879,7 @@ function PaperRuntimeSection({ runtimeState }) {
         <div className="sp-activity-head">
           <div>
             <h2>Kompakt paper-status</h2>
-            <span>Read-only sammanfattning. Full vy finns under Resultat, där Paper Trading visas tillsammans med daytrading-diagnos.</span>
+            <span>Read-only sammanfattning. Full vy finns under Paper Trading och Lab, där samma data visas i enklare vyer.</span>
           </div>
           <ConfigScopeBadge scope="test" />
         </div>
@@ -897,7 +897,7 @@ function PaperRuntimeSection({ runtimeState }) {
             </div>
             {shownTradeRecords < (summary.limit ?? 50) && (
               <div className="sp-activity-empty">
-                Systemet har inte skapat 50 paper records ännu. Full status finns på <Link to="/daytrading">Resultat</Link>.
+                Systemet har inte skapat 50 paper records ännu. Full status finns på <Link to="/paper-trading">Paper Trading</Link>.
               </div>
             )}
             {(error || runtime?.status === 'degraded') && (
@@ -913,8 +913,8 @@ function PaperRuntimeSection({ runtimeState }) {
               <span>broker_enabled=false</span>
             </div>
             <div className="sp-work-status">
-              <Link to="/daytrading">Öppna Resultat och Paper Trading</Link>
-              <Link to="/supervisor">Öppna supervisor</Link>
+              <Link to="/paper-trading">Öppna Paper Trading</Link>
+              <Link to="/system">Öppna System</Link>
             </div>
           </>
         )}
@@ -983,8 +983,8 @@ function QuickActions({ onFilter, topSetups }) {
       <button type="button" onClick={() => onFilter('crypto')}>Visa bara krypto</button>
       <button type="button" onClick={() => onFilter('strong_setup')}>Visa starka setups</button>
       <button type="button" onClick={() => onFilter('volatility')}>Visa timeout-problem</button>
-      <Link to="/insikter?tab=setups">Visa starkaste mönster</Link>
-      <Link to="/insikter?tab=setups">Visa svaga strategier</Link>
+      <Link to="/lab?tab=strategier">Visa starkaste mönster</Link>
+      <Link to="/lab?tab=strategier">Visa svaga strategier</Link>
       {topSetups?.[0] && <Link to={`/lab?tab=strategier&setup=${encodeURIComponent(topSetups[0].setup_id || topSetups[0].label)}`}>Öppna LAB med detta mönster</Link>}
     </div>
   );
@@ -1582,7 +1582,7 @@ export default function SignalpulsPage() {
 
       <div className="sp-perf-header">
         <h2 className="sp-section-h2">Mönsterhistorik</h2>
-        <Link to="/insikter" className="sp-perf-link">Se alla resultat →</Link>
+        <Link to="/lab?tab=replay" className="sp-perf-link">Se alla resultat →</Link>
       </div>
 
       {advancedMode && setupData ? (
@@ -1619,7 +1619,7 @@ export default function SignalpulsPage() {
       {/* Quick nav */}
       <div className="sp-quick-nav">
         <Link to="/lab" className="sp-quick-btn sp-qb-lab">🧪 LAB</Link>
-        <Link to="/insikter" className="sp-quick-btn sp-qb-results">📊 INSIKTER</Link>
+        <Link to="/lab?tab=replay" className="sp-quick-btn sp-qb-results">📊 LAB HISTORIK</Link>
         <Link to="/system?tab=safety" className="sp-quick-btn sp-qb-safety">🛡️ SYSTEM Safety</Link>
       </div>
     </div>

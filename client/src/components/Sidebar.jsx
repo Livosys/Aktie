@@ -8,13 +8,9 @@ const NAV_GROUPS = [
     label: 'Trading OS',
     items: [
       { path: '/live', icon: '🟢', label: 'Live', match: ['/live'] },
-      { path: '/daytrading', icon: '📈', label: 'Resultat', match: ['/daytrading'] },
       { path: '/paper-trading', icon: '🧾', label: 'Paper Trading', match: ['/paper-trading'] },
-      { path: '/supervisor', icon: '🧠', label: 'Control Room', match: ['/supervisor'] },
-      { path: '/narrow', icon: '◐', label: 'Narrow State', match: ['/narrow'] },
       { path: '/lab', icon: '🧪', label: 'Test Lab', match: ['/lab'] },
       { path: '/system', icon: '🛡️', label: 'System', match: ['/system'] },
-      { path: '/insikter?tab=overview', icon: '📊', label: 'Data', match: ['/insikter'] },
     ],
   },
 ];
@@ -84,7 +80,7 @@ export default function Sidebar({ open, onClose }) {
       <aside className={`premium-sidebar${open ? ' is-open' : ''}`}>
 
         {/* Brand */}
-        <Link to="/supervisor" className="sb-brand" onClick={onClose}>
+        <Link to="/lab" className="sb-brand" onClick={onClose}>
           <img src="/evin.png" alt="" className="sb-brand-logo" />
           <div className="sb-brand-text">
             <strong>Trading OS</strong>

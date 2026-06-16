@@ -1349,7 +1349,7 @@ export default function SupervisorBrainPage() {
         <footer className="tos-footer">
           <div className="tos-footer-links">
             <Link to="/lab">Öppna Research/Lab</Link>
-            <Link to="/insikter">Öppna Historik</Link>
+            <Link to="/lab?tab=replay">Öppna Historik</Link>
             <Link to="/system?tab=safety">Öppna Safety</Link>
           </div>
           <div className="tos-footer-copy">

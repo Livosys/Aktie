@@ -11,12 +11,8 @@ const EXAMPLES = [
 
 function pageFromPath(pathname) {
   if (pathname.startsWith('/system')) return 'system';
-  if (pathname.startsWith('/insikter')) return 'insights';
   if (pathname.startsWith('/paper-trading')) return 'daytrading';
   if (pathname.startsWith('/lab')) return 'lab';
-  if (pathname.startsWith('/supervisor')) return 'supervisor';
-  if (pathname.startsWith('/narrow')) return 'narrow';
-  if (pathname.startsWith('/daytrading')) return 'daytrading';
   return 'live';
 }
 

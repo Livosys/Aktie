@@ -144,7 +144,7 @@ function SummaryGrid({ runtime }) {
         </div>
         <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
           <Link to="/live">Till Signalpuls</Link>
-          <Link to="/supervisor">Till Supervisor</Link>
+          <Link to="/system">Till System</Link>
         </div>
       </div>
 

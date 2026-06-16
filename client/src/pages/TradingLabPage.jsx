@@ -2644,7 +2644,7 @@ function StrategiesTab() {
           <strong>Lab påverkar inte vilka strategier som kör paper trades.</strong>
           <div>Vill du styra paper-runtime, gå till Daytrading. Här körs bara test, replay, batch och analys.</div>
         </div>
-        <Link className="strat-test-btn" to="/daytrading">Öppna Daytrading-kontroll</Link>
+        <Link className="strat-test-btn" to="/paper-trading">Öppna Paper Trading</Link>
       </div>
       <div className="strat-list">
         {strategies.map(strategy => (
@@ -4289,7 +4289,7 @@ export default function TradingLabPage() {
       {/* Bottom nav */}
       <div className="tl-bottom-nav">
         <Link to="/live" className="tl-bottom-link">❤️ LIVE</Link>
-        <Link to="/insikter" className="tl-bottom-link">📊 INSIKTER</Link>
+        <Link to="/lab?tab=replay" className="tl-bottom-link">📊 HISTORIK</Link>
         <Link to="/system?tab=safety" className="tl-bottom-link">🛡️ SYSTEM</Link>
       </div>
     </div>

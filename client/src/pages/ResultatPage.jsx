@@ -333,10 +333,10 @@ function OversiktTab() {
       </div>
 
       <div className="res-quick-links">
-        <Link to="/daytrading" className="res-quick-btn">◉ DAYTRADING — operativ kontroll</Link>
+        <Link to="/paper-trading" className="res-quick-btn">◉ PAPER TRADING — operativ kontroll</Link>
         <Link to="/lab" className="res-quick-btn">🧪 LAB — analys &amp; test</Link>
         <Link to="/system?tab=safety" className="res-quick-btn">🛡️ SYSTEM — safety &amp; skyddsstatus</Link>
-        <Link to="/insikter?tab=data-center" className="res-quick-btn">▣ Data Center — all historik</Link>
+        <Link to="/lab?tab=replay" className="res-quick-btn">▣ Historik — all data</Link>
       </div>
     </div>
   );
@@ -450,7 +450,7 @@ function AiTab() {
       )}
 
       <div className="res-ai-nav">
-        <Link to="/insikter?tab=ai" className="res-ai-link">🧠 Gå till Learning →</Link>
+        <Link to="/lab?tab=adaptive" className="res-ai-link">🧠 Gå till Learning →</Link>
       </div>
     </div>
   );
@@ -829,7 +829,7 @@ function DaytradingStrategiesTab() {
             Den nya sidan Daytrading Control Center ger livekontroll för strategier, signaler, pipeline och paper trades.
             Insikter fokuserar på historik och lärande.
           </div>
-          <Link to="/daytrading" className="dt-moved-btn">Öppna Daytrading Control Center</Link>
+        <Link to="/paper-trading" className="dt-moved-btn">Öppna Paper Trading</Link>
         </div>
       </div>
     </div>
@@ -1270,9 +1270,9 @@ export default function ResultatPage() {
       {tab === 'daytrading' && (
         <LegacyTabNotice
           title="Daytrading har en egen sida"
-          text="Operativ kontroll för daytrading ligger kvar på den separata daytrading-sidan."
-          linkTo="/daytrading"
-          linkLabel="Öppna Daytrading"
+          text="Operativ kontroll för daytrading ligger nu i Paper Trading."
+          linkTo="/paper-trading"
+          linkLabel="Öppna Paper Trading"
         />
       )}
       {tab === 'memory' && (
@@ -1286,9 +1286,9 @@ export default function ResultatPage() {
       {tab === 'candidates' && (
         <LegacyTabNotice
           title="Kandidater visas utanför Insikter"
-          text="Kandidater hör hemma i Daytrading-flödet. Insikter visar nu översikt, aktivitet och Data Center."
-          linkTo="/daytrading"
-          linkLabel="Öppna Daytrading"
+          text="Kandidater hör hemma i Paper Trading-flödet. Insikter visar nu översikt, aktivitet och Data Center."
+          linkTo="/paper-trading"
+          linkLabel="Öppna Paper Trading"
         />
       )}
       {tab === 'paper' && (
