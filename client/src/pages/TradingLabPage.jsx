@@ -2076,6 +2076,97 @@ const MARKET_OPTIONS = [
 ];
 const TIMEFRAME_OPTIONS = ['1m', '2m', '5m', '15m', '30m', '1h'];
 
+// Marknadsförval för batch. Varje preset fyller bara i symboler/strategier/timeframes —
+// det startar ALDRIG en batch. strategyIds matchas mot katalogen vid applicering så att
+// crypto-strategier inte hamnar på aktier och tvärtom.
+const BATCH_MARKET_PRESETS = [
+  {
+    key: 'crypto',
+    label: 'Crypto',
+    emoji: '🪙',
+    market: 'crypto',
+    dataSource: 'Binance (crypto)',
+    symbols: ['BTCUSDT', 'ETHUSDT', 'SOLUSDT'],
+    timeframes: ['1m', '2m', '5m'],
+    // Endast crypto-kompatibla strategier (market_group crypto eller all).
+    strategyIds: ['crypto_momentum_scalper', 'vwap_momentum_long', 'volume_spike_momentum', 'trend_continuation'],
+    allowedGroups: ['crypto', 'all'],
+    note: 'Crypto handlas dygnet runt och har egna market gates och datakällor.',
+  },
+  {
+    key: 'us_stocks',
+    label: 'US Stocks / Mag 7',
+    emoji: '📈',
+    market: 'stocks',
+    dataSource: 'Alpaca',
+    symbols: ['AAPL', 'MSFT', 'NVDA', 'TSLA', 'META', 'AMZN', 'GOOGL'],
+    timeframes: ['2m', '5m', '15m'],
+    strategyIds: ['trend_continuation', 'vwap_momentum_long', 'opening_range_breakout', 'resistance_rejection', 'support_bounce'],
+    allowedGroups: ['stocks', 'all'],
+    note: 'US-aktier kräver Alpaca-historik och följer börsens öppettider.',
+  },
+  {
+    key: 'etf_index',
+    label: 'ETF / Index',
+    emoji: '🧭',
+    market: 'stocks',
+    dataSource: 'Alpaca',
+    symbols: ['QQQ', 'SPY'],
+    timeframes: ['2m', '5m', '15m'],
+    strategyIds: ['narrow_breakout', 'narrow_fakeout_reversal_v1', 'narrow_state_expansion_long', 'vwap_momentum_long'],
+    allowedGroups: ['stocks', 'all'],
+    note: 'ETF/index passar narrow state- och VWAP-strategier. Kräver Alpaca-historik.',
+  },
+  {
+    key: 'swedish',
+    label: 'Svenska aktier / Avanza',
+    emoji: '🇸🇪',
+    market: 'stocks',
+    dataSource: 'Avanza (ej kopplad)',
+    symbols: [],
+    timeframes: ['5m', '15m'],
+    strategyIds: [],
+    allowedGroups: ['stocks', 'all'],
+    disabled: true,
+    disabledReason: 'Datakälla saknas',
+    note: 'Svenska aktier kräver en Avanza-datakälla som inte är kopplad ännu.',
+  },
+];
+
+const CRYPTO_SYMBOL_HINTS = new Set(['BTCUSDT', 'ETHUSDT', 'SOLUSDT', 'XRPUSDT', 'DOGEUSDT', 'AVAXUSDT', 'LINKUSDT', 'BNBUSDT', 'ADAUSDT']);
+
+// Klassificera en symbol som 'crypto' eller 'stock' (samma logik som backend inferMarketGroup).
+function classifySymbolMarket(symbol) {
+  const s = String(symbol || '').trim().toUpperCase();
+  if (!s) return 'unknown';
+  if (CRYPTO_SYMBOL_HINTS.has(s) || /USDT$/.test(s) || /USD$/.test(s)) return 'crypto';
+  return 'stock';
+}
+
+// Returnerar true om en lista av symboler blandar crypto och aktier.
+function hasMixedMarkets(symbols = []) {
+  const kinds = new Set(symbols.map(classifySymbolMarket).filter((k) => k !== 'unknown'));
+  return kinds.has('crypto') && kinds.has('stock');
+}
+
+// Välj de katalog-strategier som matchar ett preset: prioritera presetets önskade id:n,
+// men släpp endast igenom strategier vars market_group är kompatibel med marknaden.
+function resolvePresetStrategyIds(preset, catalog = []) {
+  if (!preset || !catalog.length) return [];
+  const allowed = new Set(preset.allowedGroups || ['all']);
+  const isCompatible = (strategy) => {
+    const group = String(strategy.market_group || strategy.market || 'all').toLowerCase();
+    return allowed.has(group);
+  };
+  const byId = new Map(catalog.map((s) => [s.id, s]));
+  const picked = [];
+  (preset.strategyIds || []).forEach((id) => {
+    const strat = byId.get(id);
+    if (strat && isCompatible(strat) && !picked.includes(id)) picked.push(id);
+  });
+  return picked.slice(0, 8);
+}
+
 function pctText(v) {
   if (v == null || Number.isNaN(Number(v))) return 'Ingen data ännu';
   return `${Number(v).toFixed(1)}%`;
@@ -2545,6 +2636,119 @@ function batchPipelineSteps({ form, comboCount, batchBlocked, activeBatch, compa
   ];
 }
 
+// Symboler vi förväntar oss täckning för (samma som marknadsförvalen).
+const EXPECTED_DATA_SYMBOLS = ['BTCUSDT', 'ETHUSDT', 'SOLUSDT', 'AAPL', 'MSFT', 'NVDA', 'TSLA', 'META', 'AMZN', 'GOOGL', 'QQQ', 'SPY'];
+
+function dataSourceForSymbol(marketGroup, symbol) {
+  if (classifySymbolMarket(symbol) === 'crypto' || marketGroup === 'crypto') return 'Binance';
+  return 'Alpaca';
+}
+
+function assetClassLabel(marketGroup, symbol) {
+  if (classifySymbolMarket(symbol) === 'crypto' || marketGroup === 'crypto') return 'Crypto';
+  if (marketGroup === 'nasdaq100' || marketGroup === 'index' || marketGroup === 'etf') return 'ETF/Index';
+  return 'Aktie';
+}
+
+// Read-only panel: visar vilken lokal historik som finns och vad batch/replay faktiskt läser.
+// Muterar ingenting, startar ingen sync/backfill. Återanvänder befintliga coverage-endpoints.
+function AlpacaDataSyncPanel() {
+  const [coverage, setCoverage] = React.useState(null);
+  const [status, setStatus] = React.useState(null);
+  const [loading, setLoading] = React.useState(true);
+  const [open, setOpen] = React.useState(true);
+
+  const load = React.useCallback(async () => {
+    const [cov, st] = await Promise.all([
+      fetch('/api/data-center/coverage').then((r) => (r.ok ? r.json() : null)).catch(() => null),
+      fetch('/api/data-coverage/status').then((r) => (r.ok ? r.json() : null)).catch(() => null),
+    ]);
+    setCoverage(cov);
+    setStatus(st);
+    setLoading(false);
+  }, []);
+
+  React.useEffect(() => { load(); }, [load]);
+
+  const symbols = coverage?.symbols || [];
+  const bySymbol = {};
+  symbols.forEach((row) => { bySymbol[row.symbol] = row; });
+  const alpacaProvider = status?.provider_status?.alpaca;
+  const connected = alpacaProvider ? (alpacaProvider.ok || alpacaProvider.configured) : null;
+  const lastUpdate = coverage?.generated_at || status?.generated_at;
+  const missing = EXPECTED_DATA_SYMBOLS.filter((s) => !bySymbol[s]);
+
+  return (
+    <section className="alpaca-sync-card">
+      <div className="alpaca-sync-header">
+        <div>
+          <div className="batch-section-title">📡 Alpaca Data &amp; Synkning</div>
+          <div className="batch-pipeline-subtitle">Read-only · visar lokal historik som batch/replay faktiskt läser</div>
+        </div>
+        <button type="button" className="opt-expand-btn" onClick={() => setOpen((v) => !v)}>{open ? 'Dölj' : 'Visa'}</button>
+      </div>
+
+      {open && (loading ? (
+        <div className="tl-loading">Laddar coverage…</div>
+      ) : (
+        <>
+          <div className="alpaca-sync-grid">
+            <div><span>Alpaca ansluten</span><strong>{connected == null ? 'Okänt' : connected ? 'Ja' : 'Nej'}</strong></div>
+            <div><span>Senaste coverage-update</span><strong>{lastUpdate ? fmtBatchTime(lastUpdate) : '–'}</strong></div>
+            <div><span>Symboler med historik</span><strong>{symbols.length}</strong></div>
+            <div><span>Batch läser lokal store</span><strong>Ja</strong></div>
+            <div><span>Replay läser lokal store</span><strong>Ja</strong></div>
+            <div><span>Direkt Alpaca vid testkörning</span><strong>Nej</strong></div>
+          </div>
+
+          <div className="alpaca-sync-explain">
+            Batch och replay läser <strong>endast lokal historik</strong> från <code>data/market-data/candles-2m/</code> (rå Alpaca-bars i <code>data/market-data/alpaca/raw/</code>).
+            Alpaca kan ha flera års historik, men <strong>bara det som backfillats lokalt</strong> används i tester. Därför kan UI säga "för lite historik" trots att Alpaca är anslutet.
+          </div>
+
+          <div className="alpaca-sync-table">
+            <div className="alpaca-sync-row alpaca-sync-head">
+              <span>Symbol</span><span>Klass</span><span>Källa</span><span>Tidigast</span><span>Senast</span><span>2m candles</span><span>Timeframes</span><span>Status</span>
+            </div>
+            {symbols.length === 0 && <div className="batch-audit-empty">Ingen lokal historik hittad.</div>}
+            {symbols.map((row) => {
+              const tfs = Object.keys(row.timeframes || {}).filter((t) => t !== 'raw_alpaca').join(', ') || '–';
+              return (
+                <div key={row.symbol} className={`alpaca-sync-row alpaca-sync-${row.tone || 'gray'}`}>
+                  <strong>{row.symbol}</strong>
+                  <span>{assetClassLabel(row.market_group, row.symbol)}</span>
+                  <span>{dataSourceForSymbol(row.market_group, row.symbol)}</span>
+                  <span>{row.first_date || '–'}</span>
+                  <span>{row.latest_date || '–'}</span>
+                  <span>{row.candles_2m_count ?? row.total_candle_count ?? 0}</span>
+                  <span>{tfs}</span>
+                  <span>{row.status_sv || '–'}</span>
+                </div>
+              );
+            })}
+          </div>
+
+          {missing.length > 0 && (
+            <div className="batch-warning alpaca-sync-missing">
+              Saknar lokal historik helt: {missing.join(', ')}. Dessa kan inte batch/replay-testas förrän de backfillats.
+            </div>
+          )}
+
+          <div className="alpaca-sync-reco">
+            <strong>Rekommenderad åtgärd:</strong>
+            <ul>
+              <li>Backfilla US stocks/ETF från Alpaca innan långa batch/replay-tester.</li>
+              <li>Börja med QQQ, SPY, NVDA, AAPL, MSFT om coverage saknas.</li>
+              <li>Bygg en separat backfill-kontroll <em>efter</em> denna read-only-vy (ingen sync-knapp här ännu).</li>
+            </ul>
+          </div>
+          <div className="batch-safety">Read-only · ingen sync/backfill startas härifrån · paper_only · actions_allowed=false</div>
+        </>
+      ))}
+    </section>
+  );
+}
+
 function BatchTestTab() {
   const { data: marketUniverse } = useMarketUniverse();
   const [catalog, setCatalog] = React.useState([]);
@@ -2555,6 +2759,7 @@ function BatchTestTab() {
   const [coverageMap, setCoverageMap] = React.useState({});
   const [message, setMessage] = React.useState('');
   const [loading, setLoading] = React.useState(true);
+  const [activePreset, setActivePreset] = React.useState('');
   const [form, setForm] = React.useState({
     name: '',
     strategy_ids: [],
@@ -2633,6 +2838,21 @@ function BatchTestTab() {
       if (set.has(value)) set.delete(value); else set.add(value);
       return { ...prev, [key]: [...set] };
     });
+  }
+
+  // Fyller i symboler/strategier/timeframes från ett marknadsförval. Startar ALDRIG en batch.
+  function applyPreset(preset) {
+    if (!preset || preset.disabled) return;
+    const strategyIds = resolvePresetStrategyIds(preset, catalog);
+    setActivePreset(preset.key);
+    setForm((prev) => ({
+      ...prev,
+      symbols: preset.symbols.join(','),
+      timeframes: preset.timeframes.slice(),
+      strategy_ids: strategyIds.length ? strategyIds : prev.strategy_ids,
+      markets: ['all'],
+    }));
+    setMessage('');
   }
 
   function payload() {
@@ -2745,6 +2965,7 @@ function BatchTestTab() {
   const selectedProviderMissing = marketOptions.filter((m) => form.markets.includes(m.id) && m.dataStatus === 'needs_provider');
   const batchBlocked = selectedProviderMissing.length > 0 && form.certificate_simulation_mode !== 'underlying_only';
   const batchCoverageWarnings = csvSymbols(form.symbols).map((symbol) => coverageMap[symbol]).filter(Boolean).filter((row) => !row.usable_for_batch);
+  const mixedMarkets = hasMixedMarkets(csvSymbols(form.symbols));
   const bestResult = compare?.recommended_config?.strategy_id ? compare.recommended_config : compare?.best_overall?.[0];
   const bestDecision = batchDecision(bestResult);
   const pipelineSteps = batchPipelineSteps({ form, comboCount, batchBlocked, activeBatch, compare });
@@ -2867,6 +3088,8 @@ function BatchTestTab() {
       </section>
       <div className="batch-safety">Paper/replay only · actions_allowed=false · can_place_orders=false · live_trading_enabled=false</div>
 
+      <AlpacaDataSyncPanel />
+
       <section className="batch-pipeline-card">
         <div className="batch-pipeline-header">
           <div>
@@ -2904,6 +3127,30 @@ function BatchTestTab() {
           </label>
           <div className="batch-info">
             Lämna tomt så namnges batchen automatiskt: <strong>{autoBatchName}</strong>
+          </div>
+
+          <div className="batch-section-title">Marknadsförval</div>
+          <div className="batch-info">
+            Välj ett förval så fylls rätt symboler, strategier och timeframes i för en marknad. Förval startar aldrig en batch automatiskt — du kör den själv.
+          </div>
+          <div className="batch-preset-row">
+            {BATCH_MARKET_PRESETS.map((preset) => (
+              <button
+                key={preset.key}
+                type="button"
+                className={`batch-preset-btn${activePreset === preset.key ? ' active' : ''}${preset.disabled ? ' disabled' : ''}`}
+                onClick={() => applyPreset(preset)}
+                disabled={preset.disabled}
+                title={preset.disabled ? preset.disabledReason : preset.note}
+              >
+                <span className="batch-preset-emoji">{preset.emoji}</span>
+                <strong>{preset.label}</strong>
+                <span className="batch-preset-meta">{preset.disabled ? preset.disabledReason : `${preset.symbols.length} symboler · ${preset.dataSource}`}</span>
+              </button>
+            ))}
+          </div>
+          <div className="batch-warning batch-mix-note">
+            ⚠️ Blanda inte crypto och aktier i samma batch om du vill ha tillförlitliga resultat. De har olika datakällor, öppettider och signalregler.
           </div>
 
           <div className="batch-section-title">Strategier</div>
@@ -2961,6 +3208,11 @@ function BatchTestTab() {
             <span>Symboler</span>
             <input value={form.symbols} onChange={e => setForm(f => ({ ...f, symbols: e.target.value }))} />
           </label>
+          {mixedMarkets && (
+            <div className="batch-warning batch-mix-active">
+              🚫 Du blandar crypto och aktier i samma batch ({csvSymbols(form.symbols).join(', ')}). Resultaten blir opålitliga — använd ett marknadsförval istället, eller dela upp i separata batchar.
+            </div>
+          )}
           {batchCoverageWarnings.length > 0 && (
             <div className="batch-warning">
               För lite historik för säkert test: {batchCoverageWarnings.map((row) => row.symbol).join(', ')}.

@@ -20708,3 +20708,50 @@ body {
 .pnl-positive { color: var(--green); font-weight: 700; }
 .pnl-negative { color: var(--red); font-weight: 700; }
 .pnl-neutral { color: var(--text); }
+
+/* ── Batch market presets ─────────────────────────────────────────── */
+.batch-preset-row { display: flex; flex-wrap: wrap; gap: 8px; margin: 8px 0 4px; }
+.batch-preset-btn {
+  display: flex; flex-direction: column; align-items: flex-start; gap: 2px;
+  min-width: 150px; padding: 8px 12px; cursor: pointer; text-align: left;
+  background: var(--surface-2); border: 1px solid var(--border); border-radius: 8px;
+  color: var(--text); transition: border-color .15s, background .15s;
+}
+.batch-preset-btn:hover:not(.disabled) { border-color: var(--accent, #3b82f6); }
+.batch-preset-btn.active { border-color: var(--accent, #3b82f6); background: rgba(59,130,246,.12); }
+.batch-preset-btn.disabled { opacity: .5; cursor: not-allowed; }
+.batch-preset-btn strong { font-size: 13px; }
+.batch-preset-emoji { font-size: 16px; }
+.batch-preset-meta { font-size: 11px; color: var(--text-muted); }
+.batch-mix-note { opacity: .85; }
+.batch-mix-active { border-color: var(--red); }
+
+/* ── Alpaca Data & Sync panel (read-only) ─────────────────────────── */
+.alpaca-sync-card {
+  margin: 12px 0; padding: 14px; border: 1px solid var(--border);
+  border-radius: 10px; background: var(--surface);
+}
+.alpaca-sync-header { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; margin-bottom: 10px; }
+.alpaca-sync-grid {
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  gap: 8px; margin-bottom: 10px;
+}
+.alpaca-sync-grid > div { background: var(--surface-2); border-radius: 8px; padding: 8px 10px; display: flex; flex-direction: column; gap: 2px; }
+.alpaca-sync-grid span { font-size: 11px; color: var(--text-muted); }
+.alpaca-sync-grid strong { font-size: 14px; }
+.alpaca-sync-explain { font-size: 12px; color: var(--text-muted); margin-bottom: 10px; line-height: 1.5; }
+.alpaca-sync-explain code { background: var(--surface-2); padding: 1px 5px; border-radius: 4px; font-size: 11px; }
+.alpaca-sync-table { display: flex; flex-direction: column; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
+.alpaca-sync-row {
+  display: grid; grid-template-columns: 1fr .8fr .8fr .9fr .9fr .8fr 1fr .9fr;
+  gap: 6px; padding: 6px 10px; font-size: 12px; align-items: center;
+  border-bottom: 1px solid rgba(148,163,184,.12);
+}
+.alpaca-sync-row:last-child { border-bottom: none; }
+.alpaca-sync-head { background: var(--surface-2); font-weight: 600; color: var(--text-muted); font-size: 11px; }
+.alpaca-sync-green strong { color: var(--green); }
+.alpaca-sync-yellow strong { color: #facc15; }
+.alpaca-sync-red strong, .alpaca-sync-gray strong { color: var(--text-muted); }
+.alpaca-sync-missing { margin-top: 10px; }
+.alpaca-sync-reco { font-size: 12px; margin-top: 10px; }
+.alpaca-sync-reco ul { margin: 4px 0 0; padding-left: 18px; color: var(--text-muted); line-height: 1.6; }
