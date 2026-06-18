@@ -4068,6 +4068,19 @@ router.get('/automation/paper-allowlist/status', (req, res) => {
   catch (err) { res.status(500).json({ ok: false, error: err.message, ...paperAllowlistService.SAFETY }); }
 });
 
+// ── Interactive Brokers Paper — Phase 1 read-only / dry-run preview ───────────
+// Additive, read-only. NO broker connection, NO order submission, NO queue,
+// NO execution, and NO change to the internal paper trading flow.
+const interactiveBrokersPreviewService = require('../services/interactiveBrokersPreviewService');
+router.get('/interactive-brokers/status', (req, res) => {
+  try { res.json(interactiveBrokersPreviewService.getIbPaperStatus()); }
+  catch (err) { res.status(500).json({ ok: false, error: err.message, safety: interactiveBrokersPreviewService.SAFETY }); }
+});
+router.get('/interactive-brokers/approved-strategies-preview', (req, res) => {
+  try { res.json(interactiveBrokersPreviewService.getApprovedStrategiesPreview()); }
+  catch (err) { res.status(500).json({ ok: false, error: err.message, safety: interactiveBrokersPreviewService.SAFETY }); }
+});
+
 // ── API 404 — never return HTML for unknown /api/* paths ──────────────────────
 router.use((req, res) => {
   res.status(404).json({ ok: false, error: 'API route not found' });

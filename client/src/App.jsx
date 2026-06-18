@@ -13,6 +13,7 @@ import SystemPage       from './pages/SystemPage.jsx';
 import DaytradingPage   from './pages/DaytradingPage.jsx';
 import SupervisorBrainPage from './pages/SupervisorBrainPage.jsx';
 import NarrowStateLabPage from './pages/NarrowStateLabPage.jsx';
+import InteractiveBrokersPage from './pages/InteractiveBrokersPage.jsx';
 
 function RedirectWithSearch({ to }) {
   const { search } = useLocation();
@@ -39,6 +40,7 @@ export default function App() {
           <Route path="/insikter"     element={<ResultatPage />} />
           <Route path="/system"       element={<SystemPage />} />
           <Route path="/daytrading"   element={<DaytradingPage />} />
+          <Route path="/interactive-brokers" element={<InteractiveBrokersPage />} />
 
           {/* Legacy primary routes */}
           <Route path="/signalpuls"  element={<RedirectWithSearch to="/live" />} />

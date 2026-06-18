@@ -13,8 +13,10 @@ const NAV_GROUPS = [
           { path: '/lab',        label: 'Lärdomar',        icon: '🧪', match: ['/lab', '/trading-lab', '/strategy-lab', '/replay', '/review-chart', '/intelligence', '/machine'], accent: 'orange' },
           { path: '/insikter',   label: 'Historik',        icon: '📊', match: ['/insikter', '/resultat', '/setup-performance', '/historik', '/paper-trading'], accent: 'green' },
           { path: '/system',     label: 'Teknik',          icon: '🛡️', match: ['/system', '/system-health', '/alerts', '/sakerhet', '/risk', '/risk-engine', '/safety', '/execution-safety'], accent: 'purple' },
+          { path: '/interactive-brokers', label: 'Interactive Brokers', icon: '🔌', match: ['/interactive-brokers'], accent: 'blue' },
         ],
       },
+
 ];
 
 const ACCENT_CLASS = {
