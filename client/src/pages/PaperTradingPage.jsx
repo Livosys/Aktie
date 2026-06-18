@@ -602,6 +602,26 @@ function useGateStatus(refreshKey = 0) {
   return state;
 }
 
+function useRiskPauseSummary(refreshKey = 0) {
+  const [state, setState] = useState({ loading: true, data: null, error: null });
+  useEffect(() => {
+    let alive = true;
+    setState((prev) => ({ ...prev, loading: true }));
+    fetchJsonWithTimeout('/api/paper-trading/risk-pause-summary')
+      .then((data) => { if (alive) setState({ loading: false, data, error: null }); })
+      .catch((err) => {
+        if (!alive) return;
+        setState({
+          loading: false,
+          data: null,
+          error: err?.message || 'Kunde inte läsa risk pause summary.',
+        });
+      });
+    return () => { alive = false; };
+  }, [refreshKey]);
+  return state;
+}
+
 function useApprovalPreview(refreshKey = 0) {
   const [state, setState] = useState({ loading: true, data: null, error: null });
   useEffect(() => {
@@ -1287,7 +1307,77 @@ function MetricCard({ label, value, tone = 'neutral', note }) {
   );
 }
 
-function WhyNoTradesPanel({ runtime, allowlist }) {
+function RiskPauseSummaryPanel({ riskPauseSummary, gateStatus, runtime }) {
+  const theme = useThemeMode();
+  const summary = riskPauseSummary?.summary || riskPauseSummary || {};
+  const gatePipeline = gateStatus?.pipeline || {};
+  const last60m = gatePipeline?.last60m || {};
+  const latestEvent = summary.latest_risk_pause_event || runtime?.recentEvents?.find?.((row) => String(row?.type || '').toUpperCase() === 'RISK_PAUSE_TRIGGERED') || null;
+  const active = summary.pause_trading === true || summary.active === true;
+  const reasonText = summary.pause_reason || (Array.isArray(summary.pause_reasons) ? summary.pause_reasons.join(', ') : null) || '–';
+  const latestEventText = latestEvent?.timestamp
+    ? `${fmtTime(latestEvent.timestamp)} · ${latestEvent.symbol || '–'} · ${latestEvent.strategy_id || latestEvent.strategy_name || '–'}`
+    : '–';
+  const consecutiveText = `${summary.consecutive_losses ?? '–'} / ${summary.max_consecutive_losses ?? '–'}`;
+
+  return (
+    <div style={{ ...sectionStyle(), marginTop: 12, marginBottom: 12, background: 'var(--surface-2)' }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap', alignItems: 'flex-start' }}>
+        <div>
+          <div style={{ fontSize: 16, fontWeight: 900, color: 'var(--text)' }}>Risk pause</div>
+          <div style={{ marginTop: 4, fontSize: 12, color: 'var(--muted)', lineHeight: 1.5 }}>
+            Read-only diagnos för varför nya paper trades inte öppnas när riskmotorn pausar entry-loopen.
+          </div>
+        </div>
+        <span style={statusPillStyle(active ? 'danger' : 'success', theme)}>{active ? 'Aktiv' : 'Inte aktiv'}</span>
+      </div>
+
+      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10, marginTop: 12 }}>
+        <MetricCard
+          label="Consecutive losses"
+          value={consecutiveText}
+          tone={active ? 'warn' : 'neutral'}
+          note={`pause_after_consecutive_losses=${String(summary.pause_after_consecutive_losses !== false)}`}
+        />
+        <MetricCard
+          label="Pause reason"
+          value={reasonText}
+          tone={active ? 'warn' : 'neutral'}
+          note="consecutive_losses_limit"
+        />
+        <MetricCard
+          label="Senaste risk pause"
+          value={latestEvent?.timestamp ? fmtTime(latestEvent.timestamp) : '–'}
+          tone="neutral"
+          note={latestEventText}
+        />
+        <MetricCard
+          label="GATE_ALLOWED 60m"
+          value={last60m.gateAllowedLast60m ?? '–'}
+          tone="neutral"
+        />
+        <MetricCard
+          label="TRADE_OPENED 60m"
+          value={last60m.tradesOpenedLast60m ?? 0}
+          tone="neutral"
+        />
+      </div>
+
+      <div style={{ marginTop: 12, fontSize: 13, lineHeight: 1.6, color: 'var(--text)' }}>
+        <strong>Förklaring:</strong> Scanner och market gate hittar kandidater, men risk-pausen stoppar nya paper entries tills förlustsviten bryts eller risk review görs.
+      </div>
+
+      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginTop: 12 }}>
+        <span style={statusPillStyle('neutral', theme)}>Read-only</span>
+        <span style={statusPillStyle('neutral', theme)}>Ingen reset här</span>
+        <span style={statusPillStyle('neutral', theme)}>Ingen live trading</span>
+        <span style={statusPillStyle('neutral', theme)}>Inga riktiga order</span>
+      </div>
+    </div>
+  );
+}
+
+function WhyNoTradesPanel({ runtime, allowlist, riskPauseSummary, gateStatus }) {
   const theme = useThemeMode();
   const summary = runtime?.summary || {};
   const open = Number(summary.openCount) || 0;
@@ -1317,6 +1407,7 @@ function WhyNoTradesPanel({ runtime, allowlist }) {
     <div style={sectionStyle()}>
       <div style={{ fontSize: 16, fontWeight: 800, marginBottom: 4 }}>Varför finns inga paper trades?</div>
       <div style={{ fontSize: 12, ...mutedTextStyle(theme), marginBottom: 12 }}>Read-only diagnos. Inga riktiga order, inga actions härifrån.</div>
+      <RiskPauseSummaryPanel riskPauseSummary={riskPauseSummary} gateStatus={gateStatus} runtime={runtime} />
       <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10 }}>
         <MetricCard label="Runtime" value={runtimeActive ? 'Aktiv' : 'Avvaktar'} tone={runtimeActive ? 'good' : 'warn'} note="paper_only, read-only" />
         <MetricCard label="Öppna trades" value={open} tone="neutral" />
@@ -2118,6 +2209,7 @@ export default function PaperTradingPage() {
   const [marketRefreshKey, setMarketRefreshKey] = useState(0);
   const safetyState = useSafetyStatus(refreshKey);
   const gateStatusState = useGateStatus(refreshKey);
+  const riskPauseSummaryState = useRiskPauseSummary(refreshKey);
   const approvalPreviewState = useApprovalPreview(refreshKey);
   const tradingViewBlueprintState = useTradingViewBlueprints(refreshKey);
   const runtimeState = usePaperRuntime(50);
@@ -2210,7 +2302,12 @@ export default function PaperTradingPage() {
 
       <DailySelectionPreviewPanel preview={dailySelectionPreview} />
 
-      <WhyNoTradesPanel runtime={runtime} allowlist={allowlistState.data} />
+      <WhyNoTradesPanel
+        runtime={runtime}
+        allowlist={allowlistState.data}
+        riskPauseSummary={riskPauseSummaryState.data}
+        gateStatus={gateStatusState.data}
+      />
 
       <PaperAllowlistManager runtime={runtime} allowlist={allowlistState.data} refreshKey={refreshKey} onRefresh={() => setRefreshKey((t) => t + 1)} />
 

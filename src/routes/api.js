@@ -109,6 +109,7 @@ const replayAutopilotService = require('../services/replayAutopilotService');
 const replayStatusService = require('../services/replayStatusService');
 const paperTradingStatusService = require('../services/paperTradingStatusService');
 const paperTradingRuntimeService = require('../services/paperTradingRuntimeService');
+const paperRiskPauseSummaryService = require('../services/paperRiskPauseSummaryService');
 const tradingViewTestBlueprintService = require('../services/tradingViewTestBlueprintService');
 const paperTradeExplanationService = require('../services/paperTradeExplanationService');
 const lossReviewQueueService = require('../services/lossReviewQueueService');
@@ -3433,6 +3434,15 @@ router.get('/paper-trading/runtime', (req, res) => {
     }));
   } catch (err) {
     res.status(500).json({ ok: false, error: err.message, ...paperTradingRuntimeService.SAFETY });
+  }
+});
+
+router.get('/paper-trading/risk-pause-summary', async (req, res) => {
+  try {
+    const result = await paperRiskPauseSummaryService.defaultPaperRiskPauseSummaryService.getRiskPauseSummary();
+    res.json(result);
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message, ...paperRiskPauseSummaryService.SAFETY });
   }
 });
 
