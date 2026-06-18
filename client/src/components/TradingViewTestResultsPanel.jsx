@@ -284,7 +284,7 @@ export default function TradingViewTestResultsPanel({ data, theme = 'dark' }) {
             <div>
               <div style={{ fontSize: 16, fontWeight: 900, color: 'var(--text)' }}>Bästa manuella test hittills: {safeText(best.strategyName)}</div>
               <div style={{ marginTop: 4, color: 'var(--muted)', fontSize: 12 }}>
-                AAPL är starkast hittills. Nästa test: RSI &gt; 50 + SMA200 uppåtlutning.
+                AAPL är starkast i de manuella testerna hittills. Föreslaget nästa manuella test: RSI &gt; 50 + SMA200 uppåtlutning.
               </div>
             </div>
             <span style={badgeStyle('success')}>{safeText(best.aiRating)}</span>

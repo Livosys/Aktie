@@ -10,6 +10,11 @@ function safeArray(value) {
   return Array.isArray(value) ? value.filter((item) => item != null) : [];
 }
 
+function toPositiveNumber(value) {
+  const num = Number(value);
+  return Number.isFinite(num) && num > 0 ? num : 0;
+}
+
 function sectionStyle(theme = 'dark') {
   return {
     background: 'var(--surface)',
@@ -110,6 +115,10 @@ export default function TradingViewTestBlueprintPanel({ data, theme = 'dark' }) 
   const summary = data?.summary || {};
   const fieldInventory = data?.fieldInventory || {};
   const blueprints = Array.isArray(data?.blueprints) ? data.blueprints : [];
+  const pineScriptPossibleCount = blueprints.filter((blueprint) => blueprint?.pineScriptPossible === true).length;
+  const needsAttentionCount = blueprints.filter((blueprint) => safeArray(blueprint?.warnings).length > 0 || safeArray(blueprint?.missingFields).length > 0).length;
+  const directionBothCount = blueprints.filter((blueprint) => String(blueprint?.direction || '').toLowerCase() === 'both').length;
+  const strategiesCount = toPositiveNumber(summary.strategies) || toPositiveNumber(summary.totalStrategies) || blueprints.length;
   const emptyState = data?.status === 'empty' || (!blueprints.length && summary.totalStrategies === 0);
   const sourceLabel = safeString(data?.source, data?.status === 'empty' ? 'none' : 'unknown');
 
@@ -128,10 +137,10 @@ export default function TradingViewTestBlueprintPanel({ data, theme = 'dark' }) 
         <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
           <span style={badgeStyle('neutral')}>status {safeString(data?.status, 'unknown')}</span>
           <span style={badgeStyle('neutral')}>source {sourceLabel}</span>
-          <span style={badgeStyle('success')}>strategies {safeString(summary.totalStrategies, 0)}</span>
-          <span style={badgeStyle('info')}>pineScriptPossible {safeString(summary.pineScriptPossible, 0)}</span>
-          <span style={badgeStyle('warning')}>needsAttention {safeString(summary.needsAttention, 0)}</span>
-          <span style={badgeStyle('neutral')}>directionBoth {safeString(summary.directionBoth, 0)}</span>
+          <span style={badgeStyle('success')}>strategies {strategiesCount}</span>
+          <span style={badgeStyle('info')}>pineScriptPossible {toPositiveNumber(summary.pineScriptPossible) || pineScriptPossibleCount}</span>
+          <span style={badgeStyle('warning')}>needsAttention {toPositiveNumber(summary.needsAttention) || needsAttentionCount}</span>
+          <span style={badgeStyle('neutral')}>directionBoth {toPositiveNumber(summary.directionBoth) || directionBothCount}</span>
         </div>
       </div>
 
