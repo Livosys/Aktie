@@ -330,6 +330,7 @@ function mapPaperEventToTradingLog(input = {}) {
       gate_mode: input.gateMode || null,
       risk_block_reasons: input.riskBlockReasons || [],
       safety_block_reasons: input.safetyBlockReasons || [],
+      risk_review_override_active: input.riskReviewOverrideActive === true,
       risk_evaluation: safeEventValue(input.riskEvaluation || null),
       execution_safety: safeEventValue(input.executionSafety || null),
       exit_reason_code: input.exitReasonCode || null,
@@ -385,6 +386,7 @@ function appendEvent(input) {
     riskPositionSizeSek: input.riskEvaluation?.position_size_sek ?? input.riskPositionSizeSek ?? null,
     riskPositionUnits: input.riskEvaluation?.position_size_units ?? input.riskPositionUnits ?? null,
     riskPauseTrading: input.riskEvaluation?.pause_trading === true || input.riskPauseTrading === true,
+    riskReviewOverrideActive: input.riskReviewOverrideActive === true,
     executionSafety: safeEventValue(input.executionSafety || null),
     safetyBlockReasons: input.executionSafety?.paper_block_reasons || input.executionSafety?.block_reasons || input.safetyBlockReasons || [],
     safetyWarnings: input.executionSafety?.warnings || input.safetyWarnings || [],
@@ -687,6 +689,7 @@ function buildOpenTrade(c, gateDecision = null) {
     aiAgentAnalysis: c.aiAgentAnalysis || null,
     riskEvaluation:  safeEventValue(c.riskEvaluation || null),
     executionSafety: safeEventValue(c.executionSafety || null),
+    riskReviewOverrideActive: c.riskReviewOverrideActive === true,
     riskPositionSizeSek: c.riskEvaluation?.position_size_sek ?? null,
     riskPositionUnits: c.riskEvaluation?.position_size_units ?? null,
     riskMaxLossSek: c.riskEvaluation?.max_loss_sek ?? null,
@@ -1598,6 +1601,26 @@ function buildRiskSignalContext(c, gateDecision, agentAnalysis, riskProfile) {
   };
 }
 
+function applyManualRiskReviewOverride(riskEvaluation, canOverrideRiskPause) {
+  if (!riskEvaluation || !canOverrideRiskPause) return { riskEvaluation, overrideActive: false };
+  const filteredBlockReasons = Array.isArray(riskEvaluation.block_reasons)
+    ? riskEvaluation.block_reasons.filter((reason) => reason !== 'consecutive_losses_limit')
+    : [];
+  if (filteredBlockReasons.length === riskEvaluation.block_reasons?.length) {
+    return { riskEvaluation, overrideActive: false };
+  }
+  return {
+    riskEvaluation: {
+      ...riskEvaluation,
+      allowed: filteredBlockReasons.length === 0,
+      block_reasons: filteredBlockReasons,
+      pause_trading: false,
+      pause_reasons: [],
+    },
+    overrideActive: true,
+  };
+}
+
 function candidateTime(c, fallback = new Date().toISOString()) {
   return c?.lastUpdate || c?.last_updated || c?.timestamp || c?.candleTs || c?.candle_ts || c?.updatedAt || fallback;
 }
@@ -2051,21 +2074,28 @@ async function runTick() {
           console.warn(`[paper-trading] risk pause overridden by manual paper review until ${paperRiskReviewState.expiresAt || 'unknown'}`);
         }
 
-        if (!riskEvaluation.allowed) {
+        const { riskEvaluation: effectiveRiskEvaluation, overrideActive: riskReviewOverrideActive } =
+          applyManualRiskReviewOverride(riskEvaluation, canOverrideRiskPause);
+        candidateWithAgent.riskReviewOverrideActive = riskReviewOverrideActive;
+        candidateWithAgent.originalRiskEvaluation = riskEvaluation;
+        candidateWithAgent.riskEvaluation = effectiveRiskEvaluation;
+
+        if (!effectiveRiskEvaluation.allowed) {
           appendEvent({
-            ...eventFromCandidate('RISK_BLOCKED', candidateWithAgent, `Riskmotor blockerade: ${riskEvaluation.block_reasons.join(', ')}.`, 'skipped'),
+            ...eventFromCandidate('RISK_BLOCKED', candidateWithAgent, `Riskmotor blockerade: ${effectiveRiskEvaluation.block_reasons.join(', ')}.`, 'skipped'),
             aiConfidenceAdjustment: aiAdjustment,
             aiAgentAnalysis: agentAnalysis,
-            riskEvaluation,
+            riskEvaluation: effectiveRiskEvaluation,
+            riskReviewOverrideActive,
           });
-          console.warn(`[paper-trading] risk block ${c.symbol}: ${riskEvaluation.block_reasons.join(',')}`);
+          console.warn(`[paper-trading] risk block ${c.symbol}: ${effectiveRiskEvaluation.block_reasons.join(',')}`);
           continue;
         }
 
         let executionSafety = null;
         try {
           executionSafety = await executionSafetyService.evaluateExecutionSafety(
-            await buildExecutionSafetyContext(candidateWithAgent, gateDecision, riskEvaluation, riskProfile),
+            await buildExecutionSafetyContext(candidateWithAgent, gateDecision, effectiveRiskEvaluation, riskProfile),
           );
         } catch (err) {
           const failClosed = {
@@ -2084,7 +2114,8 @@ async function runTick() {
             ...eventFromCandidate('SAFETY_BLOCKED', candidateWithAgent, 'Säkerhetsmotor blockerade entry: safety_error_fail_closed.', 'skipped'),
             aiConfidenceAdjustment: aiAdjustment,
             aiAgentAnalysis: agentAnalysis,
-            riskEvaluation,
+            riskEvaluation: effectiveRiskEvaluation,
+            riskReviewOverrideActive,
             executionSafety: failClosed,
           });
           void notificationEngineV2.processExecutionSafetyEvent({
@@ -2124,20 +2155,22 @@ async function runTick() {
           continue;
         }
 
-        candidateWithAgent.riskEvaluation = riskEvaluation;
-        candidateWithAgent.executionSafety = executionSafety;
-        const trade = buildOpenTrade(candidateWithAgent, gateDecision);
-        _bump('tradesOpened', 'opened');
-        state.openTrades.push(trade);
+          candidateWithAgent.riskEvaluation = effectiveRiskEvaluation;
+          candidateWithAgent.executionSafety = executionSafety;
+          candidateWithAgent.riskReviewOverrideActive = riskReviewOverrideActive;
+          const trade = buildOpenTrade(candidateWithAgent, gateDecision);
+          _bump('tradesOpened', 'opened');
+          state.openTrades.push(trade);
         if (c.signalId) state.seenSignalIds = [...state.seenSignalIds, c.signalId].slice(-200);
         recordPaperTradeToLearning('opened', trade);
         if (agentAnalysis) recordAgentAnalysisToLearning(agentAnalysis, candidateWithAgent);
-        appendEvent({
-          ...eventFromCandidate('TRADE_OPENED', candidateWithAgent, openedReasonSv(candidateWithAgent), 'opened'),
-          aiConfidenceAdjustment: aiAdjustment,
-          riskEvaluation,
-          executionSafety,
-        });
+          appendEvent({
+            ...eventFromCandidate('TRADE_OPENED', candidateWithAgent, openedReasonSv(candidateWithAgent), 'opened'),
+            aiConfidenceAdjustment: aiAdjustment,
+            riskEvaluation: effectiveRiskEvaluation,
+            riskReviewOverrideActive,
+            executionSafety,
+          });
         changed = true;
         console.log(`[paper-trading] OPEN ${c.symbol} ${trade.direction} ${c.signalFamily}/${c.signalSubtype} @ ${c.price}`);
       } catch (err) {
@@ -2810,4 +2843,7 @@ module.exports = {
   getGateEffectivenessReport,
   appendGateDecision,
   loadGateDecisionHistory,
+  _internal: {
+    applyManualRiskReviewOverride,
+  },
 };
