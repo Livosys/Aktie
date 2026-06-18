@@ -108,6 +108,7 @@ const replayAutopilotService = require('../services/replayAutopilotService');
 const replayStatusService = require('../services/replayStatusService');
 const paperTradingStatusService = require('../services/paperTradingStatusService');
 const paperTradingRuntimeService = require('../services/paperTradingRuntimeService');
+const paperTradeExplanationService = require('../services/paperTradeExplanationService');
 const tradingViewPaperReplayPreviewService = require('../services/tradingViewPaperReplayPreviewService');
 const tradingViewPreviewLogService = require('../services/tradingViewPreviewLogService');
 const TEST_LIVE_SEND_COOLDOWN_MS = 5 * 60 * 1000;
@@ -3429,6 +3430,29 @@ router.get('/paper-trading/runtime', (req, res) => {
     }));
   } catch (err) {
     res.status(500).json({ ok: false, error: err.message, ...paperTradingRuntimeService.SAFETY });
+  }
+});
+
+router.get('/paper-trading/trade-explanations/:tradeId?', (req, res) => {
+  try {
+    const { tradeId } = req.params;
+    const limit = req.query.limit || req.query.n || 50;
+    if (tradeId || req.query.symbol || req.query.strategyId || req.query.strategy_id || req.query.openedAt || req.query.opened_at) {
+      res.json(paperTradeExplanationService.buildTradeExplanationLookup({
+        limit,
+        lookup: {
+          tradeId: tradeId || req.query.tradeId || null,
+          symbol: req.query.symbol || null,
+          strategyId: req.query.strategyId || req.query.strategy_id || null,
+          openedAt: req.query.openedAt || req.query.opened_at || null,
+          closedAt: req.query.closedAt || req.query.closed_at || null,
+        },
+      }));
+      return;
+    }
+    res.json(paperTradeExplanationService.buildTradeExplanations({ limit }));
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message, ...paperTradeExplanationService.SAFETY });
   }
 });
 
