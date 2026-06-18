@@ -4080,6 +4080,12 @@ router.get('/interactive-brokers/approved-strategies-preview', (req, res) => {
   try { res.json(interactiveBrokersPreviewService.getApprovedStrategiesPreview()); }
   catch (err) { res.status(500).json({ ok: false, error: err.message, safety: interactiveBrokersPreviewService.SAFETY }); }
 });
+// Read-only connection readiness. Never logs in, never sends orders; a harmless
+// TCP reachability probe only (disabled by default via IB_CONNECTION_CHECK_ENABLED).
+router.get('/interactive-brokers/connection-readiness', async (req, res) => {
+  try { res.json(await interactiveBrokersPreviewService.getConnectionReadiness()); }
+  catch (err) { res.status(500).json({ ok: false, error: err.message, safety: interactiveBrokersPreviewService.SAFETY }); }
+});
 
 // ── API 404 — never return HTML for unknown /api/* paths ──────────────────────
 router.use((req, res) => {
