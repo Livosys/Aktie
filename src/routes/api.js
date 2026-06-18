@@ -80,6 +80,7 @@ const strategyIdNormalizer = require('../services/strategyIdNormalizerService');
 const automationPlanService = require('../services/automationPlanService');
 const automationApprovalService = require('../services/automationApprovalService');
 const paperAllowlistConfigService = require('../services/paperAllowlistConfigService');
+const paperMarketConfigService = require('../services/paperMarketConfigService');
 const aiAgentPaperCandidateService = require('../services/aiAgentPaperCandidateService');
 const batchReplayPaperCandidateService = require('../services/batchReplayPaperCandidateService');
 const paperCandidateReadinessService = require('../services/paperCandidateReadinessService');
