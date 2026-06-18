@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useState } from 'react';
 
 const FETCH_TIMEOUT_MS = 6500;
+const UNUSABLE_HIDDEN_STORAGE_KEY = 'paper-candidate-panel-hide-unusable-v1';
 
 function safeString(value, fallback = '') {
   if (value === null || value === undefined) return fallback;
@@ -85,15 +86,6 @@ const DECISION_LABELS = {
   watch: 'Watch',
   reject: 'Reject',
 };
-
-const FLOW_STEPS = [
-  { label: 'Förslag', hint: 'Batch / Replay / AI-agent' },
-  { label: 'Kandidat', hint: 'Paper-kandidat' },
-  { label: 'Runtime redo', hint: 'Runtime readiness' },
-  { label: 'Approved', hint: 'Manuell allowlist' },
-  { label: 'Paper-testas', hint: 'Paper trading' },
-  { label: 'Lärande', hint: 'Learning' },
-];
 
 function sourceLabel(source) {
   const raw = safeString(source, 'unknown').toLowerCase();
@@ -380,10 +372,10 @@ function presentationBucketRank(bucket) {
 
 function chipStyle(kind = 'neutral') {
   const palette = {
-    good: { background: 'rgba(34,197,94,0.14)', color: '#22c55e', border: 'rgba(34,197,94,0.32)' },
-    warn: { background: 'rgba(245,158,11,0.14)', color: '#f59e0b', border: 'rgba(245,158,11,0.32)' },
-    bad: { background: 'rgba(239,68,68,0.14)', color: '#ef4444', border: 'rgba(239,68,68,0.32)' },
-    neutral: { background: 'rgba(148,163,184,0.10)', color: '#cbd5e1', border: 'rgba(148,163,184,0.24)' },
+    good: { background: 'var(--surface)', color: 'var(--success)', border: 'var(--border)' },
+    warn: { background: 'var(--surface)', color: 'var(--warning)', border: 'var(--border)' },
+    bad: { background: 'var(--surface)', color: 'var(--danger)', border: 'var(--border)' },
+    neutral: { background: 'var(--surface)', color: 'var(--text)', border: 'var(--border)' },
   };
   return {
     display: 'inline-flex',
@@ -397,6 +389,22 @@ function chipStyle(kind = 'neutral') {
     fontSize: 12,
     fontWeight: 700,
     lineHeight: 1,
+  };
+}
+
+function badgeStyle(kind = 'neutral') {
+  const palette = {
+    good: 'var(--success)',
+    warn: 'var(--warning)',
+    bad: 'var(--danger)',
+    info: 'var(--accent)',
+    muted: 'var(--muted)',
+    neutral: 'var(--text)',
+  };
+  return {
+    ...chipStyle('neutral'),
+    color: palette[kind] || palette.neutral,
+    fontWeight: 800,
   };
 }
 
@@ -521,6 +529,10 @@ export default function PaperCandidatePanel({ mode = 'lab' }) {
   const [error, setError] = useState('');
   const [showUnusable, setShowUnusable] = useState(false);
   const [expandedUnusableKeys, setExpandedUnusableKeys] = useState({});
+  const [hideUnusable, setHideUnusable] = useState(() => {
+    if (typeof window === 'undefined') return false;
+    return window.localStorage.getItem(UNUSABLE_HIDDEN_STORAGE_KEY) === '1';
+  });
 
   const previewRows = previewState.data?.candidates || [];
   const savedRows = savedState.data?.candidates || [];
@@ -565,15 +577,29 @@ export default function PaperCandidatePanel({ mode = 'lab' }) {
   const blockedCount = presentation.main.filter((entry) => entry.bucket === 'blocked_fixable').length;
   const unusableCount = presentation.unusable.length;
   const viewTitle = mode === 'paper'
-    ? 'Paper-kandidater från AI, Batch och Replay'
+    ? 'Paper-kandidater'
     : 'AI / Batch / Replay → Paper-kandidater';
   const viewSubtitle = mode === 'paper'
     ? 'Samma backend-data som i Lab. Fokus här är manuellt godkännande och runtime-readiness.'
     : 'Samma backend-data som i Paper Trading. Fokus här är preview, score och vad som kan sparas som kandidat.';
-  const unusableExpanded = unusableCount <= 3 || showUnusable;
+  const unusableExpanded = !hideUnusable && (unusableCount <= 3 || showUnusable);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const stored = window.localStorage.getItem(UNUSABLE_HIDDEN_STORAGE_KEY) === '1';
+    setHideUnusable(stored);
+  }, []);
 
   async function reloadAll() {
     setRefreshTick((tick) => tick + 1);
+  }
+
+  function setUnusableHidden(nextValue) {
+    setHideUnusable(nextValue);
+    if (typeof window !== 'undefined') {
+      window.localStorage.setItem(UNUSABLE_HIDDEN_STORAGE_KEY, nextValue ? '1' : '0');
+    }
+    if (nextValue) setShowUnusable(false);
   }
 
   async function createCandidate(candidate) {
@@ -638,68 +664,20 @@ export default function PaperCandidatePanel({ mode = 'lab' }) {
             {viewSubtitle}
           </div>
         </div>
-        <div className="badge badge-paper-only" style={{ whiteSpace: 'nowrap' }}>
+        <div className="badge badge-paper-only" style={{ ...badgeStyle('info'), whiteSpace: 'nowrap' }}>
           allowlist {approvedCount} / {maxApproved}
         </div>
       </div>
 
-      <div className="paper-candidate-flow" style={{
-        display: 'flex',
-        flexWrap: 'wrap',
-        gap: 10,
-        marginTop: 14,
-        padding: 12,
-        borderRadius: 14,
-        border: '1px solid var(--border)',
-        background: 'rgba(15,23,42,0.4)',
-      }}>
-        {FLOW_STEPS.map((step, index) => {
-          const tone = index === 0 ? 'good' : index === 2 ? 'warn' : 'neutral';
-          const active = mode === 'lab' ? index === 0 || index === 1 : index === 3 || index === 4;
-          return (
-            <React.Fragment key={step.label}>
-              <div className="paper-candidate-flow-step" style={flowStyle(active, tone)}>
-                <div style={{ fontSize: 12, fontWeight: 900, marginBottom: 4 }}>{step.label}</div>
-                <div style={{ color: '#94a3b8', fontSize: 11, lineHeight: 1.4 }}>{step.hint}</div>
-              </div>
-              {index < FLOW_STEPS.length - 1 && (
-                <div className="paper-candidate-flow-arrow" style={{ alignSelf: 'center', color: '#64748b', fontWeight: 900, fontSize: 18 }}>→</div>
-              )}
-            </React.Fragment>
-          );
-        })}
-      </div>
-
-      <div style={{ marginTop: 12, color: '#cbd5e1', fontSize: 13, lineHeight: 1.5 }}>
-        Detta är paper-only research. Systemet får föreslå, men du godkänner manuellt.
-      </div>
-
-      <div className="paper-candidate-summary">
-        <div className="paper-candidate-summary-item candidate-summary-approved">
-          <span>Godkända och redo</span>
-          <strong>{approvedReadyCount}</strong>
-        </div>
-        <div className="paper-candidate-summary-item candidate-summary-review">
-          <span>Behöver granskning</span>
-          <strong>{reviewCount}</strong>
-        </div>
-        <div className="paper-candidate-summary-item candidate-summary-blocked">
-          <span>Blockerade/fixbara</span>
-          <strong>{blockedCount}</strong>
-        </div>
-        <div className="paper-candidate-summary-item candidate-summary-unusable">
-          <span>Ej användbara</span>
-          <strong>{unusableCount}</strong>
-        </div>
-      </div>
-
       <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginTop: 12 }}>
-        <span className="badge badge-paper-only">Förslag {sourceSummary.batch + sourceSummary.replay + sourceSummary.ai_agent}</span>
-        <span className="badge badge-ready">Kandidat {candidates.length}</span>
-        <span className="badge badge-warning">Runtime redo {readinessState.data?.summary?.runtimeReady ?? 0}</span>
-        <span className="badge badge-approved">Approved {readinessState.data?.summary?.alreadyApproved ?? approvedCount}</span>
-        <span className="badge badge-paper-only">Paper-testas {readinessState.data?.summary?.paperRunnable ?? 0}</span>
-        <span className="badge badge-muted">Lärande via data/logg</span>
+        <span className="badge badge-paper-only" style={badgeStyle('neutral')}>{presentation.main.length} kandidater</span>
+        <span className="badge badge-ready" style={badgeStyle('good')}>{approvedReadyCount} redo</span>
+        <span className="badge badge-warning" style={badgeStyle('warn')}>{reviewCount} behöver godkännas</span>
+        <span className="badge badge-reject" style={badgeStyle('bad')}>{unusableCount} oanvändbara replay-resultat</span>
+      </div>
+
+      <div style={{ marginTop: 10, color: 'var(--muted)', fontSize: 12, lineHeight: 1.5 }}>
+        Paper-only research. Systemet får föreslå, men du godkänner manuellt.
       </div>
 
       {message ? (
@@ -713,155 +691,91 @@ export default function PaperCandidatePanel({ mode = 'lab' }) {
         </div>
       ) : null}
 
-      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10, marginTop: 12, color: '#94a3b8', fontSize: 12 }}>
+      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10, marginTop: 12, color: 'var(--muted)', fontSize: 12 }}>
         <span>{previewState.loading ? 'Läser preview...' : `${previewRows.length} preview-kandidater`}</span>
         <span>{savedState.loading ? 'Läser saved...' : `${savedRows.length} sparade kandidater`}</span>
         <span>{readinessState.loading ? 'Läser readiness...' : `${readinessRows.length} readiness-kandidater`}</span>
         <span>Samma backenddata används i Lab och Paper Trading.</span>
       </div>
 
-      <div className="paper-candidate-list" style={{ display: 'flex', flexDirection: 'column', gap: 12, marginTop: 14 }}>
-        {presentation.main.length > 0 ? presentation.main.map((entry) => {
-          const candidate = entry.candidate;
-          const ui = entry.ui;
-          const approved = ui.uiStatus === 'approved_ready';
-          const ready = ui.runtimeReady === true;
-          const runnable = ui.paperRunnable === true;
-          const canCreate = ui.uiStatus === 'candidate_ready_for_review'
-            && ui.canCreatePaperCandidate
-            && !candidate.saved
-            && ['batch', 'replay'].includes(String(candidate.source || ''));
-          const canApprove = ui.uiStatus === 'candidate_ready_for_review' && !!candidate.strategyId && !ui.alreadyApproved && !ui.blocked;
-          const allowlistText = ui.alreadyApproved
-            ? 'Approved'
-            : candidate.allowlistStatus === 'max_nått'
-              ? 'Max nått'
-              : candidate.allowlistStatus === 'nekad'
-                ? 'Nekad'
-                : candidate.allowlistStatus === 'needs_strategy_id'
-                  ? 'Saknar strategyId'
-                  : 'Ej godkänd';
-          const similarCount = Number(candidate.similarCount) > 1 ? candidate.similarCount : 0;
-
-          return (
-            <div key={candidateKey(candidate)} className={candidateCardClass(candidate, entry.bucket)}>
-              <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap', alignItems: 'flex-start' }}>
-                <div>
-                  <div style={{ fontSize: 16, fontWeight: 900, marginBottom: 4 }}>{candidate.displayName || candidate.strategyName || candidate.strategyId || 'Okänd kandidat'}</div>
-                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginTop: 6 }}>
-                    <span className={`badge ${sourceBadgeClass(candidate.source)}`}>{sourceLabel(candidate.source)}</span>
-                    <span className="badge badge-paper-only">paper-only</span>
-                    <span className="badge badge-muted">StrategyId: {candidate.strategyId || '–'}</span>
-                    {similarCount > 1 ? (
-                      <span className="badge badge-muted">{similarCount} liknande förslag samlade</span>
-                    ) : null}
-                  </div>
-                </div>
-                <div className={`badge ${ui.uiTone === 'success' ? 'badge-approved' : ui.uiTone === 'info' ? 'badge-ready' : ui.uiTone === 'warning' ? 'badge-warning' : 'badge-reject'}`}>
-                  {ui.uiLabel}
-                </div>
-              </div>
-
-              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: 10, marginTop: 14 }}>
-                <Metric label="Trades" value={candidate.metrics?.trades ?? '–'} />
-                <Metric label="Win rate" value={candidate.metrics?.winRate != null ? `${candidate.metrics.winRate}%` : '–'} />
-                <Metric label="PnL" value={candidate.metrics?.totalPnlPct != null ? `${candidate.metrics.totalPnlPct}%` : '–'} tone={metricClass(candidate.metrics?.totalPnlPct, 'pnl')} />
-                <Metric label="Score" value={candidate.metrics?.score ?? '–'} />
-                <Metric label="Confidence" value={candidate.recommendation?.confidence || '–'} tone={metricClass(candidate.recommendation?.confidence, 'confidence')} />
-                <Metric label="Decision" value={DECISION_LABELS[candidate.recommendation?.decision] || candidate.recommendation?.decision || '–'} />
-              </div>
-
-              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginTop: 12 }}>
-                <span className={`badge ${ready ? 'badge-ready' : 'badge-reject'}`}>{ready ? 'Runtime ready' : 'Runtime ej redo'}</span>
-                <span className={`badge ${runnable ? 'badge-ready' : 'badge-warning'}`}>{runnable ? 'Paper runnable' : 'Ej redo för paper-test'}</span>
-                <span className={`badge ${ui.alreadyApproved ? 'badge-approved' : 'badge-warning'}`}>
-                  {ui.alreadyApproved ? 'Already approved' : allowlistText}
-                </span>
-                <span className={`badge ${candidate.blockers?.length ? 'badge-reject' : 'badge-ready'}`}>
-                  {candidate.blockers?.length ? `${candidate.blockers.length} blocker(s)` : 'Inga blockers'}
-                </span>
-                <span className={`badge ${confidenceTone(candidate)}`}>
-                  Confidence {candidate.recommendation?.confidence || candidate.confidence || '–'}
-                </span>
-                <span className="badge badge-paper-only">Next action: {candidate.nextAction || '–'}</span>
-                <span className={`badge ${sourceBadgeClass(candidate.source)}`}>Source: {sourceLabel(candidate.source)}</span>
-              </div>
-
-              <div style={{ marginTop: 12, color: '#cbd5e1', fontSize: 13, lineHeight: 1.55 }}>
-                {candidate.explanation || candidate.recommendation?.reason || '–'}
-              </div>
-
-              {candidate.blockers?.length > 0 ? (
-                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 10, marginTop: 12 }}>
-                  {candidate.blockers.map((blocker) => (
-                    <div key={blocker.code} style={{ border: '1px solid rgba(148,163,184,0.24)', borderRadius: 12, padding: 12, background: 'rgba(2,6,23,0.35)' }}>
-                      <div style={{ fontWeight: 800, marginBottom: 4 }}>{blocker.label}</div>
-                      <div style={{ color: '#94a3b8', fontSize: 12, marginBottom: 6 }}>{blocker.code}</div>
-                      <div style={{ color: '#cbd5e1', fontSize: 12, lineHeight: 1.45 }}>{blocker.explanation}</div>
-                      <div style={{ color: '#94a3b8', fontSize: 12, marginTop: 6 }}>Nästa steg: {blocker.nextStep}</div>
-                    </div>
+      <div style={{ marginTop: 14 }}>
+        {presentation.main.length > 0 ? (
+          <div style={{ overflowX: 'auto' }}>
+            <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 780 }}>
+              <thead>
+                <tr>
+                  {['Strategi', 'Symbol', 'Källa', 'Status', 'Confidence', 'Nästa steg', ''].map((label) => (
+                    <th key={label} style={{ textAlign: 'left', padding: '10px 12px', borderBottom: '1px solid var(--border)', color: 'var(--muted)', fontSize: 11, textTransform: 'uppercase', letterSpacing: '0.08em' }}>
+                      {label}
+                    </th>
                   ))}
-                </div>
-              ) : ui.canShowReadyForPaperTest ? (
-                <div className="callout callout-ready">
-                  Redo för paper-test. Godkänd via paper allowlist och matchad mot runtime.
-                </div>
-              ) : (
-                <div className={`callout ${ui.uiTone === 'danger' ? 'callout-danger' : ui.uiTone === 'warning' ? 'callout-warning' : 'callout-info'}`}>
-                  {ui.reason || 'Redo för manuell granskning'}
-                </div>
-              )}
-
-              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginTop: 14, alignItems: 'center' }}>
-                {approved ? (
-                  <button type="button" disabled className="candidate-action candidate-action-create" title="Redan godkänd via paper allowlist">
-                    Redan godkänd
-                  </button>
-                ) : canCreate ? (
-                  <button
-                    type="button"
-                    disabled={busyKey === `create:${candidate.candidateId}` || candidate.saved}
-                    onClick={() => createCandidate(candidate)}
-                    className="candidate-action candidate-action-create"
-                  >
-                    {candidate.saved ? 'Redan sparad' : busyKey === `create:${candidate.candidateId}` ? 'Sparar...' : 'Skapa paper-testkandidat'}
-                  </button>
-                ) : (
-                  <button
-                    type="button"
-                    disabled
-                    title={ui.reason || 'Kan inte skapas ännu'}
-                    className="candidate-action candidate-action-create"
-                  >
-                    Kan inte skapas ännu
-                  </button>
-                )}
-
-                {canApprove ? (
-                  <button
-                    type="button"
-                    disabled={busyKey === `approve:${candidate.strategyId}`}
-                    onClick={() => approveCandidate(candidate)}
-                    className="candidate-action candidate-action-approve"
-                  >
-                    {busyKey === `approve:${candidate.strategyId}`
-                      ? 'Godkänner...'
-                      : 'Lägg till i paper allowlist'}
-                  </button>
-                ) : null}
-
-                <span className="candidate-next-action-note">
-                  {approved
-                    ? 'Approved via paper allowlist och matchad mot runtime.'
+                </tr>
+              </thead>
+              <tbody>
+                {presentation.main.map((entry) => {
+                  const candidate = entry.candidate;
+                  const ui = entry.ui;
+                  const approved = ui.uiStatus === 'approved_ready';
+                  const confidenceText = candidate.recommendation?.confidence || candidate.confidence || '–';
+                  const statusText = approved
+                    ? 'Redo'
                     : ui.uiStatus === 'candidate_ready_for_review'
-                      ? 'Du måste godkänna den innan paper trading testar den.'
-                      : ui.reason || 'Godkänn manuellt när du vill lämna allowlist-status oförändrad tills dess.'}
-                </span>
-              </div>
-            </div>
-          );
-        }) : (
-          <div style={{ color: '#94a3b8', fontSize: 13 }}>
+                      ? 'Behöver godkännas'
+                      : ui.uiStatus === 'blocked' || ui.uiStatus === 'runtime_not_ready' || ui.uiStatus === 'not_paper_runnable'
+                        ? 'Blockerad'
+                        : 'Ej användbar';
+                  const nextStep = approved
+                    ? 'Redo för paper-test · Redan godkänd'
+                    : 'Behöver godkännas · Lägg till paper allowlist';
+                  const key = candidateKey(candidate);
+                  const open = !!expandedUnusableKeys[key];
+
+                  return (
+                    <React.Fragment key={key}>
+                      <tr>
+                        <td style={{ padding: '10px 12px', borderBottom: '1px solid var(--border)' }}>
+                          <div style={{ fontWeight: 800, color: 'var(--text)' }}>{candidate.displayName || candidate.strategyName || candidate.strategyId || 'Okänd kandidat'}</div>
+                          <div style={{ color: 'var(--muted)', fontSize: 12 }}>{candidate.strategyId || '–'}</div>
+                        </td>
+                        <td style={{ padding: '10px 12px', borderBottom: '1px solid var(--border)', color: 'var(--text)' }}>{candidate.symbol || '–'}</td>
+                        <td style={{ padding: '10px 12px', borderBottom: '1px solid var(--border)' }}>
+                          <span className={`badge ${sourceBadgeClass(candidate.source)}`} style={badgeStyle(candidate.source?.toLowerCase().includes('ai_agent') ? 'info' : candidate.source?.toLowerCase().includes('batch') ? 'muted' : candidate.source?.toLowerCase().includes('replay') ? 'muted' : 'neutral')}>{sourceLabel(candidate.source)}</span>
+                        </td>
+                        <td style={{ padding: '10px 12px', borderBottom: '1px solid var(--border)' }}>
+                          <span className={`badge ${approved ? 'badge-approved' : ui.uiStatus === 'candidate_ready_for_review' ? 'badge-ready' : 'badge-warning'}`} style={badgeStyle(approved ? 'good' : ui.uiStatus === 'candidate_ready_for_review' ? 'info' : ui.uiStatus === 'blocked' || ui.uiStatus === 'runtime_not_ready' || ui.uiStatus === 'not_paper_runnable' ? 'warn' : 'neutral')}>{statusText}</span>
+                        </td>
+                        <td style={{ padding: '10px 12px', borderBottom: '1px solid var(--border)', color: 'var(--text)' }}>{confidenceText}</td>
+                        <td style={{ padding: '10px 12px', borderBottom: '1px solid var(--border)', color: 'var(--text)' }}>{nextStep}</td>
+                        <td style={{ padding: '10px 12px', borderBottom: '1px solid var(--border)' }}>
+                          <button
+                            type="button"
+                            className="paper-unusable-toggle"
+                            onClick={() => setExpandedUnusableKeys((prev) => ({ ...prev, [key]: !prev[key] }))}
+                          >
+                            {open ? 'Dölj detaljer' : 'Visa detaljer'}
+                          </button>
+                        </td>
+                      </tr>
+                      {open ? (
+                        <tr>
+                          <td colSpan={7} style={{ padding: '0 12px 12px 12px', borderBottom: '1px solid var(--border)' }}>
+                            <div style={{ marginTop: 10, padding: 12, borderRadius: 12, border: '1px solid var(--border)', background: 'var(--surface-2)', color: 'var(--text)', fontSize: 12, lineHeight: 1.6 }}>
+                              <div>strategyId: {candidate.strategyId || '–'} · runtime ready: {ui.runtimeReady ? 'Ja' : 'Nej'} · paper runnable: {ui.paperRunnable ? 'Ja' : 'Nej'}</div>
+                              <div>Score: {candidate.metrics?.score ?? '–'} · Win rate: {candidate.metrics?.winRate != null ? `${candidate.metrics.winRate}%` : '–'} · PnL: {candidate.metrics?.totalPnlPct != null ? `${candidate.metrics.totalPnlPct}%` : '–'}</div>
+                              <div>Blockers: {candidate.blockers?.length || 0} · Källa: {sourceLabel(candidate.source)} · Next action: {candidate.nextAction || '–'}</div>
+                              <div style={{ marginTop: 6, color: 'var(--muted)' }}>{candidate.explanation || candidate.recommendation?.reason || '–'}</div>
+                            </div>
+                          </td>
+                        </tr>
+                      ) : null}
+                    </React.Fragment>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        ) : (
+          <div style={{ color: 'var(--muted)', fontSize: 13 }}>
             {previewState.loading || savedState.loading || readinessState.loading || approvalsState.loading
               ? 'Läser kandidatdata...'
               : 'Inga AI-/batch-/replay-kandidater hittades ännu.'}
@@ -869,17 +783,24 @@ export default function PaperCandidatePanel({ mode = 'lab' }) {
         )}
       </div>
 
-      <div className="paper-unusable-section">
-        <div className="paper-unusable-header">
+      <div className="paper-unusable-section" style={{ marginTop: 14, border: '1px solid var(--border)', borderRadius: 14, background: 'var(--surface)', padding: 16 }}>
+        <div className="paper-unusable-header" style={{ display: 'flex', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap', alignItems: 'flex-start' }}>
           <div>
-            <div className="paper-unusable-title">Ej användbara replay-resultat</div>
-            <div className="paper-unusable-subtitle">
-              Dessa replay-resultat saknar strategyId, har låg confidence eller är Reject. De kan inte paper-testas förrän de är mappade till en strategi.
+            <div className="paper-unusable-title" style={{ fontSize: 16, fontWeight: 900 }}>Ej användbara replay-resultat</div>
+            <div className="paper-unusable-subtitle" style={{ color: 'var(--muted)', fontSize: 13, lineHeight: 1.5 }}>
+              {hideUnusable ? 'Döljs bara i denna vy. Closed paper trades påverkas inte.' : 'Dessa replay-resultat saknar strategyId, har låg confidence eller är Reject. De kan inte paper-testas förrän de är mappade till en strategi.'}
             </div>
           </div>
-          <div className="paper-unusable-header-actions">
-            <span className="badge badge-reject">{unusableCount} resultat</span>
-            {unusableCount > 3 ? (
+          <div className="paper-unusable-header-actions" style={{ display: 'flex', flexWrap: 'wrap', gap: 8, alignItems: 'center' }}>
+            <span className="badge badge-reject" style={badgeStyle('bad')}>{unusableCount} oanvändbara replay-resultat</span>
+            <button
+              type="button"
+              className="paper-unusable-toggle"
+              onClick={() => setUnusableHidden(!hideUnusable)}
+            >
+              {hideUnusable ? 'Visa detaljer' : 'Dölj oanvändbara'}
+            </button>
+            {!hideUnusable && unusableCount > 3 ? (
               <button
                 type="button"
                 className="paper-unusable-toggle"
@@ -890,36 +811,36 @@ export default function PaperCandidatePanel({ mode = 'lab' }) {
             ) : null}
           </div>
         </div>
-        {unusableExpanded ? (
-          <div className="paper-unusable-list">
+        {hideUnusable ? null : unusableExpanded ? (
+          <div className="paper-unusable-list" style={{ marginTop: 12, display: 'grid', gap: 10 }}>
             {presentation.unusable.length > 0 ? presentation.unusable.map((entry) => {
               const candidate = entry.candidate;
               const ui = entry.ui;
               const key = candidateKey(candidate);
               const open = !!expandedUnusableKeys[key];
               return (
-                <div key={key} className={`paper-unusable-row ${ui.uiStatus === 'rejected' ? 'paper-unusable-row-rejected' : ''}`}>
-                  <div className="paper-unusable-row-head">
+                <div key={key} className={`paper-unusable-row ${ui.uiStatus === 'rejected' ? 'paper-unusable-row-rejected' : ''}`} style={{ border: '1px solid var(--border)', borderRadius: 12, padding: 12, background: 'var(--surface-2)' }}>
+                  <div className="paper-unusable-row-head" style={{ display: 'flex', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap', alignItems: 'flex-start' }}>
                     <div>
-                      <div className="paper-unusable-row-title">
+                      <div className="paper-unusable-row-title" style={{ fontWeight: 800, color: 'var(--text)' }}>
                         {candidate.displayName || candidate.strategyName || candidate.strategyId || 'Okänd kandidat'}
                       </div>
-                      <div className="paper-unusable-row-meta">
+                      <div className="paper-unusable-row-meta" style={{ color: 'var(--muted)', fontSize: 12, lineHeight: 1.5 }}>
                         Source: {sourceLabel(candidate.source)} · Decision: {DECISION_LABELS[candidate.recommendation?.decision] || candidate.recommendation?.decision || '–'} · Next action: {candidate.nextAction || '–'}
                       </div>
                     </div>
-                    <div className={`badge ${ui.uiTone === 'danger' ? 'badge-reject' : ui.uiTone === 'warning' ? 'badge-warning' : 'badge-neutral'}`}>
+                    <div className={`badge ${ui.uiTone === 'danger' ? 'badge-reject' : ui.uiTone === 'warning' ? 'badge-warning' : 'badge-neutral'}`} style={badgeStyle(ui.uiTone === 'danger' ? 'bad' : ui.uiTone === 'warning' ? 'warn' : 'neutral')}>
                       {ui.uiLabel}
                     </div>
                   </div>
 
-                  <div className="paper-unusable-row-pills">
-                    <span className="badge badge-muted">StrategyId: {candidate.strategyId || '–'}</span>
-                    <span className={`badge ${confidenceTone(candidate)}`}>Confidence {candidate.recommendation?.confidence || candidate.confidence || '–'}</span>
-                    <span className="badge badge-muted">Score {candidate.metrics?.score ?? '–'}</span>
+                  <div className="paper-unusable-row-pills" style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginTop: 10 }}>
+                    <span className="badge badge-muted" style={badgeStyle('muted')}>StrategyId: {candidate.strategyId || '–'}</span>
+                    <span className={`badge ${confidenceTone(candidate)}`} style={badgeStyle(candidate.recommendation?.confidence != null && Number(candidate.recommendation?.confidence) >= 70 ? 'good' : candidate.recommendation?.confidence != null && Number(candidate.recommendation?.confidence) < 50 ? 'bad' : 'warn')}>Confidence {candidate.recommendation?.confidence || candidate.confidence || '–'}</span>
+                    <span className="badge badge-muted" style={badgeStyle('muted')}>Score {candidate.metrics?.score ?? '–'}</span>
                   </div>
 
-                  <div className="paper-unusable-row-actions">
+                  <div className="paper-unusable-row-actions" style={{ marginTop: 10 }}>
                     <button
                       type="button"
                       className="paper-unusable-toggle"
@@ -930,7 +851,7 @@ export default function PaperCandidatePanel({ mode = 'lab' }) {
                   </div>
 
                   {open ? (
-                    <div className="paper-unusable-row-details">
+                    <div className="paper-unusable-row-details" style={{ marginTop: 10, color: 'var(--text)', fontSize: 12, lineHeight: 1.6 }}>
                       <div>{candidate.explanation || candidate.recommendation?.reason || 'Replay-resultatet saknar tillräcklig metadata för paper-test.'}</div>
                       <div>{ui.reason || 'Kan inte bli paper-test ännu.'}</div>
                       <div>Runtime: {ui.runtimeReady ? 'Redo' : 'Ej redo'} · Paper runnable: {ui.paperRunnable ? 'Ja' : 'Nej'} · Blockers: {candidate.blockers?.length || 0}</div>
@@ -939,7 +860,7 @@ export default function PaperCandidatePanel({ mode = 'lab' }) {
                 </div>
               );
             }) : (
-              <div className="paper-unusable-empty">Inga ej användbara replay-resultat just nu.</div>
+              <div className="paper-unusable-empty" style={{ color: 'var(--muted)', fontSize: 13 }}>Inga ej användbara replay-resultat just nu.</div>
             )}
           </div>
         ) : null}
