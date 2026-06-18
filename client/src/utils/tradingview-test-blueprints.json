@@ -1,0 +1,104 @@
+{
+  "ok": true,
+  "status": "ready",
+  "source": "file:client/src/utils/tradingview-test-blueprints.json",
+  "warning": "TradingView blueprint-källa är read-only research och påverkar inte broker, risk eller execution.",
+  "summary": {
+    "strategies": 2,
+    "pineScriptPossible": 2,
+    "needsAttention": 0,
+    "directionBoth": 0
+  },
+  "blueprints": [
+    {
+      "strategyId": "tv_aapl_sma20_sma200_clean_backtest",
+      "strategyName": "AAPL SMA20/SMA200 Clean Backtest",
+      "displayName": "AAPL SMA20/SMA200 Clean Backtest",
+      "symbol": "AAPL",
+      "timeframe": "15m",
+      "direction": "long",
+      "source": "TradingView external backtest blueprint",
+      "indicatorsRequired": ["SMA20", "SMA200", "Volume", "RSI"],
+      "entryConditionsHuman": "Long only when SMA20 reclaims SMA200 and momentum confirms above the moving-average stack.",
+      "entryConditionsPinePseudo": "entryRaw = ta.crossover(sma20, sma200) and volume > ta.sma(volume, 20) and ta.rsi(close, 14) > 50\nif entryRaw\n    strategy.entry(\"L\", strategy.long)",
+      "exitConditionsHuman": "Exit on SMA loss, trend failure, or invalidation from the clean trend structure.",
+      "exitConditionsPinePseudo": "exitReason = ta.crossunder(close, sma20) or ta.crossunder(close, sma200) or stopLossHit\nstrategy.exit(\"XL\", from_entry=\"L\", stop=stopPrice, limit=takeProfitPrice)",
+      "filtersHuman": [
+        "Market group: stocks",
+        "Timeframe: 15m",
+        "Session: RTH 09:30-16:00 ET",
+        "No earnings window"
+      ],
+      "filtersPinePseudo": "sessionOk = session.ismarket\n timeFrameOk = timeframe.period == \"15m\"\n marketOk = syminfo.type == 'stock'\n filtersOk = sessionOk and timeFrameOk and marketOk",
+      "riskRules": {
+        "stopLossPct": 0.2,
+        "takeProfitR": 1.5,
+        "holdingMinutes": 10,
+        "timeoutMinutes": 10,
+        "confidenceThreshold": 65,
+        "maxTradesPerDay": 3,
+        "cooldownMinutes": 60,
+        "recommendedLookbackDays": 180,
+        "paperOnly": true
+      },
+      "maxTradesPerDay": 3,
+      "cooldownMinutes": 60,
+      "sessionFilter": "RTH 09:30-16:00 ET",
+      "recommendedLookbackDays": 180,
+      "pineScriptPossible": true,
+      "missingFields": [],
+      "warnings": [
+        "external_backtest_blueprint",
+        "no_execution",
+        "no_broker",
+        "no_live_trading"
+      ],
+      "nextStep": "Compare against paper candidates and validate with TradingView CSV/backtest export."
+    },
+    {
+      "strategyId": "tv_googl_sma20_sma200_clean_backtest",
+      "strategyName": "GOOGL SMA20/SMA200 Clean Backtest",
+      "displayName": "GOOGL SMA20/SMA200 Clean Backtest",
+      "symbol": "GOOGL",
+      "timeframe": "15m",
+      "direction": "long",
+      "source": "TradingView external backtest blueprint",
+      "indicatorsRequired": ["SMA20", "SMA200", "Volume", "RSI"],
+      "entryConditionsHuman": "Long only when SMA20 crosses above SMA200 and the confirmation bar keeps momentum positive.",
+      "entryConditionsPinePseudo": "entryRaw = ta.crossover(sma20, sma200) and volume > ta.sma(volume, 20) and ta.rsi(close, 14) > 50\nif entryRaw\n    strategy.entry(\"L\", strategy.long)",
+      "exitConditionsHuman": "Exit on trend reversal, stop invalidation, or loss of the moving-average structure.",
+      "exitConditionsPinePseudo": "exitReason = ta.crossunder(close, sma20) or ta.crossunder(close, sma200) or stopLossHit\nstrategy.exit(\"XL\", from_entry=\"L\", stop=stopPrice, limit=takeProfitPrice)",
+      "filtersHuman": [
+        "Market group: stocks",
+        "Timeframe: 15m",
+        "Session: RTH 09:30-16:00 ET",
+        "No earnings window"
+      ],
+      "filtersPinePseudo": "sessionOk = session.ismarket\n timeFrameOk = timeframe.period == \"15m\"\n marketOk = syminfo.type == 'stock'\n filtersOk = sessionOk and timeFrameOk and marketOk",
+      "riskRules": {
+        "stopLossPct": 0.2,
+        "takeProfitR": 1.5,
+        "holdingMinutes": 10,
+        "timeoutMinutes": 10,
+        "confidenceThreshold": 65,
+        "maxTradesPerDay": 3,
+        "cooldownMinutes": 60,
+        "recommendedLookbackDays": 180,
+        "paperOnly": true
+      },
+      "maxTradesPerDay": 3,
+      "cooldownMinutes": 60,
+      "sessionFilter": "RTH 09:30-16:00 ET",
+      "recommendedLookbackDays": 180,
+      "pineScriptPossible": true,
+      "missingFields": [],
+      "warnings": [
+        "external_backtest_blueprint",
+        "no_execution",
+        "no_broker",
+        "no_live_trading"
+      ],
+      "nextStep": "Compare against paper candidates and validate with TradingView CSV/backtest export."
+    }
+  ]
+}

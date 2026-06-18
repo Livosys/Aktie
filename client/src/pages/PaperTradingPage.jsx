@@ -1,6 +1,9 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
 import PaperCandidatePanel from '../components/PaperCandidatePanel.jsx';
+import TradingViewTestBlueprintPanel from '../components/TradingViewTestBlueprintPanel.jsx';
+import TradingViewTestResultsPanel from '../components/TradingViewTestResultsPanel.jsx';
+import tradingViewTestBlueprintFallback from '../utils/tradingview-test-blueprints.json';
 
 const REFRESH_MS = 15_000;
 const FETCH_TIMEOUT_MS = 6_500;
@@ -11,7 +14,7 @@ async function fetchJsonWithTimeout(url, { timeoutMs = FETCH_TIMEOUT_MS, signal 
   const onAbort = () => controller.abort();
   if (signal) signal.addEventListener('abort', onAbort, { once: true });
   try {
-    const res = await fetch(url, { signal: controller.signal });
+    const res = await fetch(url, { signal: controller.signal, credentials: 'include' });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     return await res.json();
   } catch (err) {
@@ -21,6 +24,23 @@ async function fetchJsonWithTimeout(url, { timeoutMs = FETCH_TIMEOUT_MS, signal 
     clearTimeout(timer);
     if (signal) signal.removeEventListener('abort', onAbort);
   }
+}
+
+function getThemeMode() {
+  if (typeof document === 'undefined') return 'dark';
+  return document.documentElement.dataset.theme === 'light' ? 'light' : 'dark';
+}
+
+function useThemeMode() {
+  const [theme, setTheme] = useState(getThemeMode());
+
+  useEffect(() => {
+    const handler = () => setTheme(getThemeMode());
+    window.addEventListener('themechange', handler);
+    return () => window.removeEventListener('themechange', handler);
+  }, []);
+
+  return theme;
 }
 
 function usePaperRuntime(limit = 50) {
@@ -86,11 +106,11 @@ function fmtPct(value) {
 
 function toneForResult(result) {
   const key = String(result || '').toUpperCase();
-  if (key === 'WIN') return '#22c55e';
-  if (key === 'LOSS') return '#ef4444';
-  if (key === 'OPEN') return '#38bdf8';
-  if (key === 'TIMEOUT') return '#f59e0b';
-  return '#94a3b8';
+  if (key === 'WIN') return 'var(--success)';
+  if (key === 'LOSS') return 'var(--danger)';
+  if (key === 'OPEN') return 'var(--accent)';
+  if (key === 'TIMEOUT') return 'var(--warning)';
+  return 'var(--muted)';
 }
 
 function cellStyle() {
@@ -112,6 +132,70 @@ function sectionStyle() {
   };
 }
 
+function sectionFrameStyle(theme = null, extra = {}) {
+  const isLight = (theme || getThemeMode()) === 'light';
+  return {
+    background: extra.background || 'var(--surface)',
+    border: extra.border || '1px solid var(--border)',
+    borderRadius: extra.borderRadius || 14,
+    padding: extra.padding || 18,
+    marginBottom: extra.marginBottom ?? 18,
+    boxShadow: extra.boxShadow || (isLight ? '0 10px 24px rgba(15,23,42,0.06)' : '0 18px 40px rgba(2,6,23,0.18)'),
+  };
+}
+
+function subtleToneColors(theme = null) {
+  const isLight = (theme || getThemeMode()) === 'light';
+  return {
+    neutral: {
+      border: 'var(--border)',
+      bg: 'var(--surface-2)',
+      fg: 'var(--text)',
+    },
+    success: {
+      border: isLight ? 'rgba(34,197,94,0.18)' : 'rgba(34,197,94,0.28)',
+      bg: isLight ? 'var(--surface-2)' : 'rgba(34,197,94,0.12)',
+      fg: isLight ? '#166534' : '#dcfce7',
+    },
+    danger: {
+      border: isLight ? 'rgba(239,68,68,0.18)' : 'rgba(239,68,68,0.28)',
+      bg: isLight ? 'var(--surface-2)' : 'rgba(239,68,68,0.12)',
+      fg: isLight ? '#b91c1c' : '#fecaca',
+    },
+    warning: {
+      border: isLight ? 'rgba(245,158,11,0.20)' : 'rgba(245,158,11,0.30)',
+      bg: isLight ? 'var(--surface-2)' : 'rgba(245,158,11,0.12)',
+      fg: isLight ? '#92400e' : '#ffedd5',
+    },
+    info: {
+      border: isLight ? 'rgba(59,130,246,0.18)' : 'rgba(56,189,248,0.28)',
+      bg: isLight ? 'var(--surface-2)' : 'rgba(56,189,248,0.12)',
+      fg: isLight ? '#1d4ed8' : '#dbeafe',
+    },
+  };
+}
+
+function mutedTextStyle(theme = null) {
+  return { color: 'var(--muted)' };
+}
+
+function statusPillStyle(tone = 'neutral', theme = null, compact = false) {
+  const cfg = subtleToneColors(theme)[tone] || subtleToneColors(theme).neutral;
+  return {
+    display: 'inline-flex',
+    alignItems: 'center',
+    gap: 6,
+    padding: compact ? '4px 8px' : '6px 10px',
+    borderRadius: 999,
+    border: `1px solid ${cfg.border}`,
+    background: cfg.bg,
+    color: cfg.fg,
+    fontSize: compact ? 10.5 : 11,
+    fontWeight: 900,
+    lineHeight: 1.2,
+  };
+}
+
 function SafetyBanner({ safety }) {
   return (
     <div style={{
@@ -120,19 +204,160 @@ function SafetyBanner({ safety }) {
       flexWrap: 'wrap',
       gap: 10,
       alignItems: 'center',
-      background: 'rgba(15, 23, 42, 0.8)',
+      background: 'var(--surface)',
     }}>
-      <strong style={{ color: '#22c55e' }}>Endast låtsashandel</strong>
-      <span>Inga riktiga order</span>
-      <span>Broker avstängd</span>
-      <span>Live trading avstängd</span>
-      <span>actions_allowed={String(safety?.actions_allowed === true)}</span>
-      <span>can_place_orders={String(safety?.can_place_orders === true)}</span>
+      <strong style={{ color: 'var(--text)' }}>Endast låtsashandel</strong>
+      <span style={statusPillStyle('success')}>Inga riktiga order</span>
+      <span style={statusPillStyle('neutral')}>Broker avstängd</span>
+      <span style={statusPillStyle('neutral')}>Live trading avstängd</span>
+      <span style={statusPillStyle('info')}>actions_allowed={String(safety?.actions_allowed === true)}</span>
+      <span style={statusPillStyle('info')}>can_place_orders={String(safety?.can_place_orders === true)}</span>
+    </div>
+  );
+}
+
+function previewValue(value, fallback = '–') {
+  if (value === null || value === undefined) return fallback;
+  if (typeof value === 'object') return fallback;
+  const text = String(value).trim();
+  return text || fallback;
+}
+
+function previewNumber(value, digits = 2, fallback = '–') {
+  const num = Number(value);
+  if (!Number.isFinite(num)) return fallback;
+  return num >= 0 ? `+${num.toFixed(digits)}` : num.toFixed(digits);
+}
+
+function previewDecision(value) {
+  const text = previewValue(value);
+  if (text === '–') return text;
+  return text.replace(/_/g, ' ');
+}
+
+function DailySelectionPreviewPanel({ preview }) {
+  const theme = useThemeMode();
+  const candidates = Array.isArray(preview?.candidates) ? preview.candidates.slice(0, 3) : [];
+  const selectionCount = Number(preview?.selectionCount) || 3;
+  const selectedCount = Number(preview?.selectedCount) || candidates.length;
+  const dateLabel = previewValue(preview?.date);
+  const emptyText = previewValue(preview?.emptyStateText, 'Inga säkra kandidater just nu');
+  const partialState = selectedCount > 0 && selectedCount < selectionCount;
+
+  return (
+    <div style={sectionStyle()}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap', alignItems: 'flex-start', marginBottom: 12 }}>
+        <div>
+          <h2 style={{ margin: 0, fontSize: 22 }}>Dagens 3 paper-kandidater</h2>
+          <div style={{ ...mutedTextStyle(theme), marginTop: 4, fontSize: 13 }}>
+            Systemet visar 3 möjliga kandidater för framtida daglig paper trading. Inga trades skapas härifrån.
+          </div>
+        </div>
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, alignItems: 'center' }}>
+          <span style={statusPillStyle('info', theme)}>
+            Preview av framtida 3-per-dag-logik
+          </span>
+          <span style={statusPillStyle('neutral', theme)}>
+            {selectedCount}/{selectionCount}
+          </span>
+        </div>
+      </div>
+
+      <div style={{ ...mutedTextStyle(theme), fontSize: 12, marginBottom: 12 }}>
+        Datum: {dateLabel} · Urvalet är stabilt under dagen och ändras först när datumet ändras.
+      </div>
+
+      {partialState ? (
+        <div style={{ marginBottom: 12, padding: '10px 12px', borderRadius: 12, border: statusPillStyle('warning', theme).border, background: 'var(--surface-2)', color: 'var(--text)', fontSize: 13, fontWeight: 700 }}>
+          Det finns inte 3 säkra kandidater just nu. Systemet väntar på bättre signaler.
+        </div>
+      ) : null}
+
+      {candidates.length ? (
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(250px, 1fr))', gap: 12 }}>
+          {candidates.map((candidate, index) => {
+            const key = candidate?.candidateId || `${previewValue(candidate?.canonicalStrategyId)}:${previewValue(candidate?.symbol)}:${index}`;
+            return (
+              <div
+                key={key}
+                style={{
+                  border: '1px solid var(--border)',
+                  borderRadius: 16,
+                  padding: 16,
+                  background: 'var(--surface)',
+                  boxShadow: theme === 'light' ? '0 10px 24px rgba(15,23,42,0.05)' : '0 12px 28px rgba(2,6,23,0.12)',
+                }}
+              >
+                <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10, alignItems: 'flex-start' }}>
+                  <div>
+                    <div style={{ fontSize: 18, fontWeight: 900, lineHeight: 1.15 }}>
+                      {previewValue(candidate?.symbol)} <span style={{ ...mutedTextStyle(theme), fontWeight: 700 }}>· {previewValue(candidate?.strategyName)}</span>
+                    </div>
+                    <div style={{ ...mutedTextStyle(theme), marginTop: 4, fontSize: 12 }}>
+                      {previewValue(candidate?.canonicalStrategyId)}
+                    </div>
+                  </div>
+                  <span style={statusPillStyle('info', theme)}>
+                    {previewValue(candidate?.safetyLabel, 'Preview only')}
+                  </span>
+                </div>
+
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: 10, marginTop: 14 }}>
+                  <div style={{ border: '1px solid var(--border)', borderRadius: 12, padding: 10, background: 'var(--surface-2)' }}>
+                    <div style={{ ...mutedTextStyle(theme), fontSize: 10, textTransform: 'uppercase', letterSpacing: '0.08em' }}>Setup / source</div>
+                    <div style={{ marginTop: 4, fontWeight: 800, fontSize: 13 }}>{previewValue(candidate?.setup)}</div>
+                    <div style={{ marginTop: 4, ...mutedTextStyle(theme), fontSize: 12 }}>{previewValue(candidate?.source)}</div>
+                  </div>
+                  <div style={{ border: '1px solid var(--border)', borderRadius: 12, padding: 10, background: 'var(--surface-2)' }}>
+                    <div style={{ ...mutedTextStyle(theme), fontSize: 10, textTransform: 'uppercase', letterSpacing: '0.08em' }}>Confidence / score</div>
+                    <div style={{ marginTop: 4, fontWeight: 800, fontSize: 13 }}>
+                      Confidence: {previewValue(candidate?.confidence)}
+                    </div>
+                    <div style={{ marginTop: 4, ...mutedTextStyle(theme), fontSize: 12 }}>
+                      Score: {previewValue(candidate?.score)}
+                    </div>
+                  </div>
+                  <div style={{ border: '1px solid var(--border)', borderRadius: 12, padding: 10, background: 'var(--surface-2)' }}>
+                    <div style={{ ...mutedTextStyle(theme), fontSize: 10, textTransform: 'uppercase', letterSpacing: '0.08em' }}>Win rate / pnl</div>
+                    <div style={{ marginTop: 4, fontWeight: 800, fontSize: 13 }}>
+                      Win rate: {previewValue(candidate?.winRate)}{candidate?.winRate != null && candidate?.winRate !== '–' ? '%' : ''}
+                    </div>
+                    <div style={{ marginTop: 4, ...mutedTextStyle(theme), fontSize: 12 }}>
+                      PnL: {previewValue(candidate?.pnl)}
+                    </div>
+                  </div>
+                  <div style={{ border: '1px solid var(--border)', borderRadius: 12, padding: 10, background: 'var(--surface-2)' }}>
+                    <div style={{ ...mutedTextStyle(theme), fontSize: 10, textTransform: 'uppercase', letterSpacing: '0.08em' }}>Decision / time</div>
+                    <div style={{ marginTop: 4, fontWeight: 800, fontSize: 13 }}>{previewDecision(candidate?.decision)}</div>
+                    <div style={{ marginTop: 4, ...mutedTextStyle(theme), fontSize: 12 }}>{fmtTime(candidate?.latestActivityAt)}</div>
+                  </div>
+                </div>
+
+                <div style={{ marginTop: 12, padding: '10px 12px', borderRadius: 12, border: '1px solid var(--border)', background: 'var(--surface-2)', color: 'var(--text)', fontSize: 12, lineHeight: 1.5 }}>
+                  Varför: {previewValue(candidate?.reason)}
+                </div>
+
+                <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginTop: 12 }}>
+                  <span style={statusPillStyle('success', theme)}>Preview only</span>
+                  <span style={statusPillStyle('danger', theme)}>Ingen order</span>
+                  <span style={statusPillStyle('warning', theme)}>Ingen trade skapad</span>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      ) : (
+        <div style={{ border: '1px solid var(--border)', borderRadius: 14, padding: 14, background: 'var(--surface-2)', color: 'var(--text)', fontSize: 13 }}>
+          <div style={{ fontWeight: 800 }}>{emptyText}</div>
+          <div style={{ marginTop: 4, ...mutedTextStyle(theme) }}>Systemet väntar på bättre signaler innan något säkert urval visas.</div>
+        </div>
+      )}
     </div>
   );
 }
 
 function SummaryGrid({ runtime }) {
+  const theme = useThemeMode();
   const summary = runtime?.summary || {};
   const shown = summary.returnedCount ?? 0;
   const limit = summary.limit ?? 50;
@@ -141,7 +366,7 @@ function SummaryGrid({ runtime }) {
       <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap', marginBottom: 14 }}>
         <div>
           <h2 style={{ margin: 0, fontSize: 22 }}>Paper trading runtime</h2>
-          <div style={{ color: '#94a3b8', marginTop: 4 }}>Verkliga paper-only records från runtime-filerna.</div>
+          <div style={{ ...mutedTextStyle(theme), marginTop: 4 }}>Verkliga paper-only records från runtime-filerna.</div>
         </div>
         <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
           <Link to="/live">Till Signalpuls</Link>
@@ -156,20 +381,20 @@ function SummaryGrid({ runtime }) {
           ['Events', summary.eventCount ?? 0],
           ['Blocked', summary.blockedCount ?? 0],
         ].map(([label, value]) => (
-          <div key={label} style={{ border: '1px solid var(--border)', borderRadius: 12, padding: 14, background: 'var(--surface-2, #1e2740)' }}>
-            <div style={{ color: '#94a3b8', fontSize: 11, textTransform: 'uppercase', letterSpacing: '0.08em' }}>{label}</div>
+          <div key={label} style={{ border: '1px solid var(--border)', borderRadius: 12, padding: 14, background: 'var(--surface-2)' }}>
+            <div style={{ ...mutedTextStyle(theme), fontSize: 11, textTransform: 'uppercase', letterSpacing: '0.08em' }}>{label}</div>
             <div style={{ fontSize: 24, fontWeight: 800, marginTop: 6 }}>{value}</div>
           </div>
         ))}
       </div>
 
-      <div style={{ marginTop: 14, display: 'flex', flexWrap: 'wrap', gap: 12, color: '#cbd5e1', fontSize: 13 }}>
+      <div style={{ marginTop: 14, display: 'flex', flexWrap: 'wrap', gap: 12, color: 'var(--text)', fontSize: 13 }}>
         <strong>Visar senaste {shown}/{limit} paper records</strong>
         <span>Senaste event: {fmtTime(summary.latestEventAt)}</span>
         <span>mode=paper_only</span>
       </div>
       {shown < limit && (
-        <div style={{ marginTop: 10, color: '#94a3b8', fontSize: 13 }}>
+        <div style={{ marginTop: 10, ...mutedTextStyle(theme), fontSize: 13 }}>
           Visar senaste {shown}/{limit} paper records. Systemet har inte skapat {limit} ännu.
         </div>
       )}
@@ -178,11 +403,12 @@ function SummaryGrid({ runtime }) {
 }
 
 function DataTable({ title, subtitle, columns, rows, emptyText, rowKey }) {
+  const theme = useThemeMode();
   return (
     <div style={sectionStyle()}>
       <div style={{ marginBottom: 12 }}>
         <h3 style={{ margin: 0, fontSize: 18 }}>{title}</h3>
-        {subtitle && <div style={{ color: '#94a3b8', marginTop: 4, fontSize: 13 }}>{subtitle}</div>}
+        {subtitle && <div style={{ ...mutedTextStyle(theme), marginTop: 4, fontSize: 13 }}>{subtitle}</div>}
       </div>
       {rows.length ? (
         <div style={{ overflowX: 'auto' }}>
@@ -190,7 +416,7 @@ function DataTable({ title, subtitle, columns, rows, emptyText, rowKey }) {
             <thead>
               <tr>
                 {columns.map((column) => (
-                  <th key={column.key} style={{ ...cellStyle(), color: '#94a3b8', textAlign: 'left', fontSize: 11, textTransform: 'uppercase', letterSpacing: '0.08em' }}>
+                  <th key={column.key} style={{ ...cellStyle(), ...mutedTextStyle(theme), textAlign: 'left', fontSize: 11, textTransform: 'uppercase', letterSpacing: '0.08em' }}>
                     {column.label}
                   </th>
                 ))}
@@ -210,7 +436,7 @@ function DataTable({ title, subtitle, columns, rows, emptyText, rowKey }) {
           </table>
         </div>
       ) : (
-        <div style={{ color: '#94a3b8', fontSize: 13 }}>{emptyText}</div>
+        <div style={{ ...mutedTextStyle(theme), fontSize: 13 }}>{emptyText}</div>
       )}
     </div>
   );
@@ -243,6 +469,59 @@ function friendlyAllowlistError(err, fallback) {
   return message || fallback;
 }
 
+function friendlyTradeExplanationError(err, fallback) {
+  const message = String(err?.message || '').trim();
+  if (/^HTTP 404$/i.test(message)) return fallback;
+  if (/Failed to fetch|NetworkError|Load failed/i.test(message)) return fallback;
+  if (/^timeout_after_\d+ms$/i.test(message)) return `${fallback} (timeout)`;
+  return message || fallback;
+}
+
+function friendlyBlueprintError(err) {
+  const message = String(err?.message || '').trim();
+  if (/^HTTP 404$/i.test(message)) return 'Blueprint-data saknas ännu';
+  if (/Failed to fetch|NetworkError|Load failed/i.test(message)) return 'Blueprint-källa inte ansluten ännu';
+  if (/^timeout_after_\d+ms$/i.test(message)) return 'Blueprint-källa inte ansluten ännu (timeout)';
+  return message || 'Blueprint-källa inte ansluten ännu';
+}
+
+async function fetchTradingViewBlueprintPayload() {
+  try {
+    return await fetchJsonWithTimeout('/api/paper-trading/tradingview-test-blueprints');
+  } catch (err) {
+    const message = String(err?.message || '').trim();
+    const isConnectivityIssue = /^HTTP 404$/i.test(message) || /Failed to fetch|NetworkError|Load failed/i.test(message);
+    if (!isConnectivityIssue) throw err;
+    return tradingViewTestBlueprintFallback;
+  }
+}
+
+function friendlyLossReviewError(err, fallback) {
+  return friendlyTradeExplanationError(err, fallback);
+}
+
+function useLossReviewQueue(refreshKey = 0) {
+  const [state, setState] = useState({ loading: true, data: null, error: null });
+
+  useEffect(() => {
+    let alive = true;
+    setState((prev) => ({ ...prev, loading: true }));
+    fetchJsonWithTimeout('/api/paper-trading/loss-review-queue')
+      .then((data) => { if (alive) setState({ loading: false, data, error: null }); })
+      .catch((err) => {
+        if (!alive) return;
+        setState({
+          loading: false,
+          data: null,
+          error: friendlyLossReviewError(err, 'Loss review queue är tillfälligt otillgängligt.'),
+        });
+      });
+    return () => { alive = false; };
+  }, [refreshKey]);
+
+  return state;
+}
+
 function usePaperAllowlistConfig(refreshKey = 0) {
   const [state, setState] = useState({ loading: true, data: null, error: null });
   useEffect(() => {
@@ -261,6 +540,704 @@ function usePaperAllowlistConfig(refreshKey = 0) {
     return () => { alive = false; };
   }, [refreshKey]);
   return state;
+}
+
+function usePaperMarketConfig(refreshKey = 0) {
+  const [state, setState] = useState({ loading: true, data: null, error: null });
+  useEffect(() => {
+    let alive = true;
+    setState((prev) => ({ ...prev, loading: true }));
+    fetchJsonWithTimeout('/api/paper-trading/market-config')
+      .then((data) => { if (alive) setState({ loading: false, data, error: null }); })
+      .catch((err) => {
+        if (!alive) return;
+        setState({
+          loading: false,
+          data: null,
+          error: friendlyAllowlistError(err, 'Kunde inte läsa paper market-config.'),
+        });
+      });
+    return () => { alive = false; };
+  }, [refreshKey]);
+  return state;
+}
+
+function useSafetyStatus(refreshKey = 0) {
+  const [state, setState] = useState({ loading: true, data: null, error: null });
+  useEffect(() => {
+    let alive = true;
+    setState((prev) => ({ ...prev, loading: true }));
+    fetchJsonWithTimeout('/api/safety/status')
+      .then((data) => { if (alive) setState({ loading: false, data, error: null }); })
+      .catch((err) => {
+        if (!alive) return;
+        setState({
+          loading: false,
+          data: null,
+          error: friendlyAllowlistError(err, 'Kunde inte läsa safety-status.'),
+        });
+      });
+    return () => { alive = false; };
+  }, [refreshKey]);
+  return state;
+}
+
+function useGateStatus(refreshKey = 0) {
+  const [state, setState] = useState({ loading: true, data: null, error: null });
+  useEffect(() => {
+    let alive = true;
+    setState((prev) => ({ ...prev, loading: true }));
+    fetchJsonWithTimeout('/api/paper-trading/gate-status')
+      .then((data) => { if (alive) setState({ loading: false, data, error: null }); })
+      .catch((err) => {
+        if (!alive) return;
+        setState({
+          loading: false,
+          data: null,
+          error: friendlyAllowlistError(err, 'Kunde inte läsa gate-status.'),
+        });
+      });
+    return () => { alive = false; };
+  }, [refreshKey]);
+  return state;
+}
+
+function useApprovalPreview(refreshKey = 0) {
+  const [state, setState] = useState({ loading: true, data: null, error: null });
+  useEffect(() => {
+    let alive = true;
+    setState((prev) => ({ ...prev, loading: true }));
+    fetchJsonWithTimeout('/api/paper-trading/approval-preview')
+      .then((data) => { if (alive) setState({ loading: false, data, error: null }); })
+      .catch((err) => {
+        if (!alive) return;
+        setState({
+          loading: false,
+          data: null,
+          error: friendlyAllowlistError(err, 'Kunde inte läsa approval preview.'),
+        });
+      });
+    return () => { alive = false; };
+  }, [refreshKey]);
+  return state;
+}
+
+function useTradingViewBlueprints(refreshKey = 0) {
+  const [state, setState] = useState({ loading: true, data: null, error: null });
+  const emptyPayload = useMemo(() => ({
+    ok: true,
+    status: 'empty',
+    source: 'none',
+    blueprints: [],
+    summary: {
+      strategies: 0,
+      pineScriptPossible: 0,
+      needsAttention: 0,
+      directionBoth: 0,
+    },
+  }), []);
+
+  useEffect(() => {
+    let alive = true;
+    setState((prev) => ({ ...prev, loading: true }));
+    fetchTradingViewBlueprintPayload()
+      .then((data) => {
+        if (!alive) return;
+        const normalized = data && typeof data === 'object'
+          ? {
+              ...data,
+              source: data.source || (Array.isArray(data.blueprints) && data.blueprints.length ? 'file' : 'none'),
+            }
+          : emptyPayload;
+        setState({ loading: false, data: normalized, error: null });
+      })
+      .catch((err) => {
+        if (!alive) return;
+        setState({
+          loading: false,
+          data: emptyPayload,
+          error: friendlyBlueprintError(err),
+        });
+      });
+    return () => { alive = false; };
+  }, [emptyPayload, refreshKey]);
+
+  return state;
+}
+
+function useTradeExplanations(limit = 50) {
+  const [state, setState] = useState({ loading: true, data: null, error: null });
+
+  useEffect(() => {
+    let alive = true;
+    let activeController = null;
+    const load = () => {
+      if (activeController) activeController.abort();
+      activeController = new AbortController();
+      fetchJsonWithTimeout(`/api/paper-trading/trade-explanations?limit=${encodeURIComponent(limit)}`, {
+        signal: activeController.signal,
+      })
+        .then((data) => {
+          if (!alive) return;
+          setState({ loading: false, error: null, data });
+        })
+        .catch((err) => {
+          if (!alive) return;
+          setState((prev) => ({
+            loading: false,
+            error: friendlyTradeExplanationError(err, 'Trade explanations är tillfälligt otillgängligt.'),
+            data: prev.data || null,
+          }));
+        });
+    };
+    load();
+    const t = setInterval(load, REFRESH_MS);
+    return () => {
+      alive = false;
+      clearInterval(t);
+      if (activeController) activeController.abort();
+    };
+  }, [limit]);
+
+  return state;
+}
+
+function useTradeExplanationLookup(trade, enabled) {
+  const [state, setState] = useState({ loading: false, data: null, error: null });
+
+  useEffect(() => {
+    if (!enabled || !trade) {
+      setState({ loading: false, data: null, error: null });
+      return;
+    }
+
+    const params = tradeLookupParams(trade);
+    if (!params) {
+      setState({ loading: false, data: null, error: null });
+      return;
+    }
+
+    let alive = true;
+    const controller = new AbortController();
+    setState({ loading: true, data: null, error: null });
+
+    fetchJsonWithTimeout(`/api/paper-trading/trade-explanations?${params.toString()}`, {
+      signal: controller.signal,
+    })
+      .then((data) => {
+        if (!alive) return;
+        setState({ loading: false, data, error: null });
+      })
+      .catch((err) => {
+        if (!alive) return;
+        setState({
+          loading: false,
+          data: null,
+          error: friendlyTradeExplanationError(err, 'Trade explanations är tillfälligt otillgängligt.'),
+        });
+      });
+
+    return () => {
+      alive = false;
+      controller.abort();
+    };
+  }, [enabled, trade?.tradeId, trade?.symbol, trade?.strategy_id, trade?.strategyId, trade?.canonicalStrategyId, trade?.resolvedStrategyId, trade?.opened_at, trade?.openedAt, trade?.closed_at, trade?.closedAt]);
+
+  return state;
+}
+
+function explanationValue(value, fallback = 'unknown') {
+  if (value === null || value === undefined) return fallback;
+  if (typeof value === 'number' && Number.isFinite(value)) return value;
+  const text = String(value).trim();
+  return text || fallback;
+}
+
+function tradeLookupKey(trade) {
+  if (!trade) return null;
+  if (trade.tradeId) return trade.tradeId;
+  const symbol = previewValue(trade.symbol, 'unknown');
+  const strategyId = previewValue(trade.strategy_id || trade.strategyId || trade.canonicalStrategyId || trade.resolvedStrategyId, 'unknown');
+  const openedAt = previewValue(trade.opened_at || trade.openedAt, 'unknown');
+  return `${symbol}:${strategyId}:${openedAt}`;
+}
+
+function tradeLookupParams(trade) {
+  if (!trade) return null;
+  const params = new URLSearchParams();
+  if (trade.tradeId) params.set('tradeId', trade.tradeId);
+  if (trade.symbol) params.set('symbol', trade.symbol);
+  const strategyId = trade.strategy_id || trade.strategyId || trade.canonicalStrategyId || trade.resolvedStrategyId;
+  if (strategyId) params.set('strategyId', strategyId);
+  if (trade.opened_at || trade.openedAt) params.set('openedAt', trade.opened_at || trade.openedAt);
+  if (trade.closed_at || trade.closedAt) params.set('closedAt', trade.closed_at || trade.closedAt);
+  return params;
+}
+
+function explanationBadgeStyle(tone = 'neutral', compact = false, theme = null) {
+  const cfg = subtleToneColors(theme)[tone] || subtleToneColors(theme).neutral;
+  return {
+    display: 'inline-flex',
+    alignItems: 'center',
+    padding: compact ? '4px 8px' : '6px 10px',
+    borderRadius: 999,
+    border: `1px solid ${cfg.border}`,
+    background: cfg.bg,
+    color: cfg.fg,
+    fontSize: compact ? 10.5 : 11,
+    fontWeight: 900,
+    lineHeight: 1.2,
+  };
+}
+
+function ClosedTradeExplanationPanel({ explanation, trade, theme }) {
+  const missingFields = Array.isArray(explanation?.diagnosis?.missingFields) ? explanation.diagnosis.missingFields : [];
+  const nearbyEvents = Array.isArray(explanation?.nearbyEvents) ? explanation.nearbyEvents : [];
+  const entry = explanation?.entry || {};
+  const exit = explanation?.exit || {};
+  const diagnosis = explanation?.diagnosis || {};
+  const stats = explanation?.tradeStats || diagnosis?.tradeStats || {};
+  const tradeLabel = trade?.symbol ? `${trade.symbol} · ${trade.strategy_id || trade.strategyId || 'unknown'}` : 'unknown';
+  const mfePct = stats.mfePct == null ? '–' : `${stats.mfePct >= 0 ? '+' : ''}${Number(stats.mfePct).toFixed(2)}%`;
+  const maePct = stats.maePct == null ? '–' : `${stats.maePct >= 0 ? '+' : ''}${Number(stats.maePct).toFixed(2)}%`;
+
+  return (
+    <div style={{
+      marginTop: 10,
+      padding: 16,
+      borderRadius: 16,
+      border: '1px solid var(--border)',
+      background: 'var(--surface)',
+      boxShadow: theme === 'light' ? '0 10px 24px rgba(15,23,42,0.06)' : '0 18px 40px rgba(2,6,23,0.20)',
+    }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap', alignItems: 'flex-start' }}>
+        <div>
+          <div style={{ fontSize: 16, fontWeight: 900, color: 'var(--text)' }}>Varför traden öppnades och stängdes</div>
+          <div style={{ marginTop: 4, color: 'var(--muted)', fontSize: 12 }}>{tradeLabel}</div>
+        </div>
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+          <span style={explanationBadgeStyle(trade?.result === 'WIN' ? 'success' : trade?.result === 'LOSS' ? 'danger' : 'warning', false, theme)}>
+            Result: {explanationValue(trade?.result)}
+          </span>
+          <span style={explanationBadgeStyle('info', false, theme)}>
+            Exit type: {explanationValue(exit.exitType)}
+          </span>
+          <span style={explanationBadgeStyle('neutral', false, theme)}>
+            Safety: paper_only
+          </span>
+        </div>
+      </div>
+
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(260px, 1fr))', gap: 12, marginTop: 14 }}>
+        <div style={{ border: '1px solid var(--border)', borderRadius: 14, padding: 12, background: 'var(--surface-2)' }}>
+          <div style={{ color: 'var(--muted)', fontSize: 10, textTransform: 'uppercase', letterSpacing: '0.08em' }}>Entry</div>
+          <div style={{ marginTop: 6, fontWeight: 800, fontSize: 13, color: 'var(--text)' }}>{explanationValue(entry.explanation, 'Saknas i loggning')}</div>
+          <div style={{ marginTop: 8, color: 'var(--text)', fontSize: 12, lineHeight: 1.5 }}>
+            Reason: {explanationValue(entry.reason)}
+            <br />
+            Status: {explanationValue(entry.status)}
+            <br />
+            Bias: {explanationValue(entry.bias)}
+            <br />
+            Confidence: {entry.confidence == null ? 'unknown' : entry.confidence}
+            <br />
+            Gate stage: {explanationValue(entry.gateStage)}
+            <br />
+            Setup: {explanationValue(entry.setup)}
+          </div>
+        </div>
+
+        <div style={{ border: '1px solid var(--border)', borderRadius: 14, padding: 12, background: 'var(--surface-2)' }}>
+          <div style={{ color: 'var(--muted)', fontSize: 10, textTransform: 'uppercase', letterSpacing: '0.08em' }}>Exit</div>
+          <div style={{ marginTop: 6, fontWeight: 800, fontSize: 13, color: 'var(--text)' }}>{explanationValue(exit.explanation, 'Exakt exitReason saknas i loggning')}</div>
+          <div style={{ marginTop: 8, color: 'var(--text)', fontSize: 12, lineHeight: 1.5 }}>
+            Reason: {explanationValue(exit.reason)}
+            <br />
+            Exit type: {explanationValue(exit.exitType)}
+            <br />
+            Source: {explanationValue(exit.exitSource)}
+          </div>
+        </div>
+
+        <div style={{ border: '1px solid var(--border)', borderRadius: 14, padding: 12, background: 'var(--surface-2)' }}>
+          <div style={{ color: 'var(--muted)', fontSize: 10, textTransform: 'uppercase', letterSpacing: '0.08em' }}>Diagnosis</div>
+          <div style={{ marginTop: 6, fontWeight: 800, fontSize: 13, color: 'var(--text)' }}>{explanationValue(diagnosis.summary)}</div>
+          <div style={{ marginTop: 8, color: 'var(--text)', fontSize: 12, lineHeight: 1.5 }}>
+            Why: {explanationValue(diagnosis.whyWinOrLoss)}
+            <br />
+            Lesson: {explanationValue(diagnosis.lesson)}
+            <br />
+            Possible issue: {explanationValue(diagnosis.possibleIssue)}
+          </div>
+        </div>
+      </div>
+
+      <div style={{ marginTop: 12, display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 10 }}>
+        <div style={{ border: '1px solid var(--border)', borderRadius: 14, padding: 12, background: 'var(--surface-2)' }}>
+          <div style={{ color: 'var(--muted)', fontSize: 10, textTransform: 'uppercase', letterSpacing: '0.08em' }}>Signal strength</div>
+          <div style={{ marginTop: 6, fontWeight: 900, color: 'var(--text)' }}>{entry.signalStrength == null ? 'saknas i äldre loggning' : entry.signalStrength}</div>
+        </div>
+        <div style={{ border: '1px solid var(--border)', borderRadius: 14, padding: 12, background: 'var(--surface-2)' }}>
+          <div style={{ color: 'var(--muted)', fontSize: 10, textTransform: 'uppercase', letterSpacing: '0.08em' }}>MFE</div>
+          <div style={{ marginTop: 6, fontWeight: 900, color: 'var(--text)' }}>{mfePct === '–' ? 'saknas i äldre loggning' : mfePct}</div>
+        </div>
+        <div style={{ border: '1px solid var(--border)', borderRadius: 14, padding: 12, background: 'var(--surface-2)' }}>
+          <div style={{ color: 'var(--muted)', fontSize: 10, textTransform: 'uppercase', letterSpacing: '0.08em' }}>MAE</div>
+          <div style={{ marginTop: 6, fontWeight: 900, color: 'var(--text)' }}>{maePct === '–' ? 'saknas i äldre loggning' : maePct}</div>
+        </div>
+        <div style={{ border: '1px solid var(--border)', borderRadius: 14, padding: 12, background: 'var(--surface-2)' }}>
+          <div style={{ color: 'var(--muted)', fontSize: 10, textTransform: 'uppercase', letterSpacing: '0.08em' }}>Learned</div>
+          <div style={{ marginTop: 6, fontWeight: 900, color: 'var(--text)' }}>{explanationValue(diagnosis.lesson, 'saknas i äldre loggning')}</div>
+        </div>
+      </div>
+
+      <div style={{ marginTop: 12, border: '1px solid var(--border)', borderRadius: 14, padding: 12, background: 'var(--surface-2)' }}>
+        <div style={{ color: 'var(--muted)', fontSize: 10, textTransform: 'uppercase', letterSpacing: '0.08em' }}>Nearby events</div>
+        {nearbyEvents.length ? (
+          <div style={{ marginTop: 10, display: 'grid', gap: 8 }}>
+            {nearbyEvents.slice(0, 8).map((event) => (
+              <div key={event.eventId || `${event.type}-${event.timestamp}`} style={{ padding: 10, borderRadius: 12, border: '1px solid var(--border)', background: 'var(--surface)', fontSize: 12, lineHeight: 1.45 }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10, flexWrap: 'wrap' }}>
+                  <strong style={{ color: 'var(--text)' }}>{explanationValue(event.type)}</strong>
+                  <span style={{ color: 'var(--muted)' }}>{fmtTime(event.timestamp)}</span>
+                </div>
+                <div style={{ color: 'var(--text)', marginTop: 4 }}>
+                  {event.reason ? `${event.reason}` : 'Saknas i loggning'}
+                </div>
+                <div style={{ color: 'var(--muted)', marginTop: 4 }}>
+                  Offset: {event.offsetMinutes == null ? 'unknown' : `${event.offsetMinutes} min`} · Match: {explanationValue(event.match)}
+                </div>
+              </div>
+            ))}
+          </div>
+        ) : (
+          <div style={{ marginTop: 8, color: 'var(--muted)', fontSize: 12 }}>Inga närliggande events hittades eller så saknas tidskoppling i loggen.</div>
+        )}
+      </div>
+
+      <div style={{ marginTop: 12, display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+        {missingFields.length ? missingFields.map((field) => (
+          <span key={field} style={explanationBadgeStyle('warning', true, theme)}>
+            saknas i loggning: {field}
+          </span>
+        )) : (
+          <span style={explanationBadgeStyle('success', true, theme)}>fullständig loggning</span>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function gateTone(status) {
+  const key = String(status || 'unknown').toLowerCase();
+  if (key === 'pass') return 'success';
+  if (key === 'warn') return 'warning';
+  if (key === 'fail') return 'danger';
+  return 'neutral';
+}
+
+function gateLabel(value) {
+  const key = String(value || 'unknown').toLowerCase();
+  if (key === 'pass') return 'pass';
+  if (key === 'warn') return 'warn';
+  if (key === 'fail') return 'fail';
+  return 'unknown';
+}
+
+function EntryQualityGatePanel({ gate, theme }) {
+  if (!gate) return null;
+  const checks = gate.checks || {};
+  const recommendations = Array.isArray(gate.recommendations) ? gate.recommendations : [];
+  const missingFields = Array.isArray(gate.missingFields) ? gate.missingFields : [];
+  const statusTone = gateTone(gate.entryQuality);
+  const score = Number.isFinite(Number(gate.score)) ? Number(gate.score) : 0;
+
+  const cards = [
+    { key: 'lateEntry', label: 'Sen entry', data: checks.lateEntry },
+    { key: 'twoMinuteConfirmation', label: '2m-bekräftelse', data: checks.twoMinuteConfirmation },
+    { key: 'stopFit', label: 'Stop loss-passform', data: checks.stopFit },
+    { key: 'choppyMarket', label: 'Choppy marknad', data: checks.choppyMarket },
+  ];
+
+  return (
+    <div style={{
+      marginTop: 12,
+      padding: 16,
+      borderRadius: 16,
+      border: '1px solid var(--border)',
+      background: 'var(--surface)',
+      boxShadow: theme === 'light' ? '0 10px 24px rgba(15,23,42,0.05)' : '0 18px 40px rgba(2,6,23,0.18)',
+    }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap', alignItems: 'flex-start' }}>
+        <div>
+          <div style={{ fontSize: 16, fontWeight: 900, color: 'var(--text)' }}>Entry Quality Gate</div>
+          <div style={{ marginTop: 4, color: 'var(--muted)', fontSize: 12, lineHeight: 1.5 }}>
+            Detta är analys, inte automatisk ändring. Rekommendationen bör testas i replay/paper innan den används. Originalstrategin ändras inte.
+          </div>
+        </div>
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, alignItems: 'center' }}>
+          <span style={explanationBadgeStyle(statusTone, false, theme)}>
+            Entry quality: {gateLabel(gate.entryQuality)}
+          </span>
+          <span style={explanationBadgeStyle('info', false, theme)}>
+            Score: {score}
+          </span>
+        </div>
+      </div>
+
+      <div style={{ marginTop: 12, display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(230px, 1fr))', gap: 10 }}>
+        {cards.map((card) => {
+          const data = card.data || {};
+          const status = gateLabel(data.status);
+          const evidence = data.evidence || {};
+          const reason = data.reason || 'Data saknas för att bedöma detta steg.';
+          const missing = Array.isArray(data.missingFields) ? data.missingFields : [];
+          return (
+            <div key={card.key} style={{ border: '1px solid var(--border)', borderRadius: 14, padding: 12, background: 'var(--surface-2)' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8, alignItems: 'center' }}>
+                <div style={{ fontWeight: 900, color: 'var(--text)', fontSize: 13 }}>{card.label}</div>
+                <span style={explanationBadgeStyle(gateTone(status), true, theme)}>{status}</span>
+              </div>
+              <div style={{ marginTop: 8, color: 'var(--text)', fontSize: 12, lineHeight: 1.5 }}>
+                {reason}
+              </div>
+              <div style={{ marginTop: 8, color: 'var(--muted)', fontSize: 11, lineHeight: 1.45 }}>
+                {data.status === 'unknown' || !reason ? 'Data saknas.' : ''}
+                {evidence.entryReason || evidence.exitReason || evidence.maxFavorablePct != null || evidence.maxAdversePct != null || evidence.nearbyBlockedCount != null
+                  ? `Evidence: ${[
+                    evidence.entryReason ? `entryReason=${evidence.entryReason}` : null,
+                    evidence.statusAtEntry ? `statusAtEntry=${evidence.statusAtEntry}` : null,
+                    evidence.maxFavorablePct != null ? `MFE=${previewValue(evidence.maxFavorablePct)}` : null,
+                    evidence.maxAdversePct != null ? `MAE=${previewValue(evidence.maxAdversePct)}` : null,
+                    evidence.exitReason ? `exitReason=${evidence.exitReason}` : null,
+                    evidence.nearbyBlockedCount != null ? `nearbyBlocked=${evidence.nearbyBlockedCount}` : null,
+                  ].filter(Boolean).join(' · ')}`
+                  : 'Data saknas.'}
+              </div>
+              {missing.length ? (
+                <div style={{ marginTop: 8, ...mutedTextStyle(theme), fontSize: 11 }}>
+                  Saknade fält: {missing.join(', ')}
+                </div>
+              ) : null}
+            </div>
+          );
+        })}
+      </div>
+
+      <div style={{ marginTop: 12, padding: 12, borderRadius: 14, border: '1px solid var(--border)', background: 'var(--surface-2)', color: 'var(--text)', fontSize: 12, lineHeight: 1.55 }}>
+        Rekommendationerna nedan är säkra testspår för replay eller paper-test. De ändrar inte runtime eller originalstrategin.
+      </div>
+
+      {missingFields.length ? (
+        <div style={{ marginTop: 12, ...mutedTextStyle(theme), fontSize: 12 }}>
+          Data saknas: {missingFields.join(', ')}
+        </div>
+      ) : null}
+
+      {recommendations.length ? (
+        <div style={{ marginTop: 12, display: 'grid', gap: 10 }}>
+          {recommendations.map((recommendation) => (
+            <div key={`${recommendation.type}-${recommendation.title}`} style={{ border: '1px solid var(--border)', borderRadius: 14, padding: 12, background: 'var(--surface-2)' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
+                <div style={{ fontWeight: 900, color: 'var(--text)', fontSize: 13 }}>{recommendation.title}</div>
+                <span style={explanationBadgeStyle('neutral', true, theme)}>{recommendation.type}</span>
+              </div>
+              <div style={{ marginTop: 6, color: 'var(--text)', fontSize: 12, lineHeight: 1.5 }}>
+                {recommendation.description}
+              </div>
+              <div style={{ marginTop: 6, ...mutedTextStyle(theme), fontSize: 11 }}>
+                safeActionOnly={String(recommendation.safeActionOnly === true)}
+              </div>
+            </div>
+          ))}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function issueTone(issueType, count = 0) {
+  const key = String(issueType || 'unknown');
+  if (count >= 4) return 'danger';
+  if (key === 'missing_logging_fields') return 'info';
+  if (key === 'stop_loss_hit') return 'warning';
+  if (key === 'unknown') return 'neutral';
+  return 'warning';
+}
+
+function LossReviewQueuePanel({ review, loading, error, theme, previewState, onPreviewGroup }) {
+  if (loading && !review) {
+    return (
+      <div style={sectionStyle()}>
+        <div style={{ fontSize: 22, fontWeight: 900, color: 'var(--text)' }}>Förlustanalys och testförslag</div>
+        <div style={{ marginTop: 6, ...mutedTextStyle(theme), fontSize: 13 }}>Läser förlustanalyskö...</div>
+      </div>
+    );
+  }
+
+  if (error && !review) {
+    return (
+      <div style={sectionStyle()}>
+        <div style={{ fontSize: 22, fontWeight: 900, color: 'var(--text)' }}>Förlustanalys och testförslag</div>
+        <div style={{ marginTop: 6, color: 'var(--danger)', fontSize: 13 }}>{error}</div>
+      </div>
+    );
+  }
+
+  if (!review) return null;
+  const groups = Array.isArray(review.groups) ? review.groups : [];
+  const summary = review.summary || {};
+  const safety = review.safety || {};
+
+  return (
+    <div style={sectionStyle()}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap', alignItems: 'flex-start' }}>
+        <div>
+          <div style={{ fontSize: 22, fontWeight: 900, color: 'var(--text)' }}>Förlustanalys och testförslag</div>
+          <div style={{ marginTop: 4, color: 'var(--muted)', fontSize: 13, lineHeight: 1.5 }}>
+            Trade explanations och Entry Quality Gate grupperas här till säkra testspår för replay eller paper-test.
+          </div>
+        </div>
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+          <span style={statusPillStyle('neutral', theme)}>mode={previewValue(safety.mode || 'paper_only')}</span>
+          <span style={statusPillStyle('danger', theme)}>{previewValue(summary.totalLosses, 0)} losses</span>
+          <span style={statusPillStyle('info', theme)}>{previewValue(summary.topIssue, 'unknown') || 'unknown'}</span>
+        </div>
+      </div>
+
+      <div style={{ marginTop: 8, ...mutedTextStyle(theme), fontSize: 13, lineHeight: 1.5 }}>
+        Detta är analys och testförslag. Originalstrategin ändras inte.
+      </div>
+
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(170px, 1fr))', gap: 10, marginTop: 14 }}>
+        {[
+          ['Closed', summary.totalClosed ?? 0],
+          ['Losses', summary.totalLosses ?? 0],
+          ['Reviewed', summary.reviewedLosses ?? 0],
+          ['Top issue', summary.topIssue || 'unknown'],
+          ['Top strategy', summary.topStrategyIssue || 'unknown'],
+        ].map(([label, value]) => (
+          <div key={label} style={{ border: '1px solid var(--border)', borderRadius: 12, padding: 14, background: 'var(--surface-2)' }}>
+            <div style={{ ...mutedTextStyle(theme), fontSize: 11, textTransform: 'uppercase', letterSpacing: '0.08em' }}>{label}</div>
+            <div style={{ fontSize: 18, fontWeight: 900, marginTop: 6, color: 'var(--text)' }}>{previewValue(value, 'unknown')}</div>
+          </div>
+        ))}
+      </div>
+
+      {groups.length ? (
+        <div style={{ marginTop: 14, display: 'grid', gap: 12 }}>
+          {groups.map((group) => {
+            const preview = previewState?.groupId === group.id ? previewState.data?.preview || previewState.data?.group?.preview || null : null;
+            const previewBusy = previewState?.loadingGroupId === group.id;
+            const previewError = previewState?.groupId === group.id ? previewState.error : null;
+            const tone = issueTone(group.issueType, group.count);
+            const lastExample = Array.isArray(group.examples) && group.examples[0] ? group.examples[0] : null;
+            return (
+              <div key={group.id} style={{
+                border: '1px solid var(--border)',
+                borderRadius: 16,
+                padding: 14,
+                background: 'var(--surface)',
+                boxShadow: theme === 'light' ? '0 10px 24px rgba(15,23,42,0.05)' : '0 18px 40px rgba(2,6,23,0.18)',
+              }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap', alignItems: 'flex-start' }}>
+                  <div>
+                    <div style={{ fontSize: 17, fontWeight: 900, color: 'var(--text)' }}>{group.issueLabel || group.issueType}</div>
+                    <div style={{ marginTop: 4, color: 'var(--muted)', fontSize: 12, lineHeight: 1.45 }}>
+                      Strategi: {previewValue(group.strategyId)} · Setup: {previewValue(group.setup)}
+                    </div>
+                  </div>
+                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, alignItems: 'center' }}>
+                    <span style={statusPillStyle(tone, theme)}>{previewValue(group.count, 0)} lossar</span>
+                    <span style={statusPillStyle('info', theme)}>Snitt PnL {group.avgPnlPct == null ? '–' : `${group.avgPnlPct >= 0 ? '+' : ''}${group.avgPnlPct.toFixed(2)}%`}</span>
+                    <button
+                      type="button"
+                      onClick={() => onPreviewGroup(group.id)}
+                      style={{
+                        ...statusPillStyle('success', theme),
+                        cursor: 'pointer',
+                        border: '1px solid var(--border)',
+                      }}
+                    >
+                      {previewBusy ? 'Bygger preview...' : 'Förhandsvisa test'}
+                    </button>
+                  </div>
+                </div>
+
+                <div style={{ marginTop: 12, display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(170px, 1fr))', gap: 10 }}>
+                  <div style={{ border: '1px solid var(--border)', borderRadius: 12, padding: 10, background: 'var(--surface-2)' }}>
+                    <div style={{ ...mutedTextStyle(theme), fontSize: 10, textTransform: 'uppercase', letterSpacing: '0.08em' }}>Genomsnittlig confidence</div>
+                    <div style={{ marginTop: 4, fontWeight: 900, color: 'var(--text)' }}>{group.avgConfidence == null ? '–' : group.avgConfidence.toFixed(2)}</div>
+                  </div>
+                  <div style={{ border: '1px solid var(--border)', borderRadius: 12, padding: 10, background: 'var(--surface-2)' }}>
+                    <div style={{ ...mutedTextStyle(theme), fontSize: 10, textTransform: 'uppercase', letterSpacing: '0.08em' }}>Genomsnittlig förlust</div>
+                    <div style={{ marginTop: 4, fontWeight: 900, color: 'var(--text)' }}>{group.avgPnlPct == null ? '–' : `${group.avgPnlPct >= 0 ? '+' : ''}${group.avgPnlPct.toFixed(2)}%`}</div>
+                  </div>
+                  <div style={{ border: '1px solid var(--border)', borderRadius: 12, padding: 10, background: 'var(--surface-2)' }}>
+                    <div style={{ ...mutedTextStyle(theme), fontSize: 10, textTransform: 'uppercase', letterSpacing: '0.08em' }}>Symbols</div>
+                    <div style={{ marginTop: 4, fontWeight: 800, color: 'var(--text)', fontSize: 12, lineHeight: 1.45 }}>{(group.symbols || []).join(', ') || '–'}</div>
+                  </div>
+                  <div style={{ border: '1px solid var(--border)', borderRadius: 12, padding: 10, background: 'var(--surface-2)' }}>
+                    <div style={{ ...mutedTextStyle(theme), fontSize: 10, textTransform: 'uppercase', letterSpacing: '0.08em' }}>Bias / entry</div>
+                    <div style={{ marginTop: 4, fontWeight: 800, color: 'var(--text)', fontSize: 12, lineHeight: 1.45 }}>
+                      Bias: {Object.entries(group.biasCounts || {}).map(([key, value]) => `${key}:${value}`).join(', ') || '–'}
+                      <br />
+                      Status: {Object.entries(group.statusAtEntryCounts || {}).map(([key, value]) => `${key}:${value}`).join(', ') || '–'}
+                    </div>
+                  </div>
+                </div>
+
+                <div style={{ marginTop: 12, padding: 12, borderRadius: 12, border: '1px solid var(--border)', background: 'var(--surface-2)', color: 'var(--text)', fontSize: 12, lineHeight: 1.55 }}>
+                  <strong style={{ display: 'block', marginBottom: 4 }}>Diagnosis</strong>
+                  {group.diagnosis}
+                </div>
+
+                <div style={{ marginTop: 12, padding: 12, borderRadius: 12, border: '1px solid var(--border)', background: 'var(--surface-2)', color: 'var(--text)', fontSize: 12, lineHeight: 1.55 }}>
+                  <strong style={{ display: 'block', marginBottom: 4 }}>Rekommenderat test</strong>
+                  {group.recommendation?.description || '–'}
+                  {group.recommendation?.proposedVariant?.name ? (
+                    <div style={{ marginTop: 6, color: 'var(--muted)' }}>
+                      Variant: {group.recommendation.proposedVariant.name}
+                    </div>
+                  ) : null}
+                </div>
+
+                {lastExample ? (
+                  <div style={{ marginTop: 12, padding: 12, borderRadius: 12, border: '1px solid var(--border)', background: 'var(--surface-2)', color: 'var(--text)', fontSize: 12, lineHeight: 1.55 }}>
+                    <strong style={{ display: 'block', marginBottom: 4 }}>Exempel</strong>
+                    {lastExample.symbol} · {fmtTime(lastExample.openedAt)} · PnL {previewValue(lastExample.pnlPct, '–')}
+                    <br />
+                    {lastExample.explanation}
+                  </div>
+                ) : null}
+
+                {preview ? (
+                  <div style={{ marginTop: 12, border: '1px solid var(--border)', borderRadius: 12, padding: 12, background: 'var(--surface)', color: 'var(--text)', fontSize: 12, lineHeight: 1.55 }}>
+                    <strong style={{ display: 'block', marginBottom: 4 }}>Testpreview</strong>
+                    {preview.reason}
+                    <br />
+                    Queue: {preview.queue_item?.strategy_id || '–'} · {preview.queue_item?.test_type || '–'} · {preview.queue_item?.source || '–'}
+                    <br />
+                    Safety: paper_only · actions_allowed=false · can_place_orders=false · live_trading_enabled=false · broker_enabled=false
+                  </div>
+                ) : previewError ? (
+                  <div style={{ marginTop: 12, border: '1px solid rgba(239,68,68,0.24)', borderRadius: 12, padding: 12, background: 'var(--surface-2)', color: 'var(--danger)', fontSize: 12, lineHeight: 1.55 }}>
+                    {previewError}
+                  </div>
+                ) : previewBusy ? (
+                  <div style={{ marginTop: 12, ...mutedTextStyle(theme), fontSize: 12 }}>Bygger preview för denna grupp...</div>
+                ) : null}
+              </div>
+            );
+          })}
+        </div>
+      ) : (
+        <div style={{ marginTop: 14, border: '1px solid var(--border)', borderRadius: 12, padding: 12, background: 'var(--surface-2)', color: 'var(--text)', fontSize: 13 }}>
+          Inga loss-grupper hittades ännu.
+        </div>
+      )}
+    </div>
+  );
 }
 
 function usePaperApprovals(refreshKey = 0) {
@@ -299,17 +1276,19 @@ function mostCommonReason(rows) {
 }
 
 function MetricCard({ label, value, tone = 'neutral', note }) {
-  const colors = { good: '#22c55e', warn: '#f59e0b', bad: '#ef4444', neutral: '#94a3b8' };
+  const theme = useThemeMode();
+  const colors = { good: 'var(--success)', warn: 'var(--warning)', bad: 'var(--danger)', neutral: 'var(--text)' };
   return (
-    <div className={`allowlist-metric allowlist-metric-${tone}`} style={{ flex: '1 1 160px', minWidth: 160, background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 12, padding: '12px 14px' }}>
-      <div style={{ fontSize: 10.5, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.05em', color: '#94a3b8' }}>{label}</div>
+    <div className={`allowlist-metric allowlist-metric-${tone}`} style={{ flex: '1 1 160px', minWidth: 160, background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 12, padding: '12px 14px', boxShadow: theme === 'light' ? '0 10px 24px rgba(15,23,42,0.04)' : 'none' }}>
+      <div style={{ fontSize: 10.5, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.05em', ...mutedTextStyle(theme) }}>{label}</div>
       <div style={{ fontSize: 20, fontWeight: 800, color: colors[tone] || colors.neutral, marginTop: 2 }}>{value}</div>
-      {note ? <div style={{ fontSize: 11, color: '#94a3b8', marginTop: 2, lineHeight: 1.4 }}>{note}</div> : null}
+      {note ? <div style={{ fontSize: 11, ...mutedTextStyle(theme), marginTop: 2, lineHeight: 1.4 }}>{note}</div> : null}
     </div>
   );
 }
 
 function WhyNoTradesPanel({ runtime, allowlist }) {
+  const theme = useThemeMode();
   const summary = runtime?.summary || {};
   const open = Number(summary.openCount) || 0;
   const closed = Number(summary.closedCount) || 0;
@@ -337,7 +1316,7 @@ function WhyNoTradesPanel({ runtime, allowlist }) {
   return (
     <div style={sectionStyle()}>
       <div style={{ fontSize: 16, fontWeight: 800, marginBottom: 4 }}>Varför finns inga paper trades?</div>
-      <div style={{ fontSize: 12, color: '#94a3b8', marginBottom: 12 }}>Read-only diagnos. Inga riktiga order, inga actions härifrån.</div>
+      <div style={{ fontSize: 12, ...mutedTextStyle(theme), marginBottom: 12 }}>Read-only diagnos. Inga riktiga order, inga actions härifrån.</div>
       <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10 }}>
         <MetricCard label="Runtime" value={runtimeActive ? 'Aktiv' : 'Avvaktar'} tone={runtimeActive ? 'good' : 'warn'} note="paper_only, read-only" />
         <MetricCard label="Öppna trades" value={open} tone="neutral" />
@@ -347,8 +1326,268 @@ function WhyNoTradesPanel({ runtime, allowlist }) {
         <MetricCard label="Senaste event" value={fmtTime(summary.latestEventAt)} tone="neutral" />
         <MetricCard label="Vanligaste orsak" value={topReason ? `${topReason.count}×` : '–'} tone={blocked > 0 ? 'warn' : 'neutral'} note={topReason ? topReason.reason : 'Ingen blockering i fönstret'} />
       </div>
-      <div style={{ ...sectionStyle(), marginTop: 12, marginBottom: 0, background: 'rgba(15,23,42,0.55)' }}>
+      <div style={{ ...sectionStyle(), marginTop: 12, marginBottom: 0, background: 'var(--surface-2)' }}>
         <strong>Slutsats:</strong> {conclusion}
+      </div>
+    </div>
+  );
+}
+
+function countReasons(rows) {
+  const counts = new Map();
+  for (const row of Array.isArray(rows) ? rows : []) {
+    const reason = String(
+      row?.blockedReason
+      || row?.reasonSv
+      || row?.reason
+      || row?.exitReasonCode
+      || row?.result
+      || row?.status
+      || '',
+    ).trim();
+    if (!reason) continue;
+    counts.set(reason, (counts.get(reason) || 0) + 1);
+  }
+  return [...counts.entries()]
+    .map(([reason, count]) => ({ reason, count }))
+    .sort((a, b) => b.count - a.count || a.reason.localeCompare(b.reason));
+}
+
+function bestStrategyFromPerformance(performance) {
+  const rows = Array.isArray(performance?.strategies) ? performance.strategies : [];
+  const ranked = rows.filter((row) => Number.isFinite(Number(row?.netPnlPct)) || Number.isFinite(Number(row?.winRatePct)));
+  if (!ranked.length) return { best: null, worst: null };
+  const best = ranked.slice().sort((a, b) => {
+    const an = Number(a?.netPnlPct);
+    const bn = Number(b?.netPnlPct);
+    if (Number.isFinite(bn) && Number.isFinite(an) && bn !== an) return bn - an;
+    const aw = Number(a?.winRatePct);
+    const bw = Number(b?.winRatePct);
+    if (Number.isFinite(bw) && Number.isFinite(aw) && bw !== aw) return bw - aw;
+    return Number(b?.closedTrades || 0) - Number(a?.closedTrades || 0);
+  })[0] || null;
+  const worst = ranked.slice().sort((a, b) => {
+    const an = Number(a?.netPnlPct);
+    const bn = Number(b?.netPnlPct);
+    if (Number.isFinite(bn) && Number.isFinite(an) && bn !== an) return an - bn;
+    const aw = Number(a?.winRatePct);
+    const bw = Number(b?.winRatePct);
+    if (Number.isFinite(bw) && Number.isFinite(aw) && bw !== aw) return aw - bw;
+    return Number(a?.closedTrades || 0) - Number(b?.closedTrades || 0);
+  })[0] || null;
+  return { best, worst };
+}
+
+function PaperControlRoomPanel({ runtime, safetyStatus, gateStatus, approvalPreview, allowlist }) {
+  const theme = useThemeMode();
+  const summary = runtime?.summary || {};
+  const strategyPerformance = runtime?.strategyPerformance || {};
+  const perfSummary = strategyPerformance?.summary || {};
+  const closedTrades = Array.isArray(runtime?.closedTrades) ? runtime.closedTrades : [];
+  const recentEvents = Array.isArray(runtime?.recentEvents) ? runtime.recentEvents : [];
+  const blockedCandidates = Array.isArray(runtime?.blockedCandidates) ? runtime.blockedCandidates : [];
+  const { best, worst } = bestStrategyFromPerformance(strategyPerformance);
+  const latestTrade = closedTrades[0] || null;
+  const latestEvent = recentEvents[0] || null;
+  const approvedStrategyIds = Array.isArray(allowlist?.approvedStrategyIds) && allowlist.approvedStrategyIds.length
+    ? allowlist.approvedStrategyIds
+    : Array.isArray(approvalPreview?.approvedStrategyIds)
+      ? approvalPreview.approvedStrategyIds
+      : [];
+  const gatePipeline = gateStatus?.pipeline || {};
+  const safety = safetyStatus?.status && typeof safetyStatus.status === 'object'
+    ? safetyStatus.status
+    : (runtime?.safety || {});
+  const blockers = useMemo(() => {
+    const blockedEvents = recentEvents.filter((row) => {
+      const type = String(row?.type || '').toUpperCase();
+      const status = String(row?.status || '').toLowerCase();
+      return Boolean(
+        row?.blockedReason
+        || ['blocked', 'skipped', 'caution'].includes(status)
+        || ['GATE_BLOCKED', 'TRADE_SKIPPED', 'MARKET_CLOSED', 'RISK_BLOCKED', 'RISK_PAUSE_TRIGGERED', 'SAFETY_BLOCKED', 'GATE_OBSERVE_ONLY'].includes(type),
+      );
+    });
+    const counts = countReasons([...blockedCandidates, ...blockedEvents]);
+    const categories = [
+      { key: 'market_session', label: 'market/session', match: /marknaden är stängd|market closed/i },
+      { key: 'mapping', label: 'strategy mapping', match: /inte kopplad till katalogstrategi|runtime-mapping kunde inte läsas|strategyId/i },
+      { key: 'crypto_volume', label: 'crypto volume gate', match: /Svag volym i crypto|normal volym i crypto/i },
+      { key: 'observe_only', label: 'observe-only', match: /EMA i crypto är pausad|observe only/i },
+      { key: 'risk_pause', label: 'risk pause', match: /consecutive_losses_limit|Systempaus/i },
+      { key: 'wait_status', label: 'wait-status', match: /status var Vänta|status var Jaga inte/i },
+    ];
+    const categorized = categories
+      .map((category) => ({
+        ...category,
+        count: counts.filter((row) => category.match.test(row.reason)).reduce((sum, row) => sum + row.count, 0),
+      }))
+      .filter((row) => row.count > 0);
+    return {
+      exactTop: counts.slice(0, 8),
+      categories: categorized,
+    };
+  }, [blockedCandidates, recentEvents]);
+  const latestTradeLabel = latestTrade
+    ? `${latestTrade.symbol || '–'} · ${latestTrade.strategy_id || 'unknown'} · ${latestTrade.result || '–'}`
+    : '–';
+  const latestEventLabel = latestEvent
+    ? `${latestEvent.type || '–'} · ${latestEvent.symbol || '–'} · ${latestEvent.reasonSv || latestEvent.blockedReason || latestEvent.result || '–'}`
+    : '–';
+  const closedCount = Number(summary.closedCount || 0);
+  const staleHours = summary.latestEventAt ? (Date.now() - new Date(summary.latestEventAt).getTime()) / 36e5 : null;
+  const sampleNote = closedCount < 30
+    ? `Learning-data är fortfarande liten (${closedCount} closed trades).`
+    : 'Learning-data är tillräcklig för att ge stabil riktning.';
+  const freshnessNote = Number.isFinite(staleHours)
+    ? (staleHours > 6
+      ? 'Runtime-data är äldre än 6 timmar.'
+      : 'Runtime-data är färsk.')
+    : 'Runtime-datafärskhet kan inte bedömas ännu.';
+  const recommendation = blockers.categories.length
+    ? `Systemet är säkert. Nya paper trades stoppas främst av ${blockers.categories.slice(0, 4).map((row) => row.label).join(', ')}. Nästa tekniska steg är att prioritera runtime-truth i Paper Trading och därefter strategy mapping. Ingen live trading-risk finns eftersom live trading är avstängt.`
+    : 'Systemet är säkert och paper-only. När marknad och gate öppnar ska nya paper-trades kunna passera om kandidat, mapping och risk tillåter det.';
+
+  return (
+    <div style={{
+      ...sectionStyle(),
+      borderColor: 'rgba(56, 189, 248, 0.22)',
+      background: 'linear-gradient(180deg, var(--surface) 0%, var(--surface-2) 100%)',
+    }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap', alignItems: 'flex-start' }}>
+        <div>
+          <h2 style={{ margin: 0, fontSize: 24 }}>Paper Control Room</h2>
+          <div style={{ ...mutedTextStyle(theme), marginTop: 4, fontSize: 13, lineHeight: 1.5 }}>
+            Samlad read-only truth för safety, runtime, gates, learning och nästa rekommenderade steg.
+          </div>
+        </div>
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+          <span style={statusPillStyle('success', theme)}>Paper only</span>
+          <span style={statusPillStyle('neutral', theme)}>Live off</span>
+          <span style={statusPillStyle('neutral', theme)}>Broker off</span>
+          <span style={statusPillStyle('neutral', theme)}>Real orders blocked</span>
+        </div>
+      </div>
+
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(170px, 1fr))', gap: 10, marginTop: 14 }}>
+        <div style={{ border: '1px solid var(--border)', borderRadius: 14, padding: 14, background: 'var(--surface)' }}>
+          <div style={{ ...mutedTextStyle(theme), fontSize: 11, textTransform: 'uppercase', letterSpacing: '0.08em' }}>Safety</div>
+          <div style={{ marginTop: 8, fontWeight: 900, color: 'var(--text)' }}>Paper only</div>
+          <div style={{ marginTop: 6, fontSize: 12, lineHeight: 1.5, color: 'var(--text)' }}>
+            actions_allowed={String(safety?.actions_allowed === true)}<br />
+            can_place_orders={String(safety?.can_place_orders === true)}<br />
+            live_trading_enabled={String(safety?.live_trading_enabled === true)}<br />
+            broker_enabled={String(safety?.broker_enabled === true)}
+          </div>
+        </div>
+        <div style={{ border: '1px solid var(--border)', borderRadius: 14, padding: 14, background: 'var(--surface)' }}>
+          <div style={{ ...mutedTextStyle(theme), fontSize: 11, textTransform: 'uppercase', letterSpacing: '0.08em' }}>Runtime</div>
+          <div style={{ marginTop: 8, fontWeight: 900, color: 'var(--text)' }}>{summary.openCount ?? 0} open · {summary.closedCount ?? 0} closed</div>
+          <div style={{ marginTop: 6, fontSize: 12, lineHeight: 1.5, color: 'var(--text)' }}>
+            blocked={summary.blockedCount ?? 0}<br />
+            latestEventAt={fmtTime(summary.latestEventAt)}
+          </div>
+        </div>
+        <div style={{ border: '1px solid var(--border)', borderRadius: 14, padding: 14, background: 'var(--surface)' }}>
+          <div style={{ ...mutedTextStyle(theme), fontSize: 11, textTransform: 'uppercase', letterSpacing: '0.08em' }}>Latest trade</div>
+          <div style={{ marginTop: 8, fontWeight: 900, color: 'var(--text)' }}>{latestTradeLabel}</div>
+          <div style={{ marginTop: 6, fontSize: 12, lineHeight: 1.5, color: 'var(--text)' }}>
+            opened={fmtTime(latestTrade?.opened_at)}<br />
+            closed={fmtTime(latestTrade?.closed_at)}
+          </div>
+        </div>
+        <div style={{ border: '1px solid var(--border)', borderRadius: 14, padding: 14, background: 'var(--surface)' }}>
+          <div style={{ ...mutedTextStyle(theme), fontSize: 11, textTransform: 'uppercase', letterSpacing: '0.08em' }}>Latest event</div>
+          <div style={{ marginTop: 8, fontWeight: 900, color: 'var(--text)' }}>{latestEvent?.type || '–'}</div>
+          <div style={{ marginTop: 6, fontSize: 12, lineHeight: 1.5, color: 'var(--text)' }}>
+            {latestEventLabel}
+            <br />
+            {fmtTime(latestEvent?.timestamp)}
+          </div>
+        </div>
+        <div style={{ border: '1px solid var(--border)', borderRadius: 14, padding: 14, background: 'var(--surface)' }}>
+          <div style={{ ...mutedTextStyle(theme), fontSize: 11, textTransform: 'uppercase', letterSpacing: '0.08em' }}>Approved strategies</div>
+          <div style={{ marginTop: 8, fontWeight: 900, color: 'var(--text)' }}>{approvedStrategyIds.length} godkända</div>
+          <div style={{ marginTop: 6, fontSize: 12, lineHeight: 1.5, color: 'var(--text)' }}>
+            preview accepted={approvalPreview?.accepted ?? '–'} · blocked={approvalPreview?.blocked ?? '–'}
+          </div>
+          <div style={{ marginTop: 10, display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+            {approvedStrategyIds.slice(0, 8).map((id) => (
+              <span key={id} style={statusPillStyle('info', theme, true)}>{id}</span>
+            ))}
+          </div>
+        </div>
+        <div style={{ border: '1px solid var(--border)', borderRadius: 14, padding: 14, background: 'var(--surface)' }}>
+          <div style={{ ...mutedTextStyle(theme), fontSize: 11, textTransform: 'uppercase', letterSpacing: '0.08em' }}>Learning</div>
+          <div style={{ marginTop: 8, fontWeight: 900, color: 'var(--text)' }}>{previewValue(perfSummary.winRatePct, '–')}% win rate</div>
+          <div style={{ marginTop: 6, fontSize: 12, lineHeight: 1.5, color: 'var(--text)' }}>
+            net pnl={previewNumber(perfSummary.netPnlPct, 2)}<br />
+            avg pnl={previewNumber(perfSummary.avgTradePct ?? perfSummary.avgPnlPct, 2)}
+          </div>
+        </div>
+      </div>
+
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 10, marginTop: 14 }}>
+        <div style={{ border: '1px solid var(--border)', borderRadius: 14, padding: 14, background: 'var(--surface-2)' }}>
+          <div style={{ fontWeight: 900, color: 'var(--text)' }}>Varför öppnas inga nya trades?</div>
+          <div style={{ marginTop: 8, display: 'grid', gap: 8 }}>
+            {blockers.categories.length ? blockers.categories.slice(0, 6).map((row) => (
+              <div key={row.key} style={{ display: 'flex', justifyContent: 'space-between', gap: 10, fontSize: 12, color: 'var(--text)' }}>
+                <span>{row.label}</span>
+                <strong>{row.count}</strong>
+              </div>
+            )) : (
+              <div style={{ fontSize: 12, color: 'var(--muted)' }}>Inga blockerande orsaker hittades i senaste fönstret.</div>
+            )}
+          </div>
+        </div>
+        <div style={{ border: '1px solid var(--border)', borderRadius: 14, padding: 14, background: 'var(--surface-2)' }}>
+          <div style={{ fontWeight: 900, color: 'var(--text)' }}>Exakta toppblockers</div>
+          <div style={{ marginTop: 8, display: 'grid', gap: 8 }}>
+            {blockers.exactTop.length ? blockers.exactTop.slice(0, 10).map((row) => (
+              <div key={row.reason} style={{ fontSize: 12, color: 'var(--text)', lineHeight: 1.45 }}>
+                <strong>{row.count}x</strong> {row.reason}
+              </div>
+            )) : (
+              <div style={{ fontSize: 12, color: 'var(--muted)' }}>Inga blockeringsskäl i senaste fönstret.</div>
+            )}
+          </div>
+        </div>
+        <div style={{ border: '1px solid var(--border)', borderRadius: 14, padding: 14, background: 'var(--surface-2)' }}>
+          <div style={{ fontWeight: 900, color: 'var(--text)' }}>Pipeline / gate</div>
+          <div style={{ marginTop: 8, display: 'grid', gap: 8, fontSize: 12, color: 'var(--text)' }}>
+            <div>scannerCandidatesToday: <strong>{gatePipeline.scannerCandidatesToday ?? '–'}</strong></div>
+            <div>qualifiesPassedToday: <strong>{gatePipeline.qualifiesPassedToday ?? '–'}</strong></div>
+            <div>marketGateAllowedToday: <strong>{gatePipeline.marketGateAllowedToday ?? '–'}</strong></div>
+            <div>tradesOpenedToday: <strong>{gatePipeline.tradesOpenedToday ?? '–'}</strong></div>
+            <div>last60m candidates: <strong>{gatePipeline?.last60m?.candidatesLast60m ?? '–'}</strong></div>
+            <div>last60m trades opened: <strong>{gatePipeline?.last60m?.tradesOpenedLast60m ?? '–'}</strong></div>
+          </div>
+        </div>
+        <div style={{ border: '1px solid var(--border)', borderRadius: 14, padding: 14, background: 'var(--surface-2)' }}>
+          <div style={{ fontWeight: 900, color: 'var(--text)' }}>Learning / strategy truth</div>
+          <div style={{ marginTop: 8, fontSize: 12, lineHeight: 1.55, color: 'var(--text)' }}>
+            {best ? (
+              <>
+                Bäst: <strong>{best.strategy_name || best.strategy_id || '–'}</strong> ({previewValue(best.winRatePct)}% win rate, {previewNumber(best.netPnlPct, 2)} net pnl)
+                <br />
+              </>
+            ) : null}
+            {worst ? (
+              <>
+                Svagast: <strong>{worst.strategy_name || worst.strategy_id || '–'}</strong> ({previewValue(worst.winRatePct)}% win rate, {previewNumber(worst.netPnlPct, 2)} net pnl)
+                <br />
+              </>
+            ) : null}
+            {sampleNote}
+            <br />
+            {freshnessNote}
+          </div>
+        </div>
+      </div>
+
+      <div style={{ marginTop: 14, padding: '12px 14px', borderRadius: 14, border: '1px solid var(--border)', background: 'var(--surface-2)', color: 'var(--text)', fontSize: 13, lineHeight: 1.6 }}>
+        <strong>Rekommenderat nästa steg:</strong> {recommendation}
       </div>
     </div>
   );
@@ -364,11 +1603,188 @@ function allowlistTone(status) {
   return 'neutral';
 }
 
+async function postPaperMarketConfig(patch) {
+  try {
+    const res = await fetch('/api/paper-trading/market-config', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      credentials: 'include',
+      body: JSON.stringify(patch),
+    });
+    const data = await res.json().catch(() => null);
+    if (!res.ok || !data || data.ok === false) {
+      throw new Error((data && data.error) || `HTTP ${res.status}`);
+    }
+    return data;
+  } catch (err) {
+    throw new Error(friendlyAllowlistError(err, 'Kunde inte spara paper market-config.'));
+  }
+}
+
+function PaperMarketsPanel({ refreshKey, onRefresh }) {
+  const theme = useThemeMode();
+  const [stateKey, setStateKey] = useState(0);
+  const [busy, setBusy] = useState(false);
+  const [message, setMessage] = useState(null);
+  const [confirm, setConfirm] = useState(null);
+  const configState = usePaperMarketConfig(refreshKey + stateKey);
+  const config = configState.data || {};
+  const cryptoEnabled = config.cryptoPaperEnabled !== false;
+  const equityEnabled = config.equityPaperEnabled !== false;
+
+  function ask(market, nextValue, label) {
+    setMessage(null);
+    setConfirm({ market, nextValue, label });
+  }
+
+  async function runAction() {
+    if (!confirm) return;
+    setBusy(true);
+    const patch = confirm.market === 'crypto'
+      ? { cryptoPaperEnabled: confirm.nextValue }
+      : { equityPaperEnabled: confirm.nextValue };
+    setConfirm(null);
+    setMessage(null);
+    try {
+      const result = await postPaperMarketConfig(patch);
+      setMessage({
+        type: 'ok',
+        text: result.changed === false
+          ? 'Inställningen var redan satt till samma värde.'
+          : 'Paper market-inställning uppdaterad. Endast nya paper trades påverkas.',
+      });
+      setStateKey((value) => value + 1);
+      onRefresh?.();
+    } catch (err) {
+      setMessage({ type: 'error', text: err?.message || 'Kunde inte uppdatera paper market.' });
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const toggleButton = (active, tone) => ({
+    appearance: 'none',
+    cursor: active ? 'default' : 'pointer',
+    border: `1px solid ${active ? 'var(--border)' : 'var(--border)'}`,
+    borderRadius: 999,
+    background: active ? 'var(--surface)' : 'var(--surface-2)',
+    color: tone === 'success' ? 'var(--success)' : tone === 'danger' ? 'var(--danger)' : 'var(--text)',
+    padding: '6px 10px',
+    fontSize: 12,
+    fontWeight: 800,
+    minWidth: 56,
+    opacity: active ? 1 : 0.92,
+  });
+
+  const rowStyle = {
+    display: 'flex',
+    justifyContent: 'space-between',
+    gap: 12,
+    alignItems: 'center',
+    padding: '12px 0',
+    borderTop: '1px solid var(--border)',
+  };
+
+  return (
+    <div style={sectionStyle()}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap', alignItems: 'flex-start', marginBottom: 10 }}>
+        <div>
+          <h2 style={{ margin: 0, fontSize: 18 }}>Paper markets</h2>
+          <div style={{ marginTop: 4, ...mutedTextStyle(theme), fontSize: 13, lineHeight: 1.5 }}>
+            Styr bara vilka signaler som får skapa nya paper trades. Inga riktiga order kan läggas.
+          </div>
+        </div>
+        <span style={statusPillStyle('info', theme)}>Endast nya paper trades</span>
+      </div>
+
+      <div style={rowStyle}>
+        <div>
+          <div style={{ fontWeight: 800, color: 'var(--text)' }}>Krypto paper</div>
+          <div style={{ ...mutedTextStyle(theme), fontSize: 12, marginTop: 3 }}>
+            {cryptoEnabled
+              ? 'Crypto-signaler kan skapa nya paper trades.'
+              : 'Crypto-signaler blockeras från nya paper trades.'}
+          </div>
+        </div>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+          <span style={statusPillStyle(cryptoEnabled ? 'success' : 'danger', theme, true)}>
+            {cryptoEnabled ? 'På' : 'Av'}
+          </span>
+          <button type="button" disabled={busy || cryptoEnabled} style={toggleButton(cryptoEnabled, 'success')} onClick={() => ask('crypto', true, 'Krypto paper')}>
+            På
+          </button>
+          <button type="button" disabled={busy || !cryptoEnabled} style={toggleButton(!cryptoEnabled, 'danger')} onClick={() => ask('crypto', false, 'Krypto paper')}>
+            Av
+          </button>
+        </div>
+      </div>
+
+      <div style={rowStyle}>
+        <div>
+          <div style={{ fontWeight: 800, color: 'var(--text)' }}>Aktier/QQQ paper</div>
+          <div style={{ ...mutedTextStyle(theme), fontSize: 12, marginTop: 3 }}>
+            {equityEnabled
+              ? 'Aktie/ETF/QQQ-signaler kan skapa nya paper trades.'
+              : 'Aktie/QQQ-signaler blockeras från nya paper trades.'}
+          </div>
+        </div>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+          <span style={statusPillStyle(equityEnabled ? 'success' : 'danger', theme, true)}>
+            {equityEnabled ? 'På' : 'Av'}
+          </span>
+          <button type="button" disabled={busy || equityEnabled} style={toggleButton(equityEnabled, 'success')} onClick={() => ask('equity', true, 'Aktier/QQQ paper')}>
+            På
+          </button>
+          <button type="button" disabled={busy || !equityEnabled} style={toggleButton(!equityEnabled, 'danger')} onClick={() => ask('equity', false, 'Aktier/QQQ paper')}>
+            Av
+          </button>
+        </div>
+      </div>
+
+      <div style={{ marginTop: 12, color: 'var(--muted)', fontSize: 12, lineHeight: 1.5 }}>
+        Crypto = symbol som slutar på <code>USDT</code>. Övriga symboler, inklusive <code>QQQ</code>, hanteras som aktier/ETF för paper runtime-universet.
+      </div>
+
+      {configState.error ? (
+        <div style={{ marginTop: 12, border: '1px solid var(--border)', borderRadius: 12, padding: 12, background: 'var(--surface-2)', color: 'var(--danger)', fontSize: 13 }}>
+          {configState.error}
+        </div>
+      ) : null}
+
+      {message ? (
+        <div style={{ marginTop: 12, border: '1px solid var(--border)', borderRadius: 12, padding: 12, background: 'var(--surface-2)', color: message.type === 'ok' ? 'var(--success)' : 'var(--danger)', fontSize: 13 }}>
+          {message.text}
+        </div>
+      ) : null}
+
+      {confirm ? (
+        <div style={{ marginTop: 12, border: '1px solid var(--border)', borderRadius: 12, padding: 12, background: 'var(--surface-2)', color: 'var(--text)' }}>
+          <div style={{ fontWeight: 800, marginBottom: 6 }}>Bekräfta ändring</div>
+          <div style={{ fontSize: 13, lineHeight: 1.5 }}>
+            Detta påverkar bara nya paper trades. Befintliga trades och historik påverkas inte.
+            <br />
+            {confirm.label}: {confirm.nextValue ? 'slå på' : 'slå av'}?
+          </div>
+          <div style={{ display: 'flex', gap: 8, marginTop: 10 }}>
+            <button type="button" disabled={busy} style={toggleButton(true, confirm.nextValue ? 'success' : 'danger')} onClick={runAction}>
+              Bekräfta
+            </button>
+            <button type="button" disabled={busy} style={toggleButton(true, 'neutral')} onClick={() => setConfirm(null)}>
+              Avbryt
+            </button>
+          </div>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
 async function postApproval(action, strategyId) {
   try {
     const res = await fetch(`/api/automation/approvals/${action}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
+      credentials: 'include',
       body: JSON.stringify({ strategyId, reason: 'manual_ui_admin' }),
     });
     const data = await res.json().catch(() => null);
@@ -386,6 +1802,7 @@ async function postPaperAllowlistConfig(maxApproved) {
     const res = await fetch('/api/automation/paper-allowlist/config', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
+      credentials: 'include',
       body: JSON.stringify({ maxApproved, reason: 'manual_ui_config' }),
     });
     const data = await res.json().catch(() => null);
@@ -399,6 +1816,7 @@ async function postPaperAllowlistConfig(maxApproved) {
 }
 
 function PaperAllowlistManager({ runtime, allowlist, refreshKey, onRefresh }) {
+  const theme = useThemeMode();
   const [approvals, setApprovals] = useState(null);
   const [config, setConfig] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -516,10 +1934,18 @@ function PaperAllowlistManager({ runtime, allowlist, refreshKey, onRefresh }) {
   const btnStyle = (disabled, tone) => ({
     appearance: 'none',
     cursor: disabled ? 'not-allowed' : 'pointer',
-    opacity: disabled ? 0.5 : 1,
+    opacity: disabled ? 0.72 : 1,
     border: '1px solid var(--border)',
-    background: tone === 'danger' ? 'rgba(239,68,68,0.12)' : 'rgba(34,197,94,0.12)',
-    color: tone === 'danger' ? '#ef4444' : '#22c55e',
+    background: tone === 'danger'
+      ? 'var(--surface-2)'
+      : tone === 'ok'
+        ? 'var(--surface-2)'
+        : 'var(--surface-2)',
+    color: tone === 'danger'
+      ? 'var(--danger)'
+      : tone === 'ok'
+        ? 'var(--success)'
+        : 'var(--text)',
     fontWeight: 700,
     fontSize: 12,
     padding: '6px 10px',
@@ -529,7 +1955,7 @@ function PaperAllowlistManager({ runtime, allowlist, refreshKey, onRefresh }) {
   return (
     <div className="allowlist-panel" style={sectionStyle()}>
       <div style={{ fontSize: 16, fontWeight: 800, marginBottom: 4 }}>Paper Allowlist Manager</div>
-      <div style={{ fontSize: 12, color: '#94a3b8', lineHeight: 1.5, marginBottom: 10 }}>
+      <div style={{ fontSize: 12, ...mutedTextStyle(theme), lineHeight: 1.5, marginBottom: 10 }}>
         Paper allowlist styrs manuellt av dig. Systemet får inte automatiskt lägga till eller ta bort strategier — det får bara visa rekommendationer. Detta gäller endast låtsashandel/paper trading; inga riktiga order kan läggas.
       </div>
 
@@ -539,14 +1965,14 @@ function PaperAllowlistManager({ runtime, allowlist, refreshKey, onRefresh }) {
         <MetricCard label="Säkerhetsläge" value={paperOnly ? 'paper_only' : 'OKÄND'} tone={paperOnly ? 'good' : 'bad'} note="actions_allowed=false" />
       </div>
 
-      <div style={{ ...sectionStyle(), marginTop: 12, marginBottom: 12, background: 'rgba(15,23,42,0.55)' }}>
+      <div style={{ ...sectionStyle(), marginTop: 12, marginBottom: 12, background: 'var(--surface-2)' }}>
         <div style={{ fontWeight: 800, marginBottom: 6 }}>Styr maxgränsen manuellt</div>
-        <div style={{ fontSize: 12, color: '#94a3b8', marginBottom: 10 }}>
+        <div style={{ fontSize: 12, ...mutedTextStyle(theme), marginBottom: 10 }}>
           Paper allowlist styrs manuellt av dig. Systemet får inte automatiskt lägga till eller ta bort strategier. Detta ändrar bara hur många strategier som får vara godkända för låtsashandel. Det skapar inga trades.
         </div>
         <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10, alignItems: 'center' }}>
           <label style={{ display: 'flex', flexDirection: 'column', gap: 6, minWidth: 220 }}>
-            <span style={{ fontSize: 11, color: '#94a3b8', textTransform: 'uppercase', letterSpacing: '0.08em' }}>Nuvarande maxApproved</span>
+            <span style={{ fontSize: 11, ...mutedTextStyle(theme), textTransform: 'uppercase', letterSpacing: '0.08em' }}>Nuvarande maxApproved</span>
             <select
               value={draftMaxApproved}
               onChange={(e) => setDraftMaxApproved(e.target.value)}
@@ -554,7 +1980,7 @@ function PaperAllowlistManager({ runtime, allowlist, refreshKey, onRefresh }) {
                 border: '1px solid var(--border)',
                 borderRadius: 10,
                 background: 'var(--surface)',
-                color: 'inherit',
+                color: 'var(--text)',
                 padding: '10px 12px',
                 fontSize: 14,
               }}
@@ -564,7 +1990,7 @@ function PaperAllowlistManager({ runtime, allowlist, refreshKey, onRefresh }) {
               ))}
             </select>
           </label>
-          <div style={{ fontSize: 12, color: '#94a3b8' }}>
+          <div style={{ fontSize: 12, ...mutedTextStyle(theme) }}>
             Max tillåtet: {hardMaxApproved}. Senast sparat: {num(config?.maxApproved ?? approvals?.maxApproved) || '–'}.
           </div>
           <button
@@ -579,13 +2005,13 @@ function PaperAllowlistManager({ runtime, allowlist, refreshKey, onRefresh }) {
       </div>
 
       {message ? (
-        <div style={{ ...sectionStyle(), marginBottom: 12, borderColor: message.type === 'ok' ? 'rgba(34,197,94,0.45)' : 'rgba(239,68,68,0.45)', color: message.type === 'ok' ? '#22c55e' : '#ef4444' }}>
+        <div style={{ ...sectionStyle(), marginBottom: 12, borderColor: message.type === 'ok' ? 'rgba(34,197,94,0.22)' : 'rgba(239,68,68,0.22)', background: 'var(--surface-2)', color: message.type === 'ok' ? 'var(--success)' : 'var(--danger)' }}>
           {message.text}
         </div>
       ) : null}
 
       {confirm ? (
-        <div style={{ ...sectionStyle(), marginBottom: 12, borderColor: 'rgba(56,189,248,0.45)' }}>
+        <div style={{ ...sectionStyle(), marginBottom: 12, borderColor: 'rgba(56,189,248,0.22)', background: 'var(--surface-2)' }}>
           <div style={{ marginBottom: 8 }}>
             {confirm.kind === 'config'
               ? `Detta ändrar bara hur många strategier som får vara godkända för låtsashandel. Det skapar inga trades.`
@@ -600,28 +2026,28 @@ function PaperAllowlistManager({ runtime, allowlist, refreshKey, onRefresh }) {
         </div>
       ) : null}
 
-      {loading ? <div style={{ color: '#94a3b8' }}>Hämtar allowlist...</div> : null}
+      {loading ? <div style={mutedTextStyle(theme)}>Hämtar allowlist...</div> : null}
 
       {approvalsState.error ? (
-        <div style={{ ...sectionStyle(), marginBottom: 12, borderColor: 'rgba(239,68,68,0.45)', color: '#ef4444' }}>
+        <div style={{ ...sectionStyle(), marginBottom: 12, borderColor: 'rgba(239,68,68,0.22)', background: 'var(--surface-2)', color: 'var(--danger)' }}>
           {approvalsState.error}
         </div>
       ) : null}
 
       {configState.error ? (
-        <div style={{ ...sectionStyle(), marginBottom: 12, borderColor: 'rgba(239,68,68,0.45)', color: '#ef4444' }}>
+        <div style={{ ...sectionStyle(), marginBottom: 12, borderColor: 'rgba(239,68,68,0.22)', background: 'var(--surface-2)', color: 'var(--danger)' }}>
           {configState.error}
         </div>
       ) : null}
 
       {config?.warning ? (
-        <div style={{ ...sectionStyle(), marginBottom: 12, borderColor: 'rgba(245, 158, 11, 0.45)', color: '#fbbf24' }}>
+        <div style={{ ...sectionStyle(), marginBottom: 12, borderColor: 'rgba(245, 158, 11, 0.22)', background: 'var(--surface-2)', color: 'var(--warning)' }}>
           Allowlist-config saknade eller var trasig. Fallback {maxApproved || 4} används tills den sparas igen.
         </div>
       ) : null}
 
       {!paperOnly && !loading ? (
-        <div style={{ ...sectionStyle(), borderColor: 'rgba(239,68,68,0.45)', color: '#ef4444' }}>
+        <div style={{ ...sectionStyle(), borderColor: 'rgba(239,68,68,0.22)', background: 'var(--surface-2)', color: 'var(--danger)' }}>
           Säkerhetsläget kunde inte bekräftas som paper_only — åtgärder är dolda.
         </div>
       ) : null}
@@ -632,7 +2058,7 @@ function PaperAllowlistManager({ runtime, allowlist, refreshKey, onRefresh }) {
           {approvedRows.length > 0 ? (
             <div style={{ overflowX: 'auto', marginBottom: 14 }}>
               <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 640 }}>
-                <thead><tr>{['Strategy id', 'Namn', 'Runtime ready', 'Events (fönster)', 'Senaste aktivitet', ''].map((l) => <th key={l} style={{ ...cellStyle(), color: '#94a3b8' }}>{l}</th>)}</tr></thead>
+                <thead><tr>{['Strategy id', 'Namn', 'Runtime ready', 'Events (fönster)', 'Senaste aktivitet', ''].map((l) => <th key={l} style={{ ...cellStyle(), ...mutedTextStyle(theme) }}>{l}</th>)}</tr></thead>
                 <tbody>
                   {approvedRows.map((r) => (
                     <tr key={r.id} className={`allowlist-row allowlist-row-approved allowlist-row-${allowlistTone(r.allowlistStatus)}`}>
@@ -649,16 +2075,16 @@ function PaperAllowlistManager({ runtime, allowlist, refreshKey, onRefresh }) {
                 </tbody>
               </table>
             </div>
-          ) : <div style={{ color: '#94a3b8', marginBottom: 14 }}>Inga godkända strategier ännu.</div>}
+          ) : <div style={{ ...mutedTextStyle(theme), marginBottom: 14 }}>Inga godkända strategier ännu.</div>}
 
           <div style={{ fontWeight: 800, marginBottom: 6 }}>Icke-godkända strategier med aktivitet</div>
-          <div style={{ fontSize: 11.5, color: '#94a3b8', marginBottom: 6 }}>
+          <div style={{ fontSize: 11.5, ...mutedTextStyle(theme), marginBottom: 6 }}>
             Sorterade efter antal blockeringar. {slotFree ? '' : 'Max antal godkända är nått — ta bort en strategi först eller höj maxgränsen. '}Om godkännande nekas visas exakt orsak från servern (t.ex. svag strategi eller maxgräns).
           </div>
           {nonApproved.length > 0 ? (
             <div style={{ overflowX: 'auto' }}>
               <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 760 }}>
-                <thead><tr>{['Strategy id', 'Namn', 'Blockeringar', 'Senaste orsak', 'Senaste aktivitet', ''].map((l) => <th key={l} style={{ ...cellStyle(), color: '#94a3b8' }}>{l}</th>)}</tr></thead>
+                <thead><tr>{['Strategy id', 'Namn', 'Blockeringar', 'Senaste orsak', 'Senaste aktivitet', ''].map((l) => <th key={l} style={{ ...cellStyle(), ...mutedTextStyle(theme) }}>{l}</th>)}</tr></thead>
                 <tbody>
                   {nonApproved.map((r) => (
                     <tr key={r.id} className={`allowlist-row allowlist-row-${allowlistTone(r.allowlistStatus)}`}>
@@ -679,7 +2105,7 @@ function PaperAllowlistManager({ runtime, allowlist, refreshKey, onRefresh }) {
                 </tbody>
               </table>
             </div>
-          ) : <div style={{ color: '#94a3b8' }}>Inga icke-godkända strategier med aktivitet i fönstret.</div>}
+          ) : <div style={mutedTextStyle(theme)}>Inga icke-godkända strategier med aktivitet i fönstret.</div>}
         </>
       ) : null}
     </div>
@@ -687,23 +2113,79 @@ function PaperAllowlistManager({ runtime, allowlist, refreshKey, onRefresh }) {
 }
 
 export default function PaperTradingPage() {
+  const theme = useThemeMode();
   const [refreshKey, setRefreshKey] = useState(0);
+  const [marketRefreshKey, setMarketRefreshKey] = useState(0);
+  const safetyState = useSafetyStatus(refreshKey);
+  const gateStatusState = useGateStatus(refreshKey);
+  const approvalPreviewState = useApprovalPreview(refreshKey);
+  const tradingViewBlueprintState = useTradingViewBlueprints(refreshKey);
   const runtimeState = usePaperRuntime(50);
+  const explanationsState = useTradeExplanations(50);
+  const lossReviewState = useLossReviewQueue(refreshKey);
   const allowlistState = usePaperAllowlist(refreshKey);
+  const [expandedTradeKey, setExpandedTradeKey] = useState(null);
+  const [lossReviewPreview, setLossReviewPreview] = useState({ loadingGroupId: null, groupId: null, data: null, error: null });
   const runtime = runtimeState.data;
   const summary = runtime?.summary || {};
+  const explanationsByKey = useMemo(() => {
+    const map = new Map();
+    const items = Array.isArray(explanationsState.data?.items) ? explanationsState.data.items : [];
+    items.forEach((item) => {
+      const key = tradeLookupKey(item);
+      if (key) map.set(key, item);
+    });
+    return map;
+  }, [explanationsState.data]);
   const warnings = useMemo(() => {
     const list = [];
     if (runtimeState.error) list.push(`Paper runtime tillfälligt otillgängligt: ${runtimeState.error}`);
+    if (explanationsState.error) list.push(`Trade explanations tillfälligt otillgängligt: ${explanationsState.error}`);
+    if (lossReviewState.error) list.push(`Loss review queue tillfälligt otillgängligt: ${lossReviewState.error}`);
     if (runtime?.status === 'degraded') list.push(`Degraded read-only data: ${(runtime.warnings || []).join(', ') || 'okänd källa'}`);
     return list;
-  }, [runtimeState.error, runtime]);
+  }, [explanationsState.error, lossReviewState.error, runtimeState.error, runtime]);
 
   const openTrades = runtime?.openTrades || [];
   const closedTrades = runtime?.closedTrades || [];
   const blockedCandidates = runtime?.blockedCandidates || [];
   const recentEvents = runtime?.recentEvents || [];
   const strategies = runtime?.strategies || [];
+  const dailySelectionPreview = runtime?.dailySelectionPreview || null;
+  const selectedClosedTrade = useMemo(() => {
+    if (!expandedTradeKey) return null;
+    return closedTrades.find((row) => {
+      const key = tradeLookupKey(row);
+      return key === expandedTradeKey;
+    }) || null;
+  }, [closedTrades, expandedTradeKey]);
+  const closedTradeExplanation = expandedTradeKey ? explanationsByKey.get(expandedTradeKey) || null : null;
+  const selectedLookup = useTradeExplanationLookup(
+    selectedClosedTrade,
+    Boolean(expandedTradeKey && selectedClosedTrade && !closedTradeExplanation),
+  );
+  const selectedLookupData = selectedLookup.data;
+  const selectedLookupExplanation = selectedLookupData?.found ? selectedLookupData.tradeExplanation : null;
+  const selectedLookupDiagnosis = selectedLookupData?.found === false ? selectedLookupData.diagnosis : null;
+  const activeClosedTradeExplanation = closedTradeExplanation || selectedLookupExplanation || null;
+
+  async function loadLossReviewPreview(groupId) {
+    const id = String(groupId || '').trim();
+    if (!id) return;
+    setLossReviewPreview({ loadingGroupId: id, groupId: id, data: null, error: null });
+    try {
+      const data = await fetchJsonWithTimeout(`/api/paper-trading/loss-review-queue/${encodeURIComponent(id)}/test-preview`);
+      if (!data?.ok) throw new Error(data?.error || 'Kunde inte bygga loss-review preview.');
+      setLossReviewPreview({ loadingGroupId: null, groupId: id, data, error: null });
+    } catch (err) {
+      setLossReviewPreview({
+        loadingGroupId: null,
+        groupId: id,
+        data: null,
+        error: friendlyLossReviewError(err, 'Loss review preview är tillfälligt otillgängligt.'),
+      });
+    }
+  }
 
   return (
     <div className="page-wrap">
@@ -714,11 +2196,37 @@ export default function PaperTradingPage() {
         </div>
       </div>
 
+      <PaperControlRoomPanel
+        runtime={runtime}
+        safetyStatus={safetyState.data}
+        gateStatus={gateStatusState.data}
+        approvalPreview={approvalPreviewState.data}
+        allowlist={allowlistState.data}
+      />
+
       <SafetyBanner safety={runtime?.safety || runtime} />
+
+      <PaperMarketsPanel refreshKey={marketRefreshKey} onRefresh={() => setMarketRefreshKey((t) => t + 1)} />
+
+      <DailySelectionPreviewPanel preview={dailySelectionPreview} />
 
       <WhyNoTradesPanel runtime={runtime} allowlist={allowlistState.data} />
 
       <PaperAllowlistManager runtime={runtime} allowlist={allowlistState.data} refreshKey={refreshKey} onRefresh={() => setRefreshKey((t) => t + 1)} />
+
+      {tradingViewBlueprintState.loading && !tradingViewBlueprintState.data ? (
+        <div style={sectionStyle()}>Hämtar TradingView Test Blueprint...</div>
+      ) : null}
+
+      {tradingViewBlueprintState.error ? (
+        <div style={{ ...sectionStyle(), borderColor: 'rgba(245, 158, 11, 0.22)', background: 'var(--surface-2)' }}>
+          <div style={{ color: 'var(--warning)', fontWeight: 700 }}>{tradingViewBlueprintState.error}</div>
+        </div>
+      ) : null}
+
+      <TradingViewTestBlueprintPanel data={tradingViewBlueprintState.data} theme={theme} />
+
+      <TradingViewTestResultsPanel theme={theme} />
 
       <PaperCandidatePanel mode="paper" />
 
@@ -727,9 +2235,9 @@ export default function PaperTradingPage() {
       ) : null}
 
       {warnings.length ? (
-        <div style={{ ...sectionStyle(), borderColor: 'rgba(245, 158, 11, 0.45)' }}>
+        <div style={{ ...sectionStyle(), borderColor: 'rgba(245, 158, 11, 0.22)', background: 'var(--surface-2)' }}>
           {warnings.map((warning) => (
-            <div key={warning} style={{ color: '#fbbf24', marginBottom: 6 }}>{warning}</div>
+            <div key={warning} style={{ color: 'var(--warning)', marginBottom: 6 }}>{warning}</div>
           ))}
         </div>
       ) : null}
@@ -758,7 +2266,7 @@ export default function PaperTradingPage() {
         subtitle={`Senaste closed trades. Total closed i runtime: ${summary.closedCount ?? 0}`}
         rows={closedTrades}
         emptyText="Inga stängda paper trades ännu."
-        rowKey={(row, index) => row.tradeId || `${row.symbol}-${index}`}
+        rowKey={(row, index) => tradeLookupKey(row) || `${row.symbol}-${index}`}
         columns={[
           { key: 'symbol', label: 'Symbol' },
           { key: 'strategy_id', label: 'Canonical strategy_id' },
@@ -769,8 +2277,84 @@ export default function PaperTradingPage() {
           { key: 'closed_at', label: 'Closed', render: (row) => fmtTime(row.closed_at) },
           { key: 'source', label: 'Source' },
           { key: 'paperOnly', label: 'paperOnly', render: (row) => String(row.paperOnly === true) },
+          {
+            key: 'why',
+            label: 'Why',
+            render: (row) => {
+              const key = tradeLookupKey(row);
+              const isOpen = expandedTradeKey === key;
+              return (
+                <button
+                  type="button"
+                  onClick={() => setExpandedTradeKey(isOpen ? null : key)}
+                  style={{
+                    ...explanationBadgeStyle(isOpen ? 'info' : 'neutral'),
+                    cursor: 'pointer',
+                    whiteSpace: 'nowrap',
+                    border: isOpen ? '1px solid rgba(56,189,248,0.22)' : '1px solid var(--border)',
+                  }}
+                >
+                  {isOpen ? 'Dölj' : 'Visa varför'}
+                </button>
+              );
+            },
+          },
         ]}
       />
+      <LossReviewQueuePanel
+        review={lossReviewState.data}
+        loading={lossReviewState.loading}
+        error={lossReviewState.error}
+        theme={theme}
+        previewState={lossReviewPreview}
+        onPreviewGroup={loadLossReviewPreview}
+      />
+      {expandedTradeKey ? (
+        <div style={{ marginTop: -10, marginBottom: 18 }}>
+          {activeClosedTradeExplanation ? (
+            <>
+              <ClosedTradeExplanationPanel explanation={activeClosedTradeExplanation} trade={selectedClosedTrade} theme={theme} />
+              <EntryQualityGatePanel gate={activeClosedTradeExplanation.entryQualityGate} theme={theme} />
+            </>
+          ) : selectedLookup.loading ? (
+            <div style={{ ...sectionStyle(), borderColor: 'rgba(56,189,248,0.18)', background: 'var(--surface-2)' }}>
+              <strong>Hämtar förklaring...</strong>
+              <div style={{ marginTop: 4, ...mutedTextStyle(theme), fontSize: 13 }}>
+                Läser read-only historik för att matcha traden mot loggen.
+              </div>
+            </div>
+          ) : selectedLookup.error ? (
+            <div style={{ ...sectionStyle(), borderColor: 'rgba(245, 158, 11, 0.18)', background: 'var(--surface-2)' }}>
+              <strong>Trade explanations tillfälligt otillgängligt</strong>
+              <div style={{ marginTop: 4, ...mutedTextStyle(theme), fontSize: 13 }}>
+                {selectedLookup.error}
+              </div>
+            </div>
+          ) : selectedLookupDiagnosis ? (
+            <div style={{ ...sectionStyle(), borderColor: 'rgba(245, 158, 11, 0.18)', background: 'var(--surface-2)' }}>
+              <strong>Förklaring saknas för denna trade eftersom äldre logg saknar matchande ID/tid.</strong>
+              <div style={{ marginTop: 4, ...mutedTextStyle(theme), fontSize: 13, lineHeight: 1.5 }}>
+                Orsak: {explanationValue(selectedLookupDiagnosis.reason)}
+                <br />
+                Sökt symbol: {explanationValue(selectedLookupDiagnosis.searchedSymbol)}
+                <br />
+                Sökt strategyId: {explanationValue(selectedLookupDiagnosis.searchedStrategyId)}
+                <br />
+                Sökt openedAt: {explanationValue(selectedLookupDiagnosis.searchedOpenedAt)}
+                <br />
+                Tillgänglig närmaste match: {selectedLookupDiagnosis.availableClosestMatch ? `${selectedLookupDiagnosis.availableClosestMatch.symbol} · ${selectedLookupDiagnosis.availableClosestMatch.strategyId || 'unknown'} · ${fmtTime(selectedLookupDiagnosis.availableClosestMatch.openedAt)}` : 'ingen'}
+              </div>
+            </div>
+          ) : (
+            <div style={{ ...sectionStyle(), borderColor: 'rgba(245, 158, 11, 0.18)', background: 'var(--surface-2)' }}>
+              <strong>Saknas i loggning</strong>
+              <div style={{ marginTop: 4, ...mutedTextStyle(theme), fontSize: 13 }}>
+                Trade-explanation kunde inte matchas mot historiken. Kontrollera tradeId eller symbol + strategyId + openedAt.
+              </div>
+            </div>
+          )}
+        </div>
+      ) : null}
 
       <DataTable
         title="Blocked candidates"
