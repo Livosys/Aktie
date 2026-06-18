@@ -10,10 +10,15 @@
  */
 
 const fs = require('fs');
+const crypto = require('crypto');
 const path = require('path');
 
+const automationPlanService = require('./automationPlanService');
+const paperAllowlistService = require('./paperAllowlistService');
 const strategyCatalog = require('./daytradingStrategyCatalogService');
 const strategyIdNormalizer = require('./strategyIdNormalizerService');
+const strategyRuntimeMatrixService = require('./strategyRuntimeMatrixService');
+const tradeStats = require('./tradeStatsService');
 
 const ROOT = path.resolve(__dirname, '../..');
 const DEFAULT_FILES = Object.freeze({
@@ -21,6 +26,9 @@ const DEFAULT_FILES = Object.freeze({
   events: path.join(ROOT, 'data/paper-trading/events.jsonl'),
   gateDecisions: path.join(ROOT, 'data/paper-trading/gate-decisions.jsonl'),
   state: path.join(ROOT, 'data/paper-trading/state.json'),
+  learningOutcomes: path.join(ROOT, 'data/daytrading-learning/outcomes.jsonl'),
+  optimizationCandidates: path.join(ROOT, 'data/optimization/paper-candidates.jsonl'),
+  optimizationLatest: path.join(ROOT, 'data/optimization/latest.json'),
 });
 
 const SAFETY = Object.freeze({
@@ -74,6 +82,110 @@ function eventTime(row = {}) {
 
 function newestFirst(a, b) {
   return String(eventTime(b) || '').localeCompare(String(eventTime(a) || ''));
+}
+
+function todayIsoDate(value = new Date()) {
+  return new Date(value).toISOString().slice(0, 10);
+}
+
+function stableHash(input) {
+  return crypto.createHash('sha256').update(String(input || '')).digest('hex');
+}
+
+function safeText(value, fallback = '–') {
+  const out = text(value, '');
+  return out ? out : fallback;
+}
+
+function safeNumberText(value, decimals = 2) {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return '–';
+  return n.toFixed(decimals);
+}
+
+function sourceRank(source) {
+  const raw = String(source || '').toLowerCase();
+  if (raw.includes('paper_trade')) return 0;
+  if (raw.includes('trade')) return 1;
+  if (raw.includes('learning')) return 2;
+  if (raw.includes('optimization')) return 3;
+  if (raw.includes('plan')) return 4;
+  return 5;
+}
+
+function normalizeCandidateSymbol(row = {}) {
+  return text(
+    row.symbol
+    || row.traded_symbol
+    || row.underlying_symbol
+    || row.testedConfig?.symbol
+    || row.appliedConfig?.symbol
+    || null,
+  );
+}
+
+function normalizeCandidateStrategyId(row = {}) {
+  return text(
+    row.strategy_id
+    || row.strategyId
+    || row.resolvedStrategyId
+    || row.sourceStrategyId
+    || row.affected_strategy
+    || null,
+  );
+}
+
+function blockedActivityReason(row = {}, cooldowns = {}, nowMs = Date.now()) {
+  const strategyId = normalizeCandidateStrategyId(row);
+  const symbol = normalizeCandidateSymbol(row);
+  const timestamp = eventTime(row);
+  const eventTs = timestamp ? new Date(timestamp).getTime() : NaN;
+  if (!strategyId) return 'missing_strategy_id';
+  if (!row.runtime_status && !row.paperRuntimeStatus && row.type && /UNKNOWN/i.test(String(row.type))) return 'unknown_runtime_matrix';
+  if (Array.isArray(row.riskBlockReasons) && row.riskBlockReasons.length > 0) return 'risk_blocked';
+  if (String(row.type || '').toUpperCase().includes('BLOCKED')) return 'blocked';
+  if (String(row.type || '').toUpperCase().includes('SKIPPED')) return 'skipped';
+  if (String(row.type || '').toUpperCase().includes('OBSERVE_ONLY')) return 'observe_only';
+  if (symbol && cooldowns && cooldowns[symbol]) {
+    const cooldownAt = new Date(cooldowns[symbol]).getTime();
+    if (Number.isFinite(cooldownAt) && Number.isFinite(eventTs) && eventTs <= cooldownAt && cooldownAt > nowMs) {
+      return 'cooldown';
+    }
+  }
+  return null;
+}
+
+function normalizationSourceName(row = {}) {
+  return text(row.source || row.sourceKind || row.sourceLabel || row.mode || row.event || row.type || row.reasonSv || null);
+}
+
+function candidateCandidateId(row = {}) {
+  return text(
+    row.candidateId
+    || row.recommendationId
+    || row.eventId
+    || row.event_id
+    || row.tradeId
+    || row.trade_id
+    || `${normalizeCandidateStrategyId(row) || 'unknown'}:${normalizeCandidateSymbol(row) || 'unknown'}:${eventTime(row) || ''}`,
+  );
+}
+
+function parseStrategyName(row = {}, fallback = null) {
+  return text(row.strategyName || row.strategy_name || row.name || row.strategy_name_sv || fallback);
+}
+
+function parseReason(row = {}, fallback = null) {
+  return text(
+    row.reasonSv
+    || row.reason_sv
+    || row.reason
+    || row.blockedReason
+    || row.exitReason
+    || row.result
+    || fallback,
+    fallback,
+  );
 }
 
 function readJson(file, fallback) {
@@ -371,6 +483,323 @@ function buildStrategies(openTrades, closedTrades, blockedCandidates, recentEven
     .sort((a, b) => String(b.latestEventAt || '').localeCompare(String(a.latestEventAt || '')));
 }
 
+/**
+ * Read-only per-strategy risk/reward quality from CLOSED paper trades.
+ *
+ * Groups normalized closed trades by canonical strategy_id (null → 'unknown')
+ * and computes risk/reward metrics via tradeStatsService.computeRiskReward.
+ * Purely additive analysis: it never mutates state, places orders or changes
+ * allowlist decisions. A broken group can never crash the endpoint — each
+ * computation is fault-isolated and falls back to an empty metric object.
+ */
+function buildStrategyPerformance(closedTrades) {
+  const groups = new Map();
+  for (const trade of arr(closedTrades)) {
+    const key = trade.strategy_id || 'unknown';
+    if (!groups.has(key)) {
+      groups.set(key, { strategy_id: trade.strategy_id || null, strategy_name: trade.strategy_name || null, rows: [] });
+    }
+    const group = groups.get(key);
+    if (!group.strategy_name && trade.strategy_name) group.strategy_name = trade.strategy_name;
+    group.rows.push(trade);
+  }
+
+  const strategies = [...groups.entries()].map(([key, group]) => {
+    let metrics;
+    try { metrics = tradeStats.computeRiskReward(group.rows); } catch (_) { metrics = {}; }
+    const safeMetrics = metrics && typeof metrics === 'object' ? metrics : {};
+    let statusLabel;
+    try { statusLabel = tradeStats.riskRewardStatusLabel(safeMetrics); } catch (_) { statusLabel = 'Neutral – granska manuellt'; }
+    return {
+      strategy_id: group.strategy_id,
+      strategy_key: key,
+      strategy_name: group.strategy_name || (key === 'unknown' ? 'Okänd strategi' : key),
+      ...safeMetrics,
+      statusLabel,
+      ...SAFETY,
+    };
+  });
+
+  // Sort: highest risk first (lossToWinRatio desc, nulls last), then worst net
+  // PnL first (netPnlPct asc), then most data first (closedTrades desc).
+  strategies.sort((a, b) => {
+    const al = (a.lossToWinRatio === null || a.lossToWinRatio === undefined) ? -Infinity : a.lossToWinRatio;
+    const bl = (b.lossToWinRatio === null || b.lossToWinRatio === undefined) ? -Infinity : b.lossToWinRatio;
+    if (bl !== al) return bl - al;
+    const anet = (a.netPnlPct === null || a.netPnlPct === undefined) ? 0 : a.netPnlPct;
+    const bnet = (b.netPnlPct === null || b.netPnlPct === undefined) ? 0 : b.netPnlPct;
+    if (anet !== bnet) return anet - bnet;
+    return (Number(b.closedTrades) || 0) - (Number(a.closedTrades) || 0);
+  });
+
+  let overall = {};
+  try { overall = tradeStats.computeRiskReward(arr(closedTrades)); } catch (_) { overall = {}; }
+  let avgLossVsWinMultiple = null;
+  if (overall && overall.avgWinPct && overall.avgLossPct) {
+    avgLossVsWinMultiple = Math.round((Math.abs(overall.avgLossPct) / overall.avgWinPct) * 100) / 100;
+  }
+
+  return {
+    strategies,
+    summary: {
+      ...overall,
+      avgLossVsWinMultiple,
+      strategyCount: strategies.length,
+      ...SAFETY,
+    },
+  };
+}
+
+function normalizeLearningOutcome(row = {}) {
+  const strategy = strategyMeta(row);
+  return {
+    eventId: text(row.id || row.event_id || row.trade_id || row.timestamp),
+    type: text(row.type || 'paper_trade'),
+    timestamp: eventTime(row),
+    symbol: text(row.symbol || row.traded_symbol || row.underlying_symbol),
+    source: text(row.source || 'daytrading-learning'),
+    strategy_id: strategy.strategy_id,
+    strategy_name: strategy.strategy_name,
+    setup: text(row.signal_subtype || row.raw_strategy || row.signal_type || row.strategy),
+    confidence: num(row.confidence),
+    score: num(row.score ?? row.underlying_signal_strength),
+    result: text(row.outcome || row.status || row.result?.outcome || null),
+    pnlPct: num(row.pnl_percent ?? row.paper_pnl_percent ?? row.pnl ?? row.result?.pnl_pct),
+    blockedReason: null,
+    reason: text(row.exit_reason || row.extra?.recommendation || row.result?.outcome || null),
+    paperOnly: true,
+    ...SAFETY,
+  };
+}
+
+function resolveSymbolFromDisplayName(displayName) {
+  const value = text(displayName, '');
+  if (!value) return null;
+  const parts = value.split('·').map((part) => part.trim()).filter(Boolean);
+  return parts.length > 1 ? parts[parts.length - 1] : null;
+}
+
+function resolveOptimizationLatestSymbol(latest = {}, strategyId = null) {
+  const best = latest?.daytradingStrategies?.bestStrategy || null;
+  if (best && (!strategyId || best.strategy_id === strategyId)) {
+    const symbols = Array.isArray(best.symbols) ? best.symbols : [];
+    if (symbols.length > 0 && symbols[0]?.symbol) return text(symbols[0].symbol);
+  }
+  const strategies = Array.isArray(latest?.daytradingStrategies?.strategies) ? latest.daytradingStrategies.strategies : [];
+  const row = strategies.find((item) => item && (!strategyId || item.strategy_id === strategyId));
+  if (row && Array.isArray(row.symbols) && row.symbols[0]?.symbol) return text(row.symbols[0].symbol);
+  return null;
+}
+
+function normalizeOptimizationCandidate(row = {}, latestOptimization = {}) {
+  const strategyId = normalizeCandidateStrategyId(row);
+  const displaySymbol = text(row.testedConfig?.symbol || resolveSymbolFromDisplayName(row.displayName));
+  const latestSymbol = displaySymbol || resolveOptimizationLatestSymbol(latestOptimization, strategyId);
+  return {
+    eventId: text(row.candidateId || row.id || row.recommendationId),
+    type: 'OPTIMIZATION_CANDIDATE',
+    timestamp: iso(row.updatedAt || row.createdAt),
+    symbol: latestSymbol,
+    source: text(row.sourceLabel || row.sourceKind || row.source || 'optimization'),
+    strategy_id: strategyId,
+    strategy_name: text(row.strategyName || row.strategy_name),
+    setup: text(row.testedConfig?.timeframe || row.sourceKind || row.reason || row.sourceLabel),
+    confidence: row.confidence ?? row.recommendation?.confidence ?? null,
+    score: num(row.overallScore ?? row.metrics?.score ?? row.summarySnapshot?.metrics?.score),
+    winRate: num(row.metrics?.winRate ?? row.metrics?.win_rate ?? row.summarySnapshot?.metrics?.winRate),
+    pnlPct: num(row.metrics?.totalPnlPct ?? row.metrics?.avgPnlPct ?? row.summarySnapshot?.metrics?.totalPnlPct ?? row.summarySnapshot?.metrics?.avgPnlPct),
+    result: text(row.recommendation?.decision || row.allowlistStatus || null),
+    blockedReason: null,
+    reason: text(row.recommendation?.reason || row.allowlistReason || row.reason || null),
+    paperOnly: true,
+    ...SAFETY,
+  };
+}
+
+function normalizeActivityRecord(row = {}, latestOptimization = {}) {
+  if (!row) return null;
+  if (row.type === 'OPTIMIZATION_CANDIDATE') return normalizeOptimizationCandidate(row, latestOptimization);
+  if (row.source === 'daytrading-learning' || row.paper_only === true || row.live === false) {
+    return normalizeLearningOutcome(row);
+  }
+  if (row.tradeId || row.signalId || row.opened_at || row.closed_at || row.result || row.pnlPct != null) {
+    return normalizeTrade(row, row.status || (row.closed_at ? 'closed' : 'open'));
+  }
+  return normalizeRuntimeEvent(row);
+}
+
+function loadDailySelectionSources(files) {
+  const tradesRead = readTail(files.trades, 250);
+  const eventsRead = readTail(files.events, 250);
+  const learningRead = readTail(files.learningOutcomes, 250);
+  const candidatesRead = readTail(files.optimizationCandidates, 250);
+  const latestOptimization = readJson(files.optimizationLatest, {});
+  const state = readJson(files.state, {});
+
+  return {
+    openTradeRows: arr(state?.openTrades).map((row) => normalizeTrade(row, 'open')).filter(Boolean),
+    tradeRows: tradesRead.rows.map((row) => normalizeTrade(row, 'closed')).filter(Boolean),
+    eventRows: eventsRead.rows.map(normalizeRuntimeEvent).filter(Boolean),
+    learningRows: learningRead.rows.map(normalizeLearningOutcome).filter(Boolean),
+    candidateRows: candidatesRead.rows.map((row) => normalizeOptimizationCandidate(row, latestOptimization)).filter(Boolean),
+    latestOptimization,
+  };
+}
+
+function findLatestEligibleActivity(strategyId, sources, cooldowns, nowMs) {
+  const rows = [
+    ...arr(sources.openTradeRows),
+    ...arr(sources.tradeRows),
+    ...arr(sources.eventRows),
+    ...arr(sources.learningRows),
+    ...arr(sources.candidateRows),
+  ].filter((row) => normalizeCandidateStrategyId(row) === strategyId);
+
+  const eligible = rows.filter((row) => !blockedActivityReason(row, cooldowns, nowMs));
+  eligible.sort((a, b) => {
+    const timeDiff = String(eventTime(b) || '').localeCompare(String(eventTime(a) || ''));
+    if (timeDiff !== 0) return timeDiff;
+    const sourceDiff = sourceRank(a.source) - sourceRank(b.source);
+    if (sourceDiff !== 0) return sourceDiff;
+    return String(candidateCandidateId(a)).localeCompare(String(candidateCandidateId(b)));
+  });
+  return eligible[0] || null;
+}
+
+function buildDailySelectionCandidate({ strategyId, plannedRow, matrixRow, allowRow, activity, latestOptimization }) {
+  const fallbackSymbol = normalizeCandidateSymbol(activity)
+    || resolveOptimizationLatestSymbol(latestOptimization, strategyId)
+    || resolveSymbolFromDisplayName(allowRow?.name)
+    || null;
+  const symbol = safeText(fallbackSymbol, '–');
+  const latestActivityAt = eventTime(activity) || plannedRow?.evidence?.lastTested || matrixRow?.lastTested || null;
+  const strategyName = text(matrixRow?.name || allowRow?.name || plannedRow?.name || strategyCatalog.getStrategyById(strategyId)?.name || strategyId);
+  const source = normalizationSourceName(activity) || plannedRow?.source || 'paper_only';
+  const setup = safeText(
+    activity?.setup
+    || activity?.signal_subtype
+    || activity?.raw_strategy
+    || activity?.strategy
+    || plannedRow?.nextStep
+    || matrixRow?.simulationSummary?.badge?.label
+    || null,
+  );
+  const confidence = activity?.confidence ?? plannedRow?.confidence ?? activity?.confidenceScore ?? matrixRow?.simulationSummary?.score ?? null;
+  const score = activity?.score ?? plannedRow?.evidence?.simWinRate ?? matrixRow?.simulationSummary?.score ?? null;
+  const winRate = activity?.winRate ?? matrixRow?.paperSummary?.winRate ?? matrixRow?.simulationSummary?.winRate ?? null;
+  const pnl = activity?.pnlPct ?? matrixRow?.paperSummary?.totalPnl ?? matrixRow?.simulationSummary?.totalPnl ?? null;
+  const decision = text(matrixRow?.recommendation || plannedRow?.recommendation || activity?.result || null);
+  const reason = text(
+    plannedRow?.reason
+    || matrixRow?.simulationSummary?.badge?.label
+    || activity?.reason
+    || activity?.reasonSv
+    || plannedRow?.nextStep
+    || null,
+  );
+  const candidateId = candidateCandidateId(activity) || `${strategyId}:${symbol}:${latestActivityAt || ''}`;
+
+  return {
+    candidateId,
+    symbol,
+    canonicalStrategyId: strategyId,
+    strategyName,
+    setup,
+    confidence: confidence == null ? null : confidence,
+    source,
+    latestActivityAt,
+    reason,
+    previewOnly: true,
+    wouldCreateTrade: false,
+    blockedExecution: true,
+    safetyLabel: 'Preview only - ingen trade skapas',
+    score: score == null ? null : score,
+    winRate: winRate == null ? null : winRate,
+    pnl: pnl == null ? null : pnl,
+    decision: decision || null,
+    blockedBy: null,
+    activitySource: activity?.source || null,
+    activityType: activity?.type || null,
+  };
+}
+
+function buildDailySelectionPreview(options = {}) {
+  const files = { ...DEFAULT_FILES, ...(options.files || {}) };
+  const now = options.now ? new Date(options.now) : new Date();
+  const seedDate = todayIsoDate(now);
+  const limit = Math.max(1, Math.min(3, Math.round(Number(options.selectionCount || 3) || 3)));
+
+  const plan = automationPlanService.getAutomationPlan();
+  const allowlistStatus = paperAllowlistService.getPaperAllowlistStatus();
+  const matrix = strategyRuntimeMatrixService.getStrategyRuntimeMatrix();
+  const matrixRows = Array.isArray(matrix.strategies) ? matrix.strategies : [];
+  const matrixById = new Map(matrixRows.map((row) => [row.id || row.strategy_id, row]));
+  const allowRows = Array.isArray(allowlistStatus.allowlist) ? allowlistStatus.allowlist : [];
+  const allowById = new Map(allowRows.map((row) => [row.id, row]));
+  const sources = loadDailySelectionSources(files);
+  const cooldowns = readJson(files.state, {})?.cooldowns || {};
+  const nowMs = now.getTime();
+
+  const pool = [];
+  for (const plannedRow of arr(plan.recommendedPaperCandidates)) {
+    const strategyId = plannedRow?.id;
+    if (!strategyId) continue;
+    const allowRow = allowById.get(strategyId);
+    const matrixRow = matrixById.get(strategyId);
+    if (!allowRow || allowRow.readyForPaperRuntime !== true) continue;
+    if (!matrixRow || matrixRow.paperRuntimeStatus !== 'active' || (Array.isArray(matrixRow.blockers) && matrixRow.blockers.length > 0)) continue;
+
+    let activity = findLatestEligibleActivity(strategyId, sources, cooldowns, nowMs);
+    if (!activity) {
+      activity = normalizeOptimizationCandidate({
+        candidateId: strategyId,
+        strategyId,
+        strategyName: allowRow?.name || plannedRow?.name || strategyId,
+        source: 'plan_fallback',
+        updatedAt: plannedRow?.evidence?.lastTested || now.toISOString(),
+        reason: plannedRow?.reason,
+      }, sources.latestOptimization);
+    }
+
+    const candidate = buildDailySelectionCandidate({
+      strategyId,
+      plannedRow,
+      matrixRow,
+      allowRow,
+      activity,
+      latestOptimization: sources.latestOptimization,
+    });
+
+    if (!candidate.symbol) candidate.symbol = '–';
+    pool.push(candidate);
+  }
+
+  pool.sort((a, b) => {
+    const ha = stableHash(`${seedDate}:${a.canonicalStrategyId}:${a.symbol}:${a.candidateId || ''}`);
+    const hb = stableHash(`${seedDate}:${b.canonicalStrategyId}:${b.symbol}:${b.candidateId || ''}`);
+    if (ha !== hb) return ha.localeCompare(hb);
+    return String(b.latestActivityAt || '').localeCompare(String(a.latestActivityAt || ''));
+  });
+
+  const selected = pool.slice(0, limit);
+
+  return {
+    date: seedDate,
+    mode: 'preview_only',
+    selectionCount: limit,
+    selectedCount: selected.length,
+    candidates: selected.map((candidate) => ({
+      ...candidate,
+      safety: { ...SAFETY },
+    })),
+    explanation: selected.length
+      ? 'Preview av framtida 3-per-dag-logik. Urvalet är read-only, stabilt per datum och skapar inga trades.'
+      : 'Inga säkra kandidater just nu',
+    emptyStateText: selected.length ? null : 'Inga säkra kandidater just nu',
+    safety: { ...SAFETY },
+  };
+}
+
 function buildPaperTradingRuntime(options = {}) {
   const limit = clampLimit(options.limit, 50);
   const files = { ...DEFAULT_FILES, ...(options.files || {}) };
@@ -414,6 +843,18 @@ function buildPaperTradingRuntime(options = {}) {
     recordKey,
   ).slice(0, limit);
 
+  const dailySelectionPreview = buildDailySelectionPreview({ files, selectionCount: 3 });
+
+  // Per-strategy risk/reward quality, computed over ALL closed trades (not the
+  // limited window) so the metrics reflect the full paper history. Fault-isolated.
+  let strategyPerformance = { strategies: [], summary: null };
+  try {
+    const allClosed = readJsonl(files.trades).map((row) => normalizeTrade(row, 'closed')).filter(Boolean);
+    strategyPerformance = buildStrategyPerformance(allClosed);
+  } catch (_) {
+    warnings.push('strategy_performance_failed');
+  }
+
   const latestEventAt = [
     limitedOpenTrades[0]?.timestamp,
     limitedClosedTrades[0]?.timestamp,
@@ -441,6 +882,8 @@ function buildPaperTradingRuntime(options = {}) {
     recentEvents: limitedRecentEvents,
     blockedCandidates,
     strategies,
+    strategyPerformance,
+    dailySelectionPreview,
     limits: {
       requested: limit,
       returnedClosed: limitedClosedTrades.length,
@@ -480,5 +923,9 @@ module.exports = {
     normalizeGateDecision,
     strategyMeta,
     buildStrategies,
+    buildDailySelectionPreview,
+    normalizeLearningOutcome,
+    normalizeOptimizationCandidate,
+    findLatestEligibleActivity,
   },
 };

@@ -23,6 +23,9 @@ const files = {
   events: path.join(tmp, 'paper-trading/events.jsonl'),
   gateDecisions: path.join(tmp, 'paper-trading/gate-decisions.jsonl'),
   state: path.join(tmp, 'paper-trading/state.json'),
+  learningOutcomes: path.join(tmp, 'daytrading-learning/outcomes.jsonl'),
+  optimizationCandidates: path.join(tmp, 'optimization/paper-candidates.jsonl'),
+  optimizationLatest: path.join(tmp, 'optimization/latest.json'),
 };
 
 writeJson(files.state, {
@@ -97,6 +100,70 @@ writeJsonl(files.events, [
   },
 ]);
 
+writeJsonl(files.learningOutcomes, [
+  {
+    id: 'lo-1',
+    timestamp: '2026-06-16T13:09:56.707Z',
+    type: 'paper_trade_opened',
+    source: 'paper_agent',
+    paper_only: true,
+    strategy_id: 'narrow_breakout',
+    strategy_name: 'Narrow Breakout',
+    symbol: 'QQQ',
+    raw_strategy: 'NARROW_WAIT',
+    signal_subtype: 'NARROW_WAIT',
+    confidence: 92,
+    score: 73,
+  },
+]);
+
+writeJsonl(files.optimizationCandidates, [
+  {
+    candidateId: 'cand-narrow-fakeout',
+    strategyId: 'narrow_fakeout_reversal_v1',
+    strategyName: 'Narrow Fakeout Reversal Strategy',
+    source: 'ai_agent_batch_recommendation',
+    sourceLabel: 'AI-agent paper',
+    createdAt: '2026-06-16T09:08:39.517Z',
+    updatedAt: '2026-06-16T09:08:39.517Z',
+    testedConfig: { symbol: 'QQQ', timeframe: '2m' },
+    overallScore: 61,
+    confidence: 72,
+    metrics: { trades: 15, winRate: 60, avgPnlPct: 0.1423, totalPnlPct: 2.1338, score: 61 },
+    recommendation: { decision: 'watch', reason: 'Lovande, men kräver mer data innan promotion till paper allowlist.', confidence: 'medium' },
+    allowlistStatus: 'approved',
+    allowlistReason: 'Strategin är redan godkänd i paper allowlist.',
+  },
+  {
+    candidateId: 'cand-vwap-short',
+    strategyId: 'vwap_failed_breakout_short',
+    strategyName: 'VWAP Failed Breakout Short',
+    source: 'ai_agent_batch_recommendation',
+    sourceLabel: 'AI-agent paper',
+    createdAt: '2026-06-16T09:57:33.400Z',
+    updatedAt: '2026-06-16T09:57:33.400Z',
+    overallScore: 83,
+    confidence: 83,
+    metrics: { trades: 3, winRate: 62.5, avgPnlPct: 0.143, totalPnlPct: 4.5772, score: 83 },
+    recommendation: { decision: 'watch', reason: 'Stark resultatdata.', confidence: 'medium' },
+    allowlistStatus: 'approved',
+    allowlistReason: 'Strategin är redan godkänd i paper allowlist.',
+  },
+]);
+
+writeJson(files.optimizationLatest, {
+  daytradingStrategies: {
+    bestStrategy: {
+      strategy_id: 'vwap_failed_breakout_short',
+      strategy_name: 'VWAP Failed Breakout Short',
+      symbols: [
+        { symbol: 'AAPL', runs: 2, total_pnl: 0.286 },
+        { symbol: 'QQQ', runs: 2, total_pnl: 0 },
+      ],
+    },
+  },
+});
+
 writeJsonl(files.gateDecisions, [
   {
     event_id: 'gate-1',
@@ -132,5 +199,38 @@ assert.equal(summary.summary.closedCount, 2);
 assert.ok(Array.isArray(summary.latestClosedTrades));
 assert.ok(Array.isArray(summary.latestBlockedCandidates));
 assert.equal(summary.live_trading_enabled, false);
+
+const previewA = svc._internal.buildDailySelectionPreview({ files, now: '2026-06-16T14:30:00.000Z', selectionCount: 3 });
+const previewB = svc._internal.buildDailySelectionPreview({ files, now: '2026-06-16T14:30:00.000Z', selectionCount: 3 });
+const previewNextDay = svc._internal.buildDailySelectionPreview({ files, now: '2026-06-17T14:30:00.000Z', selectionCount: 3 });
+
+assert.equal(previewA.mode, 'preview_only');
+assert.equal(previewA.selectionCount, 3);
+assert.ok(previewA.candidates.length <= 3, 'daily preview caps at 3 candidates');
+assert.deepEqual(previewA.candidates.map((row) => row.canonicalStrategyId), previewB.candidates.map((row) => row.canonicalStrategyId), 'same day selection is stable');
+assert.notDeepEqual(previewA.candidates.map((row) => row.canonicalStrategyId), previewNextDay.candidates.map((row) => row.canonicalStrategyId), 'different day can change selection');
+assert.ok(previewA.candidates.every((row) => row.previewOnly === true && row.wouldCreateTrade === false && row.blockedExecution === true), 'preview rows are read-only');
+
+const cooldownSources = {
+  tradeRows: [],
+  eventRows: [
+    {
+      strategy_id: 'trend_continuation',
+      symbol: 'AMZN',
+      timestamp: '2026-06-16T14:17:26.720Z',
+      type: 'TRADE_OPENED',
+      source: 'paper_agent',
+    },
+  ],
+  learningRows: [],
+  candidateRows: [],
+};
+const cooldownBlocked = svc._internal.findLatestEligibleActivity(
+  'trend_continuation',
+  cooldownSources,
+  { AMZN: '2026-06-16T15:00:00.000Z' },
+  new Date('2026-06-16T14:30:00.000Z').getTime(),
+);
+assert.equal(cooldownBlocked, null, 'cooldown blocks the candidate');
 
 console.log('# paperTradingRuntimeService tests passed.');
