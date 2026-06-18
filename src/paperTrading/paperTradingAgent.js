@@ -45,6 +45,7 @@ const eventLogService                           = require('../services/eventLogS
 const notificationEngineV2                      = require('../alerts/notificationEngineV2');
 const strategyRuntimeConnector                  = require('../services/strategyRuntimeConnectorService');
 const paperApprovalGate                         = require('../services/paperApprovalGateService');
+const paperMarketConfigService                  = require('../services/paperMarketConfigService');
 const marketUniverse                            = require('../services/marketUniverseService');
 const learningConnector                         = require('../services/learningConnectorService');
 const learningEngine                            = require('../services/daytradingLearningEngineService');
@@ -386,6 +387,7 @@ function appendEvent(input) {
     executionSafety: safeEventValue(input.executionSafety || null),
     safetyBlockReasons: input.executionSafety?.paper_block_reasons || input.executionSafety?.block_reasons || input.safetyBlockReasons || [],
     safetyWarnings: input.executionSafety?.warnings || input.safetyWarnings || [],
+    blockedReason:  input.blockedReason   || null,
     exitReasonCode: input.exitReasonCode || null,
     exitSource: input.exitSource || null,
     exitEngineDecision: safeEventValue(input.exitEngineDecision || null),
@@ -1825,6 +1827,28 @@ async function runTick() {
             c,
             'Marknadsgruppen är avstängd för paper test från Daytrading.',
           ));
+          continue;
+        }
+        const paperMarketDecision = paperMarketConfigService.getPaperMarketGateDecision(c.symbol);
+        if (!paperMarketDecision.allowed) {
+          _bump('qualifiesRejected', null);
+          _recentRejections = [{
+            type:          'MARKET_CONTROL_PAPER_DISABLED',
+            symbol:        c.symbol,
+            marketGroup:   controlGroup || getMarketGroup(c.symbol) || c.marketGroup || 'UNKNOWN',
+            signalSubtype: c.signalSubtype || null,
+            reason:        paperMarketDecision.blockedReason,
+            timestamp:     new Date().toISOString(),
+          }, ..._recentRejections].slice(0, 100);
+          appendEvent({
+            ...eventFromCandidate(
+              'MARKET_CONTROL_PAPER_DISABLED',
+              c,
+              paperMarketDecision.reasonSv,
+              'blocked',
+            ),
+            blockedReason: paperMarketDecision.blockedReason,
+          });
           continue;
         }
         const runtimeDecision = strategyRuntimeConnector.canCreatePaperTradeForSignal(c);

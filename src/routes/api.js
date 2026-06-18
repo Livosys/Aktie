@@ -3436,6 +3436,44 @@ router.get('/paper-trading/runtime', (req, res) => {
   }
 });
 
+router.get('/paper-trading/tradingview-test-blueprints', (req, res) => {
+  try {
+    const result = tradingViewTestBlueprintService.defaultTradingViewTestBlueprintService.buildTradingViewTestBlueprints();
+    if (req.query.strategyId) {
+      const single = tradingViewTestBlueprintService.defaultTradingViewTestBlueprintService.getTradingViewTestBlueprint(req.query.strategyId);
+      return res.status(single.ok ? 200 : 404).json(single);
+    }
+    res.json(result);
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message, ...tradingViewTestBlueprintService.SAFETY });
+  }
+});
+
+router.get('/paper-trading/market-config', (req, res) => {
+  try {
+    res.json(paperMarketConfigService.readPaperMarketConfig());
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message, safety: paperMarketConfigService.SAFETY });
+  }
+});
+
+router.post('/paper-trading/market-config', (req, res) => {
+  try {
+    const body = req.body && typeof req.body === 'object' ? req.body : {};
+    if (body.live_trading_enabled === true || body.can_place_orders === true || body.actions_allowed === true || body.broker_enabled === true) {
+      return res.status(400).json({ ok: false, error: 'paper_market_config_is_paper_only', safety: paperMarketConfigService.SAFETY });
+    }
+    const result = paperMarketConfigService.updatePaperMarketConfig({
+      cryptoPaperEnabled: body.cryptoPaperEnabled,
+      equityPaperEnabled: body.equityPaperEnabled,
+      updatedBy: 'manual',
+    });
+    res.status(result.ok ? 200 : 400).json(result);
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message, safety: paperMarketConfigService.SAFETY });
+  }
+});
+
 router.get('/paper-trading/trade-explanations/:tradeId?', (req, res) => {
   try {
     const { tradeId } = req.params;
@@ -3456,6 +3494,24 @@ router.get('/paper-trading/trade-explanations/:tradeId?', (req, res) => {
     res.json(paperTradeExplanationService.buildTradeExplanations({ limit }));
   } catch (err) {
     res.status(500).json({ ok: false, error: err.message, ...paperTradeExplanationService.SAFETY });
+  }
+});
+
+router.get('/paper-trading/loss-review-queue', (req, res) => {
+  try {
+    res.json(lossReviewQueueService.defaultLossReviewQueueService.getLossReviewQueue());
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message, ...lossReviewQueueService.SAFETY });
+  }
+});
+
+router.get('/paper-trading/loss-review-queue/:groupId/test-preview', (req, res) => {
+  try {
+    const result = lossReviewQueueService.defaultLossReviewQueueService.buildTestPreview(req.params.groupId);
+    const status = result.ok ? 200 : (result.error === 'loss_group_not_found' ? 404 : 400);
+    res.status(status).json(result);
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message, ...lossReviewQueueService.SAFETY });
   }
 });
 
