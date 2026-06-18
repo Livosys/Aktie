@@ -1308,6 +1308,20 @@ function MetricCard({ label, value, tone = 'neutral', note }) {
 }
 
 async function postPaperRiskReviewResume(payload) {
+  async function parseErrorMessage(res, rawBody) {
+    if (!res) return '';
+    const contentType = res.headers.get('content-type') || '';
+    if (contentType.includes('application/json')) {
+      try {
+        const json = rawBody ? JSON.parse(rawBody) : null;
+        return String(json?.error || json?.message || '').trim();
+      } catch (_) {
+        return '';
+      }
+    }
+    return String(rawBody || '').trim();
+  }
+
   try {
     const res = await fetch('/api/paper-trading/risk-review/resume', {
       method: 'POST',
@@ -1315,13 +1329,21 @@ async function postPaperRiskReviewResume(payload) {
       credentials: 'include',
       body: JSON.stringify(payload),
     });
-    const data = await res.json().catch(() => null);
+    const rawBody = await res.text().catch(() => '');
+    const data = rawBody ? (() => {
+      try { return JSON.parse(rawBody); } catch (_) { return null; }
+    })() : null;
     if (!res.ok || !data || data.ok === false) {
-      throw new Error((data && data.error) || `HTTP ${res.status}`);
+      const serverMessage = await parseErrorMessage(res, rawBody);
+      throw new Error(serverMessage || `HTTP ${res.status}`);
     }
     return data;
   } catch (err) {
-    throw new Error(err?.message || 'Kunde inte återuppta paper testing.');
+    const message = String(err?.message || '').trim();
+    if (/Failed to fetch|NetworkError|Load failed/i.test(message)) {
+      throw new Error('Kunde inte nå backend. Kontrollera att API:t är omstartat och att sidan är uppdaterad.');
+    }
+    throw new Error(message || 'Kunde inte återuppta paper testing.');
   }
 }
 
@@ -1627,6 +1649,7 @@ function PaperControlRoomPanel({ runtime, safetyStatus, gateStatus, approvalPrev
       ? approvalPreview.approvedStrategyIds
       : [];
   const gatePipeline = gateStatus?.pipeline || {};
+  const nearMissLearning = gateStatus?.nearMissLearning || {};
   const safety = safetyStatus?.status && typeof safetyStatus.status === 'object'
     ? safetyStatus.status
     : (runtime?.safety || {});
@@ -1693,12 +1716,15 @@ function PaperControlRoomPanel({ runtime, safetyStatus, gateStatus, approvalPrev
             Samlad read-only truth för safety, runtime, gates, learning och nästa rekommenderade steg.
           </div>
         </div>
-        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
-          <span style={statusPillStyle('success', theme)}>Paper only</span>
-          <span style={statusPillStyle('neutral', theme)}>Live off</span>
-          <span style={statusPillStyle('neutral', theme)}>Broker off</span>
-          <span style={statusPillStyle('neutral', theme)}>Real orders blocked</span>
-        </div>
+      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+        <span style={statusPillStyle('success', theme)}>Paper only</span>
+        <span style={statusPillStyle('neutral', theme)}>Live off</span>
+        <span style={statusPillStyle('neutral', theme)}>Broker off</span>
+        <span style={statusPillStyle('neutral', theme)}>Real orders blocked</span>
+        <span style={statusPillStyle(nearMissLearning.enabled ? 'info' : 'neutral', theme)}>
+          Near-miss {nearMissLearning.enabled ? 'aktiv' : 'av'}
+        </span>
+      </div>
       </div>
 
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(170px, 1fr))', gap: 10, marginTop: 14 }}>
@@ -1791,9 +1817,12 @@ function PaperControlRoomPanel({ runtime, safetyStatus, gateStatus, approvalPrev
             <div>scannerCandidatesToday: <strong>{gatePipeline.scannerCandidatesToday ?? '–'}</strong></div>
             <div>qualifiesPassedToday: <strong>{gatePipeline.qualifiesPassedToday ?? '–'}</strong></div>
             <div>marketGateAllowedToday: <strong>{gatePipeline.marketGateAllowedToday ?? '–'}</strong></div>
+            <div>marketGateNearMissLearningToday: <strong>{gatePipeline.marketGateNearMissLearningToday ?? '–'}</strong></div>
             <div>tradesOpenedToday: <strong>{gatePipeline.tradesOpenedToday ?? '–'}</strong></div>
             <div>last60m candidates: <strong>{gatePipeline?.last60m?.candidatesLast60m ?? '–'}</strong></div>
             <div>last60m trades opened: <strong>{gatePipeline?.last60m?.tradesOpenedLast60m ?? '–'}</strong></div>
+            <div>nearMissLearning entries: <strong>{nearMissLearning.entries ?? '–'}</strong></div>
+            <div>nearMissLearning margin: <strong>{nearMissLearning.margin ?? '–'}</strong></div>
           </div>
         </div>
         <div style={{ border: '1px solid var(--border)', borderRadius: 14, padding: 14, background: 'var(--surface-2)' }}>
@@ -1863,6 +1892,10 @@ function PaperMarketsPanel({ refreshKey, onRefresh }) {
   const config = configState.data || {};
   const cryptoEnabled = config.cryptoPaperEnabled !== false;
   const equityEnabled = config.equityPaperEnabled !== false;
+  const nearMissEnabled = config.nearMissLearningEnabled !== false;
+  const nearMissMargin = Number.isFinite(Number(config.nearMissLearningMargin))
+    ? Number(config.nearMissLearningMargin)
+    : 5;
 
   function ask(market, nextValue, label) {
     setMessage(null);
@@ -1970,6 +2003,18 @@ function PaperMarketsPanel({ refreshKey, onRefresh }) {
           <button type="button" disabled={busy || !equityEnabled} style={toggleButton(!equityEnabled, 'danger')} onClick={() => ask('equity', false, 'Aktier/QQQ paper')}>
             Av
           </button>
+        </div>
+      </div>
+
+      <div style={{ marginTop: 8, padding: '12px 14px', borderRadius: 12, border: '1px solid var(--border)', background: 'var(--surface-2)', color: 'var(--text)', fontSize: 12, lineHeight: 1.6 }}>
+        <strong>Near-miss learning</strong>
+        <div style={{ marginTop: 4 }}>
+          {nearMissEnabled
+            ? `Aktiv för paper-only learning, margin ${nearMissMargin} poäng från gate-tröskeln.`
+            : 'Avstängt.'}
+        </div>
+        <div style={{ marginTop: 4, color: 'var(--muted)' }}>
+          Detta kan bara skapa låtsastrades i paper-only-läget. Inga riktiga order, broker eller live trading påverkas.
         </div>
       </div>
 

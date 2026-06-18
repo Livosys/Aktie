@@ -272,6 +272,7 @@ function tradingLogDecisionForEvent(type, decision) {
   if (upper === 'GATE_ALLOWED') return 'allowed';
   if (upper === 'GATE_BLOCKED') return 'blocked';
   if (upper === 'GATE_OBSERVE_ONLY') return 'observe_only';
+  if (upper === 'PAPER_NEAR_MISS_LEARNING_ENTRY') return 'allowed';
   if (decision && ['allowed', 'blocked', 'observe_only', 'paper_opened', 'paper_closed', 'no_trade'].includes(String(decision))) {
     return String(decision);
   }
@@ -280,7 +281,7 @@ function tradingLogDecisionForEvent(type, decision) {
 
 function mapPaperEventToTradingLog(input = {}) {
   const type = String(input.type || '').toUpperCase();
-  const source = ['GATE_ALLOWED', 'GATE_BLOCKED', 'GATE_OBSERVE_ONLY'].includes(type)
+  const source = ['GATE_ALLOWED', 'GATE_BLOCKED', 'GATE_OBSERVE_ONLY', 'PAPER_NEAR_MISS_LEARNING_ENTRY'].includes(type)
     ? 'market_gate'
     : 'paper_trading';
   const decision = tradingLogDecisionForEvent(type, input.decision);
@@ -290,6 +291,7 @@ function mapPaperEventToTradingLog(input = {}) {
     GATE_ALLOWED: 'market_gate.allowed',
     GATE_BLOCKED: 'market_gate.blocked',
     GATE_OBSERVE_ONLY: 'market_gate.observe_only',
+    PAPER_NEAR_MISS_LEARNING_ENTRY: 'market_gate.allowed',
   }[type] || 'paper_trade.skipped';
 
   return {
@@ -664,7 +666,7 @@ function buildOpenTrade(c, gateDecision = null) {
     marketType:       c.marketType || c.market || 'unknown',
     marketGroup:      marketGrp,
     riskProfileName:  profile.profileName,
-    paperOnly:        mpRisk?.paperOnly ?? false,
+    paperOnly:        true,
     session:          mpRisk?.session ?? null,
     direction:        c.nextMoveBias,
     strategyId:       c.strategyId || c.strategy_id || c.resolvedStrategyId || c.sourceStrategyId || null,
@@ -709,6 +711,11 @@ function buildOpenTrade(c, gateDecision = null) {
     compassConflict:         compassConflict || false,
     volumeGateDecision:      gateDecision?.volumeGateDecision || null,
     observeOnlyReasonSv:     gateDecision?.observeOnlyReasonSv || null,
+    nearMissLearning:        gateDecision?.nearMissLearning === true,
+    marketGateNearMissOverride: gateDecision?.marketGateNearMissOverride === true,
+    originalGateScore:        gateDecision?.originalGateScore ?? null,
+    originalGateThreshold:    gateDecision?.originalGateThreshold ?? null,
+    originalGateBlockedReason: gateDecision?.originalGateBlockedReason ?? null,
     // gate decision stored for analysis
     gateScore:               gateDecision?.gateScore    ?? null,
     gateThreshold:           gateDecision?.threshold    ?? null,
@@ -941,6 +948,12 @@ function recordPaperTradeToLearning(eventType, trade, exit = null) {
       underlying_market: trade.underlying_market || trade.underlyingMarket || trade.marketGroup || trade.marketType || null,
       underlying_signal_direction: trade.underlying_signal_direction || trade.underlyingSignalDirection || trade.direction || trade.nextMoveBias || null,
       underlying_signal_strength: trade.underlying_signal_strength || trade.underlyingSignalStrength || trade.confidenceScore || trade.score || trade.gateScore || null,
+      paper_only: trade.paperOnly === true,
+      near_miss_learning: trade.nearMissLearning === true,
+      market_gate_near_miss_override: trade.marketGateNearMissOverride === true,
+      original_gate_score: trade.originalGateScore ?? null,
+      original_gate_threshold: trade.originalGateThreshold ?? null,
+      original_gate_blocked_reason: trade.originalGateBlockedReason ?? null,
       traded_symbol: trade.traded_symbol || trade.tradedSymbol || trade.symbol,
       traded_instrument_type: trade.traded_instrument_type || trade.tradedInstrumentType || trade.instrument_type || trade.instrumentType || null,
       market_group: trade.market_group || trade.marketGroup || trade.marketType || null,
@@ -1083,6 +1096,96 @@ function classifySkip(c, reason) {
   }
 
   return { type: 'TRADE_SKIPPED', reasonSv: 'Skippad — testreglerna godkände inte signalen.' };
+}
+
+function normalizeNearMissMargin(value, fallback = 5) {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return fallback;
+  return Math.max(1, Math.min(10, Math.round(n)));
+}
+
+function buildNearMissLearningGateDecision(gateDecision, candidate, config = {}) {
+  const enabled = config.nearMissLearningEnabled !== false;
+  const margin = normalizeNearMissMargin(config.nearMissLearningMargin, 5);
+  const gateScore = Number(gateDecision?.gateScore);
+  const threshold = Number(gateDecision?.threshold);
+  const status = String(candidate?.status || '').toLowerCase();
+  const direction = String(candidate?.nextMoveBias || candidate?.direction || '').toUpperCase();
+  const setup = String(candidate?.signalSubtype || candidate?.setup || '').toUpperCase();
+  const strategyId = candidate?.strategyId || candidate?.strategy_id || candidate?.resolvedStrategyId || candidate?.sourceStrategyId || null;
+  const runtimeStatus = String(candidate?.runtimeStatus || '').toLowerCase();
+  const blockedReason = String(gateDecision?.reasons?.[0] || gateDecision?.warnings?.[0] || '').trim() || null;
+  const hardBlockerCount = Array.isArray(gateDecision?.reasons) ? gateDecision.reasons.length : 0;
+
+  const result = {
+    allowed: false,
+    eligible: false,
+    enabled,
+    margin,
+    gateScore: Number.isFinite(gateScore) ? gateScore : null,
+    threshold: Number.isFinite(threshold) ? threshold : null,
+    scoreDelta: Number.isFinite(gateScore) && Number.isFinite(threshold) ? threshold - gateScore : null,
+    blockedReason,
+    reasonCode: null,
+    reasonSv: null,
+  };
+
+  if (!enabled) {
+    result.reasonCode = 'near_miss_learning_disabled';
+    result.reasonSv = 'Near-miss learning är avstängt.';
+    return result;
+  }
+  if (!Number.isFinite(gateScore) || !Number.isFinite(threshold)) {
+    result.reasonCode = 'missing_gate_score';
+    result.reasonSv = 'Gate score eller threshold saknas.';
+    return result;
+  }
+  if (gateDecision?.allowed !== false || gateDecision?.mode === 'observe_only') {
+    result.reasonCode = 'gate_not_blocked';
+    result.reasonSv = 'Gate är inte i block-läge.';
+    return result;
+  }
+  if (!Number.isFinite(result.scoreDelta) || result.scoreDelta <= 0 || result.scoreDelta > margin) {
+    result.reasonCode = 'not_near_threshold';
+    result.reasonSv = `Gate score är inte nära tröskeln (${gateScore}/${threshold}).`;
+    return result;
+  }
+  if (hardBlockerCount > 0) {
+    result.reasonCode = 'hard_block_present';
+    result.reasonSv = 'Gate har hårda blockers och får inte near-miss-överskridas.';
+    return result;
+  }
+  if (direction !== 'UP' && direction !== 'DOWN') {
+    result.reasonCode = 'direction_uncertain';
+    result.reasonSv = 'Riktningen är oklar.';
+    return result;
+  }
+  if (setup === 'NO_TRADE') {
+    result.reasonCode = 'setup_no_trade';
+    result.reasonSv = 'Setup är NO_TRADE.';
+    return result;
+  }
+  if (status === 'avoid') {
+    result.reasonCode = 'status_avoid';
+    result.reasonSv = 'Status är Jaga inte.';
+    return result;
+  }
+  if (!strategyId) {
+    result.reasonCode = 'strategy_missing';
+    result.reasonSv = 'Strategy mapping saknas.';
+    return result;
+  }
+  if (['disabled', 'paused', 'partial', 'not_connected', 'no_entry_rule'].includes(runtimeStatus)) {
+    result.reasonCode = `runtime_${runtimeStatus}`;
+    result.reasonSv = `Runtime är ${runtimeStatus}.`;
+    return result;
+  }
+
+  result.allowed = true;
+  result.eligible = true;
+  result.reasonCode = 'near_miss_learning_entry';
+  result.reasonSv = `PAPER_NEAR_MISS_LEARNING_ENTRY: Gate blockerad (poäng ${gateScore}/${threshold}), men inom ${margin} poäng från tröskeln.`;
+  return result;
 }
 
 function clampAgentConfidenceAdjustment(value) {
@@ -1255,6 +1358,11 @@ function normalizeGateDecisionForDisk(decision, candidate = null, timestamp = ne
     observeOnlyThreshold: THRESHOLD_OBSERVE_ONLY,
     volumeGateDecision: decision?.volumeGateDecision || persistedGateMode(decision),
     observeOnlyReasonSv: decision?.observeOnlyReasonSv || null,
+    nearMissLearning: decision?.nearMissLearning === true,
+    marketGateNearMissOverride: decision?.marketGateNearMissOverride === true,
+    originalGateScore: decision?.originalGateScore ?? null,
+    originalGateThreshold: decision?.originalGateThreshold ?? null,
+    originalGateBlockedReason: decision?.originalGateBlockedReason ?? null,
     decisionCode: gateDecisionCode(decision),
     reasonSv,
     warnings: Array.isArray(decision?.warnings) ? decision.warnings : [],
@@ -1324,6 +1432,7 @@ let _daily = {
   gateAllowed:           0,
   gateBlocked:           0,
   gateObserveOnly:       0,
+  gateNearMissLearning:  0,
   tradesOpened:          0,
 };
 
@@ -1335,6 +1444,7 @@ let _roll = {
   gateAllowed:   [],
   gateBlocked:   [],
   gateObserveOnly: [],
+  gateNearMissLearning: [],
   opened:        [],
 };
 
@@ -1347,7 +1457,7 @@ function _maybeResetDay() {
     _pipelineDay = today;
     _daily = { scannerCandidates: 0, qualifiesChecked: 0, qualifiesPassed: 0,
                qualifiesRejected: 0, gateEvaluated: 0, gateAllowed: 0,
-               gateBlocked: 0, gateObserveOnly: 0, tradesOpened: 0 };
+               gateBlocked: 0, gateObserveOnly: 0, gateNearMissLearning: 0, tradesOpened: 0 };
   }
 }
 
@@ -1373,6 +1483,7 @@ function _getRollingCounts() {
     gateAllowedLast60m:   _roll.gateAllowed.length,
     gateBlockedLast60m:   _roll.gateBlocked.length,
     gateObserveOnlyLast60m: _roll.gateObserveOnly.length,
+    gateNearMissLearningLast60m: _roll.gateNearMissLearning.length,
     tradesOpenedLast60m:  _roll.opened.length,
   };
 }
@@ -1397,6 +1508,7 @@ function getPipelineSnapshot() {
     marketGateAllowedToday:     d.gateAllowed,
     marketGateBlockedToday:     d.gateBlocked,
     marketGateObserveOnlyToday: d.gateObserveOnly,
+    marketGateNearMissLearningToday: d.gateNearMissLearning,
     tradesOpenedToday:          d.tradesOpened,
     last60m: roll,
     conversionRates: {
@@ -1693,6 +1805,7 @@ async function runTick() {
   let manualRiskResumeLogged = false;
   const now    = new Date().toISOString();
   const paperRiskReviewState = paperRiskReviewService.defaultPaperRiskReviewService.getPaperRiskReviewState({ now });
+  const paperMarketConfig = paperMarketConfigService.readPaperMarketConfig();
   const prices = getCurrentPrices();
   const marketRows = getCurrentMarketRows();
 
@@ -1855,7 +1968,7 @@ async function runTick() {
           ));
           continue;
         }
-        const paperMarketDecision = paperMarketConfigService.getPaperMarketGateDecision(c.symbol);
+        const paperMarketDecision = paperMarketConfigService.getPaperMarketGateDecision(c.symbol, paperMarketConfig);
         if (!paperMarketDecision.allowed) {
           _bump('qualifiesRejected', null);
           _recentRejections = [{
@@ -1955,10 +2068,105 @@ async function runTick() {
         _bump('gateEvaluated', 'gateEvaluated');
         const gateContext  = { conservativeMode: state.conservativeMode || false, calibrationStats: getGateCalibStats() };
         const gateDecision = evaluateMarketGate(c, gateContext);
+        if (gateDecision.mode === 'observe_only') {
+          _bump('gateObserveOnly', 'gateObserveOnly');
+          const observeReasonSv = gateDecision.observeOnlyReasonSv
+            || gateDecision.warnings?.[0]
+            || 'Agenten observerar bara.';
+          appendEvent(eventFromCandidate('GATE_OBSERVE_ONLY', c, observeReasonSv, 'observe_only'));
+          const gateDecisionTs = new Date().toISOString();
+          const persistedGateDecision = appendGateDecision(gateDecision, c, { timestamp: gateDecisionTs });
+          recordGateDecision({
+            ...gateDecision,
+            timestamp: gateDecisionTs,
+            decisionCode: persistedGateDecision.decisionCode,
+            reasonSv: persistedGateDecision.reasonSv,
+            marketGroup: persistedGateDecision.marketGroup,
+            riskProfileName: persistedGateDecision.riskProfileName,
+            signalSubtype: persistedGateDecision.signalSubtype,
+            compassBias: persistedGateDecision.compassBias,
+            volumeGateDecision: persistedGateDecision.volumeGateDecision,
+            observeOnlyReasonSv: persistedGateDecision.observeOnlyReasonSv,
+            ruleVersion: persistedGateDecision.ruleVersion,
+          });
+          continue;
+        }
+
+        let effectiveGateDecision = gateDecision;
+        if (!gateDecision.allowed) {
+          const nearMissDecision = buildNearMissLearningGateDecision(gateDecision, c, paperMarketConfig);
+          if (!nearMissDecision.allowed) {
+            _bump('gateBlocked', 'gateBlocked');
+            const gateReasonSv = gateDecision.reasons[0]
+              || `Gate blockerad (poäng ${gateDecision.gateScore}/${gateDecision.threshold}).`;
+            appendEvent({
+              ...eventFromCandidate('GATE_BLOCKED', c, gateReasonSv),
+              gateScore:     gateDecision.gateScore,
+              gateThreshold: gateDecision.threshold,
+              gateMode:      gateDecision.mode,
+            });
+            const gateDecisionTs = new Date().toISOString();
+            const persistedGateDecision = appendGateDecision(gateDecision, c, { timestamp: gateDecisionTs });
+            recordGateDecision({
+              ...gateDecision,
+              timestamp: gateDecisionTs,
+              decisionCode: persistedGateDecision.decisionCode,
+              reasonSv: persistedGateDecision.reasonSv,
+              marketGroup: persistedGateDecision.marketGroup,
+              riskProfileName: persistedGateDecision.riskProfileName,
+              signalSubtype: persistedGateDecision.signalSubtype,
+              compassBias: persistedGateDecision.compassBias,
+              volumeGateDecision: persistedGateDecision.volumeGateDecision,
+              observeOnlyReasonSv: persistedGateDecision.observeOnlyReasonSv,
+              ruleVersion: persistedGateDecision.ruleVersion,
+            });
+            continue;
+          }
+
+          effectiveGateDecision = {
+            ...gateDecision,
+            allowed: true,
+            mode: 'allow',
+            nearMissLearning: true,
+            marketGateNearMissOverride: true,
+            originalGateScore: gateDecision.gateScore,
+            originalGateThreshold: gateDecision.threshold,
+            originalGateBlockedReason: nearMissDecision.blockedReason || gateDecision.reasons?.[0] || null,
+            reasonSv: nearMissDecision.reasonSv,
+          };
+          _bump('gateAllowed', 'gateAllowed');
+          _bump('gateNearMissLearning', 'gateNearMissLearning');
+          appendEvent({
+            ...eventFromCandidate('PAPER_NEAR_MISS_LEARNING_ENTRY', c, nearMissDecision.reasonSv, 'allowed'),
+            gateScore: gateDecision.gateScore,
+            gateThreshold: gateDecision.threshold,
+            gateMode: 'allow',
+            gateStage: 'market_gate',
+            paperOnly: true,
+            mode: 'paper_only',
+            actions_allowed: false,
+            can_place_orders: false,
+            live_trading_enabled: false,
+            broker_enabled: false,
+            nearMissLearning: true,
+            marketGateNearMissOverride: true,
+            originalGateScore: gateDecision.gateScore,
+            originalGateThreshold: gateDecision.threshold,
+            originalGateBlockedReason: nearMissDecision.blockedReason || gateDecision.reasons?.[0] || null,
+          });
+        } else {
+          _bump('gateAllowed', 'gateAllowed');
+          appendEvent({
+            ...eventFromCandidate('GATE_ALLOWED', c, gateDecision.reasons?.[0] || gateDecision.warnings?.[0] || 'Gate godkänd.', 'allowed'),
+            gateScore: gateDecision.gateScore,
+            gateThreshold: gateDecision.threshold,
+            gateMode: gateDecision.mode,
+          });
+        }
         const gateDecisionTs = new Date().toISOString();
-        const persistedGateDecision = appendGateDecision(gateDecision, c, { timestamp: gateDecisionTs });
+        const persistedGateDecision = appendGateDecision(effectiveGateDecision, c, { timestamp: gateDecisionTs });
         recordGateDecision({
-          ...gateDecision,
+          ...effectiveGateDecision,
           timestamp: gateDecisionTs,
           decisionCode: persistedGateDecision.decisionCode,
           reasonSv: persistedGateDecision.reasonSv,
@@ -1971,39 +2179,10 @@ async function runTick() {
           ruleVersion: persistedGateDecision.ruleVersion,
         });
 
-        if (gateDecision.mode === 'observe_only') {
-          _bump('gateObserveOnly', 'gateObserveOnly');
-          const observeReasonSv = gateDecision.observeOnlyReasonSv
-            || gateDecision.warnings?.[0]
-            || 'Agenten observerar bara.';
-          appendEvent(eventFromCandidate('GATE_OBSERVE_ONLY', c, observeReasonSv, 'observe_only'));
-          continue;
-        }
-
-        if (!gateDecision.allowed) {
-          _bump('gateBlocked', 'gateBlocked');
-          const gateReasonSv = gateDecision.reasons[0]
-            || `Gate blockerad (poäng ${gateDecision.gateScore}/${gateDecision.threshold}).`;
-          appendEvent({
-            ...eventFromCandidate('GATE_BLOCKED', c, gateReasonSv),
-            gateScore:     gateDecision.gateScore,
-            gateThreshold: gateDecision.threshold,
-            gateMode:      gateDecision.mode,
-          });
-          continue;
-        }
-        _bump('gateAllowed', 'gateAllowed');
-        appendEvent({
-          ...eventFromCandidate('GATE_ALLOWED', c, gateDecision.reasons?.[0] || gateDecision.warnings?.[0] || 'Gate godkänd.', 'allowed'),
-          gateScore: gateDecision.gateScore,
-          gateThreshold: gateDecision.threshold,
-          gateMode: gateDecision.mode,
-        });
-
         let agentAnalysis = null;
         let aiAdjustment = 0;
         try {
-          agentAnalysis = await agentReasoningService.analyzeSignal(buildAgentSignalContext(c, gateDecision, state));
+          agentAnalysis = await agentReasoningService.analyzeSignal(buildAgentSignalContext(c, effectiveGateDecision, state));
           latestAgentAnalysis = agentAnalysis;
           aiAdjustment = clampAgentConfidenceAdjustment(agentAnalysis.confidence_adjustment);
         } catch (err) {
@@ -2023,6 +2202,12 @@ async function runTick() {
             : false,
           aiAgentAnalysis: agentAnalysis,
         };
+        candidateWithAgent.nearMissLearning = effectiveGateDecision.nearMissLearning === true;
+        candidateWithAgent.marketGateNearMissOverride = effectiveGateDecision.marketGateNearMissOverride === true;
+        candidateWithAgent.originalGateScore = effectiveGateDecision.originalGateScore ?? null;
+        candidateWithAgent.originalGateThreshold = effectiveGateDecision.originalGateThreshold ?? null;
+        candidateWithAgent.originalGateBlockedReason = effectiveGateDecision.originalGateBlockedReason ?? null;
+        candidateWithAgent.gateDecision = effectiveGateDecision;
 
         const riskProfile = getPaperRiskProfile(candidateWithAgent);
         const riskConfig = await riskEngineService.getRiskConfig();
@@ -2033,7 +2218,7 @@ async function runTick() {
           _riskConfig: riskConfig,
         };
         const riskEvaluation = await riskEngineService.evaluateTradeRisk(
-          buildRiskSignalContext(candidateWithAgent, gateDecision, agentAnalysis, riskProfile),
+          buildRiskSignalContext(candidateWithAgent, effectiveGateDecision, agentAnalysis, riskProfile),
           riskAccountState,
           { persist: true, evaluationSource: 'paper_pipeline' },
         );
@@ -2095,7 +2280,7 @@ async function runTick() {
         let executionSafety = null;
         try {
           executionSafety = await executionSafetyService.evaluateExecutionSafety(
-            await buildExecutionSafetyContext(candidateWithAgent, gateDecision, effectiveRiskEvaluation, riskProfile),
+            await buildExecutionSafetyContext(candidateWithAgent, effectiveGateDecision, effectiveRiskEvaluation, riskProfile),
           );
         } catch (err) {
           const failClosed = {
@@ -2158,7 +2343,7 @@ async function runTick() {
           candidateWithAgent.riskEvaluation = effectiveRiskEvaluation;
           candidateWithAgent.executionSafety = executionSafety;
           candidateWithAgent.riskReviewOverrideActive = riskReviewOverrideActive;
-          const trade = buildOpenTrade(candidateWithAgent, gateDecision);
+          const trade = buildOpenTrade(candidateWithAgent, effectiveGateDecision);
           _bump('tradesOpened', 'opened');
           state.openTrades.push(trade);
         if (c.signalId) state.seenSignalIds = [...state.seenSignalIds, c.signalId].slice(-200);
@@ -2674,6 +2859,43 @@ function getCalibrationReport() {
   };
 }
 
+function getNearMissLearningSummary(state = loadState()) {
+  const config = paperMarketConfigService.readPaperMarketConfig();
+  const margin = normalizeNearMissMargin(config.nearMissLearningMargin, 5);
+  const enabled = config.nearMissLearningEnabled !== false;
+  const combined = [...loadClosedTrades(), ...(state.openTrades || [])];
+  const byKey = new Map();
+  for (const trade of combined) {
+    if (!trade || trade.nearMissLearning !== true) continue;
+    const key = trade.tradeId || trade.signalId || `${trade.symbol || 'unknown'}:${trade.opened_at || trade.entryTime || ''}`;
+    if (!key) continue;
+    const ts = new Date(trade.closed_at || trade.last_update_at || trade.opened_at || trade.entryTime || trade.timestamp || 0).getTime();
+    const prev = byKey.get(key);
+    if (!prev || ts >= prev._ts) {
+      byKey.set(key, { ...trade, _ts: ts });
+    }
+  }
+  const trades = [...byKey.values()];
+  const latest = trades.reduce((acc, trade) => {
+    const ts = trade.opened_at || trade.entryTime || trade.last_update_at || trade.timestamp || null;
+    if (!ts) return acc;
+    if (!acc) return trade;
+    const current = new Date(acc.opened_at || acc.entryTime || acc.last_update_at || acc.timestamp || 0).getTime();
+    const next = new Date(ts).getTime();
+    return Number.isFinite(next) && (!Number.isFinite(current) || next > current) ? trade : acc;
+  }, null);
+
+  return {
+    enabled,
+    margin,
+    entries: trades.length,
+    openEntries: trades.filter((trade) => String(trade.result || '').toUpperCase() === 'OPEN').length,
+    closedEntries: trades.filter((trade) => trade.result && String(trade.result).toUpperCase() !== 'OPEN').length,
+    latestEntryAt: latest ? (latest.opened_at || latest.entryTime || latest.last_update_at || latest.timestamp || null) : null,
+    latestTradeId: latest?.tradeId || null,
+  };
+}
+
 function getGateStatus() {
   const state   = loadState();
   const compass = getMarketCompass();
@@ -2691,8 +2913,9 @@ function getGateStatus() {
     conservativeMode:  state.conservativeMode || false,
     compassBias:       compass?.bias || null,
     compassAvailable:  !!compass,
-    activeRules: ['data_freshness', 'session', 'paper_only', 'compass', 'market_group', 'calibration', 'subtype_safety_v3', 'stop_weak_conditions_v3'],
+    activeRules: ['data_freshness', 'session', 'paper_only', 'compass', 'market_group', 'calibration', 'subtype_safety_v3', 'stop_weak_conditions_v3', 'near_miss_learning'],
     calibrationStats:  getGateCalibStats(),
+    nearMissLearning:  getNearMissLearningSummary(state),
     pipeline:          getPipelineSnapshot(),
   };
 }
@@ -2735,6 +2958,8 @@ function getDecisionPipeline() {
     summaryParts.push(`${p.marketGateEvaluatedToday} nådde Market Gate.`);
   if (p.tradesOpenedToday > 0)
     summaryParts.push(`${p.tradesOpenedToday} trade${p.tradesOpenedToday !== 1 ? 's' : ''} öppnades.`);
+  if (p.marketGateNearMissLearningToday > 0)
+    summaryParts.push(`${p.marketGateNearMissLearningToday} near-miss learning entries öppnades.`);
   else if (p.marketGateObserveOnlyToday > 0)
     summaryParts.push('Agenten väntar på stark volym.');
   else if (p.marketGateEvaluatedToday > 0)
@@ -2759,6 +2984,7 @@ function getGateHistory() {
   const blocked = allDecisions.filter(d => d.mode === 'block' || d.allowed === false).length;
   const passed  = allDecisions.filter(d => d.mode === 'allow' || d.allowed === true).length;
   const observeOnly = allDecisions.filter(d => d.mode === 'observe_only').length;
+  const nearMissLearning = allDecisions.filter(d => d.nearMissLearning === true).length;
   return {
     ok:         true,
     mode:       'paper',
@@ -2767,6 +2993,7 @@ function getGateHistory() {
     blocked,
     passed,
     observeOnly,
+    nearMissLearning,
     passRate:   allDecisions.length ? Math.round((passed / allDecisions.length) * 100) : null,
     events:     gateEvents.slice(0, 50),
     decisions:  gateEvents.slice(0, 50),
@@ -2778,6 +3005,7 @@ function getGateDecisions() {
   const blocked = _recentGateDecisions.filter(d => d.mode !== 'observe_only' && !d.allowed).length;
   const allowed = _recentGateDecisions.filter(d => d.mode !== 'observe_only' && d.allowed).length;
   const observeOnly = _recentGateDecisions.filter(d => d.mode === 'observe_only').length;
+  const nearMissLearning = _recentGateDecisions.filter(d => d.nearMissLearning === true).length;
   return {
     ok:        true,
     mode:      'paper',
@@ -2787,6 +3015,7 @@ function getGateDecisions() {
     blocked,
     allowed,
     observeOnly,
+    nearMissLearning,
     persisted: {
       source: 'disk',
       count:  loadGateDecisionHistory().length,
@@ -2845,5 +3074,7 @@ module.exports = {
   loadGateDecisionHistory,
   _internal: {
     applyManualRiskReviewOverride,
+    buildNearMissLearningGateDecision,
+    buildOpenTrade,
   },
 };

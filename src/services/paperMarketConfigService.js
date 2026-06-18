@@ -19,6 +19,8 @@ const DEFAULT_CONFIG = Object.freeze({
   maxOpenPaperTrades: 3,
   dailyCandidatesMode: 'preview_only',
   minPaperGateScore: 70,
+  nearMissLearningEnabled: true,
+  nearMissLearningMargin: 5,
   allowSoftStatusesForPaper: false,
   allowWeakVolumeForPaper: false,
   emergencyPause: false,
@@ -102,6 +104,13 @@ function normalizeStoredConfig(parsed = {}) {
       DEFAULT_CONFIG.minPaperGateScore,
       50,
       70,
+    ),
+    nearMissLearningEnabled: normalizeToggle(parsed.nearMissLearningEnabled, DEFAULT_CONFIG.nearMissLearningEnabled),
+    nearMissLearningMargin: normalizePositiveInt(
+      parsed.nearMissLearningMargin,
+      DEFAULT_CONFIG.nearMissLearningMargin,
+      1,
+      10,
     ),
     allowSoftStatusesForPaper: normalizeToggle(parsed.allowSoftStatusesForPaper, DEFAULT_CONFIG.allowSoftStatusesForPaper),
     allowWeakVolumeForPaper: normalizeToggle(parsed.allowWeakVolumeForPaper, DEFAULT_CONFIG.allowWeakVolumeForPaper),
@@ -340,6 +349,8 @@ function validateUpdatePatch(patch = {}) {
     'maxOpenPaperTrades',
     'dailyCandidatesMode',
     'minPaperGateScore',
+    'nearMissLearningEnabled',
+    'nearMissLearningMargin',
     'allowSoftStatusesForPaper',
     'allowWeakVolumeForPaper',
     'emergencyPause',
@@ -369,6 +380,11 @@ function validateUpdatePatch(patch = {}) {
   if ('minPaperGateScore' in patch) {
     const n = Number(patch.minPaperGateScore);
     if (!Number.isFinite(n) || Math.round(n) < 50 || Math.round(n) > 70) return { ok: false, error: 'minPaperGateScore måste vara ett heltal mellan 50 och 70.' };
+  }
+  if ('nearMissLearningEnabled' in patch && typeof patch.nearMissLearningEnabled !== 'boolean') return { ok: false, error: 'nearMissLearningEnabled måste vara boolean.' };
+  if ('nearMissLearningMargin' in patch) {
+    const n = Number(patch.nearMissLearningMargin);
+    if (!Number.isFinite(n) || Math.round(n) < 1 || Math.round(n) > 10) return { ok: false, error: 'nearMissLearningMargin måste vara ett heltal mellan 1 och 10.' };
   }
   if ('allowSoftStatusesForPaper' in patch && typeof patch.allowSoftStatusesForPaper !== 'boolean') return { ok: false, error: 'allowSoftStatusesForPaper måste vara boolean.' };
   if ('allowWeakVolumeForPaper' in patch && typeof patch.allowWeakVolumeForPaper !== 'boolean') return { ok: false, error: 'allowWeakVolumeForPaper måste vara boolean.' };

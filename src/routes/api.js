@@ -3491,6 +3491,8 @@ router.post('/paper-trading/market-config', (req, res) => {
     const result = paperMarketConfigService.updatePaperMarketConfig({
       cryptoPaperEnabled: body.cryptoPaperEnabled,
       equityPaperEnabled: body.equityPaperEnabled,
+      nearMissLearningEnabled: body.nearMissLearningEnabled,
+      nearMissLearningMargin: body.nearMissLearningMargin,
       updatedBy: 'manual',
     });
     res.status(result.ok ? 200 : 400).json(result);

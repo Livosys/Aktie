@@ -14,18 +14,27 @@ let config = svc.readPaperMarketConfig({ dataFile: file });
 assert.equal(config.ok, true);
 assert.equal(config.cryptoPaperEnabled, false);
 assert.equal(config.equityPaperEnabled, true);
+assert.equal(config.nearMissLearningEnabled, true);
+assert.equal(config.nearMissLearningMargin, 5);
 
 let result = svc.updatePaperMarketConfig({ cryptoPaperEnabled: false, updatedBy: 'manual' }, { dataFile: file });
 assert.equal(result.ok, true);
 assert.equal(result.changed, true);
 assert.equal(result.cryptoPaperEnabled, false);
 assert.equal(result.equityPaperEnabled, true);
+assert.equal(result.nearMissLearningEnabled, true);
 
 result = svc.updatePaperMarketConfig({ equityPaperEnabled: false, updatedBy: 'manual' }, { dataFile: file });
 assert.equal(result.ok, true);
 assert.equal(result.changed, true);
 assert.equal(result.cryptoPaperEnabled, false);
 assert.equal(result.equityPaperEnabled, false);
+
+result = svc.updatePaperMarketConfig({ nearMissLearningEnabled: false, nearMissLearningMargin: 4, updatedBy: 'manual' }, { dataFile: file });
+assert.equal(result.ok, true);
+assert.equal(result.changed, true);
+assert.equal(result.nearMissLearningEnabled, false);
+assert.equal(result.nearMissLearningMargin, 4);
 
 assert.equal(svc.isCryptoSymbol('BTCUSDT'), true);
 assert.equal(svc.isCryptoSymbol('ETHUSDT'), true);

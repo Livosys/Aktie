@@ -317,6 +317,7 @@ function gateStageFromEvent(row = {}) {
   if (type.includes('RISK')) return 'risk';
   if (type.includes('GATE') && reason.includes('allowlist')) return 'approval_gate';
   if (type.includes('GATE')) return 'market_gate';
+  if (type.includes('NEAR_MISS')) return 'market_gate';
   if (type.includes('SKIPPED')) return 'candidate_filter';
   return 'unknown';
 }
