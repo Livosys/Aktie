@@ -10,6 +10,7 @@ const NAV_GROUPS = [
         items: [
           { path: '/supervisor', label: 'Trading OS', icon: '🧭', match: ['/supervisor', '/oversikt'], accent: 'blue' },
           { path: '/live',       label: 'Live / Signaler', icon: '♥', match: ['/', '/live', '/signalpuls', '/scanner', '/signaler', '/aktier', '/krypto', '/nasdaq'], accent: 'blue' },
+          { path: '/paper-trading', label: 'Paper Trading', icon: '🧾', match: ['/paper-trading'], accent: 'green' },
           { path: '/lab',        label: 'Lärdomar',        icon: '🧪', match: ['/lab', '/trading-lab', '/strategy-lab', '/replay', '/review-chart', '/intelligence', '/machine'], accent: 'orange' },
           { path: '/insikter',   label: 'Historik',        icon: '📊', match: ['/insikter', '/resultat', '/setup-performance', '/historik', '/paper-trading'], accent: 'green' },
           { path: '/system',     label: 'Teknik',          icon: '🛡️', match: ['/system', '/system-health', '/alerts', '/sakerhet', '/risk', '/risk-engine', '/safety', '/execution-safety'], accent: 'purple' },
