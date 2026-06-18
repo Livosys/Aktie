@@ -9,6 +9,7 @@ const NAV_GROUPS = [
     items: [
       { path: '/live', icon: '🟢', label: 'Live', match: ['/live'] },
       { path: '/paper-trading', icon: '🧾', label: 'Paper Trading', match: ['/paper-trading'] },
+      { path: '/interactive-brokers', icon: '🔌', label: 'Interactive Brokers', match: ['/interactive-brokers'] },
       { path: '/lab', icon: '🧪', label: 'Test Lab', match: ['/lab'] },
       { path: '/system', icon: '🛡️', label: 'System', match: ['/system'] },
     ],

@@ -10,6 +10,7 @@ import SignalpulsPage   from './pages/SignalpulsPage.jsx';
 import TradingLabPage   from './pages/TradingLabPage.jsx';
 import SystemPage       from './pages/SystemPage.jsx';
 import PaperTradingPage from './pages/PaperTradingPage.jsx';
+import InteractiveBrokersPage from './pages/InteractiveBrokersPage.jsx';
 
 function PlaceholderPage({ title, text }) {
   return (
@@ -42,6 +43,7 @@ export default function App() {
         <Routes>
           <Route path="/" element={<Navigate to="/lab" replace />} />
           <Route path="/paper-trading" element={<PaperTradingPage />} />
+          <Route path="/interactive-brokers" element={<InteractiveBrokersPage />} />
           <Route path="/system" element={<SystemPage />} />
           <Route path="/lab" element={<TradingLabPage />} />
           <Route path="/live" element={<SignalpulsPage />} />
