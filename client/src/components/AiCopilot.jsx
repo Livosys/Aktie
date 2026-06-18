@@ -10,12 +10,9 @@ const EXAMPLES = [
 ];
 
 function pageFromPath(pathname) {
-  if (pathname.startsWith('/alerts')) return 'alerts';
-  if (pathname.startsWith('/system-health') || pathname.startsWith('/health')) return 'system-health';
-  if (pathname.startsWith('/aktier')) return 'stocks';
-  if (pathname.startsWith('/krypto')) return 'crypto';
-  if (pathname.startsWith('/historik')) return 'history';
-  if (pathname.startsWith('/review-chart')) return 'review';
+  if (pathname.startsWith('/system')) return 'system';
+  if (pathname.startsWith('/paper-trading')) return 'daytrading';
+  if (pathname.startsWith('/lab')) return 'lab';
   return 'live';
 }
 

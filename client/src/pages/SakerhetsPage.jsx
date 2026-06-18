@@ -101,7 +101,7 @@ export function RiskTab() {
       </SectionCard>
 
       <div className="sak-nav">
-        <Link to="/risk-engine" className="sak-nav-link">Avancerad riskmotor →</Link>
+        <Link to="/system?tab=safety" className="sak-nav-link">Safety-översikt →</Link>
       </div>
     </div>
   );
@@ -178,7 +178,7 @@ export function ExitTab() {
       </SectionCard>
 
       <div className="sak-nav">
-        <Link to="/exit-engine" className="sak-nav-link">Avancerad exitmotor →</Link>
+        <Link to="/system?tab=safety" className="sak-nav-link">Safety-översikt →</Link>
         <Link to="/lab?tab=exits" className="sak-nav-link">Testa exits i LAB →</Link>
       </div>
     </div>

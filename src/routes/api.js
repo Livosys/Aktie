@@ -79,6 +79,11 @@ const strategyRuntimeMatrix = require('../services/strategyRuntimeMatrixService'
 const strategyIdNormalizer = require('../services/strategyIdNormalizerService');
 const automationPlanService = require('../services/automationPlanService');
 const automationApprovalService = require('../services/automationApprovalService');
+const paperAllowlistConfigService = require('../services/paperAllowlistConfigService');
+const paperMarketConfigService = require('../services/paperMarketConfigService');
+const aiAgentPaperCandidateService = require('../services/aiAgentPaperCandidateService');
+const batchReplayPaperCandidateService = require('../services/batchReplayPaperCandidateService');
+const paperCandidateReadinessService = require('../services/paperCandidateReadinessService');
 const strategyTestAutopilot = require('../services/strategyTestAutopilotService');
 const learningConnector = require('../services/learningConnectorService');
 const topStrategyGrid = require('../services/topStrategyGridService');
@@ -103,6 +108,12 @@ const batchAutopilotService = require('../services/batchAutopilotService');
 const replayAutopilotService = require('../services/replayAutopilotService');
 const replayStatusService = require('../services/replayStatusService');
 const paperTradingStatusService = require('../services/paperTradingStatusService');
+const paperTradingRuntimeService = require('../services/paperTradingRuntimeService');
+const paperRiskPauseSummaryService = require('../services/paperRiskPauseSummaryService');
+const paperRiskReviewService = require('../services/paperRiskReviewService');
+const tradingViewTestBlueprintService = require('../services/tradingViewTestBlueprintService');
+const paperTradeExplanationService = require('../services/paperTradeExplanationService');
+const lossReviewQueueService = require('../services/lossReviewQueueService');
 const tradingViewPaperReplayPreviewService = require('../services/tradingViewPaperReplayPreviewService');
 const tradingViewPreviewLogService = require('../services/tradingViewPreviewLogService');
 const TEST_LIVE_SEND_COOLDOWN_MS = 5 * 60 * 1000;
@@ -987,6 +998,31 @@ router.get('/automation/plan', (req, res) => {
 // paper-only testing. It NEVER starts a test, batch, replay or paper trade,
 // never touches the scheduler, paper runtime, allowlist, risk, broker or live
 // trading. Safety is always paper_only with every action flag false.
+router.get('/automation/paper-allowlist/config', (req, res) => {
+  try {
+    res.json(paperAllowlistConfigService.getPaperAllowlistConfig());
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message, safety: paperAllowlistConfigService.SAFETY });
+  }
+});
+
+router.post('/automation/paper-allowlist/config', (req, res) => {
+  try {
+    const body = req.body && typeof req.body === 'object' ? req.body : {};
+    if (body.live_trading_enabled === true || body.can_place_orders === true || body.actions_allowed === true || body.broker_enabled === true) {
+      return res.status(400).json({ ok: false, error: 'paper_allowlist_config_is_paper_only', safety: paperAllowlistConfigService.SAFETY });
+    }
+    const result = paperAllowlistConfigService.updatePaperAllowlistConfig({
+      maxApproved: body.maxApproved,
+      reason: body.reason,
+      updatedBy: body.updatedBy,
+    });
+    res.status(result.ok ? 200 : 400).json(result);
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message, safety: paperAllowlistConfigService.SAFETY });
+  }
+});
+
 router.get('/automation/approvals', (req, res) => {
   try {
     res.json(automationApprovalService.getAutomationApprovals());
@@ -3392,6 +3428,120 @@ router.get('/paper-trading/live-state', async (req, res) => {
   }
 });
 
+router.get('/paper-trading/runtime', (req, res) => {
+  try {
+    res.json(paperTradingRuntimeService.buildPaperTradingRuntime({
+      limit: req.query.limit || req.query.n,
+    }));
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message, ...paperTradingRuntimeService.SAFETY });
+  }
+});
+
+router.get('/paper-trading/risk-pause-summary', async (req, res) => {
+  try {
+    const result = await paperRiskPauseSummaryService.defaultPaperRiskPauseSummaryService.getRiskPauseSummary();
+    res.json(result);
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message, ...paperRiskPauseSummaryService.SAFETY });
+  }
+});
+
+router.post('/paper-trading/risk-review/resume', async (req, res) => {
+  try {
+    const body = req.body && typeof req.body === 'object' ? req.body : {};
+    if (body.live_trading_enabled === true || body.can_place_orders === true || body.actions_allowed === true || body.broker_enabled === true) {
+      return res.status(400).json({ ok: false, error: 'paper_risk_review_is_paper_only', safety: paperRiskReviewService.SAFETY });
+    }
+    const result = await paperRiskReviewService.defaultPaperRiskReviewService.resumePaperTesting(body);
+    const status = result.ok ? 200 : 400;
+    res.status(status).json(result);
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message, ...paperRiskReviewService.SAFETY });
+  }
+});
+
+router.get('/paper-trading/tradingview-test-blueprints', (req, res) => {
+  try {
+    const result = tradingViewTestBlueprintService.defaultTradingViewTestBlueprintService.buildTradingViewTestBlueprints();
+    if (req.query.strategyId) {
+      const single = tradingViewTestBlueprintService.defaultTradingViewTestBlueprintService.getTradingViewTestBlueprint(req.query.strategyId);
+      return res.status(single.ok ? 200 : 404).json(single);
+    }
+    res.json(result);
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message, ...tradingViewTestBlueprintService.SAFETY });
+  }
+});
+
+router.get('/paper-trading/market-config', (req, res) => {
+  try {
+    res.json(paperMarketConfigService.readPaperMarketConfig());
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message, safety: paperMarketConfigService.SAFETY });
+  }
+});
+
+router.post('/paper-trading/market-config', (req, res) => {
+  try {
+    const body = req.body && typeof req.body === 'object' ? req.body : {};
+    if (body.live_trading_enabled === true || body.can_place_orders === true || body.actions_allowed === true || body.broker_enabled === true) {
+      return res.status(400).json({ ok: false, error: 'paper_market_config_is_paper_only', safety: paperMarketConfigService.SAFETY });
+    }
+    const result = paperMarketConfigService.updatePaperMarketConfig({
+      cryptoPaperEnabled: body.cryptoPaperEnabled,
+      equityPaperEnabled: body.equityPaperEnabled,
+      nearMissLearningEnabled: body.nearMissLearningEnabled,
+      nearMissLearningMargin: body.nearMissLearningMargin,
+      updatedBy: 'manual',
+    });
+    res.status(result.ok ? 200 : 400).json(result);
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message, safety: paperMarketConfigService.SAFETY });
+  }
+});
+
+router.get('/paper-trading/trade-explanations/:tradeId?', (req, res) => {
+  try {
+    const { tradeId } = req.params;
+    const limit = req.query.limit || req.query.n || 50;
+    if (tradeId || req.query.symbol || req.query.strategyId || req.query.strategy_id || req.query.openedAt || req.query.opened_at) {
+      res.json(paperTradeExplanationService.buildTradeExplanationLookup({
+        limit,
+        lookup: {
+          tradeId: tradeId || req.query.tradeId || null,
+          symbol: req.query.symbol || null,
+          strategyId: req.query.strategyId || req.query.strategy_id || null,
+          openedAt: req.query.openedAt || req.query.opened_at || null,
+          closedAt: req.query.closedAt || req.query.closed_at || null,
+        },
+      }));
+      return;
+    }
+    res.json(paperTradeExplanationService.buildTradeExplanations({ limit }));
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message, ...paperTradeExplanationService.SAFETY });
+  }
+});
+
+router.get('/paper-trading/loss-review-queue', (req, res) => {
+  try {
+    res.json(lossReviewQueueService.defaultLossReviewQueueService.getLossReviewQueue());
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message, ...lossReviewQueueService.SAFETY });
+  }
+});
+
+router.get('/paper-trading/loss-review-queue/:groupId/test-preview', (req, res) => {
+  try {
+    const result = lossReviewQueueService.defaultLossReviewQueueService.buildTestPreview(req.params.groupId);
+    const status = result.ok ? 200 : (result.error === 'loss_group_not_found' ? 404 : 400);
+    res.status(status).json(result);
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message, ...lossReviewQueueService.SAFETY });
+  }
+});
+
 router.get('/paper-trading/trades', (req, res) => {
   try { res.json(paperTrading.getTrades()); }
   catch (err) { res.status(500).json({ ok: false, error: err.message }); }
@@ -3735,6 +3885,104 @@ router.get('/optimization/recommended-config', (req, res) => {
   } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
 });
 
+router.get('/optimization/paper-candidates', (req, res) => {
+  try {
+    res.json(aiAgentPaperCandidateService.getPaperCandidateStatus(req.query.limit || req.query.n || 25));
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message, safety: aiAgentPaperCandidateService.SAFETY });
+  }
+});
+
+router.post('/optimization/paper-candidates', (req, res) => {
+  try {
+    const body = req.body && typeof req.body === 'object' ? req.body : {};
+    if (body.live_trading_enabled === true || body.can_place_orders === true || body.actions_allowed === true || body.broker_enabled === true) {
+      return res.status(400).json({ ok: false, error: 'paper_candidate_is_paper_only', safety: aiAgentPaperCandidateService.SAFETY });
+    }
+    const result = aiAgentPaperCandidateService.recordPaperCandidate({
+      strategyId: body.strategyId,
+      strategyName: body.strategyName,
+      source: body.source,
+      sourceKind: body.sourceKind,
+      sourceLabel: body.sourceLabel,
+      recommendationId: body.recommendationId,
+      appliedConfig: body.appliedConfig,
+      selectedChanges: body.selectedChanges,
+      reason: body.reason,
+      tradeCount: body.tradeCount,
+      replayRunCount: body.replayRunCount,
+      overallScore: body.overallScore,
+      confidence: body.confidence,
+      dataVolume: body.dataVolume,
+      summarySnapshot: body.summarySnapshot,
+    });
+    res.status(result.ok ? 200 : 400).json(result);
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message, safety: aiAgentPaperCandidateService.SAFETY });
+  }
+});
+
+router.get('/optimization/batch-replay-paper-candidates/preview', (req, res) => {
+  try {
+    res.json(batchReplayPaperCandidateService.listBatchReplayCandidatePreview(req.query.limit || req.query.n || 25));
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message, safety: batchReplayPaperCandidateService.SAFETY });
+  }
+});
+
+router.post('/optimization/batch-replay-paper-candidates/create', (req, res) => {
+  try {
+    const body = req.body && typeof req.body === 'object' ? req.body : {};
+    const preview = batchReplayPaperCandidateService.findPreviewCandidate(
+      body.candidateId || body.recommendationId || body.sourceRunId || '',
+      body.limit || body.n || 25,
+    );
+    if (!preview) {
+      return res.status(404).json({ ok: false, error: 'candidate_not_found_in_preview', safety: batchReplayPaperCandidateService.SAFETY });
+    }
+    const result = aiAgentPaperCandidateService.recordPaperCandidate({
+      candidateId: preview.candidateId,
+      recommendationId: preview.candidateId,
+      strategyId: preview.strategyId,
+      strategyName: preview.strategyName,
+      source: preview.source,
+      sourceKind: preview.sourceLabel || 'batch_replay',
+      sourceLabel: preview.sourceLabel || 'Batch/replay kandidat',
+      sourceRunId: preview.sourceRunId,
+      variantId: preview.variantId,
+      displayName: preview.displayName,
+      appliedConfig: preview.testedConfig,
+      testedConfig: preview.testedConfig,
+      metrics: preview.metrics,
+      recommendation: preview.recommendation,
+      reason: body.reason || 'manual_create_from_batch_replay_preview',
+      tradeCount: preview.metrics?.trades ?? null,
+      replayRunCount: preview.source === 'replay' ? 1 : null,
+      overallScore: preview.metrics?.score ?? null,
+      confidence: preview.recommendation?.confidence || null,
+      dataVolume: preview.metrics?.trades ?? null,
+      summarySnapshot: {
+        source: preview.source,
+        sourceRunId: preview.sourceRunId,
+        variantId: preview.variantId,
+        recommendation: preview.recommendation,
+        metrics: preview.metrics,
+      },
+    });
+    res.status(result.ok ? 200 : 400).json(result);
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message, safety: batchReplayPaperCandidateService.SAFETY });
+  }
+});
+
+router.get('/optimization/paper-candidates/readiness', (req, res) => {
+  try {
+    res.json(paperCandidateReadinessService.listPaperCandidateReadiness(req.query.limit || req.query.n || 50));
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message, safety: paperCandidateReadinessService.SAFETY });
+  }
+});
+
 // ── Market Universe ───────────────────────────────────────────────────────────
 router.get('/markets/universe', (req, res) => {
   try { res.json({ ok: true, ...marketUniverse.getUniverse() }); }
@@ -4066,6 +4314,19 @@ const paperAllowlistService = require('../services/paperAllowlistService');
 router.get('/automation/paper-allowlist/status', (req, res) => {
   try { res.json(paperAllowlistService.getPaperAllowlistStatus()); }
   catch (err) { res.status(500).json({ ok: false, error: err.message, ...paperAllowlistService.SAFETY }); }
+});
+
+// ── Interactive Brokers Paper — Phase 1 read-only / dry-run preview ───────────
+// Additive, read-only. NO broker connection, NO order submission, NO queue,
+// NO execution, and NO change to the internal paper trading flow.
+const interactiveBrokersPreviewService = require('../services/interactiveBrokersPreviewService');
+router.get('/interactive-brokers/status', (req, res) => {
+  try { res.json(interactiveBrokersPreviewService.getIbPaperStatus()); }
+  catch (err) { res.status(500).json({ ok: false, error: err.message, safety: interactiveBrokersPreviewService.SAFETY }); }
+});
+router.get('/interactive-brokers/approved-strategies-preview', (req, res) => {
+  try { res.json(interactiveBrokersPreviewService.getApprovedStrategiesPreview()); }
+  catch (err) { res.status(500).json({ ok: false, error: err.message, safety: interactiveBrokersPreviewService.SAFETY }); }
 });
 
 // ── API 404 — never return HTML for unknown /api/* paths ──────────────────────

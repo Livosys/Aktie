@@ -5,11 +5,10 @@ export default function MobileBottomNav() {
   const { pathname } = useLocation();
 
   const tabs = [
-    { id: 'supervisor', label: 'Trading OS', icon: '🧭', active: pathname.startsWith('/supervisor') || pathname.startsWith('/oversikt'), to: '/supervisor' },
-    { id: 'live',       label: 'Live',       icon: '♥', active: pathname === '/' || pathname.startsWith('/live') || pathname.startsWith('/signalpuls'), to: '/live' },
-    { id: 'lab',        label: 'Lärdomar',   icon: 'L', active: pathname.startsWith('/lab') || pathname.startsWith('/trading-lab'), to: '/lab' },
-    { id: 'insikter',   label: 'Historik',   icon: 'I', active: pathname.startsWith('/insikter') || pathname.startsWith('/resultat'), to: '/insikter' },
-    { id: 'system',     label: 'Teknik',     icon: 'S', active: pathname.startsWith('/system') || pathname.startsWith('/sakerhet'), to: '/system' },
+    { id: 'live', label: 'Live', active: pathname.startsWith('/live'), to: '/live' },
+    { id: 'paper-trading', label: 'Paper Trading', active: pathname.startsWith('/paper-trading'), to: '/paper-trading' },
+    { id: 'lab', label: 'Test Lab', active: pathname.startsWith('/lab'), to: '/lab' },
+    { id: 'system', label: 'System', active: pathname.startsWith('/system'), to: '/system' },
   ];
 
   return (
@@ -21,9 +20,7 @@ export default function MobileBottomNav() {
           className={`mob-tab${tab.active ? ' mob-tab-active' : ''}`}
           aria-label={tab.label}
         >
-          <span className="mob-tab-icon">{tab.icon}</span>
           <span className="mob-tab-label">{tab.label}</span>
-          {tab.id === 'live' && <span className="mob-tab-live" />}
         </Link>
       ))}
     </nav>

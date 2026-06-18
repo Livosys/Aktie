@@ -29,6 +29,7 @@ function StatusPill({ state = 'unknown', label, value }) {
 export function useSystemStatus() {
   const unified = useUnifiedConfig('health');
   return {
+    backend: unified.global.backendHealth,
     health: unified.global.systemHealth,
     scan: unified.global.scannerStatus,
     loading: unified.meta.loading && !unified.global.systemHealth,
@@ -37,6 +38,7 @@ export function useSystemStatus() {
 }
 
 export default function SystemStatusStrip({ status }) {
+  const backend = status?.backend;
   const health = status?.health;
   const scan = status?.scan;
 
@@ -44,7 +46,7 @@ export default function SystemStatusStrip({ status }) {
     const stockScanner = componentByName(health, 'Stock scanner');
     const cryptoScanner = componentByName(health, 'Crypto scanner');
     const learning = (health?.components || []).find((c) => /learning|inlär/i.test(`${c.name} ${c.area}`));
-    const backendOk = !!health?.ok;
+    const backendOk = !!(backend?.ok ?? health?.ok);
     const scannerOk = [stockScanner, cryptoScanner].some((c) => c?.status === 'ON');
     const dataOk = [stockScanner, cryptoScanner].some((c) => c?.details?.feedStatus?.status === 'ON');
     const learningOk = learning ? learning.status !== 'OFF' : true;
@@ -58,7 +60,7 @@ export default function SystemStatusStrip({ status }) {
       lastScan,
       overall: health?.overallStatus || 'UNKNOWN',
     };
-  }, [health, scan]);
+  }, [backend, health, scan]);
 
   return (
     <div className="premium-status-strip" aria-label="Systemstatus">

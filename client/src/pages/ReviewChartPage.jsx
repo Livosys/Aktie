@@ -853,7 +853,7 @@ export default function ReviewChartPage() {
           </div>
         </div>
         <div className="status-bar-v2">
-          <Link to="/historik" className="btn" style={{ fontSize: 11, padding: '3px 10px' }}>← Historik</Link>
+          <Link to="/lab?tab=replay" className="btn" style={{ fontSize: 11, padding: '3px 10px' }}>← Lab & historik</Link>
           {symbol && (
             <a href={buildTVUrl(symbol)} target="_blank" rel="noopener noreferrer"
                className="btn" style={{ fontSize: 11, padding: '3px 10px' }}>

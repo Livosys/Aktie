@@ -14,6 +14,7 @@ const path = require('path');
 
 const automationPlanService = require('./automationPlanService');
 const strategyRuntimeMatrixService = require('./strategyRuntimeMatrixService');
+const paperAllowlistConfigService = require('./paperAllowlistConfigService');
 
 const SAFETY = Object.freeze({
   mode: 'paper_only',
@@ -23,8 +24,12 @@ const SAFETY = Object.freeze({
   broker_enabled: false,
 });
 
-const MAX_APPROVED = 4;
+const MAX_APPROVED = paperAllowlistConfigService.DEFAULT_MAX_APPROVED;
 const DATA_FILE = path.resolve(__dirname, '../../data/automation-approvals.json');
+const APPROVALS_CACHE_TTL_MS = 15_000;
+
+let _approvalsCache = null;
+let _approvalsCachedAt = 0;
 
 // Default in-memory shape. The file is NOT created until the first approve/reject.
 function defaultState() {
@@ -71,6 +76,11 @@ function writeState(state) {
   fs.writeFileSync(DATA_FILE, JSON.stringify(payload, null, 2));
 }
 
+function invalidateApprovalsCache() {
+  _approvalsCache = null;
+  _approvalsCachedAt = 0;
+}
+
 // Build a read-only snapshot of how a strategy currently looks across the
 // runtime matrix and the automation plan, so approve/reject can reason safely.
 function inspectStrategy(strategyId) {
@@ -104,6 +114,19 @@ function inspectStrategy(strategyId) {
   };
 }
 
+function getMaxApproved() {
+  try {
+    const config = paperAllowlistConfigService.getPaperAllowlistConfig();
+    const value = Number(config && config.maxApproved);
+    if (Number.isInteger(value) && value >= paperAllowlistConfigService.MIN_APPROVED && value <= paperAllowlistConfigService.HARD_MAX_APPROVED) {
+      return value;
+    }
+  } catch (_) {
+    // Fall through to the default below.
+  }
+  return MAX_APPROVED;
+}
+
 // Validate whether a strategy may be approved. Returns { ok, reason }.
 // Approval only records intent; these rules keep the recorded list sane and
 // aligned with the read-only plan. They never touch trading state.
@@ -124,8 +147,9 @@ function canApprove(strategyId, currentApproved) {
   if ((info.isWeakCandidate || info.isWeakInPlan) && !info.isPromising) {
     return { ok: false, reason: 'Svag strategi kan inte godkännas (ligger inte i promisingNeedsManualApproval).' };
   }
-  if (!currentApproved.includes(strategyId) && currentApproved.length >= MAX_APPROVED) {
-    return { ok: false, reason: `Max ${MAX_APPROVED} godkända strategier. Avvisa en innan du godkänner en ny.` };
+  const maxApproved = getMaxApproved();
+  if (!currentApproved.includes(strategyId) && currentApproved.length >= maxApproved) {
+    return { ok: false, reason: `Max ${maxApproved} godkända strategier. Avvisa en innan du godkänner en ny.` };
   }
   return { ok: true, reason: 'Approved from Automation Plan', info };
 }
@@ -156,6 +180,7 @@ function approveStrategy(input = {}) {
   });
   state.history = state.history.slice(0, 200);
   writeState(state);
+  invalidateApprovalsCache();
 
   return { ok: true, strategyId, action: 'approved', reason, safety: SAFETY };
 }
@@ -185,6 +210,7 @@ function rejectStrategy(input = {}) {
   });
   state.history = state.history.slice(0, 200);
   writeState(state);
+  invalidateApprovalsCache();
 
   return { ok: true, strategyId, action: 'rejected', reason, safety: SAFETY };
 }
@@ -193,9 +219,15 @@ function rejectStrategy(input = {}) {
 // and automation plan so the UI can flag drift (blockers appeared, no longer
 // recommended, etc). Never mutates anything.
 function getAutomationApprovals() {
+  const now = Date.now();
+  if (_approvalsCache && (now - _approvalsCachedAt) < APPROVALS_CACHE_TTL_MS) {
+    return _approvalsCache;
+  }
+
   const state = readState();
   const plan = automationPlanService.getAutomationPlan();
   const matrix = strategyRuntimeMatrixService.getStrategyRuntimeMatrix();
+  const config = paperAllowlistConfigService.getPaperAllowlistConfig();
   const matrixIds = new Set((matrix.strategies || []).map((r) => r.id));
   const recommended = plan.recommendedPaperCandidates || [];
   const recommendedIds = new Set(recommended.map((c) => c.id));
@@ -213,10 +245,12 @@ function getAutomationApprovals() {
     .filter((c) => !approved.includes(c.id) && !state.rejectedStrategyIds.includes(c.id))
     .map((c) => ({ id: c.id, name: c.name, confidence: c.confidence, reason: c.reason }));
 
-  return {
+  _approvalsCache = {
     ok: true,
     mode: state.mode,
-    maxApproved: MAX_APPROVED,
+    maxApproved: getMaxApproved(),
+    hardMaxApproved: paperAllowlistConfigService.HARD_MAX_APPROVED,
+    minApproved: paperAllowlistConfigService.MIN_APPROVED,
     approvedCount: approved.length,
     approvedStrategyIds: approved,
     rejectedStrategyIds: state.rejectedStrategyIds,
@@ -225,15 +259,26 @@ function getAutomationApprovals() {
     approvedWithBlockers,
     approvedNoLongerRecommended,
     waitingForApproval,
+    ...(config.warning ? { configWarning: config.warning } : {}),
     note: 'Detta startar inga tester. Det sparar bara ditt godkännande för framtida paper-only testing.',
     safety: SAFETY,
   };
+  _approvalsCachedAt = now;
+
+  return _approvalsCache;
+}
+
+function getAutomationApprovalsConfig() {
+  return paperAllowlistConfigService.getPaperAllowlistConfig();
 }
 
 module.exports = {
   SAFETY,
   MAX_APPROVED,
+  getMaxApproved,
+  getAutomationApprovalsConfig,
   getAutomationApprovals,
+  canApproveStrategy: canApprove,
   approveStrategy,
   rejectStrategy,
 };

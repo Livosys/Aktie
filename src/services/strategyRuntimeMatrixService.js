@@ -19,6 +19,10 @@ const SAFETY = Object.freeze({
 
 const ROOT = path.resolve(__dirname, '../..');
 const PAPER_TRADES_FILE = path.join(ROOT, 'data/paper-trading/trades.jsonl');
+const MATRIX_CACHE_TTL_MS = 30_000;
+
+let _matrixCache = null;
+let _matrixCachedAt = 0;
 
 function round(value, decimals = 4) {
   const n = Number(value);
@@ -277,6 +281,11 @@ function recommendationFor(row) {
 }
 
 function getStrategyRuntimeMatrix() {
+  const now = Date.now();
+  if (_matrixCache && (now - _matrixCachedAt) < MATRIX_CACHE_TTL_MS) {
+    return _matrixCache;
+  }
+
   const catalog = catalogService.getCatalog();
   const strategies = Array.isArray(catalog.strategies) ? catalog.strategies : [];
   const runtimeRows = runtimeByStrategy();
@@ -364,7 +373,7 @@ function getStrategyRuntimeMatrix() {
     paperOnly: true,
   };
 
-  return {
+  _matrixCache = {
     ok: true,
     status: summary.status,
     source: summary.source,
@@ -392,6 +401,9 @@ function getStrategyRuntimeMatrix() {
     },
     safety: SAFETY,
   };
+  _matrixCachedAt = now;
+
+  return _matrixCache;
 }
 
 module.exports = {

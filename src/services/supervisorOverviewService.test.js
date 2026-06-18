@@ -237,6 +237,48 @@ async function withPatchedMethod(modPath, methodName, replacement, fn) {
   assert.equal(o.replayAutopilotSummary.live_trading_enabled, false);
   assert.equal(o.replayAutopilotSummary.broker_enabled, false);
 
+  // ── 5c. stale-while-revalidate returns cached overview immediately ─────────
+  const originalNow = Date.now;
+  try {
+    const baseNow = 1_800_000_000_000;
+    Date.now = () => baseNow;
+    overview.resetOverviewCache();
+    let buildCalls = 0;
+    overview._internal.setBuildOverviewOverride(async () => {
+      buildCalls += 1;
+      if (buildCalls === 1) {
+        return {
+          ok: true,
+          generatedAt: '2026-01-01T00:00:00.000Z',
+          technical: { status: 'ok', source: 'test' },
+        };
+      }
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      return {
+        ok: true,
+        generatedAt: '2026-01-01T00:05:00.000Z',
+        technical: { status: 'ok', source: 'test' },
+      };
+    });
+    const first = await overview.getCachedOverview({ force: true });
+    assert.equal(first.cached, false, 'first fetch is uncached');
+    Date.now = () => baseNow + overview.OVERVIEW_TTL_MS + 1;
+    const started = process.hrtime.bigint();
+    const stale = await overview.getCachedOverview();
+    const elapsedMs = Number(process.hrtime.bigint() - started) / 1e6;
+    assert.equal(stale.cached, true, 'stale response uses cache');
+    assert.equal(stale.staleWhileRevalidate, true, 'stale response signals background refresh');
+    assert.ok(elapsedMs < 40, `stale response should return before refresh completes, got ${elapsedMs}ms`);
+    await new Promise((resolve) => setTimeout(resolve, 80));
+    Date.now = () => baseNow + overview.OVERVIEW_TTL_MS + 100;
+    const refreshed = await overview.getCachedOverview({ force: true });
+    assert.equal(refreshed.generatedAt, '2026-01-01T00:05:00.000Z', 'background refresh updated cache');
+  } finally {
+    overview._internal.setBuildOverviewOverride(null);
+    Date.now = originalNow;
+    overview.resetOverviewCache();
+  }
+
   // ── 7. normalizeRecentTest maps a real event and drops junk ─────────────────
   const norm = overview.normalizeRecentTest({
     timestamp: 't', event: 'run_completed', planId: 'p1', strategy_id: 'narrow_fakeout_reversal_v1',

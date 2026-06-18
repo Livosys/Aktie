@@ -330,6 +330,28 @@ function narrowStateDataPresentForStrategy(strategyId, rows = null) {
   return hasPersistedNarrowStateData();
 }
 
+function cryptoSignalContextPresentForStrategy(strategyId, rows = null) {
+  const target = String(strategyId || '').toLowerCase();
+  if (!target) return false;
+
+  const strategy = catalog.getStrategyById(target);
+  const isCryptoStrategy = Boolean(
+    strategy && (
+      String(strategy.market_group || '').toLowerCase() === 'crypto'
+      || String(strategy.market || '').toLowerCase() === 'crypto'
+      || String(strategy.id || '').toLowerCase().startsWith('crypto_')
+    ),
+  );
+  if (!isCryptoStrategy) return false;
+
+  const sourceRows = rows || getCurrentScannerRows();
+  return sourceRows.some((row) => {
+    const rowStrategyId = String(normalizedStrategyIdFromRow(row) || '').toLowerCase();
+    if (rowStrategyId !== target) return false;
+    return Boolean(cryptoSignalContextOf(row));
+  });
+}
+
 function strategyMeta(strategyId) {
   const strategy = catalog.getStrategyById(strategyId);
   return {
@@ -465,6 +487,16 @@ function getRuntimeStrategyMap() {
       comment_sv: 'Narrow kan skapa paper trade endast när befintlig signal tydligt är bull/bear entry.',
     }),
     runtimeEntry({
+      raw_signal: 'NARROW_FAKEOUT',
+      strategy_id: 'narrow_fakeout_reversal_v1',
+      strategy_family: 'Narrow',
+      runtime_status: 'active',
+      direction: 'UNKNOWN',
+      mapping_confidence: 'medium',
+      can_create_paper_trade: true,
+      comment_sv: 'Paper-only narrow fakeout reversal är kopplad till scanner/runtime för QQQ research.',
+    }),
+    runtimeEntry({
       raw_signal: 'EMA_PULLBACK_UP',
       strategy_id: 'ema_pullback_continuation',
       strategy_family: 'EMA Pullback',
@@ -514,6 +546,7 @@ function findMapEntry(signal = {}) {
     return map.find((entry) => entry.raw_signal === raw && entry.market === 'stocks');
   }
   if (raw === 'NARROW_WAIT') return map.find((entry) => entry.raw_signal === 'NARROW_WAIT');
+  if (raw === 'NARROW_FAKEOUT') return map.find((entry) => entry.raw_signal === 'NARROW_FAKEOUT');
   if (String(raw).includes('NARROW') || upper(signal.signalFamily).includes('NARROW')) {
     if (direction === 'DOWN' || raw.includes('BEAR')) return map.find((entry) => entry.raw_signal === 'NARROW_BEAR_ENTRY');
     if (direction === 'UP' || raw.includes('BULL')) return map.find((entry) => entry.raw_signal === 'NARROW_BULL_ENTRY');
@@ -1023,7 +1056,10 @@ function runtimeProfileForStrategy(strategyId, savedConfig = {}) {
         ? 'partial'
         : 'active';
   const narrowStateDataPresent = narrowStateDataPresentForStrategy(strategyId);
-  const runtimeStatusAfter = runtimeStatusBefore === 'partial' && narrowStateDataPresent ? 'active' : runtimeStatusBefore;
+  const cryptoSignalContextPresent = cryptoSignalContextPresentForStrategy(strategyId);
+  const runtimeStatusAfter = runtimeStatusBefore === 'partial' && (narrowStateDataPresent || cryptoSignalContextPresent)
+    ? 'active'
+    : runtimeStatusBefore;
   const canCreate = runtimeStatusAfter === 'active';
   const rawSignals = runtimeRawSignalsForStrategy(strategyId);
   const requiredData = requiredDataForStrategy(strategy);
@@ -1043,6 +1079,7 @@ function runtimeProfileForStrategy(strategyId, savedConfig = {}) {
     runtime_status: runtimeStatusAfter,
     runtime_label: statusLabel(runtimeStatusAfter),
     narrow_state_data_present: narrowStateDataPresent,
+    crypto_signal_context_present: cryptoSignalContextPresent,
     runtime_raw_signals: rawSignals,
     required_data: requiredData,
     missing_data: missingData,
@@ -1274,4 +1311,8 @@ module.exports = {
   getStrategyRuntimeSummary,
   canCreatePaperTradeForSignal,
   buildCryptoSignalContext,
+  _internal: {
+    cryptoSignalContextPresentForStrategy,
+    narrowStateDataPresentForStrategy,
+  },
 };

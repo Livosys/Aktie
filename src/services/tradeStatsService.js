@@ -241,6 +241,99 @@ function compareMethodologies(records, opts = {}) {
   };
 }
 
+// ── risk/reward quality (pnl-sign based, read-only) ───────────────────────────
+/**
+ * Compute risk/reward quality for a set of trades, classifying win/loss purely
+ * by pnl SIGN (pnlPct > 0 = win, < 0 = loss, === 0 = breakeven). This answers a
+ * different question than win rate: "are the wins actually bigger than the
+ * losses?" A strategy can win often and still lose money when the average loss
+ * is much larger than the average win.
+ *
+ * Fault isolation: trades without a numeric pnl are counted as `invalid` and
+ * excluded from every metric. Division-by-zero never produces NaN/Infinity —
+ * those cases return null, and `profitFactorLabel` carries the "∞" sentinel when
+ * there are wins but zero losses so the UI can render it as text.
+ */
+function computeRiskReward(records) {
+  const rows = Array.isArray(records) ? records : [];
+  let wins = 0, losses = 0, breakeven = 0, invalid = 0;
+  let totalWin = 0, totalLoss = 0; // totalLoss accumulates negative pnl
+  let maxWin = null, maxLoss = null;
+
+  for (const row of rows) {
+    const pnl = num(row && (row.pnlPct ?? row.pnl_pct ?? row.pnl));
+    if (pnl === null) { invalid++; continue; }
+    if (pnl > 0) {
+      wins++; totalWin += pnl;
+      if (maxWin === null || pnl > maxWin) maxWin = pnl;
+    } else if (pnl < 0) {
+      losses++; totalLoss += pnl;
+      if (maxLoss === null || pnl < maxLoss) maxLoss = pnl;
+    } else {
+      breakeven++;
+    }
+  }
+
+  const closedTrades = wins + losses + breakeven;
+  const avgWinPct = wins > 0 ? totalWin / wins : null;
+  const avgLossPct = losses > 0 ? totalLoss / losses : null; // negative or null
+  const netPnlPct = totalWin + totalLoss;
+  const avgTradePct = closedTrades > 0 ? netPnlPct / closedTrades : null;
+  const winRatePct = closedTrades > 0 ? (wins / closedTrades) * 100 : null;
+
+  const riskRewardRatio = (avgWinPct !== null && avgLossPct !== null && avgLossPct !== 0)
+    ? avgWinPct / Math.abs(avgLossPct) : null;
+  const lossToWinRatio = (avgWinPct !== null && avgWinPct !== 0 && avgLossPct !== null)
+    ? Math.abs(avgLossPct) / avgWinPct : null;
+
+  let profitFactor = null;
+  let profitFactorLabel = null;
+  if (totalLoss !== 0) {
+    profitFactor = totalWin / Math.abs(totalLoss);
+  } else if (totalWin > 0) {
+    profitFactorLabel = '∞'; // wins but zero losses — undefined ratio, label only
+  }
+
+  return {
+    closedTrades,
+    wins,
+    losses,
+    breakeven,
+    invalid,
+    winRatePct: r2(winRatePct),
+    totalWinPct: r4(totalWin),
+    totalLossPct: r4(totalLoss),
+    netPnlPct: r4(netPnlPct),
+    avgWinPct: r4(avgWinPct),
+    avgLossPct: r4(avgLossPct),
+    avgTradePct: r4(avgTradePct),
+    riskRewardRatio: r2(riskRewardRatio),
+    lossToWinRatio: r2(lossToWinRatio),
+    profitFactor: r2(profitFactor),
+    profitFactorLabel,
+    maxSingleWinPct: r4(maxWin),
+    maxSingleLossPct: r4(maxLoss),
+    ...SAFETY,
+  };
+}
+
+/**
+ * Deterministic, human-readable status for a risk/reward metric object.
+ * Pure function of the metrics so it can be unit-tested independently.
+ */
+function riskRewardStatusLabel(metrics = {}) {
+  const closed = Number(metrics.closedTrades) || 0;
+  const net = metrics.netPnlPct;
+  const pf = metrics.profitFactor;
+  const lossToWin = metrics.lossToWinRatio;
+  if (closed < 5) return 'För lite data';
+  if (lossToWin !== null && lossToWin !== undefined && lossToWin >= 2.5) return 'Risk: förlust större än vinst';
+  if (net !== null && net !== undefined && net > 0 && pf !== null && pf !== undefined && pf >= 1.5 && closed >= 20) return 'Stabil paper-kandidat';
+  if (net !== null && net !== undefined && net > 0 && closed < 20) return 'Lovande men behöver mer data';
+  if (net !== null && net !== undefined && net < 0 && closed >= 5) return 'Svag / pausa för granskning';
+  return 'Neutral – granska manuellt';
+}
+
 // ── convenience: canonical paper-trade stats from disk (read-only) ────────────
 function loadPaperTrades() {
   return readJsonl(PAPER_TRADES_FILE);
@@ -266,6 +359,8 @@ module.exports = {
   computeStats,
   computeStatsByGroup,
   compareMethodologies,
+  computeRiskReward,
+  riskRewardStatusLabel,
   // disk convenience (read-only)
   loadPaperTrades,
   buildPaperTradeStats,

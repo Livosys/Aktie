@@ -7,6 +7,25 @@ import TradeReplayPanel from '../components/TradeReplayPanel.jsx';
 import { useUnifiedConfig } from '../hooks/useUnifiedConfig.js';
 
 const REFRESH_MS = 15_000;
+const FETCH_TIMEOUT_MS = 6_000;
+
+async function fetchJsonWithTimeout(url, { timeoutMs = FETCH_TIMEOUT_MS, signal } = {}) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  const onAbort = () => controller.abort();
+  if (signal) signal.addEventListener('abort', onAbort, { once: true });
+  try {
+    const res = await fetch(url, { signal: controller.signal });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    return await res.json();
+  } catch (err) {
+    if (err?.name === 'AbortError') throw new Error(`timeout_after_${timeoutMs}ms`);
+    throw err;
+  } finally {
+    clearTimeout(timer);
+    if (signal) signal.removeEventListener('abort', onAbort);
+  }
+}
 
 // ── Signal → strategy key mapper (mirrors backend) ────────────────────────────
 function signalToStrategyKey(r) {
@@ -181,11 +200,12 @@ function useAllSignals() {
   const [meta, setMeta] = useState({ stocks: null, crypto: null, nasdaq: null });
 
   const fetchAll = useCallback(async () => {
+    const controller = new AbortController();
     try {
       const [s, c, n] = await Promise.all([
-        fetch('/api/scan/stocks').then(r => r.ok ? r.json() : null).catch(() => null),
-        fetch('/api/scan/crypto').then(r => r.ok ? r.json() : null).catch(() => null),
-        fetch('/api/scan/nasdaq').then(r => r.ok ? r.json() : null).catch(() => null),
+        fetchJsonWithTimeout('/api/scan/stocks', { signal: controller.signal }).catch(() => null),
+        fetchJsonWithTimeout('/api/scan/crypto', { signal: controller.signal }).catch(() => null),
+        fetchJsonWithTimeout('/api/scan/nasdaq', { signal: controller.signal }).catch(() => null),
       ]);
       const all = [
         ...(s?.results || []),
@@ -198,6 +218,7 @@ function useAllSignals() {
     } finally {
       setLoading(false);
     }
+    return () => controller.abort();
   }, []);
 
   useEffect(() => {
@@ -212,10 +233,11 @@ function useAllSignals() {
 function useLearningSummary() {
   const [data, setData] = useState(null);
   useEffect(() => {
-    fetch('/api/history/learning-summary')
-      .then(r => r.ok ? r.json() : null)
+    const controller = new AbortController();
+    fetchJsonWithTimeout('/api/history/learning-summary', { signal: controller.signal })
       .then(d => { if (d) setData(d); })
       .catch(() => {});
+    return () => controller.abort();
   }, []);
   return data;
 }
@@ -233,16 +255,66 @@ function useAuditSummary() {
   useEffect(() => {
     let alive = true;
     const load = () => {
-      fetch('/api/audit/summary')
-        .then(r => r.ok ? r.json() : null)
+      const controller = new AbortController();
+      fetchJsonWithTimeout('/api/audit/summary', { signal: controller.signal })
         .then(d => { if (alive && d?.ok) setSummary(d); })
         .catch(() => {});
+      return controller;
+    };
+    let lastController = load();
+    const t = setInterval(() => {
+      if (lastController) lastController.abort();
+      lastController = load();
+    }, REFRESH_MS);
+    return () => {
+      alive = false;
+      clearInterval(t);
+      if (lastController) lastController.abort();
+    };
+  }, []);
+  return summary;
+}
+
+function usePaperRuntime(limit = 50) {
+  const [state, setState] = useState({
+    loading: true,
+    error: null,
+    data: null,
+  });
+
+  useEffect(() => {
+    let alive = true;
+    let activeController = null;
+    const load = () => {
+      if (activeController) activeController.abort();
+      activeController = new AbortController();
+      fetchJsonWithTimeout(`/api/paper-trading/runtime?limit=${encodeURIComponent(limit)}`, {
+        timeoutMs: 6500,
+        signal: activeController.signal,
+      })
+        .then((data) => {
+          if (!alive) return;
+          setState({ loading: false, error: null, data });
+        })
+        .catch((err) => {
+          if (!alive) return;
+          setState((prev) => ({
+            loading: false,
+            error: err?.message || 'paper_runtime_unavailable',
+            data: prev.data || null,
+          }));
+        });
     };
     load();
     const t = setInterval(load, REFRESH_MS);
-    return () => { alive = false; clearInterval(t); };
-  }, []);
-  return summary;
+    return () => {
+      alive = false;
+      clearInterval(t);
+      if (activeController) activeController.abort();
+    };
+  }, [limit]);
+
+  return state;
 }
 
 function fmtAuditTime(ts) {
@@ -711,7 +783,142 @@ function SafetyBanner() {
     <div className="sp-safety-banner">
       <span>🔒</span>
       <span className="sp-safety-green">Riktig handel är avstängd</span>
-      <span className="sp-safety-muted">· Bara analys · Inga orders · Paper &amp; Replay only</span>
+      <span className="sp-safety-muted">· Endast låtsashandel · Inga riktiga order · Broker avstängd · Live trading avstängd</span>
+    </div>
+  );
+}
+
+function paperTone(result) {
+  const key = String(result || '').toUpperCase();
+  if (key === 'WIN') return '#22c55e';
+  if (key === 'LOSS') return '#ef4444';
+  if (key === 'OPEN') return '#38bdf8';
+  if (key === 'TIMEOUT') return '#f59e0b';
+  return 'var(--muted)';
+}
+
+function fmtSignedPct(value) {
+  if (value == null || Number.isNaN(Number(value))) return '–';
+  const n = Number(value);
+  return `${n > 0 ? '+' : ''}${n.toFixed(2)}%`;
+}
+
+function paperStageLabel(stage) {
+  const map = {
+    approval_gate: 'Approval gate',
+    market_gate: 'Market gate',
+    risk: 'Risk',
+    safety: 'Safety',
+    candidate_filter: 'Filter',
+    unknown: 'Okänd',
+  };
+  return map[stage] || stage || 'Okänd';
+}
+
+function paperSourceLabel(source) {
+  const map = {
+    scanner: 'scanner',
+    autopilot: 'autopilot',
+    tradingview: 'tradingview',
+    replay: 'replay',
+    batch: 'batch',
+  };
+  return map[source] || (source || 'scanner');
+}
+
+function strategyLine(row) {
+  if (!row?.strategy_id) return row?.strategy_name || row?.inputStrategyKey || 'okänd_strategi';
+  const suffix = row.strategy_name && row.strategy_name !== row.strategy_id ? ` · ${row.strategy_name}` : '';
+  return `${row.strategy_id}${suffix}`;
+}
+
+function PaperRuntimeList({ title, rows, emptyText, renderMeta }) {
+  return (
+    <div className="sp-activity-panel">
+      <div className="sp-activity-head">
+        <div>
+          <h2>{title}</h2>
+          <span>Paper-only runtime</span>
+        </div>
+        <ConfigScopeBadge scope="test" />
+      </div>
+      {rows.length ? (
+        <div className="sp-activity-list">
+          {rows.map((row, index) => (
+            <div key={row.tradeId || row.eventId || `${row.symbol}-${row.timestamp}-${index}`} className="sp-activity-row">
+              <span>{fmtAuditTime(row.timestamp)}</span>
+              <strong>{row.symbol || 'SYSTEM'}</strong>
+              <em>{strategyLine(row)}</em>
+              <span style={{ color: paperTone(row.result) }}>{row.result || row.status || '–'}</span>
+              <span>{renderMeta(row)}</span>
+            </div>
+          ))}
+        </div>
+      ) : (
+        <div className="sp-activity-empty">{emptyText}</div>
+      )}
+    </div>
+  );
+}
+
+function PaperRuntimeSection({ runtimeState }) {
+  const runtime = runtimeState?.data;
+  const loading = runtimeState?.loading;
+  const error = runtimeState?.error;
+  const summary = runtime?.summary || {};
+  const shownTradeRecords = summary.returnedCount ?? 0;
+
+  return (
+    <div className="sp-paper-runtime">
+      <div className="sp-section-label">
+        <span>DEL 1B</span>
+        <span className="sp-section-title">Paper trading</span>
+      </div>
+
+      <div className="sp-activity-panel">
+        <div className="sp-activity-head">
+          <div>
+            <h2>Kompakt paper-status</h2>
+            <span>Read-only sammanfattning. Full vy finns under Paper Trading och Lab, där samma data visas i enklare vyer.</span>
+          </div>
+          <ConfigScopeBadge scope="test" />
+        </div>
+        {loading ? (
+          <div className="sp-loading">
+            <div className="sp-loading-dot" />
+            <span>Hämtar compact paper-status...</span>
+          </div>
+        ) : (
+          <>
+            <div className="sp-work-status">
+              <strong>Paper trading: {summary.openCount ?? 0} open, {summary.closedCount ?? 0} closed, {summary.blockedCount ?? 0} blocked</strong>
+              <span>Senaste event: {summary.latestEventAt ? fmtAuditTime(summary.latestEventAt) : '–'}</span>
+              <span>Visar {shownTradeRecords}/{summary.limit ?? 50} records på papersidan</span>
+            </div>
+            {shownTradeRecords < (summary.limit ?? 50) && (
+              <div className="sp-activity-empty">
+                Systemet har inte skapat 50 paper records ännu. Full status finns på <Link to="/paper-trading">Paper Trading</Link>.
+              </div>
+            )}
+            {(error || runtime?.status === 'degraded') && (
+              <div className="sp-activity-empty">
+                Paper runtime tillfälligt otillgängligt eller degraderat: {error || (runtime?.warnings || []).join(', ') || 'okänd read-only källa svarade långsamt eller saknas'}.
+              </div>
+            )}
+            <div className="sp-work-status">
+              <span>mode=paper_only</span>
+              <span>actions_allowed=false</span>
+              <span>can_place_orders=false</span>
+              <span>live_trading_enabled=false</span>
+              <span>broker_enabled=false</span>
+            </div>
+            <div className="sp-work-status">
+              <Link to="/paper-trading">Öppna Paper Trading</Link>
+              <Link to="/system">Öppna System</Link>
+            </div>
+          </>
+        )}
+      </div>
     </div>
   );
 }
@@ -776,8 +983,8 @@ function QuickActions({ onFilter, topSetups }) {
       <button type="button" onClick={() => onFilter('crypto')}>Visa bara krypto</button>
       <button type="button" onClick={() => onFilter('strong_setup')}>Visa starka setups</button>
       <button type="button" onClick={() => onFilter('volatility')}>Visa timeout-problem</button>
-      <Link to="/insikter?tab=setups">Visa starkaste mönster</Link>
-      <Link to="/insikter?tab=setups">Visa svaga strategier</Link>
+      <Link to="/lab?tab=strategier">Visa starkaste mönster</Link>
+      <Link to="/lab?tab=strategier">Visa svaga strategier</Link>
       {topSetups?.[0] && <Link to={`/lab?tab=strategier&setup=${encodeURIComponent(topSetups[0].setup_id || topSetups[0].label)}`}>Öppna LAB med detta mönster</Link>}
     </div>
   );
@@ -1139,6 +1346,7 @@ export default function SignalpulsPage() {
   const unifiedConfig = useUnifiedConfig('lab');
   const prioritySummary = unifiedConfig.test.prioritySummary;
   const auditSummary = useAuditSummary();
+  const paperRuntime = usePaperRuntime(50);
   const [advancedMode, setAdvancedMode] = useAdvancedMode();
   const [dataCoverageMap, setDataCoverageMap] = useState({});
   const adaptiveMode = unifiedConfig.test.adaptiveConfig.enabled;
@@ -1146,14 +1354,15 @@ export default function SignalpulsPage() {
   const marketFilter = globalFilters.market || 'all';
 
   useEffect(() => {
-    fetch('/api/data-coverage/symbols')
-      .then(r => r.ok ? r.json() : null)
+    const controller = new AbortController();
+    fetchJsonWithTimeout('/api/data-coverage/symbols', { signal: controller.signal })
       .then(d => {
         const map = {};
         (d?.symbols || []).forEach((row) => { map[row.symbol] = row; });
         setDataCoverageMap(map);
       })
       .catch(() => {});
+    return () => controller.abort();
   }, []);
 
   useEffect(() => {
@@ -1317,6 +1526,8 @@ export default function SignalpulsPage() {
       {/* Market filter (styr listan nedan) */}
       <MarketFilterBar filter={marketFilter} onChange={setMarketFilter} />
 
+      <PaperRuntimeSection runtimeState={paperRuntime} />
+
       {/* Top 20 — listan startar på #2 eftersom #1 visas som Hero ovan */}
       <div className="sp-top20-header">
         <h2 className="sp-section-h2">
@@ -1371,7 +1582,7 @@ export default function SignalpulsPage() {
 
       <div className="sp-perf-header">
         <h2 className="sp-section-h2">Mönsterhistorik</h2>
-        <Link to="/insikter" className="sp-perf-link">Se alla resultat →</Link>
+        <Link to="/lab?tab=replay" className="sp-perf-link">Se alla resultat →</Link>
       </div>
 
       {advancedMode && setupData ? (
@@ -1408,7 +1619,7 @@ export default function SignalpulsPage() {
       {/* Quick nav */}
       <div className="sp-quick-nav">
         <Link to="/lab" className="sp-quick-btn sp-qb-lab">🧪 LAB</Link>
-        <Link to="/insikter" className="sp-quick-btn sp-qb-results">📊 INSIKTER</Link>
+        <Link to="/lab?tab=replay" className="sp-quick-btn sp-qb-results">📊 LAB HISTORIK</Link>
         <Link to="/system?tab=safety" className="sp-quick-btn sp-qb-safety">🛡️ SYSTEM Safety</Link>
       </div>
     </div>

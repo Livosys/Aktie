@@ -4,6 +4,7 @@ import ReplayPage from './ReplayPage.jsx';
 import ReviewChartPage from './ReviewChartPage.jsx';
 import IntelligencePage from './IntelligencePage.jsx';
 import { AdvancedModeToggle, ConfigScopeBadge, PlatformEmptyState, PlatformSafetyBar, useAdvancedMode } from '../components/PlatformControls.jsx';
+import PaperCandidatePanel from '../components/PaperCandidatePanel.jsx';
 import {
   DEFAULT_TRADING_LAB_EXITS as DEFAULT_EXITS,
   DEFAULT_TRADING_LAB_PARAMS as DEFAULT_PARAMS,
@@ -873,11 +874,114 @@ function useRecommendedConfig() {
   return { data, loading, error };
 }
 
-function ApplyPanel({ toggles, params, exits, onApplyParams, onApplyToggles, onApplyExits }) {
+function usePaperOptimizationCandidates(limit = 5) {
+  const [data, setData] = React.useState(null);
+  const [loading, setLoading] = React.useState(true);
+  const [error, setError] = React.useState(null);
+
+  const load = React.useCallback(() => {
+    setLoading(true);
+    setError(null);
+    fetch(`/api/optimization/paper-candidates?limit=${limit}`)
+      .then(r => r.ok ? r.json() : null)
+      .then(d => { setData(d); setLoading(false); })
+      .catch(e => { setError(e.message); setLoading(false); });
+  }, [limit]);
+
+  React.useEffect(() => { load(); }, [load]);
+  return { data, loading, error, reload: load };
+}
+
+function useAutomationApprovals() {
+  const [data, setData] = React.useState(null);
+  const [loading, setLoading] = React.useState(true);
+  const [error, setError] = React.useState(null);
+
+  const load = React.useCallback(() => {
+    setLoading(true);
+    setError(null);
+    fetch('/api/automation/approvals')
+      .then((r) => (r.ok ? r.json() : null))
+      .then((d) => { setData(d); setLoading(false); })
+      .catch((e) => { setError(e.message); setLoading(false); });
+  }, []);
+
+  React.useEffect(() => { load(); }, [load]);
+  return { data, loading, error, reload: load };
+}
+
+function useBatchReplayPaperCandidatesPreview(limit = 12) {
+  const [data, setData] = React.useState(null);
+  const [loading, setLoading] = React.useState(true);
+  const [error, setError] = React.useState(null);
+
+  const load = React.useCallback(() => {
+    setLoading(true);
+    setError(null);
+    fetch(`/api/optimization/batch-replay-paper-candidates/preview?limit=${limit}`)
+      .then((r) => (r.ok ? r.json() : null))
+      .then((d) => { setData(d); setLoading(false); })
+      .catch((e) => { setError(e.message); setLoading(false); });
+  }, [limit]);
+
+  React.useEffect(() => { load(); }, [load]);
+  return { data, loading, error, reload: load };
+}
+
+function usePaperCandidateReadiness(limit = 12) {
+  const [data, setData] = React.useState(null);
+  const [loading, setLoading] = React.useState(true);
+  const [error, setError] = React.useState(null);
+
+  const load = React.useCallback(() => {
+    setLoading(true);
+    setError(null);
+    fetch(`/api/optimization/paper-candidates/readiness?limit=${limit}`)
+      .then((r) => (r.ok ? r.json() : null))
+      .then((d) => { setData(d); setLoading(false); })
+      .catch((e) => { setError(e.message); setLoading(false); });
+  }, [limit]);
+
+  React.useEffect(() => { load(); }, [load]);
+  return { data, loading, error, reload: load };
+}
+
+const PAPER_CANDIDATE_STATUS_LABELS = {
+  approved: 'Godkänd',
+  not_approved: 'Ej godkänd',
+  max_nått: 'Max nått',
+  nekad: 'Nekad',
+  needs_strategy_id: 'Saknar strategyId',
+  unknown: 'Okänd',
+};
+
+const BATCH_REPLAY_DECISION_LABELS = {
+  promote_to_paper: 'Promote',
+  watch: 'Watch',
+  reject: 'Reject',
+};
+
+const READINESS_BOOL = {
+  true: 'Ja',
+  false: 'Nej',
+};
+
+function paperCandidateStatusClass(status) {
+  return `opt-paper-candidate-${String(status || 'unknown')
+    .toLowerCase()
+    .replace(/å/g, 'a')
+    .replace(/[^a-z0-9_-]/g, '_')}`;
+}
+
+function ApplyPanel({ summary, toggles, params, exits, onApplyParams, onApplyToggles, onApplyExits }) {
   const { data, loading, error } = useRecommendedConfig();
+  const { data: paperCandidatesData, loading: paperCandidatesLoading, error: paperCandidatesError, reload: reloadPaperCandidates } = usePaperOptimizationCandidates(5);
   const [selected, setSelected] = React.useState({});
   const [applied, setApplied] = React.useState(false);
   const [hasBackup, setHasBackup] = React.useState(false);
+  const [candidateMessage, setCandidateMessage] = React.useState('');
+  const [candidateError, setCandidateError] = React.useState('');
+  const [savingCandidate, setSavingCandidate] = React.useState(false);
 
   React.useEffect(() => {
     setHasBackup(!!localStorage.getItem('tradinglab_config_v1_backup'));
@@ -896,9 +1000,19 @@ function ApplyPanel({ toggles, params, exits, onApplyParams, onApplyToggles, onA
   if (!data?.changes?.length) return <div className="opt-empty">Inga rekommendationer tillgängliga ännu — kör mer paper trading.</div>;
 
   const { changes, tradeCount, hasEnoughData } = data;
+  const latestPaperCandidate = paperCandidatesData?.latest || paperCandidatesData?.candidates?.[0] || null;
 
   const impactColor = { high: '#ef4444', medium: '#f59e0b', low: '#94a3b8' };
   const impactLabel = { high: 'Hög', medium: 'Medel', low: 'Låg' };
+  const changeSelection = changes.filter(c => selected[c.id]).map((change) => ({
+    id: change.id,
+    key: change.key,
+    label: change.label,
+    type: change.type,
+    impact: change.impact,
+    recommendedValue: change.recommendedValue,
+    rationale: change.rationale,
+  }));
 
   function getCurrentValue(change) {
     if (change.type === 'param')  return params[change.key];
@@ -914,9 +1028,103 @@ function ApplyPanel({ toggles, params, exits, onApplyParams, onApplyToggles, onA
     return `${val}`;
   }
 
-  function applySelected() {
+  function resolvePaperCandidateContext() {
+    const bestStrategy =
+      summary?.strategyBatchTesting?.bestStrategy?.strategy_id
+        ? summary.strategyBatchTesting.bestStrategy
+        : summary?.daytradingStrategies?.bestStrategy?.strategy_id
+          ? summary.daytradingStrategies.bestStrategy
+          : summary?.topStrategyGrid?.bestOverall?.strategy_id
+            ? summary.topStrategyGrid.bestOverall
+            : summary?.topStrategyGrid?.bestOverall?.strategy_name
+              ? summary.topStrategyGrid.bestOverall
+              : null;
+    const strategyId =
+      bestStrategy?.strategy_id
+      || bestStrategy?.id
+      || bestStrategy?.strategyId
+      || null;
+    const strategyName =
+      bestStrategy?.strategy_name
+      || bestStrategy?.name
+      || bestStrategy?.label
+      || strategyId
+      || 'Okänd strategi';
+    const sourceKind = summary?.strategyBatchTesting?.bestStrategy?.strategy_id
+      ? 'batch'
+      : summary?.daytradingStrategies?.bestStrategy?.strategy_id
+        ? 'paper'
+        : 'optimization';
+    return { bestStrategy, strategyId, strategyName, sourceKind };
+  }
+
+  function buildPaperCandidatePayload() {
+    const { strategyId, strategyName, sourceKind } = resolvePaperCandidateContext();
+    const selectedIds = changeSelection.map((change) => change.id).sort();
+    const recommendationId = [
+      summary?.generatedAt || 'summary',
+      sourceKind,
+      strategyId || 'no_strategy',
+      selectedIds.join('|') || 'no_changes',
+    ].join(':');
+    return {
+      strategyId,
+      strategyName,
+      source: 'ai_agent_batch_recommendation',
+      sourceKind,
+      sourceLabel: `AI-agent ${sourceKind}`,
+      recommendationId,
+      reason: 'manual_apply_from_ai_agent',
+      tradeCount: summary?.tradeCount ?? tradeCount ?? null,
+      replayRunCount: summary?.replayRunCount ?? null,
+      overallScore: summary?.overallScore ?? null,
+      confidence: summary?.overallScore ?? null,
+      dataVolume: summary?.tradeCount ?? null,
+      selectedChanges: changeSelection,
+      appliedConfig: { toggles, params, exits },
+      summarySnapshot: {
+        generatedAt: summary?.generatedAt || null,
+        tradeCount: summary?.tradeCount ?? null,
+        replayRunCount: summary?.replayRunCount ?? null,
+        overallScore: summary?.overallScore ?? null,
+      },
+    };
+  }
+
+  async function savePaperCandidate() {
+    const payload = buildPaperCandidatePayload();
+    if (!payload.strategyId) {
+      setCandidateError('Kunde inte spara kandidat: saknar strategyId från analysdata.');
+      return null;
+    }
+    setSavingCandidate(true);
+    setCandidateError('');
+    try {
+      const res = await fetch('/api/optimization/paper-candidates', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      const json = await res.json().catch(() => null);
+      if (!res.ok || !json?.ok) {
+        throw new Error(json?.error || 'Kunde inte spara paper-testkandidat.');
+      }
+      setCandidateMessage(json.deduped ? 'Paper-testkandidat redan sparad.' : 'Skickad till paper-testkandidater.');
+      await reloadPaperCandidates();
+      return json.candidate || null;
+    } catch (err) {
+      setCandidateError(err.message || 'Kunde inte spara paper-testkandidat.');
+      return null;
+    } finally {
+      setSavingCandidate(false);
+    }
+  }
+
+  async function applySelected() {
     localStorage.setItem('tradinglab_config_v1_backup', JSON.stringify({ toggles, params, exits }));
     setHasBackup(true);
+    setCandidateMessage('');
+    setCandidateError('');
     const paramChanges = {}, toggleChanges = {}, exitChanges = {};
     changes.forEach(c => {
       if (!selected[c.id]) return;
@@ -928,6 +1136,7 @@ function ApplyPanel({ toggles, params, exits, onApplyParams, onApplyToggles, onA
     if (Object.keys(toggleChanges).length) onApplyToggles(toggleChanges);
     if (Object.keys(exitChanges).length)   onApplyExits(exitChanges);
     setApplied(true);
+    await savePaperCandidate();
   }
 
   function undoApply() {
@@ -962,10 +1171,10 @@ function ApplyPanel({ toggles, params, exits, onApplyParams, onApplyToggles, onA
           <button
             className={`opt-apply-btn${applied ? ' opt-apply-done' : ''}`}
             onClick={applySelected}
-            disabled={selectedCount === 0}
+            disabled={selectedCount === 0 || savingCandidate}
             type="button"
           >
-            {applied ? '✓ Applicerat' : `Applicera valda (${selectedCount})`}
+            {savingCandidate ? 'Sparar kandidat...' : (applied ? '✓ Applicerat' : `Applicera valda (${selectedCount})`)}
           </button>
         </div>
       </div>
@@ -1031,8 +1240,106 @@ function ApplyPanel({ toggles, params, exits, onApplyParams, onApplyToggles, onA
         </label>
         <div className="opt-apply-note">🔒 Testmiljö — inga riktiga orders påverkas</div>
       </div>
+
+      <div className="opt-paper-candidate-panel">
+        <div className="opt-paper-candidate-head">
+          <div>
+            <div className="opt-paper-candidate-title">Paper-testkandidat</div>
+            <div className="opt-paper-candidate-sub">
+              {paperCandidatesLoading
+                ? 'Läser kandidatstatus...'
+                : latestPaperCandidate
+                  ? 'Senast sparade kandidat från AI-agenten'
+                  : 'När du applicerar sparas rekommendationen som en paper-only kandidat.'}
+            </div>
+          </div>
+          {latestPaperCandidate?.allowlist?.status && (
+            <span className={`opt-paper-candidate-pill ${paperCandidateStatusClass(latestPaperCandidate.allowlist.status)}`}>
+              {PAPER_CANDIDATE_STATUS_LABELS[latestPaperCandidate.allowlist.status] || latestPaperCandidate.allowlist.status}
+            </span>
+          )}
+        </div>
+
+        {candidateMessage && <div className="opt-paper-candidate-msg opt-paper-candidate-msg-good">{candidateMessage}</div>}
+        {candidateError && <div className="opt-paper-candidate-msg opt-paper-candidate-msg-bad">{candidateError}</div>}
+        {paperCandidatesError && <div className="opt-paper-candidate-msg opt-paper-candidate-msg-bad">Kunde inte läsa paper-testkandidater: {paperCandidatesError}</div>}
+
+        {latestPaperCandidate ? (
+          <>
+            <div className="opt-paper-candidate-grid">
+              <div>
+                <span>Strategy</span>
+                <strong>{latestPaperCandidate.strategyName || latestPaperCandidate.strategyId || '–'}</strong>
+              </div>
+              <div>
+                <span>Källa</span>
+                <strong>{latestPaperCandidate.sourceKind || latestPaperCandidate.source || '–'}</strong>
+              </div>
+              <div>
+                <span>Trades analyserade</span>
+                <strong>{latestPaperCandidate.tradeCount ?? tradeCount ?? '–'}</strong>
+              </div>
+              <div>
+                <span>Score / confidence</span>
+                <strong>{latestPaperCandidate.confidence ?? latestPaperCandidate.overallScore ?? '–'}</strong>
+              </div>
+            </div>
+            <div className="opt-paper-candidate-meta">
+              <span>allowlist: {latestPaperCandidate.allowlist?.approvedCount ?? '–'} / {latestPaperCandidate.allowlist?.maxApproved ?? '–'}</span>
+              <span>{latestPaperCandidate.allowlist?.reason || '–'}</span>
+            </div>
+            <div className="opt-paper-candidate-actions">
+              <button
+                className="opt-paper-candidate-approve"
+                type="button"
+                disabled={!latestPaperCandidate.strategyId || latestPaperCandidate.allowlist?.status !== 'not_approved' || savingCandidate}
+                onClick={async () => {
+                  const strategyName = latestPaperCandidate.strategyName || latestPaperCandidate.strategyId || 'strategin';
+                  const ok = window.confirm('Detta godkänner endast låtsashandel. Inga riktiga order kan läggas.');
+                  if (!ok) return;
+                  try {
+                    const res = await fetch('/api/automation/approvals/approve', {
+                      method: 'POST',
+                      headers: { 'Content-Type': 'application/json' },
+                      body: JSON.stringify({
+                        strategyId: latestPaperCandidate.strategyId,
+                        reason: `manual_ui_from_ai_agent:${strategyName}`,
+                      }),
+                    });
+                    const json = await res.json().catch(() => null);
+                    if (!res.ok || !json?.ok) throw new Error(json?.error || 'Kunde inte lägga till i paper allowlist.');
+                    setCandidateMessage(`Lades till i paper allowlist: ${strategyName}.`);
+                    await reloadPaperCandidates();
+                  } catch (err) {
+                    setCandidateError(err.message || 'Kunde inte lägga till i paper allowlist.');
+                  }
+                }}
+              >
+                Lägg till i paper allowlist
+              </button>
+              <span>
+                {latestPaperCandidate.allowlist?.status === 'approved'
+                  ? 'Redan godkänd'
+                  : latestPaperCandidate.allowlist?.status === 'max_nått'
+                    ? `Max nått: ${latestPaperCandidate.allowlist?.reason || 'kan inte godkännas'}`
+                    : latestPaperCandidate.allowlist?.status === 'nekad'
+                      ? `Kan inte godkännas: ${latestPaperCandidate.allowlist?.reason || 'serverorsak'}`
+                      : 'Detta påverkar bara paper-only låtsashandel.'}
+              </span>
+            </div>
+          </>
+        ) : (
+          <div className="opt-paper-candidate-empty">
+            Inga sparade paper-testkandidater ännu.
+          </div>
+        )}
+      </div>
     </div>
   );
+}
+
+function BatchReplayPaperCandidatesPanel() {
+  return <PaperCandidatePanel mode="lab" />;
 }
 
 // ── Adaptive Intelligence Tab ─────────────────────────────────────────────────
@@ -1548,6 +1855,9 @@ function AiOptimizationTab({ toggles, params, exits, onApplyParams, onApplyToggl
           ) : (
             <div className="opt-empty">Inga batch-resultat ännu. Kör Batch-test i Trading Lab för att få rekommendationer.</div>
           )}
+
+          <div className="opt-subsection" style={{ marginTop: '1.25rem' }}>Batch/Replay → Paper-kandidater</div>
+          <BatchReplayPaperCandidatesPanel />
         </div>
       )}
 
@@ -1556,6 +1866,7 @@ function AiOptimizationTab({ toggles, params, exits, onApplyParams, onApplyToggl
         <div className="opt-section-content">
           <div className="opt-subsection">Auto-apply — Applicera rekommendationer</div>
           <ApplyPanel
+            summary={data}
             toggles={toggles}
             params={params}
             exits={exits}
@@ -1764,6 +2075,97 @@ const MARKET_OPTIONS = [
   { value: 'all', label: 'Alla' },
 ];
 const TIMEFRAME_OPTIONS = ['1m', '2m', '5m', '15m', '30m', '1h'];
+
+// Marknadsförval för batch. Varje preset fyller bara i symboler/strategier/timeframes —
+// det startar ALDRIG en batch. strategyIds matchas mot katalogen vid applicering så att
+// crypto-strategier inte hamnar på aktier och tvärtom.
+const BATCH_MARKET_PRESETS = [
+  {
+    key: 'crypto',
+    label: 'Crypto',
+    emoji: '🪙',
+    market: 'crypto',
+    dataSource: 'Binance (crypto)',
+    symbols: ['BTCUSDT', 'ETHUSDT', 'SOLUSDT'],
+    timeframes: ['1m', '2m', '5m'],
+    // Endast crypto-kompatibla strategier (market_group crypto eller all).
+    strategyIds: ['crypto_momentum_scalper', 'vwap_momentum_long', 'volume_spike_momentum', 'trend_continuation'],
+    allowedGroups: ['crypto', 'all'],
+    note: 'Crypto handlas dygnet runt och har egna market gates och datakällor.',
+  },
+  {
+    key: 'us_stocks',
+    label: 'US Stocks / Mag 7',
+    emoji: '📈',
+    market: 'stocks',
+    dataSource: 'Alpaca',
+    symbols: ['AAPL', 'MSFT', 'NVDA', 'TSLA', 'META', 'AMZN', 'GOOGL'],
+    timeframes: ['2m', '5m', '15m'],
+    strategyIds: ['trend_continuation', 'vwap_momentum_long', 'opening_range_breakout', 'resistance_rejection', 'support_bounce'],
+    allowedGroups: ['stocks', 'all'],
+    note: 'US-aktier kräver Alpaca-historik och följer börsens öppettider.',
+  },
+  {
+    key: 'etf_index',
+    label: 'ETF / Index',
+    emoji: '🧭',
+    market: 'stocks',
+    dataSource: 'Alpaca',
+    symbols: ['QQQ', 'SPY'],
+    timeframes: ['2m', '5m', '15m'],
+    strategyIds: ['narrow_breakout', 'narrow_fakeout_reversal_v1', 'narrow_state_expansion_long', 'vwap_momentum_long'],
+    allowedGroups: ['stocks', 'all'],
+    note: 'ETF/index passar narrow state- och VWAP-strategier. Kräver Alpaca-historik.',
+  },
+  {
+    key: 'swedish',
+    label: 'Svenska aktier / Avanza',
+    emoji: '🇸🇪',
+    market: 'stocks',
+    dataSource: 'Avanza (ej kopplad)',
+    symbols: [],
+    timeframes: ['5m', '15m'],
+    strategyIds: [],
+    allowedGroups: ['stocks', 'all'],
+    disabled: true,
+    disabledReason: 'Datakälla saknas',
+    note: 'Svenska aktier kräver en Avanza-datakälla som inte är kopplad ännu.',
+  },
+];
+
+const CRYPTO_SYMBOL_HINTS = new Set(['BTCUSDT', 'ETHUSDT', 'SOLUSDT', 'XRPUSDT', 'DOGEUSDT', 'AVAXUSDT', 'LINKUSDT', 'BNBUSDT', 'ADAUSDT']);
+
+// Klassificera en symbol som 'crypto' eller 'stock' (samma logik som backend inferMarketGroup).
+function classifySymbolMarket(symbol) {
+  const s = String(symbol || '').trim().toUpperCase();
+  if (!s) return 'unknown';
+  if (CRYPTO_SYMBOL_HINTS.has(s) || /USDT$/.test(s) || /USD$/.test(s)) return 'crypto';
+  return 'stock';
+}
+
+// Returnerar true om en lista av symboler blandar crypto och aktier.
+function hasMixedMarkets(symbols = []) {
+  const kinds = new Set(symbols.map(classifySymbolMarket).filter((k) => k !== 'unknown'));
+  return kinds.has('crypto') && kinds.has('stock');
+}
+
+// Välj de katalog-strategier som matchar ett preset: prioritera presetets önskade id:n,
+// men släpp endast igenom strategier vars market_group är kompatibel med marknaden.
+function resolvePresetStrategyIds(preset, catalog = []) {
+  if (!preset || !catalog.length) return [];
+  const allowed = new Set(preset.allowedGroups || ['all']);
+  const isCompatible = (strategy) => {
+    const group = String(strategy.market_group || strategy.market || 'all').toLowerCase();
+    return allowed.has(group);
+  };
+  const byId = new Map(catalog.map((s) => [s.id, s]));
+  const picked = [];
+  (preset.strategyIds || []).forEach((id) => {
+    const strat = byId.get(id);
+    if (strat && isCompatible(strat) && !picked.includes(id)) picked.push(id);
+  });
+  return picked.slice(0, 8);
+}
 
 function pctText(v) {
   if (v == null || Number.isNaN(Number(v))) return 'Ingen data ännu';
@@ -2038,7 +2440,7 @@ function StrategiesTab() {
           <strong>Lab påverkar inte vilka strategier som kör paper trades.</strong>
           <div>Vill du styra paper-runtime, gå till Daytrading. Här körs bara test, replay, batch och analys.</div>
         </div>
-        <Link className="strat-test-btn" to="/daytrading">Öppna Daytrading-kontroll</Link>
+        <Link className="strat-test-btn" to="/paper-trading">Öppna Paper Trading</Link>
       </div>
       <div className="strat-list">
         {strategies.map(strategy => (
@@ -2234,6 +2636,119 @@ function batchPipelineSteps({ form, comboCount, batchBlocked, activeBatch, compa
   ];
 }
 
+// Symboler vi förväntar oss täckning för (samma som marknadsförvalen).
+const EXPECTED_DATA_SYMBOLS = ['BTCUSDT', 'ETHUSDT', 'SOLUSDT', 'AAPL', 'MSFT', 'NVDA', 'TSLA', 'META', 'AMZN', 'GOOGL', 'QQQ', 'SPY'];
+
+function dataSourceForSymbol(marketGroup, symbol) {
+  if (classifySymbolMarket(symbol) === 'crypto' || marketGroup === 'crypto') return 'Binance';
+  return 'Alpaca';
+}
+
+function assetClassLabel(marketGroup, symbol) {
+  if (classifySymbolMarket(symbol) === 'crypto' || marketGroup === 'crypto') return 'Crypto';
+  if (marketGroup === 'nasdaq100' || marketGroup === 'index' || marketGroup === 'etf') return 'ETF/Index';
+  return 'Aktie';
+}
+
+// Read-only panel: visar vilken lokal historik som finns och vad batch/replay faktiskt läser.
+// Muterar ingenting, startar ingen sync/backfill. Återanvänder befintliga coverage-endpoints.
+function AlpacaDataSyncPanel() {
+  const [coverage, setCoverage] = React.useState(null);
+  const [status, setStatus] = React.useState(null);
+  const [loading, setLoading] = React.useState(true);
+  const [open, setOpen] = React.useState(true);
+
+  const load = React.useCallback(async () => {
+    const [cov, st] = await Promise.all([
+      fetch('/api/data-center/coverage').then((r) => (r.ok ? r.json() : null)).catch(() => null),
+      fetch('/api/data-coverage/status').then((r) => (r.ok ? r.json() : null)).catch(() => null),
+    ]);
+    setCoverage(cov);
+    setStatus(st);
+    setLoading(false);
+  }, []);
+
+  React.useEffect(() => { load(); }, [load]);
+
+  const symbols = coverage?.symbols || [];
+  const bySymbol = {};
+  symbols.forEach((row) => { bySymbol[row.symbol] = row; });
+  const alpacaProvider = status?.provider_status?.alpaca;
+  const connected = alpacaProvider ? (alpacaProvider.ok || alpacaProvider.configured) : null;
+  const lastUpdate = coverage?.generated_at || status?.generated_at;
+  const missing = EXPECTED_DATA_SYMBOLS.filter((s) => !bySymbol[s]);
+
+  return (
+    <section className="alpaca-sync-card">
+      <div className="alpaca-sync-header">
+        <div>
+          <div className="batch-section-title">📡 Alpaca Data &amp; Synkning</div>
+          <div className="batch-pipeline-subtitle">Read-only · visar lokal historik som batch/replay faktiskt läser</div>
+        </div>
+        <button type="button" className="opt-expand-btn" onClick={() => setOpen((v) => !v)}>{open ? 'Dölj' : 'Visa'}</button>
+      </div>
+
+      {open && (loading ? (
+        <div className="tl-loading">Laddar coverage…</div>
+      ) : (
+        <>
+          <div className="alpaca-sync-grid">
+            <div><span>Alpaca ansluten</span><strong>{connected == null ? 'Okänt' : connected ? 'Ja' : 'Nej'}</strong></div>
+            <div><span>Senaste coverage-update</span><strong>{lastUpdate ? fmtBatchTime(lastUpdate) : '–'}</strong></div>
+            <div><span>Symboler med historik</span><strong>{symbols.length}</strong></div>
+            <div><span>Batch läser lokal store</span><strong>Ja</strong></div>
+            <div><span>Replay läser lokal store</span><strong>Ja</strong></div>
+            <div><span>Direkt Alpaca vid testkörning</span><strong>Nej</strong></div>
+          </div>
+
+          <div className="alpaca-sync-explain">
+            Batch och replay läser <strong>endast lokal historik</strong> från <code>data/market-data/candles-2m/</code> (rå Alpaca-bars i <code>data/market-data/alpaca/raw/</code>).
+            Alpaca kan ha flera års historik, men <strong>bara det som backfillats lokalt</strong> används i tester. Därför kan UI säga "för lite historik" trots att Alpaca är anslutet.
+          </div>
+
+          <div className="alpaca-sync-table">
+            <div className="alpaca-sync-row alpaca-sync-head">
+              <span>Symbol</span><span>Klass</span><span>Källa</span><span>Tidigast</span><span>Senast</span><span>2m candles</span><span>Timeframes</span><span>Status</span>
+            </div>
+            {symbols.length === 0 && <div className="batch-audit-empty">Ingen lokal historik hittad.</div>}
+            {symbols.map((row) => {
+              const tfs = Object.keys(row.timeframes || {}).filter((t) => t !== 'raw_alpaca').join(', ') || '–';
+              return (
+                <div key={row.symbol} className={`alpaca-sync-row alpaca-sync-${row.tone || 'gray'}`}>
+                  <strong>{row.symbol}</strong>
+                  <span>{assetClassLabel(row.market_group, row.symbol)}</span>
+                  <span>{dataSourceForSymbol(row.market_group, row.symbol)}</span>
+                  <span>{row.first_date || '–'}</span>
+                  <span>{row.latest_date || '–'}</span>
+                  <span>{row.candles_2m_count ?? row.total_candle_count ?? 0}</span>
+                  <span>{tfs}</span>
+                  <span>{row.status_sv || '–'}</span>
+                </div>
+              );
+            })}
+          </div>
+
+          {missing.length > 0 && (
+            <div className="batch-warning alpaca-sync-missing">
+              Saknar lokal historik helt: {missing.join(', ')}. Dessa kan inte batch/replay-testas förrän de backfillats.
+            </div>
+          )}
+
+          <div className="alpaca-sync-reco">
+            <strong>Rekommenderad åtgärd:</strong>
+            <ul>
+              <li>Backfilla US stocks/ETF från Alpaca innan långa batch/replay-tester.</li>
+              <li>Börja med QQQ, SPY, NVDA, AAPL, MSFT om coverage saknas.</li>
+              <li>Bygg en separat backfill-kontroll <em>efter</em> denna read-only-vy (ingen sync-knapp här ännu).</li>
+            </ul>
+          </div>
+          <div className="batch-safety">Read-only · ingen sync/backfill startas härifrån · paper_only · actions_allowed=false</div>
+        </>
+      ))}
+    </section>
+  );
+}
+
 function BatchTestTab() {
   const { data: marketUniverse } = useMarketUniverse();
   const [catalog, setCatalog] = React.useState([]);
@@ -2244,6 +2759,7 @@ function BatchTestTab() {
   const [coverageMap, setCoverageMap] = React.useState({});
   const [message, setMessage] = React.useState('');
   const [loading, setLoading] = React.useState(true);
+  const [activePreset, setActivePreset] = React.useState('');
   const [form, setForm] = React.useState({
     name: '',
     strategy_ids: [],
@@ -2322,6 +2838,21 @@ function BatchTestTab() {
       if (set.has(value)) set.delete(value); else set.add(value);
       return { ...prev, [key]: [...set] };
     });
+  }
+
+  // Fyller i symboler/strategier/timeframes från ett marknadsförval. Startar ALDRIG en batch.
+  function applyPreset(preset) {
+    if (!preset || preset.disabled) return;
+    const strategyIds = resolvePresetStrategyIds(preset, catalog);
+    setActivePreset(preset.key);
+    setForm((prev) => ({
+      ...prev,
+      symbols: preset.symbols.join(','),
+      timeframes: preset.timeframes.slice(),
+      strategy_ids: strategyIds.length ? strategyIds : prev.strategy_ids,
+      markets: ['all'],
+    }));
+    setMessage('');
   }
 
   function payload() {
@@ -2434,6 +2965,7 @@ function BatchTestTab() {
   const selectedProviderMissing = marketOptions.filter((m) => form.markets.includes(m.id) && m.dataStatus === 'needs_provider');
   const batchBlocked = selectedProviderMissing.length > 0 && form.certificate_simulation_mode !== 'underlying_only';
   const batchCoverageWarnings = csvSymbols(form.symbols).map((symbol) => coverageMap[symbol]).filter(Boolean).filter((row) => !row.usable_for_batch);
+  const mixedMarkets = hasMixedMarkets(csvSymbols(form.symbols));
   const bestResult = compare?.recommended_config?.strategy_id ? compare.recommended_config : compare?.best_overall?.[0];
   const bestDecision = batchDecision(bestResult);
   const pipelineSteps = batchPipelineSteps({ form, comboCount, batchBlocked, activeBatch, compare });
@@ -2556,6 +3088,8 @@ function BatchTestTab() {
       </section>
       <div className="batch-safety">Paper/replay only · actions_allowed=false · can_place_orders=false · live_trading_enabled=false</div>
 
+      <AlpacaDataSyncPanel />
+
       <section className="batch-pipeline-card">
         <div className="batch-pipeline-header">
           <div>
@@ -2593,6 +3127,30 @@ function BatchTestTab() {
           </label>
           <div className="batch-info">
             Lämna tomt så namnges batchen automatiskt: <strong>{autoBatchName}</strong>
+          </div>
+
+          <div className="batch-section-title">Marknadsförval</div>
+          <div className="batch-info">
+            Välj ett förval så fylls rätt symboler, strategier och timeframes i för en marknad. Förval startar aldrig en batch automatiskt — du kör den själv.
+          </div>
+          <div className="batch-preset-row">
+            {BATCH_MARKET_PRESETS.map((preset) => (
+              <button
+                key={preset.key}
+                type="button"
+                className={`batch-preset-btn${activePreset === preset.key ? ' active' : ''}${preset.disabled ? ' disabled' : ''}`}
+                onClick={() => applyPreset(preset)}
+                disabled={preset.disabled}
+                title={preset.disabled ? preset.disabledReason : preset.note}
+              >
+                <span className="batch-preset-emoji">{preset.emoji}</span>
+                <strong>{preset.label}</strong>
+                <span className="batch-preset-meta">{preset.disabled ? preset.disabledReason : `${preset.symbols.length} symboler · ${preset.dataSource}`}</span>
+              </button>
+            ))}
+          </div>
+          <div className="batch-warning batch-mix-note">
+            ⚠️ Blanda inte crypto och aktier i samma batch om du vill ha tillförlitliga resultat. De har olika datakällor, öppettider och signalregler.
           </div>
 
           <div className="batch-section-title">Strategier</div>
@@ -2650,6 +3208,11 @@ function BatchTestTab() {
             <span>Symboler</span>
             <input value={form.symbols} onChange={e => setForm(f => ({ ...f, symbols: e.target.value }))} />
           </label>
+          {mixedMarkets && (
+            <div className="batch-warning batch-mix-active">
+              🚫 Du blandar crypto och aktier i samma batch ({csvSymbols(form.symbols).join(', ')}). Resultaten blir opålitliga — använd ett marknadsförval istället, eller dela upp i separata batchar.
+            </div>
+          )}
           {batchCoverageWarnings.length > 0 && (
             <div className="batch-warning">
               För lite historik för säkert test: {batchCoverageWarnings.map((row) => row.symbol).join(', ')}.
@@ -3683,7 +4246,7 @@ export default function TradingLabPage() {
       {/* Bottom nav */}
       <div className="tl-bottom-nav">
         <Link to="/live" className="tl-bottom-link">❤️ LIVE</Link>
-        <Link to="/insikter" className="tl-bottom-link">📊 INSIKTER</Link>
+        <Link to="/lab?tab=replay" className="tl-bottom-link">📊 HISTORIK</Link>
         <Link to="/system?tab=safety" className="tl-bottom-link">🛡️ SYSTEM</Link>
       </div>
     </div>

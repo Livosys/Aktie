@@ -5,11 +5,11 @@ import ThemeToggle from './ThemeToggle.jsx';
 import AiSummaryBar from './AiSummaryBar.jsx';
 
 const SEARCH_ROUTES = [
-  { key: 'supervisor', to: '/supervisor' },
-  { key: 'trading os', to: '/supervisor' },
-  { key: 'översikt', to: '/supervisor' },
-  { key: 'oversikt', to: '/supervisor' },
-  { key: 'kör bilen', to: '/supervisor' },
+  { key: 'supervisor', to: '/system' },
+  { key: 'trading os', to: '/system' },
+  { key: 'översikt', to: '/system' },
+  { key: 'oversikt', to: '/system' },
+  { key: 'kör bilen', to: '/system' },
   { key: 'live', to: '/live' },
   { key: 'scanner', to: '/live' },
   { key: 'signaler', to: '/live' },
@@ -20,14 +20,14 @@ const SEARCH_ROUTES = [
   { key: 'säkerhet', to: '/system?tab=safety' },
   { key: 'safety', to: '/system?tab=safety' },
   { key: 'diagram', to: '/lab?tab=review' },
-  { key: 'historik', to: '/insikter?tab=memory' },
+  { key: 'historik', to: '/lab?tab=replay' },
   { key: 'replay', to: '/lab?tab=replay' },
   { key: 'intelligens', to: '/lab?tab=adaptive' },
   { key: 'hälsa', to: '/system?tab=health' },
   { key: 'halsa', to: '/system?tab=health' },
   { key: 'system', to: '/system' },
   { key: 'lab', to: '/lab' },
-  { key: 'insikter', to: '/insikter' },
+  { key: 'insikter', to: '/lab?tab=replay' },
 ];
 
 export default function TopBar({ onMenu, status }) {
