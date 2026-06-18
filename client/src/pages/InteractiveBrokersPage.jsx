@@ -35,6 +35,31 @@ const CARD_STYLE = {
   marginBottom: 16,
 };
 
+// Safe blocked fallback used whenever the API fails (error / 404 / timeout).
+// Every value here is the SAFE / blocked state. It must NEVER imply that any
+// action, order, broker, or live trading is allowed.
+const SAFE_FALLBACK_STATUS = Object.freeze({
+  ok: false,
+  dryRun: true,
+  ibPaper: { enabled: false, previewEnabled: false, orderQueueEnabled: false, executionEnabled: false },
+  safety: { mode: 'paper_only', actions_allowed: false, can_place_orders: false, live_trading_enabled: false, broker_enabled: false },
+  orderSendingBlocked: true,
+  orderQueueBlocked: true,
+  executionBlocked: true,
+  wouldCreateIbPaperOrder: false,
+  blockedReason: 'api_unavailable_safe_fallback',
+  nextPhaseLocked: {
+    paperOrderQueue: { locked: true },
+    brokerExecution: { locked: true },
+    liveTrading: { locked: true },
+    manualApprovalRequired: true,
+  },
+  approvedStrategies: [],
+  approvedStrategiesCount: 0,
+  approvedStrategiesSource: { available: false, status: 'degraded' },
+  internalPaperTradingUnaffected: true,
+});
+
 function Badge({ ok, labelTrue, labelFalse }) {
   const good = ok === true;
   return (
@@ -95,9 +120,22 @@ export default function InteractiveBrokersPage() {
   }, []);
 
   const { loading, error, status, preview } = state;
-  const ib = status?.ibPaper || {};
-  const safety = status?.safety || {};
-  const strategies = preview?.approvedStrategies || status?.approvedStrategies || [];
+
+  // On ANY error (404 / timeout / network) fall back to the safe blocked state.
+  // Never derive values from an absent payload — that could accidentally render
+  // a non-blocked state. Always use explicit safe fallback values instead.
+  const usingFallback = !!error || (!loading && !status);
+  const eff = usingFallback ? SAFE_FALLBACK_STATUS : (status || SAFE_FALLBACK_STATUS);
+
+  const ib = eff.ibPaper || {};
+  const safety = eff.safety || {};
+  const nextPhase = eff.nextPhaseLocked || {};
+  const strategies = usingFallback ? [] : (preview?.approvedStrategies || eff.approvedStrategies || []);
+  const sourceStatus = usingFallback
+    ? 'degraded'
+    : ((preview?.approvedStrategiesSource || eff.approvedStrategiesSource || {}).status || 'unknown');
+  const sourceDegraded = sourceStatus === 'degraded' || preview?.degraded === true;
+  const blockedReason = usingFallback ? 'api_unavailable_safe_fallback' : (eff.blockedReason || 'unknown');
 
   return (
     <div className="page" style={{ maxWidth: 920, margin: '0 auto', padding: '32px 24px' }}>
@@ -105,36 +143,41 @@ export default function InteractiveBrokersPage() {
         <h1>Interactive Brokers Paper</h1>
         <p style={{ color: '#94a3b8', lineHeight: 1.6 }}>
           Interactive Brokers Paper är separat från intern paper trading.
-          {' '}Inga order skickas i denna fas. Endast godkända strategier visas här.
+          {' '}Inga order skickas i denna fas.
+          {' '}Endast redan godkända strategier visas här.
         </p>
       </div>
 
       {loading && <div style={CARD_STYLE}>Laddar…</div>}
-      {error && (
-        <div style={{ ...CARD_STYLE, borderColor: 'rgba(248,113,113,0.4)' }}>
-          Kunde inte ladda IB Paper-status: {error}
-        </div>
-      )}
 
       {!loading && (
         <>
+          {usingFallback && (
+            <div style={{ ...CARD_STYLE, borderColor: 'rgba(248,113,113,0.5)', background: 'rgba(248,113,113,0.08)' }}>
+              <strong style={{ color: '#f87171' }}>API-status kunde inte laddas. Sidan visar säkra blockerade fallback-värden.</strong>
+              {error && (
+                <div style={{ color: '#94a3b8', marginTop: 8, fontSize: 13 }}>Detalj: {error}</div>
+              )}
+            </div>
+          )}
+
           {/* IB Paper status */}
           <div style={CARD_STYLE}>
             <h2 style={{ marginTop: 0 }}>IB Paper-status</h2>
             <Row label="IB Paper aktiverad">
               <Badge ok={!ib.enabled} labelTrue="Inaktiverad" labelFalse="Aktiverad" />
             </Row>
-            <Row label="Preview aktiverad (feature flag)">
+            <Row label="Preview-flagga">
               <Badge ok={ib.previewEnabled === true} labelTrue="På" labelFalse="Av" />
             </Row>
-            <Row label="Order queue">
+            <Row label="Paper order-kö">
               <Badge ok={!ib.orderQueueEnabled} labelTrue="Av" labelFalse="På" />
             </Row>
-            <Row label="Execution">
+            <Row label="Broker-execution">
               <Badge ok={!ib.executionEnabled} labelTrue="Av" labelFalse="På" />
             </Row>
-            <Row label="Dry-run">
-              <Badge ok={status?.dryRun === true} labelTrue="Ja" labelFalse="Nej" />
+            <Row label="Dry-run / läsläge">
+              <Badge ok={eff.dryRun === true} labelTrue="Ja" labelFalse="Nej" />
             </Row>
           </div>
 
@@ -142,13 +185,13 @@ export default function InteractiveBrokersPage() {
           <div style={{ ...CARD_STYLE, borderColor: 'rgba(248,113,113,0.35)' }}>
             <h2 style={{ marginTop: 0 }}>Order är blockerat</h2>
             <Row label="Order sending blockerad">
-              <Badge ok={status?.orderSendingBlocked === true} labelTrue="Blockerad" labelFalse="Tillåten" />
+              <Badge ok={eff.orderSendingBlocked === true} labelTrue="Blockerad" labelFalse="Tillåten" />
             </Row>
             <Row label="Skulle skapa IB Paper-order">
-              <Badge ok={status?.wouldCreateIbPaperOrder === false} labelTrue="Nej" labelFalse="Ja" />
+              <Badge ok={eff.wouldCreateIbPaperOrder === false} labelTrue="Nej" labelFalse="Ja" />
             </Row>
             <Row label="Orsak (blockedReason)">
-              <code style={{ color: '#fbbf24' }}>{status?.blockedReason || 'unknown'}</code>
+              <code style={{ color: '#fbbf24' }}>{blockedReason}</code>
             </Row>
             <p style={{ color: '#94a3b8', marginBottom: 0, marginTop: 12, lineHeight: 1.6 }}>
               I denna fas (Phase 1) byggs ingen order submission, ingen broker-anslutning
@@ -180,9 +223,15 @@ export default function InteractiveBrokersPage() {
           <div style={CARD_STYLE}>
             <h2 style={{ marginTop: 0 }}>Godkända strategier för framtida IB Paper-preview</h2>
             <p style={{ color: '#94a3b8', marginTop: 0, lineHeight: 1.6 }}>
-              Endast strategier som redan är godkända i systemets approval/allowlist visas här.
-              Ingen ny approval skapas.
+              Endast redan godkända strategier visas här (läses från systemets befintliga
+              approval/allowlist). Ingen ny approval skapas och inga regler ändras.
             </p>
+            {sourceDegraded && (
+              <div style={{ color: '#fbbf24', padding: '8px 0' }}>
+                Approval/allowlist-källan är inte tillgänglig just nu — visar tom lista.
+                Detta är inte ett fel (degraded status).
+              </div>
+            )}
             {strategies.length === 0 ? (
               <div style={{ color: '#94a3b8', padding: '8px 0' }}>
                 Inga godkända strategier hittades. (Empty status — inte ett fel.)
@@ -211,11 +260,32 @@ export default function InteractiveBrokersPage() {
             )}
           </div>
 
+          {/* Next phase locked */}
+          <div style={{ ...CARD_STYLE, borderColor: 'rgba(251,191,36,0.35)' }}>
+            <h2 style={{ marginTop: 0 }}>Nästa fas — låst</h2>
+            <Row label="Paper order-kö">
+              <Badge ok={nextPhase.paperOrderQueue?.locked !== false} labelTrue="Låst" labelFalse="Öppen" />
+            </Row>
+            <Row label="Broker-execution">
+              <Badge ok={nextPhase.brokerExecution?.locked !== false} labelTrue="Låst" labelFalse="Öppen" />
+            </Row>
+            <Row label="Live trading">
+              <Badge ok={nextPhase.liveTrading?.locked !== false} labelTrue="Låst" labelFalse="Öppen" />
+            </Row>
+            <Row label="Manuellt godkännande krävs">
+              <Badge ok={nextPhase.manualApprovalRequired === true} labelTrue="Ja" labelFalse="Nej" />
+            </Row>
+            <p style={{ color: '#94a3b8', marginBottom: 0, marginTop: 12, lineHeight: 1.6 }}>
+              Inga framtida steg (order-kö, broker-execution, live trading) kan aktiveras härifrån.
+              Varje steg kräver explicit manuellt godkännande och en separat byggnation.
+            </p>
+          </div>
+
           {/* Separation note */}
           <div style={{ ...CARD_STYLE, borderColor: 'rgba(34,197,94,0.3)' }}>
             <h2 style={{ marginTop: 0 }}>Separation från intern paper trading</h2>
             <Row label="Intern paper trading opåverkad">
-              <Badge ok={status?.internalPaperTradingUnaffected === true} labelTrue="Ja" labelFalse="Nej" />
+              <Badge ok={eff.internalPaperTradingUnaffected === true} labelTrue="Ja" labelFalse="Nej" />
             </Row>
             <p style={{ color: '#94a3b8', marginBottom: 0, marginTop: 12, lineHeight: 1.6 }}>
               Den interna paper trading-funktionen körs helt separat och är oförändrad.
