@@ -14,6 +14,7 @@ import DaytradingPage   from './pages/DaytradingPage.jsx';
 import SupervisorBrainPage from './pages/SupervisorBrainPage.jsx';
 import NarrowStateLabPage from './pages/NarrowStateLabPage.jsx';
 import InteractiveBrokersPage from './pages/InteractiveBrokersPage.jsx';
+import PaperTradingPage from './pages/PaperTradingPage.jsx';
 
 function RedirectWithSearch({ to }) {
   const { search } = useLocation();
@@ -78,7 +79,7 @@ export default function App() {
           <Route path="/review-chart"      element={<RedirectWithSearch to="/lab?tab=review" />} />
           <Route path="/system-health"     element={<Navigate to="/system?tab=health" replace />} />
           <Route path="/quality"           element={<Navigate to="/insikter?tab=ai" replace />} />
-          <Route path="/paper-trading"     element={<Navigate to="/insikter?tab=paper" replace />} />
+          <Route path="/paper-trading"     element={<PaperTradingPage />} />
           <Route path="/risk-engine"       element={<Navigate to="/system?tab=safety" replace />} />
           <Route path="/exit-engine"       element={<Navigate to="/lab?tab=exits" replace />} />
           {/* Legacy alias: canonical safety lives at /system?tab=safety */}
