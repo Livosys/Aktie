@@ -46,6 +46,7 @@ const notificationEngineV2                      = require('../alerts/notificatio
 const strategyRuntimeConnector                  = require('../services/strategyRuntimeConnectorService');
 const paperApprovalGate                         = require('../services/paperApprovalGateService');
 const paperMarketConfigService                  = require('../services/paperMarketConfigService');
+const paperRiskReviewService                    = require('../services/paperRiskReviewService');
 const marketUniverse                            = require('../services/marketUniverseService');
 const learningConnector                         = require('../services/learningConnectorService');
 const learningEngine                            = require('../services/daytradingLearningEngineService');
@@ -1666,7 +1667,9 @@ async function runTick() {
   if (!state.enabled) return;
 
   let changed = false;
+  let manualRiskResumeLogged = false;
   const now    = new Date().toISOString();
+  const paperRiskReviewState = paperRiskReviewService.defaultPaperRiskReviewService.getPaperRiskReviewState({ now });
   const prices = getCurrentPrices();
   const marketRows = getCurrentMarketRows();
 
@@ -2012,6 +2015,12 @@ async function runTick() {
           { persist: true, evaluationSource: 'paper_pipeline' },
         );
 
+        const manualPaperResumeActive = paperRiskReviewState.active === true;
+        const canOverrideRiskPause = manualPaperResumeActive
+          && Array.isArray(riskEvaluation.pause_reasons)
+          && riskEvaluation.pause_reasons.length === 1
+          && riskEvaluation.pause_reasons[0] === 'consecutive_losses_limit';
+
         if (riskEvaluation.pause_trading) {
           appendEvent({
             ...eventFromCandidate('RISK_PAUSE_TRIGGERED', candidateWithAgent, `Systempaus — ${riskEvaluation.pause_reasons.join(', ') || 'riskgräns nådd'}.`, 'skipped'),
@@ -2019,8 +2028,27 @@ async function runTick() {
             aiAgentAnalysis: agentAnalysis,
             riskEvaluation,
           });
-          console.warn(`[paper-trading] risk pause active, inga nya entries: ${(riskEvaluation.pause_reasons || []).join(',')}`);
-          break;
+          if (!canOverrideRiskPause) {
+            console.warn(`[paper-trading] risk pause active, inga nya entries: ${(riskEvaluation.pause_reasons || []).join(',')}`);
+            break;
+          }
+          if (!manualRiskResumeLogged) {
+            appendEvent({
+              type: 'PAPER_RISK_REVIEW_OVERRIDE_USED',
+              symbol: candidateWithAgent.symbol,
+              marketType: candidateWithAgent.marketType,
+              decision: 'manual_override',
+              reasonSv: `Manuell risk review aktiv — paper testing fortsätter trots ${riskEvaluation.pause_reasons.join(', ')}.`,
+              signalFamily: candidateWithAgent.signalFamily,
+              signalSubtype: candidateWithAgent.signalSubtype,
+              status: 'resumed',
+              nextMoveBias: candidateWithAgent.nextMoveBias,
+              dataFreshness: candidateWithAgent.dataFreshness,
+              mode: 'paper',
+            });
+            manualRiskResumeLogged = true;
+          }
+          console.warn(`[paper-trading] risk pause overridden by manual paper review until ${paperRiskReviewState.expiresAt || 'unknown'}`);
         }
 
         if (!riskEvaluation.allowed) {

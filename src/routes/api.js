@@ -110,6 +110,7 @@ const replayStatusService = require('../services/replayStatusService');
 const paperTradingStatusService = require('../services/paperTradingStatusService');
 const paperTradingRuntimeService = require('../services/paperTradingRuntimeService');
 const paperRiskPauseSummaryService = require('../services/paperRiskPauseSummaryService');
+const paperRiskReviewService = require('../services/paperRiskReviewService');
 const tradingViewTestBlueprintService = require('../services/tradingViewTestBlueprintService');
 const paperTradeExplanationService = require('../services/paperTradeExplanationService');
 const lossReviewQueueService = require('../services/lossReviewQueueService');
@@ -3443,6 +3444,20 @@ router.get('/paper-trading/risk-pause-summary', async (req, res) => {
     res.json(result);
   } catch (err) {
     res.status(500).json({ ok: false, error: err.message, ...paperRiskPauseSummaryService.SAFETY });
+  }
+});
+
+router.post('/paper-trading/risk-review/resume', async (req, res) => {
+  try {
+    const body = req.body && typeof req.body === 'object' ? req.body : {};
+    if (body.live_trading_enabled === true || body.can_place_orders === true || body.actions_allowed === true || body.broker_enabled === true) {
+      return res.status(400).json({ ok: false, error: 'paper_risk_review_is_paper_only', safety: paperRiskReviewService.SAFETY });
+    }
+    const result = await paperRiskReviewService.defaultPaperRiskReviewService.resumePaperTesting(body);
+    const status = result.ok ? 200 : 400;
+    res.status(status).json(result);
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message, ...paperRiskReviewService.SAFETY });
   }
 });
 

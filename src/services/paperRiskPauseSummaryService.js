@@ -18,6 +18,7 @@ const ROOT = path.resolve(__dirname, '../..');
 const DEFAULT_FILES = Object.freeze({
   trades: path.join(ROOT, 'data/paper-trading/trades.jsonl'),
   events: path.join(ROOT, 'data/paper-trading/events.jsonl'),
+  riskReviewState: path.join(ROOT, 'data/paper-trading/risk-review-state.json'),
 });
 
 const SAFETY = Object.freeze({
@@ -55,6 +56,15 @@ function readJsonl(file) {
       .filter(Boolean);
   } catch (_) {
     return [];
+  }
+}
+
+function readJson(file, fallback) {
+  try {
+    if (!fs.existsSync(file)) return fallback;
+    return JSON.parse(fs.readFileSync(file, 'utf8'));
+  } catch (_) {
+    return fallback;
   }
 }
 
@@ -126,6 +136,57 @@ function buildLatestRiskPauseEvent(events) {
   };
 }
 
+function normalizeRiskReviewState(raw = {}, now = new Date()) {
+  const nowMs = now instanceof Date ? now.getTime() : new Date(now || '').getTime();
+  const expiresAt = text(raw.expiresAt || raw.expires_at || null);
+  const expiresMs = expiresAt ? new Date(expiresAt).getTime() : NaN;
+  const active = Boolean(
+    raw.paperOnly === true
+    && raw.resumedAt
+    && Number.isFinite(expiresMs)
+    && expiresMs > nowMs,
+  );
+  const latestAuditEvent = raw.latestAuditEvent && typeof raw.latestAuditEvent === 'object'
+    ? raw.latestAuditEvent
+    : null;
+
+  return {
+    paperOnly: raw.paperOnly === true,
+    resumedAt: text(raw.resumedAt || raw.resumed_at || null),
+    resumedBy: text(raw.resumedBy || raw.resumed_by || null),
+    reason: text(raw.reason || null),
+    previousConsecutiveLosses: Number.isFinite(Number(raw.previousConsecutiveLosses))
+      ? Number(raw.previousConsecutiveLosses)
+      : null,
+    previousPauseReason: text(raw.previousPauseReason || null),
+    expiresAt,
+    maxAgeMinutes: Number.isFinite(Number(raw.maxAgeMinutes)) ? Number(raw.maxAgeMinutes) : null,
+    active,
+    expired: raw.resumedAt ? !active : false,
+    latestAuditEvent,
+  };
+}
+
+function loadRiskReviewState(files = DEFAULT_FILES, now = new Date()) {
+  const raw = readJson(files.riskReviewState, null);
+  if (!raw || typeof raw !== 'object') {
+    return {
+      paperOnly: true,
+      active: false,
+      expired: false,
+      latestAuditEvent: null,
+      resumedAt: null,
+      resumedBy: null,
+      reason: null,
+      previousConsecutiveLosses: null,
+      previousPauseReason: null,
+      expiresAt: null,
+      maxAgeMinutes: null,
+    };
+  }
+  return normalizeRiskReviewState(raw, now);
+}
+
 async function buildPaperRiskPauseSummary(options = {}) {
   const files = { ...DEFAULT_FILES, ...(options.files || {}) };
   const riskConfig = options.riskConfig || await riskEngineService.getRiskConfig();
@@ -139,6 +200,8 @@ async function buildPaperRiskPauseSummary(options = {}) {
   }
   const pauseTrading = pauseReasons.length > 0;
   const latestRiskPauseEvent = buildLatestRiskPauseEvent(events);
+  const riskReview = loadRiskReviewState(files, options.now || new Date());
+  const effectivePauseTrading = pauseTrading && !riskReview.active;
 
   return {
     ok: true,
@@ -147,6 +210,7 @@ async function buildPaperRiskPauseSummary(options = {}) {
     summary: {
       active: pauseTrading,
       pause_trading: pauseTrading,
+      effective_pause_trading: effectivePauseTrading,
       pause_reasons: pauseReasons,
       pause_reason: pauseReasons[0] || null,
       pause_after_consecutive_losses: riskConfig.pause_after_consecutive_losses === true,
@@ -154,6 +218,8 @@ async function buildPaperRiskPauseSummary(options = {}) {
       max_consecutive_losses: Number(riskConfig.max_consecutive_losses) || 4,
       last_loss_at: riskState.last_loss_at,
       latest_risk_pause_event: latestRiskPauseEvent,
+      risk_review: riskReview,
+      resume_override_active: riskReview.active === true,
     },
     safety: { ...SAFETY },
     ...SAFETY,
@@ -182,11 +248,14 @@ module.exports = {
   defaultPaperRiskPauseSummaryService,
   _internal: {
     readJsonl,
+    readJson,
     normalizeResult,
     eventTime,
     normalizeRiskEvent,
     isRiskPauseEvent,
     buildConsecutiveLossState,
     buildLatestRiskPauseEvent,
+    loadRiskReviewState,
+    normalizeRiskReviewState,
   },
 };

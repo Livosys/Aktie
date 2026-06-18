@@ -1307,18 +1307,66 @@ function MetricCard({ label, value, tone = 'neutral', note }) {
   );
 }
 
-function RiskPauseSummaryPanel({ riskPauseSummary, gateStatus, runtime }) {
+async function postPaperRiskReviewResume(payload) {
+  try {
+    const res = await fetch('/api/paper-trading/risk-review/resume', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      credentials: 'include',
+      body: JSON.stringify(payload),
+    });
+    const data = await res.json().catch(() => null);
+    if (!res.ok || !data || data.ok === false) {
+      throw new Error((data && data.error) || `HTTP ${res.status}`);
+    }
+    return data;
+  } catch (err) {
+    throw new Error(err?.message || 'Kunde inte återuppta paper testing.');
+  }
+}
+
+function RiskPauseSummaryPanel({ riskPauseSummary, gateStatus, runtime, onRefresh }) {
   const theme = useThemeMode();
+  const [resumeAck, setResumeAck] = useState(false);
+  const [resumeBusy, setResumeBusy] = useState(false);
+  const [resumeMessage, setResumeMessage] = useState(null);
+
   const summary = riskPauseSummary?.summary || riskPauseSummary || {};
+  const riskReview = summary.risk_review || {};
   const gatePipeline = gateStatus?.pipeline || {};
   const last60m = gatePipeline?.last60m || {};
   const latestEvent = summary.latest_risk_pause_event || runtime?.recentEvents?.find?.((row) => String(row?.type || '').toUpperCase() === 'RISK_PAUSE_TRIGGERED') || null;
   const active = summary.pause_trading === true || summary.active === true;
+  const reviewActive = riskReview.active === true;
+  const canResume = active && !reviewActive;
   const reasonText = summary.pause_reason || (Array.isArray(summary.pause_reasons) ? summary.pause_reasons.join(', ') : null) || '–';
   const latestEventText = latestEvent?.timestamp
     ? `${fmtTime(latestEvent.timestamp)} · ${latestEvent.symbol || '–'} · ${latestEvent.strategy_id || latestEvent.strategy_name || '–'}`
     : '–';
   const consecutiveText = `${summary.consecutive_losses ?? '–'} / ${summary.max_consecutive_losses ?? '–'}`;
+  const latestAuditEvent = riskReview.latestAuditEvent || null;
+  const latestAuditEventText = latestAuditEvent?.timestamp
+    ? `${fmtTime(latestAuditEvent.timestamp)} · ${latestAuditEvent.type || '–'}`
+    : '–';
+
+  async function handleResume() {
+    if (!resumeAck || resumeBusy) return;
+    setResumeBusy(true);
+    setResumeMessage(null);
+    try {
+      const result = await postPaperRiskReviewResume({
+        confirmPaperOnly: true,
+        reason: 'Manual risk review accepted. Resume paper testing.',
+      });
+      setResumeMessage({ type: 'ok', text: result.message || 'Paper testing återupptagen efter manuell risk review.' });
+      setResumeAck(false);
+      onRefresh?.();
+    } catch (err) {
+      setResumeMessage({ type: 'error', text: err?.message || 'Kunde inte återuppta paper testing.' });
+    } finally {
+      setResumeBusy(false);
+    }
+  }
 
   return (
     <div style={{ ...sectionStyle(), marginTop: 12, marginBottom: 12, background: 'var(--surface-2)' }}>
@@ -1329,8 +1377,43 @@ function RiskPauseSummaryPanel({ riskPauseSummary, gateStatus, runtime }) {
             Read-only diagnos för varför nya paper trades inte öppnas när riskmotorn pausar entry-loopen.
           </div>
         </div>
-        <span style={statusPillStyle(active ? 'danger' : 'success', theme)}>{active ? 'Aktiv' : 'Inte aktiv'}</span>
+        <span style={statusPillStyle(active && !reviewActive ? 'danger' : 'success', theme)}>
+          {active && !reviewActive ? 'Pausad' : reviewActive ? 'Återupptagen' : 'Inte aktiv'}
+        </span>
       </div>
+
+      {active && !reviewActive ? (
+        <div style={{ marginTop: 12, padding: 16, borderRadius: 16, border: '1px solid rgba(239,68,68,0.25)', background: 'rgba(239,68,68,0.08)', color: 'var(--text)', lineHeight: 1.6 }}>
+          <div style={{ fontSize: 18, fontWeight: 900, marginBottom: 4 }}>Paper trading är pausad</div>
+          <div style={{ fontSize: 13 }}>Riskmotorn har pausat nya paper trades efter förlustsvit.</div>
+          <div style={{ marginTop: 10, fontSize: 13 }}>
+            Orsak: <strong>{reasonText}</strong>
+            <br />
+            Förlustsvit: <strong>{consecutiveText}</strong>
+            <br />
+            Senaste risk-pause-event: <strong>{latestEventText}</strong>
+          </div>
+          <div style={{ marginTop: 10, fontSize: 13 }}>
+            Scanner och gates kan fortfarande hitta kandidater, men nya paper trades öppnas inte.
+          </div>
+        </div>
+      ) : null}
+
+      {active && reviewActive ? (
+        <div style={{ marginTop: 12, padding: 16, borderRadius: 16, border: '1px solid rgba(34,197,94,0.28)', background: 'rgba(34,197,94,0.10)', color: 'var(--text)', lineHeight: 1.6 }}>
+          <div style={{ fontSize: 18, fontWeight: 900, marginBottom: 4 }}>Paper testing återupptagen efter manuell risk review</div>
+          <div style={{ fontSize: 13 }}>
+            Den underliggande risk-pausen finns kvar, men en paper-only override är aktiv under en tidsbegränsad review-period.
+          </div>
+          <div style={{ marginTop: 10, fontSize: 13 }}>
+            Orsak: <strong>{reasonText}</strong>
+            <br />
+            Förlustsvit: <strong>{consecutiveText}</strong>
+            <br />
+            Override giltig till: <strong>{fmtTime(riskReview.expiresAt)}</strong>
+          </div>
+        </div>
+      ) : null}
 
       <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10, marginTop: 12 }}>
         <MetricCard
@@ -1350,6 +1433,18 @@ function RiskPauseSummaryPanel({ riskPauseSummary, gateStatus, runtime }) {
           value={latestEvent?.timestamp ? fmtTime(latestEvent.timestamp) : '–'}
           tone="neutral"
           note={latestEventText}
+        />
+        <MetricCard
+          label="Manuell review"
+          value={reviewActive ? 'Aktiv' : '–'}
+          tone={reviewActive ? 'good' : 'neutral'}
+          note={reviewActive ? `expires ${fmtTime(riskReview.expiresAt)}` : 'Ingen override aktiv'}
+        />
+        <MetricCard
+          label="Senaste audit-event"
+          value={latestAuditEvent?.type || '–'}
+          tone={reviewActive ? 'good' : 'neutral'}
+          note={latestAuditEventText}
         />
         <MetricCard
           label="GATE_ALLOWED 60m"
@@ -1372,12 +1467,58 @@ function RiskPauseSummaryPanel({ riskPauseSummary, gateStatus, runtime }) {
         <span style={statusPillStyle('neutral', theme)}>Ingen reset här</span>
         <span style={statusPillStyle('neutral', theme)}>Ingen live trading</span>
         <span style={statusPillStyle('neutral', theme)}>Inga riktiga order</span>
+        {active && !reviewActive ? <span style={statusPillStyle('warning', theme)}>Manuell review krävs</span> : null}
       </div>
+
+      {resumeMessage ? (
+        <div style={{ marginTop: 12, border: '1px solid var(--border)', borderRadius: 12, padding: 12, background: 'var(--surface)', color: resumeMessage.type === 'ok' ? 'var(--success)' : 'var(--danger)', fontSize: 13, lineHeight: 1.5 }}>
+          {resumeMessage.text}
+        </div>
+      ) : null}
+
+      {canResume ? (
+        <div style={{ marginTop: 12, border: '1px solid var(--border)', borderRadius: 14, padding: 14, background: 'var(--surface)' }}>
+          <div style={{ fontWeight: 900, color: 'var(--text)' }}>Återuppta paper testing</div>
+          <div style={{ marginTop: 6, fontSize: 13, color: 'var(--text)', lineHeight: 1.5 }}>
+            För att fortsätta krävs manuell risk review. Det påverkar bara paper trading och lägger ingen riktig order.
+          </div>
+          <label style={{ marginTop: 10, display: 'flex', gap: 10, alignItems: 'flex-start', fontSize: 13, color: 'var(--text)', lineHeight: 1.5 }}>
+            <input
+              type="checkbox"
+              checked={resumeAck}
+              onChange={(e) => setResumeAck(e.target.checked)}
+              style={{ marginTop: 4 }}
+            />
+            <span>Jag bekräftar att detta endast gäller paper trading och inte live trading.</span>
+          </label>
+          <div style={{ display: 'flex', gap: 8, marginTop: 12, flexWrap: 'wrap' }}>
+            <button
+              type="button"
+              disabled={!resumeAck || resumeBusy}
+              onClick={handleResume}
+              style={{
+                appearance: 'none',
+                cursor: (!resumeAck || resumeBusy) ? 'not-allowed' : 'pointer',
+                border: '1px solid var(--border)',
+                borderRadius: 10,
+                background: (!resumeAck || resumeBusy) ? 'var(--surface-2)' : 'var(--surface)',
+                color: 'var(--text)',
+                padding: '10px 14px',
+                fontSize: 13,
+                fontWeight: 900,
+                opacity: (!resumeAck || resumeBusy) ? 0.65 : 1,
+              }}
+            >
+              {resumeBusy ? 'Återupptar...' : 'Återuppta paper testing efter risk review'}
+            </button>
+          </div>
+        </div>
+      ) : null}
     </div>
   );
 }
 
-function WhyNoTradesPanel({ runtime, allowlist, riskPauseSummary, gateStatus }) {
+function WhyNoTradesPanel({ runtime, allowlist, riskPauseSummary, gateStatus, onRefresh }) {
   const theme = useThemeMode();
   const summary = runtime?.summary || {};
   const open = Number(summary.openCount) || 0;
@@ -1407,7 +1548,7 @@ function WhyNoTradesPanel({ runtime, allowlist, riskPauseSummary, gateStatus }) 
     <div style={sectionStyle()}>
       <div style={{ fontSize: 16, fontWeight: 800, marginBottom: 4 }}>Varför finns inga paper trades?</div>
       <div style={{ fontSize: 12, ...mutedTextStyle(theme), marginBottom: 12 }}>Read-only diagnos. Inga riktiga order, inga actions härifrån.</div>
-      <RiskPauseSummaryPanel riskPauseSummary={riskPauseSummary} gateStatus={gateStatus} runtime={runtime} />
+      <RiskPauseSummaryPanel riskPauseSummary={riskPauseSummary} gateStatus={gateStatus} runtime={runtime} onRefresh={onRefresh} />
       <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10 }}>
         <MetricCard label="Runtime" value={runtimeActive ? 'Aktiv' : 'Avvaktar'} tone={runtimeActive ? 'good' : 'warn'} note="paper_only, read-only" />
         <MetricCard label="Öppna trades" value={open} tone="neutral" />
@@ -2307,6 +2448,7 @@ export default function PaperTradingPage() {
         allowlist={allowlistState.data}
         riskPauseSummary={riskPauseSummaryState.data}
         gateStatus={gateStatusState.data}
+        onRefresh={() => setRefreshKey((t) => t + 1)}
       />
 
       <PaperAllowlistManager runtime={runtime} allowlist={allowlistState.data} refreshKey={refreshKey} onRefresh={() => setRefreshKey((t) => t + 1)} />

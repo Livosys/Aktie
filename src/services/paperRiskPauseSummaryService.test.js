@@ -10,6 +10,7 @@ const svc = require('./paperRiskPauseSummaryService');
 const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'paper-risk-pause-'));
 const tradesFile = path.join(tmpDir, 'trades.jsonl');
 const eventsFile = path.join(tmpDir, 'events.jsonl');
+const riskReviewStateFile = path.join(tmpDir, 'risk-review-state.json');
 
 const now = new Date('2026-06-18T15:00:00.000Z');
 const lines = [
@@ -25,10 +26,24 @@ const lines = [
 
 fs.writeFileSync(tradesFile, lines.slice(0, 4).map((row) => JSON.stringify(row)).join('\n') + '\n');
 fs.writeFileSync(eventsFile, lines.slice(4).map((row) => JSON.stringify(row)).join('\n') + '\n');
+fs.writeFileSync(riskReviewStateFile, JSON.stringify({
+  paperOnly: true,
+  resumedAt: '2026-06-18T14:45:00.000Z',
+  resumedBy: 'manual',
+  reason: 'Manual risk review accepted. Resume paper testing.',
+  previousConsecutiveLosses: 4,
+  previousPauseReason: 'consecutive_losses_limit',
+  maxAgeMinutes: 60,
+  expiresAt: '2026-06-18T15:45:00.000Z',
+  latestAuditEvent: {
+    type: 'PAPER_RISK_REVIEW_RESUMED',
+    timestamp: '2026-06-18T14:45:00.000Z',
+  },
+}, null, 2) + '\n');
 
 async function main() {
   const result = await svc.buildPaperRiskPauseSummary({
-    files: { trades: tradesFile, events: eventsFile },
+    files: { trades: tradesFile, events: eventsFile, riskReviewState: riskReviewStateFile },
     now,
     riskConfig: {
       pause_after_consecutive_losses: true,
@@ -50,6 +65,9 @@ async function main() {
   assert.equal(result.summary.latest_risk_pause_event.symbol, 'AAPL');
   assert.equal(result.summary.latest_risk_pause_event.strategy_id, 'trend_continuation');
   assert.equal(result.summary.latest_risk_pause_event.type, 'RISK_PAUSE_TRIGGERED');
+  assert.equal(result.summary.risk_review.active, true);
+  assert.equal(result.summary.effective_pause_trading, false);
+  assert.equal(result.summary.resume_override_active, true);
 
   const inactive = await svc.buildPaperRiskPauseSummary({
     files: { trades: tradesFile, events: eventsFile },
