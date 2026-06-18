@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useMemo, useState } from 'react';
 
 function safeString(value, fallback = '–') {
   if (value === null || value === undefined) return fallback;
@@ -65,6 +65,15 @@ function FieldRow({ label, value }) {
   );
 }
 
+function CompactLine({ children, tone = 'neutral' }) {
+  return (
+    <div style={{ display: 'flex', gap: 8, alignItems: 'flex-start', color: 'var(--text)', fontSize: 13, lineHeight: 1.55 }}>
+      <span style={badgeStyle(tone)}>{tone === 'success' ? 'OK' : tone === 'warning' ? 'Kräver' : 'Info'}</span>
+      <div>{children}</div>
+    </div>
+  );
+}
+
 function BlueprintCard({ blueprint }) {
   const missing = safeArray(blueprint?.missingFields);
   const warnings = safeArray(blueprint?.warnings);
@@ -115,12 +124,19 @@ export default function TradingViewTestBlueprintPanel({ data, theme = 'dark' }) 
   const summary = data?.summary || {};
   const fieldInventory = data?.fieldInventory || {};
   const blueprints = Array.isArray(data?.blueprints) ? data.blueprints : [];
-  const pineScriptPossibleCount = blueprints.filter((blueprint) => blueprint?.pineScriptPossible === true).length;
-  const needsAttentionCount = blueprints.filter((blueprint) => safeArray(blueprint?.warnings).length > 0 || safeArray(blueprint?.missingFields).length > 0).length;
-  const directionBothCount = blueprints.filter((blueprint) => String(blueprint?.direction || '').toLowerCase() === 'both').length;
+  const pineScriptPossibleCount = toPositiveNumber(summary.pineScriptPossible) || blueprints.filter((blueprint) => blueprint?.pineScriptPossible === true).length;
+  const needsAttentionCount = toPositiveNumber(summary.needsAttention) || blueprints.filter((blueprint) => safeArray(blueprint?.warnings).length > 0 || safeArray(blueprint?.missingFields).length > 0).length;
+  const directionBothCount = toPositiveNumber(summary.directionBoth) || blueprints.filter((blueprint) => String(blueprint?.direction || '').toLowerCase() === 'both').length;
   const strategiesCount = toPositiveNumber(summary.strategies) || toPositiveNumber(summary.totalStrategies) || blueprints.length;
+  const [showAllBlueprints, setShowAllBlueprints] = useState(false);
+  const [showTechnicalDetails, setShowTechnicalDetails] = useState(false);
+  const visibleBlueprints = useMemo(
+    () => (showAllBlueprints ? blueprints : blueprints.slice(0, 5)),
+    [blueprints, showAllBlueprints],
+  );
   const emptyState = data?.status === 'empty' || (!blueprints.length && summary.totalStrategies === 0);
   const sourceLabel = safeString(data?.source, data?.status === 'empty' ? 'none' : 'unknown');
+  const canShowMore = blueprints.length > 5;
 
   return (
     <section style={sectionStyle(theme)}>
@@ -130,18 +146,29 @@ export default function TradingViewTestBlueprintPanel({ data, theme = 'dark' }) 
           <div style={{ marginTop: 4, color: 'var(--muted)', fontSize: 13 }}>
             Read-only blueprint för att göra strategier Pine-ready utan att ändra execution, broker eller risk.
           </div>
-          <div style={{ marginTop: 8, color: 'var(--muted)', fontSize: 12, lineHeight: 1.55 }}>
-            Blueprint är strategins testrecept. När en blueprint har testats i TradingView kan resultatet jämföras mot paper-kandidater och Learning.
-          </div>
         </div>
         <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
           <span style={badgeStyle('neutral')}>status {safeString(data?.status, 'unknown')}</span>
           <span style={badgeStyle('neutral')}>source {sourceLabel}</span>
           <span style={badgeStyle('success')}>strategies {strategiesCount}</span>
-          <span style={badgeStyle('info')}>pineScriptPossible {toPositiveNumber(summary.pineScriptPossible) || pineScriptPossibleCount}</span>
-          <span style={badgeStyle('warning')}>needsAttention {toPositiveNumber(summary.needsAttention) || needsAttentionCount}</span>
-          <span style={badgeStyle('neutral')}>directionBoth {toPositiveNumber(summary.directionBoth) || directionBothCount}</span>
+          <span style={badgeStyle('info')}>pineScriptPossible {pineScriptPossibleCount}</span>
+          <span style={badgeStyle('warning')}>needsAttention {needsAttentionCount}</span>
+          <span style={badgeStyle('neutral')}>directionBoth {directionBothCount}</span>
         </div>
+      </div>
+
+      <div style={{ display: 'grid', gap: 10, marginBottom: 14 }}>
+        <CompactLine tone="success">{strategiesCount} strategier kan göras Pine-ready.</CompactLine>
+        <CompactLine tone="warning">{needsAttentionCount} behöver kompletteras med symbol/filter/session innan exakt TradingView-test.</CompactLine>
+        <CompactLine tone="neutral">Nästa steg: välj toppstrategier och skapa manuella Pine Script-tester.</CompactLine>
+      </div>
+
+      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginBottom: 14 }}>
+        <span style={badgeStyle('neutral')}>Read-only</span>
+        <span style={badgeStyle('neutral')}>Ingen execution</span>
+        <span style={badgeStyle('neutral')}>Ingen broker</span>
+        <span style={badgeStyle('neutral')}>Ingen riskändring</span>
+        <span style={badgeStyle('neutral')}>Inga riktiga order</span>
       </div>
 
       {emptyState ? (
@@ -150,20 +177,68 @@ export default function TradingViewTestBlueprintPanel({ data, theme = 'dark' }) 
         </div>
       ) : null}
 
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 10, marginBottom: 14 }}>
-        {safeArray(fieldInventory.fields).map((field) => (
-          <div key={field.field} style={{ border: '1px solid var(--border)', borderRadius: 12, padding: 12, background: 'var(--surface-2)' }}>
-            <div style={{ color: 'var(--muted)', fontSize: 11, textTransform: 'uppercase', letterSpacing: '0.08em' }}>{field.field}</div>
-            <div style={{ marginTop: 6, fontSize: 20, fontWeight: 900, color: 'var(--text)' }}>{field.present}</div>
-            <div style={{ marginTop: 4, color: 'var(--muted)', fontSize: 12 }}>missing {field.missing}</div>
-          </div>
-        ))}
+      <div style={{ marginBottom: 14 }}>
+        <button
+          type="button"
+          onClick={() => setShowAllBlueprints((value) => !value)}
+          style={{
+            border: '1px solid var(--border)',
+            background: 'var(--surface-2)',
+            color: 'var(--text)',
+            borderRadius: 999,
+            padding: '8px 12px',
+            fontSize: 12,
+            fontWeight: 800,
+            cursor: 'pointer',
+          }}
+        >
+          {showAllBlueprints ? 'Dölj blueprints' : 'Visa alla blueprints'}
+        </button>
       </div>
 
       <div style={{ display: 'grid', gap: 12 }}>
-        {blueprints.map((blueprint) => (
+        {visibleBlueprints.map((blueprint) => (
           <BlueprintCard key={blueprint.strategyId} blueprint={blueprint} />
         ))}
+      </div>
+
+      {canShowMore ? (
+        <div style={{ marginTop: 12, color: 'var(--muted)', fontSize: 12 }}>
+          {showAllBlueprints ? `${blueprints.length} blueprints visas.` : `Visar topp 5 av ${blueprints.length} blueprints.`}
+        </div>
+      ) : null}
+
+      <div style={{ marginTop: 14 }}>
+        <button
+          type="button"
+          onClick={() => setShowTechnicalDetails((value) => !value)}
+          style={{
+            border: '1px solid var(--border)',
+            background: 'var(--surface-2)',
+            color: 'var(--text)',
+            borderRadius: 999,
+            padding: '8px 12px',
+            fontSize: 12,
+            fontWeight: 800,
+            cursor: 'pointer',
+          }}
+        >
+          {showTechnicalDetails ? 'Dölj tekniska detaljer' : 'Visa tekniska detaljer'}
+        </button>
+
+        {showTechnicalDetails ? (
+          <div style={{ marginTop: 12 }}>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 10, marginBottom: 14 }}>
+              {safeArray(fieldInventory.fields).map((field) => (
+                <div key={field.field} style={{ border: '1px solid var(--border)', borderRadius: 12, padding: 12, background: 'var(--surface-2)' }}>
+                  <div style={{ color: 'var(--muted)', fontSize: 11, textTransform: 'uppercase', letterSpacing: '0.08em' }}>{field.field}</div>
+                  <div style={{ marginTop: 6, fontSize: 20, fontWeight: 900, color: 'var(--text)' }}>{field.present}</div>
+                  <div style={{ marginTop: 4, color: 'var(--muted)', fontSize: 12 }}>missing {field.missing}</div>
+                </div>
+              ))}
+            </div>
+          </div>
+        ) : null}
       </div>
     </section>
   );
