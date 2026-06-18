@@ -58,6 +58,17 @@ const SAFE_FALLBACK_STATUS = Object.freeze({
   approvedStrategiesCount: 0,
   approvedStrategiesSource: { available: false, status: 'degraded' },
   internalPaperTradingUnaffected: true,
+  connection: {
+    connectionCheckEnabled: false,
+    gatewayReachable: false,
+    host: '127.0.0.1',
+    port: null,
+    portConfigured: false,
+    clientIdConfigured: false,
+    paperMode: 'unknown',
+    paperModeVerified: false,
+    blockedReason: 'ib_connection_check_disabled',
+  },
 });
 
 function Badge({ ok, labelTrue, labelFalse }) {
@@ -130,6 +141,7 @@ export default function InteractiveBrokersPage() {
   const ib = eff.ibPaper || {};
   const safety = eff.safety || {};
   const nextPhase = eff.nextPhaseLocked || {};
+  const conn = eff.connection || {};
   const strategies = usingFallback ? [] : (preview?.approvedStrategies || eff.approvedStrategies || []);
   const sourceStatus = usingFallback
     ? 'degraded'
@@ -197,6 +209,41 @@ export default function InteractiveBrokersPage() {
               I denna fas (Phase 1) byggs ingen order submission, ingen broker-anslutning
               och ingen execution. Inga order skickas.
             </p>
+          </div>
+
+          {/* Connection readiness (read-only) */}
+          <div style={CARD_STYLE}>
+            <h2 style={{ marginTop: 0 }}>Anslutnings-readiness (IB Gateway/TWS)</h2>
+            <div style={{ color: '#94a3b8', marginTop: 0, marginBottom: 12, lineHeight: 1.7 }}>
+              • IBKR-lösenord sparas inte i Trading OS.<br />
+              • Logga in manuellt i IB Gateway/TWS med Paper-kontot.<br />
+              • Den här sidan kontrollerar bara om anslutningen är redo.
+            </div>
+            <Row label="Anslutningskontroll aktiverad">
+              <Badge ok={conn.connectionCheckEnabled === true} labelTrue="På" labelFalse="Av" />
+            </Row>
+            <Row label="Gateway nåbar">
+              <Badge
+                ok={conn.gatewayReachable === true}
+                labelTrue="Nåbar"
+                labelFalse={conn.gatewayReachable === null ? 'okänt (ej kontrollerad)' : 'Ej nåbar'}
+              />
+            </Row>
+            <Row label="Gateway host">
+              <code>{conn.host || '127.0.0.1'}</code>
+            </Row>
+            <Row label="Gateway port">
+              <code>{conn.portConfigured ? conn.port : 'ej konfigurerad'}</code>
+            </Row>
+            <Row label="Paper mode">
+              <Badge ok={conn.paperModeVerified === true} labelTrue="verifierad" labelFalse={conn.paperMode || 'unknown'} />
+            </Row>
+            <Row label="Order sending">
+              <Badge ok={eff.orderSendingBlocked === true} labelTrue="Blockerad" labelFalse="Tillåten" />
+            </Row>
+            <Row label="Orsak (blockedReason)">
+              <code style={{ color: '#fbbf24' }}>{conn.blockedReason || 'unknown'}</code>
+            </Row>
           </div>
 
           {/* Safety status */}

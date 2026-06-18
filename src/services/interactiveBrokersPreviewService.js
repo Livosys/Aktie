@@ -16,6 +16,7 @@
 // Safety is permanently locked: paper_only, no actions, no orders, no broker,
 // no live trading. The feature flags below all default to OFF.
 
+const net = require('net');
 const paperAllowlistService = require('./paperAllowlistService');
 
 // Permanent safety contract — identical to the rest of the paper-only stack.
@@ -51,6 +52,114 @@ function getFeatureFlags() {
     previewEnabled: readFlag('IB_PAPER_PREVIEW_ENABLED'),
     orderQueueEnabled: readFlag('IB_PAPER_ORDER_QUEUE_ENABLED'),
     executionEnabled: readFlag('IB_PAPER_EXECUTION_ENABLED'),
+  };
+}
+
+// ── Read-only connection readiness ──────────────────────────────────────────
+// Trading OS NEVER stores or handles the IBKR password. Login must happen
+// MANUALLY in IB Gateway / TWS using the IBKR Paper account. This module may
+// only READ whether the local gateway socket is reachable — it never logs in,
+// never requests trading permissions, never sends or queues any order.
+//
+// No password/secret env var is read here. Host/port/clientId are connection
+// coordinates only (not secrets); we expose host/port and a boolean for whether
+// a client id is configured — never any credential.
+function getConnectionConfig() {
+  const host = String(process.env.IB_GATEWAY_HOST || '127.0.0.1').trim() || '127.0.0.1';
+  const portRaw = String(process.env.IB_GATEWAY_PORT || '').trim();
+  const clientIdRaw = String(process.env.IB_GATEWAY_CLIENT_ID || '').trim();
+  const port = /^\d+$/.test(portRaw) ? Number(portRaw) : null; // null = disabled/unset
+  return {
+    checkEnabled: readFlag('IB_CONNECTION_CHECK_ENABLED'),
+    host,
+    port,
+    portConfigured: port !== null,
+    clientIdConfigured: clientIdRaw !== '',
+  };
+}
+
+// Harmless TCP reachability probe: opens a socket, writes NOTHING, and destroys
+// it immediately. It only answers "is something listening on host:port?". It
+// performs NO IBKR handshake, NO login, NO account/permission request, NO order.
+function tcpReachable(host, port, timeoutMs = 1500) {
+  return new Promise((resolve) => {
+    const socket = new net.Socket();
+    let settled = false;
+    const finish = (value) => {
+      if (settled) return;
+      settled = true;
+      try { socket.destroy(); } catch (_) { /* ignore */ }
+      resolve(value);
+    };
+    socket.setTimeout(timeoutMs);
+    socket.once('connect', () => finish(true));
+    socket.once('timeout', () => finish(false));
+    socket.once('error', () => finish(false));
+    try { socket.connect(port, host); } catch (_) { finish(false); }
+  });
+}
+
+// Synchronous connection summary embedded in the status payload. Does NOT probe
+// the network (status stays sync); the dedicated readiness endpoint performs the
+// actual harmless TCP check.
+function buildConnectionSummary() {
+  const cfg = getConnectionConfig();
+  const base = {
+    host: cfg.host,
+    port: cfg.port,
+    portConfigured: cfg.portConfigured,
+    clientIdConfigured: cfg.clientIdConfigured,
+    // Paper mode can never be asserted from a TCP probe; it stays unknown until
+    // a human verifies the IBKR Paper login inside IB Gateway / TWS.
+    paperMode: 'unknown',
+    paperModeVerified: false,
+  };
+  if (!cfg.checkEnabled) {
+    return { ...base, connectionCheckEnabled: false, gatewayReachable: false, blockedReason: 'ib_connection_check_disabled' };
+  }
+  return {
+    ...base,
+    connectionCheckEnabled: true,
+    gatewayReachable: null, // unknown until the readiness endpoint probes
+    blockedReason: cfg.portConfigured ? 'connection_check_pending' : 'ib_gateway_port_not_configured',
+  };
+}
+
+// Read-only connection readiness endpoint payload. When disabled (default) it
+// returns immediately without any network activity.
+async function getConnectionReadiness() {
+  const cfg = getConnectionConfig();
+  const base = {
+    ok: true,
+    dryRun: true,
+    safety: { ...SAFETY },
+    host: cfg.host,
+    port: cfg.port,
+    portConfigured: cfg.portConfigured,
+    clientIdConfigured: cfg.clientIdConfigured,
+    paperMode: 'unknown',
+    paperModeVerified: false,
+    orderSendingBlocked: true,
+    wouldCreateIbPaperOrder: false,
+    internalPaperTradingUnaffected: true,
+    passwordStored: false,
+    note: 'Read-only readiness. IBKR password is never stored. Log in manually in '
+      + 'IB Gateway / TWS with the Paper account. No orders are sent.',
+  };
+
+  if (!cfg.checkEnabled) {
+    return { ...base, connectionCheckEnabled: false, gatewayReachable: false, blockedReason: 'ib_connection_check_disabled' };
+  }
+  if (!cfg.portConfigured) {
+    return { ...base, connectionCheckEnabled: true, gatewayReachable: false, blockedReason: 'ib_gateway_port_not_configured' };
+  }
+
+  const reachable = await tcpReachable(cfg.host, cfg.port);
+  return {
+    ...base,
+    connectionCheckEnabled: true,
+    gatewayReachable: reachable,
+    blockedReason: reachable ? 'reachable_read_only_no_orders' : 'ib_gateway_unreachable',
   };
 }
 
@@ -136,6 +245,7 @@ function getIbPaperStatus() {
     wouldCreateIbPaperOrder: false,
     blockedReason,
     nextPhaseLocked: { ...NEXT_PHASE_LOCKED },
+    connection: buildConnectionSummary(),
     approvedStrategies,
     approvedStrategiesCount: approvedStrategies.length,
     approvedStrategiesSource: {
@@ -193,6 +303,8 @@ module.exports = {
   SAFETY,
   NEXT_PHASE_LOCKED,
   getFeatureFlags,
+  getConnectionConfig,
+  getConnectionReadiness,
   getIbPaperStatus,
   getApprovedStrategiesPreview,
 };
