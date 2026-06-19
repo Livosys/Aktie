@@ -1,48 +1,55 @@
 import React, { useState, useEffect } from 'react';
 import { Link, useLocation } from 'react-router-dom';
+import { useAlerts } from '../alertContext.jsx';
 import { getTheme } from './ThemeToggle.jsx';
 
 const NAV_GROUPS = [
-  {
-    id: 'pipeline',
-    label: 'Trading OS',
-    items: [
-      { path: '/live', icon: '🟢', label: 'Live', match: ['/live'] },
-      { path: '/paper-trading', icon: '🧾', label: 'Paper Trading', match: ['/paper-trading'] },
-      { path: '/interactive-brokers', icon: '🔌', label: 'Interactive Brokers', match: ['/interactive-brokers'] },
-      { path: '/lab', icon: '🧪', label: 'Test Lab', match: ['/lab'] },
-      { path: '/system', icon: '🛡️', label: 'System', match: ['/system'] },
-    ],
-  },
+      {
+        id: 'main',
+        label: null,
+        items: [
+          { path: '/supervisor', label: 'Trading OS', icon: '🧭', match: ['/supervisor', '/oversikt'], accent: 'blue' },
+          { path: '/live',       label: 'Live / Signaler', icon: '♥', match: ['/', '/live', '/signalpuls', '/scanner', '/signaler', '/aktier', '/krypto', '/nasdaq'], accent: 'blue' },
+          { path: '/paper-trading', label: 'Paper Trading', icon: '🧾', match: ['/paper-trading'], accent: 'green' },
+          { path: '/lab',        label: 'Lärdomar',        icon: '🧪', match: ['/lab', '/trading-lab', '/strategy-lab', '/replay', '/review-chart', '/intelligence', '/machine'], accent: 'orange' },
+          { path: '/insikter',   label: 'Historik',        icon: '📊', match: ['/insikter', '/resultat', '/setup-performance', '/historik', '/paper-trading'], accent: 'green' },
+          { path: '/system',     label: 'Teknik',          icon: '🛡️', match: ['/system', '/system-health', '/alerts', '/sakerhet', '/risk', '/risk-engine', '/safety', '/execution-safety'], accent: 'purple' },
+          { path: '/interactive-brokers', label: 'Interactive Brokers', icon: '🔌', match: ['/interactive-brokers'], accent: 'blue' },
+        ],
+      },
+
 ];
 
-function isActive(item, pathname, search) {
+const ACCENT_CLASS = {
+  blue:   'sb-icon-blue',
+  green:  'sb-icon-green',
+  orange: 'sb-icon-orange',
+  purple: 'sb-icon-purple',
+  teal:   'sb-icon-teal',
+};
+
+function isActive(item, pathname) {
   const matches = (item.match || [item.path]).map((p) => p.split('?')[0]);
-  const pathMatched = matches.some((p) => pathname === p || pathname.startsWith(`${p}/`));
-  if (!pathMatched) {
-    return false;
-  }
-  if (item.searchMatch?.length) {
-    return item.searchMatch.some((token) => search.includes(token));
-  }
-  return true;
+  if (item.path === '/live') return pathname === '/' || pathname === '/signalpuls' || pathname === '/live';
+  return matches.some((p) => pathname === p || pathname.startsWith(`${p}/`));
 }
 
 function NavItem({ item, onClose }) {
-  const { pathname, search } = useLocation();
-  const active = isActive(item, pathname, search);
+  const { pathname } = useLocation();
+  const { heroToasts } = useAlerts();
+  const active = isActive(item, pathname);
+  const hasAlerts = item.path === '/alerts' && (heroToasts?.length ?? 0) > 0;
+  const iconCls = active ? `sb-icon ${ACCENT_CLASS[item.accent] || 'sb-icon-blue'} sb-icon-active` : `sb-icon ${ACCENT_CLASS[item.accent] || 'sb-icon-blue'}`;
 
   return (
     <Link
       to={item.path}
       className={`sb-link${active ? ' sb-link-active' : ''}`}
       onClick={onClose}
-      aria-label={item.label}
     >
-      <span className="sb-icon" aria-hidden="true">{item.icon}</span>
-      <span className="sb-link-copy">
-        <span className="sb-link-label">{item.label}</span>
-      </span>
+      <span className={iconCls}>{item.icon}</span>
+      <span className="sb-link-label">{item.label}</span>
+      {hasAlerts && <span className="sb-alert-pip" />}
       {active && <span className="sb-active-bar" />}
     </Link>
   );
@@ -63,7 +70,7 @@ function ThemeStatus() {
       <span className="sb-theme-track">
         <span className={`sb-theme-thumb ${isDark ? 'thumb-dark' : 'thumb-light'}`} />
       </span>
-      <span className="sb-theme-label">Theme: {isDark ? 'Dark mode' : 'Light mode'}</span>
+      <span className="sb-theme-label">Tema: {isDark ? 'Mörkt läge' : 'Ljust läge'}</span>
     </div>
   );
 }
@@ -74,22 +81,23 @@ export default function Sidebar({ open, onClose }) {
       {open && (
         <button
           className="premium-sidebar-backdrop"
-          aria-label="Close menu"
+          aria-label="Stäng meny"
           onClick={onClose}
         />
       )}
       <aside className={`premium-sidebar${open ? ' is-open' : ''}`}>
 
         {/* Brand */}
-        <Link to="/lab" className="sb-brand" onClick={onClose}>
+        <Link to="/supervisor" className="sb-brand" onClick={onClose}>
           <img src="/evin.png" alt="" className="sb-brand-logo" />
           <div className="sb-brand-text">
             <strong>Trading OS</strong>
+            <small>Översikt · test · läsning</small>
           </div>
         </Link>
 
         {/* Nav */}
-        <nav className="sb-nav" aria-label="Main navigation">
+        <nav className="sb-nav" aria-label="Huvudnavigation">
           {NAV_GROUPS.map((group) => (
             <div key={group.id} className="sb-group">
               {group.label && (
@@ -113,6 +121,7 @@ export default function Sidebar({ open, onClose }) {
           <ThemeStatus />
           <div className="sb-footer-meta">
             <span>Trading OS</span>
+            <span>Inga affärer utförs</span>
           </div>
         </div>
 

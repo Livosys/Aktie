@@ -1,5 +1,5 @@
 import React from 'react';
-import { Routes, Route, Navigate } from 'react-router-dom';
+import { Routes, Route, Navigate, useLocation } from 'react-router-dom';
 import AppShell from './layout/AppShell.jsx';
 import MobileBottomNav from './MobileBottomNav.jsx';
 import AiCopilot from './components/AiCopilot.jsx';
@@ -8,31 +8,19 @@ import { AlertProvider, HeroToastContainer } from './alertContext.jsx';
 // New primary pages
 import SignalpulsPage   from './pages/SignalpulsPage.jsx';
 import TradingLabPage   from './pages/TradingLabPage.jsx';
+import ResultatPage     from './pages/ResultatPage.jsx';
 import SystemPage       from './pages/SystemPage.jsx';
+import DaytradingPage   from './pages/DaytradingPage.jsx';
+import SupervisorBrainPage from './pages/SupervisorBrainPage.jsx';
+import NarrowStateLabPage from './pages/NarrowStateLabPage.jsx';
 import PaperTradingPage from './pages/PaperTradingPage.jsx';
 import InteractiveBrokersPage from './pages/InteractiveBrokersPage.jsx';
 
-function PlaceholderPage({ title, text }) {
-  return (
-    <div className="page" style={{ maxWidth: 760, margin: '0 auto', padding: '40px 24px' }}>
-      <div className="page-head">
-        <h1>{title}</h1>
-      </div>
-      <div
-        className="res-tab-content"
-        style={{
-          border: '1px solid rgba(148,163,184,0.18)',
-          borderRadius: 16,
-          padding: 24,
-          background: 'rgba(15, 23, 42, 0.35)',
-          lineHeight: 1.6,
-          whiteSpace: 'pre-line',
-        }}
-      >
-        {text}
-      </div>
-    </div>
-  );
+function RedirectWithSearch({ to }) {
+  const { search } = useLocation();
+  const joiner = to.includes('?') ? '&' : '';
+  const suffix = search ? `${joiner}${search.slice(1)}` : '';
+  return <Navigate to={`${to}${suffix}`} replace />;
 }
 
 export default function App() {
@@ -41,48 +29,68 @@ export default function App() {
       <AppShell>
         <HeroToastContainer />
         <Routes>
-          <Route path="/" element={<Navigate to="/lab" replace />} />
-          <Route path="/paper-trading" element={<PaperTradingPage />} />
+          {/* Trading OS v2 */}
+          <Route path="/"             element={<Navigate to="/supervisor" replace />} />
+          <Route path="/supervisor"   element={<SupervisorBrainPage />} />
+          <Route path="/overview"     element={<Navigate to="/supervisor" replace />} />
+          <Route path="/narrow"       element={<NarrowStateLabPage />} />
+          <Route path="/narrow-state" element={<Navigate to="/narrow" replace />} />
+          <Route path="/oversikt"     element={<Navigate to="/supervisor" replace />} />
+          <Route path="/live"         element={<SignalpulsPage />} />
+          <Route path="/lab"          element={<TradingLabPage />} />
+          <Route path="/insikter"     element={<ResultatPage />} />
+          <Route path="/system"       element={<SystemPage />} />
+          <Route path="/daytrading"   element={<DaytradingPage />} />
           <Route path="/interactive-brokers" element={<InteractiveBrokersPage />} />
-          <Route path="/system" element={<SystemPage />} />
-          <Route path="/lab" element={<TradingLabPage />} />
-          <Route path="/live" element={<SignalpulsPage />} />
-          <Route
-            path="/daytrading"
-            element={(
-              <PlaceholderPage
-                title="Daytrading kommer snart"
-                text="Den här modulen är tillfälligt avstängd medan Trading OS förenklas."
-              />
-            )}
-          />
-          <Route
-            path="/narrow"
-            element={(
-              <PlaceholderPage
-                title="Narrow Lab kommer snart"
-                text="Den här vyn är under ombyggnad."
-              />
-            )}
-          />
-          <Route
-            path="/supervisor"
-            element={(
-              <PlaceholderPage
-                title="Supervisor har ersatts"
-                text="Supervisor-funktioner flyttas successivt till Lab och System."
-              />
-            )}
-          />
-          <Route
-            path="/insikter"
-            element={(
-              <PlaceholderPage
-                title="Insikter kommer tillbaka"
-                text="Insikter byggs om till en ny central analysvy."
-              />
-            )}
-          />
+
+          {/* Legacy primary routes */}
+          <Route path="/signalpuls"  element={<RedirectWithSearch to="/live" />} />
+          <Route path="/trading-lab" element={<RedirectWithSearch to="/lab" />} />
+          <Route path="/resultat"    element={<RedirectWithSearch to="/insikter" />} />
+          <Route path="/sakerhet"    element={<Navigate to="/system?tab=safety" replace />} />
+
+          {/* Alerts */}
+          <Route path="/alerts"      element={<Navigate to="/system?tab=logs" replace />} />
+
+          {/* Legacy premium pages */}
+          <Route path="/scanner"     element={<Navigate to="/live?filter=all" replace />} />
+          <Route path="/signaler"    element={<Navigate to="/live?filter=all" replace />} />
+
+          {/* Alias routes */}
+          <Route path="/intelligence"  element={<Navigate to="/lab?tab=adaptive" replace />} />
+          <Route path="/intelligens"   element={<Navigate to="/lab?tab=adaptive" replace />} />
+          <Route path="/health"        element={<Navigate to="/system?tab=health" replace />} />
+          <Route path="/halsa"         element={<Navigate to="/system?tab=health" replace />} />
+          <Route path="/history"       element={<Navigate to="/insikter?tab=memory" replace />} />
+          <Route path="/data-center"   element={<Navigate to="/insikter?tab=data-center" replace />} />
+          <Route path="/larm"          element={<Navigate to="/system?tab=logs" replace />} />
+
+          {/* Legacy routes — unchanged */}
+          <Route path="/aktier"            element={<Navigate to="/live?filter=stocks" replace />} />
+          <Route path="/nasdaq"            element={<Navigate to="/live?filter=nasdaq" replace />} />
+          <Route path="/krypto"            element={<Navigate to="/live?filter=crypto" replace />} />
+          <Route path="/historik"          element={<Navigate to="/insikter?tab=memory" replace />} />
+          <Route path="/datacenter"        element={<Navigate to="/insikter?tab=data-center" replace />} />
+          <Route path="/replay"            element={<Navigate to="/lab?tab=replay" replace />} />
+          <Route path="/machine"           element={<Navigate to="/lab?tab=ai_agent" replace />} />
+          <Route path="/missed-breakouts"  element={<Navigate to="/lab?tab=candidates" replace />} />
+          <Route path="/micro-move"        element={<Navigate to="/lab?tab=adaptive" replace />} />
+          <Route path="/wave"              element={<Navigate to="/lab?tab=adaptive" replace />} />
+          <Route path="/review-chart"      element={<RedirectWithSearch to="/lab?tab=review" />} />
+          <Route path="/system-health"     element={<Navigate to="/system?tab=health" replace />} />
+          <Route path="/quality"           element={<Navigate to="/insikter?tab=ai" replace />} />
+          <Route path="/paper-trading"     element={<PaperTradingPage />} />
+          <Route path="/risk-engine"       element={<Navigate to="/system?tab=safety" replace />} />
+          <Route path="/exit-engine"       element={<Navigate to="/lab?tab=exits" replace />} />
+          {/* Legacy alias: canonical safety lives at /system?tab=safety */}
+          <Route path="/execution-safety"  element={<Navigate to="/system?tab=safety" replace />} />
+          <Route path="/strategy-lab"      element={<Navigate to="/lab?tab=strategier" replace />} />
+          <Route path="/strategilabb"      element={<Navigate to="/lab?tab=strategier" replace />} />
+          <Route path="/setup-performance" element={<Navigate to="/insikter?tab=setups" replace />} />
+          <Route path="/setup-resultat"    element={<Navigate to="/insikter?tab=setups" replace />} />
+          <Route path="/safety"            element={<Navigate to="/system?tab=safety" replace />} />
+          <Route path="/risk"              element={<Navigate to="/system?tab=safety" replace />} />
+          <Route path="/exit"              element={<Navigate to="/lab?tab=exits" replace />} />
         </Routes>
       </AppShell>
       <MobileBottomNav />
