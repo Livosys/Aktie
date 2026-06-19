@@ -17,7 +17,10 @@
 // no live trading. The feature flags below all default to OFF.
 
 const net = require('net');
+const automationApprovalService = require('./automationApprovalService');
+const marketUniverseService = require('./marketUniverseService');
 const paperAllowlistService = require('./paperAllowlistService');
+const paperTradingRuntimeService = require('./paperTradingRuntimeService');
 
 // Permanent safety contract — identical to the rest of the paper-only stack.
 // These values are frozen and must never become "true" in Phase 1.
@@ -38,6 +41,9 @@ const NEXT_PHASE_LOCKED = Object.freeze({
   liveTrading: { locked: true, reason: 'permanently_blocked_paper_only' },
   manualApprovalRequired: true,
 });
+
+const PREVIEW_LIMIT = 3;
+const ALLOWED_MARKET_GROUPS = new Set(['stocks', 'mag7', 'nasdaq100']);
 
 // Feature flags. All OFF by default. Reading an env var can only ever turn a
 // flag ON for *preview rendering* — it can NEVER enable order submission or a
@@ -194,6 +200,204 @@ async function getConnectionReadiness() {
   };
 }
 
+function safeUpper(value) {
+  return String(value || '').trim().toUpperCase();
+}
+
+function safeLower(value) {
+  return String(value || '').trim().toLowerCase();
+}
+
+function buildApprovedStrategyIndex() {
+  const approvals = automationApprovalService.getAutomationApprovals();
+  const allowlist = paperAllowlistService.getPaperAllowlistStatus();
+  const approved = new Set(Array.isArray(approvals?.approvedStrategyIds) ? approvals.approvedStrategyIds.filter(Boolean) : []);
+  const names = new Map();
+
+  for (const row of Array.isArray(allowlist?.allowlist) ? allowlist.allowlist : []) {
+    if (!row || !row.id) continue;
+    const id = String(row.id);
+    names.set(id, String(row.name || id));
+    if (row.approvedForPaperTesting === true) approved.add(id);
+  }
+
+  return { approved, names, approvals, allowlist };
+}
+
+function inferDirection(candidate = {}) {
+  const explicit = safeLower(candidate.direction || candidate.nextMoveBias || candidate.side);
+  if (explicit === 'long' || explicit === 'short') return explicit;
+  if (explicit === 'up' || explicit === 'bull' || explicit === 'buy') return 'long';
+  if (explicit === 'down' || explicit === 'bear' || explicit === 'sell') return 'short';
+
+  const blob = safeUpper([
+    candidate.setup,
+    candidate.signalSubtype,
+    candidate.signalFamily,
+    candidate.reason,
+    candidate.strategyName,
+  ].filter(Boolean).join(' '));
+
+  if (/(LONG|BULL|BUY|UP)/.test(blob)) return 'long';
+  if (/(SHORT|BEAR|SELL|DOWN)/.test(blob)) return 'short';
+  return null;
+}
+
+function classifySymbol(candidate = {}) {
+  const normalized = safeUpper(candidate.symbol);
+  const fallbackGroup = candidate.marketGroup || candidate.group || candidate.market_group || null;
+  const marketGroup = normalized
+    ? marketUniverseService.getGroupForSymbol(normalized, fallbackGroup || undefined)
+    : (fallbackGroup ? String(fallbackGroup) : null);
+  const group = marketGroup ? String(marketGroup) : null;
+  return {
+    symbol: normalized || null,
+    marketGroup: group,
+    isCrypto: group === 'crypto',
+    isEtf: group === 'etf' || group === 'leveraged_etf',
+    isQqq: normalized === 'QQQ',
+    isAllowedGroup: Boolean(group && ALLOWED_MARKET_GROUPS.has(group)),
+    isKnown: Boolean(group),
+  };
+}
+
+function joinReasons(reasons = []) {
+  const list = reasons.filter(Boolean).map((item) => String(item).replace(/[.]\s*$/, ''));
+  if (list.length === 0) return 'Godkänd för IB Paper-preview.';
+  return `Blockerad: ${list.join('. ')}.`;
+}
+
+function buildOrderPreviewCandidate(candidate = {}, context = {}) {
+  const approvedIndex = context.approvedIndex || buildApprovedStrategyIndex();
+  const strategyId = String(candidate.canonicalStrategyId || candidate.strategyId || candidate.strategy_id || '').trim() || null;
+  const strategyName = String(
+    candidate.strategyName
+    || candidate.strategy_name
+    || (strategyId ? approvedIndex.names.get(strategyId) : '')
+    || strategyId
+    || 'Okänd strategi',
+  ).trim();
+  const symbolInfo = classifySymbol(candidate);
+  const direction = inferDirection(candidate);
+  const confidence = candidate.confidence ?? candidate.score ?? null;
+  const gateScore = candidate.score ?? candidate.gateScore ?? null;
+  const blockers = [];
+
+  if (!strategyId) blockers.push('Saknar strategyId');
+  if (!strategyId || !approvedIndex.approved.has(strategyId)) blockers.push('Strategin är inte godkänd i allowlisten');
+  if (!symbolInfo.symbol) blockers.push('Saknar symbol');
+  else if (symbolInfo.isQqq) blockers.push('QQQ är blockerat i denna fas');
+  else if (symbolInfo.isCrypto) blockers.push('Krypto är blockerat i denna fas');
+  else if (symbolInfo.isEtf) blockers.push('ETF är blockerat i denna fas');
+  else if (!symbolInfo.isKnown) blockers.push('Okänd marknadsgrupp');
+  else if (!symbolInfo.isAllowedGroup) blockers.push('Symbolen är inte en Nasdaq100- eller US-stock-kandidat');
+  if (!direction) blockers.push('Riktningen kunde inte verifieras tydligt');
+
+  const allowedForIbPaperPreview = blockers.length === 0;
+  const reasonSv = allowedForIbPaperPreview
+    ? 'Godkänd för IB Paper-preview: godkänd strategi, tillåten marknad och tydlig riktning. Inga order skickas ännu.'
+    : joinReasons(blockers);
+
+  return {
+    strategyId,
+    strategyName,
+    symbol: symbolInfo.symbol,
+    direction: direction || 'unknown',
+    source: String(candidate.source || 'unknown'),
+    confidence,
+    gateScore,
+    allowedForIbPaperPreview,
+    blockers,
+    reasonSv,
+    wouldCreateIbPaperOrder: false,
+    orderSendingBlocked: true,
+    marketGroup: symbolInfo.marketGroup,
+    previewOnly: true,
+    blockedExecution: true,
+    approvalStatus: strategyId && approvedIndex.approved.has(strategyId) ? 'approved' : 'not_approved',
+  };
+}
+
+function getIbPaperOrderPreview(options = {}) {
+  const approvedIndex = buildApprovedStrategyIndex();
+  const dailySelectionPreview = options.dailySelectionPreview
+    || paperTradingRuntimeService._internal.buildDailySelectionPreview({
+      selectionCount: PREVIEW_LIMIT,
+      now: options.now,
+      files: options.files,
+    });
+  const rawCandidates = Array.isArray(options.candidates)
+    ? options.candidates
+    : Array.isArray(dailySelectionPreview?.candidates)
+      ? dailySelectionPreview.candidates
+      : [];
+
+  const classified = rawCandidates
+    .slice(0, PREVIEW_LIMIT)
+    .map((candidate) => buildOrderPreviewCandidate(candidate, { approvedIndex }))
+    .sort((a, b) => {
+      if (a.allowedForIbPaperPreview !== b.allowedForIbPaperPreview) return a.allowedForIbPaperPreview ? -1 : 1;
+      const aScore = Number.isFinite(Number(a.gateScore)) ? Number(a.gateScore) : Number.isFinite(Number(a.confidence)) ? Number(a.confidence) : -Infinity;
+      const bScore = Number.isFinite(Number(b.gateScore)) ? Number(b.gateScore) : Number.isFinite(Number(b.confidence)) ? Number(b.confidence) : -Infinity;
+      if (aScore !== bScore) return bScore - aScore;
+      return String(a.strategyId || '').localeCompare(String(b.strategyId || ''));
+    })
+    .slice(0, PREVIEW_LIMIT);
+
+  const allowedCandidates = classified.filter((row) => row.allowedForIbPaperPreview);
+  const blockedCandidates = classified.filter((row) => !row.allowedForIbPaperPreview);
+  const blockerCounts = {};
+  for (const row of blockedCandidates) {
+    for (const reason of row.blockers || []) {
+      blockerCounts[reason] = (blockerCounts[reason] || 0) + 1;
+    }
+  }
+  const totalAllowed = allowedCandidates.length;
+  const totalBlocked = blockedCandidates.length;
+  const blockerSummary = Object.keys(blockerCounts).join(', ') || 'policygrindar';
+  const summaryNote = totalAllowed === PREVIEW_LIMIT
+    ? 'Tre kandidater är tillåtna för IB Paper-preview idag.'
+    : totalAllowed > 0
+      ? `Endast ${totalAllowed} kandidat${totalAllowed === 1 ? '' : 'er'} uppfyller alla IB Paper-preview-grindar. Övriga blockerades av ${blockerSummary}.`
+      : `Inga kandidater uppfyller alla IB Paper-preview-grindar just nu. ${totalBlocked} kandidat${totalBlocked === 1 ? '' : 'er'} blockerades.`;
+
+  return {
+    ok: true,
+    mode: 'preview_only',
+    maxPerDay: PREVIEW_LIMIT,
+    cryptoBlocked: true,
+    etfBlocked: true,
+    qqqBlocked: true,
+    executionEnabled: false,
+    orderQueueEnabled: false,
+    brokerExecutionEnabled: false,
+    liveTradingEnabled: false,
+    orderSendingBlocked: true,
+    wouldCreateIbPaperOrder: false,
+    candidates: classified,
+    generatedAt: new Date().toISOString(),
+    summary: {
+      totalCandidates: classified.length,
+      allowedCandidates: totalAllowed,
+      blockedCandidates: totalBlocked,
+      availableAllowedCandidates: totalAllowed,
+      availableBlockedCandidates: totalBlocked,
+      previewSource: 'paperTradingRuntimeService._internal.buildDailySelectionPreview',
+      noteSv: summaryNote,
+      blockerCounts,
+      cryptoBlocked: true,
+      etfBlocked: true,
+      qqqBlocked: true,
+    },
+    source: {
+      dailySelectionPreviewMode: dailySelectionPreview?.mode || 'preview_only',
+      dailySelectionPreviewDate: dailySelectionPreview?.date || null,
+      dailySelectionPreviewCount: dailySelectionPreview?.selectedCount || 0,
+      approvedStrategyCount: approvedIndex.approved.size,
+    },
+  };
+}
+
 // Map the existing read-only allowlist rows into a minimal, IB-preview-shaped
 // view. We expose ONLY already-approved strategies. No mutation, no new fields
 // that imply execution.
@@ -338,4 +542,13 @@ module.exports = {
   getConnectionReadiness,
   getIbPaperStatus,
   getApprovedStrategiesPreview,
+  getIbPaperOrderPreview,
+  _internal: {
+    safeUpper,
+    safeLower,
+    buildApprovedStrategyIndex,
+    inferDirection,
+    classifySymbol,
+    buildOrderPreviewCandidate,
+  },
 };

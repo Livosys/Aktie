@@ -36,6 +36,37 @@ const CARD_STYLE = {
 };
 
 const PAPER_SESSION_NOT_VERIFIED_TEXT = 'Ej verifierad via API ännu';
+const PREVIEW_LIMIT = 3;
+
+const SAFE_FALLBACK_ORDER_PREVIEW = Object.freeze({
+  ok: false,
+  mode: 'preview_only',
+  maxPerDay: PREVIEW_LIMIT,
+  cryptoBlocked: true,
+  etfBlocked: true,
+  qqqBlocked: true,
+  executionEnabled: false,
+  orderQueueEnabled: false,
+  brokerExecutionEnabled: false,
+  liveTradingEnabled: false,
+  orderSendingBlocked: true,
+  wouldCreateIbPaperOrder: false,
+  candidates: [],
+  generatedAt: null,
+  summary: {
+    totalCandidates: 0,
+    allowedCandidates: 0,
+    blockedCandidates: 0,
+    availableAllowedCandidates: 0,
+    availableBlockedCandidates: 0,
+    previewSource: 'safe_fallback',
+    noteSv: 'Förhandsvisning är inte tillgänglig just nu. Inga order skickas ännu.',
+    blockerCounts: {},
+    cryptoBlocked: true,
+    etfBlocked: true,
+    qqqBlocked: true,
+  },
+});
 
 // Safe blocked fallback used whenever the API fails (error / 404 / timeout).
 // Every value here is the SAFE / blocked state. It must NEVER imply that any
@@ -103,7 +134,14 @@ function Row({ label, children }) {
 }
 
 export default function InteractiveBrokersPage() {
-  const [state, setState] = useState({ loading: true, error: null, status: null, readiness: null, preview: null });
+  const [state, setState] = useState({
+    loading: true,
+    error: null,
+    status: null,
+    readiness: null,
+    preview: null,
+    orderPreview: null,
+  });
 
   useEffect(() => {
     let alive = true;
@@ -112,13 +150,14 @@ export default function InteractiveBrokersPage() {
       if (controller) controller.abort();
       controller = new AbortController();
       try {
-        const [status, readiness, preview] = await Promise.all([
+        const [status, readiness, preview, orderPreview] = await Promise.all([
           fetchJsonWithTimeout('/api/interactive-brokers/status', { signal: controller.signal }),
           fetchJsonWithTimeout('/api/interactive-brokers/connection-readiness', { signal: controller.signal }),
           fetchJsonWithTimeout('/api/interactive-brokers/approved-strategies-preview', { signal: controller.signal }),
+          fetchJsonWithTimeout('/api/interactive-brokers/order-preview', { signal: controller.signal }),
         ]);
         if (!alive) return;
-        setState({ loading: false, error: null, status, readiness, preview });
+        setState({ loading: false, error: null, status, readiness, preview, orderPreview });
       } catch (err) {
         if (!alive) return;
         setState((s) => ({ ...s, loading: false, error: err.message || String(err) }));
@@ -133,7 +172,7 @@ export default function InteractiveBrokersPage() {
     };
   }, []);
 
-  const { loading, error, status, readiness, preview } = state;
+  const { loading, error, status, readiness, preview, orderPreview } = state;
 
   // On ANY error (404 / timeout / network) fall back to the safe blocked state.
   // Never derive values from an absent payload — that could accidentally render
@@ -146,11 +185,28 @@ export default function InteractiveBrokersPage() {
   const nextPhase = eff.nextPhaseLocked || {};
   const conn = usingFallback ? SAFE_FALLBACK_STATUS.connection : (readiness || eff.connection || SAFE_FALLBACK_STATUS.connection);
   const strategies = usingFallback ? [] : (preview?.approvedStrategies || eff.approvedStrategies || []);
+  const ibPreview = usingFallback ? SAFE_FALLBACK_ORDER_PREVIEW : (orderPreview || SAFE_FALLBACK_ORDER_PREVIEW);
   const sourceStatus = usingFallback
     ? 'degraded'
     : ((preview?.approvedStrategiesSource || eff.approvedStrategiesSource || {}).status || 'unknown');
   const sourceDegraded = sourceStatus === 'degraded' || preview?.degraded === true;
   const blockedReason = usingFallback ? 'api_unavailable_safe_fallback' : (eff.blockedReason || 'unknown');
+  const previewSummary = ibPreview.summary || SAFE_FALLBACK_ORDER_PREVIEW.summary;
+  const previewCandidates = Array.isArray(ibPreview.candidates) ? ibPreview.candidates : [];
+
+  function formatDirection(value) {
+    if (!value) return 'Okänd';
+    const raw = String(value).toLowerCase();
+    if (raw === 'long') return 'Lång';
+    if (raw === 'short') return 'Kort';
+    return value;
+  }
+
+  function formatConfidence(candidate) {
+    if (candidate == null) return '–';
+    if (typeof candidate === 'number') return Number.isFinite(candidate) ? String(candidate) : '–';
+    return String(candidate);
+  }
 
   return (
     <div className="page" style={{ maxWidth: 920, margin: '0 auto', padding: '32px 24px' }}>
@@ -317,6 +373,92 @@ export default function InteractiveBrokersPage() {
                 </tbody>
               </table>
             )}
+          </div>
+
+          {/* IB Paper preview only */}
+          <div style={{ ...CARD_STYLE, borderColor: 'rgba(59,130,246,0.35)' }}>
+            <h2 style={{ marginTop: 0 }}>Dagens IB Paper-preview</h2>
+            <p style={{ color: '#94a3b8', marginTop: 0, lineHeight: 1.6 }}>
+              Förhandsvisning endast. Inga order skickas ännu.
+              {' '}Previewn bygger på Trading OS-kandidater och visar varför varje kandidat är tillåten eller blockerad.
+            </p>
+            <div style={{ color: '#94a3b8', marginTop: 0, marginBottom: 12, lineHeight: 1.7 }}>
+              • Max {ibPreview.maxPerDay || PREVIEW_LIMIT} kandidater per dag.<br />
+              • Crypto/ETF/QQQ blockerat i denna fas.<br />
+              • Endast approved strategies och tydlig riktning visas som tillåtna.
+            </div>
+            <Row label="Preview-läge">
+              <code>{ibPreview.mode || 'preview_only'}</code>
+            </Row>
+            <Row label="Tillåtna kandidater">
+              <code>{previewSummary.allowedCandidates || 0}</code>
+            </Row>
+            <Row label="Blockerade kandidater">
+              <code>{previewSummary.blockedCandidates || 0}</code>
+            </Row>
+            <Row label="Order skickas ännu">
+              <Badge ok={ibPreview.orderSendingBlocked === true} labelTrue="Nej" labelFalse="Ja" />
+            </Row>
+            <div style={{ marginTop: 12, padding: '12px 14px', borderRadius: 12, background: 'rgba(37,99,235,0.08)', border: '1px solid rgba(59,130,246,0.22)', color: '#dbeafe', lineHeight: 1.6 }}>
+              {previewSummary.noteSv || 'Förhandsvisning endast. Inga order skickas ännu.'}
+            </div>
+            <div style={{ marginTop: 16, display: 'grid', gap: 12 }}>
+              {previewCandidates.length === 0 ? (
+                <div style={{ color: '#94a3b8' }}>
+                  Inga preview-kandidater just nu. Inga order skickas ännu.
+                </div>
+              ) : previewCandidates.map((candidate, index) => {
+                const ok = candidate.allowedForIbPaperPreview === true;
+                const chips = Array.isArray(candidate.blockers) ? candidate.blockers : [];
+                return (
+                  <div
+                    key={`${candidate.strategyId || 'unknown'}:${candidate.symbol || 'unknown'}:${index}`}
+                    style={{
+                      border: `1px solid ${ok ? 'rgba(34,197,94,0.28)' : 'rgba(248,113,113,0.35)'}`,
+                      borderRadius: 14,
+                      padding: 14,
+                      background: ok ? 'rgba(34,197,94,0.06)' : 'rgba(248,113,113,0.06)',
+                    }}
+                  >
+                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap' }}>
+                      <strong style={{ color: '#e2e8f0' }}>
+                        {candidate.symbol || '–'} · {candidate.strategyName || candidate.strategyId || 'Okänd strategi'}
+                      </strong>
+                      <Badge ok={ok} labelTrue="Tillåten" labelFalse="Blockerad" />
+                    </div>
+                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: 8, marginTop: 10, fontSize: 14 }}>
+                      <div><span style={{ color: '#94a3b8' }}>Strategi:</span> {candidate.strategyId || '–'}</div>
+                      <div><span style={{ color: '#94a3b8' }}>Riktning:</span> {formatDirection(candidate.direction)}</div>
+                      <div><span style={{ color: '#94a3b8' }}>Källa:</span> {candidate.source || '–'}</div>
+                      <div><span style={{ color: '#94a3b8' }}>Confidence/score:</span> {formatConfidence(candidate.confidence ?? candidate.gateScore)}</div>
+                    </div>
+                    <div style={{ marginTop: 10, color: '#cbd5e1', lineHeight: 1.55 }}>
+                      {candidate.reasonSv || 'Förhandsvisning endast. Inga order skickas ännu.'}
+                    </div>
+                    {chips.length > 0 && (
+                      <div style={{ marginTop: 10, display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+                        {chips.map((chip) => (
+                          <span
+                            key={chip}
+                            style={{
+                              display: 'inline-block',
+                              padding: '2px 10px',
+                              borderRadius: 999,
+                              fontSize: 12,
+                              color: '#fca5a5',
+                              border: '1px solid rgba(248,113,113,0.35)',
+                              background: 'rgba(248,113,113,0.08)',
+                            }}
+                          >
+                            {chip}
+                          </span>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
           </div>
 
           {/* Next phase locked */}
