@@ -267,6 +267,14 @@ function joinReasons(reasons = []) {
   return `Blockerad: ${list.join('. ')}.`;
 }
 
+function selectionGroupRank(marketGroup) {
+  const group = String(marketGroup || '').toLowerCase();
+  if (group === 'nasdaq100') return 3;
+  if (group === 'stocks') return 2;
+  if (group === 'mag7') return 1;
+  return 0;
+}
+
 function buildOrderPreviewCandidate(candidate = {}, context = {}) {
   const approvedIndex = context.approvedIndex || buildApprovedStrategyIndex();
   const strategyId = String(candidate.canonicalStrategyId || candidate.strategyId || candidate.strategy_id || '').trim() || null;
@@ -315,6 +323,10 @@ function buildOrderPreviewCandidate(candidate = {}, context = {}) {
     previewOnly: true,
     blockedExecution: true,
     approvalStatus: strategyId && approvedIndex.approved.has(strategyId) ? 'approved' : 'not_approved',
+    selectionRank: (allowedForIbPaperPreview ? 10_000 : 0)
+      + (symbolInfo.isAllowedGroup ? 1_000 : 0)
+      + (selectionGroupRank(symbolInfo.marketGroup) * 100)
+      + (Number.isFinite(Number(gateScore)) ? Number(gateScore) : Number.isFinite(Number(confidence)) ? Number(confidence) : 0),
   };
 }
 
@@ -333,13 +345,9 @@ function getIbPaperOrderPreview(options = {}) {
       : [];
 
   const classified = rawCandidates
-    .slice(0, PREVIEW_LIMIT)
     .map((candidate) => buildOrderPreviewCandidate(candidate, { approvedIndex }))
     .sort((a, b) => {
-      if (a.allowedForIbPaperPreview !== b.allowedForIbPaperPreview) return a.allowedForIbPaperPreview ? -1 : 1;
-      const aScore = Number.isFinite(Number(a.gateScore)) ? Number(a.gateScore) : Number.isFinite(Number(a.confidence)) ? Number(a.confidence) : -Infinity;
-      const bScore = Number.isFinite(Number(b.gateScore)) ? Number(b.gateScore) : Number.isFinite(Number(b.confidence)) ? Number(b.confidence) : -Infinity;
-      if (aScore !== bScore) return bScore - aScore;
+      if (a.selectionRank !== b.selectionRank) return b.selectionRank - a.selectionRank;
       return String(a.strategyId || '').localeCompare(String(b.strategyId || ''));
     })
     .slice(0, PREVIEW_LIMIT);

@@ -63,6 +63,24 @@ function run() {
     assert.ok(row.reasonSv.length > 0);
   }
 
+  // ── Allowed Nasdaq/US-stock candidates must outrank blocked crypto/unclear rows ──
+  const approvedIndex = svc._internal.buildApprovedStrategyIndex();
+  const approvedStrategyId = Array.from(approvedIndex.approved)[0] || 'narrow_breakout';
+  const prioritized = svc.getIbPaperOrderPreview({
+    candidates: [
+      candidate({ symbol: 'BTCUSDT', canonicalStrategyId: approvedStrategyId, strategyName: 'Approved Crypto', direction: 'long', score: 99, confidence: 99 }),
+      candidate({ symbol: 'QQQ', canonicalStrategyId: approvedStrategyId, strategyName: 'Approved QQQ', direction: 'long', score: 98, confidence: 98 }),
+      candidate({ symbol: 'AAPL', canonicalStrategyId: approvedStrategyId, strategyName: 'Approved AAPL', direction: 'long', score: 70, confidence: 70 }),
+      candidate({ symbol: 'NVDA', canonicalStrategyId: approvedStrategyId, strategyName: 'Approved NVDA', direction: 'long', score: 69, confidence: 69 }),
+    ],
+  });
+  assert.equal(prioritized.candidates.length, 3, 'prioritized preview still caps at 3');
+  assert.equal(prioritized.candidates[0].symbol, 'AAPL', 'allowed US-stock should outrank blocked crypto/unclear');
+  assert.equal(prioritized.candidates[0].allowedForIbPaperPreview, true);
+  assert.equal(prioritized.candidates[1].symbol, 'NVDA', 'allowed US-stock should stay ahead of blocked rows');
+  assert.equal(prioritized.candidates[1].allowedForIbPaperPreview, true);
+  assert.equal(prioritized.candidates[2].allowedForIbPaperPreview, false, 'blocked rows are shown only after allowed candidates');
+
   // ── Crypto is blocked even when the strategy itself is approved ─────────────
   const crypto = svc._internal.buildOrderPreviewCandidate(candidate({
     symbol: 'BTCUSDT',
