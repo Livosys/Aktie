@@ -101,7 +101,7 @@ function Row({ label, children }) {
 }
 
 export default function InteractiveBrokersPage() {
-  const [state, setState] = useState({ loading: true, error: null, status: null, preview: null });
+  const [state, setState] = useState({ loading: true, error: null, status: null, readiness: null, preview: null });
 
   useEffect(() => {
     let alive = true;
@@ -110,12 +110,13 @@ export default function InteractiveBrokersPage() {
       if (controller) controller.abort();
       controller = new AbortController();
       try {
-        const [status, preview] = await Promise.all([
+        const [status, readiness, preview] = await Promise.all([
           fetchJsonWithTimeout('/api/interactive-brokers/status', { signal: controller.signal }),
+          fetchJsonWithTimeout('/api/interactive-brokers/connection-readiness', { signal: controller.signal }),
           fetchJsonWithTimeout('/api/interactive-brokers/approved-strategies-preview', { signal: controller.signal }),
         ]);
         if (!alive) return;
-        setState({ loading: false, error: null, status, preview });
+        setState({ loading: false, error: null, status, readiness, preview });
       } catch (err) {
         if (!alive) return;
         setState((s) => ({ ...s, loading: false, error: err.message || String(err) }));
@@ -130,7 +131,7 @@ export default function InteractiveBrokersPage() {
     };
   }, []);
 
-  const { loading, error, status, preview } = state;
+  const { loading, error, status, readiness, preview } = state;
 
   // On ANY error (404 / timeout / network) fall back to the safe blocked state.
   // Never derive values from an absent payload — that could accidentally render
@@ -141,7 +142,7 @@ export default function InteractiveBrokersPage() {
   const ib = eff.ibPaper || {};
   const safety = eff.safety || {};
   const nextPhase = eff.nextPhaseLocked || {};
-  const conn = eff.connection || {};
+  const conn = usingFallback ? SAFE_FALLBACK_STATUS.connection : (readiness || eff.connection || SAFE_FALLBACK_STATUS.connection);
   const strategies = usingFallback ? [] : (preview?.approvedStrategies || eff.approvedStrategies || []);
   const sourceStatus = usingFallback
     ? 'degraded'
@@ -217,10 +218,16 @@ export default function InteractiveBrokersPage() {
             <div style={{ color: '#94a3b8', marginTop: 0, marginBottom: 12, lineHeight: 1.7 }}>
               • IBKR-lösenord sparas inte i Trading OS.<br />
               • Logga in manuellt i IB Gateway/TWS med Paper-kontot.<br />
-              • Den här sidan kontrollerar bara om anslutningen är redo.
+              • Connection check är endast läsning.<br />
             </div>
             <Row label="Anslutningskontroll aktiverad">
               <Badge ok={conn.connectionCheckEnabled === true} labelTrue="På" labelFalse="Av" />
+            </Row>
+            <Row label="Connection status">
+              <code>{conn.status || 'unknown'}</code>
+            </Row>
+            <Row label="Konfigurerad">
+              <Badge ok={conn.status !== 'not_configured'} labelTrue="Ja" labelFalse="Nej" />
             </Row>
             <Row label="Gateway nåbar">
               <Badge

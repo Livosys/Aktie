@@ -81,7 +81,7 @@ function getConnectionConfig() {
 // Harmless TCP reachability probe: opens a socket, writes NOTHING, and destroys
 // it immediately. It only answers "is something listening on host:port?". It
 // performs NO IBKR handshake, NO login, NO account/permission request, NO order.
-function tcpReachable(host, port, timeoutMs = 1500) {
+function tcpReachable(host, port, timeoutMs = 1000) {
   return new Promise((resolve) => {
     const socket = new net.Socket();
     let settled = false;
@@ -109,19 +109,36 @@ function buildConnectionSummary() {
     port: cfg.port,
     portConfigured: cfg.portConfigured,
     clientIdConfigured: cfg.clientIdConfigured,
+    status: 'disabled',
     // Paper mode can never be asserted from a TCP probe; it stays unknown until
     // a human verifies the IBKR Paper login inside IB Gateway / TWS.
     paperMode: 'unknown',
     paperModeVerified: false,
   };
   if (!cfg.checkEnabled) {
-    return { ...base, connectionCheckEnabled: false, gatewayReachable: false, blockedReason: 'ib_connection_check_disabled' };
+    return {
+      ...base,
+      connectionCheckEnabled: false,
+      gatewayReachable: false,
+      status: 'disabled',
+      blockedReason: 'ib_connection_check_disabled',
+    };
+  }
+  if (!cfg.portConfigured) {
+    return {
+      ...base,
+      connectionCheckEnabled: true,
+      gatewayReachable: false,
+      status: 'not_configured',
+      blockedReason: 'ib_gateway_not_configured',
+    };
   }
   return {
     ...base,
     connectionCheckEnabled: true,
     gatewayReachable: null, // unknown until the readiness endpoint probes
-    blockedReason: cfg.portConfigured ? 'connection_check_pending' : 'ib_gateway_port_not_configured',
+    status: 'reachable',
+    blockedReason: 'connection_check_pending',
   };
 }
 
@@ -137,6 +154,7 @@ async function getConnectionReadiness() {
     port: cfg.port,
     portConfigured: cfg.portConfigured,
     clientIdConfigured: cfg.clientIdConfigured,
+    status: 'disabled',
     paperMode: 'unknown',
     paperModeVerified: false,
     orderSendingBlocked: true,
@@ -148,17 +166,30 @@ async function getConnectionReadiness() {
   };
 
   if (!cfg.checkEnabled) {
-    return { ...base, connectionCheckEnabled: false, gatewayReachable: false, blockedReason: 'ib_connection_check_disabled' };
+    return {
+      ...base,
+      connectionCheckEnabled: false,
+      gatewayReachable: false,
+      status: 'disabled',
+      blockedReason: 'ib_connection_check_disabled',
+    };
   }
   if (!cfg.portConfigured) {
-    return { ...base, connectionCheckEnabled: true, gatewayReachable: false, blockedReason: 'ib_gateway_port_not_configured' };
+    return {
+      ...base,
+      connectionCheckEnabled: true,
+      gatewayReachable: false,
+      status: 'not_configured',
+      blockedReason: 'ib_gateway_not_configured',
+    };
   }
 
-  const reachable = await tcpReachable(cfg.host, cfg.port);
+  const reachable = await tcpReachable(cfg.host, cfg.port, 1000);
   return {
     ...base,
     connectionCheckEnabled: true,
     gatewayReachable: reachable,
+    status: reachable ? 'reachable' : 'unreachable',
     blockedReason: reachable ? 'reachable_read_only_no_orders' : 'ib_gateway_unreachable',
   };
 }
