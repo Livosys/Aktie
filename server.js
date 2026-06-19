@@ -91,6 +91,10 @@ function requireAuthForMutations(req, res, next) {
   if (path.startsWith('/tradingview/webhook')) {
     return next();
   }
+  // Paper-only manual risk-review resume. Route/service enforces paper-only safety.
+  if (req.method === 'POST' && path === '/paper-trading/risk-review/resume') {
+    return next();
+  }
   if (path === '/strategies/test-queue/add' || /^\/strategies\/test-queue\/[^/]+\/cancel$/.test(path)) {
     return next();
   }
