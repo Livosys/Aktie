@@ -35,6 +35,8 @@ const CARD_STYLE = {
   marginBottom: 16,
 };
 
+const PAPER_SESSION_NOT_VERIFIED_TEXT = 'Ej verifierad via API ännu';
+
 // Safe blocked fallback used whenever the API fails (error / 404 / timeout).
 // Every value here is the SAFE / blocked state. It must NEVER imply that any
 // action, order, broker, or live trading is allowed.
@@ -219,6 +221,7 @@ export default function InteractiveBrokersPage() {
               • IBKR-lösenord sparas inte i Trading OS.<br />
               • Logga in manuellt i IB Gateway/TWS med Paper-kontot.<br />
               • Connection check är endast läsning.<br />
+              Trading OS gör endast en TCP-readiness-check mot IB Gateway. Paper-läge bekräftas inte via IB API i denna fas. Order är fortfarande blockerade.
             </div>
             <Row label="Anslutningskontroll aktiverad">
               <Badge ok={conn.connectionCheckEnabled === true} labelTrue="På" labelFalse="Av" />
@@ -242,8 +245,10 @@ export default function InteractiveBrokersPage() {
             <Row label="Gateway port">
               <code>{conn.portConfigured ? conn.port : 'ej konfigurerad'}</code>
             </Row>
-            <Row label="Paper mode">
-              <Badge ok={conn.paperModeVerified === true} labelTrue="verifierad" labelFalse={conn.paperMode || 'unknown'} />
+            <Row label="Paper session">
+              <span style={{ color: '#dbeafe' }}>
+                {conn.paperModeVerified === true ? (conn.paperMode || 'verifierad') : PAPER_SESSION_NOT_VERIFIED_TEXT}
+              </span>
             </Row>
             <Row label="Order sending">
               <Badge ok={eff.orderSendingBlocked === true} labelTrue="Blockerad" labelFalse="Tillåten" />
