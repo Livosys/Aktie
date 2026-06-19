@@ -690,6 +690,7 @@ function buildOpenTrade(c, gateDecision = null) {
     aiRiskFlag:      c.aiRiskFlag === true,
     aiAgentAnalysis: c.aiAgentAnalysis || null,
     riskEvaluation:  safeEventValue(c.riskEvaluation || null),
+    originalRiskEvaluation: safeEventValue(c.originalRiskEvaluation || null),
     executionSafety: safeEventValue(c.executionSafety || null),
     riskReviewOverrideActive: c.riskReviewOverrideActive === true,
     riskPositionSizeSek: c.riskEvaluation?.position_size_sek ?? null,
@@ -1733,6 +1734,26 @@ function applyManualRiskReviewOverride(riskEvaluation, canOverrideRiskPause) {
   };
 }
 
+function buildEffectiveRiskReviewState(riskEvaluation, paperRiskReviewState) {
+  const manualPaperResumeActive = paperRiskReviewState?.active === true;
+  const canOverrideRiskPause = manualPaperResumeActive
+    && Array.isArray(riskEvaluation?.pause_reasons)
+    && riskEvaluation.pause_reasons.length === 1
+    && riskEvaluation.pause_reasons[0] === 'consecutive_losses_limit';
+  const { riskEvaluation: effectiveRiskEvaluation, overrideActive: riskReviewOverrideActive } =
+    applyManualRiskReviewOverride(riskEvaluation, canOverrideRiskPause);
+
+  return {
+    originalRiskEvaluation: riskEvaluation,
+    effectiveRiskEvaluation,
+    riskReviewOverrideActive,
+    manualPaperResumeActive,
+    canOverrideRiskPause,
+    riskPauseTrading: effectiveRiskEvaluation?.pause_trading === true,
+    riskBlockReasons: effectiveRiskEvaluation?.block_reasons || [],
+  };
+}
+
 function candidateTime(c, fallback = new Date().toISOString()) {
   return c?.lastUpdate || c?.last_updated || c?.timestamp || c?.candleTs || c?.candle_ts || c?.updatedAt || fallback;
 }
@@ -2223,47 +2244,59 @@ async function runTick() {
           { persist: true, evaluationSource: 'paper_pipeline' },
         );
 
-        const manualPaperResumeActive = paperRiskReviewState.active === true;
-        const canOverrideRiskPause = manualPaperResumeActive
-          && Array.isArray(riskEvaluation.pause_reasons)
-          && riskEvaluation.pause_reasons.length === 1
-          && riskEvaluation.pause_reasons[0] === 'consecutive_losses_limit';
+        const {
+          originalRiskEvaluation,
+          effectiveRiskEvaluation,
+          riskReviewOverrideActive,
+          riskPauseTrading,
+          riskBlockReasons,
+        } = buildEffectiveRiskReviewState(riskEvaluation, paperRiskReviewState);
+        candidateWithAgent.originalRiskEvaluation = originalRiskEvaluation;
+        candidateWithAgent.riskEvaluation = effectiveRiskEvaluation;
+        candidateWithAgent.riskReviewOverrideActive = riskReviewOverrideActive;
 
-        if (riskEvaluation.pause_trading) {
+        if (originalRiskEvaluation?.pause_trading) {
+          const originalPauseReasons = Array.isArray(originalRiskEvaluation.pause_reasons)
+            ? originalRiskEvaluation.pause_reasons
+            : [];
           appendEvent({
-            ...eventFromCandidate('RISK_PAUSE_TRIGGERED', candidateWithAgent, `Systempaus — ${riskEvaluation.pause_reasons.join(', ') || 'riskgräns nådd'}.`, 'skipped'),
+            ...eventFromCandidate(
+              'RISK_PAUSE_TRIGGERED',
+              candidateWithAgent,
+              `Systempaus — ${originalPauseReasons.join(', ') || 'riskgräns nådd'}.`,
+              'skipped',
+            ),
             aiConfidenceAdjustment: aiAdjustment,
             aiAgentAnalysis: agentAnalysis,
-            riskEvaluation,
+            riskEvaluation: effectiveRiskEvaluation,
+            originalRiskEvaluation,
+            riskBlockReasons,
+            riskPauseTrading,
+            riskReviewOverrideActive,
           });
-          if (!canOverrideRiskPause) {
-            console.warn(`[paper-trading] risk pause active, inga nya entries: ${(riskEvaluation.pause_reasons || []).join(',')}`);
+          if (!riskPauseTrading) {
+            if (riskReviewOverrideActive && !manualRiskResumeLogged) {
+              appendEvent({
+                type: 'PAPER_RISK_REVIEW_OVERRIDE_USED',
+                symbol: candidateWithAgent.symbol,
+                marketType: candidateWithAgent.marketType,
+                decision: 'manual_override',
+                reasonSv: `Manuell risk review aktiv — paper testing fortsätter trots ${originalPauseReasons.join(', ')}.`,
+                signalFamily: candidateWithAgent.signalFamily,
+                signalSubtype: candidateWithAgent.signalSubtype,
+                status: 'resumed',
+                nextMoveBias: candidateWithAgent.nextMoveBias,
+                dataFreshness: candidateWithAgent.dataFreshness,
+                mode: 'paper',
+              });
+              manualRiskResumeLogged = true;
+            }
+            console.warn(`[paper-trading] risk pause overridden by manual paper review until ${paperRiskReviewState.expiresAt || 'unknown'}`);
+          } else if (!riskReviewOverrideActive) {
+            console.warn(`[paper-trading] risk pause active, inga nya entries: ${originalPauseReasons.join(',')}`);
             break;
           }
-          if (!manualRiskResumeLogged) {
-            appendEvent({
-              type: 'PAPER_RISK_REVIEW_OVERRIDE_USED',
-              symbol: candidateWithAgent.symbol,
-              marketType: candidateWithAgent.marketType,
-              decision: 'manual_override',
-              reasonSv: `Manuell risk review aktiv — paper testing fortsätter trots ${riskEvaluation.pause_reasons.join(', ')}.`,
-              signalFamily: candidateWithAgent.signalFamily,
-              signalSubtype: candidateWithAgent.signalSubtype,
-              status: 'resumed',
-              nextMoveBias: candidateWithAgent.nextMoveBias,
-              dataFreshness: candidateWithAgent.dataFreshness,
-              mode: 'paper',
-            });
-            manualRiskResumeLogged = true;
-          }
-          console.warn(`[paper-trading] risk pause overridden by manual paper review until ${paperRiskReviewState.expiresAt || 'unknown'}`);
         }
-
-        const { riskEvaluation: effectiveRiskEvaluation, overrideActive: riskReviewOverrideActive } =
-          applyManualRiskReviewOverride(riskEvaluation, canOverrideRiskPause);
-        candidateWithAgent.riskReviewOverrideActive = riskReviewOverrideActive;
-        candidateWithAgent.originalRiskEvaluation = riskEvaluation;
-        candidateWithAgent.riskEvaluation = effectiveRiskEvaluation;
 
         if (!effectiveRiskEvaluation.allowed) {
           appendEvent({
@@ -2271,6 +2304,7 @@ async function runTick() {
             aiConfidenceAdjustment: aiAdjustment,
             aiAgentAnalysis: agentAnalysis,
             riskEvaluation: effectiveRiskEvaluation,
+            originalRiskEvaluation,
             riskReviewOverrideActive,
           });
           console.warn(`[paper-trading] risk block ${c.symbol}: ${effectiveRiskEvaluation.block_reasons.join(',')}`);
@@ -2300,6 +2334,7 @@ async function runTick() {
             aiConfidenceAdjustment: aiAdjustment,
             aiAgentAnalysis: agentAnalysis,
             riskEvaluation: effectiveRiskEvaluation,
+            originalRiskEvaluation,
             riskReviewOverrideActive,
             executionSafety: failClosed,
           });
@@ -2324,7 +2359,9 @@ async function runTick() {
             ...eventFromCandidate('SAFETY_BLOCKED', candidateWithAgent, `Säkerhetsmotor blockerade entry: ${reasons.join(', ') || 'safety_block'}.`, 'skipped'),
             aiConfidenceAdjustment: aiAdjustment,
             aiAgentAnalysis: agentAnalysis,
-            riskEvaluation,
+            riskEvaluation: effectiveRiskEvaluation,
+            originalRiskEvaluation,
+            riskReviewOverrideActive,
             executionSafety,
           });
           void notificationEngineV2.processExecutionSafetyEvent({
@@ -3074,6 +3111,7 @@ module.exports = {
   loadGateDecisionHistory,
   _internal: {
     applyManualRiskReviewOverride,
+    buildEffectiveRiskReviewState,
     buildNearMissLearningGateDecision,
     buildOpenTrade,
   },

@@ -38,6 +38,23 @@ function main() {
   assert.equal(mixedOverride.riskEvaluation.pause_trading, false);
   assert.deepEqual(mixedOverride.riskEvaluation.pause_reasons, []);
 
+  const effectiveRiskState = agent._internal.buildEffectiveRiskReviewState(mixedRisk, {
+    active: true,
+    expiresAt: '2026-06-18T19:21:31.102Z',
+  });
+  assert.equal(effectiveRiskState.riskReviewOverrideActive, true);
+  assert.equal(effectiveRiskState.riskPauseTrading, false);
+  assert.deepEqual(effectiveRiskState.effectiveRiskEvaluation.block_reasons, ['low_confidence']);
+  assert.equal(effectiveRiskState.originalRiskEvaluation.pause_trading, true);
+
+  const inactiveRiskState = agent._internal.buildEffectiveRiskReviewState(baseRisk, {
+    active: false,
+    expiresAt: '2026-06-18T19:21:31.102Z',
+  });
+  assert.equal(inactiveRiskState.riskReviewOverrideActive, false);
+  assert.equal(inactiveRiskState.riskPauseTrading, true);
+  assert.deepEqual(inactiveRiskState.effectiveRiskEvaluation.block_reasons, ['consecutive_losses_limit']);
+
   const nearMiss = agent._internal.buildNearMissLearningGateDecision(
     {
       allowed: false,
@@ -75,6 +92,7 @@ function main() {
     dataFreshness: 'LIVE',
     strategyId: 'trend_continuation',
     strategyName: 'Trend Continuation',
+    originalRiskEvaluation: baseRisk,
   }, {
     ...nearMiss,
     allowed: true,
@@ -92,6 +110,7 @@ function main() {
   assert.equal(trade.originalGateScore, 69);
   assert.equal(trade.originalGateThreshold, 70);
   assert.equal(trade.paperOnly, true);
+  assert.deepEqual(trade.originalRiskEvaluation.block_reasons, ['consecutive_losses_limit']);
 
   console.log('# paperTradingAgent override tests passed.');
 }
