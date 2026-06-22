@@ -356,6 +356,72 @@ function DailySelectionPreviewPanel({ preview }) {
   );
 }
 
+function TopStrategySelectorPanel({ preview }) {
+  const theme = useThemeMode();
+  const topStrategies = Array.isArray(preview?.candidates) ? preview.candidates.slice(0, 3) : [];
+  return (
+    <div style={sectionStyle()}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap', alignItems: 'flex-start', marginBottom: 12 }}>
+        <div>
+          <h2 style={{ margin: 0, fontSize: 22 }}>Top 3 paper candidates</h2>
+          <div style={{ ...mutedTextStyle(theme), marginTop: 4, fontSize: 13 }}>
+            Runtime-baserad preview från befintlig paper trading-data. Detta är read-only och skapar inga order.
+          </div>
+        </div>
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, alignItems: 'center' }}>
+          <span style={statusPillStyle('info', theme)}>mode=paper_only</span>
+          <span style={statusPillStyle('neutral', theme)}>{topStrategies.length}/3</span>
+        </div>
+      </div>
+
+      <div style={{ ...mutedTextStyle(theme), fontSize: 12, marginBottom: 12 }}>
+        Källa: paper runtime daily selection preview · scanned={preview?.totalScanned ?? '–'}
+      </div>
+
+      {topStrategies.length ? (
+        <div style={{ display: 'grid', gap: 12 }}>
+          {topStrategies.map((row) => (
+            <div key={`${row.candidateId || row.symbol || 'unknown'}:${row.canonicalStrategyId || row.strategyId || 0}`} style={{ border: '1px solid var(--border)', borderRadius: 16, padding: 14, background: 'var(--surface)' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap' }}>
+                <div>
+                  <div style={{ fontWeight: 900, color: 'var(--text)' }}>
+                    {row.strategyName || row.canonicalStrategyId || row.strategyId || 'Okänd strategi'}
+                  </div>
+                  <div style={{ marginTop: 4, color: 'var(--muted)', fontSize: 12 }}>
+                    {previewValue(row.symbol)} · {previewValue(row.source)}
+                  </div>
+                </div>
+                <span style={statusPillStyle(row.blockedBy ? 'warning' : 'success', theme)}>
+                  {row.blockedBy ? 'Blockerad' : 'Preview'}
+                </span>
+              </div>
+              <div style={{ marginTop: 10, color: 'var(--text)', lineHeight: 1.55, fontSize: 13 }}>
+                {previewValue(row.reason, 'Read-only urval utan orderväg.')}
+              </div>
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginTop: 10 }}>
+                <span style={statusPillStyle('neutral', theme)}>symbol {previewValue(row.symbol)}</span>
+                <span style={statusPillStyle('neutral', theme)}>setup {previewValue(row.setup)}</span>
+                <span style={statusPillStyle('neutral', theme)}>score {previewValue(row.score)}</span>
+                <span style={statusPillStyle('neutral', theme)}>confidence {previewValue(row.confidence)}</span>
+              </div>
+              {row.blockedBy ? (
+                <div style={{ marginTop: 10, display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+                  <span style={statusPillStyle('danger', theme)}>{row.blockedBy}</span>
+                </div>
+              ) : null}
+            </div>
+          ))}
+        </div>
+      ) : (
+        <div style={{ border: '1px solid var(--border)', borderRadius: 14, padding: 14, background: 'var(--surface-2)', color: 'var(--text)', fontSize: 13 }}>
+          <div style={{ fontWeight: 800 }}>{preview?.emptyStateText || 'Inga top 3-kandidater att visa ännu.'}</div>
+          <div style={{ marginTop: 4, ...mutedTextStyle(theme) }}>Systemet väntar på runtime-kandidater som passerar preview-reglerna.</div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function SummaryGrid({ runtime }) {
   const theme = useThemeMode();
   const summary = runtime?.summary || {};
@@ -1637,6 +1703,7 @@ function PaperControlRoomPanel({ runtime, safetyStatus, gateStatus, approvalPrev
   const summary = runtime?.summary || {};
   const strategyPerformance = runtime?.strategyPerformance || {};
   const perfSummary = strategyPerformance?.summary || {};
+  const dailySelectionPreview = runtime?.dailySelectionPreview || {};
   const closedTrades = Array.isArray(runtime?.closedTrades) ? runtime.closedTrades : [];
   const recentEvents = Array.isArray(runtime?.recentEvents) ? runtime.recentEvents : [];
   const blockedCandidates = Array.isArray(runtime?.blockedCandidates) ? runtime.blockedCandidates : [];
@@ -1648,6 +1715,7 @@ function PaperControlRoomPanel({ runtime, safetyStatus, gateStatus, approvalPrev
     : Array.isArray(approvalPreview?.approvedStrategyIds)
       ? approvalPreview.approvedStrategyIds
       : [];
+  const previewCandidates = Array.isArray(dailySelectionPreview?.candidates) ? dailySelectionPreview.candidates : [];
   const gatePipeline = gateStatus?.pipeline || {};
   const nearMissLearning = gateStatus?.nearMissLearning || {};
   const safety = safetyStatus?.status && typeof safetyStatus.status === 'object'
@@ -1700,7 +1768,7 @@ function PaperControlRoomPanel({ runtime, safetyStatus, gateStatus, approvalPrev
       : 'Runtime-data är färsk.')
     : 'Runtime-datafärskhet kan inte bedömas ännu.';
   const recommendation = blockers.categories.length
-    ? `Systemet är säkert. Nya paper trades stoppas främst av ${blockers.categories.slice(0, 4).map((row) => row.label).join(', ')}. Nästa tekniska steg är att prioritera runtime-truth i Paper Trading och därefter strategy mapping. Ingen live trading-risk finns eftersom live trading är avstängt.`
+    ? `Systemet är säkert. Nya paper trades stoppas främst av ${blockers.categories.slice(0, 4).map((row) => row.label).join(', ')}. Nästa tekniska steg är att jämföra runtime, gate-status och approval-preview i Paper Trading. Ingen live trading-risk finns eftersom live trading är avstängt.`
     : 'Systemet är säkert och paper-only. När marknad och gate öppnar ska nya paper-trades kunna passera om kandidat, mapping och risk tillåter det.';
 
   return (
@@ -1713,7 +1781,7 @@ function PaperControlRoomPanel({ runtime, safetyStatus, gateStatus, approvalPrev
         <div>
           <h2 style={{ margin: 0, fontSize: 24 }}>Paper Control Room</h2>
           <div style={{ ...mutedTextStyle(theme), marginTop: 4, fontSize: 13, lineHeight: 1.5 }}>
-            Samlad read-only truth för safety, runtime, gates, learning och nästa rekommenderade steg.
+            Samlad read-only översikt för safety, runtime, gates, approval-preview, learning och nästa rekommenderade steg.
           </div>
         </div>
       <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
@@ -1747,6 +1815,14 @@ function PaperControlRoomPanel({ runtime, safetyStatus, gateStatus, approvalPrev
           </div>
         </div>
         <div style={{ border: '1px solid var(--border)', borderRadius: 14, padding: 14, background: 'var(--surface)' }}>
+          <div style={{ ...mutedTextStyle(theme), fontSize: 11, textTransform: 'uppercase', letterSpacing: '0.08em' }}>Top candidates</div>
+          <div style={{ marginTop: 8, fontWeight: 900, color: 'var(--text)' }}>{previewCandidates.length} preview</div>
+          <div style={{ marginTop: 6, fontSize: 12, lineHeight: 1.5, color: 'var(--text)' }}>
+            selected={dailySelectionPreview?.selectedCount ?? '–'} / {dailySelectionPreview?.selectionCount ?? 3}<br />
+            scanned={dailySelectionPreview?.totalScanned ?? '–'}
+          </div>
+        </div>
+        <div style={{ border: '1px solid var(--border)', borderRadius: 14, padding: 14, background: 'var(--surface)' }}>
           <div style={{ ...mutedTextStyle(theme), fontSize: 11, textTransform: 'uppercase', letterSpacing: '0.08em' }}>Latest trade</div>
           <div style={{ marginTop: 8, fontWeight: 900, color: 'var(--text)' }}>{latestTradeLabel}</div>
           <div style={{ marginTop: 6, fontSize: 12, lineHeight: 1.5, color: 'var(--text)' }}>
@@ -1773,6 +1849,14 @@ function PaperControlRoomPanel({ runtime, safetyStatus, gateStatus, approvalPrev
             {approvedStrategyIds.slice(0, 8).map((id) => (
               <span key={id} style={statusPillStyle('info', theme, true)}>{id}</span>
             ))}
+          </div>
+        </div>
+        <div style={{ border: '1px solid var(--border)', borderRadius: 14, padding: 14, background: 'var(--surface)' }}>
+          <div style={{ ...mutedTextStyle(theme), fontSize: 11, textTransform: 'uppercase', letterSpacing: '0.08em' }}>Runtime summary</div>
+          <div style={{ marginTop: 8, fontWeight: 900, color: 'var(--text)' }}>{runtime?.status || '–'}</div>
+          <div style={{ marginTop: 6, fontSize: 12, lineHeight: 1.5, color: 'var(--text)' }}>
+            allowlist={allowlist?.totalApproved ?? approvedStrategyIds.length}<br />
+            blockers={blockedCandidates.length}
           </div>
         </div>
         <div style={{ border: '1px solid var(--border)', borderRadius: 14, padding: 14, background: 'var(--surface)' }}>
@@ -1826,7 +1910,7 @@ function PaperControlRoomPanel({ runtime, safetyStatus, gateStatus, approvalPrev
           </div>
         </div>
         <div style={{ border: '1px solid var(--border)', borderRadius: 14, padding: 14, background: 'var(--surface-2)' }}>
-          <div style={{ fontWeight: 900, color: 'var(--text)' }}>Learning / strategy truth</div>
+          <div style={{ fontWeight: 900, color: 'var(--text)' }}>Learning / strategy summary</div>
           <div style={{ marginTop: 8, fontSize: 12, lineHeight: 1.55, color: 'var(--text)' }}>
             {best ? (
               <>
@@ -2483,6 +2567,8 @@ export default function PaperTradingPage() {
       />
 
       <SafetyBanner safety={runtime?.safety || runtime} />
+
+      <TopStrategySelectorPanel preview={dailySelectionPreview} />
 
       <PaperMarketsPanel refreshKey={marketRefreshKey} onRefresh={() => setMarketRefreshKey((t) => t + 1)} />
 
