@@ -46,6 +46,7 @@ const notificationEngineV2                      = require('../alerts/notificatio
 const strategyRuntimeConnector                  = require('../services/strategyRuntimeConnectorService');
 const paperApprovalGate                         = require('../services/paperApprovalGateService');
 const paperMarketConfigService                  = require('../services/paperMarketConfigService');
+const entryQualityComparisonService             = require('../services/entryQualityComparisonService');
 const paperRiskReviewService                    = require('../services/paperRiskReviewService');
 const marketUniverse                            = require('../services/marketUniverseService');
 const learningConnector                         = require('../services/learningConnectorService');
@@ -701,6 +702,9 @@ function buildOpenTrade(c, gateDecision = null) {
     nextMoveBias:     c.nextMoveBias,
     volumeState:      c.volumeState     || 'unknown',
     extensionLevel:   c.extensionLevel  || 'none',
+    // Read-only entry-quality preview snapshot (Del B). Does not gate this trade
+    // unless PAPER_ENTRY_QUALITY_GATE_ENABLED=true; here it is just recorded.
+    entryQualityPreview: c.entryQualityPreview || null,
     dataFreshness:    c.dataFreshness,
     targetPct:        profile.targetPct,
     stopPct:          profile.stopPct,
@@ -2380,6 +2384,31 @@ async function runTick() {
           candidateWithAgent.riskEvaluation = effectiveRiskEvaluation;
           candidateWithAgent.executionSafety = executionSafety;
           candidateWithAgent.riskReviewOverrideActive = riskReviewOverrideActive;
+
+          // ── Entry-quality preview (Del B) ────────────────────────────────────
+          // Read-only assessment of how the entry-quality filters would treat this
+          // candidate. The preview is ALWAYS attached for visibility. It only ever
+          // blocks a PAPER candidate when PAPER_ENTRY_QUALITY_GATE_ENABLED=true
+          // (default false). It never touches live/broker/order paths.
+          let entryQualityPreview = null;
+          try {
+            entryQualityPreview = entryQualityComparisonService.evaluateEntryQuality(candidateWithAgent);
+          } catch (previewErr) {
+            console.warn('[paper-trading] entry-quality preview failed:', previewErr.message);
+          }
+          candidateWithAgent.entryQualityPreview = entryQualityPreview;
+          if (entryQualityComparisonService.isGateEnabled()
+            && entryQualityPreview
+            && entryQualityPreview.wouldSkipByEntryFilter) {
+            appendEvent({
+              ...eventFromCandidate('TRADE_SKIPPED', candidateWithAgent, `Skippad av entry-quality-gate — ${entryQualityPreview.reasonSv}.`, 'skipped'),
+              blockedReason: 'entry_quality_gate',
+              entryQualityPreview,
+            });
+            console.log(`[paper-trading] entry-quality gate skipped ${c.symbol}: ${entryQualityPreview.reasonSv}`);
+            continue;
+          }
+
           const trade = buildOpenTrade(candidateWithAgent, effectiveGateDecision);
           _bump('tradesOpened', 'opened');
           state.openTrades.push(trade);

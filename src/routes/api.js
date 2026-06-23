@@ -113,6 +113,7 @@ const paperRiskPauseSummaryService = require('../services/paperRiskPauseSummaryS
 const paperRiskReviewService = require('../services/paperRiskReviewService');
 const tradingViewTestBlueprintService = require('../services/tradingViewTestBlueprintService');
 const paperTradeExplanationService = require('../services/paperTradeExplanationService');
+const entryQualityComparisonService = require('../services/entryQualityComparisonService');
 const lossReviewQueueService = require('../services/lossReviewQueueService');
 const tradingViewPaperReplayPreviewService = require('../services/tradingViewPaperReplayPreviewService');
 const tradingViewPreviewLogService = require('../services/tradingViewPreviewLogService');
@@ -3586,6 +3587,13 @@ router.get('/paper-trading/approval-preview', (req, res) => {
 router.get('/paper-trading/calibration-report', (req, res) => {
   try { res.json(paperTrading.getCalibrationReport()); }
   catch (err) { res.status(500).json({ ok: false, error: err.message }); }
+});
+
+// Read-only entry-quality comparison: how a set of entry-filter profiles would
+// reshape the closed paper-trade set vs baseline. Never writes/orders/touches broker.
+router.get('/paper-trading/entry-quality-comparison', (req, res) => {
+  try { res.json(entryQualityComparisonService.buildEntryQualityComparison()); }
+  catch (err) { res.status(500).json({ ok: false, error: err.message, ...entryQualityComparisonService.SAFETY }); }
 });
 
 router.get('/paper-trading/compass', (req, res) => {

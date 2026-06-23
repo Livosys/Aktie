@@ -21,6 +21,7 @@ const DEFAULT_FILES = Object.freeze({
 
 const MATCH_TOLERANCE_SECONDS = 15;
 const entryQualityGateService = require('./entryQualityGateService');
+const entryQualityComparisonService = require('./entryQualityComparisonService');
 
 const SAFETY = Object.freeze({
   mode: 'paper_only',
@@ -449,6 +450,9 @@ function buildExplanationForTrade(row, events) {
     exit,
     diagnosis,
     entryQualityGate,
+    // Non-blocking entry-filter preview (Del B). Read-only: shows what the
+    // entry-quality filters WOULD do; never affects this closed trade.
+    entryQualityPreview: entryQualityComparisonService.evaluateEntryQuality(trade),
     recommendations: entryQualityGate.recommendations,
     missingFields: unique([
       ...diagnosis.missingFields,

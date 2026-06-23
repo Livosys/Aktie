@@ -708,6 +708,26 @@ function useApprovalPreview(refreshKey = 0) {
   return state;
 }
 
+function useEntryQualityComparison(refreshKey = 0) {
+  const [state, setState] = useState({ loading: true, data: null, error: null });
+  useEffect(() => {
+    let alive = true;
+    setState((prev) => ({ ...prev, loading: true }));
+    fetchJsonWithTimeout('/api/paper-trading/entry-quality-comparison')
+      .then((data) => { if (alive) setState({ loading: false, data, error: null }); })
+      .catch((err) => {
+        if (!alive) return;
+        setState({
+          loading: false,
+          data: null,
+          error: friendlyAllowlistError(err, 'Entry-quality-jämförelse är tillfälligt otillgänglig.'),
+        });
+      });
+    return () => { alive = false; };
+  }, [refreshKey]);
+  return state;
+}
+
 function useTradingViewBlueprints(refreshKey = 0) {
   const [state, setState] = useState({ loading: true, data: null, error: null });
   const emptyPayload = useMemo(() => ({
@@ -1138,6 +1158,159 @@ function EntryQualityGatePanel({ gate, theme }) {
           ))}
         </div>
       ) : null}
+    </div>
+  );
+}
+
+function fmtSmallPct(value, digits = 3) {
+  if (value == null || Number.isNaN(Number(value))) return '–';
+  const num = Number(value);
+  return `${num > 0 ? '+' : ''}${num.toFixed(digits)}%`;
+}
+
+// Del C — read-only "Entry quality test" section. Pure analysis; never changes runtime.
+function EntryQualityTestPanel({ state, theme }) {
+  const data = state?.data;
+  const frame = {
+    marginTop: 18,
+    marginBottom: 18,
+    padding: 16,
+    borderRadius: 16,
+    border: '1px solid var(--border)',
+    background: 'var(--surface)',
+    boxShadow: theme === 'light' ? '0 10px 24px rgba(15,23,42,0.05)' : '0 18px 40px rgba(2,6,23,0.18)',
+  };
+
+  if (state?.loading && !data) {
+    return <div style={frame}>Hämtar entry-quality-jämförelse...</div>;
+  }
+  if (state?.error && !data) {
+    return (
+      <div style={{ ...frame, borderColor: 'rgba(245, 158, 11, 0.22)', background: 'var(--surface-2)' }}>
+        <div style={{ fontWeight: 900, color: 'var(--text)', fontSize: 16 }}>Entry quality test</div>
+        <div style={{ marginTop: 6, color: 'var(--warning)', fontSize: 13 }}>{state.error}</div>
+      </div>
+    );
+  }
+  if (!data) return null;
+
+  const profiles = Array.isArray(data.profiles) ? data.profiles : [];
+  const bestKey = data.best?.profile || null;
+  const notes = Array.isArray(data.notesSv) ? data.notesSv : [];
+
+  return (
+    <div style={frame}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap', alignItems: 'flex-start' }}>
+        <div>
+          <div style={{ fontSize: 18, fontWeight: 900, color: 'var(--text)' }}>Entry quality test</div>
+          <div style={{ marginTop: 4, color: 'var(--muted)', fontSize: 12, lineHeight: 1.5 }}>
+            Read-only jämförelse av baseline mot entry-filter-profiler på {data.tradesAnalyzed ?? 0} stängda paper trades.
+          </div>
+        </div>
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, alignItems: 'center' }}>
+          <span style={explanationBadgeStyle('info', false, theme)}>READ_ONLY · paper_only</span>
+          <span style={explanationBadgeStyle(data.beatsBaseline ? 'success' : 'neutral', false, theme)}>
+            {data.beatsBaseline ? 'Entry-filter slår baseline' : 'Ingen profil slår baseline tydligt'}
+          </span>
+        </div>
+      </div>
+
+      {data.best ? (
+        <div style={{ marginTop: 12, padding: 12, borderRadius: 14, border: '1px solid rgba(56,189,248,0.22)', background: 'var(--surface-2)', color: 'var(--text)', fontSize: 13, lineHeight: 1.55 }}>
+          <strong>Bäst just nu:</strong> {data.best.labelSv} (variant: {data.bestVariantClass})
+          {' '}· winrate {data.best.winDelta >= 0 ? '+' : ''}{data.best.winDelta} p.e. · snitt-PnL {fmtSmallPct(data.best.pnlDelta)}
+        </div>
+      ) : null}
+
+      <div style={{ marginTop: 8, color: 'var(--text)', fontSize: 13, lineHeight: 1.55 }}>{data.summarySv}</div>
+
+      <div style={{ overflowX: 'auto', marginTop: 12 }}>
+        <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
+          <thead>
+            <tr>
+              {['Profil', 'Trades kvar', 'Filtrerade (W/L)', 'Winrate', 'Avg PnL', 'Median PnL', 'Median tid', 'Avg MFE', 'Avg MAE'].map((h) => (
+                <th key={h} style={{ ...cellStyle(), textAlign: 'left', color: 'var(--muted)', fontWeight: 700, whiteSpace: 'nowrap' }}>{h}</th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {profiles.map((p) => {
+              const isBest = p.profile === bestKey;
+              return (
+                <tr key={p.profile} style={isBest ? { background: 'rgba(34,197,94,0.08)' } : undefined}>
+                  <td style={{ ...cellStyle(), fontWeight: isBest ? 900 : 600, color: 'var(--text)' }}>
+                    {p.labelSv}{isBest ? ' ★' : ''}
+                  </td>
+                  <td style={cellStyle()}>{p.kept?.trades ?? 0}</td>
+                  <td style={cellStyle()}>
+                    {p.filtered?.count ?? 0}
+                    {p.filtered?.count ? ` (${p.filtered.wins}/${p.filtered.losses}${p.filtered.winRate != null ? `, ${p.filtered.winRate}%` : ''})` : ''}
+                  </td>
+                  <td style={cellStyle()}>{p.kept?.winRate != null ? `${p.kept.winRate}%` : '–'}</td>
+                  <td style={cellStyle()}>{fmtSmallPct(p.kept?.avgPnlPct)}</td>
+                  <td style={cellStyle()}>{fmtSmallPct(p.kept?.medianPnlPct)}</td>
+                  <td style={cellStyle()}>{p.kept?.medianDurationLabel ?? '–'}</td>
+                  <td style={cellStyle()}>{fmtSmallPct(p.kept?.avgMfePct)}</td>
+                  <td style={cellStyle()}>{fmtSmallPct(p.kept?.avgMaePct)}</td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+
+      <div style={{ marginTop: 12, display: 'grid', gap: 8 }}>
+        {profiles.filter((p) => p.profile !== 'baseline').map((p) => (
+          <div key={`rec-${p.profile}`} style={{ border: '1px solid var(--border)', borderRadius: 12, padding: 10, background: 'var(--surface-2)', fontSize: 12, lineHeight: 1.5 }}>
+            <div style={{ fontWeight: 800, color: 'var(--text)' }}>{p.labelSv}</div>
+            <div style={{ marginTop: 4, color: 'var(--text)' }}>{p.recommendationSv}</div>
+            {p.filtered?.topSymbols?.length ? (
+              <div style={{ marginTop: 4, ...mutedTextStyle(theme), fontSize: 11 }}>
+                Mest påverkade symboler: {p.filtered.topSymbols.map((s) => `${s.label} (${s.count})`).join(', ')}
+                {p.filtered?.topStrategies?.length ? ` · strategier: ${p.filtered.topStrategies.map((s) => `${s.label} (${s.count})`).join(', ')}` : ''}
+              </div>
+            ) : null}
+          </div>
+        ))}
+      </div>
+
+      <div style={{ marginTop: 12, padding: 12, borderRadius: 14, border: '1px solid var(--border)', background: 'var(--surface-2)', color: 'var(--text)', fontSize: 12, lineHeight: 1.6 }}>
+        {notes.map((note) => (
+          <div key={note}>• {note}</div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+// Per-trade entry-filter preview shown in the closed-trade detail (Del B/C).
+function EntryQualityPreviewPanel({ preview, theme }) {
+  if (!preview) return null;
+  const wouldBlock = preview.wouldSkipByEntryFilter === true;
+  return (
+    <div style={{
+      marginTop: 12,
+      padding: 16,
+      borderRadius: 16,
+      border: '1px solid var(--border)',
+      background: 'var(--surface)',
+    }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap', alignItems: 'center' }}>
+        <div style={{ fontSize: 15, fontWeight: 900, color: 'var(--text)' }}>Entry-filter preview</div>
+        <span style={explanationBadgeStyle(wouldBlock ? 'warning' : 'success', false, theme)}>
+          Hade blockerats av entry-filter: {wouldBlock ? 'ja' : 'nej'}
+        </span>
+      </div>
+      <div style={{ marginTop: 8, color: 'var(--text)', fontSize: 13, lineHeight: 1.55 }}>
+        <div>Skäl: {preview.reasonSv || '–'}</div>
+        {preview.recommendedTestSv ? <div style={{ marginTop: 4 }}>Rekommenderat test: {preview.recommendedTestSv}</div> : null}
+        {preview.wouldRequire2mConfirmation ? (
+          <div style={{ marginTop: 4, color: 'var(--warning)', fontWeight: 700 }}>Skulle kräva ny 2m-confirmation.</div>
+        ) : null}
+      </div>
+      <div style={{ marginTop: 8, ...mutedTextStyle(theme), fontSize: 11 }}>
+        Detta är bara analys. Runtime ändras inte (entry-quality-gate är avstängd som default).
+      </div>
     </div>
   );
 }
@@ -2484,6 +2657,7 @@ export default function PaperTradingPage() {
   const tradingViewBlueprintState = useTradingViewBlueprints(refreshKey);
   const runtimeState = usePaperRuntime(50);
   const explanationsState = useTradeExplanations(50);
+  const entryQualityComparisonState = useEntryQualityComparison(refreshKey);
   const lossReviewState = useLossReviewQueue(refreshKey);
   const allowlistState = usePaperAllowlist(refreshKey);
   const [expandedTradeKey, setExpandedTradeKey] = useState(null);
@@ -2671,6 +2845,9 @@ export default function PaperTradingPage() {
           },
         ]}
       />
+
+      <EntryQualityTestPanel state={entryQualityComparisonState} theme={theme} />
+
       <LossReviewQueuePanel
         review={lossReviewState.data}
         loading={lossReviewState.loading}
@@ -2685,6 +2862,7 @@ export default function PaperTradingPage() {
             <>
               <ClosedTradeExplanationPanel explanation={activeClosedTradeExplanation} trade={selectedClosedTrade} theme={theme} />
               <EntryQualityGatePanel gate={activeClosedTradeExplanation.entryQualityGate} theme={theme} />
+              <EntryQualityPreviewPanel preview={activeClosedTradeExplanation.entryQualityPreview} theme={theme} />
             </>
           ) : selectedLookup.loading ? (
             <div style={{ ...sectionStyle(), borderColor: 'rgba(56,189,248,0.18)', background: 'var(--surface-2)' }}>
