@@ -109,6 +109,8 @@ const replayAutopilotService = require('../services/replayAutopilotService');
 const replayStatusService = require('../services/replayStatusService');
 const paperTradingStatusService = require('../services/paperTradingStatusService');
 const paperTradingRuntimeService = require('../services/paperTradingRuntimeService');
+const strategyPipelineTruthService = require('../services/strategyPipelineTruthService');
+const shortExitTruthService = require('../services/shortExitTruthService');
 const paperRiskPauseSummaryService = require('../services/paperRiskPauseSummaryService');
 const paperRiskReviewService = require('../services/paperRiskReviewService');
 const tradingViewTestBlueprintService = require('../services/tradingViewTestBlueprintService');
@@ -3435,6 +3437,29 @@ router.get('/paper-trading/runtime', (req, res) => {
     }));
   } catch (err) {
     res.status(500).json({ ok: false, error: err.message, ...paperTradingRuntimeService.SAFETY });
+  }
+});
+
+// Read-only: "Varför gör strategier inte paper trades?" — per-strategy pipeline
+// truth (approval/catalog/allowlist/signals/candidates/trades/chainStop).
+router.get('/paper-trading/strategy-pipeline-truth', (req, res) => {
+  try {
+    res.json(strategyPipelineTruthService.buildStrategyPipelineTruth({
+      now: req.query.now || undefined,
+    }));
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message, safety: strategyPipelineTruthService.SAFETY });
+  }
+});
+
+// Read-only: "Varför stängs trades snabbt?" — exit-reason / duration breakdown.
+router.get('/paper-trading/short-exit-truth', (req, res) => {
+  try {
+    res.json(shortExitTruthService.buildShortExitTruth({
+      now: req.query.now || undefined,
+    }));
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message, safety: shortExitTruthService.SAFETY });
   }
 });
 

@@ -186,6 +186,70 @@ function runForwardValidation(options = {}) {
   };
 }
 
+// --- per-entry forward PREVIEW (runtime, observe-only, gate stays OFF) --------
+// Pure function of entry-time fields (no pnl needed). Produces the additive
+// `entryQualityForwardPreview` record attached to every NEW paper trade.
+//
+// HARD GUARANTEES (never change):
+//   - gateEnabled = false  → PAPER_ENTRY_QUALITY_GATE_ENABLED is never read/set.
+//   - runtimeBlocked = false → this NEVER blocks, skips or delays a trade.
+//   - additive only → the caller keeps opening the trade exactly as before; this
+//     just annotates it for observability/forward measurement.
+function evaluateEntryForwardPreview(raw = {}, opts = {}) {
+  const statusAtEntry = lower(
+    raw.statusAtEntry ?? raw.status ?? raw.runtime_status ?? raw.runtimeStatus ?? '',
+  ) || 'unknown';
+  const setupBlob = [
+    raw.setup, raw.signalSubtype, raw.signalFamily, raw.signal_subtype,
+    raw.subtypeLabelSv, raw.familyLabelSv, raw.strategyName, raw.strategy_name, raw.strategy,
+  ].map(lower).join(' ');
+  const isRegularPullback = /regular_pullback|regular pullback|trend continuation|rekyl/.test(setupBlob);
+  const isNarrowWait = /narrow_wait/.test(setupBlob);
+  const isCaution = statusAtEntry === 'caution';
+  const evaluatedAt = opts.now ? new Date(opts.now).toISOString() : new Date().toISOString();
+
+  // Neutral default: nothing flagged, never blocks.
+  const preview = {
+    enabled: true,
+    gateEnabled: false,     // gate stays OFF — observe-only
+    runtimeBlocked: false,  // ALWAYS false
+    wouldAvoidByEntryFilter: false,
+    wouldSkipByEntryFilter: false,
+    wouldRequire2mConfirmation: false,
+    reasonCode: null,
+    reasonSv: null,
+    cohort: null,
+    severity: null,
+    evaluatedAt,
+  };
+
+  // NARROW_WAIT: weakest cohort in fresh data → flag avoid/skip, but DO NOT block.
+  if (isNarrowWait) {
+    preview.wouldAvoidByEntryFilter = true;
+    preview.wouldSkipByEntryFilter = true;
+    preview.reasonCode = 'narrow_wait_underperforms_forward_validation';
+    preview.reasonSv = 'NARROW_WAIT har varit svag i färsk data. Detta är bara analys; traden stoppas inte.';
+    preview.cohort = 'narrow_wait';
+    preview.severity = 'high';
+    return preview;
+  }
+
+  // caution + REGULAR_PULLBACK: fresh data does NOT justify blocking → neutral
+  // monitor only. Never skip/avoid, never require 2m confirmation by default.
+  if (isCaution && isRegularPullback) {
+    preview.reasonCode = 'caution_regular_pullback_monitor_only';
+    preview.reasonSv = 'Färsk data motiverar inte blockering just nu. Detta bevakas bara.';
+    preview.cohort = 'caution_regular_pullback';
+    preview.wouldRequire2mConfirmation = false;
+    preview.severity = 'low';
+    return preview;
+  }
+
+  // Everything else: unflagged, neutral.
+  preview.cohort = 'unflagged';
+  return preview;
+}
+
 // --- text report -------------------------------------------------------------
 function formatReport(result) {
   const L = [];
@@ -232,6 +296,7 @@ module.exports = {
   loadSignals,
   summarize,
   evaluateWindow,
+  evaluateEntryForwardPreview,
   runForwardValidation,
   formatReport,
 };

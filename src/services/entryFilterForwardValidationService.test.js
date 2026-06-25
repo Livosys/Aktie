@@ -78,6 +78,51 @@ check('runForwardValidation is deterministic with fixed --since', () => {
   assert.deepStrictEqual(a.windows.forward.all, b.windows.forward.all);
 });
 
+// --- evaluateEntryForwardPreview (runtime preview-only) ----------------------
+check('preview NARROW_WAIT flags avoid/skip high severity but NEVER blocks', () => {
+  const p = svc.evaluateEntryForwardPreview({ statusAtEntry: 'caution', signalSubtype: 'NARROW_WAIT' });
+  assert.strictEqual(p.wouldAvoidByEntryFilter, true);
+  assert.strictEqual(p.wouldSkipByEntryFilter, true);
+  assert.strictEqual(p.severity, 'high');
+  assert.strictEqual(p.reasonCode, 'narrow_wait_underperforms_forward_validation');
+  assert.strictEqual(p.runtimeBlocked, false);
+  assert.strictEqual(p.gateEnabled, false);
+});
+
+check('preview caution+REGULAR_PULLBACK is monitor-only, never skip/avoid/block', () => {
+  const p = svc.evaluateEntryForwardPreview({ statusAtEntry: 'caution', signalSubtype: 'REGULAR_PULLBACK' });
+  assert.strictEqual(p.wouldAvoidByEntryFilter, false);
+  assert.strictEqual(p.wouldSkipByEntryFilter, false);
+  assert.strictEqual(p.wouldRequire2mConfirmation, false);
+  assert.strictEqual(p.reasonCode, 'caution_regular_pullback_monitor_only');
+  assert.strictEqual(p.cohort, 'caution_regular_pullback');
+  assert.strictEqual(p.runtimeBlocked, false);
+});
+
+check('preview unflagged cohort is neutral and never blocks', () => {
+  const p = svc.evaluateEntryForwardPreview({ statusAtEntry: 'watch', signalSubtype: 'NARROW_BULL_ENTRY' });
+  assert.strictEqual(p.wouldAvoidByEntryFilter, false);
+  assert.strictEqual(p.wouldSkipByEntryFilter, false);
+  assert.strictEqual(p.cohort, 'unflagged');
+  assert.strictEqual(p.runtimeBlocked, false);
+  assert.strictEqual(p.gateEnabled, false);
+});
+
+check('preview gateEnabled=false and runtimeBlocked=false for ALL inputs', () => {
+  for (const raw of [
+    {}, { statusAtEntry: 'caution', signalSubtype: 'NARROW_WAIT' },
+    { statusAtEntry: 'caution', signalSubtype: 'REGULAR_PULLBACK' },
+    { statusAtEntry: 'watch', signalSubtype: 'REGULAR_PULLBACK' },
+    { statusAtEntry: 'caution', strategyName: 'Trend Continuation' },
+  ]) {
+    const p = svc.evaluateEntryForwardPreview(raw);
+    assert.strictEqual(p.gateEnabled, false);
+    assert.strictEqual(p.runtimeBlocked, false);
+    assert.strictEqual(p.enabled, true);
+    assert.ok(typeof p.evaluatedAt === 'string');
+  }
+});
+
 // --- live run ---------------------------------------------------------------
 const sinceArg = (process.argv.find((a) => a.startsWith('--since=')) || '').split('=')[1];
 console.log('\n' + '='.repeat(60));

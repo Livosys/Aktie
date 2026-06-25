@@ -45,6 +45,7 @@ const eventLogService                           = require('../services/eventLogS
 const notificationEngineV2                      = require('../alerts/notificationEngineV2');
 const strategyRuntimeConnector                  = require('../services/strategyRuntimeConnectorService');
 const paperApprovalGate                         = require('../services/paperApprovalGateService');
+const entryFilterForwardValidation              = require('../services/entryFilterForwardValidationService');
 const paperMarketConfigService                  = require('../services/paperMarketConfigService');
 const paperRiskReviewService                    = require('../services/paperRiskReviewService');
 const marketUniverse                            = require('../services/marketUniverseService');
@@ -645,6 +646,29 @@ function makeTradeId() {
   return `pt_${Date.now()}_${crypto.randomBytes(3).toString('hex')}`;
 }
 
+// Observe-only forward-filter preview for a candidate at entry time. Pure +
+// defensive: any failure degrades to a neutral, non-blocking stub so the trade
+// is NEVER affected. The gate is never read or set here.
+function buildEntryForwardPreview(c) {
+  try {
+    return entryFilterForwardValidation.evaluateEntryForwardPreview(c || {});
+  } catch (_) {
+    return {
+      enabled: true,
+      gateEnabled: false,
+      runtimeBlocked: false,
+      wouldAvoidByEntryFilter: false,
+      wouldSkipByEntryFilter: false,
+      wouldRequire2mConfirmation: false,
+      reasonCode: null,
+      reasonSv: null,
+      cohort: null,
+      severity: null,
+      evaluatedAt: new Date().toISOString(),
+    };
+  }
+}
+
 function buildOpenTrade(c, gateDecision = null) {
   const profile    = getPaperRiskProfile(c);
   const mpRisk     = getRiskProfile(c.symbol);
@@ -740,6 +764,10 @@ function buildOpenTrade(c, gateDecision = null) {
     pnlPct:                  null,
     result:                  'OPEN',
     mode:                    'paper',
+    // Additive observe-only annotation. Gate stays OFF, runtimeBlocked=false —
+    // this never blocks/skips the trade, it only records the forward-filter view
+    // so new trades can be measured automatically. See evaluateEntryForwardPreview.
+    entryQualityForwardPreview: buildEntryForwardPreview(c),
   };
   return strategyRuntimeConnector.enrichPaperTradeWithStrategy(trade);
 }
