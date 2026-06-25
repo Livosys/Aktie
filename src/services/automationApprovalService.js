@@ -225,19 +225,13 @@ function getAutomationApprovals() {
   }
 
   const state = readState();
-  const plan = automationPlanService.getAutomationPlan();
-  const matrix = strategyRuntimeMatrixService.getStrategyRuntimeMatrix();
   const config = paperAllowlistConfigService.getPaperAllowlistConfig();
-  const matrixIds = new Set((matrix.strategies || []).map((r) => r.id));
-  const recommended = plan.recommendedPaperCandidates || [];
-  const recommendedIds = new Set(recommended.map((c) => c.id));
+  const recommended = [];
+  const recommendedIds = new Set();
 
   const approved = state.approvedStrategyIds;
-  const approvedStillInMatrix = approved.filter((id) => matrixIds.has(id));
-  const approvedWithBlockers = approved.filter((id) => {
-    const info = inspectStrategy(id);
-    return info.isPausedOrBlocked || info.hasBlockers;
-  });
+  const approvedStillInMatrix = [];
+  const approvedWithBlockers = [];
   const approvedNoLongerRecommended = approved.filter((id) => !recommendedIds.has(id));
 
   // Recommended candidates the user has not yet acted on.
@@ -259,6 +253,8 @@ function getAutomationApprovals() {
     approvedWithBlockers,
     approvedNoLongerRecommended,
     waitingForApproval,
+    partial: true,
+    warnings: ['automation_plan_skipped_for_fast_read_only_approvals', 'runtime_matrix_skipped_for_fast_read_only_approvals'],
     ...(config.warning ? { configWarning: config.warning } : {}),
     note: 'Detta startar inga tester. Det sparar bara ditt godkännande för framtida paper-only testing.',
     safety: SAFETY,

@@ -93,6 +93,7 @@ const auditTrail        = require('../services/auditTrailService');
 const eventLogService   = require('../services/eventLogService');
 const tradeOutcomeReplay = require('../services/tradeOutcomeReplayService');
 const marketRegime      = require('../services/marketRegimeService');
+const milderExitReplayService = require('../services/milderExitReplayService');
 const priorityEngine    = require('../services/priorityEngineService');
 const dailyIntelligencePipeline = require('../services/dailyIntelligencePipelineService');
 const historicalDataCenter = require('../services/historicalDataCenterService');
@@ -3404,6 +3405,9 @@ router.get('/review/chart-data', (req, res) => {
 
 // ── Paper Trading ─────────────────────────────────────────────────────────────
 // All endpoints are paper-only. No real orders are placed, ever.
+const EXIT_PROFILE_COMPARISON_CACHE_TTL_MS = 20_000;
+let exitProfileComparisonCache = null;
+let exitProfileComparisonCacheAt = 0;
 
 router.get('/paper-trading/status', (req, res) => {
   try { res.json(paperTrading.getStatus()); }
@@ -3460,6 +3464,25 @@ router.get('/paper-trading/short-exit-truth', (req, res) => {
     }));
   } catch (err) {
     res.status(500).json({ ok: false, error: err.message, safety: shortExitTruthService.SAFETY });
+  }
+});
+
+router.get('/paper-trading/exit-profile-comparison', (req, res) => {
+  try {
+    const now = Date.now();
+    if (exitProfileComparisonCache && (now - exitProfileComparisonCacheAt) < EXIT_PROFILE_COMPARISON_CACHE_TTL_MS) {
+      return res.json(exitProfileComparisonCache);
+    }
+    const result = milderExitReplayService.runComparison();
+    exitProfileComparisonCache = {
+      ...result,
+      generatedAt: new Date(now).toISOString(),
+      cacheTtlMs: EXIT_PROFILE_COMPARISON_CACHE_TTL_MS,
+    };
+    exitProfileComparisonCacheAt = now;
+    return res.json(exitProfileComparisonCache);
+  } catch (err) {
+    return res.status(500).json({ ok: false, error: err.message, safety: milderExitReplayService.SAFETY });
   }
 });
 

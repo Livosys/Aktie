@@ -17,6 +17,7 @@ const fs = require('fs');
 const path = require('path');
 const automationApprovalService = require('./automationApprovalService');
 const daytradingStrategyCatalog = require('./daytradingStrategyCatalogService');
+const { readJsonlTail } = require('./readOnlyJsonlTailService');
 
 const SAFETY = Object.freeze({
   mode: 'paper_only',
@@ -33,6 +34,12 @@ const SKIPPED_FILE = path.join(DATA_DIR, 'daytrading-learning/skipped-signals.js
 
 const WINDOW_MS = Object.freeze({ '24h': 86400e3, '3d': 3 * 86400e3, '7d': 7 * 86400e3 });
 const PRIMARY_WINDOW = '7d'; // window used for the chainStop verdict
+const CACHE_TTL_MS = 20_000;
+const TRADES_TAIL_BYTES = 8 * 1024 * 1024;
+const SKIPPED_TAIL_BYTES = 16 * 1024 * 1024;
+
+let _cache = null;
+let _cacheAt = 0;
 
 // Canonical chain-stop codes (stable for UI/tests).
 const CHAIN_STOP = Object.freeze({
@@ -71,24 +78,13 @@ function tsOf(v) { const t = v ? Date.parse(v) : NaN; return Number.isFinite(t) 
 function readRowsSince(file, sinceTs, tsField = 'timestamp') {
   if (!fs.existsSync(file)) return [];
   const rows = [];
-  const raw = fs.readFileSync(file, 'utf8');
-  let start = 0;
-  for (let i = 0; i <= raw.length; i += 1) {
-    if (i === raw.length || raw[i] === '\n') {
-      if (i > start) {
-        const line = raw.slice(start, i);
-        if (line.charCodeAt(0) === 123 /* { */) {
-          try {
-            const obj = JSON.parse(line);
-            const ts = tsOf(obj[tsField] || obj.exitTime || obj.closed_at || obj.entryTime || obj.opened_at);
-            if (ts != null && ts >= sinceTs) rows.push({ ...obj, _ts: ts });
-          } catch (_) { /* skip bad line */ }
-        }
-      }
-      start = i + 1;
-    }
+  const maxBytes = file === SKIPPED_FILE ? SKIPPED_TAIL_BYTES : TRADES_TAIL_BYTES;
+  const tail = readJsonlTail(file, { maxBytes, maxLines: 120_000 });
+  for (const obj of tail.rows) {
+    const ts = tsOf(obj[tsField] || obj.exitTime || obj.closed_at || obj.entryTime || obj.opened_at);
+    if (ts != null && ts >= sinceTs) rows.push({ ...obj, _ts: ts });
   }
-  return rows;
+  return { rows, partial: tail.partial, warnings: tail.warnings, sourceBytes: tail.size, sourceRows: tail.rows.length };
 }
 
 function mapCategoryToChainStop(category) {
@@ -112,8 +108,15 @@ function topKey(counter) {
 }
 
 function buildStrategyPipelineTruth(options = {}) {
+  const cacheable = !options.now && options.cache !== false;
+  const cacheKey = 'default';
+  const cacheNow = Date.now();
+  if (cacheable && _cache && _cache.key === cacheKey && (cacheNow - _cacheAt) < CACHE_TTL_MS) return _cache.value;
+
   const now = options.now ? new Date(options.now).getTime() : Date.now();
   const widest = now - WINDOW_MS['7d'];
+  const warnings = [];
+  let partial = false;
 
   // --- approvals (source of truth for proposed/rejected/approved) ------------
   let approvals = { approvedStrategyIds: [], rejectedStrategyIds: [] };
@@ -122,8 +125,12 @@ function buildStrategyPipelineTruth(options = {}) {
   const rejectedSet = new Set((approvals.rejectedStrategyIds || []).filter(Boolean));
 
   // --- data within 7d --------------------------------------------------------
-  const trades = readRowsSince(TRADES_FILE, widest);
-  const skipped = readRowsSince(SKIPPED_FILE, widest);
+  const tradesRead = readRowsSince(TRADES_FILE, widest);
+  const skippedRead = readRowsSince(SKIPPED_FILE, widest);
+  const trades = tradesRead.rows;
+  const skipped = skippedRead.rows;
+  partial = Boolean(tradesRead.partial || skippedRead.partial);
+  warnings.push(...(tradesRead.warnings || []), ...(skippedRead.warnings || []));
 
   // --- universe of strategies actually in the pipeline -----------------------
   const universe = new Set([...approvedSet, ...rejectedSet]);
@@ -232,9 +239,11 @@ function buildStrategyPipelineTruth(options = {}) {
     })),
   };
 
-  return {
+  const result = {
     ok: true,
     mode: 'paper_only',
+    partial,
+    warnings,
     generatedAt: new Date(now).toISOString(),
     safety: { ...SAFETY },
     windows: windowKeys,
@@ -247,6 +256,15 @@ function buildStrategyPipelineTruth(options = {}) {
       trades: 'data/paper-trading/trades.jsonl',
       skipped: 'data/daytrading-learning/skipped-signals.jsonl',
     },
+    readLimits: {
+      cacheTtlMs: CACHE_TTL_MS,
+      tradesTailBytes: TRADES_TAIL_BYTES,
+      skippedTailBytes: SKIPPED_TAIL_BYTES,
+      tradesRowsRead: tradesRead.sourceRows,
+      skippedRowsRead: skippedRead.sourceRows,
+      tradesSourceBytes: tradesRead.sourceBytes,
+      skippedSourceBytes: skippedRead.sourceBytes,
+    },
     counts: {
       strategies: rows.length,
       approved: rows.filter((r) => r.approved).length,
@@ -258,6 +276,12 @@ function buildStrategyPipelineTruth(options = {}) {
     strategies: rows,
     groups,
   };
+
+  if (cacheable) {
+    _cache = { key: cacheKey, value: result };
+    _cacheAt = cacheNow;
+  }
+  return result;
 }
 
 module.exports = {

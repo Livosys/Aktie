@@ -13,6 +13,7 @@
 
 const fs = require('fs');
 const path = require('path');
+const { readJsonlTail } = require('./readOnlyJsonlTailService');
 
 const SAFETY = Object.freeze({
   mode: 'paper_only',
@@ -27,6 +28,11 @@ const DATA_DIR = path.resolve(__dirname, '../../data');
 const TRADES_FILE = path.join(DATA_DIR, 'paper-trading/trades.jsonl');
 
 const WINDOW_MS = Object.freeze({ '24h': 86400e3, '3d': 3 * 86400e3, '7d': 7 * 86400e3 });
+const CACHE_TTL_MS = 20_000;
+const TRADES_TAIL_BYTES = 8 * 1024 * 1024;
+
+let _cache = null;
+let _cacheAt = 0;
 
 function tsOf(v) { const t = v ? Date.parse(v) : NaN; return Number.isFinite(t) ? t : null; }
 function num(v) { const n = Number(v); return Number.isFinite(n) ? n : null; }
@@ -40,12 +46,9 @@ function median(arr) {
 }
 
 function readTrades() {
-  if (!fs.existsSync(TRADES_FILE)) return [];
-  return fs.readFileSync(TRADES_FILE, 'utf8')
-    .split('\n')
-    .filter((l) => l && l.charCodeAt(0) === 123)
-    .map((l) => { try { return JSON.parse(l); } catch (_) { return null; } })
-    .filter(Boolean)
+  if (!fs.existsSync(TRADES_FILE)) return { rows: [], partial: false, warnings: [], sourceBytes: 0, sourceRows: 0 };
+  const tail = readJsonlTail(TRADES_FILE, { maxBytes: TRADES_TAIL_BYTES, maxLines: 80_000 });
+  const rows = tail.rows
     .filter((t) => t.pnlPct != null)
     .map((t) => ({
       ts: tsOf(t.exitTime || t.closed_at || t.entryTime || t.opened_at),
@@ -61,6 +64,7 @@ function readTrades() {
       firstTargetTouchAt: t.firstTargetTouchAt || null,
       firstStopTouchAt: t.firstStopTouchAt || null,
     }));
+  return { rows, partial: tail.partial, warnings: tail.warnings, sourceBytes: tail.size, sourceRows: tail.rows.length };
 }
 
 // "default" exit = closed with no explicit reason code (the fallback close).
@@ -110,8 +114,13 @@ function summarize(trades) {
 }
 
 function buildShortExitTruth(options = {}) {
+  const cacheable = !options.now && options.cache !== false;
+  const cacheNow = Date.now();
+  if (cacheable && _cache && (cacheNow - _cacheAt) < CACHE_TTL_MS) return _cache;
+
   const now = options.now ? new Date(options.now).getTime() : Date.now();
-  const all = readTrades();
+  const read = readTrades();
+  const all = read.rows;
 
   const windows = {};
   for (const [wk, ms] of Object.entries(WINDOW_MS)) {
@@ -132,15 +141,28 @@ function buildShortExitTruth(options = {}) {
     windows[wk] = { overall: summarize(w), byStrategy, bySetup, byStatus };
   }
 
-  return {
+  const result = {
     ok: true,
     mode: 'paper_only',
+    partial: Boolean(read.partial),
+    warnings: read.warnings || [],
     generatedAt: new Date(now).toISOString(),
     safety: { ...SAFETY },
     note: 'Detta ändrar inte exit. Det visar bara varför trades stängdes.',
     dataSource: 'data/paper-trading/trades.jsonl',
+    readLimits: {
+      cacheTtlMs: CACHE_TTL_MS,
+      tradesTailBytes: TRADES_TAIL_BYTES,
+      tradesRowsRead: read.sourceRows,
+      tradesSourceBytes: read.sourceBytes,
+    },
     windows,
   };
+  if (cacheable) {
+    _cache = result;
+    _cacheAt = cacheNow;
+  }
+  return result;
 }
 
 module.exports = {

@@ -33,6 +33,7 @@
 
 const fs = require('fs');
 const path = require('path');
+const { readJsonlTail } = require('./readOnlyJsonlTailService');
 
 const SAFETY = Object.freeze({
   mode: 'paper_only',
@@ -47,6 +48,7 @@ const SAFETY = Object.freeze({
 
 const DATA_DIR = path.resolve(__dirname, '../../data');
 const PAPER_TRADES_FILE = path.join(DATA_DIR, 'paper-trading/trades.jsonl');
+const TRADES_TAIL_BYTES = 8 * 1024 * 1024;
 
 // --- Profile definitions -----------------------------------------------------
 // breakEvenArmPct      : favorable % required before a trailing/BE stop arms.
@@ -96,11 +98,7 @@ const PROFILES = Object.freeze({
 // --- low-level helpers -------------------------------------------------------
 function readJsonl(file) {
   if (!fs.existsSync(file)) return [];
-  return fs.readFileSync(file, 'utf8')
-    .split('\n')
-    .filter(Boolean)
-    .map((line) => { try { return JSON.parse(line); } catch (_) { return null; } })
-    .filter(Boolean);
+  return readJsonlTail(file, { maxBytes: TRADES_TAIL_BYTES, maxLines: 80_000 }).rows;
 }
 
 function num(value) {
@@ -310,6 +308,14 @@ function bucketCounts(rows) {
 function runComparison(options = {}) {
   const file = options.file || PAPER_TRADES_FILE;
   const trades = loadClosedTrades(file);
+  const sourceStat = (() => {
+    try {
+      const stat = fs.statSync(file);
+      return { bytes: stat.size, partial: stat.size > TRADES_TAIL_BYTES };
+    } catch (_) {
+      return { bytes: 0, partial: false };
+    }
+  })();
 
   const profileOrder = ['baseline', 'mild_exit_v1', 'mild_exit_v2', 'entry_filtered_plus_mild_exit'];
 
@@ -383,7 +389,16 @@ function runComparison(options = {}) {
   };
 
   return {
+    ok: true,
     safety: SAFETY,
+    mode: 'paper_only',
+    partial: sourceStat.partial,
+    warnings: sourceStat.partial ? [`jsonl_tail_limited:${file}`] : [],
+    readLimits: {
+      tradesTailBytes: TRADES_TAIL_BYTES,
+      tradesSourceBytes: sourceStat.bytes,
+      tradesRowsUsed: trades.length,
+    },
     dataSource: file,
     replayType: 'APPROXIMATION (closed-trade MFE/MAE based) — NOT exact bar replay (no 2m candles available for trade windows)',
     totalClosedTrades: trades.length,

@@ -5,11 +5,15 @@ const path = require('path');
 
 const paperTradeExplanationService = require('./paperTradeExplanationService');
 const entryQualityGateService = require('./entryQualityGateService');
+const { readJsonlTail } = require('./readOnlyJsonlTailService');
 
 const ROOT = path.resolve(__dirname, '../..');
 const DEFAULT_FILES = Object.freeze({
   trades: path.join(ROOT, 'data/paper-trading/trades.jsonl'),
 });
+const CACHE_TTL_MS = 20_000;
+const TRADES_TAIL_BYTES = 8 * 1024 * 1024;
+const DEFAULT_MAX_LOSSES = 250;
 
 const SAFETY = Object.freeze({
   mode: 'paper_only',
@@ -57,21 +61,17 @@ function iso(value) {
 
 function readJsonl(file) {
   try {
-    if (!fs.existsSync(file)) return [];
-    return fs.readFileSync(file, 'utf8')
-      .split('\n')
-      .map((line) => line.trim())
-      .filter(Boolean)
-      .map((line) => {
-        try {
-          return JSON.parse(line);
-        } catch (_) {
-          return null;
-        }
-      })
-      .filter(Boolean);
+    if (!fs.existsSync(file)) return { rows: [], partial: false, warnings: [], sourceBytes: 0, sourceRows: 0 };
+    const tail = readJsonlTail(file, { maxBytes: TRADES_TAIL_BYTES, maxLines: 80_000 });
+    return {
+      rows: tail.rows,
+      partial: tail.partial,
+      warnings: tail.warnings,
+      sourceBytes: tail.size,
+      sourceRows: tail.rows.length,
+    };
   } catch (_) {
-    return [];
+    return { rows: [], partial: true, warnings: [`jsonl_read_failed:${file}`], sourceBytes: 0, sourceRows: 0 };
   }
 }
 
@@ -496,23 +496,48 @@ function buildTradeContext(trade, options) {
 
 function createLossReviewQueueService(options = {}) {
   const files = { ...DEFAULT_FILES, ...(options.files || {}) };
+  let cache = null;
+  let cacheAt = 0;
+  const maxLosses = clampLimit(options.maxLosses || DEFAULT_MAX_LOSSES, DEFAULT_MAX_LOSSES);
+  let lastReadMeta = { partial: false, warnings: [], sourceBytes: 0, sourceRows: 0 };
 
   function loadClosedTrades() {
-    const rows = Array.isArray(options.trades) ? options.trades : readJsonl(files.trades);
-    return rows
+    const read = Array.isArray(options.trades)
+      ? { rows: options.trades, partial: false, warnings: [], sourceBytes: 0, sourceRows: options.trades.length }
+      : readJsonl(files.trades);
+    lastReadMeta = read;
+    return read.rows
       .filter(isClosedTrade)
       .map(normalizeTrade)
       .filter((trade) => trade.result === 'LOSS')
-      .sort((a, b) => String(b.closedAt || b.openedAt || '').localeCompare(String(a.closedAt || a.openedAt || '')));
+      .sort((a, b) => String(b.closedAt || b.openedAt || '').localeCompare(String(a.closedAt || a.openedAt || '')))
+      .slice(0, maxLosses);
   }
 
   function buildLossReviewQueue() {
+    const rows = Array.isArray(options.trades) ? options.trades : null;
+    if (!rows && cache && (Date.now() - cacheAt) < CACHE_TTL_MS) return cache;
+
     const closedTrades = loadClosedTrades();
     const tradeContexts = closedTrades.map((trade) => buildTradeContext(trade, { ...options, files }));
     const { groups, summary, missingFields } = aggregateLosses(closedTrades, tradeContexts);
+    const partial = Boolean(lastReadMeta.partial || closedTrades.length >= maxLosses);
+    const warnings = [
+      ...(lastReadMeta.warnings || []),
+      ...(closedTrades.length >= maxLosses ? [`loss_review_limited:${maxLosses}`] : []),
+    ];
 
-    return {
+    const result = {
       ok: true,
+      partial,
+      warnings,
+      readLimits: {
+        cacheTtlMs: CACHE_TTL_MS,
+        tradesTailBytes: TRADES_TAIL_BYTES,
+        maxLosses,
+        tradesRowsRead: lastReadMeta.sourceRows,
+        tradesSourceBytes: lastReadMeta.sourceBytes,
+      },
       safety: { ...SAFETY },
       summary: {
         totalClosed: closedTrades.length,
@@ -525,6 +550,12 @@ function createLossReviewQueueService(options = {}) {
       groups,
       missingFields,
     };
+
+    if (!rows) {
+      cache = result;
+      cacheAt = Date.now();
+    }
+    return result;
   }
 
   function getLossReviewQueue() {
@@ -541,6 +572,8 @@ function createLossReviewQueueService(options = {}) {
 
     return {
       ok: true,
+      partial: Boolean(queue.partial),
+      warnings: queue.warnings || [],
       safety: { ...SAFETY },
       groupId: group.id,
       group,

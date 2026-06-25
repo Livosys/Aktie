@@ -2210,7 +2210,8 @@ function PaperAllowlistManager({ runtime, allowlist, refreshKey, onRefresh }) {
   const hardMaxApproved = num(config?.hardMaxApproved ?? approvals?.hardMaxApproved) || 10;
   const minApproved = num(config?.minApproved ?? approvals?.minApproved) || 1;
   const approvedCount = approvedIds.length;
-  const slotFree = maxApproved > 0 && approvedCount < maxApproved;
+  const maxApprovedKnown = maxApproved > 0;
+  const slotFree = maxApprovedKnown && approvedCount < maxApproved;
 
   const strategies = Array.isArray(runtime?.strategies) ? runtime.strategies : [];
   const stratById = new Map(strategies.map((s) => [s.strategy_id, s]));
@@ -2321,7 +2322,7 @@ function PaperAllowlistManager({ runtime, allowlist, refreshKey, onRefresh }) {
       </div>
 
       <div className="allowlist-metrics" style={{ display: 'flex', flexWrap: 'wrap', gap: 10, marginBottom: 12 }}>
-        <MetricCard label="Godkända" value={`${approvedCount} / ${maxApproved || '–'}`} tone={slotFree ? 'good' : 'warn'} note={slotFree ? 'Plats finns' : 'Max nått'} />
+        <MetricCard label="Godkända" value={`${approvedCount} / ${maxApproved || '–'}`} tone={!maxApprovedKnown ? 'neutral' : (slotFree ? 'good' : 'warn')} note={!maxApprovedKnown ? 'Max okänt' : (slotFree ? 'Plats finns' : 'Max nått')} />
         <MetricCard label="Max antal godkända" value={maxApproved || '–'} tone="neutral" note={`Manuell config, min ${minApproved}, max ${hardMaxApproved}`} />
         <MetricCard label="Säkerhetsläge" value={paperOnly ? 'paper_only' : 'OKÄND'} tone={paperOnly ? 'good' : 'bad'} note="actions_allowed=false" />
       </div>
@@ -2440,7 +2441,7 @@ function PaperAllowlistManager({ runtime, allowlist, refreshKey, onRefresh }) {
 
           <div style={{ fontWeight: 800, marginBottom: 6 }}>Icke-godkända strategier med aktivitet</div>
           <div style={{ fontSize: 11.5, ...mutedTextStyle(theme), marginBottom: 6 }}>
-            Sorterade efter antal blockeringar. {slotFree ? '' : 'Max antal godkända är nått — ta bort en strategi först eller höj maxgränsen. '}Om godkännande nekas visas exakt orsak från servern (t.ex. svag strategi eller maxgräns).
+            Sorterade efter antal blockeringar. {!maxApprovedKnown ? 'Maxgräns okänd just nu — approvals/config behöver laddas. ' : (slotFree ? '' : 'Max antal godkända är nått — ta bort en strategi först eller höj maxgränsen. ')}Om godkännande nekas visas exakt orsak från servern (t.ex. svag strategi eller maxgräns).
           </div>
           {nonApproved.length > 0 ? (
             <div style={{ overflowX: 'auto' }}>
@@ -2457,6 +2458,8 @@ function PaperAllowlistManager({ runtime, allowlist, refreshKey, onRefresh }) {
                       <td style={cellStyle()}>
                         {slotFree ? (
                           <button type="button" disabled={busyId === r.id} style={btnStyle(busyId === r.id, 'ok')} onClick={() => ask('approve', r.id, r.name)}>Lägg till i paper allowlist</button>
+                        ) : !maxApprovedKnown ? (
+                          <span title="Maxgränsen kunde inte bekräftas ännu." style={{ ...btnStyle(true, 'neutral'), display: 'inline-block' }}>Max okänt</span>
                         ) : (
                           <span title="Max antal godkända är nått. Ta bort en strategi först eller höj maxgränsen." style={{ ...btnStyle(true, 'ok'), display: 'inline-block' }}>Max nått</span>
                         )}
@@ -2501,6 +2504,29 @@ function useShortExitTruth(refreshKey = 0) {
     return () => { alive = false; };
   }, [refreshKey]);
   return state;
+}
+
+function useExitProfileComparison(refreshKey = 0) {
+  const [state, setState] = useState({ loading: true, data: null, error: null });
+  useEffect(() => {
+    let alive = true;
+    setState((prev) => ({ ...prev, loading: true }));
+    fetchJsonWithTimeout('/api/paper-trading/exit-profile-comparison')
+      .then((data) => { if (alive) setState({ loading: false, data, error: null }); })
+      .catch((err) => { if (alive) setState({ loading: false, data: null, error: friendlyTradeExplanationError(err, 'Exit profile comparison är tillfälligt otillgänglig.') }); });
+    return () => { alive = false; };
+  }, [refreshKey]);
+  return state;
+}
+
+function PartialDataNotice({ data }) {
+  const theme = useThemeMode();
+  if (!data?.partial) return null;
+  return (
+    <div style={{ marginTop: 10, marginBottom: 10, color: 'var(--warning)', fontSize: 12, ...mutedTextStyle(theme) }}>
+      Visar deldata från senaste logg-tailen för att hålla panelen responsiv. Runtime och tradingregler påverkas inte.
+    </div>
+  );
 }
 
 function fmtDurSec(value) {
@@ -2586,6 +2612,7 @@ function StrategyPipelineTruthPanel({ pipeline, loading, error }) {
           Godkänd betyder inte alltid att strategin är körbar i paper runtime.<br />
           Denna vy visar var strategin stannar. Read-only — inga trades påverkas.
         </div>
+        <PartialDataNotice data={pipeline} />
       </div>
       <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10, marginBottom: 14 }}>
         <MetricCard label="Strategier" value={counts.strategies ?? 0} />
@@ -2672,10 +2699,11 @@ function ShortExitTruthPanel({ shortExit, loading, error }) {
       <div style={{ marginBottom: 12, display: 'flex', flexWrap: 'wrap', gap: 12, alignItems: 'flex-start', justifyContent: 'space-between' }}>
         <div>
           <h3 style={{ margin: 0, fontSize: 18 }}>Varför stängs trades snabbt?</h3>
-          <div style={{ ...mutedTextStyle(theme), marginTop: 4, fontSize: 13, lineHeight: 1.5 }}>
-            Detta ändrar inte exit. Det visar bara varför trades stängdes.
-          </div>
+        <div style={{ ...mutedTextStyle(theme), marginTop: 4, fontSize: 13, lineHeight: 1.5 }}>
+          Detta ändrar inte exit. Det visar bara varför trades stängdes.
         </div>
+        <PartialDataNotice data={shortExit} />
+      </div>
         <div style={{ display: 'flex', gap: 6 }}>
           {windowOptions.map((opt) => (
             <button
@@ -2729,6 +2757,48 @@ function ShortExitTruthPanel({ shortExit, loading, error }) {
         emptyText="Ingen setup-data i detta fönster."
         rowKey={(row) => `set-${row.label}`}
         columns={statColumns}
+      />
+    </div>
+  );
+}
+
+function ExitProfileComparisonPanel({ comparison, theme }) {
+  if (!comparison?.ok) return null;
+  const profiles = comparison.profiles || {};
+  const rows = (comparison.profileOrder || []).map((id) => {
+    const profile = profiles[id] || {};
+    return {
+      id,
+      label: profile.label || id,
+      summary: profile.summary || {},
+      diff: profile.diffVsBaseline || {},
+    };
+  });
+  return (
+    <div style={sectionStyle()}>
+      <div style={{ marginBottom: 12 }}>
+        <h3 style={{ margin: 0, fontSize: 18 }}>Exit profile comparison</h3>
+        <div style={{ ...mutedTextStyle(theme), marginTop: 4, fontSize: 13, lineHeight: 1.5 }}>
+          Read-only approximation mot stängda paper trades. Ändrar inte exitEngine default eller runtime.
+        </div>
+        <PartialDataNotice data={comparison} />
+      </div>
+      <DataTable
+        title="Baseline vs mildare exit-profiler"
+        subtitle="Approximation från registrerad MFE/MAE, inte bar-by-bar replay."
+        rows={rows}
+        emptyText="Ingen exit profile comparison tillgänglig."
+        rowKey={(row) => row.id}
+        columns={[
+          { key: 'label', label: 'Profil', render: (row) => <span style={{ fontWeight: 700 }}>{row.label}</span> },
+          { key: 'trades', label: 'Trades', render: (row) => row.summary.trades ?? 0 },
+          { key: 'winrate', label: 'Winrate', render: (row) => `${row.summary.winrate ?? 0}%` },
+          { key: 'avgPnl', label: 'Avg PnL', render: (row) => `${row.summary.avgPnl ?? 0}%` },
+          { key: 'totalPnl', label: 'Total PnL', render: (row) => `${row.summary.totalPnl ?? 0}%` },
+          { key: 'under5', label: '<5 min', render: (row) => `${row.summary.pctUnder5min ?? 0}%` },
+          { key: 'repriced', label: 'Repriced', render: (row) => row.summary.repricedTrades ?? 0 },
+          { key: 'diff', label: 'Diff total vs baseline', render: (row) => row.id === 'baseline' ? '–' : `${row.diff.totalPnl ?? 0}%` },
+        ]}
       />
     </div>
   );
