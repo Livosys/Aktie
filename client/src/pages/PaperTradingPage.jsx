@@ -2473,6 +2473,267 @@ function PaperAllowlistManager({ runtime, allowlist, refreshKey, onRefresh }) {
   );
 }
 
+// ── Read-only truth panels (observability only — no trading behaviour) ─────────
+// Both panels read additive, read-only endpoints. They never place orders, never
+// touch the gate (PAPER_ENTRY_QUALITY_GATE_ENABLED), never change exit behaviour.
+
+function useStrategyPipelineTruth(refreshKey = 0) {
+  const [state, setState] = useState({ loading: true, data: null, error: null });
+  useEffect(() => {
+    let alive = true;
+    setState((prev) => ({ ...prev, loading: true }));
+    fetchJsonWithTimeout('/api/paper-trading/strategy-pipeline-truth')
+      .then((data) => { if (alive) setState({ loading: false, data, error: null }); })
+      .catch((err) => { if (alive) setState({ loading: false, data: null, error: String(err?.message || err) }); });
+    return () => { alive = false; };
+  }, [refreshKey]);
+  return state;
+}
+
+function useShortExitTruth(refreshKey = 0) {
+  const [state, setState] = useState({ loading: true, data: null, error: null });
+  useEffect(() => {
+    let alive = true;
+    setState((prev) => ({ ...prev, loading: true }));
+    fetchJsonWithTimeout('/api/paper-trading/short-exit-truth')
+      .then((data) => { if (alive) setState({ loading: false, data, error: null }); })
+      .catch((err) => { if (alive) setState({ loading: false, data: null, error: String(err?.message || err) }); });
+    return () => { alive = false; };
+  }, [refreshKey]);
+  return state;
+}
+
+function fmtDurSec(value) {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return '–';
+  if (n < 60) return `${Math.round(n)}s`;
+  const m = Math.floor(n / 60);
+  const s = Math.round(n % 60);
+  return s ? `${m}m ${s}s` : `${m}m`;
+}
+
+function chainStopTone(code) {
+  if (code === 'trades_ok') return 'success';
+  if (code === 'proposed_not_approved' || code === 'approved_not_allowlisted') return 'neutral';
+  if (code === 'allowlist_block' || code === 'no_matching_signal_subtype' || code === 'market_closed') return 'warning';
+  if (code === 'missing_data' || code === 'unknown') return 'danger';
+  return 'info';
+}
+
+function approvalTone(status) {
+  if (status === 'approved') return 'success';
+  if (status === 'rejected') return 'danger';
+  return 'neutral';
+}
+
+function pipelineStrategyColumns(theme, primaryWindow = '7d') {
+  return [
+    { key: 'strategyId', label: 'strategyId', render: (row) => <span style={{ fontWeight: 700 }}>{row.strategyId}</span> },
+    { key: 'name', label: 'Namn' },
+    {
+      key: 'approvalStatus',
+      label: 'Status',
+      render: (row) => <span style={statusPillStyle(approvalTone(row.approvalStatus), theme, true)}>{row.approvalStatus}</span>,
+    },
+    { key: 'hasDetector', label: 'Katalog/detector', render: (row) => (row.hasDetector ? 'ja' : 'nej') },
+    { key: 'listedInApprovals', label: 'I approvals.json', render: (row) => (row.listedInApprovals ? 'ja' : 'nej') },
+    { key: 'paperEnabled', label: 'Paper-enabled / allowlist', render: (row) => (row.paperEnabled ? 'ja' : 'nej') },
+    { key: 'signals', label: 'Signaler 24h/3d/7d', render: (row) => `${row.signals?.['24h'] ?? 0} / ${row.signals?.['3d'] ?? 0} / ${row.signals?.['7d'] ?? 0}` },
+    { key: 'candidates', label: 'Kandidater 24h/3d/7d', render: (row) => `${row.candidates?.['24h'] ?? 0} / ${row.candidates?.['3d'] ?? 0} / ${row.candidates?.['7d'] ?? 0}` },
+    { key: 'paperTrades', label: 'Trades 24h/3d/7d', render: (row) => `${row.paperTrades?.['24h'] ?? 0} / ${row.paperTrades?.['3d'] ?? 0} / ${row.paperTrades?.['7d'] ?? 0}` },
+    { key: 'commonBlockerReason', label: 'Vanligaste blocker', render: (row) => row.commonBlockerReason || '–' },
+    {
+      key: 'chainStop',
+      label: `Stannar (${primaryWindow})`,
+      render: (row) => (
+        <span title={row.chainStopSv} style={statusPillStyle(chainStopTone(row.chainStop), theme, true)}>{row.chainStop}</span>
+      ),
+    },
+  ];
+}
+
+function StrategyPipelineTruthPanel({ pipeline, loading, error }) {
+  const theme = useThemeMode();
+  if (loading && !pipeline) {
+    return <div style={sectionStyle()}>Hämtar strategy pipeline truth...</div>;
+  }
+  if (error && !pipeline) {
+    return (
+      <div style={{ ...sectionStyle(), borderColor: 'rgba(245, 158, 11, 0.22)', background: 'var(--surface-2)' }}>
+        <strong>Varför gör strategier inte paper trades?</strong>
+        <div style={{ marginTop: 4, color: 'var(--warning)', fontSize: 13 }}>Tillfälligt otillgängligt: {error}</div>
+      </div>
+    );
+  }
+  if (!pipeline?.ok) return null;
+  const counts = pipeline.counts || {};
+  const groups = pipeline.groups || {};
+  const primary = pipeline.primaryWindow || '7d';
+  const columns = pipelineStrategyColumns(theme, primary);
+  const zeroColumns = [
+    { key: 'strategyId', label: 'strategyId', render: (row) => <span style={{ fontWeight: 700 }}>{row.strategyId}</span> },
+    { key: 'name', label: 'Namn' },
+    { key: 'approvalStatus', label: 'Status', render: (row) => <span style={statusPillStyle(approvalTone(row.approvalStatus), theme, true)}>{row.approvalStatus}</span> },
+    { key: 'signals7d', label: 'Signaler 7d', render: (row) => row.signals7d ?? 0 },
+    { key: 'chainStop', label: 'Stannar', render: (row) => <span title={row.chainStopSv} style={statusPillStyle(chainStopTone(row.chainStop), theme, true)}>{row.chainStop}</span> },
+    { key: 'chainStopSv', label: 'Förklaring', render: (row) => <span style={{ ...mutedTextStyle(theme), fontSize: 12 }}>{row.chainStopSv}</span> },
+  ];
+  return (
+    <div style={sectionStyle()}>
+      <div style={{ marginBottom: 12 }}>
+        <h3 style={{ margin: 0, fontSize: 18 }}>Varför gör strategier inte paper trades?</h3>
+        <div style={{ ...mutedTextStyle(theme), marginTop: 4, fontSize: 13, lineHeight: 1.5 }}>
+          Godkänd betyder inte alltid att strategin är körbar i paper runtime.<br />
+          Denna vy visar var strategin stannar. Read-only — inga trades påverkas.
+        </div>
+      </div>
+      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10, marginBottom: 14 }}>
+        <MetricCard label="Strategier" value={counts.strategies ?? 0} />
+        <MetricCard label="Godkända" value={counts.approved ?? 0} tone="good" />
+        <MetricCard label="Godkända som tradar" value={counts.approvedTrading ?? 0} tone="good" />
+        <MetricCard label="Godkända utan trades" value={counts.approvedNotTrading ?? 0} tone="warn" />
+        <MetricCard label="Rejected" value={counts.rejected ?? 0} tone="bad" />
+        <MetricCard label="Föreslagna" value={counts.proposed ?? 0} />
+      </div>
+      <DataTable
+        title="Godkända som tradar"
+        subtitle="Godkänd allowlist + faktiska paper trades i 7d-fönstret."
+        rows={groups.approvedTrading || []}
+        emptyText="Ingen godkänd strategi har tradat i 7d-fönstret."
+        rowKey={(row) => `at-${row.strategyId}`}
+        columns={columns}
+      />
+      <DataTable
+        title="Godkända som inte tradar"
+        subtitle="Godkända men 0 paper trades — kolumnen Stannar visar var kedjan bryts."
+        rows={groups.approvedNotTrading || []}
+        emptyText="Alla godkända strategier tradar i 7d-fönstret."
+        rowKey={(row) => `ant-${row.strategyId}`}
+        columns={columns}
+      />
+      <DataTable
+        title="Rejected som emitterar men blockas"
+        subtitle="Ej godkända strategier som ändå genererar signaler och stoppas av allowlisten."
+        rows={groups.rejectedButEmitting || []}
+        emptyText="Inga ej-godkända strategier emitterar signaler i 7d-fönstret."
+        rowKey={(row) => `rbe-${row.strategyId}`}
+        columns={columns}
+      />
+      <DataTable
+        title="Strategier med 0 trades och varför"
+        subtitle="Alla strategier utan paper trades i 7d-fönstret, med klassificerad stopp-punkt."
+        rows={groups.zeroTradesWhy || []}
+        emptyText="Inga strategier saknar trades i 7d-fönstret."
+        rowKey={(row) => `ztw-${row.strategyId}`}
+        columns={zeroColumns}
+      />
+    </div>
+  );
+}
+
+function shortExitStatColumns(theme) {
+  return [
+    { key: 'label', label: 'Grupp', render: (row) => <span style={{ fontWeight: 700 }}>{row.label}</span> },
+    { key: 'count', label: 'Trades', render: (row) => row.s?.count ?? 0 },
+    { key: 'medianDurationSec', label: 'Median duration', render: (row) => fmtDurSec(row.s?.medianDurationSec) },
+    { key: 'pctUnder5min', label: '% under 5 min', render: (row) => `${row.s?.pctUnder5min ?? 0}%` },
+    { key: 'targetHits', label: 'Target hits', render: (row) => row.s?.targetHits ?? 0 },
+    { key: 'tightenedStop', label: 'tightened_stop', render: (row) => row.s?.tightenedStop ?? 0 },
+    { key: 'momentumFade', label: 'momentum_fade', render: (row) => row.s?.momentumFade ?? 0 },
+    { key: 'defaultExits', label: 'default', render: (row) => row.s?.defaultExits ?? 0 },
+  ];
+}
+
+function ShortExitTruthPanel({ shortExit, loading, error }) {
+  const theme = useThemeMode();
+  const [windowKey, setWindowKey] = useState('7d');
+  if (loading && !shortExit) {
+    return <div style={sectionStyle()}>Hämtar short exit truth...</div>;
+  }
+  if (error && !shortExit) {
+    return (
+      <div style={{ ...sectionStyle(), borderColor: 'rgba(245, 158, 11, 0.22)', background: 'var(--surface-2)' }}>
+        <strong>Varför stängs trades snabbt?</strong>
+        <div style={{ marginTop: 4, color: 'var(--warning)', fontSize: 13 }}>Tillfälligt otillgängligt: {error}</div>
+      </div>
+    );
+  }
+  if (!shortExit?.ok) return null;
+  const windowOptions = Object.keys(shortExit.windows || { '24h': 0, '3d': 0, '7d': 0 });
+  const w = shortExit.windows?.[windowKey] || {};
+  const overall = w.overall || { count: 0 };
+  const exitReasonTop = Array.isArray(overall.exitReasonTop) ? overall.exitReasonTop : [];
+  const strategyRows = Object.entries(w.byStrategy || {}).map(([label, s]) => ({ label, s }));
+  const setupRows = Object.entries(w.bySetup || {}).map(([label, s]) => ({ label, s }));
+  const statusRows = Object.entries(w.byStatus || {}).map(([label, s]) => ({ label, s }));
+  const statColumns = shortExitStatColumns(theme);
+  return (
+    <div style={sectionStyle()}>
+      <div style={{ marginBottom: 12, display: 'flex', flexWrap: 'wrap', gap: 12, alignItems: 'flex-start', justifyContent: 'space-between' }}>
+        <div>
+          <h3 style={{ margin: 0, fontSize: 18 }}>Varför stängs trades snabbt?</h3>
+          <div style={{ ...mutedTextStyle(theme), marginTop: 4, fontSize: 13, lineHeight: 1.5 }}>
+            Detta ändrar inte exit. Det visar bara varför trades stängdes.
+          </div>
+        </div>
+        <div style={{ display: 'flex', gap: 6 }}>
+          {windowOptions.map((opt) => (
+            <button
+              key={opt}
+              type="button"
+              onClick={() => setWindowKey(opt)}
+              style={{
+                ...statusPillStyle(opt === windowKey ? 'info' : 'neutral', theme, true),
+                cursor: 'pointer',
+                border: opt === windowKey ? '1px solid rgba(56,189,248,0.30)' : '1px solid var(--border)',
+              }}
+            >
+              {opt}
+            </button>
+          ))}
+        </div>
+      </div>
+      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10, marginBottom: 14 }}>
+        <MetricCard label="Total trades" value={overall.count ?? 0} />
+        <MetricCard label="Median duration" value={fmtDurSec(overall.medianDurationSec)} />
+        <MetricCard label="% under 5 min" value={`${overall.pctUnder5min ?? 0}%`} tone={(overall.pctUnder5min ?? 0) >= 50 ? 'warn' : 'neutral'} />
+        <MetricCard label="Target hits" value={overall.targetHits ?? 0} tone="good" />
+        <MetricCard label="tightened_stop" value={overall.tightenedStop ?? 0} />
+        <MetricCard label="momentum_fade" value={overall.momentumFade ?? 0} />
+        <MetricCard label="default exits" value={overall.defaultExits ?? 0} />
+      </div>
+      <DataTable
+        title="exitReasonCode-topplista"
+        subtitle={`Fönster: ${windowKey}. Andel av stängda trades per exit-reason.`}
+        rows={exitReasonTop}
+        emptyText="Inga stängda trades i detta fönster."
+        rowKey={(row, index) => `er-${row.code}-${index}`}
+        columns={[
+          { key: 'code', label: 'exitReasonCode', render: (row) => <span style={{ fontWeight: 700 }}>{row.code}</span> },
+          { key: 'count', label: 'Antal' },
+          { key: 'pct', label: 'Andel', render: (row) => `${row.pct ?? 0}%` },
+        ]}
+      />
+      <DataTable
+        title="Per strategi"
+        subtitle="trend_continuation / narrow_breakout / narrow_state_expansion_long."
+        rows={strategyRows}
+        emptyText="Ingen strategidata i detta fönster."
+        rowKey={(row) => `ses-${row.label}`}
+        columns={statColumns}
+      />
+      <DataTable
+        title="Per setup / status"
+        subtitle="REGULAR_PULLBACK / NARROW_WAIT m.fl. samt statusAtEntry (caution/watch)."
+        rows={[...setupRows, ...statusRows]}
+        emptyText="Ingen setup-data i detta fönster."
+        rowKey={(row) => `set-${row.label}`}
+        columns={statColumns}
+      />
+    </div>
+  );
+}
+
 export default function PaperTradingPage() {
   const theme = useThemeMode();
   const [refreshKey, setRefreshKey] = useState(0);
@@ -2484,8 +2745,11 @@ export default function PaperTradingPage() {
   const tradingViewBlueprintState = useTradingViewBlueprints(refreshKey);
   const runtimeState = usePaperRuntime(50);
   const explanationsState = useTradeExplanations(50);
+  const exitComparisonState = useExitProfileComparison(131);
   const lossReviewState = useLossReviewQueue(refreshKey);
   const allowlistState = usePaperAllowlist(refreshKey);
+  const strategyPipelineTruthState = useStrategyPipelineTruth(refreshKey);
+  const shortExitTruthState = useShortExitTruth(refreshKey);
   const [expandedTradeKey, setExpandedTradeKey] = useState(null);
   const [lossReviewPreview, setLossReviewPreview] = useState({ loadingGroupId: null, groupId: null, data: null, error: null });
   const runtime = runtimeState.data;
@@ -2582,6 +2846,12 @@ export default function PaperTradingPage() {
         onRefresh={() => setRefreshKey((t) => t + 1)}
       />
 
+      <StrategyPipelineTruthPanel
+        pipeline={strategyPipelineTruthState.data}
+        loading={strategyPipelineTruthState.loading}
+        error={strategyPipelineTruthState.error}
+      />
+
       <PaperAllowlistManager runtime={runtime} allowlist={allowlistState.data} refreshKey={refreshKey} onRefresh={() => setRefreshKey((t) => t + 1)} />
 
       {tradingViewBlueprintState.loading && !tradingViewBlueprintState.data ? (
@@ -2613,6 +2883,14 @@ export default function PaperTradingPage() {
       ) : null}
 
       <SummaryGrid runtime={runtime} />
+
+      <ExitProfileComparisonPanel comparison={exitComparisonState.data} theme={theme} />
+
+      <ShortExitTruthPanel
+        shortExit={shortExitTruthState.data}
+        loading={shortExitTruthState.loading}
+        error={shortExitTruthState.error}
+      />
 
       <DataTable
         title="Open paper trades"
