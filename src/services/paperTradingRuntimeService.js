@@ -213,18 +213,49 @@ function readJsonl(file) {
   }
 }
 
-function readTail(file, limit) {
+// Read-only tail: reads only the last `maxBytes` of the file from the end and
+// returns the last `limit` JSONL rows. This avoids loading whole multi-MB files
+// (e.g. gate-decisions.jsonl ~22MB) into memory on every request. Return shape
+// is kept identical to the previous read-all implementation so all callers
+// (`.rows`, `.total`, `.exists`, `.degraded`) keep working unchanged.
+const READ_TAIL_MAX_BYTES = 4 * 1024 * 1024; // 4MB tail window
+
+function readTail(file, limit, options = {}) {
+  const maxLines = Math.max(1, Number(limit) || 1);
+  const maxBytes = Math.max(64 * 1024, Math.min(Number(options.maxBytes) || READ_TAIL_MAX_BYTES, 16 * 1024 * 1024));
   try {
-    if (!fs.existsSync(file)) return { rows: [], total: 0, exists: false, degraded: false };
-    const lines = fs.readFileSync(file, 'utf8').split('\n').filter((line) => line.trim());
+    const stat = fs.statSync(file);
+    const size = stat.size;
+    const partial = size > maxBytes;
+    const start = partial ? size - maxBytes : 0;
+    const length = size - start;
+    let textChunk = '';
+    if (length > 0) {
+      const fd = fs.openSync(file, 'r');
+      try {
+        const buffer = Buffer.alloc(length);
+        fs.readSync(fd, buffer, 0, length, start);
+        textChunk = buffer.toString('utf8');
+      } finally {
+        fs.closeSync(fd);
+      }
+    }
+    if (partial) {
+      // The first line in the window is likely truncated; drop it so we only
+      // ever parse whole records.
+      const firstNewline = textChunk.indexOf('\n');
+      textChunk = firstNewline >= 0 ? textChunk.slice(firstNewline + 1) : '';
+    }
+    const lines = textChunk.split('\n').filter((line) => line.trim());
     const rows = [];
     let degraded = false;
-    for (const line of lines.slice(-Math.max(1, limit))) {
+    for (const line of lines.slice(-maxLines)) {
       try { rows.push(JSON.parse(line)); } catch (_) { degraded = true; }
     }
-    return { rows, total: lines.length, exists: true, degraded };
-  } catch (_) {
-    return { rows: [], total: 0, exists: false, degraded: true };
+    return { rows, total: lines.length, exists: true, degraded, partial };
+  } catch (err) {
+    if (err && err.code === 'ENOENT') return { rows: [], total: 0, exists: false, degraded: false, partial: false };
+    return { rows: [], total: 0, exists: false, degraded: true, partial: false };
   }
 }
 
@@ -801,7 +832,77 @@ function buildDailySelectionPreview(options = {}) {
   };
 }
 
+// Read-only response cache. The runtime view is an aggregate over append-only
+// JSONL/state files; serving a slightly stale (<=15s) snapshot is acceptable and
+// shields the endpoint from repeated multi-MB reads under polling/dashboards.
+// The cache is pure read-side: it never affects trading, risk or order logic.
+const RUNTIME_CACHE_TTL_MS = 15000;
+const RUNTIME_CACHE_MAX_ENTRIES = 32;
+// The heavy work (file reads, normalization, aggregation) is limit-independent,
+// so the cached view is always built at the maximum limit and cheaply sliced
+// per request. clampLimit() bounds requests to this value.
+const RUNTIME_CACHE_BUILD_LIMIT = 100;
+const runtimeCache = new Map();
+
+// Cheap post-processing: take a full view (built at RUNTIME_CACHE_BUILD_LIMIT)
+// and return a copy limited to `limit`. Only the limit-dependent arrays and the
+// small count fields are recomputed; all other fields pass through unchanged so
+// the external API shape is preserved exactly. The limit-independent summary
+// counts (openCount/closedCount/eventCount/blockedCount) are left as-is.
+function applyRuntimeLimit(full, limit) {
+  if (!full || typeof full !== 'object') return full;
+  const lim = clampLimit(limit, 50);
+  const openTrades = arr(full.openTrades).slice(0, lim);
+  const closedTrades = arr(full.closedTrades).slice(0, lim);
+  const recentEvents = arr(full.recentEvents).slice(0, lim);
+  const blockedCandidates = arr(full.blockedCandidates).slice(0, lim);
+  const strategies = arr(full.strategies).slice(0, lim);
+  const returnedCount = uniqueBy(
+    [...openTrades, ...closedTrades, ...blockedCandidates, ...recentEvents].sort(newestFirst),
+    recordKey,
+  ).slice(0, lim).length;
+  return {
+    ...full,
+    openTrades,
+    closedTrades,
+    recentEvents,
+    blockedCandidates,
+    strategies,
+    summary: { ...(full.summary || {}), returnedCount, limit: lim },
+    limits: {
+      requested: lim,
+      returnedClosed: closedTrades.length,
+      returnedEvents: recentEvents.length,
+      returnedBlocked: blockedCandidates.length,
+    },
+  };
+}
+
 function buildPaperTradingRuntime(options = {}) {
+  const requestedLimit = clampLimit(options.limit, 50);
+  const files = { ...DEFAULT_FILES, ...(options.files || {}) };
+  // Cache key intentionally excludes `limit`: varying limit no longer busts the
+  // cache (which previously turned a polling dashboard with different limits
+  // into a storm of synchronous cache-miss rebuilds). We build the full view
+  // once per file-set and slice per request.
+  const cacheKey = JSON.stringify({ files });
+  const now = Date.now();
+  const cached = runtimeCache.get(cacheKey);
+  if (cached && (now - cached.at) < RUNTIME_CACHE_TTL_MS) {
+    const limited = applyRuntimeLimit(cached.value, requestedLimit);
+    return { ...limited, cache: { hit: true, ttlMs: RUNTIME_CACHE_TTL_MS, ageMs: now - cached.at } };
+  }
+  const value = buildPaperTradingRuntimeUncached({ ...options, limit: RUNTIME_CACHE_BUILD_LIMIT, files });
+  runtimeCache.set(cacheKey, { at: now, value });
+  if (runtimeCache.size > RUNTIME_CACHE_MAX_ENTRIES) {
+    const oldestKey = runtimeCache.keys().next().value;
+    runtimeCache.delete(oldestKey);
+  }
+  const limited = applyRuntimeLimit(value, requestedLimit);
+  return { ...limited, cache: { hit: false, ttlMs: RUNTIME_CACHE_TTL_MS, ageMs: 0 } };
+}
+
+function buildPaperTradingRuntimeUncached(options = {}) {
   const limit = clampLimit(options.limit, 50);
   const files = { ...DEFAULT_FILES, ...(options.files || {}) };
   const warnings = [];
@@ -809,7 +910,10 @@ function buildPaperTradingRuntime(options = {}) {
   const state = readJson(files.state, {});
   const openTrades = arr(state?.openTrades).map((row) => normalizeTrade(row, 'open')).filter(Boolean).sort(newestFirst);
 
-  const tradesRead = readTail(files.trades, Math.max(limit * 4, 200));
+  // 8MB tail window so this single bounded read covers the full current
+  // trades.jsonl (~6.4MB) in one pass. The same normalized set is reused for
+  // strategyPerformance below, replacing a second unbounded full-file read.
+  const tradesRead = readTail(files.trades, Math.max(limit * 4, 200), { maxBytes: 8 * 1024 * 1024 });
   if (tradesRead.degraded) warnings.push('trades_file_degraded');
   const closedTrades = tradesRead.rows.map((row) => normalizeTrade(row, 'closed')).filter(Boolean).sort(newestFirst);
 
@@ -846,12 +950,17 @@ function buildPaperTradingRuntime(options = {}) {
 
   const dailySelectionPreview = buildDailySelectionPreview({ files, selectionCount: 3 });
 
-  // Per-strategy risk/reward quality, computed over ALL closed trades (not the
-  // limited window) so the metrics reflect the full paper history. Fault-isolated.
+  // Per-strategy risk/reward quality. Previously this did an unbounded
+  // readJsonl(files.trades) full-file read on every cache-miss (~6.4MB), which
+  // dominated the endpoint's miss latency. We now reuse `closedTrades`, already
+  // read above via the bounded readTail, so no extra file read happens. The
+  // window is bounded, so the result is flagged partial when the tail did not
+  // cover the whole file. Fault-isolated.
   let strategyPerformance = { strategies: [], summary: null };
   try {
-    const allClosed = readJsonl(files.trades).map((row) => normalizeTrade(row, 'closed')).filter(Boolean);
-    strategyPerformance = buildStrategyPerformance(allClosed);
+    strategyPerformance = buildStrategyPerformance(closedTrades);
+    strategyPerformance.partial = tradesRead.partial === true;
+    strategyPerformance.source = tradesRead.partial ? 'bounded_tail' : 'full_tail';
   } catch (_) {
     warnings.push('strategy_performance_failed');
   }
