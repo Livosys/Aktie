@@ -839,6 +839,12 @@ function explanationValue(value, fallback = 'unknown') {
   return text || fallback;
 }
 
+function replayNumber(value, fallback = '–') {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return fallback;
+  return n > 0 ? `+${n}` : String(n);
+}
+
 function tradeLookupKey(trade) {
   if (!trade) return null;
   if (trade.tradeId) return trade.tradeId;
@@ -876,6 +882,46 @@ function explanationBadgeStyle(tone = 'neutral', compact = false, theme = null) 
   };
 }
 
+function TwoMinuteConfirmationPreviewNotice({ preview, theme }) {
+  if (preview?.applies !== true) return null;
+  const isLight = theme === 'light';
+  return (
+    <div style={{
+      marginTop: 12,
+      padding: 12,
+      borderRadius: 14,
+      border: isLight ? '1px solid rgba(245,158,11,0.24)' : '1px solid rgba(245,158,11,0.34)',
+      background: isLight ? 'rgba(255,251,235,0.72)' : 'rgba(245,158,11,0.10)',
+      color: 'var(--text)',
+    }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10, flexWrap: 'wrap', alignItems: 'flex-start' }}>
+        <div>
+          <div style={{ fontWeight: 900, fontSize: 14 }}>
+            2-min bekräftelse rekommenderas som observation
+          </div>
+          <div style={{ marginTop: 6, fontSize: 12, lineHeight: 1.5, color: 'var(--text)' }}>
+            {preview.reasonSv || 'Historisk replay visar att 2-minuters bekräftelse hade minskat förluster i narrow/compression-kohorten. Detta är bara analys; traden stoppas inte.'}
+          </div>
+        </div>
+        <span style={explanationBadgeStyle('warning', true, theme)}>
+          Preview only — ingen trade stoppas
+        </span>
+      </div>
+
+      <div style={{ marginTop: 10, display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: 8 }}>
+        <div style={{ fontSize: 12 }}>Kohort: <strong>narrow/compression</strong></div>
+        <div style={{ fontSize: 12 }}>Replay: <strong>{preview.replayWindow || '7d'}</strong></div>
+        <div style={{ fontSize: 12 }}>Sample: <strong>{preview.sampleSize ?? '–'} trades</strong></div>
+        <div style={{ fontSize: 12 }}>Undvikna förlorare: <strong>{preview.avoidedLosers ?? '–'}</strong></div>
+        <div style={{ fontSize: 12 }}>Missade vinnare: <strong>{preview.missedWinners ?? '–'}</strong></div>
+        <div style={{ fontSize: 12 }}>Nettoförbättring i replay: <strong>{replayNumber(preview.replayNetImprovementPct)}</strong></div>
+        <div style={{ fontSize: 12 }}>gateEnabled=<strong>{String(preview.gateEnabled === true)}</strong></div>
+        <div style={{ fontSize: 12 }}>runtimeBlocked=<strong>{String(preview.runtimeBlocked === true)}</strong></div>
+      </div>
+    </div>
+  );
+}
+
 function ClosedTradeExplanationPanel({ explanation, trade, theme }) {
   const missingFields = Array.isArray(explanation?.diagnosis?.missingFields) ? explanation.diagnosis.missingFields : [];
   const nearbyEvents = Array.isArray(explanation?.nearbyEvents) ? explanation.nearbyEvents : [];
@@ -886,6 +932,10 @@ function ClosedTradeExplanationPanel({ explanation, trade, theme }) {
   const tradeLabel = trade?.symbol ? `${trade.symbol} · ${trade.strategy_id || trade.strategyId || 'unknown'}` : 'unknown';
   const mfePct = stats.mfePct == null ? '–' : `${stats.mfePct >= 0 ? '+' : ''}${Number(stats.mfePct).toFixed(2)}%`;
   const maePct = stats.maePct == null ? '–' : `${stats.maePct >= 0 ? '+' : ''}${Number(stats.maePct).toFixed(2)}%`;
+  const twoMinuteConfirmationPreview =
+    explanation?.entryQualityForwardPreview?.twoMinuteConfirmationPreview
+    || trade?.entryQualityForwardPreview?.twoMinuteConfirmationPreview
+    || null;
 
   return (
     <div style={{
@@ -976,6 +1026,8 @@ function ClosedTradeExplanationPanel({ explanation, trade, theme }) {
           <div style={{ marginTop: 6, fontWeight: 900, color: 'var(--text)' }}>{explanationValue(diagnosis.lesson, 'saknas i äldre loggning')}</div>
         </div>
       </div>
+
+      <TwoMinuteConfirmationPreviewNotice preview={twoMinuteConfirmationPreview} theme={theme} />
 
       <div style={{ marginTop: 12, border: '1px solid var(--border)', borderRadius: 14, padding: 12, background: 'var(--surface-2)' }}>
         <div style={{ color: 'var(--muted)', fontSize: 10, textTransform: 'uppercase', letterSpacing: '0.08em' }}>Nearby events</div>
