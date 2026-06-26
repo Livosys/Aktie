@@ -56,6 +56,18 @@ const trades = [
     exitReason: 'STOP_HIT',
     exitReasonCode: 'stop_hit',
     exitSource: 'exit_engine_v1',
+    entryQualityForwardPreview: {
+      enabled: true,
+      gateEnabled: false,
+      runtimeBlocked: false,
+      twoMinuteConfirmationPreview: {
+        enabled: true,
+        gateEnabled: false,
+        runtimeBlocked: false,
+        applies: false,
+        cohort: null,
+      },
+    },
     paperOnly: true,
     actions_allowed: false,
     can_place_orders: false,
@@ -164,6 +176,9 @@ assert.equal(aapl.tradeId, 'pt_1');
 assert.equal(aapl.entry.reason, 'Traden öppnades eftersom signalen passade testreglerna.');
 assert.equal(aapl.exit.exitType, 'stop_loss');
 assert.ok(aapl.entryQualityGate);
+assert.equal(aapl.entryQualityForwardPreview.gateEnabled, false);
+assert.equal(aapl.entryQualityForwardPreview.runtimeBlocked, false);
+assert.equal(aapl.entryQualityForwardPreview.twoMinuteConfirmationPreview.applies, false);
 assert.equal(aapl.entryQualityGate.checks.lateEntry.status, 'warn');
 assert.ok(Array.isArray(aapl.recommendations));
 assert.ok(aapl.recommendations.every((item) => item.safeActionOnly === true));

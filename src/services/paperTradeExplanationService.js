@@ -173,6 +173,7 @@ function normalizeTrade(row = {}) {
       stopLoss: num(row.stopLoss ?? row.stop_loss ?? row.stopPct ?? row.stop_pct ?? null),
       takeProfit: num(row.takeProfit ?? row.take_profit ?? row.targetPct ?? row.target_pct ?? null),
     },
+    entryQualityForwardPreview: row.entryQualityForwardPreview || null,
     paperOnly: row.paperOnly === true || row.paper_only === true,
     raw: row,
   };
@@ -445,6 +446,7 @@ function buildExplanationForTrade(row, events) {
     openedAt: trade.openedAt,
     closedAt: trade.closedAt,
     tradeStats: trade.tradeStats,
+    entryQualityForwardPreview: trade.entryQualityForwardPreview,
     entry,
     exit,
     diagnosis,

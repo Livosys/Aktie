@@ -111,6 +111,38 @@ function main() {
   assert.equal(trade.originalGateThreshold, 70);
   assert.equal(trade.paperOnly, true);
   assert.deepEqual(trade.originalRiskEvaluation.block_reasons, ['consecutive_losses_limit']);
+  assert.equal(trade.entryQualityForwardPreview.gateEnabled, false);
+  assert.equal(trade.entryQualityForwardPreview.runtimeBlocked, false);
+  assert.equal(trade.entryQualityForwardPreview.twoMinuteConfirmationPreview.applies, false);
+
+  const narrowTrade = agent._internal.buildOpenTrade({
+    symbol: 'AMD',
+    marketType: 'stocks',
+    price: 100,
+    status: 'watch',
+    nextMoveBias: 'UP',
+    signalFamily: 'NARROW_COMPRESSION',
+    signalSubtype: 'NARROW_BULL_ENTRY',
+    confidenceScore: 68,
+    dataFreshness: 'LIVE',
+    strategyId: 'narrow_breakout',
+    strategyName: 'Narrow Breakout',
+    originalRiskEvaluation: baseRisk,
+  }, {
+    allowed: true,
+    mode: 'allow',
+    gateScore: 72,
+    threshold: 70,
+  });
+  assert.equal(narrowTrade.entryQualityForwardPreview.gateEnabled, false);
+  assert.equal(narrowTrade.entryQualityForwardPreview.runtimeBlocked, false);
+  assert.equal(narrowTrade.entryQualityForwardPreview.twoMinuteConfirmationPreview.applies, true);
+  assert.equal(narrowTrade.entryQualityForwardPreview.twoMinuteConfirmationPreview.gateEnabled, false);
+  assert.equal(narrowTrade.entryQualityForwardPreview.twoMinuteConfirmationPreview.runtimeBlocked, false);
+  assert.equal(
+    narrowTrade.entryQualityForwardPreview.twoMinuteConfirmationPreview.reasonCode,
+    'narrow_compression_2m_confirmation_replay_warning',
+  );
 
   console.log('# paperTradingAgent override tests passed.');
 }

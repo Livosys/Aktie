@@ -664,6 +664,22 @@ function buildEntryForwardPreview(c) {
       reasonSv: null,
       cohort: null,
       severity: null,
+      twoMinuteConfirmationPreview: {
+        enabled: true,
+        gateEnabled: false,
+        runtimeBlocked: false,
+        applies: false,
+        cohort: null,
+        confidence: 'low-medium',
+        reasonCode: null,
+        reasonSv: null,
+        replayWindow: '7d',
+        sampleSize: 30,
+        replayNetImprovementPct: 0.9314,
+        avoidedLosers: 5,
+        missedWinners: 1,
+        evaluatedAt: new Date().toISOString(),
+      },
       evaluatedAt: new Date().toISOString(),
     };
   }

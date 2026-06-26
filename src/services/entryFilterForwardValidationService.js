@@ -66,13 +66,80 @@ function median(arr) {
 function avg(arr) { const a = arr.filter((x) => Number.isFinite(x)); return a.length ? a.reduce((s, x) => s + x, 0) / a.length : null; }
 function tsOf(v) { const t = v ? Date.parse(v) : NaN; return Number.isFinite(t) ? t : null; }
 
-// --- derive the entry signals we flag on (mirrors entryQualityComparison) -----
-function deriveSignals(raw = {}) {
-  const statusAtEntry = lower(raw.statusAtEntry ?? raw.runtime_status ?? raw.runtimeStatus ?? '') || 'unknown';
-  const setupBlob = [
+const TWO_MIN_CONFIRMATION_REPLAY = Object.freeze({
+  confidence: 'low-medium',
+  reasonCode: 'narrow_compression_2m_confirmation_replay_warning',
+  reasonSv: 'Historisk replay visar att 2-minuters bekräftelse hade minskat förluster i narrow/compression-kohorten. Detta är bara analys; traden stoppas inte.',
+  replayWindow: '7d',
+  sampleSize: 30,
+  replayNetImprovementPct: 0.9314,
+  avoidedLosers: 5,
+  missedWinners: 1,
+});
+
+const NARROW_CONFIRMATION_SETUPS = Object.freeze([
+  'narrow_compression',
+  'narrow_wait',
+  'narrow_bull_entry',
+  'narrow_bear_entry',
+]);
+
+const NARROW_CONFIRMATION_STRATEGIES = Object.freeze([
+  'narrow_breakout',
+  'narrow_state_expansion_long',
+]);
+
+function buildSetupBlob(raw = {}) {
+  return [
     raw.setup, raw.signalSubtype, raw.signalFamily, raw.signal_subtype,
     raw.subtypeLabelSv, raw.familyLabelSv, raw.strategyName, raw.strategy_name, raw.strategy,
   ].map(lower).join(' ');
+}
+
+function strategyIdOf(raw = {}) {
+  return lower(
+    raw.strategy_id
+    ?? raw.strategyId
+    ?? raw.resolvedStrategyId
+    ?? raw.sourceStrategyId
+    ?? raw.canonicalStrategyId
+    ?? '',
+  );
+}
+
+function isNarrowCompressionConfirmationCohort(raw = {}) {
+  const setupBlob = buildSetupBlob(raw);
+  const strategyId = strategyIdOf(raw);
+  const setupApplies = NARROW_CONFIRMATION_SETUPS.some((setup) => setupBlob.includes(setup));
+  const strategyApplies = NARROW_CONFIRMATION_STRATEGIES.includes(strategyId);
+  return setupApplies || strategyApplies;
+}
+
+function buildTwoMinuteConfirmationPreview(raw = {}, opts = {}) {
+  const evaluatedAt = opts.now ? new Date(opts.now).toISOString() : new Date().toISOString();
+  const applies = isNarrowCompressionConfirmationCohort(raw);
+  return {
+    enabled: true,
+    gateEnabled: false,
+    runtimeBlocked: false,
+    applies,
+    cohort: applies ? 'narrow_compression' : null,
+    confidence: TWO_MIN_CONFIRMATION_REPLAY.confidence,
+    reasonCode: applies ? TWO_MIN_CONFIRMATION_REPLAY.reasonCode : null,
+    reasonSv: applies ? TWO_MIN_CONFIRMATION_REPLAY.reasonSv : null,
+    replayWindow: TWO_MIN_CONFIRMATION_REPLAY.replayWindow,
+    sampleSize: TWO_MIN_CONFIRMATION_REPLAY.sampleSize,
+    replayNetImprovementPct: TWO_MIN_CONFIRMATION_REPLAY.replayNetImprovementPct,
+    avoidedLosers: TWO_MIN_CONFIRMATION_REPLAY.avoidedLosers,
+    missedWinners: TWO_MIN_CONFIRMATION_REPLAY.missedWinners,
+    evaluatedAt,
+  };
+}
+
+// --- derive the entry signals we flag on (mirrors entryQualityComparison) -----
+function deriveSignals(raw = {}) {
+  const statusAtEntry = lower(raw.statusAtEntry ?? raw.runtime_status ?? raw.runtimeStatus ?? '') || 'unknown';
+  const setupBlob = buildSetupBlob(raw);
   const isRegularPullback = /regular_pullback|regular pullback|trend continuation|rekyl/.test(setupBlob);
   const isNarrowWait = /narrow_wait/.test(setupBlob);
   const result = String(raw.result ?? raw.outcome ?? '').trim().toUpperCase() || 'UNKNOWN';
@@ -199,10 +266,7 @@ function evaluateEntryForwardPreview(raw = {}, opts = {}) {
   const statusAtEntry = lower(
     raw.statusAtEntry ?? raw.status ?? raw.runtime_status ?? raw.runtimeStatus ?? '',
   ) || 'unknown';
-  const setupBlob = [
-    raw.setup, raw.signalSubtype, raw.signalFamily, raw.signal_subtype,
-    raw.subtypeLabelSv, raw.familyLabelSv, raw.strategyName, raw.strategy_name, raw.strategy,
-  ].map(lower).join(' ');
+  const setupBlob = buildSetupBlob(raw);
   const isRegularPullback = /regular_pullback|regular pullback|trend continuation|rekyl/.test(setupBlob);
   const isNarrowWait = /narrow_wait/.test(setupBlob);
   const isCaution = statusAtEntry === 'caution';
@@ -220,6 +284,7 @@ function evaluateEntryForwardPreview(raw = {}, opts = {}) {
     reasonSv: null,
     cohort: null,
     severity: null,
+    twoMinuteConfirmationPreview: buildTwoMinuteConfirmationPreview(raw, { now: evaluatedAt }),
     evaluatedAt,
   };
 
@@ -297,6 +362,8 @@ module.exports = {
   summarize,
   evaluateWindow,
   evaluateEntryForwardPreview,
+  buildTwoMinuteConfirmationPreview,
+  isNarrowCompressionConfirmationCohort,
   runForwardValidation,
   formatReport,
 };

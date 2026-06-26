@@ -89,6 +89,41 @@ check('preview NARROW_WAIT flags avoid/skip high severity but NEVER blocks', () 
   assert.strictEqual(p.gateEnabled, false);
 });
 
+check('2m confirmation preview applies to narrow/compression setups only', () => {
+  for (const raw of [
+    { signalSubtype: 'NARROW_COMPRESSION' },
+    { signalSubtype: 'NARROW_WAIT' },
+    { signalSubtype: 'NARROW_BULL_ENTRY' },
+    { signalSubtype: 'NARROW_BEAR_ENTRY' },
+    { strategy_id: 'narrow_breakout' },
+    { strategyId: 'narrow_state_expansion_long' },
+  ]) {
+    const p = svc.evaluateEntryForwardPreview(raw, { now: '2026-06-26T00:00:00.000Z' });
+    assert.strictEqual(p.twoMinuteConfirmationPreview.applies, true, JSON.stringify(raw));
+    assert.strictEqual(p.twoMinuteConfirmationPreview.cohort, 'narrow_compression');
+    assert.strictEqual(p.twoMinuteConfirmationPreview.reasonCode, 'narrow_compression_2m_confirmation_replay_warning');
+    assert.strictEqual(p.twoMinuteConfirmationPreview.gateEnabled, false);
+    assert.strictEqual(p.twoMinuteConfirmationPreview.runtimeBlocked, false);
+  }
+});
+
+check('2m confirmation preview does not apply to baseline or unrelated strategies', () => {
+  for (const raw of [
+    { signalSubtype: 'REGULAR_PULLBACK' },
+    { strategy_id: 'trend_continuation' },
+    { strategy_id: 'vwap_failed_breakout_short' },
+    { strategy_id: 'ema_pullback_continuation' },
+    { signalSubtype: 'EMA_PULLBACK_UP' },
+  ]) {
+    const p = svc.evaluateEntryForwardPreview(raw, { now: '2026-06-26T00:00:00.000Z' });
+    assert.strictEqual(p.twoMinuteConfirmationPreview.applies, false, JSON.stringify(raw));
+    assert.strictEqual(p.twoMinuteConfirmationPreview.cohort, null);
+    assert.strictEqual(p.twoMinuteConfirmationPreview.reasonCode, null);
+    assert.strictEqual(p.twoMinuteConfirmationPreview.gateEnabled, false);
+    assert.strictEqual(p.twoMinuteConfirmationPreview.runtimeBlocked, false);
+  }
+});
+
 check('preview caution+REGULAR_PULLBACK is monitor-only, never skip/avoid/block', () => {
   const p = svc.evaluateEntryForwardPreview({ statusAtEntry: 'caution', signalSubtype: 'REGULAR_PULLBACK' });
   assert.strictEqual(p.wouldAvoidByEntryFilter, false);
@@ -100,7 +135,7 @@ check('preview caution+REGULAR_PULLBACK is monitor-only, never skip/avoid/block'
 });
 
 check('preview unflagged cohort is neutral and never blocks', () => {
-  const p = svc.evaluateEntryForwardPreview({ statusAtEntry: 'watch', signalSubtype: 'NARROW_BULL_ENTRY' });
+  const p = svc.evaluateEntryForwardPreview({ statusAtEntry: 'watch', signalSubtype: 'EMA_PULLBACK_UP' });
   assert.strictEqual(p.wouldAvoidByEntryFilter, false);
   assert.strictEqual(p.wouldSkipByEntryFilter, false);
   assert.strictEqual(p.cohort, 'unflagged');
@@ -118,6 +153,8 @@ check('preview gateEnabled=false and runtimeBlocked=false for ALL inputs', () =>
     const p = svc.evaluateEntryForwardPreview(raw);
     assert.strictEqual(p.gateEnabled, false);
     assert.strictEqual(p.runtimeBlocked, false);
+    assert.strictEqual(p.twoMinuteConfirmationPreview.gateEnabled, false);
+    assert.strictEqual(p.twoMinuteConfirmationPreview.runtimeBlocked, false);
     assert.strictEqual(p.enabled, true);
     assert.ok(typeof p.evaluatedAt === 'string');
   }
