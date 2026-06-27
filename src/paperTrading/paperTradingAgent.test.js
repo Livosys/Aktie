@@ -144,6 +144,54 @@ function main() {
     'narrow_compression_2m_confirmation_replay_warning',
   );
 
+  const narrowWaitEvent = agent._internal.eventFromCandidate('MARKET_CLOSED', {
+    symbol: 'SPY',
+    marketType: 'stocks',
+    status: 'watch',
+    nextMoveBias: 'UNCERTAIN',
+    signalFamily: 'NARROW_COMPRESSION',
+    signalSubtype: 'NARROW_WAIT',
+    strategyId: 'narrow_breakout',
+    strategyName: 'Narrow Breakout',
+    dataFreshness: 'MARKET_CLOSED',
+  }, 'Skippad — marknaden är stängd.');
+  assert.equal(narrowWaitEvent.entryQualityForwardPreview.gateEnabled, false);
+  assert.equal(narrowWaitEvent.entryQualityForwardPreview.runtimeBlocked, false);
+  assert.equal(narrowWaitEvent.entryQualityForwardPreview.twoMinuteConfirmationPreview.applies, true);
+  assert.equal(narrowWaitEvent.entryQualityForwardPreview.twoMinuteConfirmationPreview.cohort, 'narrow_compression');
+
+  const liveFieldNarrowEvent = agent._internal.eventFromCandidate('TRADE_SKIPPED', {
+    symbol: 'SPY',
+    marketType: 'stocks',
+    status: 'watch',
+    nextMoveBias: 'UNCERTAIN',
+    raw_strategy: 'NARROW_COMPRESSION',
+    signal_subtype: 'NARROW_WAIT',
+    strategy_id: 'narrow_breakout',
+    dataFreshness: 'MARKET_CLOSED',
+  }, 'Skippad — marknaden är stängd.');
+  assert.equal(liveFieldNarrowEvent.entryQualityForwardPreview.twoMinuteConfirmationPreview.applies, true);
+
+  const vwapEvent = agent._internal.eventFromCandidate('TRADE_SKIPPED', {
+    symbol: 'BTCUSDT',
+    marketType: 'crypto',
+    status: 'caution',
+    nextMoveBias: 'DOWN',
+    signalSubtype: 'VWAP_REJECTION_DOWN',
+    strategyId: 'vwap_failed_breakout_short',
+  }, 'Skippad — testreglerna godkände inte signalen.');
+  assert.equal(vwapEvent.entryQualityForwardPreview.twoMinuteConfirmationPreview.applies, false);
+
+  const emaEvent = agent._internal.eventFromCandidate('TRADE_SKIPPED', {
+    symbol: 'BTCUSDT',
+    marketType: 'crypto',
+    status: 'wait',
+    nextMoveBias: 'UP',
+    signalSubtype: 'EMA_PULLBACK_UP',
+    strategyId: 'ema_pullback_continuation',
+  }, 'Skippad — status var Vänta.');
+  assert.equal(emaEvent.entryQualityForwardPreview.twoMinuteConfirmationPreview.applies, false);
+
   console.log('# paperTradingAgent override tests passed.');
 }
 

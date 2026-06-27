@@ -95,8 +95,12 @@ check('2m confirmation preview applies to narrow/compression setups only', () =>
     { signalSubtype: 'NARROW_WAIT' },
     { signalSubtype: 'NARROW_BULL_ENTRY' },
     { signalSubtype: 'NARROW_BEAR_ENTRY' },
+    { raw_strategy: 'NARROW_COMPRESSION', signal_subtype: 'NARROW_WAIT' },
+    { raw_strategy: 'NARROW_COMPRESSION', subtype: 'NARROW_BEAR_ENTRY' },
     { strategy_id: 'narrow_breakout' },
     { strategyId: 'narrow_state_expansion_long' },
+    { resolved_strategy_id: 'narrow_breakout' },
+    { source_strategy_id: 'narrow_state_expansion_long' },
   ]) {
     const p = svc.evaluateEntryForwardPreview(raw, { now: '2026-06-26T00:00:00.000Z' });
     assert.strictEqual(p.twoMinuteConfirmationPreview.applies, true, JSON.stringify(raw));
@@ -105,6 +109,19 @@ check('2m confirmation preview applies to narrow/compression setups only', () =>
     assert.strictEqual(p.twoMinuteConfirmationPreview.gateEnabled, false);
     assert.strictEqual(p.twoMinuteConfirmationPreview.runtimeBlocked, false);
   }
+});
+
+check('2m confirmation preview matches live narrow/compression field names', () => {
+  const p = svc.evaluateEntryForwardPreview({
+    raw_strategy: 'NARROW_COMPRESSION',
+    strategy_id: 'narrow_breakout',
+    signal_subtype: 'NARROW_WAIT',
+    status: 'watch',
+  }, { now: '2026-06-26T00:00:00.000Z' });
+  assert.strictEqual(p.twoMinuteConfirmationPreview.applies, true);
+  assert.strictEqual(p.twoMinuteConfirmationPreview.cohort, 'narrow_compression');
+  assert.strictEqual(p.twoMinuteConfirmationPreview.gateEnabled, false);
+  assert.strictEqual(p.twoMinuteConfirmationPreview.runtimeBlocked, false);
 });
 
 check('2m confirmation preview does not apply to baseline or unrelated strategies', () => {

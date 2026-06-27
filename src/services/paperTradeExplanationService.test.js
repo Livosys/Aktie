@@ -95,6 +95,43 @@ const trades = [
     broker_enabled: false,
   },
   {
+    tradeId: 'pt_narrow',
+    symbol: 'SPY',
+    strategy_id: 'narrow_breakout',
+    setup: 'NARROW_WAIT',
+    signalFamily: 'NARROW_COMPRESSION',
+    signalSubtype: 'NARROW_WAIT',
+    opened_at: '2026-06-11T10:30:00.000Z',
+    closed_at: '2026-06-11T10:35:00.000Z',
+    result: 'LOSS',
+    pnlPct: -0.12,
+    entryReasonSv: 'Narrow/compression paper test.',
+    statusAtEntry: 'watch',
+    confidenceScore: 78,
+    gateDecision: { allowed: true, gateMode: 'normal' },
+    exitReason: 'STOP_HIT',
+    exitReasonCode: 'stop_hit',
+    exitSource: 'exit_engine_v1',
+    entryQualityForwardPreview: {
+      enabled: true,
+      gateEnabled: false,
+      runtimeBlocked: false,
+      twoMinuteConfirmationPreview: {
+        enabled: true,
+        gateEnabled: false,
+        runtimeBlocked: false,
+        applies: true,
+        cohort: 'narrow_compression',
+        reasonCode: 'narrow_compression_2m_confirmation_replay_warning',
+      },
+    },
+    paperOnly: true,
+    actions_allowed: false,
+    can_place_orders: false,
+    live_trading_enabled: false,
+    broker_enabled: false,
+  },
+  {
     symbol: 'TSLA',
     strategyId: 'trend_continuation',
     setup: 'REGULAR_PULLBACK',
@@ -168,7 +205,7 @@ const before = snapshot(files);
 const list = svc.buildTradeExplanations({ files, limit: 10 });
 assert.equal(list.ok, true);
 assert.equal(list.safety.mode, 'paper_only');
-assert.equal(list.count, 3);
+assert.equal(list.count, 4);
 
 const aapl = list.items.find((item) => item.symbol === 'AAPL');
 assert.ok(aapl);
@@ -202,6 +239,15 @@ assert.ok(tsla.diagnosis.possibleIssue.includes('entryReason'));
 assert.equal(tsla.tradeStats.mfePct, null);
 assert.ok(tsla.entryQualityGate);
 assert.equal(tsla.entryQualityGate.checks.choppyMarket.status, 'unknown');
+
+const spy = list.items.find((item) => item.symbol === 'SPY');
+assert.ok(spy);
+assert.equal(spy.strategyId, 'narrow_breakout');
+assert.equal(spy.setup, 'NARROW_WAIT');
+assert.equal(spy.entryQualityForwardPreview.gateEnabled, false);
+assert.equal(spy.entryQualityForwardPreview.runtimeBlocked, false);
+assert.equal(spy.entryQualityForwardPreview.twoMinuteConfirmationPreview.applies, true);
+assert.equal(spy.entryQualityForwardPreview.twoMinuteConfirmationPreview.cohort, 'narrow_compression');
 
 const lookupByFields = svc.buildTradeExplanationLookup({
   files,

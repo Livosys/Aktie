@@ -239,6 +239,15 @@ function strategyMetadataOf(input = {}) {
 
 function eventFromCandidate(type, c, reasonSv, decision = 'skipped') {
   const meta = strategyMetadataOf(c);
+  const candidateWithResolvedIdentity = {
+    ...(c || {}),
+    strategyId: c?.strategyId || meta.strategyId || meta.resolvedStrategyId || meta.sourceStrategyId || null,
+    strategyName: c?.strategyName || meta.strategyName || meta.resolvedStrategyName || meta.sourceStrategyName || null,
+    resolvedStrategyId: c?.resolvedStrategyId || meta.resolvedStrategyId || meta.strategyId || null,
+    resolvedStrategyName: c?.resolvedStrategyName || meta.resolvedStrategyName || meta.strategyName || null,
+    sourceStrategyId: c?.sourceStrategyId || meta.sourceStrategyId || null,
+    sourceStrategyName: c?.sourceStrategyName || meta.sourceStrategyName || null,
+  };
   return {
     type,
     symbol:         c?.symbol        || null,
@@ -262,6 +271,7 @@ function eventFromCandidate(type, c, reasonSv, decision = 'skipped') {
     resolvedStrategyId: meta.resolvedStrategyId,
     resolvedStrategyName: meta.resolvedStrategyName,
     mappingSource: meta.mappingSource,
+    entryQualityForwardPreview: buildEntryForwardPreview(candidateWithResolvedIdentity),
     mode: 'paper',
   };
 }
@@ -400,6 +410,7 @@ function appendEvent(input) {
     hardBlockers:      input.hardBlockers      || [],
     extensionLevel:    input.extensionLevel    || null,
     twoMinuteConflict: input.twoMinuteConflict === true,
+    entryQualityForwardPreview: safeEventValue(input.entryQualityForwardPreview || null),
     mode: 'paper',
   };
 
@@ -434,6 +445,7 @@ function appendEvent(input) {
         source_strategy_id: event.sourceStrategyId || null,
         resolved_strategy_id: event.resolvedStrategyId || event.strategyId || null,
         mapping_source: event.mappingSource || null,
+        entryQualityForwardPreview: event.entryQualityForwardPreview || null,
         source: 'paper_agent',
       });
     } catch (err) {
@@ -3158,5 +3170,6 @@ module.exports = {
     buildEffectiveRiskReviewState,
     buildNearMissLearningGateDecision,
     buildOpenTrade,
+    eventFromCandidate,
   },
 };

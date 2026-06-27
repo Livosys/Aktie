@@ -92,6 +92,7 @@ const NARROW_CONFIRMATION_STRATEGIES = Object.freeze([
 function buildSetupBlob(raw = {}) {
   return [
     raw.setup, raw.signalSubtype, raw.signalFamily, raw.signal_subtype,
+    raw.subtype, raw.raw_strategy,
     raw.subtypeLabelSv, raw.familyLabelSv, raw.strategyName, raw.strategy_name, raw.strategy,
   ].map(lower).join(' ');
 }
@@ -101,8 +102,11 @@ function strategyIdOf(raw = {}) {
     raw.strategy_id
     ?? raw.strategyId
     ?? raw.resolvedStrategyId
+    ?? raw.resolved_strategy_id
     ?? raw.sourceStrategyId
+    ?? raw.source_strategy_id
     ?? raw.canonicalStrategyId
+    ?? raw.canonical_strategy_id
     ?? '',
   );
 }

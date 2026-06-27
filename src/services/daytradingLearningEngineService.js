@@ -413,6 +413,7 @@ function recordSkippedSignal(event = {}) {
       entry_rule_implemented: event.entry_rule_implemented ?? null,
       enabled_for_paper: event.enabled_for_paper ?? null,
       enabled_for_scanner: event.enabled_for_scanner ?? null,
+      entryQualityForwardPreview: event.entryQualityForwardPreview || null,
       config_snapshot: event.config_snapshot || buildConfigSnapshot({ market_group }),
       scanner_context: event.scanner_context || null,
       ...instrumentFields,
