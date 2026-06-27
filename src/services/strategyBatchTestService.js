@@ -141,13 +141,27 @@ function symbolCoverage(symbol) {
   }
 }
 
+// Körbarhetsregel för batch-test (paper-replay, ingen order/broker).
+// Måste matcha frontend (client/src/pages/TradingLabPage.jsx -> hasLabBatchHistoricalData):
+// en symbol är körbar om coverage.usable_for_batch === true ELLER om det finns
+// minst 3 täckta dagar och minst 500 candles. dataCoverageExpansionService sätter
+// usable_for_batch först vid >= 10 dagar, så utan denna fallback säger UI "redo"
+// medan POST /api/strategy-batches svarar missing_data för ~9-dagars-symboler.
+function isBatchRunnableCoverage(coverage = {}) {
+  if (!coverage || typeof coverage !== 'object') return false;
+  if (coverage.usable_for_batch === true) return true;
+  const days = Number(coverage.days_covered ?? coverage.daysCovered ?? 0);
+  const candles = Number(coverage.candles_count ?? coverage.candles_2m_count ?? coverage.candles ?? 0);
+  return Number.isFinite(days) && Number.isFinite(candles) && days >= 3 && candles >= 500;
+}
+
 function normalizeSymbolsForBatch(symbols) {
   const requested = symbols.map((s) => String(s).toUpperCase());
   const runnable = [];
   const skipped = [];
   for (const symbol of requested) {
     const coverage = symbolCoverage(symbol);
-    if (coverage.usable_for_batch) {
+    if (isBatchRunnableCoverage(coverage)) {
       runnable.push(symbol);
     } else {
       skipped.push({
@@ -986,6 +1000,7 @@ function getLatestBatchComparison() {
 module.exports = {
   SAFETY,
   LIMITS,
+  isBatchRunnableCoverage,
   createBatchTest,
   runBatchTest,
   pauseBatchTest,

@@ -2287,6 +2287,27 @@ function BatchTestTab() {
     });
   }, [catalog]);
 
+  // Rensa gammalt skapande-/körbarhetsmeddelande när relevanta batch-val ändras.
+  // Annars ligger ett inaktuellt "No runnable symbols with historical data"-fel kvar
+  // ovanför en ny "Batchen är redo"-ruta. Ren UI-städning — ingen körning, ingen order.
+  React.useEffect(() => {
+    setMessage('');
+  }, [
+    form.symbols,
+    form.timeframes,
+    form.date_from,
+    form.date_to,
+    form.strategy_ids,
+    form.markets,
+    form.certificate_simulation_mode,
+    form.stop_losses,
+    form.take_profits,
+    form.holding_times,
+    form.timeouts,
+    form.confidence_thresholds,
+    form.volume_requirements,
+  ]);
+
   React.useEffect(() => {
     if (!activeBatch?.id) return undefined;
     const t = setInterval(async () => {
