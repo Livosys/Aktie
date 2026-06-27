@@ -16577,6 +16577,36 @@ body {
 .batch-summary-actions button:disabled { opacity: .48; cursor: not-allowed; }
 .batch-summary-actions span { color: var(--text-muted); font-size: 12px; }
 
+/* Batch-körbarhet / kompatibilitet (frontend-only guidning) */
+.batch-compat-card { border: 1px solid var(--border); background: var(--surface); border-radius: 8px; padding: 14px; margin-bottom: 12px; min-width: 0; }
+.batch-compat-list { display: flex; flex-direction: column; gap: 4px; margin: 8px 0 12px; }
+.batch-compat-row { display: grid; grid-template-columns: minmax(90px,.8fr) minmax(70px,.6fr) minmax(90px,.6fr) minmax(150px,1fr) minmax(150px,1fr) minmax(170px,1.1fr); gap: 8px; align-items: center; border: 1px solid var(--border); background: var(--surface-2); border-radius: 7px; padding: 8px 9px; color: var(--text-muted); font-size: 12px; }
+.batch-compat-row span { min-width: 0; overflow-wrap: anywhere; }
+.batch-compat-row strong { color: var(--text); font-size: 12px; overflow-wrap: anywhere; }
+.batch-compat-head { background: transparent; border-color: transparent; color: var(--text-muted); font-weight: 900; text-transform: uppercase; font-size: 10px; padding-bottom: 2px; }
+.batch-compat-ok { border-color: rgba(34,197,94,.30); }
+.batch-compat-blocked { border-color: rgba(239,68,68,.30); }
+.batch-compat-status { font-weight: 800; }
+.batch-compat-status-ok { color: #22c55e; }
+.batch-compat-status-blocked { color: #fb7185; }
+.batch-compat-date { display: flex; flex-direction: column; gap: 4px; align-items: flex-start; }
+.batch-compat-ready { border: 1px solid rgba(34,197,94,.36); background: rgba(34,197,94,.07); border-radius: 8px; padding: 12px; }
+.batch-compat-ready-title { color: #22c55e; font-size: 14px; font-weight: 900; margin-bottom: 10px; }
+.batch-compat-ready .batch-summary-grid { margin-bottom: 8px; }
+.batch-compat-safe { margin: 8px 0 0; }
+.batch-compat-block { border: 1px solid rgba(239,68,68,.36); background: rgba(239,68,68,.07); border-radius: 8px; padding: 12px; }
+.batch-compat-block-title { color: #fb7185; font-size: 14px; font-weight: 900; margin-bottom: 8px; }
+.batch-compat-block-list { margin: 0 0 10px; padding-left: 18px; color: var(--text); font-size: 12px; line-height: 1.55; }
+.batch-compat-block-list strong { color: var(--text); }
+.batch-compat-rec { color: var(--text-muted); border: 1px solid rgba(56,189,248,.25); background: rgba(56,189,248,.07); border-radius: 8px; padding: 10px; font-size: 12px; line-height: 1.45; margin-bottom: 10px; }
+.batch-compat-rec strong { color: #38bdf8; }
+.batch-compat-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 10px; }
+.batch-compat-btn { border: 1px solid rgba(34,197,94,.36); background: rgba(34,197,94,.12); color: #22c55e; border-radius: 7px; padding: 8px 11px; font-size: 12px; font-weight: 900; cursor: pointer; }
+.batch-compat-btn:hover { background: rgba(34,197,94,.2); }
+.batch-compat-btn-ghost { border-color: rgba(56,189,248,.36); background: rgba(56,189,248,.1); color: #38bdf8; }
+.batch-compat-btn-ghost:hover { background: rgba(56,189,248,.18); }
+.batch-compat-backfill { margin: 0; }
+
 /* Tone-baserade statusfärger (delas av aktiv batch-panel och summary-chip) */
 .batch-summary-status-done,
 .batch-active-badge-done { color: #22c55e; border-color: rgba(34,197,94,.4); background: rgba(34,197,94,.1); }

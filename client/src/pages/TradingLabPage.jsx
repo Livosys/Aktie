@@ -2007,7 +2007,9 @@ function MarketsTab() {
   if (!data) return <div className="tl-empty">Ingen marknadsdata.</div>;
 
   const { groups = {}, symbols = [] } = data;
-  const groupEntries = Object.entries(groups).sort((a, b) => (Number(a[1]?.priority) || 99) - (Number(b[1]?.priority) || 99));
+  const labGroups = Object.fromEntries(Object.entries(groups).filter(([key, grp]) => !isLabArchivedMarket({ id: key, ...grp })));
+  const labSymbols = symbols.filter((sym) => !isCryptoSymbol(sym.symbol) && !isLabArchivedMarket(sym.marketGroup || sym.group));
+  const groupEntries = Object.entries(labGroups).sort((a, b) => (Number(a[1]?.priority) || 99) - (Number(b[1]?.priority) || 99));
   const scannerGroups = groupEntries.filter(([, grp]) => grp.section !== 'test' && !grp.test_only);
   const testGroups = groupEntries.filter(([, grp]) => grp.section === 'test' || grp.test_only);
 
@@ -2018,9 +2020,12 @@ function MarketsTab() {
         <ConfigScopeBadge scope="global" />
         <span>Marknader och riskinstrument styrs från Daytrading. Lab visar detta endast för analys/test.</span>
       </div>
+      <div className="batch-info">
+        Crypto är arkiverat från Lab. Crypto kan fortfarande visas på Live-sidan.
+      </div>
       <div className="mu-group-grid">
         {scannerGroups.map(([key, grp]) => (
-          <MarketGroupCard key={key} groupKey={key} group={grp} symbols={symbols} />
+          <MarketGroupCard key={key} groupKey={key} group={grp} symbols={labSymbols} />
         ))}
       </div>
 
@@ -2031,7 +2036,7 @@ function MarketsTab() {
       </div>
       <div className="mu-group-grid">
         {testGroups.map(([key, grp]) => (
-          <MarketGroupCard key={key} groupKey={key} group={grp} symbols={symbols} />
+          <MarketGroupCard key={key} groupKey={key} group={grp} symbols={labSymbols} />
         ))}
       </div>
 
@@ -2041,12 +2046,12 @@ function MarketsTab() {
         <span>Symboler visas read-only här. Lägg till eller pausa marknader från Daytrading.</span>
       </div>
       <div className="mu-sym-list">
-        {symbols.map(sym => (
+        {labSymbols.map(sym => (
           <div key={sym.symbol} className={`mu-sym-row${sym.paused ? ' mu-sym-paused' : ''}${!sym.enabled ? ' mu-sym-off' : ''}`}>
             <div className="mu-sym-main">
               <span className="mu-sym-name">{textOr(sym.symbol, 'Symbol ej verifierad')}</span>
-              <span className="mu-sym-group" style={{ color: groups[sym.marketGroup]?.color }}>
-                {groupLabel(groups[sym.marketGroup], sym.marketGroup)}
+              <span className="mu-sym-group" style={{ color: labGroups[sym.marketGroup]?.color }}>
+                {groupLabel(labGroups[sym.marketGroup], sym.marketGroup)}
               </span>
               <span className={`mu-sym-mode mu-mode-${sym.testMode || 'observe'}`}>{textOr(sym.testMode || sym.mode, 'observe')}</span>
               {(sym.status_label_sv || sym.verification_status === 'unverified' || sym.verification_status === 'invalid') && (
@@ -2080,19 +2085,6 @@ const TIMEFRAME_OPTIONS = ['1m', '2m', '5m', '15m', '30m', '1h'];
 // det startar ALDRIG en batch. strategyIds matchas mot katalogen vid applicering så att
 // crypto-strategier inte hamnar på aktier och tvärtom.
 const BATCH_MARKET_PRESETS = [
-  {
-    key: 'crypto',
-    label: 'Crypto',
-    emoji: '🪙',
-    market: 'crypto',
-    dataSource: 'Binance (crypto)',
-    symbols: ['BTCUSDT', 'ETHUSDT', 'SOLUSDT'],
-    timeframes: ['1m', '2m', '5m'],
-    // Endast crypto-kompatibla strategier (market_group crypto eller all).
-    strategyIds: ['crypto_momentum_scalper', 'vwap_momentum_long', 'volume_spike_momentum', 'trend_continuation'],
-    allowedGroups: ['crypto', 'all'],
-    note: 'Crypto handlas dygnet runt och har egna market gates och datakällor.',
-  },
   {
     key: 'us_stocks',
     label: 'US Stocks / Mag 7',
@@ -2135,11 +2127,39 @@ const BATCH_MARKET_PRESETS = [
 
 const CRYPTO_SYMBOL_HINTS = new Set(['BTCUSDT', 'ETHUSDT', 'SOLUSDT', 'XRPUSDT', 'DOGEUSDT', 'AVAXUSDT', 'LINKUSDT', 'BNBUSDT', 'ADAUSDT']);
 
+function isCryptoSymbol(symbol) {
+  const s = String(symbol || '').trim().toUpperCase();
+  return CRYPTO_SYMBOL_HINTS.has(s) || /USDT$/.test(s);
+}
+
+function isCryptoStrategy(strategy = {}) {
+  const id = String(strategy.id || strategy.strategy_id || '').toLowerCase();
+  const name = String(strategy.name || strategy.strategy_name || '').toLowerCase();
+  const market = String(strategy.market_group || strategy.market || strategy.category || strategy.type || '').toLowerCase();
+  return id.includes('crypto') || name.includes('crypto') || market === 'crypto';
+}
+
+function isLabArchivedMarket(market) {
+  if (typeof market === 'object' && market !== null) {
+    return isLabArchivedMarket(market.id || market.group_id || market.marketGroup || market.group || market.product_type);
+  }
+  const value = String(market || '').trim().toLowerCase();
+  return value === 'crypto' || value === 'crypto_certificates';
+}
+
+function hasLabBatchHistoricalData(row = {}) {
+  if (isCryptoSymbol(row.symbol) || String(row.market_group || row.marketGroup || '').toLowerCase() === 'crypto') return false;
+  if (row.usable_for_batch === true) return true;
+  const days = Number(row.days_covered || 0);
+  const candles = Number(row.candles_count || row.candles_2m_count || 0);
+  return days >= 3 && candles >= 500;
+}
+
 // Klassificera en symbol som 'crypto' eller 'stock' (samma logik som backend inferMarketGroup).
 function classifySymbolMarket(symbol) {
   const s = String(symbol || '').trim().toUpperCase();
   if (!s) return 'unknown';
-  if (CRYPTO_SYMBOL_HINTS.has(s) || /USDT$/.test(s) || /USD$/.test(s)) return 'crypto';
+  if (isCryptoSymbol(s)) return 'crypto';
   return 'stock';
 }
 
@@ -2149,6 +2169,80 @@ function hasMixedMarkets(symbols = []) {
   return kinds.has('crypto') && kinds.has('stock');
 }
 
+// ── Batch-kompatibilitet (frontend-only) ────────────────────────────────────
+// Allt nedan är ren analys/UX för Lab. Det startar ALDRIG en batch, anropar
+// aldrig broker/order/runtime och ändrar aldrig backend. Syftet är bara att
+// visa varför en batch inte kan köras och föreslå körbara val.
+
+// Mappa coverage market_group → grov marknadstyp för UI.
+function batchMarketType(symbol, coverage = {}) {
+  if (isCryptoSymbol(symbol)) return 'crypto';
+  const group = String(coverage.market_group || coverage.marketGroup || '').toLowerCase();
+  if (group === 'crypto' || group === 'crypto_certificates') return 'crypto';
+  if (group === 'etf' || group === 'leveraged_etf') return 'etf';
+  if (group === 'nasdaq100' || group === 'index') return 'index';
+  if (group === 'stocks' || group === 'mag7') return 'stock';
+  if (!coverage || coverage.market_group == null) return 'unknown';
+  return 'unknown';
+}
+
+// Normalisera till YYYY-MM-DD (strängjämförelse fungerar lexikografiskt för ISO-datum).
+function isoDay(value) {
+  const s = String(value || '').slice(0, 10);
+  return /^\d{4}-\d{2}-\d{2}$/.test(s) ? s : '';
+}
+
+const BATCH_MARKET_TYPE_LABELS = {
+  crypto: 'Crypto', stock: 'Aktie', etf: 'ETF', index: 'Index', unknown: 'Okänd',
+};
+
+const BATCH_BLOCKED_REASON_LABELS = {
+  crypto_archived: 'Crypto är arkiverat från Lab',
+  no_local_history: 'Saknar lokal historik',
+  date_outside_coverage: 'Valt datum ligger utanför lokal historik',
+  unknown_market: 'Okänd marknad – ingen lokal coverage',
+};
+
+// Bygg en körbarhetsrad per symbol. Ren frontend-modell — ingen körning, ingen order.
+function buildBatchCompatibility(symbols, coverageMap = {}, form = {}) {
+  const selectedFrom = isoDay(form.date_from);
+  const selectedTo = isoDay(form.date_to);
+  const timeframe = (form.timeframes || []).join(', ');
+  const seen = new Set();
+  return symbols
+    .filter((symbol) => { const k = String(symbol || '').toUpperCase(); if (!k || seen.has(k)) return false; seen.add(k); return true; })
+    .map((symbol) => {
+      const coverage = coverageMap[symbol] || coverageMap[String(symbol).toUpperCase()] || {};
+      const marketType = batchMarketType(symbol, coverage);
+      const earliestLocalCandle = isoDay(coverage.first_candle_at);
+      const latestLocalCandle = isoDay(coverage.last_candle_at);
+      const cryptoArchived = marketType === 'crypto';
+      const hasLocalHistory = !cryptoArchived && hasLabBatchHistoricalData(coverage);
+      let runnable = false;
+      let blockedReason = '';
+      let suggestedFrom = earliestLocalCandle;
+      let suggestedTo = latestLocalCandle;
+      if (cryptoArchived) {
+        blockedReason = 'crypto_archived';
+      } else if (!hasLocalHistory) {
+        blockedReason = marketType === 'unknown' ? 'unknown_market' : 'no_local_history';
+      } else if (selectedFrom && selectedTo && earliestLocalCandle && latestLocalCandle
+        && (selectedTo < earliestLocalCandle || selectedFrom > latestLocalCandle)) {
+        blockedReason = 'date_outside_coverage';
+      } else {
+        runnable = true;
+        suggestedFrom = earliestLocalCandle && selectedFrom && selectedFrom > earliestLocalCandle ? selectedFrom : earliestLocalCandle;
+        suggestedTo = latestLocalCandle && selectedTo && selectedTo < latestLocalCandle ? selectedTo : latestLocalCandle;
+      }
+      return {
+        symbol, marketType, hasLocalHistory,
+        earliestLocalCandle, latestLocalCandle,
+        selectedFrom, selectedTo, timeframe,
+        runnable, blockedReason, suggestedFrom, suggestedTo,
+      };
+    });
+}
+
 // Välj de katalog-strategier som matchar ett preset: prioritera presetets önskade id:n,
 // men släpp endast igenom strategier vars market_group är kompatibel med marknaden.
 function resolvePresetStrategyIds(preset, catalog = []) {
@@ -2156,7 +2250,7 @@ function resolvePresetStrategyIds(preset, catalog = []) {
   const allowed = new Set(preset.allowedGroups || ['all']);
   const isCompatible = (strategy) => {
     const group = String(strategy.market_group || strategy.market || 'all').toLowerCase();
-    return allowed.has(group);
+    return !isCryptoStrategy(strategy) && allowed.has(group);
   };
   const byId = new Map(catalog.map((s) => [s.id, s]));
   const picked = [];
@@ -2208,6 +2302,7 @@ function defaultBatchStrategyIds(catalog = []) {
     .filter((strategy) => strategy.enabled !== false)
     .filter((strategy) => ['active', 'testing'].includes(catalogStatusKey(strategy)))
     .filter((strategy) => strategy.supportsBatch !== false)
+    .filter((strategy) => !isCryptoStrategy(strategy))
     .slice(0, 2)
     .map((strategy) => strategy.id)
     .filter(Boolean);
@@ -2764,7 +2859,7 @@ function BatchTestTab() {
     name: '',
     strategy_ids: [],
     markets: ['all'],
-    symbols: 'BTCUSDT,ETHUSDT,NVDA',
+    symbols: 'AAPL,MSFT,NVDA,QQQ',
     timeframes: ['2m'],
     date_from: new Date().toISOString().slice(0, 10),
     date_to: new Date().toISOString().slice(0, 10),
@@ -2783,7 +2878,7 @@ function BatchTestTab() {
       fetch('/api/strategy-batches').then(r => r.ok ? r.json() : null).catch(() => null),
       fetch('/api/data-coverage/symbols').then(r => r.ok ? r.json() : null).catch(() => null),
     ]);
-    setCatalog(cat?.strategies || []);
+    setCatalog((cat?.strategies || []).filter((strategy) => !isCryptoStrategy(strategy)));
     setBatches(list?.batches || []);
     const map = {};
     (coverage?.symbols || []).forEach((row) => { map[row.symbol] = row; });
@@ -2856,11 +2951,16 @@ function BatchTestTab() {
   }
 
   function payload() {
+    const symbols = csvSymbols(form.symbols).filter((symbol) => !isCryptoSymbol(symbol));
+    const markets = (form.markets || []).filter((market) => market === 'all' || !isLabArchivedMarket(market));
     return {
-      strategy_ids: form.strategy_ids,
-      markets: form.markets,
+      strategy_ids: form.strategy_ids.filter((id) => {
+        const strategy = catalog.find((row) => row.id === id);
+        return strategy && !isCryptoStrategy(strategy);
+      }),
+      markets: markets.length ? markets : ['all'],
       certificate_simulation_mode: form.certificate_simulation_mode,
-      symbols: csvSymbols(form.symbols),
+      symbols,
       timeframes: form.timeframes,
       date_from: form.date_from,
       date_to: form.date_to,
@@ -2891,6 +2991,11 @@ function BatchTestTab() {
     }
     if (batchBlocked) {
       setMessage('Kan inte köras ännu - datakälla saknas. Välj "Simulera mot underliggande" för test som inte använder exakt certifikatpris.');
+      return null;
+    }
+    const runnableNow = buildBatchCompatibility(csvSymbols(form.symbols), coverageMap, form).filter((r) => r.runnable);
+    if (runnableNow.length === 0) {
+      setMessage('Batchen kan inte köras ännu: inga körbara symboler med lokal historik. Använd rekommenderad batch eller backfilla historik först.');
       return null;
     }
     const batchName = form.name?.trim() || buildAutoBatchName(form, comboCount);
@@ -2954,6 +3059,7 @@ function BatchTestTab() {
   const marketGroups = marketUniverse?.groups || {};
   const marketOptions = [{ id: 'all', label: 'Alla', dataStatus: 'active', group: { label: 'Alla', data_status: 'active' } }]
     .concat(Object.entries(marketGroups)
+      .filter(([id, grp]) => !isLabArchivedMarket({ id, ...grp }))
       .filter(([, grp]) => grp.batch_enabled !== false)
       .sort((a, b) => (Number(a[1]?.priority) || 99) - (Number(b[1]?.priority) || 99))
       .map(([id, group]) => ({
@@ -2964,8 +3070,56 @@ function BatchTestTab() {
       })));
   const selectedProviderMissing = marketOptions.filter((m) => form.markets.includes(m.id) && m.dataStatus === 'needs_provider');
   const batchBlocked = selectedProviderMissing.length > 0 && form.certificate_simulation_mode !== 'underlying_only';
-  const batchCoverageWarnings = csvSymbols(form.symbols).map((symbol) => coverageMap[symbol]).filter(Boolean).filter((row) => !row.usable_for_batch);
+  const batchCoverageWarnings = csvSymbols(form.symbols)
+    .filter((symbol) => !isCryptoSymbol(symbol))
+    .map((symbol) => coverageMap[symbol])
+    .filter(Boolean)
+    .filter((row) => !hasLabBatchHistoricalData(row));
+  const archivedSymbols = csvSymbols(form.symbols).filter(isCryptoSymbol);
   const mixedMarkets = hasMixedMarkets(csvSymbols(form.symbols));
+
+  // Frontend-only körbarhetsmodell. Bestämmer vad UI får visa/blockera —
+  // ändrar aldrig backend, broker, order eller runtime.
+  const batchCompatibility = buildBatchCompatibility(csvSymbols(form.symbols), coverageMap, form);
+  const runnableRows = batchCompatibility.filter((r) => r.runnable);
+  const blockedRows = batchCompatibility.filter((r) => !r.runnable);
+  const noHistoryRows = blockedRows.filter((r) => r.blockedReason === 'no_local_history' || r.blockedReason === 'unknown_market');
+  const dateBlockedRows = blockedRows.filter((r) => r.blockedReason === 'date_outside_coverage');
+  const symbolsWithHistory = batchCompatibility.filter((r) => r.hasLocalHistory);
+  // Gemensamt körbart intervall = snittet av alla symbolers lokala coverage.
+  const commonFrom = symbolsWithHistory.reduce((acc, r) => (!r.earliestLocalCandle ? acc : (!acc || r.earliestLocalCandle > acc ? r.earliestLocalCandle : acc)), '');
+  const commonTo = symbolsWithHistory.reduce((acc, r) => (!r.latestLocalCandle ? acc : (!acc || r.latestLocalCandle < acc ? r.latestLocalCandle : acc)), '');
+  const selectedFromDay = isoDay(form.date_from);
+  const selectedToDay = isoDay(form.date_to);
+  const dateOutsideLocal = !!(commonFrom && commonTo && selectedFromDay && selectedToDay && (selectedFromDay < commonFrom || selectedToDay > commonTo));
+  const recommendedSymbols = symbolsWithHistory.map((r) => r.symbol);
+  const cryptoStrategySelected = form.strategy_ids
+    .map((id) => catalog.find((row) => row.id === id))
+    .filter((s) => s && isCryptoStrategy(s));
+  const missingStrategies = form.strategy_ids.length === 0;
+  const missingTimeframes = (form.timeframes || []).length === 0;
+  const noRunnableSymbols = runnableRows.length === 0;
+  const batchReady = !noRunnableSymbols && blockedRows.length === 0 && !mixedMarkets
+    && !dateOutsideLocal && !missingStrategies && !missingTimeframes && !batchBlocked
+    && cryptoStrategySelected.length === 0;
+  // Justerar BARA frontend-val (symboler + datum). Startar aldrig batch/backfill.
+  function applyRecommendedBatch() {
+    setForm((prev) => ({
+      ...prev,
+      symbols: recommendedSymbols.length ? recommendedSymbols.join(',') : prev.symbols,
+      date_from: commonFrom || prev.date_from,
+      date_to: commonTo || prev.date_to,
+    }));
+    setActivePreset('');
+    setMessage('');
+  }
+  // Sätter BARA datumfälten till det gemensamma körbara intervallet. Ingen körning.
+  function applyRecommendedDates() {
+    if (!commonFrom || !commonTo) return;
+    setForm((prev) => ({ ...prev, date_from: commonFrom, date_to: commonTo }));
+    setMessage('');
+  }
+
   const bestResult = compare?.recommended_config?.strategy_id ? compare.recommended_config : compare?.best_overall?.[0];
   const bestDecision = batchDecision(bestResult);
   const pipelineSteps = batchPipelineSteps({ form, comboCount, batchBlocked, activeBatch, compare });
@@ -3133,6 +3287,9 @@ function BatchTestTab() {
           <div className="batch-info">
             Välj ett förval så fylls rätt symboler, strategier och timeframes i för en marknad. Förval startar aldrig en batch automatiskt — du kör den själv.
           </div>
+          <div className="batch-info">
+            Crypto är arkiverat från Lab. Crypto kan fortfarande visas på Live-sidan.
+          </div>
           <div className="batch-preset-row">
             {BATCH_MARKET_PRESETS.map((preset) => (
               <button
@@ -3213,6 +3370,11 @@ function BatchTestTab() {
               🚫 Du blandar crypto och aktier i samma batch ({csvSymbols(form.symbols).join(', ')}). Resultaten blir opålitliga — använd ett marknadsförval istället, eller dela upp i separata batchar.
             </div>
           )}
+          {archivedSymbols.length > 0 && (
+            <div className="batch-warning">
+              Crypto är arkiverat från Lab Batch och exkluderas: {archivedSymbols.join(', ')}. Crypto kan fortfarande visas på Live-sidan.
+            </div>
+          )}
           {batchCoverageWarnings.length > 0 && (
             <div className="batch-warning">
               För lite historik för säkert test: {batchCoverageWarnings.map((row) => row.symbol).join(', ')}.
@@ -3247,6 +3409,114 @@ function BatchTestTab() {
         </div>
       </div>
 
+      {batchCompatibility.length > 0 && (
+        <section className="batch-compat-card">
+          <div className="batch-section-title">Körbarhet per symbol</div>
+          <div className="batch-info">
+            Frontend-kontroll: visar lokal candle-coverage per symbol mot vald period. Inget körs och inga orders kan läggas.
+          </div>
+          <div className="batch-compat-list">
+            <div className="batch-compat-row batch-compat-head">
+              <span>Symbol</span>
+              <span>Marknad</span>
+              <span>Lokal historik</span>
+              <span>Lokalt intervall</span>
+              <span>Vald period</span>
+              <span>Status</span>
+            </div>
+            {batchCompatibility.map((r) => (
+              <div key={r.symbol} className={`batch-compat-row batch-compat-${r.runnable ? 'ok' : 'blocked'}`}>
+                <strong>{r.symbol}</strong>
+                <span>{BATCH_MARKET_TYPE_LABELS[r.marketType] || r.marketType}</span>
+                <span>{r.hasLocalHistory ? 'Ja' : 'Nej'}</span>
+                <span>{r.earliestLocalCandle && r.latestLocalCandle ? `${r.earliestLocalCandle} → ${r.latestLocalCandle}` : '–'}</span>
+                <span>{r.selectedFrom && r.selectedTo ? `${r.selectedFrom} → ${r.selectedTo}` : '–'}</span>
+                <span className={`batch-compat-status batch-compat-status-${r.runnable ? 'ok' : 'blocked'}`}>
+                  {r.runnable ? '✅ Körbar' : `🚫 ${BATCH_BLOCKED_REASON_LABELS[r.blockedReason] || 'Blockerad'}`}
+                </span>
+              </div>
+            ))}
+          </div>
+
+          {dateOutsideLocal && (
+            <div className="batch-warning batch-compat-date">
+              <strong>Vald period ligger utanför lokal historik.</strong>
+              <div>Tillgängligt lokalt intervall: {commonFrom || '–'} → {commonTo || '–'}.</div>
+              <div>Vald period: {selectedFromDay || '–'} → {selectedToDay || '–'}.</div>
+              {commonFrom && commonTo && (
+                <button type="button" className="batch-compat-btn" onClick={applyRecommendedDates}>
+                  Använd rekommenderat datumintervall
+                </button>
+              )}
+            </div>
+          )}
+
+          {batchReady ? (
+            <div className="batch-compat-ready">
+              <div className="batch-compat-ready-title">✅ Batchen är redo</div>
+              <div className="batch-summary-grid">
+                <div><span>Körbara symboler</span><strong>{runnableRows.length} st · {runnableRows.map((r) => r.symbol).join(', ')}</strong></div>
+                <div><span>Strategier</span><strong>{form.strategy_ids.length} valda</strong></div>
+                <div><span>Timeframe</span><strong>{(form.timeframes || []).join(', ') || '–'}</strong></div>
+                <div><span>Datumintervall</span><strong>{selectedFromDay || '–'} → {selectedToDay || '–'}</strong></div>
+                <div><span>Kombinationer</span><strong>{comboCount}</strong></div>
+              </div>
+              <div className="batch-info batch-compat-safe">Analys-only / paper-replay. Inga riktiga orders.</div>
+            </div>
+          ) : (
+            <div className="batch-compat-block">
+              <div className="batch-compat-block-title">🚫 Batchen kan inte köras ännu</div>
+              <ul className="batch-compat-block-list">
+                {noHistoryRows.length > 0 && (
+                  <li>Saknar lokal historik: <strong>{noHistoryRows.map((r) => r.symbol).join(', ')}</strong></li>
+                )}
+                {dateBlockedRows.length > 0 && (
+                  <li>Datum utanför lokal coverage: <strong>{dateBlockedRows.map((r) => r.symbol).join(', ')}</strong></li>
+                )}
+                {dateOutsideLocal && dateBlockedRows.length === 0 && (
+                  <li>Vald period ligger delvis utanför lokal historik ({commonFrom || '–'} → {commonTo || '–'}).</li>
+                )}
+                {archivedSymbols.length > 0 && (
+                  <li>Crypto är arkiverat från Lab och exkluderas: <strong>{archivedSymbols.join(', ')}</strong></li>
+                )}
+                {mixedMarkets && (
+                  <li>Blandade marknader (crypto + aktier) i samma batch — dela upp i separata batchar.</li>
+                )}
+                {cryptoStrategySelected.length > 0 && (
+                  <li>Strategier som inte passar vald marknad: <strong>{cryptoStrategySelected.map((s) => s.name || s.id).join(', ')}</strong></li>
+                )}
+                {missingStrategies && <li>Inga strategier valda.</li>}
+                {missingTimeframes && <li>Ingen timeframe vald.</li>}
+                {noRunnableSymbols && <li>Inga körbara symboler med lokal historik i denna konfiguration.</li>}
+              </ul>
+              <div className="batch-compat-rec">
+                <strong>Rekommenderad batch-konfiguration:</strong>
+                {recommendedSymbols.length ? (
+                  <span> Symboler: {recommendedSymbols.join(', ')} · datumintervall {commonFrom || '–'} → {commonTo || '–'}.</span>
+                ) : (
+                  <span> Ingen vald symbol har lokal historik ännu — backfilla först.</span>
+                )}
+              </div>
+              <div className="batch-compat-actions">
+                {recommendedSymbols.length > 0 && (
+                  <button type="button" className="batch-compat-btn" onClick={applyRecommendedBatch}>
+                    Använd rekommenderad batch
+                  </button>
+                )}
+                {commonFrom && commonTo && dateOutsideLocal && (
+                  <button type="button" className="batch-compat-btn batch-compat-btn-ghost" onClick={applyRecommendedDates}>
+                    Använd rekommenderat datumintervall
+                  </button>
+                )}
+              </div>
+              <div className="batch-info batch-compat-backfill">
+                Backfilla historik från Alpaca innan längre batch/replay-tester. Read-only rekommendation — ingen backfill startas härifrån.
+              </div>
+            </div>
+          )}
+        </section>
+      )}
+
       <div className={`lab-batch-status-grid${comboCount > 500 ? ' batch-too-large' : ''}`}>
         <div><strong>{comboCount}</strong><span>Kombinationer</span></div>
         <div><strong>{uiStatus.emoji} {uiStatus.label}</strong><span>Status</span></div>
@@ -3264,8 +3534,8 @@ function BatchTestTab() {
       )}
 
       <div className="batch-actions">
-        <button type="button" onClick={createBatch} disabled={batchBlocked || anyBatchBusy}>Skapa batch</button>
-        <button type="button" onClick={() => runBatch()} disabled={comboCount > 500 || batchBlocked || anyBatchBusy}>Starta batch</button>
+        <button type="button" onClick={createBatch} disabled={batchBlocked || anyBatchBusy || noRunnableSymbols}>Skapa batch</button>
+        <button type="button" onClick={() => runBatch()} disabled={comboCount > 500 || batchBlocked || anyBatchBusy || noRunnableSymbols}>Starta batch</button>
         <button type="button" onClick={pauseBatch} disabled={!activeBatch}>Pausa</button>
         <button type="button" onClick={stopBatch} disabled={!activeBatch}>Stoppa</button>
         <button type="button" onClick={() => loadCompare()} disabled={!activeBatch}>Uppdatera resultat</button>
