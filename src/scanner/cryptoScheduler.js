@@ -33,6 +33,7 @@ const { processScanResults }                      = require('../alerts/notificat
 const notificationEngineV2                         = require('../alerts/notificationEngineV2');
 const { getMarketGroup }                          = require('../markets/marketProfiles');
 const redisService                                = require('../services/redisService');
+const candleSnapshotRecorderService               = require('../services/candleSnapshotRecorderService');
 const marketUniverse                              = require('../services/marketUniverseService');
 
 const CRYPTO_MAJOR     = ['BTCUSDT', 'ETHUSDT', 'SOLUSDT'];
@@ -55,6 +56,7 @@ async function scanCryptoSymbol(symbol) {
     const bars1m = await fetch1mBars(symbol, 410);
     if (!bars1m || bars1m.length < 40) {
       updateLiveCandleCache(symbol, '1m', bars1m || [], 'binance_live_1m');
+      queueCandleSnapshotRecord(symbol, '1m', bars1m || [], 'cryptoScanner');
       return {
         symbol,
         price: null,
@@ -91,6 +93,8 @@ async function scanCryptoSymbol(symbol) {
     const candles15m = aggregate1mTo15m(bars1m);
     updateLiveCandleCache(symbol, '1m', bars1m, 'binance_live_1m');
     updateLiveCandleCache(symbol, '2m', candles2m, 'binance_live_2m');
+    queueCandleSnapshotRecord(symbol, '1m', bars1m, 'cryptoScanner');
+    queueCandleSnapshotRecord(symbol, '2m', candles2m, 'cryptoScanner');
     const indicators = calcIndicators(candles2m);
 
     if (!indicators) {
@@ -302,6 +306,23 @@ function updateLiveCandleCache(symbol, timeframe, candles, sourceName) {
   };
   liveCandleCache.set(`${String(symbol || '').toUpperCase()}:${timeframe}`, snapshot);
   void redisService.setJson(`candles:crypto:${snapshot.symbol}:${timeframe}`, snapshot, 180);
+}
+
+function queueCandleSnapshotRecord(symbol, timeframe, candles, source) {
+  try {
+    if (!Array.isArray(candles) || !candles.length) return;
+    const result = candleSnapshotRecorderService.queueCandleSnapshots({
+      source,
+      symbol,
+      timeframe,
+      candles,
+    });
+    if (result?.enabled && !result?.ok) {
+      console.warn('[candle-snapshot-recorder] crypto queue failed:', result.error || 'unknown_error');
+    }
+  } catch (err) {
+    console.warn('[candle-snapshot-recorder] crypto queue failed:', err?.message || String(err));
+  }
 }
 
 function getLiveCandlesDebug(symbol, timeframe = '2m') {

@@ -110,6 +110,7 @@ const replayAutopilotService = require('../services/replayAutopilotService');
 const replayStatusService = require('../services/replayStatusService');
 const paperTradingStatusService = require('../services/paperTradingStatusService');
 const paperTradingRuntimeService = require('../services/paperTradingRuntimeService');
+const candleSnapshotRecorderService = require('../services/candleSnapshotRecorderService');
 const strategyPipelineTruthService = require('../services/strategyPipelineTruthService');
 const shortExitTruthService = require('../services/shortExitTruthService');
 const paperRiskPauseSummaryService = require('../services/paperRiskPauseSummaryService');
@@ -3587,6 +3588,14 @@ router.get('/paper-trading/loss-review-queue/:groupId/test-preview', (req, res) 
     res.status(status).json(result);
   } catch (err) {
     res.status(500).json({ ok: false, error: err.message, ...lossReviewQueueService.SAFETY });
+  }
+});
+
+router.get('/paper-trading/candle-snapshots/status', (req, res) => {
+  try {
+    res.json(candleSnapshotRecorderService.getStatus());
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message, ...candleSnapshotRecorderService.SAFETY });
   }
 });
 
