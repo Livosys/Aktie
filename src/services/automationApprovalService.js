@@ -136,32 +136,60 @@ function canApprove(strategyId, currentApproved) {
   if (!info.existsInMatrix && !info.existsInPlan) {
     return { ok: false, reason: 'Strategin finns inte i runtime matrix eller automation plan.' };
   }
+  // Safety gates — these stay hard blocks. They protect against approving a
+  // strategy that is paused/blocked in the runtime or carries active blockers.
   if (info.isPausedOrBlocked || info.isBlockedInPlan) {
     return { ok: false, reason: 'Strategin är pausad eller blockerad i runtime och kan inte godkännas.' };
   }
   if (info.hasBlockers) {
     return { ok: false, reason: `Strategin har aktiva blockers (${info.blockers.join(', ')}) och kan inte godkännas.` };
   }
-  // Weak strategies may only be approved if the plan also surfaces them as
-  // promising-needs-manual-approval (i.e. strong somewhere, just not clean).
-  if ((info.isWeakCandidate || info.isWeakInPlan) && !info.isPromising) {
-    return { ok: false, reason: 'Svag strategi kan inte godkännas (ligger inte i promisingNeedsManualApproval).' };
-  }
   const maxApproved = getMaxApproved();
   if (!currentApproved.includes(strategyId) && currentApproved.length >= maxApproved) {
     return { ok: false, reason: `Max ${maxApproved} godkända strategier. Avvisa en innan du godkänner en ny.` };
   }
-  return { ok: true, reason: 'Approved from Automation Plan', info };
+  // "Weak" is an advisory quality signal, NOT a safety gate. A human manually
+  // approving a paper-only candidate is an explicit override of that signal, so
+  // it no longer blocks approval — but we surface it as a warning. This is the
+  // case that lets manually-surfaced batch/AI candidates (e.g. weak-in-plan
+  // strategies) be added to the paper allowlist. Still paper-only; no orders.
+  const weak = (info.isWeakCandidate || info.isWeakInPlan) && !info.isPromising;
+  return {
+    ok: true,
+    reason: weak ? 'Approved manually (weak strategy override, paper-only)' : 'Approved from Automation Plan',
+    warning: weak ? 'Strategin är klassad som svag i automation plan — godkänd manuellt för paper-only test.' : null,
+    info,
+  };
 }
 
 function approveStrategy(input = {}) {
   const strategyId = typeof input.strategyId === 'string' ? input.strategyId.trim() : '';
   if (!strategyId) return { ok: false, error: 'strategyId krävs.', safety: SAFETY };
 
+  // Optional candidate context — echoed back so the caller can reconcile the
+  // exact candidate it approved. Allowlist itself is keyed by strategyId only.
+  const symbol = typeof input.symbol === 'string' ? input.symbol.trim() : null;
+  const source = typeof input.source === 'string' ? input.source.trim() : null;
+  const candidateId = typeof input.candidateId === 'string' ? input.candidateId.trim() : null;
+  const timeframe = typeof input.timeframe === 'string' ? input.timeframe.trim() : null;
+
   const state = readState();
+  const alreadyApproved = state.approvedStrategyIds.includes(strategyId);
   const check = canApprove(strategyId, state.approvedStrategyIds);
   if (!check.ok) {
-    return { ok: false, error: check.reason, strategyId, safety: SAFETY };
+    return {
+      ok: false,
+      approved: false,
+      error: check.reason,
+      blockedReason: check.reason,
+      strategyId,
+      symbol,
+      source,
+      candidateId,
+      timeframe,
+      allowlistStatus: alreadyApproved ? 'approved' : 'not_approved',
+      safety: SAFETY,
+    };
   }
 
   const reason = typeof input.reason === 'string' && input.reason.trim() ? input.reason.trim() : 'Manual approval from supervisor';
@@ -173,6 +201,10 @@ function approveStrategy(input = {}) {
   }
   state.history.unshift({
     strategyId,
+    symbol: symbol || undefined,
+    candidateSource: source || undefined,
+    candidateId: candidateId || undefined,
+    timeframe: timeframe || undefined,
     action: 'approved',
     reason,
     createdAt: new Date().toISOString(),
@@ -182,7 +214,21 @@ function approveStrategy(input = {}) {
   writeState(state);
   invalidateApprovalsCache();
 
-  return { ok: true, strategyId, action: 'approved', reason, safety: SAFETY };
+  return {
+    ok: true,
+    approved: true,
+    deduped: alreadyApproved,
+    strategyId,
+    symbol,
+    source,
+    candidateId,
+    timeframe,
+    action: 'approved',
+    reason,
+    allowlistStatus: 'approved',
+    ...(check.warning ? { warning: check.warning } : {}),
+    safety: SAFETY,
+  };
 }
 
 function rejectStrategy(input = {}) {

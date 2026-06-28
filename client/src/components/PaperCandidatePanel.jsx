@@ -641,12 +641,16 @@ export default function PaperCandidatePanel({ mode = 'lab' }) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           strategyId: candidate.strategyId,
+          symbol: candidate.symbol || null,
+          source: candidate.source || null,
+          candidateId: candidate.candidateId || null,
+          timeframe: candidate.timeframe || candidate.metrics?.timeframe || null,
           reason: `manual_ui_from_${mode}:${candidate.displayName || candidate.strategyId}`,
         }),
       });
       const json = await res.json().catch(() => null);
-      if (!res.ok || !json?.ok) throw new Error(json?.error || 'Kunde inte lägga till i paper allowlist.');
-      setMessage(`Lades till i paper allowlist: ${candidate.displayName || candidate.strategyId}.`);
+      if (!res.ok || !json?.ok) throw new Error(json?.error || json?.blockedReason || 'Kunde inte lägga till i paper allowlist.');
+      setMessage(`Lades till i paper allowlist: ${candidate.displayName || candidate.strategyId}.${json?.warning ? ` (${json.warning})` : ''}`);
       await reloadAll();
     } catch (err) {
       setError(err?.message || 'Kunde inte lägga till i paper allowlist.');
@@ -747,13 +751,38 @@ export default function PaperCandidatePanel({ mode = 'lab' }) {
                         <td style={{ padding: '10px 12px', borderBottom: '1px solid var(--border)', color: 'var(--text)' }}>{confidenceText}</td>
                         <td style={{ padding: '10px 12px', borderBottom: '1px solid var(--border)', color: 'var(--text)' }}>{nextStep}</td>
                         <td style={{ padding: '10px 12px', borderBottom: '1px solid var(--border)' }}>
-                          <button
-                            type="button"
-                            className="paper-unusable-toggle"
-                            onClick={() => setExpandedUnusableKeys((prev) => ({ ...prev, [key]: !prev[key] }))}
-                          >
-                            {open ? 'Dölj detaljer' : 'Visa detaljer'}
-                          </button>
+                          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, alignItems: 'center' }}>
+                            {!approved && candidate.strategyId ? (
+                              <button
+                                type="button"
+                                className="paper-unusable-toggle"
+                                disabled={busyKey === `approve:${candidate.strategyId}`}
+                                style={{ fontWeight: 800, color: 'var(--success)', borderColor: 'rgba(34,197,94,0.45)' }}
+                                onClick={() => approveCandidate(candidate)}
+                                title="Godkänn för paper allowlist (endast låtsashandel)"
+                              >
+                                {busyKey === `approve:${candidate.strategyId}` ? 'Godkänner…' : 'Godkänn'}
+                              </button>
+                            ) : null}
+                            {!candidate.saved && ['batch', 'replay'].includes(String(candidate.source || '')) && candidate.candidateId ? (
+                              <button
+                                type="button"
+                                className="paper-unusable-toggle"
+                                disabled={busyKey === `create:${candidate.candidateId}`}
+                                onClick={() => createCandidate(candidate)}
+                                title="Spara som paper-testkandidat"
+                              >
+                                {busyKey === `create:${candidate.candidateId}` ? 'Sparar…' : 'Spara kandidat'}
+                              </button>
+                            ) : null}
+                            <button
+                              type="button"
+                              className="paper-unusable-toggle"
+                              onClick={() => setExpandedUnusableKeys((prev) => ({ ...prev, [key]: !prev[key] }))}
+                            >
+                              {open ? 'Dölj detaljer' : 'Visa detaljer'}
+                            </button>
+                          </div>
                         </td>
                       </tr>
                       {open ? (

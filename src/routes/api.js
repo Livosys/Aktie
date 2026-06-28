@@ -154,6 +154,114 @@ function auditFilters(req) {
   };
 }
 
+// ── IB Paper submit-chain route helpers (merged from prod 2026-06-25) ──
+function nowMs() {
+  return Date.now();
+}
+
+function elapsedMs(startedAt) {
+  return Date.now() - startedAt;
+}
+
+const IB_PROTECTIVE_PREFLIGHT_BUDGETS = Object.freeze({
+  liveReadinessMs: 2500,
+  selectedBlueprintMs: 2500,
+  bracketHelperMs: 2500,
+});
+
+function safeRouteString(value) {
+  if (value === null || value === undefined) return '';
+  return String(value).trim();
+}
+
+function withRouteTimeout(promise, timeoutMs, step) {
+  let timer = null;
+  return Promise.race([
+    Promise.resolve(promise).finally(() => {
+      if (timer) clearTimeout(timer);
+    }),
+    new Promise((_, reject) => {
+      timer = setTimeout(() => {
+        const err = new Error(`${step}_timeout`);
+        err.code = 'protective_preflight_timeout';
+        err.timedOutStep = step;
+        reject(err);
+      }, timeoutMs);
+    }),
+  ]);
+}
+
+function buildProtectivePreflightTimeoutResponse({ startedAt, timings = {}, timedOutStep, error }) {
+  return {
+    ok: false,
+    accepted: false,
+    preflightOnly: true,
+    dryRun: true,
+    orderSent: false,
+    executed: false,
+    blockedReason: error?.message || 'protective_preflight_timeout',
+    blockers: [error?.message || 'protective_preflight_timeout'],
+    timedOutStep,
+    timings: {
+      ...timings,
+      route_total_ms: elapsedMs(startedAt),
+    },
+    safety: { mode: 'paper_only', actions_allowed: false, can_place_orders: false, live_trading_enabled: false, broker_enabled: false },
+  };
+}
+
+function isCompleteProtectiveBlueprint(blueprint) {
+  return interactiveBrokersPaperBlueprintNormalizerService.normalizeIbPaperSelectedBlueprint(blueprint).validForPreflight === true;
+}
+
+function buildFastProtectiveTruth(selectedBlueprint, liveReadinessSnapshot) {
+  const strategyId = safeRouteString(selectedBlueprint?.strategyId);
+  const strategyName = safeRouteString(selectedBlueprint?.strategyName || strategyId || 'Selected strategy');
+  const topStrategies = strategyId
+    ? [{ rank: Number(selectedBlueprint?.top3Rank || 1), strategyId, name: strategyName, readyForIbPaper: true }]
+    : [];
+  const tradeBlueprint = {
+    ok: true,
+    mode: 'trade_blueprint',
+    source: 'protective_preflight_fast_path',
+    selectedBlueprint,
+    blueprints: selectedBlueprint ? [{ ...selectedBlueprint, blueprintReady: true, manualApprovalReady: true }] : [],
+    manualApproval: {
+      requiredConfirmationPhrase: 'CONFIRM PAPER TRADE',
+      approvalStatus: 'waiting_for_user',
+      blockers: [],
+      warnings: [],
+    },
+  };
+  return {
+    truth: {
+      ok: true,
+      mode: 'paper_only',
+      topStrategies: { ok: true, mode: 'paper_only', topStrategies },
+      ibPaper: {
+        connectionReadiness: liveReadinessSnapshot,
+        readiness: liveReadinessSnapshot,
+        selectedBlueprint,
+        tradeBlueprint,
+        executionStatus: {
+          ok: true,
+          mode: 'paper_only',
+          readiness: liveReadinessSnapshot,
+          dailyQuota: { used: 0, max: 3, remaining: 3 },
+          openTrades: [],
+          openTradeCount: 0,
+          closedTrades: [],
+          closedTradeCount: 0,
+          killSwitch: { active: false, reason: null, triggeredAt: null },
+          selectedBlueprint,
+        },
+      },
+    },
+    tradeBlueprint,
+  };
+}
+
+
 function buildScanResponse(results, status, group) {
   const enriched = addDaytradeSignals(results);
   const scanGroup = group || 'all';
@@ -1042,7 +1150,14 @@ router.post('/automation/approvals/approve', (req, res) => {
     if (body.live_trading_enabled === true || body.can_place_orders === true || body.actions_allowed === true || body.broker_enabled === true) {
       return res.status(400).json({ ok: false, error: 'approval_is_paper_only', safety: automationApprovalService.SAFETY });
     }
-    const result = automationApprovalService.approveStrategy({ strategyId: body.strategyId, reason: body.reason });
+    const result = automationApprovalService.approveStrategy({
+      strategyId: body.strategyId,
+      reason: body.reason,
+      symbol: body.symbol,
+      source: body.source,
+      candidateId: body.candidateId,
+      timeframe: body.timeframe,
+    });
     res.status(result.ok ? 200 : 400).json(result);
   } catch (err) {
     res.status(500).json({ ok: false, error: err.message, safety: automationApprovalService.SAFETY });
@@ -4377,6 +4492,38 @@ router.get('/automation/paper-allowlist/status', (req, res) => {
 // Additive, read-only. NO broker connection, NO order submission, NO queue,
 // NO execution, and NO change to the internal paper trading flow.
 const interactiveBrokersPreviewService = require('../services/interactiveBrokersPreviewService');
+const interactiveBrokersPaperExecutionPreviewService = require('../services/interactiveBrokersPaperExecutionPreviewService');
+const paperTradingTruthService = require('../services/paperTradingTruthService');
+const interactiveBrokersTradeBlueprintService = require('../services/interactiveBrokersTradeBlueprintService');
+const interactiveBrokersPaperExecutionService = require('../services/interactiveBrokersPaperExecutionService');
+const interactiveBrokersPaperOneShotExecutionService = require('../services/interactiveBrokersPaperOneShotExecutionService');
+const interactiveBrokersPaperPreflightService = require('../services/interactiveBrokersPaperPreflightService');
+const interactiveBrokersPaperProtectiveOrderService = require('../services/interactiveBrokersPaperProtectiveOrderService');
+const interactiveBrokersPaperBracketSubmissionService = require('../services/interactiveBrokersPaperBracketSubmissionService');
+const interactiveBrokersPaperOneShotArmService = require('../services/interactiveBrokersPaperOneShotArmService');
+const interactiveBrokersPaperFinalGateStatusService = require('../services/interactiveBrokersPaperFinalGateStatusService');
+const interactiveBrokersPaperReadinessLoaderService = require('../services/interactiveBrokersPaperReadinessLoaderService');
+const interactiveBrokersPaperReadinessNormalizerService = require('../services/interactiveBrokersPaperReadinessNormalizerService');
+const interactiveBrokersPaperBlueprintNormalizerService = require('../services/interactiveBrokersPaperBlueprintNormalizerService');
+const interactiveBrokersDryRunScaffoldService = require('../services/interactiveBrokersDryRunScaffoldService');
+const interactiveBrokersPaperReadOnlyStateService = require('../services/interactiveBrokersPaperReadOnlyStateService');
+// ── IB Paper submit-route gate (default OFF, independent of IB_PAPER_EXECUTION_ENABLED) ──
+// When IB_PAPER_SUBMIT_ROUTES_ENABLED !== 'true', the state-changing submit routes
+// (POST paper-execute, POST arm, POST disarm) are hard-blocked before any service call.
+// Read-only/preview/status routes are unaffected. Defaults to false when the env var is absent.
+function isIbPaperSubmitRoutesEnabled() {
+  return String(process.env.IB_PAPER_SUBMIT_ROUTES_ENABLED || '').trim().toLowerCase() === 'true';
+}
+function ibPaperSubmitDisabledResponse() {
+  return {
+    ok: false,
+    accepted: false,
+    orderSent: false,
+    executed: false,
+    blockedReason: 'ib_paper_submit_routes_disabled',
+    featureFlag: 'IB_PAPER_SUBMIT_ROUTES_ENABLED',
+  };
+}
 router.get('/interactive-brokers/status', (req, res) => {
   try { res.json(interactiveBrokersPreviewService.getIbPaperStatus()); }
   catch (err) { res.status(500).json({ ok: false, error: err.message, safety: interactiveBrokersPreviewService.SAFETY }); }
@@ -4394,6 +4541,533 @@ router.get('/interactive-brokers/order-preview', (req, res) => {
 router.get('/interactive-brokers/connection-readiness', async (req, res) => {
   try { res.json(await interactiveBrokersPreviewService.getConnectionReadiness()); }
   catch (err) { res.status(500).json({ ok: false, error: err.message, safety: interactiveBrokersPreviewService.SAFETY }); }
+});
+router.get('/interactive-brokers/execution-status', async (req, res) => {
+  try { res.json(await interactiveBrokersPaperExecutionPreviewService.buildExecutionStatus()); }
+  catch (err) { res.status(500).json({ ok: false, error: err.message, safety: interactiveBrokersPaperExecutionPreviewService.SAFETY }); }
+});
+router.get('/interactive-brokers/paper-readonly-state', async (req, res) => {
+  try {
+    res.json(await interactiveBrokersPaperReadOnlyStateService.getPaperReadOnlyState({
+      timeoutMs: req.query.timeoutMs || req.query.timeout || undefined,
+    }));
+  } catch (err) {
+    res.status(500).json({ ok: false, readOnly: true, orderCapable: false, error: err.message, safety: interactiveBrokersPaperReadOnlyStateService.SAFETY });
+  }
+});
+router.post('/interactive-brokers/paper-execution-preview', async (req, res) => {
+  try {
+    const body = req.body && typeof req.body === 'object' ? req.body : {};
+    res.json(await interactiveBrokersPaperExecutionPreviewService.buildPaperExecutionPreview({ body }));
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message, safety: interactiveBrokersPaperExecutionPreviewService.SAFETY });
+  }
+});
+
+// ── IB Paper submit chain (merged from prod 2026-06-25) ───────────────────────
+router.get('/interactive-brokers/truth', async (req, res) => {
+  try {
+    res.json(await paperTradingTruthService.buildPaperTradingTruth({
+      limit: req.query.limit || req.query.n,
+      now: req.query.now || undefined,
+    }));
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message, safety: paperTradingTruthService.SAFETY });
+  }
+});
+router.get('/interactive-brokers/top-strategies', async (req, res) => {
+  try {
+    res.json(await paperTradingTruthService.buildTopStrategySelector({
+      limit: req.query.limit || req.query.n,
+      now: req.query.now || undefined,
+    }));
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message, safety: paperTradingTruthService.SAFETY });
+  }
+});
+router.get('/interactive-brokers/trade-blueprint', async (req, res) => {
+  try {
+    const truth = await paperTradingTruthService.buildPaperTradingTruth({
+      now: req.query.now || undefined,
+    });
+    res.json(await interactiveBrokersTradeBlueprintService.getTradeBlueprint({
+      now: req.query.now || undefined,
+      readiness: truth.ibPaper?.connectionReadiness || truth.readiness || undefined,
+      topStrategies: truth.topStrategies,
+    }));
+  }
+  catch (err) { res.status(500).json({ ok: false, error: err.message, safety: interactiveBrokersTradeBlueprintService.SAFETY }); }
+});
+// Read-only connection readiness. Never logs in, never sends orders; a harmless
+// TCP reachability probe only (disabled by default via IB_CONNECTION_CHECK_ENABLED).
+router.get('/interactive-brokers/paper-execution/status', async (req, res) => {
+  try {
+    const truth = await paperTradingTruthService.buildPaperTradingTruth({
+      now: req.query.now || undefined,
+    });
+    res.json(truth?.ibPaper?.executionStatus || await paperTradingTruthService.buildExecutionStatus({
+      now: req.query.now || undefined,
+      readiness: truth?.ibPaper?.connectionReadiness || truth?.readiness || undefined,
+    }));
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message, safety: paperTradingTruthService.SAFETY });
+  }
+});
+router.post('/interactive-brokers/paper-execute/preflight', async (req, res) => {
+  try {
+    const body = req.body && typeof req.body === 'object' ? req.body : null;
+    if (!body) {
+      res.status(400).json({
+        ok: false,
+        error: 'invalid_payload',
+        safety: interactiveBrokersPaperPreflightService.SAFETY,
+      });
+      return;
+    }
+    const truth = await paperTradingTruthService.buildPaperTradingTruth({
+      now: body.now || req.query.now || undefined,
+    });
+    const executionStatus = truth?.ibPaper?.executionStatus || await paperTradingTruthService.buildExecutionStatus({
+      now: body.now || req.query.now || undefined,
+    });
+    const liveReadinessSnapshot = await interactiveBrokersPaperReadinessLoaderService.loadLiveIbPaperReadinessForPreflight({
+      staleReadiness: truth?.ibPaper?.connectionReadiness || truth?.readiness || executionStatus?.readiness || undefined,
+    });
+    const tradeBlueprint = await interactiveBrokersTradeBlueprintService.getTradeBlueprint({
+      now: body.now || req.query.now || undefined,
+      readiness: liveReadinessSnapshot,
+      topStrategies: truth?.topStrategies,
+    });
+    const selectedBlueprint = body.selectedBlueprint || tradeBlueprint?.selectedBlueprint || tradeBlueprint?.previewBlueprint || (Array.isArray(tradeBlueprint?.blueprints) ? tradeBlueprint.blueprints[0] : null) || null;
+    const response = await interactiveBrokersPaperPreflightService.buildPaperExecutionPreflight({
+      now: body.now || req.query.now || undefined,
+      blueprintId: body.blueprintId || body.selectedBlueprintId || selectedBlueprint?.blueprintId || null,
+      body,
+      confirmation: body.confirmation || '',
+      confirmationPhrase: body.confirmationPhrase || body.confirmationText || body.confirmText || body.manualConfirmation || '',
+      preflightOnly: true,
+      truth,
+      executionStatus,
+      tradeBlueprint,
+      selectedBlueprint,
+      readiness: liveReadinessSnapshot,
+      liveReadinessSnapshot,
+    });
+    res.json({
+      ...response,
+      routeName: 'interactive-brokers.paper-execute.preflight',
+      method: req.method,
+      authPresent: Boolean(req.headers.authorization || req.headers.cookie),
+      requestUserPresent: Boolean(req.user),
+      readinessSource: liveReadinessSnapshot.source || null,
+      liveReadinessLoaded: liveReadinessSnapshot.liveReadinessLoaded === true || liveReadinessSnapshot.source === 'live_connection_readiness',
+      staleTruthUsed: liveReadinessSnapshot.staleTruthUsed === true || liveReadinessSnapshot.source === 'stale_truth_fallback',
+    });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message, safety: interactiveBrokersPaperPreflightService.SAFETY });
+  }
+});
+router.post('/interactive-brokers/paper-execute/protective-preflight', async (req, res) => {
+  const routeStartedAt = nowMs();
+  const timings = { route_start: new Date().toISOString() };
+  try {
+    const body = req.body && typeof req.body === 'object' ? req.body : {};
+    const preflightSnapshot = body.sessionVerification || body.preflightSessionVerification || body.readinessVerification || body.readiness || body.preflight?.sessionVerification || null;
+    const preflightGeneratedAt = body.preflightGeneratedAt || body.preflightResult?.generatedAt || body.preflight?.generatedAt || body.generatedAt || preflightSnapshot?.loadedAt || null;
+    const liveReadinessSnapshot = await withRouteTimeout(
+      interactiveBrokersPaperReadinessLoaderService.loadLiveIbPaperReadinessForPreflight({
+        staleReadiness: preflightSnapshot,
+      }),
+      IB_PROTECTIVE_PREFLIGHT_BUDGETS.liveReadinessMs,
+      'live_readiness',
+    );
+    timings.live_readiness_loaded_ms = elapsedMs(routeStartedAt);
+    const mergedReadiness = interactiveBrokersPaperReadinessNormalizerService.mergeLiveAndPreflightReadiness({
+      liveSnapshot: liveReadinessSnapshot,
+      preflightSnapshot: preflightSnapshot ? {
+        ...preflightSnapshot,
+        generatedAt: preflightGeneratedAt,
+      } : null,
+      expectedAccount: 'DUQ565596',
+      maxPreflightAgeMs: 30000,
+      now: body.now || req.query.now || Date.now(),
+    });
+
+    const requestedBlueprintCandidates = [
+      { source: safeRouteString(body.selectedBlueprint?.source) || 'preflight_selected_blueprint', value: body.selectedBlueprint },
+      { source: safeRouteString(body.selectedBlueprintVerification?.source) || 'preflight_selected_blueprint', value: body.selectedBlueprintVerification?.selectedBlueprint },
+      { source: safeRouteString(body.selectedBlueprintVerification?.source) || 'preflight_selected_blueprint', value: body.selectedBlueprintVerification },
+    ];
+    let selectedBlueprint = null;
+    let selectedBlueprintSource = null;
+    for (const candidate of requestedBlueprintCandidates) {
+      const normalized = interactiveBrokersPaperBlueprintNormalizerService.normalizeIbPaperSelectedBlueprint(candidate.value, {
+        source: candidate.source,
+      });
+      if (normalized.validForPreflight === true) {
+        selectedBlueprint = normalized.selectedBlueprint;
+        selectedBlueprintSource = candidate.source;
+        break;
+      }
+    }
+    let truth = null;
+    let tradeBlueprint = null;
+    let executionStatus = null;
+
+    if (selectedBlueprint) {
+      const fast = buildFastProtectiveTruth(selectedBlueprint, mergedReadiness);
+      truth = fast.truth;
+      tradeBlueprint = fast.tradeBlueprint;
+      executionStatus = fast.truth.ibPaper.executionStatus;
+    } else {
+      const tradeBlueprintResult = await withRouteTimeout(
+        interactiveBrokersTradeBlueprintService.getTradeBlueprint({
+          now: body.now || req.query.now || undefined,
+          readiness: mergedReadiness,
+        }),
+        IB_PROTECTIVE_PREFLIGHT_BUDGETS.selectedBlueprintMs,
+        'selected_blueprint',
+      );
+      const previewTradeBlueprint = tradeBlueprintResult?.selectedBlueprint
+        || tradeBlueprintResult?.previewBlueprint
+        || (Array.isArray(tradeBlueprintResult?.blueprints) ? tradeBlueprintResult.blueprints[0] : null)
+        || null;
+      const normalizedTradeBlueprint = interactiveBrokersPaperBlueprintNormalizerService.normalizeIbPaperSelectedBlueprint(previewTradeBlueprint, {
+        source: 'trade_blueprint',
+      });
+      selectedBlueprint = normalizedTradeBlueprint.selectedBlueprint || null;
+      selectedBlueprintSource = selectedBlueprint ? 'trade_blueprint' : null;
+      if (!selectedBlueprint) {
+        res.status(200).json({
+          ok: false,
+          accepted: false,
+          preflightOnly: true,
+          dryRun: true,
+          orderSent: false,
+          executed: false,
+          blockedReason: 'selected_blueprint_unavailable',
+          blockers: ['selected_blueprint_unavailable'],
+          selectedBlueprintVerification: normalizedTradeBlueprint,
+          readinessVerification: mergedReadiness,
+          timings: {
+            ...timings,
+            selected_blueprint_loaded_ms: elapsedMs(routeStartedAt),
+            route_total_ms: elapsedMs(routeStartedAt),
+          },
+          safety: { mode: 'paper_only', actions_allowed: false, can_place_orders: false, live_trading_enabled: false, broker_enabled: false },
+        });
+        return;
+      }
+      const fast = buildFastProtectiveTruth(selectedBlueprint, mergedReadiness);
+      truth = fast.truth;
+      tradeBlueprint = {
+        ...fast.tradeBlueprint,
+        ...tradeBlueprintResult,
+        selectedBlueprint,
+        blueprints: Array.isArray(tradeBlueprintResult?.blueprints) && tradeBlueprintResult.blueprints.length
+          ? tradeBlueprintResult.blueprints
+          : fast.tradeBlueprint.blueprints,
+      };
+      executionStatus = fast.truth.ibPaper.executionStatus;
+    }
+    timings.selected_blueprint_loaded_ms = elapsedMs(routeStartedAt);
+    timings.protective_service_started_ms = elapsedMs(routeStartedAt);
+
+    const response = await withRouteTimeout(Promise.resolve(interactiveBrokersPaperProtectiveOrderService.buildProtectivePreflightResponse({
+      now: body.now || req.query.now || undefined,
+      blueprintId: body.blueprintId || body.selectedBlueprintId || selectedBlueprint?.blueprintId || null,
+      selectedBlueprintId: body.blueprintId || body.selectedBlueprintId || selectedBlueprint?.blueprintId || null,
+      selectedBlueprint,
+      body,
+      truth,
+      executionStatus,
+      tradeBlueprint,
+      readinessSnapshot: mergedReadiness,
+      readiness: mergedReadiness,
+    })), IB_PROTECTIVE_PREFLIGHT_BUDGETS.bracketHelperMs, 'bracket_helper');
+    timings.bracket_helper_built_ms = elapsedMs(routeStartedAt);
+    timings.route_total_ms = elapsedMs(routeStartedAt);
+    const payload = {
+      ...response,
+      routeName: 'interactive-brokers.paper-execute.protective-preflight',
+      method: req.method,
+      authPresent: Boolean(req.headers.authorization || req.headers.cookie),
+      requestUserPresent: Boolean(req.user),
+      readinessSource: mergedReadiness.source || liveReadinessSnapshot.source || null,
+      liveReadinessLoaded: mergedReadiness.liveReadinessLoaded === true || mergedReadiness.source === 'live_connection_readiness',
+      staleTruthUsed: mergedReadiness.staleTruthUsed === true || mergedReadiness.source === 'stale_truth_fallback',
+      selectedBlueprintSource,
+      timings,
+    };
+    console.info('[ib_protective_preflight_timing]', JSON.stringify({
+      routeName: payload.routeName,
+      selectedBlueprintSource,
+      readinessSource: payload.readinessSource,
+      accepted: payload.accepted === true,
+      blockedReason: payload.blockedReason || null,
+      timings,
+    }));
+    res.json(payload);
+  } catch (err) {
+    if (err?.code === 'protective_preflight_timeout' || err?.timedOutStep) {
+      const payload = buildProtectivePreflightTimeoutResponse({
+        startedAt: routeStartedAt,
+        timings,
+        timedOutStep: err.timedOutStep || 'unknown',
+        error: err,
+      });
+      console.info('[ib_protective_preflight_timing]', JSON.stringify({
+        routeName: 'interactive-brokers.paper-execute.protective-preflight',
+        accepted: false,
+        blockedReason: payload.blockedReason,
+        timedOutStep: payload.timedOutStep,
+        timings: payload.timings,
+      }));
+      res.status(200).json(payload);
+      return;
+    }
+    res.status(500).json({ ok: false, error: err.message, safety: interactiveBrokersPaperProtectiveOrderService.SAFETY });
+  }
+});
+router.post('/interactive-brokers/paper-execute', async (req, res) => {
+  if (!isIbPaperSubmitRoutesEnabled()) {
+    return res.status(403).json(ibPaperSubmitDisabledResponse());
+  }
+  try {
+    const body = req.body && typeof req.body === 'object' ? req.body : {};
+    const oneShotRequested = Boolean(body.idempotencyKey || body.secondConfirmationPhrase || body.executionCommand || body.orderCommand || body.acknowledgeOneOrderOnly || body.acknowledgePaperOnly || body.acknowledgeNoLiveTrading);
+    if (oneShotRequested) {
+      const truth = await paperTradingTruthService.buildPaperTradingTruth({
+        now: body.now || req.query.now || undefined,
+      });
+      const executionStatus = truth?.ibPaper?.executionStatus || await paperTradingTruthService.buildExecutionStatus({
+        now: body.now || req.query.now || undefined,
+      });
+    const tradeBlueprint = await interactiveBrokersTradeBlueprintService.getTradeBlueprint({
+      now: body.now || req.query.now || undefined,
+      readiness: truth?.ibPaper?.connectionReadiness || truth?.readiness || undefined,
+      topStrategies: truth?.topStrategies,
+    });
+    const selectedBlueprint = body.selectedBlueprint || tradeBlueprint?.selectedBlueprint || tradeBlueprint?.previewBlueprint || (Array.isArray(tradeBlueprint?.blueprints) ? tradeBlueprint.blueprints[0] : null) || null;
+      const armStatus = interactiveBrokersPaperOneShotArmService.getArmStatus({
+        now: body.now || req.query.now || undefined,
+      });
+      res.json(await interactiveBrokersPaperOneShotExecutionService.buildPaperOneShotExecution({
+        now: body.now || req.query.now || undefined,
+        body,
+        truth,
+        executionStatus,
+        tradeBlueprint,
+        selectedBlueprint,
+        readiness: truth?.ibPaper?.connectionReadiness || truth?.readiness || executionStatus?.readiness || undefined,
+        blueprintId: body.blueprintId || body.selectedBlueprintId || selectedBlueprint?.blueprintId || null,
+        confirmation: body.confirmation || '',
+        confirmationPhrase: body.confirmationPhrase || body.confirmationText || body.confirmText || body.manualConfirmation || '',
+        secondConfirmationPhrase: body.secondConfirmationPhrase || '',
+        idempotencyKey: body.idempotencyKey || '',
+        executionCommand: body.executionCommand || body.orderCommand || body.finalExecutionCommand || '',
+        manualUserInitiated: body.manualUserInitiated === true,
+        openRealSubmitGateForThisAttempt: body.openRealSubmitGateForThisAttempt === true,
+        finalPhaseEnabled: body.finalPhase === '4G-2D' || body.finalPhaseEnabled === true,
+        armStatus,
+      }));
+      return;
+    }
+    const executionStatus = await paperTradingTruthService.buildExecutionStatus({
+      now: req.query.now || undefined,
+      readiness: body.readiness,
+    });
+    res.status(200).json({
+      ok: false,
+      accepted: false,
+      executed: false,
+      orderSent: false,
+      dryRun: true,
+      mode: 'paper_only',
+      blockedReason: 'order_sending_disabled_phase_2',
+      disableReason: 'order_sending_disabled_phase_2',
+      orderSendingBlocked: true,
+      manualApprovalScaffoldOnly: true,
+      selectedBlueprint: executionStatus.selectedBlueprint || null,
+      manualApproval: executionStatus.manualApproval || null,
+      executionStatus,
+      blockers: ['order_sending_disabled_phase_2', 'manual_approval_scaffold_only'].concat(Array.isArray(executionStatus.blockers) ? executionStatus.blockers : []),
+      safety: { mode: 'paper_only', actions_allowed: false, can_place_orders: false, live_trading_enabled: false, broker_enabled: false },
+    });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message, safety: interactiveBrokersPaperExecutionService.SAFETY, oneShotSafety: interactiveBrokersPaperOneShotExecutionService.SAFETY });
+  }
+});
+router.get('/interactive-brokers/paper-execute/arm-status', async (req, res) => {
+  try {
+    if (!interactiveBrokersPaperOneShotArmService.requireDashboardAuth(req, res)) return;
+    const truth = await paperTradingTruthService.buildPaperTradingTruth({ now: req.query.now || undefined });
+    res.json(interactiveBrokersPaperOneShotArmService.getArmStatus({
+      now: req.query.now || undefined,
+      truth,
+      executionStatus: truth?.ibPaper?.executionStatus || null,
+      tradeBlueprint: truth?.ibPaper?.tradeBlueprint || null,
+      readiness: truth?.ibPaper?.connectionReadiness || truth?.readiness || null,
+    }));
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message, safety: interactiveBrokersPaperOneShotArmService.SAFETY });
+  }
+});
+router.get('/interactive-brokers/paper-execute/final-gate-status', async (req, res) => {
+  try {
+    if (!interactiveBrokersPaperOneShotArmService.requireDashboardAuth(req, res)) return;
+    const now = req.query.now || undefined;
+    const truth = await paperTradingTruthService.buildPaperTradingTruth({ now });
+    const executionStatus = truth?.ibPaper?.executionStatus || await paperTradingTruthService.buildExecutionStatus({ now });
+    const tradeBlueprint = await interactiveBrokersTradeBlueprintService.getTradeBlueprint({
+      now,
+      readiness: truth?.ibPaper?.connectionReadiness || truth?.readiness || undefined,
+      topStrategies: truth?.topStrategies,
+    });
+    const selectedBlueprint = tradeBlueprint?.selectedBlueprint || null;
+    const armStatus = interactiveBrokersPaperOneShotArmService.getArmStatus({
+      now,
+      truth,
+      executionStatus,
+      tradeBlueprint,
+      readiness: truth?.ibPaper?.connectionReadiness || truth?.readiness || executionStatus?.readiness || undefined,
+    });
+    const currentArm = armStatus?.currentArm || armStatus || null;
+    const finalGateBody = currentArm?.quantityOverrideApplied === true
+      ? {
+          confirmationPhrase: interactiveBrokersPaperPreflightService.REQUIRED_CONFIRMATION_PHRASE || 'CONFIRM PAPER TRADE',
+          testQuantityOverride: currentArm.effectiveQuantity ?? currentArm.quantity,
+          testQuantityReason: currentArm.quantityOverrideReason || 'first_ib_paper_chain_test',
+        }
+      : {};
+    const preflight = await interactiveBrokersPaperPreflightService.buildPaperExecutionPreflight({
+      now,
+      blueprintId: selectedBlueprint?.blueprintId || null,
+      body: finalGateBody,
+      confirmationPhrase: interactiveBrokersPaperPreflightService.REQUIRED_CONFIRMATION_PHRASE || 'CONFIRM PAPER TRADE',
+      truth,
+      executionStatus,
+      tradeBlueprint,
+      selectedBlueprint,
+      readiness: truth?.ibPaper?.connectionReadiness || truth?.readiness || executionStatus?.readiness || undefined,
+      preflightOnly: true,
+    });
+    const protectivePreflight = interactiveBrokersPaperProtectiveOrderService.buildProtectivePreflightResponse({
+      now,
+      blueprintId: selectedBlueprint?.blueprintId || null,
+      selectedBlueprintId: selectedBlueprint?.blueprintId || null,
+      selectedBlueprint,
+      body: finalGateBody,
+      truth,
+      executionStatus,
+      tradeBlueprint,
+      readiness: truth?.ibPaper?.connectionReadiness || truth?.readiness || executionStatus?.readiness || undefined,
+    });
+    const bracketSubmissionPlan = interactiveBrokersPaperBracketSubmissionService.buildBracketSubmissionPreflight({
+      now,
+      truth,
+      executionStatus,
+      tradeBlueprint,
+      readiness: truth?.ibPaper?.connectionReadiness || truth?.readiness || executionStatus?.readiness || undefined,
+      selectedBlueprint,
+      protectivePlan: protectivePreflight,
+      nextValidId: truth?.ibPaper?.connectionReadiness?.nextValidId || executionStatus?.readiness?.nextValidId || null,
+    });
+    res.json(interactiveBrokersPaperFinalGateStatusService.buildFinalGateStatus({
+      now,
+      truth,
+      executionStatus,
+      tradeBlueprint,
+      selectedBlueprint,
+      preflight,
+      protectivePreflight,
+      bracketSubmissionPlan,
+      armStatus,
+      readiness: truth?.ibPaper?.connectionReadiness || truth?.readiness || executionStatus?.readiness || undefined,
+    }));
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message, safety: interactiveBrokersPaperFinalGateStatusService.SAFETY });
+  }
+});
+router.post('/interactive-brokers/paper-execute/arm', async (req, res) => {
+  if (!isIbPaperSubmitRoutesEnabled()) {
+    return res.status(403).json(ibPaperSubmitDisabledResponse());
+  }
+  try {
+    if (!interactiveBrokersPaperOneShotArmService.requireDashboardAuth(req, res)) return;
+    const body = req.body && typeof req.body === 'object' ? req.body : {};
+    const truth = await paperTradingTruthService.buildPaperTradingTruth({ now: body.now || req.query.now || undefined });
+    const executionStatus = truth?.ibPaper?.executionStatus || await paperTradingTruthService.buildExecutionStatus({ now: body.now || req.query.now || undefined });
+      const tradeBlueprint = await interactiveBrokersTradeBlueprintService.getTradeBlueprint({
+        now: body.now || req.query.now || undefined,
+        readiness: truth?.ibPaper?.connectionReadiness || truth?.readiness || undefined,
+        topStrategies: truth?.topStrategies,
+      });
+      const selectedBlueprint = body.selectedBlueprint || tradeBlueprint?.selectedBlueprint || null;
+    const preflight = await interactiveBrokersPaperPreflightService.buildPaperExecutionPreflight({
+      now: body.now || req.query.now || undefined,
+      blueprintId: body.blueprintId || body.selectedBlueprintId || selectedBlueprint?.blueprintId || null,
+      body,
+      confirmation: body.confirmation || '',
+      confirmationPhrase: body.confirmationPhrase || body.confirmationText || body.confirmText || body.manualConfirmation || '',
+      truth,
+      executionStatus,
+      tradeBlueprint,
+      selectedBlueprint,
+      readiness: truth?.ibPaper?.connectionReadiness || truth?.readiness || executionStatus?.readiness || undefined,
+    });
+    const protectivePlan = interactiveBrokersPaperProtectiveOrderService.buildProtectivePreflightResponse({
+      now: body.now || req.query.now || undefined,
+      blueprintId: body.blueprintId || body.selectedBlueprintId || selectedBlueprint?.blueprintId || null,
+      selectedBlueprintId: body.blueprintId || body.selectedBlueprintId || selectedBlueprint?.blueprintId || null,
+      selectedBlueprint,
+      body,
+      truth,
+      executionStatus,
+      tradeBlueprint,
+      readiness: truth?.ibPaper?.connectionReadiness || truth?.readiness || executionStatus?.readiness || undefined,
+    });
+    res.json(interactiveBrokersPaperOneShotArmService.armOneShot({
+      now: body.now || req.query.now || undefined,
+      body,
+      truth,
+      executionStatus,
+      tradeBlueprint,
+      selectedBlueprint,
+      preflight,
+      protectivePlan,
+      readiness: truth?.ibPaper?.connectionReadiness || truth?.readiness || executionStatus?.readiness || undefined,
+      blueprintId: body.blueprintId || body.selectedBlueprintId || selectedBlueprint?.blueprintId || null,
+      selectedBlueprintId: body.blueprintId || body.selectedBlueprintId || selectedBlueprint?.blueprintId || null,
+      idempotencyKey: body.idempotencyKey || '',
+      ttlSeconds: body.ttlSeconds,
+    }));
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message, safety: interactiveBrokersPaperOneShotArmService.SAFETY });
+  }
+});
+router.post('/interactive-brokers/paper-execute/disarm', async (req, res) => {
+  if (!isIbPaperSubmitRoutesEnabled()) {
+    return res.status(403).json(ibPaperSubmitDisabledResponse());
+  }
+  try {
+    if (!interactiveBrokersPaperOneShotArmService.requireDashboardAuth(req, res)) return;
+    const body = req.body && typeof req.body === 'object' ? req.body : {};
+    res.json(interactiveBrokersPaperOneShotArmService.disarmOneShot({
+      now: body.now || req.query.now || undefined,
+      armId: body.armId || null,
+      reason: body.reason || 'manual_cancel',
+    }));
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message, safety: interactiveBrokersPaperOneShotArmService.SAFETY });
+  }
+});
+router.get('/interactive-brokers/dry-run-scaffold', async (req, res) => {
+  try {
+    res.json(await interactiveBrokersDryRunScaffoldService.buildDryRunExecutionScaffold({ now: req.query.now || undefined }));
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message, safety: interactiveBrokersDryRunScaffoldService.SAFETY });
+  }
 });
 
 // ── API 404 — never return HTML for unknown /api/* paths ──────────────────────
