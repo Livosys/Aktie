@@ -268,5 +268,88 @@ function runDirectionTests() {
   console.log('interactiveBrokersPreviewService.test.js (direction): OK');
 }
 
+function runMarketGroupTests() {
+  const classify = svc._internal.classifySymbol;
+
+  // 1. NFLX is now classified as an allowed US equity (stocks) via fallback.
+  const nflx = classify({ symbol: 'NFLX' });
+  assert.equal(nflx.marketGroup, 'stocks', 'NFLX -> stocks');
+  assert.equal(nflx.isAllowedGroup, true);
+  assert.equal(nflx.isKnown, true);
+  assert.equal(nflx.isEtf, false);
+  assert.equal(nflx.isCrypto, false);
+  assert.equal(nflx.isQqq, false);
+  assert.equal(nflx.marketGroupSource, 'ib_paper_us_equity_fallback');
+
+  // 2-3. Registry-known equities still classify (source = market_universe).
+  for (const sym of ['AAPL', 'TSLA', 'NVDA', 'MSFT', 'AMZN', 'META', 'GOOGL']) {
+    const c = classify({ symbol: sym });
+    assert.equal(c.isAllowedGroup, true, `${sym} should be an allowed equity group`);
+    assert.equal(c.isKnown, true, `${sym} known`);
+    assert.equal(c.marketGroupSource, 'market_universe', `${sym} resolves via registry, not fallback`);
+  }
+
+  // 4. QQQ stays an ETF/QQQ (registry), never reclassified by the fallback.
+  const qqq = classify({ symbol: 'QQQ' });
+  assert.equal(qqq.isQqq, true, 'QQQ flagged');
+  assert.equal(qqq.marketGroupSource, 'market_universe');
+  assert.notEqual(qqq.marketGroup, 'stocks', 'QQQ not reclassified to stocks');
+  // ...and stays blocked when INCLUDE_ETF=false (multi OFF or includeEtf false)
+  assertBlocked(svc._internal.buildOrderPreviewCandidate(
+    { candidateId: 'c', symbol: 'QQQ', canonicalStrategyId: 'narrow_breakout', strategyName: 'X', nextMoveBias: 'bullish' },
+    { multiStrategy: { enabled: true, includeEtf: false } },
+  ), 'QQQ', 'QQQ blocked when INCLUDE_ETF=false');
+
+  // 5. QQQ becomes plannable only when INCLUDE_ETF=true (and other gates green).
+  const approvedIndex = svc._internal.buildApprovedStrategyIndex();
+  const approvedStrategyId = Array.from(approvedIndex.approved)[0] || 'narrow_breakout';
+  const qqqAllowed = svc._internal.buildOrderPreviewCandidate(
+    { candidateId: 'c', symbol: 'QQQ', canonicalStrategyId: approvedStrategyId, strategyName: 'X', nextMoveBias: 'bullish' },
+    { approvedIndex, multiStrategy: { enabled: true, includeEtf: true } },
+  );
+  assert.equal(qqqAllowed.allowedForIbPaperPreview, true, 'QQQ allowed only when INCLUDE_ETF=true and gates green');
+
+  // 6. Crypto stays crypto and blocked (registry), fallback never touches it.
+  for (const sym of ['BTCUSDT', 'SOLUSDT']) {
+    const c = classify({ symbol: sym });
+    assert.equal(c.isCrypto, true, `${sym} crypto`);
+    assert.notEqual(c.marketGroupSource, 'ib_paper_us_equity_fallback');
+  }
+  assertBlocked(svc._internal.buildOrderPreviewCandidate({
+    candidateId: 'c', symbol: 'BTCUSDT', canonicalStrategyId: approvedStrategyId, strategyName: 'X', nextMoveBias: 'bullish',
+  }), 'krypto', 'crypto blocked');
+
+  // 7. Symbol-less fallback stays unknown and blocked.
+  const noSym = classify({ symbol: null });
+  assert.equal(noSym.isKnown, false);
+  assert.equal(noSym.marketGroup, null);
+
+  // 8. Arbitrary unknown symbol is NOT let through as equity.
+  const weird = classify({ symbol: 'ZZZZ' });
+  assert.equal(weird.isKnown, false, 'unknown symbol stays unknown');
+  assert.equal(weird.marketGroup, null);
+  assert.equal(weird.isAllowedGroup, false);
+
+  // 9. NFLX with a clear direction + approved strategy is now allowed end-to-end.
+  const nflxRow = svc._internal.buildOrderPreviewCandidate(
+    { candidateId: 'c', symbol: 'NFLX', canonicalStrategyId: approvedStrategyId, strategyName: 'Trend Continuation', nextMoveBias: 'bearish', confidence: 84 },
+    { approvedIndex, multiStrategy: { enabled: true, includeEtf: false } },
+  );
+  assert.equal(nflxRow.marketGroup, 'stocks');
+  assert.equal(nflxRow.direction, 'short');
+  assert.equal(nflxRow.allowedForIbPaperPreview, true, 'NFLX bearish approved equity is allowed');
+  assert.equal(nflxRow.wouldCreateIbPaperOrder, false);
+  assert.equal(nflxRow.orderSendingBlocked, true);
+
+  // 10. Safety stays false.
+  assert.equal(svc.SAFETY.actions_allowed, false);
+  assert.equal(svc.SAFETY.can_place_orders, false);
+  assert.equal(svc.SAFETY.live_trading_enabled, false);
+  assert.equal(svc.SAFETY.broker_enabled, false);
+
+  console.log('interactiveBrokersPreviewService.test.js (market-group): OK');
+}
+
 run();
 runDirectionTests();
+runMarketGroupTests();

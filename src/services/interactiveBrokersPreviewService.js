@@ -46,6 +46,17 @@ const NEXT_PHASE_LOCKED = Object.freeze({
 
 const PREVIEW_LIMIT = 3;
 const ALLOWED_MARKET_GROUPS = new Set(['stocks', 'mag7', 'nasdaq100']);
+
+// Curated set of well-known, liquid US equities that may be missing from the
+// shared market-universe registry (e.g. NFLX). Used ONLY as a fallback when the
+// registry returns no group, so symbols that already resolve — ETFs (QQQ/SPY →
+// etf/nasdaq100), crypto (*USDT → crypto) — are never touched, and arbitrary
+// unknown symbols are NOT classified as equity. Equities only; no ETF/crypto.
+const IB_PAPER_US_EQUITY_FALLBACK = new Set([
+  'AAPL', 'MSFT', 'AMZN', 'NVDA', 'GOOGL', 'GOOG', 'META', 'TSLA', 'NFLX',
+  'AMD', 'AVGO', 'ADBE', 'CRM', 'CSCO', 'INTC', 'QCOM', 'TXN', 'AMAT', 'MU',
+  'PYPL', 'COST', 'PEP', 'SBUX', 'INTU', 'ORCL', 'IBM', 'UBER', 'ABNB', 'PLTR',
+]);
 const PAPER_PORT = 4002;
 const DEFAULT_VERIFY_TIMEOUT_MS = 6000;
 const SESSION_VERIFY_TTL_MS = 5000;
@@ -534,10 +545,20 @@ function classifySymbol(candidate = {}) {
   const marketGroup = normalized
     ? marketUniverseService.getGroupForSymbol(normalized, fallbackGroup || undefined)
     : (fallbackGroup ? String(fallbackGroup) : null);
-  const group = marketGroup ? String(marketGroup) : null;
+  let group = marketGroup ? String(marketGroup) : null;
+  let marketGroupSource = group ? 'market_universe' : null;
+  // Fallback ONLY when the registry has no group: classify a curated set of
+  // well-known US equities as 'stocks'. Never overrides an existing group, so
+  // ETF/QQQ/crypto classification is unaffected, and arbitrary unknowns stay null.
+  if (!group && normalized && IB_PAPER_US_EQUITY_FALLBACK.has(normalized)) {
+    group = 'stocks';
+    marketGroupSource = 'ib_paper_us_equity_fallback';
+  }
   return {
     symbol: normalized || null,
     marketGroup: group,
+    normalizedMarketGroup: group,
+    marketGroupSource,
     isCrypto: group === 'crypto',
     isEtf: group === 'etf' || group === 'leveraged_etf',
     isQqq: normalized === 'QQQ',
@@ -626,6 +647,8 @@ function buildOrderPreviewCandidate(candidate = {}, context = {}) {
     wouldCreateIbPaperOrder: false,
     orderSendingBlocked: true,
     marketGroup: symbolInfo.marketGroup,
+    normalizedMarketGroup: symbolInfo.normalizedMarketGroup,
+    marketGroupSource: symbolInfo.marketGroupSource,
     previewOnly: true,
     blockedExecution: true,
     // Additive multi-strategy planning hints (read-only; never enable an order).
