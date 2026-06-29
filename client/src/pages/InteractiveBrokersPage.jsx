@@ -211,6 +211,23 @@ function Row({ label, children }) {
   );
 }
 
+// Direction badge: BUY (green) / SELL (red) / BLOCKED / UNKNOWN (grey).
+function DirectionBadge({ direction }) {
+  const dir = String(direction || 'UNKNOWN').toUpperCase();
+  const map = {
+    BUY: { bg: 'rgba(34,197,94,0.15)', fg: '#4ade80', bd: 'rgba(34,197,94,0.4)', label: 'BUY (Köp)' },
+    SELL: { bg: 'rgba(248,113,113,0.15)', fg: '#f87171', bd: 'rgba(248,113,113,0.4)', label: 'SELL (Sälj)' },
+    BLOCKED: { bg: 'rgba(251,191,36,0.15)', fg: '#fbbf24', bd: 'rgba(251,191,36,0.4)', label: 'BLOCKERAD' },
+    UNKNOWN: { bg: 'rgba(148,163,184,0.15)', fg: '#94a3b8', bd: 'rgba(148,163,184,0.4)', label: 'OKÄND' },
+  };
+  const s = map[dir] || map.UNKNOWN;
+  return (
+    <span style={{ display: 'inline-block', padding: '2px 10px', borderRadius: 999, fontSize: 12, fontWeight: 700, background: s.bg, color: s.fg, border: `1px solid ${s.bd}` }}>
+      {s.label}
+    </span>
+  );
+}
+
 export default function InteractiveBrokersPage() {
   const [state, setState] = useState({
     loading: true,
@@ -224,7 +241,43 @@ export default function InteractiveBrokersPage() {
     tradeBlueprint: null,
     readOnlyState: null,
     multiStrategyPlan: null,
+    assetToggles: null,
+    directionResolver: null,
+    manualApproval: null,
+    submitReadiness: null,
   });
+  const [bump, setBump] = useState(0);
+  const [actionBusy, setActionBusy] = useState(false);
+  const [actionMsg, setActionMsg] = useState(null);
+
+  // POST helper for the safe preview-only mutations (asset toggles + manual
+  // approval). These NEVER send an order — they only update local preview state.
+  async function postAction(url, body) {
+    setActionBusy(true);
+    setActionMsg(null);
+    try {
+      const res = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify(body || {}),
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      await res.json();
+      setBump((b) => b + 1); // trigger a reload of all panels
+    } catch (err) {
+      setActionMsg(`Åtgärden misslyckades: ${err.message || String(err)}`);
+    } finally {
+      setActionBusy(false);
+    }
+  }
+
+  const toggleAsset = (assetKey, enabled) =>
+    postAction('/api/interactive-brokers/preview-asset-toggles', { asset: assetKey, enabled });
+  const approveManually = (blueprintId, symbol, side) =>
+    postAction('/api/interactive-brokers/manual-approval', { blueprintId, symbol, side });
+  const clearApproval = () =>
+    postAction('/api/interactive-brokers/manual-approval/clear', {});
 
   useEffect(() => {
     let alive = true;
@@ -261,6 +314,10 @@ export default function InteractiveBrokersPage() {
             }),
             fetchJsonWithTimeout('/api/interactive-brokers/trade-blueprint', { signal: controller.signal }),
             fetchJsonWithTimeout('/api/interactive-brokers/paper-readonly-state', { signal: controller.signal }),
+            fetchJsonWithTimeout('/api/interactive-brokers/preview-asset-toggles', { signal: controller.signal }),
+            fetchJsonWithTimeout('/api/interactive-brokers/direction-resolver', { signal: controller.signal }),
+            fetchJsonWithTimeout('/api/interactive-brokers/manual-approval', { signal: controller.signal }),
+            fetchJsonWithTimeout('/api/interactive-brokers/paper-submit-readiness', { signal: controller.signal, timeoutMs: 12_000 }),
           ]),
           planPromise,
         ]);
@@ -281,6 +338,10 @@ export default function InteractiveBrokersPage() {
           executionPreview: valueOf(5),
           tradeBlueprint: valueOf(6),
           readOnlyState: valueOf(7),
+          assetToggles: valueOf(8),
+          directionResolver: valueOf(9),
+          manualApproval: valueOf(10),
+          submitReadiness: valueOf(11),
           multiStrategyPlan,
         });
       } catch (err) {
@@ -297,9 +358,9 @@ export default function InteractiveBrokersPage() {
       if (controller) controller.abort();
       clearInterval(timer);
     };
-  }, []);
+  }, [bump]);
 
-  const { loading, error, status, readiness, preview, orderPreview, executionStatus, executionPreview, tradeBlueprint, readOnlyState, multiStrategyPlan } = state;
+  const { loading, error, status, readiness, preview, orderPreview, executionStatus, executionPreview, tradeBlueprint, readOnlyState, multiStrategyPlan, assetToggles, directionResolver, manualApproval, submitReadiness } = state;
 
   // On ANY error (404 / timeout / network) fall back to the safe blocked state.
   // Never derive values from an absent payload — that could accidentally render
@@ -354,6 +415,27 @@ export default function InteractiveBrokersPage() {
   const blockedReason = usingFallback ? 'api_unavailable_safe_fallback' : (eff.blockedReason || 'unknown');
   const previewSummary = ibPreview.summary || SAFE_FALLBACK_ORDER_PREVIEW.summary;
   const previewCandidates = Array.isArray(ibPreview.candidates) ? ibPreview.candidates : [];
+
+  // Asset activation toggles (preview-only). Safe defaults when not loaded.
+  const SAFE_ASSET_TOGGLES = { stocks: true, etfQqq: false, crypto: false };
+  const assetTogglesView = assetToggles?.paperPreviewAssetToggles || SAFE_ASSET_TOGGLES;
+  const assetList = Array.isArray(assetToggles?.assets) ? assetToggles.assets : [
+    { key: 'stocks', label: 'Aktier', enabled: assetTogglesView.stocks === true, previewOnly: false, warningSv: 'Denna knapp aktiverar endast IB Paper-preview för denna tillgångstyp. Den aktiverar inte live trading och skickar inga order.' },
+    { key: 'etfQqq', label: 'QQQ / ETF', enabled: assetTogglesView.etfQqq === true, previewOnly: true, warningSv: 'QQQ/ETF är endast tillåtet i preview-läge.' },
+    { key: 'crypto', label: 'Krypto', enabled: assetTogglesView.crypto === true, previewOnly: true, warningSv: 'Krypto är endast tillåtet i preview-läge och får inte skickas som order i denna fas.' },
+  ];
+
+  // Direction resolver rows + summary.
+  const directionRows = Array.isArray(directionResolver?.rows) ? directionResolver.rows : [];
+  const directionSummary = directionResolver?.summary || null;
+
+  // Manual approval state (auto-expiring, preview-only).
+  const manualApprovalView = manualApproval || { manualApprovalReady: false, approvedByUser: false, approvalScope: 'ib_paper_preview_only', realSubmitAllowed: false, submitRouteLocked: true };
+  const manualApprovalReady = manualApprovalView.manualApprovalReady === true;
+
+  // Authoritative paper-submit readiness (read-only).
+  const submitReadinessView = submitReadiness || { blueprintReady: false, manualApprovalReady: false, paperSubmitReadiness: false, nextStep: null, realSubmitAllowed: false, wouldPlaceOrder: false, orderSent: false, placeOrderCalled: false };
+  const paperSubmitReadiness = submitReadinessView.paperSubmitReadiness === true;
 
   function formatDirection(value) {
     if (!value) return 'Okänd';
@@ -432,6 +514,173 @@ export default function InteractiveBrokersPage() {
 	            <Row label="Dry-run / läsläge">
 	              <Badge ok={eff.dryRun === true} labelTrue="Ja" labelFalse="Nej" />
 	            </Row>
+          </div>
+
+          {/* Asset Activation Controls (preview-only) */}
+          <div style={{ ...CARD_STYLE, borderColor: 'rgba(59,130,246,0.35)' }}>
+            <h2 style={{ marginTop: 0 }}>Tillgångsaktivering (endast preview)</h2>
+            <p style={{ color: '#94a3b8', marginTop: 0, lineHeight: 1.6 }}>
+              Dessa knappar styr endast vilka tillgångar som visas i IB Paper-preview.
+              De aktiverar inte live trading, broker eller order.
+            </p>
+            {actionMsg && (
+              <div style={{ color: '#f87171', fontSize: 13, marginBottom: 8 }}>{actionMsg}</div>
+            )}
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 12, marginBottom: 8 }}>
+              {assetList.map((a) => (
+                <div key={a.key} style={{ flex: '1 1 240px', border: `1px solid ${a.enabled ? 'rgba(34,197,94,0.4)' : 'rgba(148,163,184,0.25)'}`, borderRadius: 12, padding: 14, background: a.enabled ? 'rgba(34,197,94,0.06)' : 'rgba(15,23,42,0.35)' }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8 }}>
+                    <strong>{a.label}</strong>
+                    <Badge ok={a.enabled === true} labelTrue="Preview PÅ" labelFalse="Preview AV" />
+                  </div>
+                  {a.previewOnly && (
+                    <div style={{ marginTop: 6 }}>
+                      <span style={{ display: 'inline-block', padding: '1px 8px', borderRadius: 999, fontSize: 11, fontWeight: 700, background: 'rgba(251,191,36,0.15)', color: '#fbbf24', border: '1px solid rgba(251,191,36,0.4)' }}>ENDAST PREVIEW</span>
+                    </div>
+                  )}
+                  <p style={{ color: '#94a3b8', fontSize: 12.5, lineHeight: 1.55, marginTop: 8, marginBottom: 10 }}>{a.warningSv}</p>
+                  <button
+                    type="button"
+                    disabled={actionBusy}
+                    onClick={() => toggleAsset(a.key, !a.enabled)}
+                    style={{ width: '100%', padding: '8px 10px', borderRadius: 8, cursor: actionBusy ? 'not-allowed' : 'pointer', border: '1px solid rgba(148,163,184,0.35)', background: a.enabled ? 'rgba(248,113,113,0.12)' : 'rgba(34,197,94,0.12)', color: a.enabled ? '#f87171' : '#4ade80', fontWeight: 600 }}
+                  >
+                    {a.enabled ? `Stäng av preview för ${a.label}` : `Aktivera preview för ${a.label}`}
+                  </button>
+                </div>
+              ))}
+            </div>
+            <Row label="Aktuella preview-rättigheter">
+              <code style={{ fontSize: 12 }}>{`stocks:${assetTogglesView.stocks} · etfQqq:${assetTogglesView.etfQqq} · crypto:${assetTogglesView.crypto}`}</code>
+            </Row>
+            <Row label="Broker / Live / Order påverkas">
+              <Badge ok labelTrue="Nej (oförändrat)" labelFalse="Ja" />
+            </Row>
+            <p style={{ color: '#64748b', fontSize: 12, marginBottom: 0, marginTop: 8 }}>
+              QQQ/ETF är endast tillåtet i preview-läge. Krypto är endast tillåtet i preview-läge och får inte skickas som order i denna fas.
+            </p>
+          </div>
+
+          {/* Direction Resolver — verifierbar BUY/SELL/BLOCKED/UNKNOWN */}
+          <div style={CARD_STYLE}>
+            <h2 style={{ marginTop: 0 }}>Riktning (Direction Resolver)</h2>
+            <p style={{ color: '#94a3b8', marginTop: 0, lineHeight: 1.6 }}>
+              Riktningen gissas aldrig. Den härleds från explicit sida, strateginamn och bekräftad trend.
+              Kan riktningen inte verifieras blockeras kandidaten (<code>direction_not_verified</code>).
+            </p>
+            {directionSummary && (
+              <Row label="Sammanfattning">
+                <span style={{ fontSize: 13 }}>
+                  BUY {directionSummary.buy} · SELL {directionSummary.sell} · OKÄND {directionSummary.unknown} · BLOCKERAD {directionSummary.blocked}
+                </span>
+              </Row>
+            )}
+            {directionRows.length === 0 ? (
+              <p style={{ color: '#64748b', marginBottom: 0 }}>Inga kandidater att rikta just nu.</p>
+            ) : (
+              <div style={{ overflowX: 'auto', marginTop: 8 }}>
+                <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
+                  <thead>
+                    <tr style={{ color: '#94a3b8', textAlign: 'left' }}>
+                      <th style={{ padding: '6px 8px' }}>Symbol</th>
+                      <th style={{ padding: '6px 8px' }}>Strategi</th>
+                      <th style={{ padding: '6px 8px' }}>Riktning</th>
+                      <th style={{ padding: '6px 8px' }}>Tillit</th>
+                      <th style={{ padding: '6px 8px' }}>Verifierad</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {directionRows.slice(0, 20).map((r, i) => (
+                      <tr key={`${r.symbol}-${r.strategyId}-${i}`} style={{ borderTop: '1px solid rgba(148,163,184,0.12)' }}>
+                        <td style={{ padding: '6px 8px' }}><code>{r.symbol || '–'}</code></td>
+                        <td style={{ padding: '6px 8px', color: '#cbd5e1' }}>{r.strategyId || '–'}</td>
+                        <td style={{ padding: '6px 8px' }}><DirectionBadge direction={r.direction} /></td>
+                        <td style={{ padding: '6px 8px', color: '#94a3b8' }}>{r.confidence || '–'}</td>
+                        <td style={{ padding: '6px 8px' }}><Badge ok={r.allowed === true} labelTrue="Ja" labelFalse={r.blocker || 'Nej'} /></td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
+
+          {/* Trade Blueprint status */}
+          <div style={CARD_STYLE}>
+            <h2 style={{ marginTop: 0 }}>Trade Blueprint</h2>
+            {currentBlueprint ? (
+              <>
+                <Row label="Symbol / Sida">
+                  <span><code>{currentBlueprint.symbol}</code> · <DirectionBadge direction={currentBlueprint.side || 'UNKNOWN'} /></span>
+                </Row>
+                <Row label="Strategi"><span style={{ color: '#cbd5e1' }}>{currentBlueprint.strategyName || currentBlueprint.strategyId}</span></Row>
+                <Row label="Entry / Stop / Target">
+                  <code style={{ fontSize: 12 }}>{`${currentBlueprint.entryReferencePrice ?? '–'} / ${currentBlueprint.stopLoss ?? '–'} / ${currentBlueprint.takeProfit ?? '–'}`}</code>
+                </Row>
+                <Row label="Bracket krävs"><Badge ok={currentBlueprint.stopLoss != null && currentBlueprint.takeProfit != null} labelTrue="Ja (SL+TP)" labelFalse="Saknas" /></Row>
+                <Row label="Kvantitet"><code>{currentBlueprint.quantity ?? '–'}</code></Row>
+                <Row label="Blueprint redo"><Badge ok={currentBlueprint.blueprintReady === true} labelTrue="Ja" labelFalse="Nej" /></Row>
+                <Row label="Manuell approval möjlig"><Badge ok={currentBlueprint.manualApprovalReady === true} labelTrue="Ja" labelFalse="Nej" /></Row>
+              </>
+            ) : (
+              <p style={{ color: '#64748b', marginBottom: 0 }}>Ingen blueprint redo just nu.</p>
+            )}
+            {uniqueBlueprintBlockers.length > 0 && (
+              <Row label="Blockerare">
+                <span style={{ color: '#fbbf24', fontSize: 12 }}>{uniqueBlueprintBlockers.join(', ')}</span>
+              </Row>
+            )}
+          </div>
+
+          {/* Manual Approval Layer (preview-only) */}
+          <div style={{ ...CARD_STYLE, borderColor: manualApprovalReady ? 'rgba(34,197,94,0.4)' : 'rgba(148,163,184,0.25)' }}>
+            <h2 style={{ marginTop: 0 }}>Manuell godkännande (preview-only)</h2>
+            <p style={{ color: '#94a3b8', marginTop: 0, lineHeight: 1.6 }}>
+              Manuellt godkännande är en separat grind efter att riktning är verifierad och blueprint är redo.
+              Det skickar ingen order — submit-route är fortsatt låst och <code>realSubmitAllowed=false</code>.
+            </p>
+            <Row label="Manual approval ready"><Badge ok={manualApprovalReady} labelTrue="Ja" labelFalse="Nej" /></Row>
+            <Row label="Godkänd av användare"><Badge ok={manualApprovalView.approvedByUser === true} labelTrue="Ja" labelFalse="Nej" /></Row>
+            <Row label="Scope"><code style={{ fontSize: 12 }}>{manualApprovalView.approvalScope || 'ib_paper_preview_only'}</code></Row>
+            {manualApprovalView.expiresAt && (
+              <Row label="Giltigt till"><code style={{ fontSize: 12 }}>{manualApprovalView.expiresAt}{manualApprovalView.secondsRemaining ? ` (${manualApprovalView.secondsRemaining}s)` : ''}</code></Row>
+            )}
+            <Row label="Real submit / order"><Badge ok labelTrue="Låst (ingen order)" labelFalse="Risk" /></Row>
+            <div style={{ display: 'flex', gap: 10, marginTop: 12, flexWrap: 'wrap' }}>
+              <button
+                type="button"
+                disabled={actionBusy || !(currentBlueprint?.blueprintReady === true)}
+                title={currentBlueprint?.blueprintReady === true ? '' : 'Kräver en färdig blueprint'}
+                onClick={() => approveManually(currentBlueprint?.blueprintId, currentBlueprint?.symbol, currentBlueprint?.side)}
+                style={{ padding: '8px 14px', borderRadius: 8, cursor: (actionBusy || !(currentBlueprint?.blueprintReady === true)) ? 'not-allowed' : 'pointer', border: '1px solid rgba(34,197,94,0.4)', background: 'rgba(34,197,94,0.12)', color: '#4ade80', fontWeight: 600, opacity: (currentBlueprint?.blueprintReady === true) ? 1 : 0.5 }}
+              >
+                Godkänn manuellt (preview)
+              </button>
+              <button
+                type="button"
+                disabled={actionBusy || !manualApprovalReady}
+                onClick={() => clearApproval()}
+                style={{ padding: '8px 14px', borderRadius: 8, cursor: (actionBusy || !manualApprovalReady) ? 'not-allowed' : 'pointer', border: '1px solid rgba(148,163,184,0.35)', background: 'rgba(248,113,113,0.1)', color: '#f87171', fontWeight: 600, opacity: manualApprovalReady ? 1 : 0.5 }}
+              >
+                Återkalla godkännande
+              </button>
+            </div>
+          </div>
+
+          {/* Paper Submit Readiness (read-only, authoritative) */}
+          <div style={{ ...CARD_STYLE, borderColor: paperSubmitReadiness ? 'rgba(34,197,94,0.4)' : 'rgba(148,163,184,0.25)' }}>
+            <h2 style={{ marginTop: 0 }}>Paper Submit Readiness</h2>
+            <Row label="Blueprint redo"><Badge ok={submitReadinessView.blueprintReady === true} labelTrue="Ja" labelFalse="Nej" /></Row>
+            <Row label="Manual approval redo"><Badge ok={submitReadinessView.manualApprovalReady === true} labelTrue="Ja" labelFalse="Nej" /></Row>
+            <Row label="Paper submit readiness"><Badge ok={paperSubmitReadiness} labelTrue="Ja" labelFalse="Nej" /></Row>
+            <Row label="Nästa steg"><code style={{ fontSize: 12, color: '#fbbf24' }}>{submitReadinessView.nextStep || 'manual_paper_submit_phase_required'}</code></Row>
+            <Row label="wouldPlaceOrder"><Badge ok={submitReadinessView.wouldPlaceOrder === false} labelTrue="false" labelFalse="true" /></Row>
+            <Row label="orderSent"><Badge ok={submitReadinessView.orderSent === false} labelTrue="false" labelFalse="true" /></Row>
+            <Row label="placeOrderCalled"><Badge ok={submitReadinessView.placeOrderCalled === false} labelTrue="false" labelFalse="true" /></Row>
+            <Row label="realSubmitAllowed"><Badge ok={submitReadinessView.realSubmitAllowed === false} labelTrue="false" labelFalse="true" /></Row>
+            <p style={{ color: '#64748b', fontSize: 12, marginBottom: 0, marginTop: 8 }}>
+              Även när paper submit readiness är Ja skickas ingen order. En separat manuell paper-submit-fas krävs.
+            </p>
           </div>
 
           {/* Order sending blocked */}
