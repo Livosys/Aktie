@@ -27,7 +27,12 @@ function assertBlocked(row, expectedSubstring, message) {
 
 function run() {
   // ── The public endpoint/service surface is always preview_only and hard-blocked ──
+  // Pin multi-strategy mode OFF so these assertions are deterministic regardless
+  // of ambient env. (@stoqey/ib auto-loads .env at require, which can set
+  // IB_PAPER_MULTI_STRATEGY_TEST_MODE=true and otherwise widen the caps.)
+  const SINGLE_MODE = { enabled: false, includeEtf: false };
   const preview = svc.getIbPaperOrderPreview({
+    multiStrategy: SINGLE_MODE,
     candidates: [
       candidate({ symbol: 'AAPL', canonicalStrategyId: 'narrow_breakout', direction: 'long' }),
       candidate({ symbol: 'META', canonicalStrategyId: 'trend_continuation', direction: 'long', setup: 'REGULAR_PULLBACK' }),
@@ -67,6 +72,7 @@ function run() {
   const approvedIndex = svc._internal.buildApprovedStrategyIndex();
   const approvedStrategyId = Array.from(approvedIndex.approved)[0] || 'narrow_breakout';
   const prioritized = svc.getIbPaperOrderPreview({
+    multiStrategy: SINGLE_MODE,
     candidates: [
       candidate({ symbol: 'BTCUSDT', canonicalStrategyId: approvedStrategyId, strategyName: 'Approved Crypto', direction: 'long', score: 99, confidence: 99 }),
       candidate({ symbol: 'QQQ', canonicalStrategyId: approvedStrategyId, strategyName: 'Approved QQQ', direction: 'long', score: 98, confidence: 98 }),
@@ -132,6 +138,7 @@ function run() {
 
   // ── max 3 candidates is enforced even if more are provided ─────────────────
   const capped = svc.getIbPaperOrderPreview({
+    multiStrategy: SINGLE_MODE,
     candidates: [
       candidate({ symbol: 'AAPL', canonicalStrategyId: 'narrow_breakout', direction: 'long' }),
       candidate({ symbol: 'META', canonicalStrategyId: 'trend_continuation', direction: 'long' }),
@@ -151,4 +158,115 @@ function run() {
   console.log('interactiveBrokersPreviewService.test.js: OK');
 }
 
+function runDirectionTests() {
+  const nd = svc._internal.normalizeIbPaperDirection;
+  const tts = svc._internal.directionTokenToSide;
+
+  // 1. direction=BUY -> BUY/long
+  assert.equal(nd({ direction: 'BUY' }).normalizedDirection, 'BUY');
+  assert.equal(nd({ direction: 'BUY' }).direction, 'long');
+  // 2. side=SELL -> SELL/short
+  assert.equal(nd({ side: 'SELL' }).normalizedDirection, 'SELL');
+  assert.equal(nd({ side: 'SELL' }).direction, 'short');
+  // 3. nextMoveBias=bullish -> BUY
+  assert.equal(nd({ nextMoveBias: 'bullish' }).normalizedDirection, 'BUY');
+  // 4. nextMoveBias=bearish -> SELL
+  assert.equal(nd({ nextMoveBias: 'bearish' }).normalizedDirection, 'SELL');
+  // 5. Swedish Kort/Sälj -> SELL
+  assert.equal(nd({ side: 'Kort' }).normalizedDirection, 'SELL');
+  assert.equal(nd({ action: 'Sälj' }).normalizedDirection, 'SELL');
+  // 6. Swedish Lång/Köp -> BUY
+  assert.equal(nd({ direction: 'Lång' }).normalizedDirection, 'BUY');
+  assert.equal(nd({ action: 'Köp' }).normalizedDirection, 'BUY');
+  // raw UP/DOWN tokens from runtime data
+  assert.equal(nd({ runtimeDirection: 'UP' }).normalizedDirection, 'BUY');
+  assert.equal(nd({ direction: 'DOWN' }).direction, 'short');
+  // 7. conflicting fields -> unknown + ambiguous
+  const conflict = nd({ direction: 'BUY', side: 'SELL' });
+  assert.equal(conflict.normalizedDirection, null);
+  assert.equal(conflict.direction, null);
+  assert.equal(conflict.ambiguous, true);
+  assert.equal(conflict.directionSource, 'conflict');
+  // 8. missing direction -> unknown
+  assert.equal(nd({}).direction, null);
+  assert.equal(nd({}).ambiguous, false);
+  // present-but-non-directional (UNCERTAIN) must NOT resolve
+  assert.equal(nd({ nextMoveBias: 'UNCERTAIN' }).direction, null);
+  // debug fields
+  const dbg = nd({ nextMoveBias: 'UP' });
+  assert.equal(dbg.directionSource, 'nextMoveBias');
+  assert.deepEqual(dbg.rawDirectionFields, { nextMoveBias: 'UP' });
+  // token helper
+  assert.equal(tts('bullish'), 'BUY');
+  assert.equal(tts('bearish'), 'SELL');
+  assert.equal(tts('UNCERTAIN'), null);
+  assert.equal(tts(''), null);
+  assert.equal(tts({ decision: 'long' }), 'BUY');
+
+  const approvedIndex = svc._internal.buildApprovedStrategyIndex();
+  const approvedStrategyId = Array.from(approvedIndex.approved)[0] || 'narrow_breakout';
+
+  // 9. AAPL/approved stock with a clear bullish field becomes allowed
+  const allowedBull = svc._internal.buildOrderPreviewCandidate({
+    candidateId: 'c', symbol: 'AAPL', canonicalStrategyId: approvedStrategyId,
+    strategyName: 'Trend Continuation', nextMoveBias: 'bullish', confidence: 84,
+  });
+  assert.equal(allowedBull.direction, 'long', 'bullish field -> long');
+  assert.equal(allowedBull.normalizedDirection, 'BUY');
+  assert.equal(allowedBull.directionSource, 'nextMoveBias');
+  assert.equal(allowedBull.allowedForIbPaperPreview, true, 'AAPL bullish approved stock should be allowed');
+  assert.equal(allowedBull.wouldCreateIbPaperOrder, false);
+  assert.equal(allowedBull.orderSendingBlocked, true);
+
+  // gap-fill: no explicit field, direction comes from runtime index only
+  const gapIdx = new Map([[`${approvedStrategyId}:AAPL`, { side: 'BUY' }]]);
+  const gapfilled = svc._internal.buildOrderPreviewCandidate(
+    { candidateId: 'c', symbol: 'AAPL', canonicalStrategyId: approvedStrategyId, strategyName: 'X', confidence: 70 },
+    { approvedIndex, directionIndex: gapIdx },
+  );
+  assert.equal(gapfilled.direction, 'long', 'runtime index gap-fills direction');
+  assert.equal(gapfilled.directionSource, 'runtimeDirection');
+  assert.equal(gapfilled.allowedForIbPaperPreview, true);
+
+  // explicit direction wins over a conflicting runtime hint (no false ambiguity)
+  const explicitWins = svc._internal.buildOrderPreviewCandidate(
+    { candidateId: 'c', symbol: 'AAPL', canonicalStrategyId: approvedStrategyId, strategyName: 'X', direction: 'short', confidence: 70 },
+    { approvedIndex, directionIndex: new Map([[`${approvedStrategyId}:AAPL`, { side: 'BUY' }]]) },
+  );
+  assert.equal(explicitWins.direction, 'short', 'explicit candidate direction wins over runtime hint');
+  assert.equal(explicitWins.directionAmbiguous, false);
+
+  // conflicting explicit fields stay blocked
+  const conflictRow = svc._internal.buildOrderPreviewCandidate({
+    candidateId: 'c', symbol: 'AAPL', canonicalStrategyId: approvedStrategyId, strategyName: 'X',
+    direction: 'BUY', side: 'SELL', confidence: 70,
+  });
+  assertBlocked(conflictRow, 'riktningen', 'conflicting direction must be blocked');
+  assert.equal(conflictRow.directionAmbiguous, true);
+
+  // 10. QQQ stays blocked when INCLUDE_ETF=false, even with a clear direction
+  assertBlocked(svc._internal.buildOrderPreviewCandidate({
+    candidateId: 'c', symbol: 'QQQ', canonicalStrategyId: approvedStrategyId, strategyName: 'X', nextMoveBias: 'bullish',
+  }), 'QQQ', 'QQQ blocked when INCLUDE_ETF=false');
+
+  // 11. Crypto stays blocked
+  assertBlocked(svc._internal.buildOrderPreviewCandidate({
+    candidateId: 'c', symbol: 'BTCUSDT', canonicalStrategyId: approvedStrategyId, strategyName: 'X', nextMoveBias: 'bullish',
+  }), 'krypto', 'crypto blocked');
+
+  // 12. No order-sending surface exists; allowed rows still never create an order
+  assert.equal(typeof svc.placeOrder, 'undefined');
+  assert.equal(typeof svc.cancelOrder, 'undefined');
+  assert.equal(typeof svc.submitOrder, 'undefined');
+
+  // 13. Safety permanently false
+  assert.equal(svc.SAFETY.actions_allowed, false);
+  assert.equal(svc.SAFETY.can_place_orders, false);
+  assert.equal(svc.SAFETY.live_trading_enabled, false);
+  assert.equal(svc.SAFETY.broker_enabled, false);
+
+  console.log('interactiveBrokersPreviewService.test.js (direction): OK');
+}
+
 run();
+runDirectionTests();

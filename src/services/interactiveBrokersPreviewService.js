@@ -17,10 +17,12 @@
 // no live trading. The feature flags below all default to OFF.
 
 const net = require('net');
+const { IBApi, EventName } = require('@stoqey/ib');
 const automationApprovalService = require('./automationApprovalService');
 const marketUniverseService = require('./marketUniverseService');
 const paperAllowlistService = require('./paperAllowlistService');
 const paperTradingRuntimeService = require('./paperTradingRuntimeService');
+const interactiveBrokersPaperMultiStrategyConfigService = require('./interactiveBrokersPaperMultiStrategyConfigService');
 
 // Permanent safety contract — identical to the rest of the paper-only stack.
 // These values are frozen and must never become "true" in Phase 1.
@@ -44,6 +46,11 @@ const NEXT_PHASE_LOCKED = Object.freeze({
 
 const PREVIEW_LIMIT = 3;
 const ALLOWED_MARKET_GROUPS = new Set(['stocks', 'mag7', 'nasdaq100']);
+const PAPER_PORT = 4002;
+const DEFAULT_VERIFY_TIMEOUT_MS = 6000;
+const SESSION_VERIFY_TTL_MS = 5000;
+
+const sessionVerificationCache = new Map();
 
 // Feature flags. All OFF by default. Reading an env var can only ever turn a
 // flag ON for *preview rendering* — it can NEVER enable order submission or a
@@ -75,10 +82,12 @@ function getConnectionConfig() {
   const portRaw = String(process.env.IB_GATEWAY_PORT || '').trim();
   const clientIdRaw = String(process.env.IB_GATEWAY_CLIENT_ID || '').trim();
   const port = /^\d+$/.test(portRaw) ? Number(portRaw) : null; // null = disabled/unset
+  const clientId = /^\d+$/.test(clientIdRaw) ? Number(clientIdRaw) : undefined;
   return {
     checkEnabled: readFlag('IB_CONNECTION_CHECK_ENABLED'),
     host,
     port,
+    clientId,
     portConfigured: port !== null,
     clientIdConfigured: clientIdRaw !== '',
   };
@@ -102,6 +111,186 @@ function tcpReachable(host, port, timeoutMs = 1000) {
     socket.once('timeout', () => finish(false));
     socket.once('error', () => finish(false));
     try { socket.connect(port, host); } catch (_) { finish(false); }
+  });
+}
+
+function parseManagedAccounts(accountsList) {
+  return String(accountsList || '')
+    .split(/[,\s]+/)
+    .map((item) => item.trim())
+    .filter(Boolean);
+}
+
+function isPaperAccountId(accountId) {
+  return /^DU/i.test(String(accountId || '').trim());
+}
+
+function buildVerificationBase(cfg) {
+  const paperPortConfigured = (cfg.host === '127.0.0.1' || cfg.host === 'localhost') && Number(cfg.port) === PAPER_PORT;
+  return {
+    ok: true,
+    dryRun: true,
+    safety: { ...SAFETY },
+    host: cfg.host,
+    port: cfg.port,
+    portConfigured: cfg.portConfigured,
+    clientIdConfigured: cfg.clientIdConfigured,
+    paperPortConfigured,
+    connectionCheckEnabled: cfg.checkEnabled,
+    gatewayReachable: false,
+    status: 'disabled',
+    paperMode: 'unknown',
+    paperModeVerified: false,
+    ibApiVerified: false,
+    paperAccountVerified: false,
+    managedAccounts: [],
+    managedAccountCount: 0,
+    paperAccountId: null,
+    sessionVerified: false,
+    orderSendingBlocked: true,
+    wouldCreateIbPaperOrder: false,
+    internalPaperTradingUnaffected: true,
+    passwordStored: false,
+    note: 'Read-only readiness. IBKR password is never stored. Log in manually in '
+      + 'IB Gateway / TWS with the Paper account. The endpoint performs TCP '
+      + 'reachability plus read-only nextValidId/managedAccounts verification. '
+      + 'No orders are sent.',
+  };
+}
+
+function buildVerificationResult(base, overrides = {}) {
+  const managedAccounts = Array.isArray(overrides.managedAccounts)
+    ? overrides.managedAccounts.filter(Boolean)
+    : [];
+  const paperAccountId = overrides.paperAccountId || managedAccounts.find(isPaperAccountId) || null;
+  const ibApiVerified = overrides.ibApiVerified === true;
+  const paperAccountVerified = overrides.paperAccountVerified === true;
+  const sessionVerified = overrides.sessionVerified === true || (ibApiVerified && paperAccountVerified);
+  const paperModeVerified = overrides.paperModeVerified === true || sessionVerified;
+
+  return {
+    ...base,
+    ...overrides,
+    managedAccounts,
+    managedAccountCount: managedAccounts.length,
+    paperAccountId,
+    ibApiVerified,
+    paperAccountVerified,
+    sessionVerified,
+    paperModeVerified,
+    paperMode: paperModeVerified ? 'paper_only' : (overrides.paperMode || 'unknown'),
+    status: overrides.status || (paperModeVerified ? 'verified' : base.status),
+    blockedReason: overrides.blockedReason || (paperModeVerified ? 'read_only_session_verified' : base.blockedReason || 'ib_api_not_verified'),
+  };
+}
+
+async function verifyPaperSession(cfg, options = {}) {
+  const timeoutMs = Number(options.timeoutMs || DEFAULT_VERIFY_TIMEOUT_MS);
+  const cacheKey = `${cfg.host}:${cfg.port}:${cfg.clientId || 'default'}`;
+  const cached = sessionVerificationCache.get(cacheKey);
+  if (cached && cached.expiresAt > Date.now()) {
+    return cached.value;
+  }
+
+  const base = buildVerificationBase(cfg);
+  if (!cfg.checkEnabled) {
+    return buildVerificationResult(base, {
+      gatewayReachable: false,
+      status: 'disabled',
+      blockedReason: 'ib_connection_check_disabled',
+    });
+  }
+
+  if (!cfg.portConfigured) {
+    return buildVerificationResult(base, {
+      gatewayReachable: false,
+      status: 'not_configured',
+      blockedReason: 'ib_gateway_not_configured',
+    });
+  }
+
+  const reachable = await tcpReachable(cfg.host, cfg.port, Math.min(timeoutMs, 1500));
+  if (!reachable) {
+    return buildVerificationResult(base, {
+      gatewayReachable: false,
+      status: 'unreachable',
+      blockedReason: 'ib_gateway_unreachable',
+    });
+  }
+
+  return new Promise((resolve) => {
+    const client = new IBApi({ host: cfg.host, port: cfg.port, maxReqPerSec: 10 });
+    const state = {
+      gatewayReachable: true,
+      connected: false,
+      nextValidId: null,
+      managedAccounts: [],
+      error: null,
+      finished: false,
+    };
+
+    const finish = (overrides = {}) => {
+      if (state.finished) return;
+      state.finished = true;
+      clearTimeout(timer);
+      try { client.disconnect(); } catch (_) { /* ignore */ }
+      const ibApiVerified = state.nextValidId !== null;
+      const paperAccountVerified = state.managedAccounts.some(isPaperAccountId);
+      const sessionVerified = ibApiVerified && paperAccountVerified;
+      const result = buildVerificationResult(base, {
+        gatewayReachable: true,
+        status: sessionVerified ? 'verified' : 'reachable',
+        blockedReason: sessionVerified
+          ? 'read_only_session_verified'
+          : (!ibApiVerified ? 'ib_api_not_verified' : 'paper_account_not_verified'),
+        ibApiVerified,
+        paperAccountVerified,
+        managedAccounts: state.managedAccounts,
+        paperAccountId: state.managedAccounts.find(isPaperAccountId) || null,
+        sessionVerified,
+        paperModeVerified: sessionVerified,
+        paperMode: sessionVerified ? 'paper_only' : 'unknown',
+        verificationMethod: 'nextValidId+managedAccounts',
+        connected: state.connected,
+        nextValidId: state.nextValidId,
+        error: state.error,
+        ...overrides,
+      });
+      sessionVerificationCache.set(cacheKey, {
+        expiresAt: Date.now() + SESSION_VERIFY_TTL_MS,
+        value: result,
+      });
+      resolve(result);
+    };
+
+    const timer = setTimeout(() => finish({ status: 'timeout', blockedReason: 'ib_api_not_verified' }), timeoutMs);
+    client.once(EventName.connected, () => {
+      state.connected = true;
+      try {
+        client.reqIds(1);
+        client.reqManagedAccts();
+      } catch (err) {
+        state.error = err?.message || String(err);
+        finish({ status: 'error', blockedReason: 'ib_api_not_verified' });
+      }
+    });
+    client.once(EventName.nextValidId, (orderId) => {
+      state.nextValidId = Number(orderId);
+      if (state.managedAccounts.length > 0) finish();
+    });
+    client.once(EventName.managedAccounts, (accountsList) => {
+      state.managedAccounts = parseManagedAccounts(accountsList);
+      if (state.nextValidId !== null) finish();
+    });
+    client.once(EventName.error, (err, code) => {
+      state.error = err?.message || `IB error ${code || 'unknown'}`;
+    });
+    try {
+      client.connect(cfg.clientId);
+    } catch (err) {
+      state.error = err?.message || String(err);
+      finish({ status: 'error', blockedReason: 'ib_gateway_unreachable' });
+    }
   });
 }
 
@@ -152,24 +341,7 @@ function buildConnectionSummary() {
 // returns immediately without any network activity.
 async function getConnectionReadiness() {
   const cfg = getConnectionConfig();
-  const base = {
-    ok: true,
-    dryRun: true,
-    safety: { ...SAFETY },
-    host: cfg.host,
-    port: cfg.port,
-    portConfigured: cfg.portConfigured,
-    clientIdConfigured: cfg.clientIdConfigured,
-    status: 'disabled',
-    paperMode: 'unknown',
-    paperModeVerified: false,
-    orderSendingBlocked: true,
-    wouldCreateIbPaperOrder: false,
-    internalPaperTradingUnaffected: true,
-    passwordStored: false,
-    note: 'Read-only readiness. IBKR password is never stored. Log in manually in '
-      + 'IB Gateway / TWS with the Paper account. No orders are sent.',
-  };
+  const base = buildVerificationBase(cfg);
 
   if (!cfg.checkEnabled) {
     return {
@@ -190,13 +362,24 @@ async function getConnectionReadiness() {
     };
   }
 
-  const reachable = await tcpReachable(cfg.host, cfg.port, 1000);
+  const verification = await verifyPaperSession(cfg, { timeoutMs: DEFAULT_VERIFY_TIMEOUT_MS });
   return {
     ...base,
     connectionCheckEnabled: true,
-    gatewayReachable: reachable,
-    status: reachable ? 'reachable' : 'unreachable',
-    blockedReason: reachable ? 'reachable_read_only_no_orders' : 'ib_gateway_unreachable',
+    gatewayReachable: verification.gatewayReachable === true,
+    status: verification.status || (verification.gatewayReachable ? 'reachable' : 'unreachable'),
+    blockedReason: verification.blockedReason || (verification.gatewayReachable ? 'reachable_read_only_no_orders' : 'ib_gateway_unreachable'),
+    paperMode: verification.paperMode || 'unknown',
+    paperModeVerified: verification.paperModeVerified === true,
+    ibApiVerified: verification.ibApiVerified === true,
+    paperAccountVerified: verification.paperAccountVerified === true,
+    managedAccounts: verification.managedAccounts || [],
+    managedAccountCount: verification.managedAccountCount || 0,
+    paperAccountId: verification.paperAccountId || null,
+    sessionVerified: verification.sessionVerified === true,
+    verificationMethod: verification.verificationMethod || 'nextValidId+managedAccounts',
+    nextValidId: verification.nextValidId || null,
+    error: verification.error || null,
   };
 }
 
@@ -222,6 +405,108 @@ function buildApprovedStrategyIndex() {
   }
 
   return { approved, names, approvals, allowlist };
+}
+
+// ── IB Paper direction normalization ───────────────────────────────────────
+// Resolve a candidate's trade direction from EXISTING explicit direction-bearing
+// fields only. We never guess from strategy name or setup label, and conflicting
+// explicit signals resolve to "unknown" (kept blocked). This is read-only and
+// touches no internal paper-trading logic.
+const IB_DIRECTION_BUY_TOKENS = new Set([
+  'buy', 'long', 'bull', 'bullish', 'up', 'uptrend', 'call',
+  'köp', 'kop', 'lång', 'lang', 'positive', 'higher',
+]);
+const IB_DIRECTION_SELL_TOKENS = new Set([
+  'sell', 'short', 'bear', 'bearish', 'down', 'downtrend', 'put',
+  'sälj', 'salj', 'kort', 'negative', 'lower',
+]);
+// Direction-bearing fields, highest priority first. `runtimeDirection` is an
+// internal gap-fill hint injected from the read-only paper-trading runtime view.
+const IB_DIRECTION_FIELDS = [
+  'direction', 'side', 'action', 'entrySide', 'tradeSide', 'signalDirection',
+  'setupDirection', 'bias', 'nextMoveBias', 'compassBias',
+  'underlying_signal_direction', 'expectedMove', 'recommendation', 'runtimeDirection',
+];
+
+// Map a single raw value to 'BUY' | 'SELL' | null. null means "present but not
+// directional" (e.g. UNCERTAIN/NEUTRAL) or unrecognised — never a guess.
+function directionTokenToSide(value) {
+  let raw = value;
+  if (raw && typeof raw === 'object') {
+    raw = raw.decision || raw.direction || raw.side || raw.bias || '';
+  }
+  const token = String(raw == null ? '' : raw).trim().toLowerCase();
+  if (token === '') return null;
+  if (IB_DIRECTION_BUY_TOKENS.has(token)) return 'BUY';
+  if (IB_DIRECTION_SELL_TOKENS.has(token)) return 'SELL';
+  return null;
+}
+
+// Robustly normalize direction from a candidate's existing fields. Returns the
+// canonical side plus debug fields. Ambiguous/missing -> direction null.
+function normalizeIbPaperDirection(candidate = {}) {
+  const rawDirectionFields = {};
+  const resolved = [];
+  for (const field of IB_DIRECTION_FIELDS) {
+    const value = candidate[field];
+    if (value == null || value === '') continue;
+    rawDirectionFields[field] = value;
+    const side = directionTokenToSide(value);
+    if (side === 'BUY' || side === 'SELL') resolved.push({ field, side });
+  }
+  const distinct = [...new Set(resolved.map((r) => r.side))];
+  if (distinct.length === 0) {
+    return { normalizedDirection: null, direction: null, directionSource: null, rawDirectionFields, ambiguous: false };
+  }
+  if (distinct.length > 1) {
+    // Conflicting explicit direction fields -> refuse to pick one.
+    return { normalizedDirection: null, direction: null, directionSource: 'conflict', rawDirectionFields, ambiguous: true };
+  }
+  const side = distinct[0];
+  return {
+    normalizedDirection: side,
+    direction: side === 'BUY' ? 'long' : 'short',
+    directionSource: resolved[0].field,
+    rawDirectionFields,
+    ambiguous: false,
+  };
+}
+
+// Build a read-only direction index keyed by `${strategyId}:${SYMBOL}` from the
+// public paper-trading runtime view. Only the NEWEST record per key is kept; if
+// that newest record is UNCERTAIN/non-directional the entry resolves to null so
+// stale older signals can never override a fresh uncertain one. Read-only.
+function buildRuntimeDirectionIndex(runtime) {
+  const index = new Map();
+  let rt = runtime;
+  if (!rt) {
+    try {
+      rt = paperTradingRuntimeService.buildPaperTradingRuntime({ limit: 100 });
+    } catch (err) {
+      return index; // never throw from a read-only preview helper
+    }
+  }
+  const rows = []
+    .concat(Array.isArray(rt?.openTrades) ? rt.openTrades : [])
+    .concat(Array.isArray(rt?.closedTrades) ? rt.closedTrades : [])
+    .concat(Array.isArray(rt?.recentEvents) ? rt.recentEvents : []);
+  rows.sort((a, b) => String(b?.timestamp || '').localeCompare(String(a?.timestamp || '')));
+  for (const row of rows) {
+    const strategyId = String(row?.strategy_id || row?.strategyId || '').trim();
+    const symbol = safeUpper(row?.symbol);
+    if (!strategyId || !symbol) continue;
+    const key = `${strategyId}:${symbol}`;
+    if (index.has(key)) continue; // newest wins
+    const rawValue = row?.direction != null ? row.direction : row?.nextMoveBias;
+    const side = directionTokenToSide(rawValue);
+    index.set(key, {
+      side: side === 'BUY' || side === 'SELL' ? side : null,
+      raw: rawValue == null ? null : rawValue,
+      source: row?.source || null,
+      timestamp: row?.timestamp || null,
+    });
+  }
+  return index;
 }
 
 function inferDirection(candidate = {}) {
@@ -277,6 +562,9 @@ function selectionGroupRank(marketGroup) {
 
 function buildOrderPreviewCandidate(candidate = {}, context = {}) {
   const approvedIndex = context.approvedIndex || buildApprovedStrategyIndex();
+  // Multi-strategy test mode context. Defaults OFF -> behaviour unchanged.
+  const multi = context.multiStrategy || { enabled: false, includeEtf: false };
+  const etfAllowed = multi.enabled === true && multi.includeEtf === true;
   const strategyId = String(candidate.canonicalStrategyId || candidate.strategyId || candidate.strategy_id || '').trim() || null;
   const strategyName = String(
     candidate.strategyName
@@ -286,19 +574,32 @@ function buildOrderPreviewCandidate(candidate = {}, context = {}) {
     || 'Okänd strategi',
   ).trim();
   const symbolInfo = classifySymbol(candidate);
-  const direction = inferDirection(candidate);
+  // Resolve direction from the candidate's own explicit fields first. Only if
+  // none are present (and not ambiguous) do we gap-fill from the read-only
+  // runtime direction index, so an explicit candidate direction always wins and
+  // an injected hint can never conflict with provided fields.
+  let directionInfo = normalizeIbPaperDirection(candidate);
+  if (!directionInfo.direction && !directionInfo.ambiguous && context.directionIndex && strategyId) {
+    const hit = context.directionIndex.get(`${strategyId}:${safeUpper(candidate.symbol)}`);
+    if (hit && (hit.side === 'BUY' || hit.side === 'SELL')) {
+      directionInfo = normalizeIbPaperDirection({ ...candidate, runtimeDirection: hit.side });
+    }
+  }
+  const direction = directionInfo.direction;
   const confidence = candidate.confidence ?? candidate.score ?? null;
   const gateScore = candidate.score ?? candidate.gateScore ?? null;
   const blockers = [];
 
   if (!strategyId) blockers.push('Saknar strategyId');
   if (!strategyId || !approvedIndex.approved.has(strategyId)) blockers.push('Strategin är inte godkänd i allowlisten');
+  // Crypto is ALWAYS blocked (multi-strategy mode never relaxes this). ETF/QQQ
+  // stay blocked unless multi-strategy mode is ON *and* INCLUDE_ETF is true.
   if (!symbolInfo.symbol) blockers.push('Saknar symbol');
-  else if (symbolInfo.isQqq) blockers.push('QQQ är blockerat i denna fas');
   else if (symbolInfo.isCrypto) blockers.push('Krypto är blockerat i denna fas');
-  else if (symbolInfo.isEtf) blockers.push('ETF är blockerat i denna fas');
+  else if (symbolInfo.isQqq && !etfAllowed) blockers.push('QQQ är blockerat i denna fas');
+  else if (symbolInfo.isEtf && !etfAllowed) blockers.push('ETF är blockerat i denna fas');
   else if (!symbolInfo.isKnown) blockers.push('Okänd marknadsgrupp');
-  else if (!symbolInfo.isAllowedGroup) blockers.push('Symbolen är inte en Nasdaq100- eller US-stock-kandidat');
+  else if (!symbolInfo.isAllowedGroup && !(etfAllowed && (symbolInfo.isEtf || symbolInfo.isQqq))) blockers.push('Symbolen är inte en Nasdaq100- eller US-stock-kandidat');
   if (!direction) blockers.push('Riktningen kunde inte verifieras tydligt');
 
   const allowedForIbPaperPreview = blockers.length === 0;
@@ -311,6 +612,11 @@ function buildOrderPreviewCandidate(candidate = {}, context = {}) {
     strategyName,
     symbol: symbolInfo.symbol,
     direction: direction || 'unknown',
+    // Read-only direction-normalization debug fields (never enable an order).
+    normalizedDirection: directionInfo.normalizedDirection,
+    directionSource: directionInfo.directionSource,
+    directionAmbiguous: directionInfo.ambiguous === true,
+    rawDirectionFields: directionInfo.rawDirectionFields,
     source: String(candidate.source || 'unknown'),
     confidence,
     gateScore,
@@ -322,6 +628,12 @@ function buildOrderPreviewCandidate(candidate = {}, context = {}) {
     marketGroup: symbolInfo.marketGroup,
     previewOnly: true,
     blockedExecution: true,
+    // Additive multi-strategy planning hints (read-only; never enable an order).
+    ibPaperMultiStrategyMode: multi.enabled === true,
+    wouldForceQuantity: 1,
+    bracketRequired: true,
+    entryOnlyBlocked: true,
+    multiStrategyBlockers: multi.enabled === true ? [...blockers] : [],
     approvalStatus: strategyId && approvedIndex.approved.has(strategyId) ? 'approved' : 'not_approved',
     selectionRank: (allowedForIbPaperPreview ? 10_000 : 0)
       + (symbolInfo.isAllowedGroup ? 1_000 : 0)
@@ -332,9 +644,14 @@ function buildOrderPreviewCandidate(candidate = {}, context = {}) {
 
 function getIbPaperOrderPreview(options = {}) {
   const approvedIndex = buildApprovedStrategyIndex();
+  // Multi-strategy test mode (default OFF). When OFF, limit/caps are unchanged:
+  // PREVIEW_LIMIT=3 and maxPerDay=3. When ON, the limit widens to maxCandidates
+  // and maxPerDay mirrors the global daily cap.
+  const multi = options.multiStrategy || interactiveBrokersPaperMultiStrategyConfigService.getIbPaperMultiStrategyConfig();
+  const previewLimit = multi.enabled === true ? multi.maxCandidates : PREVIEW_LIMIT;
   const dailySelectionPreview = options.dailySelectionPreview
     || paperTradingRuntimeService._internal.buildDailySelectionPreview({
-      selectionCount: PREVIEW_LIMIT,
+      selectionCount: previewLimit,
       now: options.now,
       files: options.files,
     });
@@ -344,13 +661,16 @@ function getIbPaperOrderPreview(options = {}) {
       ? dailySelectionPreview.candidates
       : [];
 
+  // Read-only direction index from the public paper-trading runtime view. Used
+  // only to gap-fill direction when a candidate carries no explicit direction.
+  const directionIndex = options.directionIndex || buildRuntimeDirectionIndex(options.runtime);
   const classified = rawCandidates
-    .map((candidate) => buildOrderPreviewCandidate(candidate, { approvedIndex }))
+    .map((candidate) => buildOrderPreviewCandidate(candidate, { approvedIndex, multiStrategy: multi, directionIndex }))
     .sort((a, b) => {
       if (a.selectionRank !== b.selectionRank) return b.selectionRank - a.selectionRank;
       return String(a.strategyId || '').localeCompare(String(b.strategyId || ''));
     })
-    .slice(0, PREVIEW_LIMIT);
+    .slice(0, previewLimit);
 
   const allowedCandidates = classified.filter((row) => row.allowedForIbPaperPreview);
   const blockedCandidates = classified.filter((row) => !row.allowedForIbPaperPreview);
@@ -363,8 +683,10 @@ function getIbPaperOrderPreview(options = {}) {
   const totalAllowed = allowedCandidates.length;
   const totalBlocked = blockedCandidates.length;
   const blockerSummary = Object.keys(blockerCounts).join(', ') || 'policygrindar';
-  const summaryNote = totalAllowed === PREVIEW_LIMIT
-    ? 'Tre kandidater är tillåtna för IB Paper-preview idag.'
+  const summaryNote = totalAllowed === previewLimit
+    ? (previewLimit === PREVIEW_LIMIT
+      ? 'Tre kandidater är tillåtna för IB Paper-preview idag.'
+      : `${totalAllowed} kandidater är tillåtna för IB Paper-preview idag.`)
     : totalAllowed > 0
       ? `Endast ${totalAllowed} kandidat${totalAllowed === 1 ? '' : 'er'} uppfyller alla IB Paper-preview-grindar. Övriga blockerades av ${blockerSummary}.`
       : `Inga kandidater uppfyller alla IB Paper-preview-grindar just nu. ${totalBlocked} kandidat${totalBlocked === 1 ? '' : 'er'} blockerades.`;
@@ -372,10 +694,14 @@ function getIbPaperOrderPreview(options = {}) {
   return {
     ok: true,
     mode: 'preview_only',
-    maxPerDay: PREVIEW_LIMIT,
+    maxPerDay: multi.enabled === true ? multi.globalDailyCap : PREVIEW_LIMIT,
+    maxCandidates: previewLimit,
     cryptoBlocked: true,
-    etfBlocked: true,
-    qqqBlocked: true,
+    etfBlocked: multi.enabled === true ? multi.includeEtf !== true : true,
+    qqqBlocked: multi.enabled === true ? multi.includeEtf !== true : true,
+    multiStrategyMode: multi.enabled === true,
+    perStrategyDailyCap: multi.enabled === true ? multi.perStrategyDailyCap : null,
+    includeEtf: multi.enabled === true ? multi.includeEtf === true : false,
     executionEnabled: false,
     orderQueueEnabled: false,
     brokerExecutionEnabled: false,
@@ -383,6 +709,8 @@ function getIbPaperOrderPreview(options = {}) {
     orderSendingBlocked: true,
     wouldCreateIbPaperOrder: false,
     candidates: classified,
+    allowedCandidates,
+    blockedCandidates,
     generatedAt: new Date().toISOString(),
     summary: {
       totalCandidates: classified.length,
@@ -556,6 +884,9 @@ module.exports = {
     safeLower,
     buildApprovedStrategyIndex,
     inferDirection,
+    normalizeIbPaperDirection,
+    directionTokenToSide,
+    buildRuntimeDirectionIndex,
     classifySymbol,
     buildOrderPreviewCandidate,
   },
