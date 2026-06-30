@@ -172,6 +172,8 @@ function runDirectionTests() {
   assert.equal(nd({ nextMoveBias: 'bullish' }).normalizedDirection, 'BUY');
   // 4. nextMoveBias=bearish -> SELL
   assert.equal(nd({ nextMoveBias: 'bearish' }).normalizedDirection, 'SELL');
+  assert.equal(nd({ trendDirection: 'bearish' }).normalizedDirection, 'SELL');
+  assert.equal(nd({ signalDirection: 'SHORT_TRIGGERED' }).normalizedDirection, 'SELL');
   // 5. Swedish Kort/Sälj -> SELL
   assert.equal(nd({ side: 'Kort' }).normalizedDirection, 'SELL');
   assert.equal(nd({ action: 'Sälj' }).normalizedDirection, 'SELL');
@@ -195,6 +197,7 @@ function runDirectionTests() {
   // debug fields
   const dbg = nd({ nextMoveBias: 'UP' });
   assert.equal(dbg.directionSource, 'nextMoveBias');
+  assert.equal(dbg.directionConfidence, 'explicit');
   assert.deepEqual(dbg.rawDirectionFields, { nextMoveBias: 'UP' });
   // token helper
   assert.equal(tts('bullish'), 'BUY');

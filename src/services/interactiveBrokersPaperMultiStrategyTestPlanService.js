@@ -56,6 +56,21 @@ function toNumber(value) {
   return Number.isFinite(n) ? n : null;
 }
 
+function round(value, decimals = 2) {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return null;
+  const factor = 10 ** decimals;
+  return Math.round(n * factor) / factor;
+}
+
+function firstNumberWithSource(candidates = []) {
+  for (const [source, value] of candidates) {
+    const numeric = toNumber(value);
+    if (numeric != null && numeric > 0) return { value: numeric, source };
+  }
+  return { value: null, source: null };
+}
+
 function sideFor(blueprint) {
   if (blueprint?.side) return safeUpper(blueprint.side);
   const dirUpper = safeUpper(blueprint?.direction);
@@ -120,12 +135,20 @@ function normalizePreviewCandidate(candidate = {}) {
     rawSource: candidate.source || 'preview_order_candidate',
     source: candidate.source || 'preview_order_candidate',
     directionSource: candidate.directionSource || null,
+    directionConfidence: candidate.directionConfidence || null,
+    rawDirectionFields: candidate.rawDirectionFields || {},
     normalizedDirection: candidate.normalizedDirection || null,
     directionAmbiguous: candidate.directionAmbiguous === true,
     previewCandidate: true,
     previewAllowed: candidate.allowedForIbPaperPreview === true,
+    price: candidate.price ?? null,
+    currentPrice: candidate.currentPrice ?? null,
+    entryPrice: candidate.entryPrice ?? null,
+    entryReferencePrice: candidate.entryReferencePrice ?? null,
     stopLoss: candidate.stopLoss ?? candidate.stopLossPrice ?? null,
     takeProfit: candidate.takeProfit ?? candidate.takeProfit1 ?? null,
+    stopLossPct: candidate.stopLossPct ?? candidate.stop_loss_pct ?? null,
+    takeProfitPct: candidate.takeProfitPct ?? candidate.take_profit_pct ?? null,
   };
 }
 
@@ -137,10 +160,77 @@ function isCryptoCandidate(blueprint) {
   return toArray(blueprint?.blockers).some((b) => CRYPTO_BLOCKERS.has(String(b)));
 }
 
+function buildBracketDiagnostics(blueprint, side, config = {}) {
+  const entry = firstNumberWithSource([
+    ['entryReferencePrice', blueprint?.entryReferencePrice],
+    ['entryPrice', blueprint?.entryPrice],
+    ['currentPrice', blueprint?.currentPrice],
+    ['price', blueprint?.price],
+    ['lastPrice', blueprint?.lastPrice],
+  ]);
+  const explicitStop = firstNumberWithSource([
+    ['stopLoss', blueprint?.stopLoss],
+    ['stopLossPrice', blueprint?.stopLossPrice],
+  ]);
+  const explicitTake = firstNumberWithSource([
+    ['takeProfit', blueprint?.takeProfit],
+    ['takeProfit1', blueprint?.takeProfit1],
+  ]);
+  const stopPct = firstNumberWithSource([
+    ['stopLossPct', blueprint?.stopLossPct],
+    ['stopLossDistancePct', blueprint?.stopLossDistancePct],
+  ]);
+  const takePct = firstNumberWithSource([
+    ['takeProfitPct', blueprint?.takeProfitPct],
+    ['takeProfitDistancePct', blueprint?.takeProfitDistancePct],
+  ]);
+
+  let stop = explicitStop.value;
+  let stopSource = explicitStop.source;
+  let take = explicitTake.value;
+  let takeSource = explicitTake.source;
+  if (!(stop > 0) && entry.value > 0 && stopPct.value > 0 && (side === 'BUY' || side === 'SELL')) {
+    stop = side === 'BUY'
+      ? round(entry.value * (1 - (stopPct.value / 100)), 2)
+      : round(entry.value * (1 + (stopPct.value / 100)), 2);
+    stopSource = stopPct.source;
+  }
+  if (!(take > 0) && entry.value > 0 && takePct.value > 0 && (side === 'BUY' || side === 'SELL')) {
+    take = side === 'BUY'
+      ? round(entry.value * (1 + (takePct.value / 100)), 2)
+      : round(entry.value * (1 - (takePct.value / 100)), 2);
+    takeSource = takePct.source;
+  }
+
+  const blockers = [];
+  if (!(entry.value > 0)) blockers.push('missing_entry_price');
+  if (!(stop > 0)) blockers.push('missing_stop_loss');
+  if (!(take > 0)) blockers.push('missing_take_profit');
+  const minStopLossPct = toNumber(config.minStopLossPct ?? 0.10);
+  const actualStopLossPct = entry.value > 0 && stop > 0
+    ? round((Math.abs(entry.value - stop) / entry.value) * 100, 4)
+    : stopPct.value;
+  if (actualStopLossPct != null && minStopLossPct != null && actualStopLossPct + 1e-6 < minStopLossPct) {
+    blockers.push('stop_loss_too_small');
+  }
+
+  return {
+    bracketReady: blockers.length === 0,
+    hasBracket: blockers.length === 0,
+    bracketSource: blockers.length === 0 ? 'candidate_fields' : null,
+    entryReferencePrice: entry.value,
+    entryPriceSource: entry.source,
+    stopLoss: stop,
+    stopLossSource: stopSource,
+    takeProfit: take,
+    takeProfitSource: takeSource,
+    stopLossPct: actualStopLossPct,
+    bracketBlockers: [...new Set(blockers)],
+  };
+}
+
 function hasBracket(blueprint) {
-  const stop = toNumber(blueprint?.stopLoss ?? blueprint?.stopLossPrice);
-  const take = toNumber(blueprint?.takeProfit ?? blueprint?.takeProfit1);
-  return stop != null && stop > 0 && take != null && take > 0;
+  return buildBracketDiagnostics(blueprint, sideFor(blueprint)).bracketReady === true;
 }
 
 // Build the set of "symbol|strategyId|side" keys that were traded within the
@@ -204,9 +294,12 @@ function classifyCandidate(blueprint, context) {
   const crypto = isCryptoCandidate(blueprint);
   if (config.cryptoBlocked && crypto) planBlockers.push('crypto_not_allowed');
 
-  // Bracket required: candidate must carry a stop loss AND take profit.
-  const bracketOk = hasBracket(blueprint);
-  if (config.bracketRequired && !bracketOk) planBlockers.push('bracket_required_missing');
+  // Bracket required: candidate must carry or explicitly derive entry + stop +
+  // take-profit. Missing pieces are exposed as diagnostics and stay blocked.
+  const bracket = buildBracketDiagnostics(blueprint, side, config);
+  if (config.bracketRequired && !bracket.bracketReady) {
+    planBlockers.push(...bracket.bracketBlockers, 'bracket_required_missing');
+  }
 
   // Entry-only must stay blocked. This is a safety invariant; if the guard were
   // ever off, every candidate is blocked rather than allowed entry-only.
@@ -260,6 +353,8 @@ function classifyCandidate(blueprint, context) {
     directionVerified: directionResult.allowed === true,
     directionBlocker: directionResult.blocker || null,
     directionSource: directionResult.source || null,
+    directionConfidence: blueprint?.directionConfidence || directionResult.confidence || null,
+    rawDirectionFields: blueprint?.rawDirectionFields || {},
     directionReasonSv: directionResult.reasonSv || null,
     confidence: directionResult.confidence || null,
     assetGroup: assetInfo.assetKey,
@@ -274,7 +369,13 @@ function classifyCandidate(blueprint, context) {
     originalQuantity: blueprint?.quantity ?? null,
     wouldRequireBracket: config.bracketRequired === true,
     wouldBlockEntryOnly,
-    hasBracket: bracketOk,
+    bracketReady: bracket.bracketReady,
+    bracketSource: bracket.bracketSource,
+    entryPriceSource: bracket.entryPriceSource,
+    stopLossSource: bracket.stopLossSource,
+    takeProfitSource: bracket.takeProfitSource,
+    bracketBlockers: bracket.bracketBlockers,
+    hasBracket: bracket.hasBracket,
     isCrypto: crypto,
     openOrderConflict,
     positionConflict,
@@ -283,9 +384,10 @@ function classifyCandidate(blueprint, context) {
     duplicateConflict,
     perStrategyCapReached,
     globalCapReached,
-    entryReferencePrice: blueprint?.entryReferencePrice ?? null,
-    stopLoss: blueprint?.stopLoss ?? blueprint?.stopLossPrice ?? null,
-    takeProfit: blueprint?.takeProfit ?? blueprint?.takeProfit1 ?? null,
+    entryReferencePrice: bracket.entryReferencePrice,
+    stopLoss: bracket.stopLoss,
+    takeProfit: bracket.takeProfit,
+    stopLossPct: bracket.stopLossPct,
     blueprintId: blueprint?.blueprintId || null,
   };
 }
@@ -459,5 +561,5 @@ module.exports = {
   DEFAULT_LIMITS,
   SAFETY,
   buildMultiStrategyTestPlan,
-  _internal: { classifyCandidate, buildDuplicateKeySet, hasBracket, isCryptoCandidate, RELAXABLE_BLOCKERS },
+  _internal: { classifyCandidate, buildDuplicateKeySet, hasBracket, buildBracketDiagnostics, isCryptoCandidate, RELAXABLE_BLOCKERS },
 };

@@ -62,6 +62,30 @@ function num(value) {
   return Number.isFinite(n) ? n : null;
 }
 
+function firstText(...values) {
+  for (const value of values) {
+    const out = text(value);
+    if (out) return out;
+  }
+  return null;
+}
+
+function firstNum(...values) {
+  for (const value of values) {
+    const out = num(value);
+    if (out != null) return out;
+  }
+  return null;
+}
+
+function firstPositiveNum(...values) {
+  for (const value of values) {
+    const out = num(value);
+    if (out != null && out > 0) return out;
+  }
+  return null;
+}
+
 function iso(value) {
   const ms = new Date(value || '').getTime();
   return Number.isFinite(ms) ? new Date(ms).toISOString() : null;
@@ -356,13 +380,24 @@ function gateStageFromEvent(row = {}) {
 function normalizeRuntimeEvent(row = {}) {
   const strategy = strategyMeta(row);
   const type = text(row.type || row.event_type || row.event, 'UNKNOWN');
+  const metadata = row.metadata && typeof row.metadata === 'object' ? row.metadata : {};
   return {
     eventId: text(row.eventId || row.event_id || row.id),
     type,
     timestamp: eventTime(row),
     symbol: text(row.symbol),
     marketType: text(row.marketType || row.market || row.market_type),
-    direction: text(row.direction || row.nextMoveBias),
+    direction: firstText(row.direction, row.nextMoveBias, metadata.direction, metadata.next_move_bias),
+    side: firstText(row.side, row.action, metadata.side, metadata.action),
+    action: firstText(row.action, metadata.action),
+    signalDirection: firstText(row.signalDirection, row.signal_direction, metadata.signalDirection, metadata.signal_direction),
+    tradeSide: firstText(row.tradeSide, row.trade_side, metadata.tradeSide, metadata.trade_side),
+    entrySide: firstText(row.entrySide, row.entry_side, metadata.entrySide, metadata.entry_side),
+    nextMoveBias: firstText(row.nextMoveBias, row.next_move_bias, metadata.nextMoveBias, metadata.next_move_bias),
+    trend: firstText(row.trend, metadata.trend),
+    trendDirection: firstText(row.trendDirection, row.trend_direction, metadata.trendDirection, metadata.trend_direction),
+    bias: firstText(row.bias, metadata.bias),
+    recommendation: firstText(row.recommendation, metadata.recommendation),
     source: normalizeSource(row),
     strategy_id: strategy.strategy_id,
     strategy_name: strategy.strategy_name,
@@ -376,6 +411,13 @@ function normalizeRuntimeEvent(row = {}) {
     status: text(row.status || row.decision || null),
     result: text(row.result || row.outcome || null),
     pnlPct: num(row.pnlPct ?? row.pnl_pct ?? row.pnl),
+    price: firstPositiveNum(row.price, row.currentPrice, row.current_price, row.lastPrice, row.last_price, metadata.price, metadata.current_price),
+    currentPrice: firstPositiveNum(row.currentPrice, row.current_price, row.price, metadata.currentPrice, metadata.current_price),
+    entryPrice: firstPositiveNum(row.entryPrice, row.entry_price, metadata.entryPrice, metadata.entry_price),
+    stopLoss: firstPositiveNum(row.stopLoss, row.stopLossPrice, row.stop_loss, row.stop_loss_price, metadata.stopLoss, metadata.stop_loss),
+    takeProfit: firstPositiveNum(row.takeProfit, row.takeProfit1, row.take_profit, row.take_profit_1, metadata.takeProfit, metadata.take_profit),
+    stopLossPct: firstPositiveNum(row.stopLossPct, row.stop_loss_pct, metadata.stopLossPct, metadata.stop_loss_pct),
+    takeProfitPct: firstPositiveNum(row.takeProfitPct, row.take_profit_pct, metadata.takeProfitPct, metadata.take_profit_pct),
     blockedReason: blockedReasonFromRow(row),
     gateStage: gateStageFromEvent(row),
     paperOnly: true,
@@ -385,13 +427,24 @@ function normalizeRuntimeEvent(row = {}) {
 
 function normalizeGateDecision(row = {}) {
   const strategy = strategyMeta(row);
+  const metadata = row.metadata && typeof row.metadata === 'object' ? row.metadata : {};
   return {
     eventId: text(row.eventId || row.event_id || row.id || `${row.symbol || 'unknown'}:${row.timestamp || ''}`),
     type: 'GATE_BLOCKED',
     timestamp: eventTime(row),
     symbol: text(row.symbol),
     marketType: text(row.marketType || row.market || row.market_group),
-    direction: text(row.direction || row.nextMoveBias),
+    direction: firstText(row.direction, row.nextMoveBias, metadata.direction, metadata.next_move_bias),
+    side: firstText(row.side, row.action, metadata.side, metadata.action),
+    action: firstText(row.action, metadata.action),
+    signalDirection: firstText(row.signalDirection, row.signal_direction, metadata.signalDirection, metadata.signal_direction),
+    tradeSide: firstText(row.tradeSide, row.trade_side, metadata.tradeSide, metadata.trade_side),
+    entrySide: firstText(row.entrySide, row.entry_side, metadata.entrySide, metadata.entry_side),
+    nextMoveBias: firstText(row.nextMoveBias, row.next_move_bias, metadata.nextMoveBias, metadata.next_move_bias),
+    trend: firstText(row.trend, metadata.trend),
+    trendDirection: firstText(row.trendDirection, row.trend_direction, metadata.trendDirection, metadata.trend_direction),
+    bias: firstText(row.bias, metadata.bias),
+    recommendation: firstText(row.recommendation, metadata.recommendation),
     source: normalizeSource(row),
     strategy_id: strategy.strategy_id,
     strategy_name: strategy.strategy_name,
@@ -405,6 +458,13 @@ function normalizeGateDecision(row = {}) {
     status: row.allowed === false ? 'blocked' : 'allowed',
     result: null,
     pnlPct: null,
+    price: firstPositiveNum(row.price, row.currentPrice, row.current_price, row.lastPrice, row.last_price, metadata.price, metadata.current_price),
+    currentPrice: firstPositiveNum(row.currentPrice, row.current_price, row.price, metadata.currentPrice, metadata.current_price),
+    entryPrice: firstPositiveNum(row.entryPrice, row.entry_price, metadata.entryPrice, metadata.entry_price),
+    stopLoss: firstPositiveNum(row.stopLoss, row.stopLossPrice, row.stop_loss, row.stop_loss_price, metadata.stopLoss, metadata.stop_loss),
+    takeProfit: firstPositiveNum(row.takeProfit, row.takeProfit1, row.take_profit, row.take_profit_1, metadata.takeProfit, metadata.take_profit),
+    stopLossPct: firstPositiveNum(row.stopLossPct, row.stop_loss_pct, metadata.stopLossPct, metadata.stop_loss_pct),
+    takeProfitPct: firstPositiveNum(row.takeProfitPct, row.take_profit_pct, metadata.takeProfitPct, metadata.take_profit_pct),
     blockedReason: blockedReasonFromRow(row),
     gateStage: 'market_gate',
     paperOnly: true,
@@ -730,6 +790,29 @@ function buildDailySelectionCandidate({ strategyId, plannedRow, matrixRow, allow
     || null,
   );
   const candidateId = candidateCandidateId(activity) || `${strategyId}:${symbol}:${latestActivityAt || ''}`;
+  const rawDirectionFields = {};
+  for (const [key, value] of Object.entries({
+    direction: activity?.direction,
+    side: activity?.side,
+    action: activity?.action,
+    signalDirection: activity?.signalDirection,
+    tradeSide: activity?.tradeSide,
+    entrySide: activity?.entrySide,
+    nextMoveBias: activity?.nextMoveBias,
+    trend: activity?.trend,
+    trendDirection: activity?.trendDirection,
+    bias: activity?.bias,
+    recommendation: activity?.recommendation,
+  })) {
+    const out = text(value);
+    if (out) rawDirectionFields[key] = out;
+  }
+  const currentPrice = firstPositiveNum(activity?.currentPrice, activity?.price, activity?.entryPrice);
+  const entryPrice = firstPositiveNum(activity?.entryPrice, activity?.currentPrice, activity?.price);
+  const stopLoss = firstPositiveNum(activity?.stopLoss, activity?.stopLossPrice);
+  const takeProfit = firstPositiveNum(activity?.takeProfit, activity?.takeProfit1);
+  const stopLossPct = firstPositiveNum(activity?.stopLossPct, activity?.stop_loss_pct);
+  const takeProfitPct = firstPositiveNum(activity?.takeProfitPct, activity?.take_profit_pct);
 
   return {
     candidateId,
@@ -749,6 +832,25 @@ function buildDailySelectionCandidate({ strategyId, plannedRow, matrixRow, allow
     winRate: winRate == null ? null : winRate,
     pnl: pnl == null ? null : pnl,
     decision: decision || null,
+    direction: activity?.direction || null,
+    side: activity?.side || null,
+    action: activity?.action || null,
+    signalDirection: activity?.signalDirection || null,
+    tradeSide: activity?.tradeSide || null,
+    entrySide: activity?.entrySide || null,
+    nextMoveBias: activity?.nextMoveBias || null,
+    trend: activity?.trend || null,
+    trendDirection: activity?.trendDirection || null,
+    bias: activity?.bias || null,
+    recommendation: activity?.recommendation || null,
+    rawDirectionFields,
+    price: currentPrice,
+    currentPrice,
+    entryPrice,
+    stopLoss,
+    takeProfit,
+    stopLossPct,
+    takeProfitPct,
     blockedBy: null,
     activitySource: activity?.source || null,
     activityType: activity?.type || null,

@@ -154,6 +154,7 @@ withEnv({ IB_PAPER_MULTI_STRATEGY_TEST_MODE: undefined, IB_PAPER_SUBMIT_ROUTES_E
       side: 'BUY',
       blockers: [],
       allowedForIbPaperPreview: true,
+      entryPrice: 200,
       stopLoss: 199.8,
       takeProfit: 200.6,
     })] } },
@@ -164,6 +165,7 @@ withEnv({ IB_PAPER_MULTI_STRATEGY_TEST_MODE: undefined, IB_PAPER_SUBMIT_ROUTES_E
   assert.equal(c.resolvedDirection, 'BUY');
   assert.equal(c.side, 'BUY');
   assert.equal(c.directionVerified, true);
+  assert.equal(c.bracketReady, true);
   assert.equal(c.allowed, true);
   assert.equal(plan.counts.allowedCount, 1);
 }
@@ -185,6 +187,7 @@ withEnv({ IB_PAPER_MULTI_STRATEGY_TEST_MODE: undefined, IB_PAPER_SUBMIT_ROUTES_E
   assert.equal(c.allowed, false);
   assert.ok(c.blockers.includes('symbol_missing'));
   assert.ok(c.blockers.includes('unknown_market_group'));
+  assert.ok(c.blockers.includes('missing_entry_price'));
 }
 
 // 2. ON -> maxCandidates 20 surfaced; default limits.
@@ -262,7 +265,40 @@ withEnv({ IB_PAPER_MULTI_STRATEGY_TEST_MODE: 'true', IB_PAPER_SUBMIT_ROUTES_ENAB
   const noBracket = bp({ blueprintId: 'nb', takeProfit: null, takeProfit1: null });
   const plan = build({ tradeBlueprint: { blueprints: [noBracket] }, readOnlyState: sampleReadOnly, config: cfg() });
   assert.equal(plan.candidates[0].hasBracket, false);
+  assert.equal(plan.candidates[0].bracketReady, false);
+  assert.ok(plan.candidates[0].bracketBlockers.includes('missing_take_profit'));
   assert.ok(plan.candidates[0].blockers.includes('bracket_required_missing'));
+}
+
+// 7b. Entry-only is never allowed through the plan.
+{
+  const entryOnly = bp({ blueprintId: 'eo', entryReferencePrice: 200, stopLoss: null, takeProfit: null, takeProfit1: null });
+  const plan = build({ tradeBlueprint: { blueprints: [entryOnly] }, readOnlyState: sampleReadOnly, config: cfg() });
+  const c = plan.candidates[0];
+  assert.equal(c.allowed, false);
+  assert.equal(c.bracketReady, false);
+  assert.ok(c.blockers.includes('missing_stop_loss'));
+  assert.ok(c.blockers.includes('missing_take_profit'));
+  assert.ok(c.blockers.includes('bracket_required_missing'));
+}
+
+// 7c. Explicit side + entry + stop/take pct can be bracket-ready without submit.
+{
+  const pct = bp({
+    blueprintId: 'pct',
+    entryReferencePrice: 100,
+    stopLoss: null,
+    takeProfit: null,
+    takeProfit1: null,
+    stopLossPct: 0.2,
+    takeProfitPct: 0.4,
+  });
+  const plan = build({ tradeBlueprint: { blueprints: [pct] }, readOnlyState: sampleReadOnly, config: cfg() });
+  const c = plan.candidates[0];
+  assert.equal(c.bracketReady, true);
+  assert.equal(c.stopLoss, 100.2);
+  assert.equal(c.takeProfit, 99.6);
+  assert.equal(c.allowed, true);
 }
 
 // 8. Open order guard blocks same symbol.

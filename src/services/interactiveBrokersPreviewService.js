@@ -435,7 +435,7 @@ const IB_DIRECTION_SELL_TOKENS = new Set([
 // internal gap-fill hint injected from the read-only paper-trading runtime view.
 const IB_DIRECTION_FIELDS = [
   'direction', 'side', 'action', 'entrySide', 'tradeSide', 'signalDirection',
-  'setupDirection', 'bias', 'nextMoveBias', 'compassBias',
+  'setupDirection', 'trendDirection', 'trend', 'bias', 'nextMoveBias', 'compassBias',
   'underlying_signal_direction', 'expectedMove', 'recommendation', 'runtimeDirection',
 ];
 
@@ -444,12 +444,13 @@ const IB_DIRECTION_FIELDS = [
 function directionTokenToSide(value) {
   let raw = value;
   if (raw && typeof raw === 'object') {
-    raw = raw.decision || raw.direction || raw.side || raw.bias || '';
+    raw = raw.decision || raw.direction || raw.side || raw.bias || raw.trend || '';
   }
   const token = String(raw == null ? '' : raw).trim().toLowerCase();
   if (token === '') return null;
-  if (IB_DIRECTION_BUY_TOKENS.has(token)) return 'BUY';
-  if (IB_DIRECTION_SELL_TOKENS.has(token)) return 'SELL';
+  const tokens = [token, ...token.split(/[^a-zåäö0-9]+/i).map((item) => item.trim().toLowerCase()).filter(Boolean)];
+  if (tokens.some((item) => IB_DIRECTION_BUY_TOKENS.has(item))) return 'BUY';
+  if (tokens.some((item) => IB_DIRECTION_SELL_TOKENS.has(item))) return 'SELL';
   return null;
 }
 
@@ -467,11 +468,11 @@ function normalizeIbPaperDirection(candidate = {}) {
   }
   const distinct = [...new Set(resolved.map((r) => r.side))];
   if (distinct.length === 0) {
-    return { normalizedDirection: null, direction: null, directionSource: null, rawDirectionFields, ambiguous: false };
+    return { normalizedDirection: null, direction: null, directionSource: null, rawDirectionFields, ambiguous: false, directionConfidence: null };
   }
   if (distinct.length > 1) {
     // Conflicting explicit direction fields -> refuse to pick one.
-    return { normalizedDirection: null, direction: null, directionSource: 'conflict', rawDirectionFields, ambiguous: true };
+    return { normalizedDirection: null, direction: null, directionSource: 'conflict', rawDirectionFields, ambiguous: true, directionConfidence: 'conflict' };
   }
   const side = distinct[0];
   return {
@@ -480,6 +481,7 @@ function normalizeIbPaperDirection(candidate = {}) {
     directionSource: resolved[0].field,
     rawDirectionFields,
     ambiguous: false,
+    directionConfidence: 'explicit',
   };
 }
 
@@ -636,11 +638,19 @@ function buildOrderPreviewCandidate(candidate = {}, context = {}) {
     // Read-only direction-normalization debug fields (never enable an order).
     normalizedDirection: directionInfo.normalizedDirection,
     directionSource: directionInfo.directionSource,
+    directionConfidence: directionInfo.directionConfidence,
     directionAmbiguous: directionInfo.ambiguous === true,
     rawDirectionFields: directionInfo.rawDirectionFields,
     source: String(candidate.source || 'unknown'),
     confidence,
     gateScore,
+    price: candidate.price ?? null,
+    currentPrice: candidate.currentPrice ?? null,
+    entryPrice: candidate.entryPrice ?? null,
+    stopLoss: candidate.stopLoss ?? candidate.stopLossPrice ?? null,
+    takeProfit: candidate.takeProfit ?? candidate.takeProfit1 ?? null,
+    stopLossPct: candidate.stopLossPct ?? candidate.stop_loss_pct ?? null,
+    takeProfitPct: candidate.takeProfitPct ?? candidate.take_profit_pct ?? null,
     allowedForIbPaperPreview,
     blockers,
     reasonSv,
