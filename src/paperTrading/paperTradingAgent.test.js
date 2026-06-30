@@ -114,6 +114,15 @@ function main() {
   assert.equal(trade.entryQualityForwardPreview.gateEnabled, false);
   assert.equal(trade.entryQualityForwardPreview.runtimeBlocked, false);
   assert.equal(trade.entryQualityForwardPreview.twoMinuteConfirmationPreview.applies, false);
+  // Entry regime metadata — null-fallback when the candidate carries no regime/signal context.
+  assert.equal(trade.marketRegime, null);
+  assert.equal(trade.marketRegimeAtEntry, null);
+  assert.equal(trade.marketRegimeSource, null);
+  assert.equal(trade.signalType, null);
+  assert.equal(trade.signalState, null);
+  assert.equal(trade.tradeScore, null);
+  assert.equal(trade.setup, 'EMA_PULLBACK_UP');
+  assert.equal(trade.source, 'scanner');
 
   const narrowTrade = agent._internal.buildOpenTrade({
     symbol: 'AMD',
@@ -143,6 +152,47 @@ function main() {
     narrowTrade.entryQualityForwardPreview.twoMinuteConfirmationPreview.reasonCode,
     'narrow_compression_2m_confirmation_replay_warning',
   );
+
+  // Entry regime metadata — copied through when the candidate carries regime/signal context.
+  const regimeTrade = agent._internal.buildOpenTrade({
+    symbol: 'NVDA',
+    marketType: 'stocks',
+    price: 100,
+    status: 'go',
+    nextMoveBias: 'DOWN',
+    signalFamily: 'REGULAR_PULLBACK',
+    signalSubtype: 'REGULAR_PULLBACK',
+    confidenceScore: 72,
+    dataFreshness: 'LIVE',
+    strategyId: 'trend_continuation',
+    strategyName: 'Trend Continuation',
+    originalRiskEvaluation: baseRisk,
+    marketRegime: 'TREND_DAY_DOWN',
+    signal: 'SHORT_TRIGGERED',
+    stateGraph: { state: 'REGULAR_TREND' },
+    tradeScore: 58,
+  }, {
+    allowed: true,
+    mode: 'allow',
+    gateScore: 75,
+    threshold: 70,
+  });
+  assert.equal(regimeTrade.marketRegime, 'TREND_DAY_DOWN');
+  assert.equal(regimeTrade.marketRegimeAtEntry, 'TREND_DAY_DOWN');
+  assert.equal(regimeTrade.marketRegimeSource, 'scanner_marketRegimeV2');
+  assert.equal(regimeTrade.signalType, 'SHORT_TRIGGERED');
+  assert.equal(regimeTrade.signalState, 'REGULAR_TREND');
+  assert.equal(regimeTrade.tradeScore, 58);
+  assert.equal(regimeTrade.setup, 'REGULAR_PULLBACK');
+  assert.equal(regimeTrade.source, 'scanner');
+  // daytradeScore fallback when tradeScore is absent
+  const daytradeFallback = agent._internal.buildOpenTrade({
+    symbol: 'QQQ', marketType: 'stocks', price: 100, status: 'go', nextMoveBias: 'DOWN',
+    signalFamily: 'REGULAR_PULLBACK', signalSubtype: 'REGULAR_PULLBACK', confidenceScore: 70,
+    dataFreshness: 'LIVE', strategyId: 'trend_continuation', originalRiskEvaluation: baseRisk,
+    daytradeScore: 41,
+  }, { allowed: true, mode: 'allow', gateScore: 72, threshold: 70 });
+  assert.equal(daytradeFallback.tradeScore, 41);
 
   const narrowWaitEvent = agent._internal.eventFromCandidate('MARKET_CLOSED', {
     symbol: 'SPY',

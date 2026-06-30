@@ -774,6 +774,18 @@ function buildOpenTrade(c, gateDecision = null) {
     gateThreshold:           gateDecision?.threshold    ?? null,
     gateMode:                gateDecision?.mode         ?? null,
     gateDecision:            gateDecision               ?? null,
+    // Read-only analysis metadata copied from the entry context (decisionMonitor
+    // candidate). Pure annotation: never read by entry/exit/risk/gate/order logic.
+    // Lets regime + signal-context live directly in the trade record so research
+    // no longer needs a brittle after-the-fact join from signals/history.
+    marketRegime:            c.marketRegime ?? null,
+    marketRegimeAtEntry:     c.marketRegime ?? null,
+    marketRegimeSource:      c.marketRegime ? 'scanner_marketRegimeV2' : null,
+    signalType:              c.signal ?? null,
+    signalState:             c.stateGraph?.state ?? c.state ?? c.narrowState ?? null,
+    tradeScore:              c.tradeScore ?? c.daytradeScore ?? null,
+    setup:                   c.signalSubtype ?? null,
+    source:                  c.source ?? 'scanner',
     sourceStrategyId:        c.sourceStrategyId || null,
     sourceStrategyName:      c.sourceStrategyName || null,
     resolvedStrategyId:      c.resolvedStrategyId || c.strategyId || c.strategy_id || c.setupId || null,
