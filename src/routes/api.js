@@ -4524,6 +4524,31 @@ function ibPaperSubmitDisabledResponse() {
     featureFlag: 'IB_PAPER_SUBMIT_ROUTES_ENABLED',
   };
 }
+function withIbPaperSubmitRouteLock(preview) {
+  const submitRoutesEnabled = isIbPaperSubmitRoutesEnabled();
+  const blockers = Array.isArray(preview?.blockers) ? [...preview.blockers] : [];
+  if (!submitRoutesEnabled && !blockers.includes('ib_paper_submit_routes_disabled')) {
+    blockers.push('ib_paper_submit_routes_disabled');
+  }
+  return {
+    ...preview,
+    readOnly: true,
+    submitRoutesEnabled,
+    submitRouteLocked: !submitRoutesEnabled,
+    blockers,
+    currentBlockers: blockers,
+    wouldPlaceOrder: false,
+    wouldSendOrder: false,
+    wouldCreateIbPaperOrder: false,
+    orderSent: false,
+    executed: false,
+    submitted: false,
+    placeOrderCalled: false,
+    submitFunctionCalled: false,
+    realSubmitAllowed: false,
+    allowRealSubmit: false,
+  };
+}
 router.get('/interactive-brokers/status', (req, res) => {
   try { res.json(interactiveBrokersPreviewService.getIbPaperStatus()); }
   catch (err) { res.status(500).json({ ok: false, error: err.message, safety: interactiveBrokersPreviewService.SAFETY }); }
@@ -4558,7 +4583,35 @@ router.get('/interactive-brokers/paper-readonly-state', async (req, res) => {
 router.post('/interactive-brokers/paper-execution-preview', async (req, res) => {
   try {
     const body = req.body && typeof req.body === 'object' ? req.body : {};
-    res.json(await interactiveBrokersPaperExecutionPreviewService.buildPaperExecutionPreview({ body }));
+    const preview = await interactiveBrokersPaperExecutionPreviewService.buildPaperExecutionPreview({ body });
+    res.json(withIbPaperSubmitRouteLock(preview));
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message, safety: interactiveBrokersPaperExecutionPreviewService.SAFETY });
+  }
+});
+// Read-only GET alias for the POST preview probe above, so manual GET checks
+// (and any read-only tooling) hit the same safe dry-run preview. The UI uses
+// POST; this GET forces dryRun=true/mockOnly=true and reuses the same service,
+// which never places, queues, arms or cancels an order. Submit stays gated by
+// IB_PAPER_SUBMIT_ROUTES_ENABLED — this route opens no order path.
+router.get('/interactive-brokers/paper-execution-preview', async (req, res) => {
+  try {
+    const query = req.query && typeof req.query === 'object' ? req.query : {};
+    // Representative safe sample when no order params are supplied, so a bare
+    // GET returns a clean read-only preview (same shape the UI's POST probe
+    // uses). dryRun/mockOnly are always forced true regardless of query.
+    const body = {
+      symbol: 'QQQ',
+      action: 'BUY',
+      quantity: 1,
+      orderType: 'MKT',
+      reason: 'ui_preview_status_no_order',
+      ...query,
+      dryRun: true,
+      mockOnly: true,
+    };
+    const preview = await interactiveBrokersPaperExecutionPreviewService.buildPaperExecutionPreview({ body });
+    res.json(withIbPaperSubmitRouteLock(preview));
   } catch (err) {
     res.status(500).json({ ok: false, error: err.message, safety: interactiveBrokersPaperExecutionPreviewService.SAFETY });
   }
