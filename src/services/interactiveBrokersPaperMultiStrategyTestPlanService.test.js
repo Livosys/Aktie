@@ -591,4 +591,61 @@ withEnv({ IB_PAPER_MULTI_STRATEGY_TEST_MODE: 'true', IB_PAPER_SUBMIT_ROUTES_ENAB
   assert.equal(/paper-execute/.test(source), false);
 }
 
+// 23. Setup-builder wiring is read-only and purely additive.
+{
+  // 23a. Each candidate carries a setupBuilder diagnostic; plan diagnostics rolls it up.
+  const watch = previewCandidate({
+    symbol: 'TSLA', strategyId: 'trend_continuation',
+    direction: 'UNCERTAIN', nextMoveBias: 'UNCERTAIN', blockers: [],
+  });
+  const readyBuy = previewCandidate({
+    symbol: 'GOOGL', strategyId: 'narrow_breakout', direction: 'BUY', side: 'BUY',
+    normalizedDirection: 'BUY', marketGroup: 'mag7', normalizedMarketGroup: 'mag7',
+    entryPrice: 100, stopLoss: 99, takeProfit: 103, blockers: [],
+  });
+  const plan = build({
+    tradeBlueprint: { blueprints: [], orderPreview: { candidates: [watch, readyBuy] } },
+    readOnlyState: sampleReadOnly,
+    config: cfg(),
+  });
+
+  // Diagnostics rollup present and consistent.
+  assert.ok(plan.diagnostics.setupBuilder, 'plan diagnostics has setupBuilder rollup');
+  assert.equal(plan.diagnostics.setupBuilder.evaluated, 2);
+  assert.equal(plan.diagnostics.setupBuilder.setupReadyCount, 1);
+  assert.equal(plan.diagnostics.setupBuilder.blockedCount, 1);
+
+  // Watch signal -> setupBuilder blocked with explicit blockers.
+  const watchRow = plan.candidates.find((c) => c.symbol === 'TSLA');
+  assert.ok(watchRow.setupBuilder, 'watch candidate has setupBuilder diagnostic');
+  assert.equal(watchRow.setupBuilder.setupReady, false);
+  assert.ok(watchRow.setupBuilder.blockers.includes('direction_not_verified'));
+
+  // Complete BUY setup -> setupBuilder setupReady with full bracket.
+  const readyRow = plan.candidates.find((c) => c.symbol === 'GOOGL');
+  assert.equal(readyRow.setupBuilder.setupReady, true, JSON.stringify(readyRow.setupBuilder.blockers));
+  assert.equal(readyRow.setupBuilder.side, 'BUY');
+  assert.equal(readyRow.setupBuilder.entryPrice, 100);
+  assert.equal(readyRow.setupBuilder.quantity, 1);
+
+  // 23b. Additive only: setupBuilder never changes allowed/blockers/counts.
+  const before = build({
+    tradeBlueprint: { blueprints: [], orderPreview: { candidates: [watch, readyBuy] } },
+    readOnlyState: sampleReadOnly,
+    config: cfg(),
+    setupBuilderService: { buildSetup: () => { throw new Error('should be caught'); } },
+  });
+  assert.equal(before.counts.candidateCount, plan.counts.candidateCount);
+  assert.equal(before.counts.allowedCount, plan.counts.allowedCount);
+  assert.equal(before.counts.blockedCount, plan.counts.blockedCount);
+  for (let i = 0; i < before.candidates.length; i += 1) {
+    assert.deepEqual(before.candidates[i].blockers, plan.candidates[i].blockers,
+      'blockers unchanged regardless of setup-builder');
+    assert.equal(before.candidates[i].allowed, plan.candidates[i].allowed);
+  }
+  // When the builder throws it is swallowed; the diagnostic degrades to null.
+  assert.equal(before.candidates[0].setupBuilder, null);
+  assert.equal(before.safety.can_place_orders, false);
+}
+
 console.log('interactiveBrokersPaperMultiStrategyTestPlanService.test.js: all assertions passed');

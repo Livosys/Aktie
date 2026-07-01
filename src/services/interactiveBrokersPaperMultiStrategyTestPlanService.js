@@ -21,6 +21,7 @@
 const configService = require('./interactiveBrokersPaperMultiStrategyConfigService');
 const directionResolverService = require('./interactiveBrokersDirectionResolverService');
 const assetToggleService = require('./interactiveBrokersPaperPreviewAssetToggleService');
+const setupBuilderService = require('./interactiveBrokersPaperSetupBuilderService');
 
 const MODE = 'ib_paper_multi_strategy_test_plan';
 const MODE_FLAG = configService.MODE_FLAG;
@@ -340,6 +341,32 @@ function classifyCandidate(blueprint, context) {
   const blockers = [...new Set(planBlockers)];
   const allowed = blockers.length === 0;
 
+  // Read-only setup-builder diagnostics. Purely additive: it never affects
+  // `allowed`/`blockers`/counts. It reports whether this candidate could become
+  // a VERIFIED trade setup (side + complete, valid bracket) without inventing
+  // any value. Asset class is passed through so crypto/ETF gating stays aligned.
+  const setupSvc = context.setupBuilderService || setupBuilderService;
+  let setupBuilderView = null;
+  try {
+    const setup = setupSvc.buildSetup(
+      { ...blueprint, assetGroup: assetInfo.assetKey, isCrypto: crypto },
+      { includeEtf: config.includeEtf === true },
+    );
+    setupBuilderView = {
+      setupReady: setup.setupReady,
+      side: setup.side,
+      entryPrice: setup.entryPrice,
+      stopLossPrice: setup.stopLossPrice,
+      takeProfitPrice: setup.takeProfitPrice,
+      quantity: setup.quantity,
+      bracketReady: setup.bracketReady,
+      blockers: setup.blockers,
+      diagnostics: setup.diagnostics,
+    };
+  } catch (_) {
+    setupBuilderView = null;
+  }
+
   return {
     symbol,
     strategyId,
@@ -389,6 +416,8 @@ function classifyCandidate(blueprint, context) {
     takeProfit: bracket.takeProfit,
     stopLossPct: bracket.stopLossPct,
     blueprintId: blueprint?.blueprintId || null,
+    // Additive read-only diagnostics (does not affect allowed/blockers).
+    setupBuilder: setupBuilderView,
   };
 }
 
@@ -453,6 +482,7 @@ function buildMultiStrategyTestPlan(input = {}) {
     config, openOrderSymbols, positionSymbols, duplicateKeys, perStrategyCounts, counters,
     directionResolver: input.directionResolver || directionResolverService,
     assetToggleService: input.assetToggleService || assetToggleService,
+    setupBuilderService: input.setupBuilderService || setupBuilderService,
   };
 
   // Respect maxCandidates when surfacing the plan. Include blocked preview
@@ -545,6 +575,12 @@ function buildMultiStrategyTestPlan(input = {}) {
       previewCandidateCount: previewCandidates.length,
       fallbackCandidateCount: fallbackCandidates.length,
       emptyReason: candidates.length === 0 ? 'no_trade_blueprints_or_preview_candidates' : null,
+      // Read-only setup-builder rollup (watch-signal -> verified trade setup).
+      setupBuilder: {
+        evaluated: candidates.filter((c) => c.setupBuilder).length,
+        setupReadyCount: candidates.filter((c) => c.setupBuilder && c.setupBuilder.setupReady).length,
+        blockedCount: candidates.filter((c) => c.setupBuilder && !c.setupBuilder.setupReady).length,
+      },
     },
     currentBlockers: [...new Set(currentBlockers)],
     candidates,
