@@ -690,6 +690,127 @@ withEnv({ IB_PAPER_MULTI_STRATEGY_TEST_MODE: 'true', IB_PAPER_SUBMIT_ROUTES_ENAB
   assert.equal(plan.diagnostics.setupMaterialization.materializedCount, 1);
 }
 
+// 24b. Stale raw bracket blockers are removed only when the materialized setup
+//      has a complete bracket whose stop distance passes the configured min.
+{
+  const now = '2026-07-01T19:30:00.000Z';
+  const plan = build({
+    tradeBlueprint: { blueprints: [], orderPreview: { candidates: [previewCandidate({
+      symbol: 'GOOGL',
+      strategyId: 'trend_continuation',
+      direction: 'BUY',
+      normalizedDirection: 'BUY',
+      side: 'BUY',
+      blockers: [
+        'missing_entry_price',
+        'missing_stop_loss',
+        'missing_take_profit',
+        'bracket_required_missing',
+        'stop_loss_too_small',
+        'ib_paper_execution_disabled',
+        'order_sending_disabled_phase_3',
+      ],
+      timestamp: now,
+    })] } },
+    readOnlyState: sampleReadOnly,
+    config: cfg(),
+    now,
+    marketResults: [{ symbol: 'GOOGL', price: 361.52, lastUpdate: now }],
+  });
+  const c = plan.candidates[0];
+  assert.equal(c.setupMaterialized, true, JSON.stringify(c.setupMaterializationBlockers));
+  assert.equal(c.setupReady, true);
+  assert.equal(c.bracketReady, true);
+  assert.equal(c.entryPrice, 361.52);
+  assert.equal(c.stopLossPrice, 360.6524);
+  assert.equal(c.takeProfitPrice, 363.0818);
+  assert.equal(c.materializedStopMinPct, 0.1);
+  assert.equal(c.materializedStopPassesMin, true);
+  assert.ok(c.materializedStopDistancePct >= 0.2399);
+  assert.ok(c.staleBlockersFiltered.includes('missing_entry_price'));
+  assert.ok(c.staleBlockersFiltered.includes('missing_stop_loss'));
+  assert.ok(c.staleBlockersFiltered.includes('missing_take_profit'));
+  assert.ok(c.staleBlockersFiltered.includes('bracket_required_missing'));
+  assert.ok(c.staleBlockersFiltered.includes('stop_loss_too_small'));
+  assert.ok(!c.blockers.includes('missing_entry_price'));
+  assert.ok(!c.blockers.includes('missing_stop_loss'));
+  assert.ok(!c.blockers.includes('missing_take_profit'));
+  assert.ok(!c.blockers.includes('bracket_required_missing'));
+  assert.ok(!c.blockers.includes('stop_loss_too_small'));
+  assert.ok(c.blockers.includes('ib_paper_execution_disabled'));
+  assert.ok(c.blockers.includes('order_sending_disabled_phase_3'));
+  assert.equal(c.allowed, false);
+}
+
+// 24c. A materialized bracket whose actual stop distance is below the min keeps
+//      stop_loss_too_small.
+{
+  const now = '2026-07-01T19:30:00.000Z';
+  const plan = build({
+    tradeBlueprint: { blueprints: [], orderPreview: { candidates: [previewCandidate({
+      symbol: 'AAPL',
+      strategyId: 'trend_continuation',
+      direction: 'BUY',
+      normalizedDirection: 'BUY',
+      side: 'BUY',
+      blockers: ['stop_loss_too_small'],
+      timestamp: now,
+    })] } },
+    readOnlyState: sampleReadOnly,
+    config: cfg(),
+    now,
+    marketResults: [{ symbol: 'AAPL', price: 200, lastUpdate: now }],
+    strategyRiskRules: { trend_continuation: { stopLossPct: 0.05, takeProfitRMultiple: 1.8 } },
+    setupBuilderService: {
+      buildSetup: () => ({
+        setupReady: true,
+        side: 'BUY',
+        entryPrice: 200,
+        stopLossPrice: 199.9,
+        takeProfitPrice: 200.18,
+        quantity: 1,
+        bracketReady: true,
+        blockers: [],
+        diagnostics: {},
+      }),
+    },
+  });
+  const c = plan.candidates[0];
+  assert.equal(c.setupMaterialized, true);
+  assert.equal(c.bracketReady, true);
+  assert.equal(c.materializedStopDistancePct, 0.05);
+  assert.equal(c.materializedStopMinPct, 0.1);
+  assert.equal(c.materializedStopPassesMin, false);
+  assert.ok(c.blockers.includes('stop_loss_too_small'));
+  assert.ok(!c.staleBlockersFiltered.includes('stop_loss_too_small'));
+}
+
+// 24d. Incomplete materialization keeps missing/bracket blockers.
+{
+  const now = '2026-07-01T19:30:00.000Z';
+  const c = build({
+    tradeBlueprint: { blueprints: [], orderPreview: { candidates: [previewCandidate({
+      symbol: 'AAPL',
+      strategyId: 'trend_continuation',
+      direction: 'BUY',
+      normalizedDirection: 'BUY',
+      side: 'BUY',
+      blockers: ['missing_stop_loss', 'missing_take_profit', 'bracket_required_missing'],
+      timestamp: now,
+    })] } },
+    readOnlyState: sampleReadOnly,
+    config: cfg(),
+    now,
+    marketResults: [{ symbol: 'AAPL', price: 200, lastUpdate: now }],
+    strategyRiskRules: { trend_continuation: { stopLossPct: 0.24, takeProfitRMultiple: null } },
+  }).candidates[0];
+  assert.equal(c.setupMaterialized, false);
+  assert.ok(c.blockers.includes('missing_stop_loss'));
+  assert.ok(c.blockers.includes('missing_take_profit'));
+  assert.ok(c.blockers.includes('bracket_required_missing'));
+  assert.deepEqual(c.staleBlockersFiltered, []);
+}
+
 // 25. Materialization blocks stale price, missing timestamp, missing risk,
 //     missing direction and null/zero prices explicitly.
 {
@@ -759,6 +880,7 @@ withEnv({ IB_PAPER_MULTI_STRATEGY_TEST_MODE: 'true', IB_PAPER_SUBMIT_ROUTES_ENAB
   assert.equal(crypto.isCrypto, true);
   assert.equal(crypto.allowed, false);
   assert.ok(crypto.blockers.includes('crypto_not_allowed'));
+  assert.ok(!crypto.staleBlockersFiltered.includes('crypto_not_allowed'));
 
   const etf = build({
     tradeBlueprint: { blueprints: [], orderPreview: { candidates: [previewCandidate({
@@ -772,6 +894,7 @@ withEnv({ IB_PAPER_MULTI_STRATEGY_TEST_MODE: 'true', IB_PAPER_SUBMIT_ROUTES_ENAB
   }).candidates[0];
   assert.equal(etf.allowed, false);
   assert.ok(etf.blockers.includes('qqq_etf_blocked'));
+  assert.ok(!etf.staleBlockersFiltered.includes('qqq_etf_blocked'));
 }
 
 // 27. Deterministic dedupe keeps the more materialized row for the same

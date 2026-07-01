@@ -216,6 +216,13 @@ const ETF_BLOCKERS = new Set([
 const CRYPTO_BLOCKERS = new Set([
   'crypto_not_allowed_for_ib_paper_first_order',
 ]);
+const STALE_MATERIALIZED_BRACKET_BLOCKERS = new Set([
+  'missing_entry_price',
+  'missing_stop_loss',
+  'missing_take_profit',
+  'bracket_required_missing',
+  'stop_loss_too_small',
+]);
 
 function normalizeBlocker(blocker) {
   const raw = String(blocker || '').trim();
@@ -383,6 +390,59 @@ function buildBracketDiagnostics(blueprint, side, config = {}) {
     takeProfitSource: takeSource,
     stopLossPct: actualStopLossPct,
     bracketBlockers: [...new Set(blockers)],
+  };
+}
+
+function buildMaterializedStopDiagnostics({ bracket, materialization, config = {} }) {
+  const entry = toNumber(bracket?.entryReferencePrice);
+  const stop = toNumber(bracket?.stopLoss);
+  const take = toNumber(bracket?.takeProfit);
+  const minStopPct = toNumber(config.minStopLossPct ?? 0.10);
+  const setupComplete = materialization?.setupMaterialized === true
+    && materialization?.setup?.setupReady === true
+    && bracket?.bracketReady === true
+    && entry > 0
+    && stop > 0
+    && take > 0;
+  const stopDistancePct = entry > 0 && stop > 0
+    ? round((Math.abs(entry - stop) / entry) * 100, 4)
+    : null;
+  const stopPassesMin = setupComplete === true
+    && stopDistancePct != null
+    && minStopPct != null
+    && stopDistancePct + 1e-6 >= minStopPct;
+
+  return {
+    setupComplete,
+    materializedStopDistancePct: stopDistancePct,
+    materializedStopMinPct: minStopPct,
+    materializedStopPassesMin: stopPassesMin,
+  };
+}
+
+function filterStaleMaterializedBracketBlockers(planBlockers, { bracket, materialization, config = {} } = {}) {
+  const stopDiagnostics = buildMaterializedStopDiagnostics({ bracket, materialization, config });
+  const staleBlockersFiltered = [];
+  const filtered = [];
+
+  for (const blocker of planBlockers) {
+    if (!STALE_MATERIALIZED_BRACKET_BLOCKERS.has(blocker) || stopDiagnostics.setupComplete !== true) {
+      filtered.push(blocker);
+      continue;
+    }
+    if (blocker === 'stop_loss_too_small' && stopDiagnostics.materializedStopPassesMin !== true) {
+      filtered.push(blocker);
+      continue;
+    }
+    staleBlockersFiltered.push(blocker);
+  }
+
+  return {
+    blockers: filtered,
+    staleBlockersFiltered: [...new Set(staleBlockersFiltered)],
+    materializedStopDistancePct: stopDiagnostics.materializedStopDistancePct,
+    materializedStopMinPct: stopDiagnostics.materializedStopMinPct,
+    materializedStopPassesMin: stopDiagnostics.materializedStopPassesMin,
   };
 }
 
@@ -634,7 +694,12 @@ function classifyCandidate(blueprint, context) {
   else counters.global += 1;
   if (globalCapReached) planBlockers.push('global_daily_cap_reached');
 
-  const blockers = [...new Set(planBlockers)];
+  const staleBlockerDiagnostics = filterStaleMaterializedBracketBlockers(planBlockers, {
+    bracket,
+    materialization,
+    config,
+  });
+  const blockers = [...new Set(staleBlockerDiagnostics.blockers)];
   const planningAllowed = blockers.length === 0;
   const allowed = planningAllowed
     && (materialization.setupMaterialized !== true || (enabled === true && submitRoutesEnabled === true));
@@ -690,6 +755,7 @@ function classifyCandidate(blueprint, context) {
     allowed,
     planningAllowed,
     blockers,
+    staleBlockersFiltered: staleBlockerDiagnostics.staleBlockersFiltered,
     rawBlueprintBlockers: rawBlockers,
     wouldForceQuantity,
     originalQuantity: blueprint?.quantity ?? null,
@@ -719,6 +785,9 @@ function classifyCandidate(blueprint, context) {
     takeProfitPrice: bracket.takeProfit,
     stopLossPct: bracket.stopLossPct ?? materialization.stopLossPct,
     takeProfitRMultiple: materialization.takeProfitRMultiple,
+    materializedStopDistancePct: staleBlockerDiagnostics.materializedStopDistancePct,
+    materializedStopMinPct: staleBlockerDiagnostics.materializedStopMinPct,
+    materializedStopPassesMin: staleBlockerDiagnostics.materializedStopPassesMin,
     setupReady: setupBuilderView?.setupReady === true,
     setupMaterialized: materialization.setupMaterialized === true,
     setupMaterializationSource: materialization.setupMaterializationSource,
