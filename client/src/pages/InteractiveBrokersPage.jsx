@@ -820,7 +820,16 @@ export default function InteractiveBrokersPage() {
 
             <div style={{ marginTop: 16 }}>
               <div style={{ color: '#94a3b8', marginBottom: 8, fontSize: 13 }}>
-                Kandidater ({multiPlanView?.summary?.allowedCount ?? 0} allowed / {multiPlanView?.summary?.blockedCount ?? 0} blocked):
+                Kandidater ({multiPlanView?.summary?.allowedCount ?? 0} allowed / {multiPlanView?.summary?.blockedCount ?? 0} blocked)
+                {multiPlanView?.diagnostics?.setupBuilder ? (
+                  <span style={{ color: '#64748b' }}>
+                    {' · Setup-builder: '}
+                    <span style={{ color: '#4ade80' }}>{multiPlanView.diagnostics.setupBuilder.setupReadyCount ?? 0} verifierade</span>
+                    {' / '}
+                    <span style={{ color: '#fbbf24' }}>{multiPlanView.diagnostics.setupBuilder.blockedCount ?? 0} watch-signaler</span>
+                    {' (read-only)'}
+                  </span>
+                ) : null}:
               </div>
               {multiPlanCandidates.length === 0 ? (
                 <div style={{ color: '#64748b', fontSize: 13 }}>
@@ -837,6 +846,7 @@ export default function InteractiveBrokersPage() {
                         <th style={{ padding: '6px 8px' }}>Status</th>
                         <th style={{ padding: '6px 8px' }}>Force qty</th>
                         <th style={{ padding: '6px 8px' }}>Bracket</th>
+                        <th style={{ padding: '6px 8px' }}>Setup</th>
                         <th style={{ padding: '6px 8px' }}>Open order</th>
                         <th style={{ padding: '6px 8px' }}>Position</th>
                         <th style={{ padding: '6px 8px' }}>Duplicate</th>
@@ -855,6 +865,22 @@ export default function InteractiveBrokersPage() {
                           </td>
                           <td style={{ padding: '6px 8px' }}>{c.wouldForceQuantity ?? '–'}</td>
                           <td style={{ padding: '6px 8px' }}>{c.wouldRequireBracket ? 'Ja' : 'Nej'}</td>
+                          <td style={{ padding: '6px 8px' }}>
+                            {c.setupBuilder ? (
+                              c.setupBuilder.setupReady ? (
+                                <span title={`Verifierad setup: ${c.setupBuilder.side} · entry ${c.setupBuilder.entryPrice} · SL ${c.setupBuilder.stopLossPrice} · TP ${c.setupBuilder.takeProfitPrice}`}>
+                                  <Badge ok labelTrue="Setup ✓" labelFalse="" />
+                                </span>
+                              ) : (
+                                <span
+                                  title={`Blockers: ${(c.setupBuilder.blockers || []).join(', ') || '–'}`}
+                                  style={{ color: c.setupBuilder.diagnostics?.reason === 'candidate_is_watch_signal_not_trade_setup' ? '#fbbf24' : '#f87171', fontSize: 12, fontWeight: 600, cursor: 'help' }}
+                                >
+                                  {c.setupBuilder.diagnostics?.reason === 'candidate_is_watch_signal_not_trade_setup' ? 'Watch-signal' : 'Ofullständig'}
+                                </span>
+                              )
+                            ) : '–'}
+                          </td>
                           <td style={{ padding: '6px 8px', color: c.openOrderConflict ? '#f87171' : '#cbd5e1' }}>{c.openOrderConflict ? 'Ja' : 'Nej'}</td>
                           <td style={{ padding: '6px 8px', color: c.positionConflict ? '#f87171' : '#cbd5e1' }}>{c.positionConflict ? 'Ja' : 'Nej'}</td>
                           <td style={{ padding: '6px 8px', color: c.duplicateConflict ? '#f87171' : '#cbd5e1' }}>{c.duplicateConflict ? 'Ja' : 'Nej'}</td>
