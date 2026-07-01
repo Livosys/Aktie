@@ -449,6 +449,140 @@ withEnv({ IB_PAPER_MULTI_STRATEGY_TEST_MODE: 'true', IB_PAPER_SUBMIT_ROUTES_ENAB
   assert.ok(plan.currentBlockers.includes('phase_2_no_auto_submit'));
 });
 
+// 22. Deterministic synthetic SELL fixture (no live market needed).
+//     Scanner-source candidate, ordinary US stock (TSLA), approved strategy
+//     (trend_continuation, no strategy blocker), explicit SELL/SHORT, and a
+//     valid *short* bracket: stop ABOVE entry, take-profit BELOW entry,
+//     stopLossPct >= minStopLossPct, quantity forceable to 1. This proves the
+//     SELL path end-to-end without any order/arm/submit.
+{
+  const sellFixture = previewCandidate({
+    symbol: 'TSLA',
+    strategyId: 'trend_continuation',
+    strategyName: 'Trend Continuation',
+    direction: 'SELL',            // explicit short/sell
+    normalizedDirection: 'SELL',
+    side: 'SELL',
+    source: 'scanner',            // scanner-source candidate
+    blockers: [],                 // approved strategy: no allowlist/strategy blocker
+    allowedForIbPaperPreview: true,
+    entryPrice: 200,              // entryPrice present
+    stopLoss: 202,                // stop ABOVE entry for a short (1.0% >= minStopLossPct 0.10)
+    takeProfit: 197,              // take-profit BELOW entry for a short
+  });
+  const plan = build({
+    tradeBlueprint: { blueprints: [], orderPreview: { candidates: [sellFixture] } },
+    readOnlyState: sampleReadOnly,
+    config: cfg(),
+  });
+  const c = plan.candidates[0];
+  assert.equal(c.symbol, 'TSLA');
+  assert.equal(c.strategyId, 'trend_continuation');
+  assert.equal(c.source, 'scanner');
+  assert.equal(c.normalizedDirection, 'SELL', 'normalizedDirection must be SELL');
+  assert.equal(c.resolvedDirection, 'SELL');
+  assert.equal(c.side, 'SELL', 'side must be SELL');
+  assert.equal(c.directionVerified, true);
+  assert.equal(c.bracketReady, true, 'valid short bracket must be bracketReady');
+  assert.equal(c.stopLoss, 202);
+  assert.equal(c.takeProfit, 197);
+  assert.ok(c.stopLossPct >= 0.10, 'stopLossPct must be >= minStopLossPct');
+  assert.equal(c.wouldForceQuantity, 1, 'quantity forced to 1');
+  assert.equal(c.allowed, true, 'allowed when every other gate is green');
+  assert.deepEqual(c.blockers, [], 'no blockers on a valid SELL bracket');
+  assert.equal(plan.counts.allowedCount, 1);
+  assert.equal(plan.directionSummary.sell, 1);
+}
+
+// 22b. Mirror BUY/long fixture with a valid long bracket (stop below entry,
+//      take-profit above entry) — proves the long path symmetrically.
+{
+  const buyFixture = previewCandidate({
+    symbol: 'NFLX',
+    strategyId: 'trend_continuation',
+    strategyName: 'Trend Continuation',
+    direction: 'BUY',
+    normalizedDirection: 'BUY',
+    side: 'BUY',
+    source: 'scanner',
+    blockers: [],
+    allowedForIbPaperPreview: true,
+    entryPrice: 200,
+    stopLoss: 198,                // stop BELOW entry for a long
+    takeProfit: 203,              // take-profit ABOVE entry for a long
+  });
+  const plan = build({
+    tradeBlueprint: { blueprints: [], orderPreview: { candidates: [buyFixture] } },
+    readOnlyState: sampleReadOnly,
+    config: cfg(),
+  });
+  const c = plan.candidates[0];
+  assert.equal(c.symbol, 'NFLX');
+  assert.equal(c.normalizedDirection, 'BUY', 'normalizedDirection must be BUY');
+  assert.equal(c.resolvedDirection, 'BUY');
+  assert.equal(c.side, 'BUY', 'side must be BUY');
+  assert.equal(c.directionVerified, true);
+  assert.equal(c.bracketReady, true, 'valid long bracket must be bracketReady');
+  assert.equal(c.wouldForceQuantity, 1);
+  assert.equal(c.allowed, true);
+  assert.deepEqual(c.blockers, []);
+  assert.equal(plan.directionSummary.buy, 1);
+}
+
+// 22c. Negative: SELL fixture WITHOUT take-profit is blocked (missing bracket).
+{
+  const sellNoTake = previewCandidate({
+    symbol: 'TSLA',
+    strategyId: 'trend_continuation',
+    direction: 'SELL',
+    normalizedDirection: 'SELL',
+    side: 'SELL',
+    source: 'scanner',
+    blockers: [],
+    entryPrice: 200,
+    stopLoss: 202,
+    takeProfit: null,
+  });
+  const plan = build({
+    tradeBlueprint: { blueprints: [], orderPreview: { candidates: [sellNoTake] } },
+    readOnlyState: sampleReadOnly,
+    config: cfg(),
+  });
+  const c = plan.candidates[0];
+  assert.equal(c.side, 'SELL');
+  assert.equal(c.bracketReady, false);
+  assert.equal(c.allowed, false, 'SELL without take-profit must be blocked');
+  assert.ok(c.blockers.includes('missing_take_profit'));
+  assert.ok(c.blockers.includes('bracket_required_missing'));
+}
+
+// 22d. Negative: SELL fixture WITHOUT stop-loss is blocked (missing bracket).
+{
+  const sellNoStop = previewCandidate({
+    symbol: 'TSLA',
+    strategyId: 'trend_continuation',
+    direction: 'SELL',
+    normalizedDirection: 'SELL',
+    side: 'SELL',
+    source: 'scanner',
+    blockers: [],
+    entryPrice: 200,
+    stopLoss: null,
+    takeProfit: 197,
+  });
+  const plan = build({
+    tradeBlueprint: { blueprints: [], orderPreview: { candidates: [sellNoStop] } },
+    readOnlyState: sampleReadOnly,
+    config: cfg(),
+  });
+  const c = plan.candidates[0];
+  assert.equal(c.side, 'SELL');
+  assert.equal(c.bracketReady, false);
+  assert.equal(c.allowed, false, 'SELL without stop-loss must be blocked');
+  assert.ok(c.blockers.includes('missing_stop_loss'));
+  assert.ok(c.blockers.includes('bracket_required_missing'));
+}
+
 // 21. Service remains read-only: no broker/order submit/cancel calls.
 {
   const source = fs.readFileSync(path.join(__dirname, 'interactiveBrokersPaperMultiStrategyTestPlanService.js'), 'utf8');
