@@ -4507,6 +4507,7 @@ const interactiveBrokersPaperReadinessNormalizerService = require('../services/i
 const interactiveBrokersPaperBlueprintNormalizerService = require('../services/interactiveBrokersPaperBlueprintNormalizerService');
 const interactiveBrokersDryRunScaffoldService = require('../services/interactiveBrokersDryRunScaffoldService');
 const interactiveBrokersPaperReadOnlyStateService = require('../services/interactiveBrokersPaperReadOnlyStateService');
+const interactiveBrokersScannerControlRoomService = require('../services/interactiveBrokersScannerControlRoomService');
 // ── IB Paper submit-route gate (default OFF, independent of IB_PAPER_EXECUTION_ENABLED) ──
 // When IB_PAPER_SUBMIT_ROUTES_ENABLED !== 'true', the state-changing submit routes
 // (POST paper-execute, POST arm, POST disarm) are hard-blocked before any service call.
@@ -4650,6 +4651,15 @@ router.get('/interactive-brokers/trade-blueprint', async (req, res) => {
     }));
   }
   catch (err) { res.status(500).json({ ok: false, error: err.message, safety: interactiveBrokersTradeBlueprintService.SAFETY }); }
+});
+router.get('/interactive-brokers/scanner-control-room', async (req, res) => {
+  try {
+    res.json(interactiveBrokersScannerControlRoomService.buildScannerControlRoom({
+      limit: req.query.limit || req.query.n,
+    }));
+  } catch (err) {
+    res.status(500).json({ ok: false, readOnly: true, error: err.message, safety: interactiveBrokersScannerControlRoomService.SAFETY });
+  }
 });
 // Read-only connection readiness. Never logs in, never sends orders; a harmless
 // TCP reachability probe only (disabled by default via IB_CONNECTION_CHECK_ENABLED).

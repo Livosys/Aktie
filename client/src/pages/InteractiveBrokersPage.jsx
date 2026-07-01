@@ -224,6 +224,7 @@ export default function InteractiveBrokersPage() {
     tradeBlueprint: null,
     readOnlyState: null,
     multiStrategyPlan: null,
+    scannerControlRoom: null,
   });
 
   useEffect(() => {
@@ -261,6 +262,7 @@ export default function InteractiveBrokersPage() {
             }),
             fetchJsonWithTimeout('/api/interactive-brokers/trade-blueprint', { signal: controller.signal }),
             fetchJsonWithTimeout('/api/interactive-brokers/paper-readonly-state', { signal: controller.signal }),
+            fetchJsonWithTimeout('/api/interactive-brokers/scanner-control-room', { signal: controller.signal, timeoutMs: 12_000 }),
           ]),
           planPromise,
         ]);
@@ -281,6 +283,7 @@ export default function InteractiveBrokersPage() {
           executionPreview: valueOf(5),
           tradeBlueprint: valueOf(6),
           readOnlyState: valueOf(7),
+          scannerControlRoom: valueOf(8),
           multiStrategyPlan,
         });
       } catch (err) {
@@ -299,7 +302,7 @@ export default function InteractiveBrokersPage() {
     };
   }, []);
 
-  const { loading, error, status, readiness, preview, orderPreview, executionStatus, executionPreview, tradeBlueprint, readOnlyState, multiStrategyPlan } = state;
+  const { loading, error, status, readiness, preview, orderPreview, executionStatus, executionPreview, tradeBlueprint, readOnlyState, multiStrategyPlan, scannerControlRoom } = state;
 
   // On ANY error (404 / timeout / network) fall back to the safe blocked state.
   // Never derive values from an absent payload — that could accidentally render
@@ -327,6 +330,14 @@ export default function InteractiveBrokersPage() {
   const multiPlanLimits = multiPlanView?.limits || {};
   const multiPlanCandidates = Array.isArray(multiPlanView?.candidates) ? multiPlanView.candidates : [];
   const multiPlanCurrentBlockers = Array.isArray(multiPlanView?.currentBlockers) ? multiPlanView.currentBlockers : [];
+  const scannerRoomView = scannerControlRoom?.ok === true ? scannerControlRoom : null;
+  const liveScannerRows = Array.isArray(scannerRoomView?.liveScanner?.candidates) ? scannerRoomView.liveScanner.candidates : [];
+  const latestByAsset = scannerRoomView?.latest50 || {};
+  const assetHistoryGroups = [
+    { key: 'crypto', label: 'Crypto', rows: Array.isArray(latestByAsset.crypto) ? latestByAsset.crypto : [] },
+    { key: 'stocks', label: 'Aktier', rows: Array.isArray(latestByAsset.stocks) ? latestByAsset.stocks : [] },
+    { key: 'qqqEtf', label: 'QQQ/ETF', rows: Array.isArray(latestByAsset.qqqEtf) ? latestByAsset.qqqEtf : [] },
+  ];
   const currentBlueprint = tradeBlueprintView?.selectedBlueprint || tradeBlueprintView?.previewBlueprint || null;
   const firstOrderReady = tradeBlueprintView?.selectedBlueprintSafety?.safeForArm === true
     && currentBlueprint?.blueprintReady === true
@@ -367,6 +378,25 @@ export default function InteractiveBrokersPage() {
     if (candidate == null) return '–';
     if (typeof candidate === 'number') return Number.isFinite(candidate) ? String(candidate) : '–';
     return String(candidate);
+  }
+
+  function formatTime(value) {
+    if (!value) return '–';
+    const d = new Date(value);
+    if (Number.isNaN(d.getTime())) return String(value);
+    return d.toLocaleString('sv-SE', { hour12: false });
+  }
+
+  function typeLabel(kind) {
+    if (kind === 'paper_trade') return 'Paper trade';
+    if (kind === 'setup') return 'Setup';
+    if (kind === 'candidate') return 'Candidate';
+    if (kind === 'signal') return 'Signal';
+    return kind || '–';
+  }
+
+  function blockersText(row) {
+    return Array.isArray(row?.blockers) && row.blockers.length ? row.blockers.join(', ') : '–';
   }
 
   return (
@@ -898,6 +928,116 @@ export default function InteractiveBrokersPage() {
               Inga nya orderknappar. Safety: actions_allowed=false, can_place_orders=false,
               live_trading_enabled=false, broker_enabled=false.
             </p>
+          </div>
+
+          <div style={{ ...CARD_STYLE, borderColor: 'rgba(20,184,166,0.35)' }}>
+            <h2 style={{ marginTop: 0 }}>Live scanner / historik</h2>
+            <p style={{ color: '#94a3b8', marginTop: 0, lineHeight: 1.6 }}>
+              Read-only vy över scanner-kandidater, signaler och intern paper-historik. IB Paper-orders visas separat och är 0 om inga IB-executions finns.
+            </p>
+            <Row label="Källa">
+              <code>{scannerRoomView?.source || 'scanner_control_room_unavailable'}</code>
+            </Row>
+            <Row label="Live scanner-kandidater">
+              <code>{scannerRoomView?.summary?.liveScannerCandidateCount ?? 0}</code>
+            </Row>
+            <Row label="Setup / bracket redo">
+              <code>{scannerRoomView ? `${scannerRoomView.summary?.setupReadyCount ?? 0} / ${scannerRoomView.summary?.bracketReadyCount ?? 0}` : '0 / 0'}</code>
+            </Row>
+            <Row label="Allowed kandidater">
+              <code>{scannerRoomView?.summary?.allowedCandidateCount ?? 0}</code>
+            </Row>
+            <Row label="Interna paper trades / IB Paper-orders">
+              <code>{scannerRoomView ? `${scannerRoomView.summary?.paperTradeCount ?? 0} / ${scannerRoomView.summary?.ibPaperOrderCount ?? 0}` : '0 / 0'}</code>
+            </Row>
+            <div style={{ marginTop: 12, padding: '10px 12px', borderRadius: 10, border: '1px solid rgba(20,184,166,0.25)', background: 'rgba(20,184,166,0.08)', color: '#ccfbf1', fontSize: 13, lineHeight: 1.5 }}>
+              {scannerRoomView?.summary?.note || 'Scanner control-room kunde inte laddas. Inga order skickas.'}
+            </div>
+
+            <div style={{ marginTop: 16 }}>
+              <div style={{ color: '#94a3b8', marginBottom: 8, fontSize: 13 }}>Live scanner-kandidater</div>
+              {liveScannerRows.length === 0 ? (
+                <div style={{ color: '#64748b', fontSize: 13 }}>Inga scanner-kandidater i denna read-only vy just nu.</div>
+              ) : (
+                <div style={{ overflowX: 'auto' }}>
+                  <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
+                    <thead>
+                      <tr style={{ color: '#94a3b8', textAlign: 'left' }}>
+                        <th style={{ padding: '6px 8px' }}>Symbol</th>
+                        <th style={{ padding: '6px 8px' }}>Asset</th>
+                        <th style={{ padding: '6px 8px' }}>Strategi</th>
+                        <th style={{ padding: '6px 8px' }}>Källa</th>
+                        <th style={{ padding: '6px 8px' }}>Riktning</th>
+                        <th style={{ padding: '6px 8px' }}>Score</th>
+                        <th style={{ padding: '6px 8px' }}>Setup</th>
+                        <th style={{ padding: '6px 8px' }}>Bracket</th>
+                        <th style={{ padding: '6px 8px' }}>Blockers</th>
+                        <th style={{ padding: '6px 8px' }}>Tid</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {liveScannerRows.map((row, index) => (
+                        <tr key={`${row.kind}:${row.symbol}:${row.strategyId}:${row.timestamp}:${index}`} style={{ borderTop: '1px solid rgba(148,163,184,0.12)' }}>
+                          <td style={{ padding: '6px 8px' }}>{row.symbol || '–'}</td>
+                          <td style={{ padding: '6px 8px' }}>{row.assetLabel || row.assetType || '–'}</td>
+                          <td style={{ padding: '6px 8px' }}>{row.strategyId || '–'}</td>
+                          <td style={{ padding: '6px 8px' }}>{row.source || '–'}</td>
+                          <td style={{ padding: '6px 8px' }}>{row.direction || '–'}</td>
+                          <td style={{ padding: '6px 8px' }}>{formatConfidence(row.confidence ?? row.score)}</td>
+                          <td style={{ padding: '6px 8px', color: row.setupReady ? '#4ade80' : '#fbbf24' }}>{row.setupReady ? 'Ja' : 'Nej'}</td>
+                          <td style={{ padding: '6px 8px', color: row.bracketReady ? '#4ade80' : '#fbbf24' }}>{row.bracketReady ? 'Ja' : 'Nej'}</td>
+                          <td style={{ padding: '6px 8px', color: row.blockers?.length ? '#f87171' : '#cbd5e1' }}>{blockersText(row)}</td>
+                          <td style={{ padding: '6px 8px' }}>{formatTime(row.timestamp)}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </div>
+
+            <div style={{ marginTop: 18, display: 'grid', gap: 12 }}>
+              {assetHistoryGroups.map((group) => (
+                <div key={group.key} style={{ border: '1px solid rgba(148,163,184,0.14)', borderRadius: 12, padding: 12, background: 'rgba(15,23,42,0.22)' }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, marginBottom: 8 }}>
+                    <strong>{group.label}</strong>
+                    <span style={{ color: '#94a3b8', fontSize: 12 }}>Senaste {group.rows.length} av max 50</span>
+                  </div>
+                  {group.rows.length === 0 ? (
+                    <div style={{ color: '#64748b', fontSize: 13 }}>Ingen historik i denna kategori.</div>
+                  ) : (
+                    <div style={{ overflowX: 'auto' }}>
+                      <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
+                        <thead>
+                          <tr style={{ color: '#94a3b8', textAlign: 'left' }}>
+                            <th style={{ padding: '5px 6px' }}>Typ</th>
+                            <th style={{ padding: '5px 6px' }}>Symbol</th>
+                            <th style={{ padding: '5px 6px' }}>Strategi</th>
+                            <th style={{ padding: '5px 6px' }}>Riktning</th>
+                            <th style={{ padding: '5px 6px' }}>Resultat</th>
+                            <th style={{ padding: '5px 6px' }}>Källa</th>
+                            <th style={{ padding: '5px 6px' }}>Tid</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {group.rows.slice(0, 50).map((row, index) => (
+                            <tr key={`${group.key}:${row.kind}:${row.symbol}:${row.timestamp}:${index}`} style={{ borderTop: '1px solid rgba(148,163,184,0.10)' }}>
+                              <td style={{ padding: '5px 6px' }}>{typeLabel(row.kind)}</td>
+                              <td style={{ padding: '5px 6px' }}>{row.symbol || '–'}</td>
+                              <td style={{ padding: '5px 6px' }}>{row.strategyId || '–'}</td>
+                              <td style={{ padding: '5px 6px' }}>{row.direction || '–'}</td>
+                              <td style={{ padding: '5px 6px' }}>{row.result || row.status || row.outcomeType || '–'}</td>
+                              <td style={{ padding: '5px 6px' }}>{row.source || '–'}</td>
+                              <td style={{ padding: '5px 6px' }}>{formatTime(row.timestamp)}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
+                </div>
+              ))}
+            </div>
           </div>
 
           {/* Separation note */}
