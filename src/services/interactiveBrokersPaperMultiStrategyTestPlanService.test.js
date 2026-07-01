@@ -648,4 +648,155 @@ withEnv({ IB_PAPER_MULTI_STRATEGY_TEST_MODE: 'true', IB_PAPER_SUBMIT_ROUTES_ENAB
   assert.equal(before.safety.can_place_orders, false);
 }
 
+// 24. Read-only live-price materialization: fresh stock + strategy risk rule
+//     becomes setupReady/bracketReady, but allowed remains false while submit
+//     routes are locked.
+{
+  const now = '2026-07-01T19:30:00.000Z';
+  const plan = build({
+    tradeBlueprint: { blueprints: [], orderPreview: { candidates: [previewCandidate({
+      symbol: 'AAPL',
+      strategyId: 'trend_continuation',
+      direction: 'BUY',
+      normalizedDirection: 'BUY',
+      side: 'BUY',
+      blockers: [],
+      entryPrice: null,
+      stopLoss: null,
+      takeProfit: null,
+      timestamp: now,
+    })] } },
+    readOnlyState: sampleReadOnly,
+    config: cfg(),
+    now,
+    marketResults: [{ symbol: 'AAPL', price: 200, lastUpdate: now }],
+  });
+  const c = plan.candidates[0];
+  assert.equal(c.setupMaterialized, true, JSON.stringify(c.setupMaterializationBlockers));
+  assert.equal(c.setupReady, true);
+  assert.equal(c.bracketReady, true);
+  assert.equal(c.entryPrice, 200);
+  assert.equal(c.stopLossPrice, 199.52);
+  assert.equal(c.takeProfitPrice, 200.864);
+  assert.equal(c.quantity, 1);
+  assert.equal(c.stopLossPct, 0.24);
+  assert.equal(c.takeProfitRMultiple, 1.8);
+  assert.equal(c.livePrice, 200);
+  assert.equal(c.livePriceTimestamp, now);
+  assert.equal(c.livePriceAgeMs, 0);
+  assert.equal(c.riskRuleSource, 'daytradingStrategyCatalogService');
+  assert.equal(c.allowed, false, 'materialized preview setup must not become order-allowed while submit routes are locked');
+  assert.equal(c.planningAllowed, true);
+  assert.equal(plan.diagnostics.setupMaterialization.materializedCount, 1);
+}
+
+// 25. Materialization blocks stale price, missing timestamp, missing risk,
+//     missing direction and null/zero prices explicitly.
+{
+  const now = '2026-07-01T19:30:00.000Z';
+  const stale = build({
+    tradeBlueprint: { blueprints: [], orderPreview: { candidates: [previewCandidate({ symbol: 'MSFT', direction: 'BUY', normalizedDirection: 'BUY', side: 'BUY', blockers: [] })] } },
+    readOnlyState: sampleReadOnly,
+    config: cfg(),
+    now,
+    marketResults: [{ symbol: 'MSFT', price: 300, lastUpdate: '2026-07-01T19:28:00.000Z' }],
+  }).candidates[0];
+  assert.ok(stale.setupMaterializationBlockers.includes('live_price_stale'));
+  assert.equal(stale.setupReady, false);
+
+  const missingTs = build({
+    tradeBlueprint: { blueprints: [], orderPreview: { candidates: [previewCandidate({ symbol: 'MSFT', direction: 'BUY', normalizedDirection: 'BUY', side: 'BUY', blockers: [] })] } },
+    readOnlyState: sampleReadOnly,
+    config: cfg(),
+    now,
+    marketResults: [{ symbol: 'MSFT', price: 300 }],
+  }).candidates[0];
+  assert.ok(missingTs.setupMaterializationBlockers.includes('live_price_timestamp_missing'));
+
+  const missingRisk = build({
+    tradeBlueprint: { blueprints: [], orderPreview: { candidates: [previewCandidate({ symbol: 'MSFT', strategyId: 'missing_strategy', direction: 'BUY', normalizedDirection: 'BUY', side: 'BUY', blockers: [] })] } },
+    readOnlyState: sampleReadOnly,
+    config: cfg(),
+    now,
+    marketResults: [{ symbol: 'MSFT', price: 300, lastUpdate: now }],
+  }).candidates[0];
+  assert.ok(missingRisk.setupMaterializationBlockers.includes('risk_rule_missing'));
+  assert.ok(missingRisk.setupMaterializationBlockers.includes('stop_loss_rule_missing'));
+  assert.ok(missingRisk.setupMaterializationBlockers.includes('take_profit_rule_missing'));
+
+  const noDirection = build({
+    tradeBlueprint: { blueprints: [], orderPreview: { candidates: [previewCandidate({ symbol: 'MSFT', direction: undefined, normalizedDirection: null, side: undefined, blockers: [] })] } },
+    readOnlyState: sampleReadOnly,
+    config: cfg(),
+    now,
+    marketResults: [{ symbol: 'MSFT', price: 300, lastUpdate: now }],
+  }).candidates[0];
+  assert.ok(noDirection.setupMaterializationBlockers.includes('direction_not_verified'));
+
+  const zeroPrice = build({
+    tradeBlueprint: { blueprints: [], orderPreview: { candidates: [previewCandidate({ symbol: 'MSFT', direction: 'BUY', normalizedDirection: 'BUY', side: 'BUY', blockers: [] })] } },
+    readOnlyState: sampleReadOnly,
+    config: cfg(),
+    now,
+    marketResults: [{ symbol: 'MSFT', price: 0, lastUpdate: now }],
+  }).candidates[0];
+  assert.ok(zeroPrice.setupMaterializationBlockers.includes('live_price_missing'));
+}
+
+// 26. Crypto and QQQ/ETF remain blocked even when live price + risk rules exist.
+{
+  const now = '2026-07-01T19:30:00.000Z';
+  const crypto = build({
+    tradeBlueprint: { blueprints: [], orderPreview: { candidates: [previewCandidate({
+      symbol: 'BTCUSDT', strategyId: 'crypto_momentum_scalper', direction: 'BUY', normalizedDirection: 'BUY', side: 'BUY',
+      marketGroup: 'crypto', normalizedMarketGroup: 'crypto', blockers: [],
+    })] } },
+    readOnlyState: sampleReadOnly,
+    config: cfg({ includeEtf: true }),
+    now,
+    marketResults: [{ symbol: 'BTCUSDT', price: 65000, lastUpdate: now }],
+  }).candidates[0];
+  assert.equal(crypto.isCrypto, true);
+  assert.equal(crypto.allowed, false);
+  assert.ok(crypto.blockers.includes('crypto_not_allowed'));
+
+  const etf = build({
+    tradeBlueprint: { blueprints: [], orderPreview: { candidates: [previewCandidate({
+      symbol: 'QQQ', strategyId: 'trend_continuation', direction: 'BUY', normalizedDirection: 'BUY', side: 'BUY',
+      marketGroup: 'etf', normalizedMarketGroup: 'etf', blockers: [],
+    })] } },
+    readOnlyState: sampleReadOnly,
+    config: cfg({ includeEtf: false }),
+    now,
+    marketResults: [{ symbol: 'QQQ', price: 700, lastUpdate: now }],
+  }).candidates[0];
+  assert.equal(etf.allowed, false);
+  assert.ok(etf.blockers.includes('qqq_etf_blocked'));
+}
+
+// 27. Deterministic dedupe keeps the more materialized row for the same
+//     symbol+strategy+direction+source+minute bucket.
+{
+  const now = '2026-07-01T19:30:00.000Z';
+  const raw = previewCandidate({
+    symbol: 'NVDA', strategyId: 'trend_continuation', direction: 'BUY', normalizedDirection: 'BUY', side: 'BUY',
+    source: 'scanner', blockers: [], timestamp: now,
+  });
+  const explicit = previewCandidate({
+    symbol: 'NVDA', strategyId: 'trend_continuation', direction: 'BUY', normalizedDirection: 'BUY', side: 'BUY',
+    source: 'scanner', blockers: [], timestamp: now, entryPrice: 200, stopLoss: 198, takeProfit: 203,
+  });
+  const plan = build({
+    tradeBlueprint: { blueprints: [], orderPreview: { candidates: [explicit, raw] } },
+    readOnlyState: sampleReadOnly,
+    config: cfg(),
+    now,
+    marketResults: [{ symbol: 'NVDA', price: 210, lastUpdate: now }],
+  });
+  assert.equal(plan.candidates.length, 1);
+  assert.equal(plan.candidates[0].setupMaterialized, true);
+  assert.equal(plan.candidates[0].entryPrice, 210);
+  assert.ok(plan.candidates[0].dedupeKey.includes('NVDA|trend_continuation|BUY|scanner|2026-07-01T19:30:00.000Z'));
+}
+
 console.log('interactiveBrokersPaperMultiStrategyTestPlanService.test.js: all assertions passed');

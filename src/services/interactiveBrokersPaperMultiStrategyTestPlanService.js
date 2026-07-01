@@ -22,6 +22,8 @@ const configService = require('./interactiveBrokersPaperMultiStrategyConfigServi
 const directionResolverService = require('./interactiveBrokersDirectionResolverService');
 const assetToggleService = require('./interactiveBrokersPaperPreviewAssetToggleService');
 const setupBuilderService = require('./interactiveBrokersPaperSetupBuilderService');
+const daytradingStrategyCatalogService = require('./daytradingStrategyCatalogService');
+const { getLatestResults } = require('../scanner/scheduler');
 
 const MODE = 'ib_paper_multi_strategy_test_plan';
 const MODE_FLAG = configService.MODE_FLAG;
@@ -39,6 +41,7 @@ const SAFETY = Object.freeze({
 
 // Reported limits (kept for back-compat with consumers reading DEFAULT_LIMITS).
 const DEFAULT_LIMITS = configService.DEFAULT_LIMITS;
+const LIVE_PRICE_MAX_AGE_MS = 60_000;
 
 function safeUpper(value) {
   return String(value == null ? '' : value).trim().toUpperCase();
@@ -53,6 +56,7 @@ function toArray(value) {
 }
 
 function toNumber(value) {
+  if (value === null || value === undefined || value === '') return null;
   const n = Number(value);
   return Number.isFinite(n) ? n : null;
 }
@@ -70,6 +74,126 @@ function firstNumberWithSource(candidates = []) {
     if (numeric != null && numeric > 0) return { value: numeric, source };
   }
   return { value: null, source: null };
+}
+
+function isoTimestamp(value) {
+  const ms = new Date(value || '').getTime();
+  return Number.isFinite(ms) ? new Date(ms).toISOString() : null;
+}
+
+function timestampMs(value) {
+  const ms = new Date(value || '').getTime();
+  return Number.isFinite(ms) ? ms : null;
+}
+
+function firstTimestamp(...values) {
+  for (const value of values) {
+    const iso = isoTimestamp(value);
+    if (iso) return iso;
+  }
+  return null;
+}
+
+function oneMinuteBucket(value) {
+  const ms = timestampMs(value);
+  if (ms == null) return 'unknown';
+  return new Date(Math.floor(ms / 60_000) * 60_000).toISOString();
+}
+
+function putLivePrice(index, row = {}, source = 'unknown', fallbackTimestamp = null) {
+  const symbol = safeUpper(row.symbol);
+  const price = firstNumberWithSource([
+    ['currentPrice', row.currentPrice],
+    ['price', row.price],
+    ['lastPrice', row.lastPrice],
+    ['close', row.close],
+    ['c', row.c],
+    ['entryPrice', row.entryPrice],
+  ]);
+  if (!symbol || !(price.value > 0)) return;
+  const timestamp = firstTimestamp(
+    row.lastUpdate,
+    row.updatedAt,
+    row.latest2mTimestamp,
+    row.timestamp,
+    row.time,
+    fallbackTimestamp,
+  );
+  index.set(symbol, {
+    symbol,
+    price: price.value,
+    source: `${source}.${price.source}`,
+    timestamp,
+  });
+}
+
+function buildLivePriceIndex(input = {}) {
+  const index = new Map();
+  const scannerRows = Array.isArray(input.marketResults)
+    ? input.marketResults
+    : (() => {
+      try { return Array.isArray(getLatestResults()) ? getLatestResults() : []; }
+      catch (_) { return []; }
+    })();
+  for (const row of scannerRows) putLivePrice(index, row, 'scanner.getLatestResults');
+
+  const snapshots = input.redisSnapshots || input.livePriceSnapshots || {};
+  for (const [key, payload] of Object.entries(snapshots || {})) {
+    if (!payload || typeof payload !== 'object') continue;
+    if (payload.prices && typeof payload.prices === 'object') {
+      for (const [symbol, price] of Object.entries(payload.prices)) {
+        putLivePrice(index, { symbol, price, updatedAt: payload.updatedAt }, `redis.${key}`, payload.updatedAt);
+      }
+    }
+    for (const row of toArray(payload.results)) {
+      putLivePrice(index, row, `redis.${key}`, payload.updatedAt);
+    }
+  }
+
+  for (const [symbol, value] of Object.entries(input.priceIndex || {})) {
+    const row = value && typeof value === 'object'
+      ? { symbol, ...value }
+      : { symbol, price: value, updatedAt: input.now };
+    putLivePrice(index, row, 'injected.priceIndex', input.now);
+  }
+  return index;
+}
+
+function resolveLivePrice(symbol, livePriceIndex) {
+  return livePriceIndex instanceof Map ? livePriceIndex.get(safeUpper(symbol)) || null : null;
+}
+
+function buildStrategyRiskRuleIndex(input = {}) {
+  const index = new Map();
+  const injected = input.strategyRiskRules || input.riskRules || {};
+  for (const [strategyId, rule] of Object.entries(injected || {})) {
+    if (!strategyId || !rule) continue;
+    index.set(String(strategyId), {
+      strategyId: String(strategyId),
+      stopLossPct: toNumber(rule.stopLossPct ?? rule.default_stop_loss_pct ?? rule.default_sl),
+      takeProfitRMultiple: toNumber(rule.takeProfitRMultiple ?? rule.default_take_profit_r ?? rule.default_tp),
+      source: rule.source || 'injected_strategy_risk_rules',
+    });
+  }
+
+  let strategies = [];
+  try { strategies = toArray(daytradingStrategyCatalogService.getCatalog()?.strategies); }
+  catch (_) { strategies = []; }
+  for (const strategy of strategies) {
+    const strategyId = String(strategy.id || strategy.strategyId || '').trim();
+    if (!strategyId || index.has(strategyId)) continue;
+    index.set(strategyId, {
+      strategyId,
+      stopLossPct: toNumber(strategy.default_stop_loss_pct ?? strategy.default_sl),
+      takeProfitRMultiple: toNumber(strategy.default_take_profit_r ?? strategy.default_tp),
+      source: 'daytradingStrategyCatalogService',
+    });
+  }
+  return index;
+}
+
+function resolveRiskRule(strategyId, strategyRiskRuleIndex) {
+  return strategyRiskRuleIndex instanceof Map ? strategyRiskRuleIndex.get(String(strategyId || '').trim()) || null : null;
 }
 
 function sideFor(blueprint) {
@@ -117,6 +241,37 @@ function candidateKey(row = {}) {
   ].join('|');
 }
 
+function dedupeKey(row = {}) {
+  return [
+    safeUpper(row.symbol),
+    String(row.strategyId || row.strategy_id || '').trim(),
+    safeUpper(row.side || row.resolvedDirection || row.direction),
+    String(row.source || row.rawSource || 'unknown').trim(),
+    oneMinuteBucket(row.timestamp || row.livePriceTimestamp || row.createdAt || row.latestActivityAt || row.lastUpdate),
+  ].join('|');
+}
+
+function dedupeRank(row = {}) {
+  let rank = 0;
+  if (row.source === 'scanner' || row.rawSource === 'scanner') rank += 1;
+  if (row.livePrice > 0) rank += 10;
+  if (row.setupMaterialized === true) rank += 50;
+  if (row.bracketReady === true) rank += 75;
+  if (row.setupReady === true) rank += 100;
+  return rank;
+}
+
+function dedupeCandidates(rows = []) {
+  const byKey = new Map();
+  for (const row of rows) {
+    const key = row.dedupeKey || dedupeKey(row);
+    const withKey = { ...row, dedupeKey: key };
+    const existing = byKey.get(key);
+    if (!existing || dedupeRank(withKey) > dedupeRank(existing)) byKey.set(key, withKey);
+  }
+  return Array.from(byKey.values());
+}
+
 function normalizePreviewCandidate(candidate = {}) {
   const rawBlockers = toArray(candidate.blockers || candidate.multiStrategyBlockers)
     .map(normalizeBlocker)
@@ -150,6 +305,7 @@ function normalizePreviewCandidate(candidate = {}) {
     takeProfit: candidate.takeProfit ?? candidate.takeProfit1 ?? null,
     stopLossPct: candidate.stopLossPct ?? candidate.stop_loss_pct ?? null,
     takeProfitPct: candidate.takeProfitPct ?? candidate.take_profit_pct ?? null,
+    timestamp: candidate.timestamp || candidate.latestActivityAt || candidate.createdAt || candidate.lastUpdate || null,
   };
 }
 
@@ -230,6 +386,90 @@ function buildBracketDiagnostics(blueprint, side, config = {}) {
   };
 }
 
+function buildSetupMaterialization({ blueprint, side, directionAllowed, symbol, strategyId, assetInfo, crypto, context }) {
+  const now = context.now || new Date();
+  const livePriceInfo = resolveLivePrice(symbol, context.livePriceIndex);
+  const livePrice = toNumber(livePriceInfo?.price);
+  const livePriceTimestamp = livePriceInfo?.timestamp || null;
+  const livePriceAgeMs = livePriceTimestamp ? new Date(now).getTime() - new Date(livePriceTimestamp).getTime() : null;
+  const riskRule = resolveRiskRule(strategyId, context.strategyRiskRuleIndex);
+  const stopLossPct = toNumber(riskRule?.stopLossPct);
+  const takeProfitRMultiple = toNumber(riskRule?.takeProfitRMultiple);
+  const blockers = [];
+
+  if (directionAllowed !== true || !['BUY', 'SELL'].includes(side)) blockers.push('direction_not_verified');
+  if (!(livePrice > 0)) blockers.push('live_price_missing');
+  if (!livePriceTimestamp) blockers.push('live_price_timestamp_missing');
+  else if (!(livePriceAgeMs <= LIVE_PRICE_MAX_AGE_MS && livePriceAgeMs >= -5_000)) blockers.push('live_price_stale');
+  if (!riskRule) blockers.push('risk_rule_missing');
+  if (!(stopLossPct > 0)) blockers.push('stop_loss_rule_missing');
+  if (!(takeProfitRMultiple > 0)) blockers.push('take_profit_rule_missing');
+
+  const base = {
+    setupMaterialized: false,
+    setupMaterializationSource: null,
+    livePrice: livePrice ?? null,
+    livePriceSource: livePriceInfo?.source || null,
+    livePriceTimestamp,
+    livePriceAgeMs,
+    riskRuleSource: riskRule?.source || null,
+    stopLossPct: stopLossPct ?? null,
+    takeProfitRMultiple: takeProfitRMultiple ?? null,
+    setupMaterializationBlockers: [...new Set(blockers)],
+    setup: null,
+  };
+
+  if (blockers.length > 0) return base;
+
+  const setupSvc = context.setupBuilderService || setupBuilderService;
+  const {
+    entryPrice,
+    entryReferencePrice,
+    entry,
+    plannedEntry,
+    limitPrice,
+    stopLoss,
+    stopLossPrice,
+    stop_loss,
+    stop,
+    sl,
+    takeProfit,
+    takeProfit1,
+    take_profit,
+    tp,
+    target,
+    targetPrice,
+    ...candidateForRuleDerivation
+  } = blueprint || {};
+  const setup = setupSvc.buildSetup(
+    {
+      ...candidateForRuleDerivation,
+      side,
+      currentPrice: livePrice,
+      price: livePrice,
+      assetGroup: assetInfo.assetKey,
+      isCrypto: crypto,
+    },
+    {
+      includeEtf: context.config.includeEtf === true,
+      allowRuleDerivedBracket: true,
+      referencePrice: livePrice,
+      stopLossPct,
+      takeProfitRMultiple,
+      quantity: 1,
+    },
+  );
+
+  const setupBlockers = toArray(setup?.blockers);
+  return {
+    ...base,
+    setupMaterialized: setup?.setupReady === true,
+    setupMaterializationSource: setup?.setupReady === true ? 'live_price_plus_strategy_risk_rule' : null,
+    setupMaterializationBlockers: [...new Set(setup?.setupReady === true ? [] : setupBlockers)],
+    setup,
+  };
+}
+
 function hasBracket(blueprint) {
   return buildBracketDiagnostics(blueprint, sideFor(blueprint)).bracketReady === true;
 }
@@ -253,7 +493,7 @@ function buildDuplicateKeySet(rows, windowMinutes, now) {
 
 function classifyCandidate(blueprint, context) {
   const {
-    config, openOrderSymbols, positionSymbols, duplicateKeys,
+    config, enabled, submitRoutesEnabled, openOrderSymbols, positionSymbols, duplicateKeys,
     perStrategyCounts, counters,
   } = context;
   const symbol = safeUpper(blueprint?.symbol) || null;
@@ -295,11 +535,67 @@ function classifyCandidate(blueprint, context) {
   const crypto = isCryptoCandidate(blueprint);
   if (config.cryptoBlocked && crypto) planBlockers.push('crypto_not_allowed');
 
+  const explicitBracket = buildBracketDiagnostics(blueprint, side, config);
+  const materialization = explicitBracket.bracketReady
+    ? {
+      setupMaterialized: false,
+      setupMaterializationSource: 'candidate_explicit_bracket',
+      livePrice: null,
+      livePriceSource: null,
+      livePriceTimestamp: null,
+      livePriceAgeMs: null,
+      riskRuleSource: null,
+      stopLossPct: explicitBracket.stopLossPct,
+      takeProfitRMultiple: null,
+      setupMaterializationBlockers: [],
+      setup: null,
+    }
+    : buildSetupMaterialization({
+      blueprint,
+      side,
+      directionAllowed: directionResult.allowed === true,
+      symbol,
+      strategyId,
+      assetInfo,
+      crypto,
+      context,
+    });
+  const materializedBlueprint = materialization.setupMaterialized === true
+    ? {
+      ...blueprint,
+      entryReferencePrice: materialization.setup.entryPrice,
+      entryPrice: materialization.setup.entryPrice,
+      currentPrice: materialization.livePrice,
+      stopLoss: materialization.setup.stopLossPrice,
+      stopLossPrice: materialization.setup.stopLossPrice,
+      takeProfit: materialization.setup.takeProfitPrice,
+      takeProfit1: materialization.setup.takeProfitPrice,
+      quantity: 1,
+      stopLossPct: materialization.stopLossPct,
+      side,
+    }
+    : blueprint;
+
   // Bracket required: candidate must carry or explicitly derive entry + stop +
   // take-profit. Missing pieces are exposed as diagnostics and stay blocked.
-  const bracket = buildBracketDiagnostics(blueprint, side, config);
+  const bracket = materialization.setupMaterialized === true
+    ? {
+      bracketReady: true,
+      hasBracket: true,
+      bracketSource: materialization.setupMaterializationSource,
+      entryReferencePrice: materialization.setup.entryPrice,
+      entryPriceSource: materialization.setup.diagnostics?.entryPriceSource || 'rule_reference_price',
+      stopLoss: materialization.setup.stopLossPrice,
+      stopLossSource: materialization.setup.diagnostics?.stopLossSource || `rule_stop_pct_${materialization.stopLossPct}`,
+      takeProfit: materialization.setup.takeProfitPrice,
+      takeProfitSource: materialization.setup.diagnostics?.takeProfitSource || `rule_take_r_${materialization.takeProfitRMultiple}`,
+      stopLossPct: materialization.stopLossPct,
+      bracketBlockers: [],
+    }
+    : explicitBracket;
   if (config.bracketRequired && !bracket.bracketReady) {
     planBlockers.push(...bracket.bracketBlockers, 'bracket_required_missing');
+    planBlockers.push(...materialization.setupMaterializationBlockers);
   }
 
   // Entry-only must stay blocked. This is a safety invariant; if the guard were
@@ -339,7 +635,9 @@ function classifyCandidate(blueprint, context) {
   if (globalCapReached) planBlockers.push('global_daily_cap_reached');
 
   const blockers = [...new Set(planBlockers)];
-  const allowed = blockers.length === 0;
+  const planningAllowed = blockers.length === 0;
+  const allowed = planningAllowed
+    && (materialization.setupMaterialized !== true || (enabled === true && submitRoutesEnabled === true));
 
   // Read-only setup-builder diagnostics. Purely additive: it never affects
   // `allowed`/`blockers`/counts. It reports whether this candidate could become
@@ -348,8 +646,8 @@ function classifyCandidate(blueprint, context) {
   const setupSvc = context.setupBuilderService || setupBuilderService;
   let setupBuilderView = null;
   try {
-    const setup = setupSvc.buildSetup(
-      { ...blueprint, assetGroup: assetInfo.assetKey, isCrypto: crypto },
+    const setup = materialization.setup || setupSvc.buildSetup(
+      { ...materializedBlueprint, assetGroup: assetInfo.assetKey, isCrypto: crypto },
       { includeEtf: config.includeEtf === true },
     );
     setupBuilderView = {
@@ -390,10 +688,12 @@ function classifyCandidate(blueprint, context) {
     assetPreviewEnabled: assetInfo.previewEnabled === true,
     assetPreviewOnly: assetInfo.previewOnly === true,
     allowed,
+    planningAllowed,
     blockers,
     rawBlueprintBlockers: rawBlockers,
     wouldForceQuantity,
     originalQuantity: blueprint?.quantity ?? null,
+    quantity: materialization.setupMaterialized === true ? 1 : (blueprint?.quantity ?? null),
     wouldRequireBracket: config.bracketRequired === true,
     wouldBlockEntryOnly,
     bracketReady: bracket.bracketReady,
@@ -412,9 +712,30 @@ function classifyCandidate(blueprint, context) {
     perStrategyCapReached,
     globalCapReached,
     entryReferencePrice: bracket.entryReferencePrice,
+    entryPrice: bracket.entryReferencePrice,
     stopLoss: bracket.stopLoss,
+    stopLossPrice: bracket.stopLoss,
     takeProfit: bracket.takeProfit,
-    stopLossPct: bracket.stopLossPct,
+    takeProfitPrice: bracket.takeProfit,
+    stopLossPct: bracket.stopLossPct ?? materialization.stopLossPct,
+    takeProfitRMultiple: materialization.takeProfitRMultiple,
+    setupReady: setupBuilderView?.setupReady === true,
+    setupMaterialized: materialization.setupMaterialized === true,
+    setupMaterializationSource: materialization.setupMaterializationSource,
+    livePrice: materialization.livePrice,
+    livePriceSource: materialization.livePriceSource,
+    livePriceTimestamp: materialization.livePriceTimestamp,
+    livePriceAgeMs: materialization.livePriceAgeMs,
+    riskRuleSource: materialization.riskRuleSource,
+    setupMaterializationBlockers: materialization.setupMaterializationBlockers,
+    dedupeKey: dedupeKey({
+      ...blueprint,
+      symbol,
+      strategyId,
+      side,
+      direction: directionResult.direction,
+      livePriceTimestamp: materialization.livePriceTimestamp,
+    }),
     blueprintId: blueprint?.blueprintId || null,
     // Additive read-only diagnostics (does not affect allowed/blockers).
     setupBuilder: setupBuilderView,
@@ -479,17 +800,20 @@ function buildMultiStrategyTestPlan(input = {}) {
   }
 
   const classificationContext = {
-    config, openOrderSymbols, positionSymbols, duplicateKeys, perStrategyCounts, counters,
+    config, enabled, submitRoutesEnabled, openOrderSymbols, positionSymbols, duplicateKeys, perStrategyCounts, counters,
     directionResolver: input.directionResolver || directionResolverService,
     assetToggleService: input.assetToggleService || assetToggleService,
     setupBuilderService: input.setupBuilderService || setupBuilderService,
+    livePriceIndex: input.livePriceIndex instanceof Map ? input.livePriceIndex : buildLivePriceIndex({ ...input, now }),
+    strategyRiskRuleIndex: input.strategyRiskRuleIndex instanceof Map ? input.strategyRiskRuleIndex : buildStrategyRiskRuleIndex(input),
+    now,
   };
 
   // Respect maxCandidates when surfacing the plan. Include blocked preview
   // candidates too, so the plan explains blockers instead of showing an empty
   // candidate list whenever trade-blueprint has no allowed blueprints.
   const consideredBlueprints = [...blueprints, ...fallbackCandidates].slice(0, config.maxCandidates);
-  const candidates = consideredBlueprints.map((bp) => classifyCandidate(bp, classificationContext));
+  const candidates = dedupeCandidates(consideredBlueprints.map((bp) => classifyCandidate(bp, classificationContext)));
 
   const allowedCount = candidates.filter((c) => c.allowed).length;
   const blockedCount = candidates.length - allowedCount;
@@ -580,6 +904,12 @@ function buildMultiStrategyTestPlan(input = {}) {
         evaluated: candidates.filter((c) => c.setupBuilder).length,
         setupReadyCount: candidates.filter((c) => c.setupBuilder && c.setupBuilder.setupReady).length,
         blockedCount: candidates.filter((c) => c.setupBuilder && !c.setupBuilder.setupReady).length,
+      },
+      setupMaterialization: {
+        evaluated: candidates.length,
+        materializedCount: candidates.filter((c) => c.setupMaterialized === true).length,
+        blockedCount: candidates.filter((c) => c.setupMaterialized !== true).length,
+        livePriceMaxAgeMs: LIVE_PRICE_MAX_AGE_MS,
       },
     },
     currentBlockers: [...new Set(currentBlockers)],
