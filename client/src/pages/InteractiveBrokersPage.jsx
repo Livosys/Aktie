@@ -399,6 +399,20 @@ export default function InteractiveBrokersPage() {
     return Array.isArray(row?.blockers) && row.blockers.length ? row.blockers.join(', ') : '–';
   }
 
+  function lineageText(row) {
+    const lineage = row?.candidateLineage || {};
+    return [lineage.stage, lineage.upstreamStage].filter(Boolean).join(' ← ') || '–';
+  }
+
+  function priceDiagnosticsText(row) {
+    const flags = [
+      row?.hasEntryPrice ? 'entry:ja' : 'entry:saknas',
+      row?.hasStopLossPrice ? 'SL:ja' : 'SL:saknas',
+      row?.hasTakeProfitPrice ? 'TP:ja' : 'TP:saknas',
+    ];
+    return `${flags.join(' · ')} · ${row?.priceSource || 'missing'}${row?.missingPriceReason ? ` · ${row.missingPriceReason}` : ''}`;
+  }
+
   return (
     <div className="page" style={{ maxWidth: 920, margin: '0 auto', padding: '32px 24px' }}>
       <div className="page-head" style={{ marginBottom: 16 }}>
@@ -964,13 +978,16 @@ export default function InteractiveBrokersPage() {
                     <thead>
                       <tr style={{ color: '#94a3b8', textAlign: 'left' }}>
                         <th style={{ padding: '6px 8px' }}>Symbol</th>
+                        <th style={{ padding: '6px 8px' }}>Typ</th>
                         <th style={{ padding: '6px 8px' }}>Asset</th>
                         <th style={{ padding: '6px 8px' }}>Strategi</th>
                         <th style={{ padding: '6px 8px' }}>Källa</th>
+                        <th style={{ padding: '6px 8px' }}>Lineage</th>
                         <th style={{ padding: '6px 8px' }}>Riktning</th>
                         <th style={{ padding: '6px 8px' }}>Score</th>
                         <th style={{ padding: '6px 8px' }}>Setup</th>
                         <th style={{ padding: '6px 8px' }}>Bracket</th>
+                        <th style={{ padding: '6px 8px' }}>Prisdiag</th>
                         <th style={{ padding: '6px 8px' }}>Blockers</th>
                         <th style={{ padding: '6px 8px' }}>Tid</th>
                       </tr>
@@ -979,13 +996,16 @@ export default function InteractiveBrokersPage() {
                       {liveScannerRows.map((row, index) => (
                         <tr key={`${row.kind}:${row.symbol}:${row.strategyId}:${row.timestamp}:${index}`} style={{ borderTop: '1px solid rgba(148,163,184,0.12)' }}>
                           <td style={{ padding: '6px 8px' }}>{row.symbol || '–'}</td>
+                          <td style={{ padding: '6px 8px' }}>{typeLabel(row.candidateType || row.kind)}</td>
                           <td style={{ padding: '6px 8px' }}>{row.assetLabel || row.assetType || '–'}</td>
                           <td style={{ padding: '6px 8px' }}>{row.strategyId || '–'}</td>
                           <td style={{ padding: '6px 8px' }}>{row.source || '–'}</td>
+                          <td style={{ padding: '6px 8px' }}>{lineageText(row)}</td>
                           <td style={{ padding: '6px 8px' }}>{row.direction || '–'}</td>
                           <td style={{ padding: '6px 8px' }}>{formatConfidence(row.confidence ?? row.score)}</td>
-                          <td style={{ padding: '6px 8px', color: row.setupReady ? '#4ade80' : '#fbbf24' }}>{row.setupReady ? 'Ja' : 'Nej'}</td>
+                          <td style={{ padding: '6px 8px', color: row.setupReady ? '#4ade80' : '#fbbf24' }} title={row.setupBuilderReason || ''}>{row.setupReady ? 'Ja' : 'Nej'}</td>
                           <td style={{ padding: '6px 8px', color: row.bracketReady ? '#4ade80' : '#fbbf24' }}>{row.bracketReady ? 'Ja' : 'Nej'}</td>
+                          <td style={{ padding: '6px 8px', color: row.missingPriceReason ? '#fbbf24' : '#cbd5e1' }}>{priceDiagnosticsText(row)}</td>
                           <td style={{ padding: '6px 8px', color: row.blockers?.length ? '#f87171' : '#cbd5e1' }}>{blockersText(row)}</td>
                           <td style={{ padding: '6px 8px' }}>{formatTime(row.timestamp)}</td>
                         </tr>

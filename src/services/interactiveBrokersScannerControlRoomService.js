@@ -38,8 +38,47 @@ function text(value, fallback = null) {
 }
 
 function num(value) {
+  if (value === null || value === undefined || value === '') return null;
   const n = Number(value);
   return Number.isFinite(n) ? n : null;
+}
+
+function firstPrice(specs) {
+  for (const spec of specs) {
+    const value = num(spec.value);
+    if (value !== null) return { value, source: spec.source };
+  }
+  return { value: null, source: null };
+}
+
+function priceDiagnostics({ entryPrice, stopLossPrice, takeProfitPrice, priceSource }) {
+  const missing = [];
+  if (!(entryPrice > 0)) missing.push('entry_price');
+  if (!(stopLossPrice > 0)) missing.push('stop_loss');
+  if (!(takeProfitPrice > 0)) missing.push('take_profit');
+  return {
+    hasEntryPrice: entryPrice > 0,
+    hasStopLossPrice: stopLossPrice > 0,
+    hasTakeProfitPrice: takeProfitPrice > 0,
+    priceSource: priceSource || 'missing',
+    missingPriceReason: missing.length > 0 ? `missing_${missing.join('_')}` : null,
+  };
+}
+
+function lineage(stage, row = {}) {
+  const source = text(row.source || row.rawSource || row.activitySource);
+  const lowerSource = String(source || '').toLowerCase();
+  let upstreamStage = null;
+  if (lowerSource.includes('trade_blueprint')) upstreamStage = 'trade_blueprint';
+  else if (lowerSource.includes('order_preview')) upstreamStage = 'order_preview';
+  else if (lowerSource.includes('runtime')) upstreamStage = 'runtime_preview';
+  else if (lowerSource.includes('scanner')) upstreamStage = 'scanner_signal';
+  return {
+    stage,
+    source,
+    upstreamStage,
+    rawKind: text(row.kind || row.type || row.activityType || row.status),
+  };
 }
 
 function iso(value) {
@@ -80,8 +119,26 @@ function normalizeBlockers(value) {
 
 function baseRecord(kind, row = {}, sourceFallback = null) {
   const assetType = classifyAsset(row);
+  const entry = firstPrice([
+    { value: row.entryPrice, source: 'candidate_entry_price' },
+    { value: row.entryReferencePrice, source: 'candidate_entry_reference_price' },
+    { value: row.setupBuilder?.entryPrice, source: 'setup_builder_entry_price' },
+  ]);
+  const stopLoss = firstPrice([
+    { value: row.stopLossPrice, source: 'candidate_stop_loss_price' },
+    { value: row.stopLoss, source: 'candidate_stop_loss' },
+    { value: row.setupBuilder?.stopLossPrice, source: 'setup_builder_stop_loss_price' },
+  ]);
+  const takeProfit = firstPrice([
+    { value: row.takeProfitPrice, source: 'candidate_take_profit_price' },
+    { value: row.takeProfit, source: 'candidate_take_profit' },
+    { value: row.takeProfit1, source: 'candidate_take_profit_1' },
+    { value: row.setupBuilder?.takeProfitPrice, source: 'setup_builder_take_profit_price' },
+  ]);
+  const priceSource = entry.source || stopLoss.source || takeProfit.source;
   return {
     kind,
+    candidateType: kind,
     symbol: text(row.symbol),
     assetType,
     assetLabel: assetLabel(assetType),
@@ -95,9 +152,15 @@ function baseRecord(kind, row = {}, sourceFallback = null) {
     bracketReady: row.bracketReady === true || row.setupBuilder?.bracketReady === true,
     blockers: normalizeBlockers(row.blockers || row.setupBuilder?.blockers || row.bracketBlockers),
     timestamp: latestTime(row),
-    entryPrice: num(row.entryPrice ?? row.entryReferencePrice ?? row.setupBuilder?.entryPrice),
-    stopLossPrice: num(row.stopLossPrice ?? row.stopLoss ?? row.setupBuilder?.stopLossPrice),
-    takeProfitPrice: num(row.takeProfitPrice ?? row.takeProfit ?? row.takeProfit1 ?? row.setupBuilder?.takeProfitPrice),
+    entryPrice: entry.value,
+    stopLossPrice: stopLoss.value,
+    takeProfitPrice: takeProfit.value,
+    ...priceDiagnostics({
+      entryPrice: entry.value,
+      stopLossPrice: stopLoss.value,
+      takeProfitPrice: takeProfit.value,
+      priceSource,
+    }),
     quantity: num(row.wouldForceQuantity ?? row.quantity ?? row.setupBuilder?.quantity),
     status: text(row.status || row.result || row.decision || row.readiness),
     reason: text(row.reasonSv || row.reason || row.blockedReason || row.message),
@@ -105,8 +168,14 @@ function baseRecord(kind, row = {}, sourceFallback = null) {
 }
 
 function normalizePlanCandidate(row = {}) {
+  const setupBuilderApplied = row.setupBuilder != null;
   return {
     ...baseRecord(row.setupBuilder?.setupReady === true ? 'setup' : 'candidate', row, 'ib_multi_strategy_plan'),
+    candidateLineage: lineage('multi_strategy_plan', row),
+    setupBuilderApplied,
+    setupBuilderReason: setupBuilderApplied
+      ? text(row.setupBuilder?.diagnostics?.reason || row.setupBuilder?.reason, row.setupBuilder?.setupReady === true ? 'setup_builder_ready' : 'setup_builder_blocked')
+      : 'not_available_on_multi_strategy_plan_candidate',
     allowed: row.allowed === true,
     openOrderConflict: row.openOrderConflict === true,
     positionConflict: row.positionConflict === true,
@@ -125,6 +194,9 @@ function normalizeRuntimeCandidate(row = {}) {
   if (blockers.length > 0) blockers.push('bracket_required_missing');
   return {
     ...baseRecord('candidate', { ...row, blockers: [...arr(row.blockers), ...blockers] }, 'paper_runtime_daily_selection_preview'),
+    candidateLineage: lineage('runtime_preview', row),
+    setupBuilderApplied: false,
+    setupBuilderReason: 'not_applied_to_raw_runtime_candidate',
     allowed: false,
     previewOnly: true,
     wouldCreateTrade: row.wouldCreateTrade === true,
@@ -143,6 +215,9 @@ function normalizeAuditSignal(row = {}) {
       score: details.score,
       marketGroup: details.group,
     }, 'audit_candidates'),
+    candidateLineage: lineage('scanner_signal', row),
+    setupBuilderApplied: false,
+    setupBuilderReason: 'not_applicable_to_signal_history',
     signal: text(details.signal || row.type),
     message: text(row.message),
   };
@@ -158,18 +233,28 @@ function normalizeSignalMemory(row = {}) {
       marketGroup: features.market || features.group,
       timestamp: row.created_at || row.resolved_at,
     }, 'signal_memory'),
+    candidateLineage: lineage('scanner_signal', row),
+    setupBuilderApplied: false,
+    setupBuilderReason: 'not_applicable_to_signal_history',
     outcomeType: text(row.outcome_type),
     moveAfter5mPct: num(row.move_after_5m_pct),
   };
 }
 
 function normalizePaperTrade(row = {}, status = null) {
-  return {
+  const record = {
     ...baseRecord('paper_trade', row, 'paper_trading_runtime'),
+    candidateLineage: lineage('paper_trade_history', row),
+    setupBuilderApplied: false,
+    setupBuilderReason: 'not_applicable_to_closed_or_internal_paper_trade_history',
     paperTradeStatus: status || row.status || null,
     pnlPct: num(row.pnlPct ?? row.pnl_pct ?? row.pnl),
     result: text(row.result || row.outcome),
     isIbPaperOrder: false,
+  };
+  return {
+    ...record,
+    priceSource: record.priceSource === 'missing' ? 'paper_trade_history' : record.priceSource,
   };
 }
 
