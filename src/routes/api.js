@@ -113,6 +113,7 @@ const paperTradingRuntimeService = require('../services/paperTradingRuntimeServi
 const candleSnapshotRecorderService = require('../services/candleSnapshotRecorderService');
 const strategyPipelineTruthService = require('../services/strategyPipelineTruthService');
 const shortExitTruthService = require('../services/shortExitTruthService');
+const regularPullbackExitResearchService = require('../services/regularPullbackExitResearchService');
 const paperRiskPauseSummaryService = require('../services/paperRiskPauseSummaryService');
 const paperRiskReviewService = require('../services/paperRiskReviewService');
 const tradingViewTestBlueprintService = require('../services/tradingViewTestBlueprintService');
@@ -3799,6 +3800,19 @@ router.get('/paper-trading/decision-pipeline', (req, res) => {
 router.get('/paper-trading/gate-effectiveness', (req, res) => {
   try { res.json({ ok: true, report: paperTrading.getGateEffectivenessReport() }); }
   catch (err) { res.json({ ok: false, error: err.message, report: emptyGateEffectivenessReport() }); }
+});
+
+// ── Regular Pullback Exit Research (read-only) ───────────────────────────────
+router.get('/research/regular-pullback-exit', (req, res) => {
+  try {
+    res.json(regularPullbackExitResearchService.buildRegularPullbackExitResearch({ ...req.query }));
+  } catch (err) {
+    res.status(500).json({
+      ok: false,
+      error: err.message,
+      safety: regularPullbackExitResearchService.SAFETY,
+    });
+  }
 });
 
 // ── System Intelligence Agent v1 ─────────────────────────────────────────────
