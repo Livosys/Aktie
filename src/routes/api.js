@@ -4522,6 +4522,7 @@ const interactiveBrokersPaperBlueprintNormalizerService = require('../services/i
 const interactiveBrokersDryRunScaffoldService = require('../services/interactiveBrokersDryRunScaffoldService');
 const interactiveBrokersPaperReadOnlyStateService = require('../services/interactiveBrokersPaperReadOnlyStateService');
 const interactiveBrokersScannerControlRoomService = require('../services/interactiveBrokersScannerControlRoomService');
+const interactiveBrokersFuturesContractService = require('../services/interactiveBrokersFuturesContractService');
 // ── IB Paper submit-route gate (default OFF, independent of IB_PAPER_EXECUTION_ENABLED) ──
 // When IB_PAPER_SUBMIT_ROUTES_ENABLED !== 'true', the state-changing submit routes
 // (POST paper-execute, POST arm, POST disarm) are hard-blocked before any service call.
@@ -4673,6 +4674,19 @@ router.get('/interactive-brokers/scanner-control-room', async (req, res) => {
     }));
   } catch (err) {
     res.status(500).json({ ok: false, readOnly: true, error: err.message, safety: interactiveBrokersScannerControlRoomService.SAFETY });
+  }
+});
+
+// ── IB Paper — Futures Contract Discovery (read-only, Phase 1) ───────────────
+// Returns a static, hand-verified CME futures contract spec (MES/MNQ/ES/NQ).
+// Pure data: front-month expiry and price are unverified, every contract is
+// isTradablePreview=false, and there is NO order path here. Submit stays hard-
+// gated by IB_PAPER_SUBMIT_ROUTES_ENABLED.
+router.get('/interactive-brokers/futures/contracts', (req, res) => {
+  try {
+    res.json(interactiveBrokersFuturesContractService.buildFuturesContracts());
+  } catch (err) {
+    res.status(500).json({ ok: false, readOnly: true, error: err.message, safety: interactiveBrokersFuturesContractService.SAFETY });
   }
 });
 // Read-only connection readiness. Never logs in, never sends orders; a harmless
