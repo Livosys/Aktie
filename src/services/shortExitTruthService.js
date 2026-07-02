@@ -14,6 +14,7 @@
 const fs = require('fs');
 const path = require('path');
 const { readJsonlTail } = require('./readOnlyJsonlTailService');
+const { normalizeExitReasonFields } = require('./exitReasonNormalizer');
 
 const SAFETY = Object.freeze({
   mode: 'paper_only',
@@ -55,8 +56,10 @@ function readTrades() {
       durationSec: num(t.duration_seconds),
       pnlPct: num(t.pnlPct),
       result: String(t.result || '').toUpperCase(),
+      exitReason: t.exitReason || null,
       exitReasonCode: t.exitReasonCode || null,
       exitSource: t.exitSource || null,
+      normalizedExitReasonCode: normalizeExitReasonFields(t).normalizedExitReasonCode,
       exitEngineDecision: t.exitEngineLastDecision?.decision || t.exitEngineDecision || null,
       strategyId: t.strategyId || t.resolvedStrategyId || t.strategy_id || 'unknown',
       signalSubtype: t.signalSubtype || t.signal_subtype || 'unknown',
@@ -84,7 +87,13 @@ function summarize(trades) {
 
   const codeCounts = {};
   for (const t of trades) {
-    const code = isDefaultExit(t.exitReasonCode) ? 'default' : t.exitReasonCode;
+    // Prefer the analysis-normalized code so legacy static exits
+    // (STOP_HIT/TARGET_HIT/TIMEOUT) are bucketed as stop_hit/target_hit/timeout
+    // instead of collapsing into the misleading "default" bucket.
+    const normalized = t.normalizedExitReasonCode;
+    const code = (normalized && normalized !== 'unknown')
+      ? normalized
+      : (isDefaultExit(t.exitReasonCode) ? 'default' : t.exitReasonCode);
     codeCounts[code] = (codeCounts[code] || 0) + 1;
   }
   const exitReasonTop = Object.entries(codeCounts)
