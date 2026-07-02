@@ -225,6 +225,7 @@ export default function InteractiveBrokersPage() {
     readOnlyState: null,
     multiStrategyPlan: null,
     scannerControlRoom: null,
+    futuresContracts: null,
   });
 
   useEffect(() => {
@@ -263,6 +264,7 @@ export default function InteractiveBrokersPage() {
             fetchJsonWithTimeout('/api/interactive-brokers/trade-blueprint', { signal: controller.signal }),
             fetchJsonWithTimeout('/api/interactive-brokers/paper-readonly-state', { signal: controller.signal }),
             fetchJsonWithTimeout('/api/interactive-brokers/scanner-control-room', { signal: controller.signal, timeoutMs: 12_000 }),
+            fetchJsonWithTimeout('/api/interactive-brokers/futures/contracts', { signal: controller.signal }),
           ]),
           planPromise,
         ]);
@@ -284,6 +286,7 @@ export default function InteractiveBrokersPage() {
           tradeBlueprint: valueOf(6),
           readOnlyState: valueOf(7),
           scannerControlRoom: valueOf(8),
+          futuresContracts: valueOf(9),
           multiStrategyPlan,
         });
       } catch (err) {
@@ -302,7 +305,7 @@ export default function InteractiveBrokersPage() {
     };
   }, []);
 
-  const { loading, error, status, readiness, preview, orderPreview, executionStatus, executionPreview, tradeBlueprint, readOnlyState, multiStrategyPlan, scannerControlRoom } = state;
+  const { loading, error, status, readiness, preview, orderPreview, executionStatus, executionPreview, tradeBlueprint, readOnlyState, multiStrategyPlan, scannerControlRoom, futuresContracts } = state;
 
   // On ANY error (404 / timeout / network) fall back to the safe blocked state.
   // Never derive values from an absent payload — that could accidentally render
@@ -332,6 +335,10 @@ export default function InteractiveBrokersPage() {
   const multiPlanCurrentBlockers = Array.isArray(multiPlanView?.currentBlockers) ? multiPlanView.currentBlockers : [];
   const scannerRoomView = scannerControlRoom?.ok === true ? scannerControlRoom : null;
   const liveScannerRows = Array.isArray(scannerRoomView?.liveScanner?.candidates) ? scannerRoomView.liveScanner.candidates : [];
+  // Futures Control Room (read-only, Phase 1). Static CME contract discovery —
+  // no order path, nothing tradable yet (front-month + price unverified).
+  const futuresView = futuresContracts?.ok === true ? futuresContracts : null;
+  const futuresRows = Array.isArray(futuresView?.contracts) ? futuresView.contracts : [];
   const latestByAsset = scannerRoomView?.latest50 || {};
   const assetHistoryGroups = [
     { key: 'crypto', label: 'Crypto', rows: Array.isArray(latestByAsset.crypto) ? latestByAsset.crypto : [] },
@@ -476,6 +483,84 @@ export default function InteractiveBrokersPage() {
 	            <Row label="Dry-run / läsläge">
 	              <Badge ok={eff.dryRun === true} labelTrue="Ja" labelFalse="Nej" />
 	            </Row>
+          </div>
+
+          {/* Futures Control Room (read-only, Phase 1) — PRIMARY IB Paper path */}
+          <div style={{ ...CARD_STYLE, borderColor: 'rgba(20,184,166,0.45)' }}>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, flexWrap: 'wrap' }}>
+              <h2 style={{ marginTop: 0, marginBottom: 0 }}>Futures Control Room</h2>
+              <span style={{ display: 'inline-block', padding: '1px 8px', borderRadius: 999, fontSize: 11, fontWeight: 700, background: 'rgba(20,184,166,0.15)', color: '#5eead4', border: '1px solid rgba(20,184,166,0.4)' }}>PRIMÄRT MÅL · READ-ONLY</span>
+            </div>
+            <p style={{ color: '#94a3b8', marginTop: 8, lineHeight: 1.6 }}>
+              Read-only contract discovery för CME-futures (MES/MNQ/ES/NQ). Statisk kontraktsspec.
+              {' '}Front-month och pris är ännu inte verifierade, så inget kontrakt är körbart preview och ingen order kan skickas härifrån.
+            </p>
+            <Row label="Källa">
+              <code>{futuresView?.source || 'futures_contracts_unavailable'}</code>
+            </Row>
+            <Row label="Paper account">
+              <code>{futuresView?.account || 'Saknas'}</code>
+            </Row>
+            <Row label="Submit-routes">
+              <Badge ok={futuresView?.submitRoutesEnabled === false} labelTrue="Låst (OFF)" labelFalse="PÅ" />
+            </Row>
+            <Row label="Kontrakt / körbara preview">
+              <code>{futuresView ? `${futuresView.counts?.total ?? futuresRows.length} / ${futuresView.counts?.tradablePreview ?? 0}` : '0 / 0'}</code>
+            </Row>
+            {Array.isArray(futuresView?.globalBlockers) && futuresView.globalBlockers.length > 0 && (
+              <div style={{ marginTop: 8, color: '#94a3b8', fontSize: 12 }}>
+                Globala blockers: <code>{futuresView.globalBlockers.join(', ')}</code>
+              </div>
+            )}
+
+            <div style={{ marginTop: 16 }}>
+              {futuresRows.length === 0 ? (
+                <div style={{ color: '#64748b', fontSize: 13 }}>Inga futures-kontrakt i denna read-only vy just nu.</div>
+              ) : (
+                <div style={{ overflowX: 'auto' }}>
+                  <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
+                    <thead>
+                      <tr style={{ color: '#94a3b8', textAlign: 'left' }}>
+                        <th style={{ padding: '6px 8px' }}>Root</th>
+                        <th style={{ padding: '6px 8px' }}>Namn</th>
+                        <th style={{ padding: '6px 8px' }}>secType</th>
+                        <th style={{ padding: '6px 8px' }}>Exchange</th>
+                        <th style={{ padding: '6px 8px' }}>Valuta</th>
+                        <th style={{ padding: '6px 8px' }}>Front month</th>
+                        <th style={{ padding: '6px 8px' }}>Tick</th>
+                        <th style={{ padding: '6px 8px' }}>Multiplier</th>
+                        <th style={{ padding: '6px 8px' }}>Tick-värde</th>
+                        <th style={{ padding: '6px 8px' }}>Körbar preview</th>
+                        <th style={{ padding: '6px 8px' }}>Blockers</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {futuresRows.map((row, index) => (
+                        <tr key={`${row.root || row.symbol}:${index}`} style={{ borderTop: '1px solid rgba(148,163,184,0.12)' }}>
+                          <td style={{ padding: '6px 8px' }}><strong>{row.root || row.symbol || '–'}</strong>{row.preferredFirstTest ? <span title="Rekommenderat första paper-test" style={{ marginLeft: 6, color: '#5eead4' }}>★</span> : null}</td>
+                          <td style={{ padding: '6px 8px' }}>{row.name || '–'}</td>
+                          <td style={{ padding: '6px 8px' }}>{row.secType || '–'}</td>
+                          <td style={{ padding: '6px 8px' }}>{row.exchange || '–'}</td>
+                          <td style={{ padding: '6px 8px' }}>{row.currency || '–'}</td>
+                          <td style={{ padding: '6px 8px', color: row.contractMonthVerified ? '#e2e8f0' : '#fbbf24' }} title={row.contractMonthVerified ? '' : 'Front-month ej verifierad (ingen reqContractDetails ännu)'}>
+                            {row.lastTradeDateOrContractMonth || row.contractMonth || 'Ej verifierad'}
+                          </td>
+                          <td style={{ padding: '6px 8px' }}>{row.minTick ?? '–'}</td>
+                          <td style={{ padding: '6px 8px' }}>{row.multiplier ?? '–'}</td>
+                          <td style={{ padding: '6px 8px' }}>{row.tickValue != null ? `$${row.tickValue}` : '–'}</td>
+                          <td style={{ padding: '6px 8px', color: row.isTradablePreview ? '#4ade80' : '#fbbf24' }}>{row.isTradablePreview ? 'Ja' : 'Nej'}</td>
+                          <td style={{ padding: '6px 8px', color: '#94a3b8' }} title={(row.blockers || []).join(', ')}>{(row.blockers || []).length}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </div>
+
+            <div style={{ marginTop: 12, padding: '10px 12px', borderRadius: 10, border: '1px solid rgba(20,184,166,0.25)', background: 'rgba(20,184,166,0.08)', color: '#ccfbf1', fontSize: 13, lineHeight: 1.5 }}>
+              {futuresView?.note || 'Futures contract discovery kunde inte laddas. Inga order skickas.'}
+            </div>
           </div>
 
           {/* Order sending blocked */}
