@@ -39,6 +39,38 @@ function rows({ expiries }) {
     assert.strictEqual(parseExpiry('20261399'), null); // month 13
   });
 
+  // 1b. parseExpiry: real IB Gateway format with time + timezone appended.
+  await run('parseExpiry handles IB "YYYYMMDD HH:MM:SS TZ" format', () => {
+    const d = parseExpiry('20261218 08:30:00 US/Central');
+    assert.ok(d instanceof Date);
+    assert.strictEqual(d.getUTCFullYear(), 2026);
+    assert.strictEqual(d.getUTCMonth(), 11); // December
+    assert.strictEqual(d.getUTCDate(), 18);
+    // Same day as the bare form.
+    assert.strictEqual(d.getTime(), parseExpiry('20261218').getTime());
+    // Garbage before whitespace still fails.
+    assert.strictEqual(parseExpiry('bogus 08:30:00 US/Central'), null);
+  });
+
+  // 1c. selectFrontMonth parses IB time+TZ format and falls back to
+  // contractMonth when lastTradeDateOrContractMonth is unparseable.
+  await run('selectFrontMonth handles IB time+TZ expiries and contractMonth fallback', () => {
+    const ibRows = [
+      { conId: 1, localSymbol: 'MESU6', lastTradeDateOrContractMonth: '20260918 08:30:00 US/Central', tradingClass: 'MES', multiplier: 5, minTick: 0.25 },
+      { conId: 2, localSymbol: 'MESZ6', lastTradeDateOrContractMonth: '20261218 08:30:00 US/Central', tradingClass: 'MES', multiplier: 5, minTick: 0.25 },
+    ];
+    const r = selectFrontMonth(ibRows, { now: NOW });
+    assert.strictEqual(r.reason, 'front_selected');
+    assert.strictEqual(r.selected.localSymbol, 'MESU6');
+
+    const fallbackRows = [
+      { conId: 3, localSymbol: 'MESH7', lastTradeDateOrContractMonth: 'unparseable-junk', contractMonth: '202703', tradingClass: 'MES', multiplier: 5, minTick: 0.25 },
+    ];
+    const f = selectFrontMonth(fallbackRows, { now: NOW });
+    assert.strictEqual(f.reason, 'front_selected');
+    assert.strictEqual(f.selected.localSymbol, 'MESH7');
+  });
+
   // 2. selectFrontMonth picks earliest non-expired, skips expired.
   await run('selectFrontMonth picks earliest non-expired', () => {
     const r = selectFrontMonth(rows({ expiries: ['20260619', '20260918', '20261218'] }), { now: NOW });

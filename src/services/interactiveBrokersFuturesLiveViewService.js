@@ -87,6 +87,7 @@ function mergeContractDetails(baseC, cdC, cdMeta = {}) {
       daysToExpiry: null,
       contractDetailsSource: 'static_contract_spec',
       detailBlockers,
+      detailError: cdC?.error ?? null,
       blockers: uniq([...(baseC.blockers || []), ...surfaced]),
     };
   }
@@ -107,6 +108,7 @@ function mergeContractDetails(baseC, cdC, cdMeta = {}) {
     contractMonthVerified: true,
     contractDetailsSource: cdMeta.source || 'ib_reqContractDetails',
     detailBlockers,
+    detailError: null,
     blockers: uniq([...blockers, ...surfaced]),
   };
 }

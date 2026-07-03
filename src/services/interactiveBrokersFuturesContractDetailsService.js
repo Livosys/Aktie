@@ -56,11 +56,13 @@ function safeNum(value) {
 /**
  * Parse an IB expiry string into a Date at the END of that day/month (UTC), so
  * a contract is only "expired" once its last trade day has fully passed.
- * Accepts "YYYYMMDD" (FUT lastTradeDateOrContractMonth) or "YYYYMM".
+ * Accepts "YYYYMMDD" (FUT lastTradeDateOrContractMonth) or "YYYYMM". IB Gateway
+ * may append time + timezone ("20261218 08:30:00 US/Central") — the date is
+ * always the first whitespace-separated token.
  * Returns null if unparseable — an unparseable expiry is never treated as valid.
  */
 function parseExpiry(raw) {
-  const s = String(raw ?? '').trim();
+  const s = String(raw ?? '').trim().split(/\s+/)[0];
   if (/^\d{8}$/.test(s)) {
     const y = Number(s.slice(0, 4));
     const m = Number(s.slice(4, 6));
@@ -85,7 +87,7 @@ function parseExpiry(raw) {
 function selectFrontMonth(rows, { now = new Date(), rollGuardDays = DEFAULT_ROLL_GUARD_DAYS } = {}) {
   const nowMs = now instanceof Date ? now.getTime() : new Date(now).getTime();
   const parsed = (Array.isArray(rows) ? rows : [])
-    .map((r) => ({ row: r, expiry: parseExpiry(r?.lastTradeDateOrContractMonth ?? r?.contractMonth) }))
+    .map((r) => ({ row: r, expiry: parseExpiry(r?.lastTradeDateOrContractMonth) ?? parseExpiry(r?.contractMonth) }))
     .filter((x) => x.expiry instanceof Date && !Number.isNaN(x.expiry.getTime()));
 
   const active = parsed
