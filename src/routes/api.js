@@ -4524,6 +4524,7 @@ const interactiveBrokersPaperReadOnlyStateService = require('../services/interac
 const interactiveBrokersScannerControlRoomService = require('../services/interactiveBrokersScannerControlRoomService');
 const interactiveBrokersFuturesContractService = require('../services/interactiveBrokersFuturesContractService');
 const interactiveBrokersFuturesLiveViewService = require('../services/interactiveBrokersFuturesLiveViewService');
+const interactiveBrokersFuturesOrderTicketService = require('../services/interactiveBrokersFuturesOrderTicketService');
 // ── IB Paper submit-route gate (default OFF, independent of IB_PAPER_EXECUTION_ENABLED) ──
 // When IB_PAPER_SUBMIT_ROUTES_ENABLED !== 'true', the state-changing submit routes
 // (POST paper-execute, POST arm, POST disarm) are hard-blocked before any service call.
@@ -4698,6 +4699,46 @@ router.get('/interactive-brokers/futures/contracts', async (req, res) => {
     } catch (_) {
       res.status(500).json({ ok: false, readOnly: true, error: err.message, safety: interactiveBrokersFuturesLiveViewService.SAFETY });
     }
+  }
+});
+// ── IB Paper — Futures Order Ticket (Phase 2, PREVIEW ONLY) ──────────────────
+// Builds a validated 1-contract LIMIT ticket for MES/MNQ from the verified
+// live view. Every stop rule is a named blocker; wouldSubmit is ALWAYS false.
+// There is NO submit path here or anywhere for futures: the ticket always
+// carries futures_submit_routes_not_implemented, plus
+// futures_submit_routes_disabled while the RESERVED flag
+// IB_FUTURES_SUBMIT_ROUTES_ENABLED (default OFF, reported only) is unset.
+// IB_PAPER_SUBMIT_ROUTES_ENABLED is untouched and unrelated to this route.
+async function buildFuturesOrderTicketResponse(params) {
+  const view = await interactiveBrokersFuturesLiveViewService.buildFuturesLiveView();
+  const root = String(params.root ?? '').trim().toUpperCase();
+  const contract = (view.contracts || []).find((c) => String(c.root ?? '').toUpperCase() === root) || null;
+  return interactiveBrokersFuturesOrderTicketService.buildOrderTicket({
+    root,
+    side: params.side,
+    quantity: params.quantity !== undefined ? Number(params.quantity) : undefined,
+    limitPrice: params.limitPrice !== undefined ? Number(params.limitPrice) : undefined,
+    offsetTicks: params.offsetTicks !== undefined ? Number(params.offsetTicks) : 0,
+    orderType: params.orderType,
+    confirmationPhrase: params.confirmationPhrase ?? null,
+    contract,
+    safetyStatus: view.safety || null,
+    account: view.account || null,
+    paperSubmitRoutesEnabled: view.submitRoutesEnabled === true,
+  });
+}
+router.get('/interactive-brokers/futures/order-ticket', async (req, res) => {
+  try {
+    res.json(await buildFuturesOrderTicketResponse(req.query && typeof req.query === 'object' ? req.query : {}));
+  } catch (err) {
+    res.status(500).json({ ok: false, readOnly: true, previewOnly: true, wouldSubmit: false, error: err.message, safety: interactiveBrokersFuturesOrderTicketService.SAFETY });
+  }
+});
+router.post('/interactive-brokers/futures/order-ticket', async (req, res) => {
+  try {
+    res.json(await buildFuturesOrderTicketResponse(req.body && typeof req.body === 'object' ? req.body : {}));
+  } catch (err) {
+    res.status(500).json({ ok: false, readOnly: true, previewOnly: true, wouldSubmit: false, error: err.message, safety: interactiveBrokersFuturesOrderTicketService.SAFETY });
   }
 });
 // Read-only connection readiness. Never logs in, never sends orders; a harmless
