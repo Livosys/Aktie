@@ -4523,6 +4523,7 @@ const interactiveBrokersDryRunScaffoldService = require('../services/interactive
 const interactiveBrokersPaperReadOnlyStateService = require('../services/interactiveBrokersPaperReadOnlyStateService');
 const interactiveBrokersScannerControlRoomService = require('../services/interactiveBrokersScannerControlRoomService');
 const interactiveBrokersFuturesContractService = require('../services/interactiveBrokersFuturesContractService');
+const interactiveBrokersFuturesLiveViewService = require('../services/interactiveBrokersFuturesLiveViewService');
 // ── IB Paper submit-route gate (default OFF, independent of IB_PAPER_EXECUTION_ENABLED) ──
 // When IB_PAPER_SUBMIT_ROUTES_ENABLED !== 'true', the state-changing submit routes
 // (POST paper-execute, POST arm, POST disarm) are hard-blocked before any service call.
@@ -4677,16 +4678,26 @@ router.get('/interactive-brokers/scanner-control-room', async (req, res) => {
   }
 });
 
-// ── IB Paper — Futures Contract Discovery (read-only, Phase 1) ───────────────
-// Returns a static, hand-verified CME futures contract spec (MES/MNQ/ES/NQ).
-// Pure data: front-month expiry and price are unverified, every contract is
-// isTradablePreview=false, and there is NO order path here. Submit stays hard-
-// gated by IB_PAPER_SUBMIT_ROUTES_ENABLED.
-router.get('/interactive-brokers/futures/contracts', (req, res) => {
+// ── IB Paper — Futures Contract Discovery (read-only, Phase 3.3) ─────────────
+// Returns the merged futures live view: static Fas 1 spec + (gated) Fas 3.1
+// front-month resolver + (gated) Fas 3.2 market-data snapshot.
+// Both data sources are GATED OFF by default (IB_FUTURES_CONTRACT_DETAILS_ENABLED
+// / IB_FUTURES_MARKETDATA_ENABLED). With both off NO IB contact happens and the
+// payload degrades to the exact Phase-1 static behaviour. Read-only: front-month
+// and price stay unverified when gated, every contract is isTradablePreview=false,
+// there is NO order path here, and submit stays hard-gated by
+// IB_PAPER_SUBMIT_ROUTES_ENABLED.
+router.get('/interactive-brokers/futures/contracts', async (req, res) => {
   try {
-    res.json(interactiveBrokersFuturesContractService.buildFuturesContracts());
+    res.json(await interactiveBrokersFuturesLiveViewService.buildFuturesLiveView());
   } catch (err) {
-    res.status(500).json({ ok: false, readOnly: true, error: err.message, safety: interactiveBrokersFuturesContractService.SAFETY });
+    // Fail safe: never surface a broken futures view — fall back to the pure
+    // Phase-1 static spec so the read-only endpoint stays available.
+    try {
+      res.json(interactiveBrokersFuturesContractService.buildFuturesContracts());
+    } catch (_) {
+      res.status(500).json({ ok: false, readOnly: true, error: err.message, safety: interactiveBrokersFuturesLiveViewService.SAFETY });
+    }
   }
 });
 // Read-only connection readiness. Never logs in, never sends orders; a harmless

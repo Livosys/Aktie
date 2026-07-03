@@ -485,15 +485,15 @@ export default function InteractiveBrokersPage() {
 	            </Row>
           </div>
 
-          {/* Futures Control Room (read-only, Phase 1) — PRIMARY IB Paper path */}
+          {/* Futures Control Room (read-only, Phase 3.3) — PRIMARY IB Paper path */}
           <div style={{ ...CARD_STYLE, borderColor: 'rgba(20,184,166,0.45)' }}>
             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, flexWrap: 'wrap' }}>
               <h2 style={{ marginTop: 0, marginBottom: 0 }}>Futures Control Room</h2>
               <span style={{ display: 'inline-block', padding: '1px 8px', borderRadius: 999, fontSize: 11, fontWeight: 700, background: 'rgba(20,184,166,0.15)', color: '#5eead4', border: '1px solid rgba(20,184,166,0.4)' }}>PRIMÄRT MÅL · READ-ONLY</span>
             </div>
             <p style={{ color: '#94a3b8', marginTop: 8, lineHeight: 1.6 }}>
-              Read-only contract discovery för CME-futures (MES/MNQ/ES/NQ). Statisk kontraktsspec.
-              {' '}Front-month och pris är ännu inte verifierade, så inget kontrakt är körbart preview och ingen order kan skickas härifrån.
+              Read-only live-vy för CME-futures (MES/MNQ/ES/NQ): statisk kontraktsspec + front-month-resolver + marknadsdata-snapshot, hopslagna.
+              {' '}Datakällorna är gated OFF som standard — då sker ingen IB-kontakt och front-month/pris förblir overifierade. Inget kontrakt är körbart preview och ingen order kan skickas härifrån.
             </p>
             <Row label="Källa">
               <code>{futuresView?.source || 'futures_contracts_unavailable'}</code>
@@ -506,6 +506,17 @@ export default function InteractiveBrokersPage() {
             </Row>
             <Row label="Kontrakt / körbara preview">
               <code>{futuresView ? `${futuresView.counts?.total ?? futuresRows.length} / ${futuresView.counts?.tradablePreview ?? 0}` : '0 / 0'}</code>
+            </Row>
+            <Row label="Front-month verifierade / med pris">
+              <code>{futuresView ? `${futuresView.counts?.contractMonthVerified ?? 0} / ${futuresView.counts?.hasUsablePrice ?? 0}` : '0 / 0'}</code>
+            </Row>
+            <Row label="Contract details">
+              <Badge ok={futuresView?.contractDetails?.gated !== false} labelTrue="Gated (OFF)" labelFalse="Live (IB)" />
+              {futuresView?.contractDetails?.source ? <code style={{ marginLeft: 8, fontSize: 11, color: '#94a3b8' }}>{futuresView.contractDetails.source}</code> : null}
+            </Row>
+            <Row label="Marknadsdata">
+              <Badge ok={futuresView?.marketData?.gated !== false} labelTrue="Gated (OFF)" labelFalse="Live (IB)" />
+              {futuresView?.marketData?.source ? <code style={{ marginLeft: 8, fontSize: 11, color: '#94a3b8' }}>{futuresView.marketData.source}</code> : null}
             </Row>
             {Array.isArray(futuresView?.globalBlockers) && futuresView.globalBlockers.length > 0 && (
               <div style={{ marginTop: 8, color: '#94a3b8', fontSize: 12 }}>
@@ -527,9 +538,14 @@ export default function InteractiveBrokersPage() {
                         <th style={{ padding: '6px 8px' }}>Exchange</th>
                         <th style={{ padding: '6px 8px' }}>Valuta</th>
                         <th style={{ padding: '6px 8px' }}>Front month</th>
+                        <th style={{ padding: '6px 8px' }}>Verifierad</th>
+                        <th style={{ padding: '6px 8px' }}>localSymbol / conId</th>
                         <th style={{ padding: '6px 8px' }}>Tick</th>
                         <th style={{ padding: '6px 8px' }}>Multiplier</th>
                         <th style={{ padding: '6px 8px' }}>Tick-värde</th>
+                        <th style={{ padding: '6px 8px' }}>Pris</th>
+                        <th style={{ padding: '6px 8px' }}>Data</th>
+                        <th style={{ padding: '6px 8px' }}>Ålder</th>
                         <th style={{ padding: '6px 8px' }}>Körbar preview</th>
                         <th style={{ padding: '6px 8px' }}>Blockers</th>
                       </tr>
@@ -542,14 +558,23 @@ export default function InteractiveBrokersPage() {
                           <td style={{ padding: '6px 8px' }}>{row.secType || '–'}</td>
                           <td style={{ padding: '6px 8px' }}>{row.exchange || '–'}</td>
                           <td style={{ padding: '6px 8px' }}>{row.currency || '–'}</td>
-                          <td style={{ padding: '6px 8px', color: row.contractMonthVerified ? '#e2e8f0' : '#fbbf24' }} title={row.contractMonthVerified ? '' : 'Front-month ej verifierad (ingen reqContractDetails ännu)'}>
+                          <td style={{ padding: '6px 8px', color: row.contractMonthVerified ? '#e2e8f0' : '#fbbf24' }} title={row.contractMonthVerified ? `Källa: ${row.contractDetailsSource || 'okänd'}` : 'Front-month ej verifierad (gated eller ej resolvad via reqContractDetails)'}>
                             {row.lastTradeDateOrContractMonth || row.contractMonth || 'Ej verifierad'}
                           </td>
+                          <td style={{ padding: '6px 8px', color: row.contractMonthVerified ? '#4ade80' : '#fbbf24' }} title={(row.detailBlockers || []).length ? `detailBlockers: ${(row.detailBlockers || []).join(', ')}` : ''}>{row.contractMonthVerified ? 'Ja' : 'Nej'}</td>
+                          <td style={{ padding: '6px 8px', color: row.localSymbol ? '#e2e8f0' : '#64748b' }}>{row.localSymbol || '–'}{row.conId != null ? <span style={{ color: '#64748b' }}> / {row.conId}</span> : ''}</td>
                           <td style={{ padding: '6px 8px' }}>{row.minTick ?? '–'}</td>
                           <td style={{ padding: '6px 8px' }}>{row.multiplier ?? '–'}</td>
                           <td style={{ padding: '6px 8px' }}>{row.tickValue != null ? `$${row.tickValue}` : '–'}</td>
+                          <td style={{ padding: '6px 8px', color: row.hasUsablePrice ? '#e2e8f0' : '#64748b' }} title={row.hasUsablePrice ? 'Användbart pris' : 'Inget användbart pris (gated, saknas eller stale)'}>{row.price != null ? row.price : '–'}</td>
+                          <td style={{ padding: '6px 8px', color: row.priceType && row.priceType !== 'realtime' ? '#fbbf24' : (row.priceType ? '#4ade80' : '#64748b') }} title={row.priceType ? `Marknadsdata-typ: ${row.priceType}${(row.marketDataBlockers || []).length ? ` · marketDataBlockers: ${(row.marketDataBlockers || []).join(', ')}` : ''}` : 'Ingen marknadsdata (gated eller overifierad)'}>{row.priceType || '–'}</td>
+                          <td style={{ padding: '6px 8px', color: '#94a3b8' }} title={row.marketDataTimestamp ? `Snapshot: ${row.marketDataTimestamp}` : ''}>{row.marketDataAgeMs != null ? `${Math.round(row.marketDataAgeMs / 1000)}s` : '–'}</td>
                           <td style={{ padding: '6px 8px', color: row.isTradablePreview ? '#4ade80' : '#fbbf24' }}>{row.isTradablePreview ? 'Ja' : 'Nej'}</td>
-                          <td style={{ padding: '6px 8px', color: '#94a3b8' }} title={(row.blockers || []).join(', ')}>{(row.blockers || []).length}</td>
+                          <td style={{ padding: '6px 8px', color: '#94a3b8' }} title={[
+                            (row.blockers || []).length ? `blockers: ${(row.blockers || []).join(', ')}` : '',
+                            (row.detailBlockers || []).length ? `detailBlockers: ${(row.detailBlockers || []).join(', ')}` : '',
+                            (row.marketDataBlockers || []).length ? `marketDataBlockers: ${(row.marketDataBlockers || []).join(', ')}` : '',
+                          ].filter(Boolean).join('\n')}>{(row.blockers || []).length}</td>
                         </tr>
                       ))}
                     </tbody>
