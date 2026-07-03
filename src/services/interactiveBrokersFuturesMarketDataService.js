@@ -278,13 +278,16 @@ function createIbMarketDataConnector(overrides = {}) {
 
       client.on(EventName.error, (err, code) => {
         if (code && Number(code) >= 2100 && Number(code) < 2200) return; // benign info
+        // 10167 = "Requested market data is not subscribed. Displaying delayed
+        // market data." — informational when mdType=delayed; delayed ticks follow.
+        if (code && Number(code) === 10167) return;
         finish(err instanceof Error ? err : new Error(String(err)));
       });
       client.on(EventName.marketDataType, (_reqId, type) => { dataType = type; });
       client.on(EventName.tickPrice, (_reqId, field, price) => {
         const f = Number(field);
         const p = safeNum(price);
-        if (p === null) return;
+        if (p === null || p <= 0) return; // IB sends -1/0 as "no data" sentinels
         if (f === TICK.BID || f === TICK.D_BID) ticks.bid = p;
         else if (f === TICK.ASK || f === TICK.D_ASK) ticks.ask = p;
         else if (f === TICK.LAST || f === TICK.D_LAST) ticks.last = p;
