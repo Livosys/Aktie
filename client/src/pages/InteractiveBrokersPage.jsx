@@ -195,6 +195,196 @@ function Badge({ ok, labelTrue, labelFalse }) {
   );
 }
 
+// ── Futures Order Ticket Preview (Fas 2.1, frontend-only) ───────────────────
+// Renders the preview-only order-ticket endpoint. There is NO submit button and
+// no order path: the only action calls POST /futures/order-ticket, which never
+// submits (wouldSubmit is always false server-side).
+const ORDER_TICKET_BLOCKER_SV = {
+  futures_submit_routes_not_implemented: 'Submit-väg är inte byggd (strukturellt lås)',
+  futures_submit_routes_disabled: 'Futures-submit-flaggan är AV (strukturellt lås)',
+  symbol_blocked_initial_version: 'Symbolen är blockerad i första versionen (endast MES/MNQ)',
+  symbol_not_allowed: 'Symbolen är inte tillåten',
+  symbol_missing: 'Symbol saknas',
+  side_invalid: 'Riktning (BUY/SELL) saknas eller är ogiltig',
+  quantity_not_exactly_one: 'Antal måste vara exakt 1 kontrakt',
+  order_type_not_allowed: 'Endast limit order (LMT) är tillåten',
+  account_mismatch: 'Fel konto — endast paper-kontot DUQ565596',
+  contract_not_found: 'Kontraktet hittades inte i live-vyn',
+  contract_not_verified: 'Kontraktsmånaden är inte IB-verifierad',
+  no_usable_price: 'Inget användbart pris',
+  price_type_not_allowed: 'Pristypen är inte tillåten (endast realtime/delayed)',
+  min_tick_unknown: 'minTick okänd',
+  limit_price_missing: 'Limitpris saknas',
+  limit_price_not_tick_aligned: 'Limitpris ligger inte på tick-gridden',
+  limit_price_out_of_tolerance: 'Limitpris utanför tolerans (max 10 ticks / 0,5 %)',
+  safety_state_changed: 'Safety-läget har ändrats — allt blockeras',
+};
+const ORDER_TICKET_STRUCTURAL = new Set(['futures_submit_routes_not_implemented', 'futures_submit_routes_disabled']);
+
+function FuturesOrderTicketPanel({ readOnlyState }) {
+  const [root, setRoot] = useState('MES');
+  const [side, setSide] = useState('BUY');
+  const [busy, setBusy] = useState(false);
+  const [ticket, setTicket] = useState(null);
+  const [fetchError, setFetchError] = useState(null);
+
+  const fetchPreview = async () => {
+    setBusy(true);
+    setFetchError(null);
+    try {
+      const res = await fetch('/api/interactive-brokers/futures/order-ticket', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ root, side, quantity: 1, orderType: 'LMT' }),
+      });
+      const data = await res.json();
+      setTicket(data && typeof data === 'object' ? data : null);
+      if (!res.ok && !data?.ok) setFetchError(data?.error || `HTTP ${res.status}`);
+    } catch (err) {
+      setFetchError(err?.message || String(err));
+      setTicket(null);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const t = ticket?.ticket || null;
+  const blockers = Array.isArray(ticket?.blockers) ? ticket.blockers : [];
+  const stopBlockers = blockers.filter((b) => !ORDER_TICKET_STRUCTURAL.has(b));
+  const structuralBlockers = blockers.filter((b) => ORDER_TICKET_STRUCTURAL.has(b));
+  const ready = ticket?.readyForManualConfirmation === true;
+  const selectStyle = { padding: '6px 10px', borderRadius: 8, background: 'rgba(15,23,42,0.6)', color: '#e2e8f0', border: '1px solid rgba(148,163,184,0.35)', fontSize: 13 };
+
+  return (
+    <div style={{ ...CARD_STYLE, borderColor: 'rgba(20,184,166,0.35)' }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+        <h2 style={{ marginTop: 0, marginBottom: 0 }}>Futures Order Ticket Preview</h2>
+        <span style={{ display: 'inline-block', padding: '1px 8px', borderRadius: 999, fontSize: 11, fontWeight: 700, background: 'rgba(251,191,36,0.15)', color: '#fbbf24', border: '1px solid rgba(251,191,36,0.4)' }}>PREVIEW ONLY · INGEN ORDER</span>
+      </div>
+      <p style={{ color: '#94a3b8', marginTop: 8, marginBottom: 12, lineHeight: 1.6 }}>
+        Detta är bara en förhandsvisning. Ingen order kan skickas här — submit-vägen finns inte
+        (wouldSubmit är alltid false) och bekräftelsefrasen nedan låser inte upp något.
+      </p>
+
+      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 12, alignItems: 'flex-end', marginBottom: 12 }}>
+        <label style={{ display: 'flex', flexDirection: 'column', gap: 4, fontSize: 12, color: '#94a3b8' }}>
+          Symbol
+          <select value={root} onChange={(e) => setRoot(e.target.value)} style={selectStyle}>
+            <option value="MES">MES (Micro E-mini S&amp;P 500)</option>
+            <option value="MNQ">MNQ (Micro E-mini Nasdaq-100)</option>
+            <option value="ES" disabled>ES — blockerad i första versionen</option>
+            <option value="NQ" disabled>NQ — blockerad i första versionen</option>
+          </select>
+        </label>
+        <label style={{ display: 'flex', flexDirection: 'column', gap: 4, fontSize: 12, color: '#94a3b8' }}>
+          Side (påverkar endast preview)
+          <select value={side} onChange={(e) => setSide(e.target.value)} style={selectStyle}>
+            <option value="BUY">BUY</option>
+            <option value="SELL">SELL</option>
+          </select>
+        </label>
+        <label style={{ display: 'flex', flexDirection: 'column', gap: 4, fontSize: 12, color: '#94a3b8' }}>
+          Antal (låst)
+          <input value="1" disabled style={{ ...selectStyle, width: 64, opacity: 0.7 }} />
+        </label>
+        <label style={{ display: 'flex', flexDirection: 'column', gap: 4, fontSize: 12, color: '#94a3b8' }}>
+          Ordertyp (låst)
+          <input value="LMT" disabled style={{ ...selectStyle, width: 72, opacity: 0.7 }} />
+        </label>
+        <button
+          type="button"
+          disabled={busy}
+          onClick={fetchPreview}
+          style={{ padding: '8px 16px', borderRadius: 8, cursor: busy ? 'not-allowed' : 'pointer', border: '1px solid rgba(20,184,166,0.45)', background: 'rgba(20,184,166,0.15)', color: '#5eead4', fontWeight: 600, fontSize: 13 }}
+        >
+          {busy ? 'Hämtar…' : 'Skapa preview'}
+        </button>
+      </div>
+
+      {fetchError && (
+        <div style={{ color: '#f87171', fontSize: 13, marginBottom: 10 }}>Preview-fel: {fetchError}</div>
+      )}
+
+      {ticket && (
+        <div>
+          <div style={{ marginBottom: 10, padding: '10px 12px', borderRadius: 10, border: `1px solid ${ready ? 'rgba(34,197,94,0.4)' : 'rgba(251,191,36,0.4)'}`, background: ready ? 'rgba(34,197,94,0.08)' : 'rgba(251,191,36,0.08)', color: ready ? '#bbf7d0' : '#fde68a', fontSize: 13, lineHeight: 1.5 }}>
+            {ready
+              ? 'Preview redo — men submit är fortfarande avstängt. Ingen order skickas.'
+              : 'Preview blockerad av stoppregler nedan. Ingen order skickas.'}
+          </div>
+
+          <Row label="Ready (preview)">
+            <Badge ok={ready} labelTrue="Ja" labelFalse="Nej" />
+          </Row>
+          <Row label="wouldSubmit">
+            <Badge ok={ticket.wouldSubmit === false} labelTrue="false (korrekt)" labelFalse="KONTROLLERA" />
+          </Row>
+          <Row label="submitRoutesEnabled / futuresSubmitRoutesEnabled">
+            <code>{String(ticket.submitRoutesEnabled)} / {String(ticket.futuresSubmitRoutesEnabled)}</code>
+          </Row>
+          <Row label="orderCapable (read-only state)">
+            <Badge ok={readOnlyState?.orderCapable === false} labelTrue="false (korrekt)" labelFalse="KONTROLLERA" />
+          </Row>
+          {t && (
+            <>
+              <Row label="Kontrakt">
+                <code>{t.root} · {t.localSymbol || '–'} · conId {t.conId ?? '–'} · månad {t.contractMonth || '–'}</code>
+              </Row>
+              <Row label="Order (preview)">
+                <code>{t.side || '–'} {t.quantity} {t.root} {t.orderType} @ {t.limitPrice ?? '–'} ({t.timeInForce})</code>
+              </Row>
+              <Row label="Referenspris">
+                <code>{t.referencePrice ?? '–'} ({t.referencePriceType || 'okänd'}) · minTick {t.minTick ?? '–'}</code>
+              </Row>
+              <Row label="Tolerans">
+                <code>max {t.tolerance?.maxOffsetTicks} ticks · max {t.tolerance?.maxDeviationPct}%</code>
+              </Row>
+            </>
+          )}
+          <Row label="Bekräftelsefras (endast text — ingen gate)">
+            <code>{ticket.manualGate?.requiredConfirmationPhrase || '– (ej redo)'}</code>
+          </Row>
+          <Row label="Safety">
+            <Badge
+              ok={ticket.safety?.mode === 'paper_only'
+                && ticket.safety?.actions_allowed === false
+                && ticket.safety?.can_place_orders === false
+                && ticket.safety?.live_trading_enabled === false
+                && ticket.safety?.broker_enabled === false}
+              labelTrue="paper_only · allt låst"
+              labelFalse="KONTROLLERA"
+            />
+          </Row>
+
+          {stopBlockers.length > 0 && (
+            <div style={{ marginTop: 10 }}>
+              <strong style={{ fontSize: 13, color: '#fbbf24' }}>Stoppregler som blockerar:</strong>
+              <ul style={{ margin: '6px 0 0', paddingLeft: 18, color: '#fde68a', fontSize: 13, lineHeight: 1.6 }}>
+                {stopBlockers.map((b) => (
+                  <li key={b}>{ORDER_TICKET_BLOCKER_SV[b] || b} <code style={{ color: '#94a3b8' }}>({b})</code></li>
+                ))}
+              </ul>
+            </div>
+          )}
+          <div style={{ marginTop: 10 }}>
+            <strong style={{ fontSize: 13, color: '#94a3b8' }}>Strukturella submit-lås (alltid aktiva i Fas 2):</strong>
+            <ul style={{ margin: '6px 0 0', paddingLeft: 18, color: '#94a3b8', fontSize: 13, lineHeight: 1.6 }}>
+              {structuralBlockers.map((b) => (
+                <li key={b}>{ORDER_TICKET_BLOCKER_SV[b] || b} <code>({b})</code></li>
+              ))}
+            </ul>
+          </div>
+        </div>
+      )}
+
+      <div style={{ marginTop: 12, padding: '10px 12px', borderRadius: 10, border: '1px solid rgba(20,184,166,0.25)', background: 'rgba(20,184,166,0.08)', color: '#ccfbf1', fontSize: 13, lineHeight: 1.5 }}>
+        Ingen order skickas. Panelen anropar endast preview-endpointen
+        (POST /api/interactive-brokers/futures/order-ticket) som aldrig submittar.
+      </div>
+    </div>
+  );
+}
+
 // Guard badge for the multi-strategy plan. When the plan endpoint itself did
 // not load, render "Okänt" rather than a misleading "Nej"/"Öppna" guard value.
 function PlanGuardBadge({ loaded, ok, labelTrue, labelFalse }) {
@@ -587,6 +777,9 @@ export default function InteractiveBrokersPage() {
               {futuresView?.note || 'Futures contract discovery kunde inte laddas. Inga order skickas.'}
             </div>
           </div>
+
+          {/* Futures Order Ticket Preview (Fas 2.1) — preview-only, no submit path */}
+          <FuturesOrderTicketPanel readOnlyState={readOnlyState} />
 
           {/* Order sending blocked */}
           <div style={{ ...CARD_STYLE, borderColor: 'rgba(248,113,113,0.35)' }}>
