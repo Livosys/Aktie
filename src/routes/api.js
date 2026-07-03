@@ -4525,6 +4525,7 @@ const interactiveBrokersScannerControlRoomService = require('../services/interac
 const interactiveBrokersFuturesContractService = require('../services/interactiveBrokersFuturesContractService');
 const interactiveBrokersFuturesLiveViewService = require('../services/interactiveBrokersFuturesLiveViewService');
 const interactiveBrokersFuturesOrderTicketService = require('../services/interactiveBrokersFuturesOrderTicketService');
+const interactiveBrokersFuturesManualSubmitService = require('../services/interactiveBrokersFuturesManualSubmitService');
 // ── IB Paper submit-route gate (default OFF, independent of IB_PAPER_EXECUTION_ENABLED) ──
 // When IB_PAPER_SUBMIT_ROUTES_ENABLED !== 'true', the state-changing submit routes
 // (POST paper-execute, POST arm, POST disarm) are hard-blocked before any service call.
@@ -4739,6 +4740,32 @@ router.post('/interactive-brokers/futures/order-ticket', async (req, res) => {
     res.json(await buildFuturesOrderTicketResponse(req.body && typeof req.body === 'object' ? req.body : {}));
   } catch (err) {
     res.status(500).json({ ok: false, readOnly: true, previewOnly: true, wouldSubmit: false, error: err.message, safety: interactiveBrokersFuturesOrderTicketService.SAFETY });
+  }
+});
+// ── IB Paper — Futures Manual Submit (FAS 4.1, SKELETON ONLY) ────────────────
+// This is the future submit route shape, but it is deliberately non-executable:
+// it reuses the order-ticket preview, requires the manual phrase, and always
+// returns wouldSubmit=false / submitted=false / placeOrderCalled=false.
+router.post('/interactive-brokers/futures/order-ticket/submit', async (req, res) => {
+  try {
+    const body = req.body && typeof req.body === 'object' ? req.body : {};
+    const preview = await buildFuturesOrderTicketResponse(body);
+    res.json(interactiveBrokersFuturesManualSubmitService.buildFuturesManualSubmitSkeleton({
+      preview,
+      confirmationPhrase: body.confirmationPhrase,
+    }));
+  } catch (err) {
+    res.status(500).json({
+      ok: false,
+      readOnly: true,
+      previewOnly: true,
+      dryRun: true,
+      wouldSubmit: false,
+      submitted: false,
+      placeOrderCalled: false,
+      error: err.message,
+      safety: interactiveBrokersFuturesManualSubmitService.SAFETY,
+    });
   }
 });
 // Read-only connection readiness. Never logs in, never sends orders; a harmless
