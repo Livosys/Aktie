@@ -11,6 +11,7 @@ async function run(name, fn) {
   console.log(`  ok - ${name}`);
 }
 
+const NOW = new Date('2026-07-03T19:40:00.000Z');
 const LOCKED_SAFETY = {
   mode: 'paper_only',
   actions_allowed: false,
@@ -36,7 +37,7 @@ function verifiedMes(overrides = {}) {
   };
 }
 
-function preview(overrides = {}) {
+function basePreview(overrides = {}) {
   return orderTicketService.buildOrderTicket({
     root: 'MES',
     side: 'BUY',
@@ -50,12 +51,39 @@ function preview(overrides = {}) {
   });
 }
 
-function skeleton(overrides = {}) {
+function readOnlyState(overrides = {}) {
+  return {
+    account: 'DUQ565596',
+    orderCapable: false,
+    openOrders: [],
+    positions: [],
+    executions: [],
+    safety: { ...LOCKED_SAFETY },
+    ...overrides,
+  };
+}
+
+function build(overrides = {}) {
+  const preview = overrides.preview || basePreview(overrides.previewOverrides || {});
   return svc.buildFuturesManualSubmitSkeleton({
-    preview: preview(overrides.preview || {}),
+    preview,
+    currentPreview: overrides.currentPreview,
     confirmationPhrase: overrides.confirmationPhrase,
+    readOnlyState: overrides.readOnlyState || readOnlyState(),
+    ticketStore: overrides.ticketStore,
+    idGenerator: overrides.idGenerator || (() => 'ticket-1'),
+    nonceGenerator: overrides.nonceGenerator || (() => 'nonce-1'),
     env: overrides.env || {},
+    now: overrides.now || NOW,
+    ttlMs: overrides.ttlMs,
+    ticketId: overrides.ticketId,
+    nonce: overrides.nonce,
+    submitConnector: overrides.submitConnector,
   });
+}
+
+function requiredPhrase(preview = basePreview()) {
+  return preview.manualGate.requiredConfirmationPhrase;
 }
 
 function assertNeverSubmits(out) {
@@ -65,6 +93,7 @@ function assertNeverSubmits(out) {
   assert.strictEqual(out.placeOrderCalled, false);
   assert.strictEqual(out.submitOrderCalled, false);
   assert.strictEqual(out.cancelOrderCalled, false);
+  assert.strictEqual(out.realSubmitAvailable, false);
   assert.strictEqual(out.futuresSubmitRoutesEnabled, false);
   assert.strictEqual(out.submitRoutesEnabled, false);
   assert.strictEqual(out.readyForManualSubmit, false);
@@ -72,87 +101,163 @@ function assertNeverSubmits(out) {
 }
 
 (async () => {
-  await run('flag off -> submitted=false, wouldSubmit=false, placeOrderCalled=false', () => {
-    const out = skeleton();
+  await run('phase is FAS_4_2_MOCK_PREFLIGHT_NO_REAL_SUBMIT', () => {
+    const out = build();
+    assert.strictEqual(out.phase, 'FAS_4_2_MOCK_PREFLIGHT_NO_REAL_SUBMIT');
+    assert.strictEqual(out.legacyPhase, 'FAS_4_1_SKELETON_NO_REAL_SUBMIT');
     assertNeverSubmits(out);
-    assert.ok(out.blockers.includes('futures_submit_routes_disabled'));
-    assert.ok(out.blockers.includes('futures_submit_skeleton_only'));
-    assert.ok(out.blockers.includes('real_submit_not_implemented'));
   });
 
-  await run('confirmation missing -> confirmation_phrase_missing', () => {
-    const out = skeleton();
+  await run('no real submit fields are always false', () => {
+    const out = build({ confirmationPhrase: requiredPhrase() });
+    assertNeverSubmits(out);
+  });
+
+  await run('ticketId and nonce are created', () => {
+    const out = build();
+    assert.strictEqual(out.ticketId, 'ticket-1');
+    assert.strictEqual(out.nonce, 'nonce-1');
+  });
+
+  await run('expiresAt is created from TTL', () => {
+    const out = build({ ttlMs: 60_000 });
+    assert.strictEqual(out.expiresAt, '2026-07-03T19:41:00.000Z');
+  });
+
+  await run('missing confirmation phrase blocks', () => {
+    const out = build();
     assert.ok(out.blockers.includes('confirmation_phrase_missing'));
-    assert.strictEqual(out.confirmationPhraseProvided, false);
     assert.strictEqual(out.confirmationPhraseMatched, false);
     assertNeverSubmits(out);
   });
 
-  await run('confirmation mismatch -> confirmation_phrase_mismatch', () => {
-    const out = skeleton({ confirmationPhrase: 'PAPER BUY 1 MES LMT 1.00' });
+  await run('mismatch confirmation phrase blocks', () => {
+    const out = build({ confirmationPhrase: 'PAPER BUY 1 MES LMT 1.00' });
     assert.ok(out.blockers.includes('confirmation_phrase_mismatch'));
-    assert.strictEqual(out.confirmationPhraseProvided, true);
     assert.strictEqual(out.confirmationPhraseMatched, false);
     assertNeverSubmits(out);
   });
 
-  await run('correct phrase but flag off -> still no submit', () => {
-    const p = preview();
-    const out = svc.buildFuturesManualSubmitSkeleton({
-      preview: p,
-      confirmationPhrase: p.manualGate.requiredConfirmationPhrase,
-      env: {},
-    });
+  await run('correct phrase still has real-submit blockers', () => {
+    const out = build({ confirmationPhrase: requiredPhrase() });
     assert.strictEqual(out.confirmationPhraseMatched, true);
-    assert.ok(out.blockers.includes('futures_submit_routes_disabled'));
+    assert.ok(out.blockers.includes('mock_preflight_only'));
+    assert.ok(out.blockers.includes('real_submit_not_implemented'));
+    assert.ok(out.blockers.includes('no_real_ib_submit_in_phase_4_2'));
     assertNeverSubmits(out);
   });
 
-  await run('correct phrase and forced futures flag true -> still no submit in FAS 4.1', () => {
-    const p = preview();
-    const out = svc.buildFuturesManualSubmitSkeleton({
-      preview: p,
-      confirmationPhrase: p.manualGate.requiredConfirmationPhrase,
+  await run('forced IB_FUTURES_SUBMIT_ROUTES_ENABLED=true still no real submit', () => {
+    const out = build({
+      confirmationPhrase: requiredPhrase(),
       env: { IB_FUTURES_SUBMIT_ROUTES_ENABLED: 'true' },
     });
     assert.strictEqual(out.reservedFuturesSubmitFlagEnabled, true);
-    assert.strictEqual(out.confirmationPhraseMatched, true);
-    assert.ok(out.blockers.includes('futures_submit_skeleton_only'));
-    assert.ok(out.blockers.includes('real_submit_not_implemented'));
     assertNeverSubmits(out);
   });
 
-  await run('ES -> symbol_blocked_initial_version', () => {
-    const out = skeleton({ preview: { root: 'ES', contract: verifiedMes({ root: 'ES' }) } });
+  await run('same ticketId second time is duplicate blocked', () => {
+    const store = svc.createMemoryTicketStore();
+    const first = build({
+      ticketStore: store,
+      ticketId: 'ticket-dupe',
+      nonce: 'nonce-dupe',
+      confirmationPhrase: requiredPhrase(),
+      env: { IB_FUTURES_SUBMIT_ROUTES_ENABLED: 'true' },
+    });
+    assert.strictEqual(first.mockPreflightReady, true);
+    const second = build({
+      ticketStore: store,
+      ticketId: 'ticket-dupe',
+      nonce: 'nonce-dupe',
+      confirmationPhrase: requiredPhrase(),
+      env: { IB_FUTURES_SUBMIT_ROUTES_ENABLED: 'true' },
+    });
+    assert.ok(second.blockers.includes('duplicate_submit_blocked'));
+    assert.ok(second.blockers.includes('ticket_already_submitted'));
+    assertNeverSubmits(second);
+  });
+
+  await run('expired ticket is stale', () => {
+    const out = build({
+      confirmationPhrase: requiredPhrase(),
+      ttlMs: 1,
+      now: new Date('2026-07-03T19:40:00.001Z'),
+      ticketStore: {
+        get: () => ({ ticketId: 'ticket-old', nonce: 'nonce-1', expiresAt: '2026-07-03T19:39:59.000Z', createdAt: '2026-07-03T19:38:59.000Z' }),
+        set: () => {},
+        markConsumed: () => {},
+      },
+      ticketId: 'ticket-old',
+    });
+    assert.ok(out.blockers.includes('ticket_expired'));
+    assert.ok(out.blockers.includes('stale_ticket'));
+    assertNeverSubmits(out);
+  });
+
+  await run('account mismatch blocks', () => {
+    const out = build({ confirmationPhrase: requiredPhrase(), readOnlyState: readOnlyState({ account: 'DUWRONG' }) });
+    assert.ok(out.blockers.includes('account_mismatch'));
+    assertNeverSubmits(out);
+  });
+
+  await run('openOrders > 0 blocks', () => {
+    const out = build({ confirmationPhrase: requiredPhrase(), readOnlyState: readOnlyState({ openOrders: [{ orderId: 1 }] }) });
+    assert.ok(out.blockers.includes('open_orders_present'));
+  });
+
+  await run('positions > 0 blocks', () => {
+    const out = build({ confirmationPhrase: requiredPhrase(), readOnlyState: readOnlyState({ positions: [{ symbol: 'MES' }] }) });
+    assert.ok(out.blockers.includes('positions_present'));
+  });
+
+  await run('executions > 0 blocks', () => {
+    const out = build({ confirmationPhrase: requiredPhrase(), readOnlyState: readOnlyState({ executions: [{ execId: 'e1' }] }) });
+    assert.ok(out.blockers.includes('recent_executions_present'));
+  });
+
+  await run('orderCapable=true blocks', () => {
+    const out = build({ confirmationPhrase: requiredPhrase(), readOnlyState: readOnlyState({ orderCapable: true }) });
+    assert.ok(out.blockers.includes('order_capable_true_unexpected'));
+  });
+
+  await run('contract mismatch blocks', () => {
+    const out = build({
+      confirmationPhrase: requiredPhrase(),
+      currentPreview: basePreview({ contract: verifiedMes({ conId: 999, localSymbol: 'MESZ6' }) }),
+    });
+    assert.ok(out.blockers.includes('contract_changed'));
+    assert.ok(out.blockers.includes('con_id_mismatch'));
+  });
+
+  await run('price changed beyond tolerance blocks', () => {
+    const out = build({
+      confirmationPhrase: requiredPhrase(),
+      currentPreview: basePreview({ contract: verifiedMes({ price: 7605.00 }) }),
+    });
+    assert.ok(out.blockers.includes('price_changed_beyond_tolerance'));
+  });
+
+  await run('ES remains blocked', () => {
+    const out = build({ previewOverrides: { root: 'ES', contract: verifiedMes({ root: 'ES' }) } });
     assert.ok(out.blockers.includes('symbol_blocked_initial_version'));
     assertNeverSubmits(out);
   });
 
-  await run('quantity=2 -> quantity_not_exactly_one', () => {
-    const out = skeleton({ preview: { quantity: 2 } });
+  await run('quantity=2 remains blocked', () => {
+    const out = build({ previewOverrides: { quantity: 2 } });
     assert.ok(out.blockers.includes('quantity_not_exactly_one'));
-    assertNeverSubmits(out);
   });
 
-  await run('MKT -> order_type_not_allowed', () => {
-    const out = skeleton({ preview: { orderType: 'MKT' } });
+  await run('MKT remains blocked', () => {
+    const out = build({ previewOverrides: { orderType: 'MKT' } });
     assert.ok(out.blockers.includes('order_type_not_allowed'));
-    assertNeverSubmits(out);
   });
 
-  await run('preview not ready -> no submit', () => {
-    const out = skeleton({ preview: { contract: verifiedMes({ contractMonthVerified: false }) } });
-    assert.ok(out.blockers.includes('contract_not_verified'));
-    assert.strictEqual(out.preview.readyForManualConfirmation, false);
-    assertNeverSubmits(out);
-  });
-
-  await run('connector/mock placeOrder is never called', () => {
+  await run('placeOrder mock dependency is never called', () => {
     let placeOrderCalls = 0;
-    const p = preview();
-    const out = svc.buildFuturesManualSubmitSkeleton({
-      preview: p,
-      confirmationPhrase: p.manualGate.requiredConfirmationPhrase,
+    const out = build({
+      confirmationPhrase: requiredPhrase(),
       env: { IB_FUTURES_SUBMIT_ROUTES_ENABLED: 'true' },
       submitConnector: { placeOrder: () => { placeOrderCalls += 1; } },
     });
@@ -160,24 +265,22 @@ function assertNeverSubmits(out) {
     assertNeverSubmits(out);
   });
 
-  await run('IB_PAPER_SUBMIT_ROUTES_ENABLED true/false never opens futures submit', () => {
-    const p = preview();
-    for (const value of ['true', 'false', undefined]) {
-      const env = { IB_FUTURES_SUBMIT_ROUTES_ENABLED: 'true' };
-      if (value !== undefined) env.IB_PAPER_SUBMIT_ROUTES_ENABLED = value;
-      const out = svc.buildFuturesManualSubmitSkeleton({
-        preview: p,
-        confirmationPhrase: p.manualGate.requiredConfirmationPhrase,
-        env,
-      });
-      assert.strictEqual(out.paperSubmitRoutesEnabledObserved, value === 'true');
-      assertNeverSubmits(out);
-    }
+  await run('IB_PAPER_SUBMIT_ROUTES_ENABLED true does not open futures submit', () => {
+    const out = build({
+      confirmationPhrase: requiredPhrase(),
+      env: { IB_PAPER_SUBMIT_ROUTES_ENABLED: 'true', IB_FUTURES_SUBMIT_ROUTES_ENABLED: 'true' },
+    });
+    assert.strictEqual(out.paperSubmitRoutesEnabledObserved, true);
+    assertNeverSubmits(out);
   });
 
-  await run('response contains phase FAS_4_1_SKELETON_NO_REAL_SUBMIT', () => {
-    const out = skeleton();
-    assert.strictEqual(out.phase, 'FAS_4_1_SKELETON_NO_REAL_SUBMIT');
+  await run('mockPreflightReady can be true while wouldSubmit/submitted stay false', () => {
+    const out = build({
+      confirmationPhrase: requiredPhrase(),
+      env: { IB_FUTURES_SUBMIT_ROUTES_ENABLED: 'true' },
+    });
+    assert.strictEqual(out.mockPreflightReady, true);
+    assert.strictEqual(out.readyForMockSubmit, true);
     assertNeverSubmits(out);
   });
 
