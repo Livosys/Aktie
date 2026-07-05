@@ -5,6 +5,7 @@ const REFRESH_MS = 30_000;
 
 const SECTIONS = [
   { id: 'controlroom', label: 'Kontrollrum' },
+  { id: 'brain', label: 'AI Brain' },
   { id: 'live', label: 'Aktivitet' },
   { id: 'data', label: 'Data' },
   { id: 'replay', label: 'Replay' },
@@ -575,6 +576,145 @@ export default function SupervisorBrainPage() {
   ];
 
   const activeStage = pipelineStages.find((stage) => stage.sectionId === activeSection) || pipelineStages[0];
+  const systemHealthBlock = overview.blocks?.system_health || {};
+  const systemHealthSummary = systemHealthBlock.summary || {};
+  const systemHealthStatus = first(systemHealthSummary.overallStatus, systemHealthBlock.status, overview.status);
+  const providerStatusText = aiStatus.enabled
+    ? 'Konfigurerad'
+    : aiStatus.provider && aiStatus.provider !== 'disabled'
+      ? 'Saknar nyckel'
+      : 'Avstängd eller okänd';
+  const aiBrainRoles = [
+    {
+      role: 'Observer',
+      status: first(systemHealthBlock.status, dataStatus.status, liveStatus, 'ok'),
+      visible: 'Supervisor',
+      source: 'Supervisor Overview, aktivitet, data och systemhälsa',
+      note: 'Ser nuläge, varningar och saknad data.',
+    },
+    {
+      role: 'Analyst',
+      status: first(aiStatus.readiness, aiStatus.status, 'ok'),
+      visible: 'AI Analyst och signalanalys',
+      source: 'AI Analyst, Signal Analyst och Agent Reasoning',
+      note: 'Förklarar signaler och testresultat. Den kan inte handla.',
+    },
+    {
+      role: 'Planner',
+      status: first(strategyResearch.status, 'ok'),
+      visible: 'Strategiforskning',
+      source: 'Strategy Research Manager och Strategy Test Planner',
+      note: 'Föreslår nästa säkra research- eller paper-only-steg.',
+    },
+    {
+      role: 'Researcher',
+      status: first(strategyResearch.status, 'ok'),
+      visible: 'Strategiforskning och Lab',
+      source: 'AI Optimization Agent, TradingAgents och Agent Debate',
+      note: 'Letar testideer för strategier som inte är trade-godkända.',
+    },
+    {
+      role: 'Reviewer',
+      status: approvalRecommendations.length ? 'warning' : 'ok',
+      visible: 'Strategiforskning',
+      source: 'Research Control och blockeringsregler',
+      note: 'Markerar när mer data eller manuell granskning behövs.',
+    },
+    {
+      role: 'Doctor',
+      status: systemHealthStatus || 'ok',
+      visible: 'Systemhälsa',
+      source: 'System Health',
+      note: 'Bevakar trasiga flöden, gammal data och systemrisker.',
+    },
+    {
+      role: 'Librarian',
+      status: first(learningStatus.status, 'degraded'),
+      visible: 'Learning och minne',
+      source: 'Learning Connector, Vector Memory och Audit Trail',
+      note: 'Samlar lärdomar, minne och journal-liknande historik.',
+    },
+    {
+      role: 'Loop Engine',
+      status: 'degraded',
+      visible: 'Delvis',
+      source: 'Utspridda loop-delar',
+      note: 'Observe, analyze, plan, test, learn och journal finns, men inte som en samlad motor.',
+    },
+    {
+      role: 'Supervisor',
+      status: safetyIsLocked ? 'ok' : 'blocked',
+      visible: 'Denna vy',
+      source: 'Safety-flaggor och skyddade zoner',
+      note: 'Stoppar allt som rör livehandel, broker, riktiga order eller skyddade strategier.',
+    },
+  ];
+  const aiBrainLoopStages = [
+    {
+      step: 'observe',
+      label: 'Observera',
+      status: first(systemHealthBlock.status, dataStatus.status, 'ok'),
+      source: 'Systemhälsa, data och aktivitet',
+      note: 'Systemet kan läsa nuläge och hitta luckor.',
+    },
+    {
+      step: 'analyze',
+      label: 'Analysera',
+      status: first(aiStatus.readiness, aiStatus.status, 'ok'),
+      source: 'AI Analyst, Agent Reasoning och regelmotorer',
+      note: 'Analys finns både som intern logik och extern AI Analyst.',
+    },
+    {
+      step: 'plan',
+      label: 'Planera',
+      status: first(strategyResearch.status, 'ok'),
+      source: 'Strategy Research Control',
+      note: 'Planen är read-only och kräver manuell granskning vid skyddade delar.',
+    },
+    {
+      step: 'test',
+      label: 'Testa',
+      status: first(replayStatus.status, batchStatus.status, paperStatus.status, 'degraded'),
+      source: 'Replay, batch och paper-only',
+      note: 'Tester hör hemma i säkra testmiljöer, inte i live trading.',
+    },
+    {
+      step: 'learn',
+      label: 'Lär',
+      status: first(learningStatus.status, 'degraded'),
+      source: 'Learning Connector och Daytrading Learning',
+      note: 'Learning samlar testutfall och bygger enklare slutsatser.',
+    },
+    {
+      step: 'improve',
+      label: 'Förbättra',
+      status: 'ok',
+      source: 'AI Optimization och research-förslag',
+      note: 'Förbättringar får bara vara förslag i research eller paper-only.',
+    },
+    {
+      step: 'journal',
+      label: 'Journal',
+      status: liveCount > 0 || aiStatus.latestExists ? 'degraded' : 'warning',
+      source: 'Audit Trail, activity och AI Analyst-logg',
+      note: 'Journal finns delvis. En samlad AI Journal saknas ännu.',
+    },
+  ];
+  const protectedZones = [
+    { name: 'Interactive Brokers', status: 'Skyddad zon', note: 'AI Brain får inte styra broker eller konto.' },
+    { name: 'Trade-godkända strategier', status: 'Skyddad zon', note: 'AI får bara föreslå manuell granskning.' },
+    { name: 'Broker, order och execution', status: 'Blockerat', note: 'Inga riktiga order och ingen orderväg visas här.' },
+    { name: 'Live trading', status: 'Avstängt', note: 'Livehandel ska inte kunna aktiveras från AI Brain.' },
+    { name: 'Riskändring', status: 'Skyddad', note: 'AI får inte ändra risk automatiskt.' },
+    { name: 'Strategy approval', status: 'Manuell process', note: 'AI får inte godkänna eller flytta upp strategier själv.' },
+  ];
+  const aiBrainSafetyRows = [
+    { label: 'mode', value: overviewSafety(overview).mode, good: overviewSafety(overview).mode === 'paper_only' },
+    { label: 'actions_allowed', value: String(overviewSafety(overview).actions_allowed), good: overviewSafety(overview).actions_allowed === false },
+    { label: 'can_place_orders', value: String(overviewSafety(overview).can_place_orders), good: overviewSafety(overview).can_place_orders === false },
+    { label: 'live_trading_enabled', value: String(overviewSafety(overview).live_trading_enabled), good: overviewSafety(overview).live_trading_enabled === false },
+    { label: 'broker_enabled', value: String(overviewSafety(overview).broker_enabled), good: overviewSafety(overview).broker_enabled === false },
+  ];
 
   return (
     <div className="research-lab-page tradingos-page">
@@ -737,6 +877,173 @@ export default function SupervisorBrainPage() {
             </div>
 
             <DryRunTestCard />
+          </section>
+        ) : null}
+
+        {activeSection === 'brain' ? (
+          <section className="tos-section">
+            <div className="tos-section-head">
+              <div>
+                <div className="tos-eyebrow">AI Brain</div>
+                <h2>Read-only status för AI-delarna</h2>
+                <p>Den här vyn visar vad som redan finns. Den startar inget, ändrar inget och kan inte handla.</p>
+              </div>
+              <Badge tone={safetyIsLocked ? 'good' : 'danger'}>{safetyIsLocked ? 'Safety låst' : 'Kontrollera safety'}</Badge>
+            </div>
+
+            <SectionCard
+              title="AI Brain status"
+              tone={safetyIsLocked ? 'good' : 'danger'}
+              aside={<Badge tone="blue">read-only</Badge>}
+            >
+              <div className="tos-metrics-grid">
+                <Metric label="Safety" value={safetyIsLocked ? 'Låst' : 'Kontrollera'} help="Alla skyddsflaggor ska vara i säkert läge." tone={safetyIsLocked ? 'good' : 'danger'} />
+                <Metric label="Extern AI" value={providerStatusText} help={`${text(aiStatus.provider, 'okänd provider')} · ${text(aiStatus.model, 'ingen modell')}`} tone={aiStatus.enabled ? 'good' : 'warning'} />
+                <Metric label="Intern AI" value={`${fmtNumber(aiBrainRoles.length)} roller`} help="Regelbaserade agenter, analyst och researchlager finns redan." tone="blue" />
+                <Metric label="Minne / learning" value={statusLabel(learningStatus.status)} help="Learning Connector och minneslager finns delvis." tone={statusTone(learningStatus.status)} />
+                <Metric label="Journal / audit" value={liveCount > 0 || aiStatus.latestExists ? 'Delvis' : 'Saknas delvis'} help="Audit och events finns, men inte en samlad AI Journal." tone={liveCount > 0 || aiStatus.latestExists ? 'warning' : 'danger'} />
+                <Metric label="Research Control" value={statusLabel(strategyResearch.status)} help="Styr vad AI får föreslå för strategier." tone={statusTone(strategyResearch.status)} />
+                <Metric label="Doctor" value={statusLabel(systemHealthStatus)} help={text(systemHealthSummary.summarySv, 'System Health är Doctor-liknande status.')} tone={statusTone(systemHealthStatus)} />
+                <Metric label="Loop Engine" value="Delvis" help="Loopens delar finns, men inte som en samlad motor ännu." tone="warning" />
+              </div>
+              <div className="tos-safety-line">
+                <Badge tone="good">paper_only</Badge>
+                <Badge tone="good">livehandel avstängd</Badge>
+                <Badge tone="good">broker avstängd</Badge>
+                <Badge tone="good">riktiga order blockerade</Badge>
+              </div>
+            </SectionCard>
+
+            <div className="tos-two-col">
+              <SectionCard title="AI-roller som redan finns" tone="blue">
+                <div className="tos-list">
+                  {aiBrainRoles.map((row) => (
+                    <div key={row.role} className="tos-list-row">
+                      <strong>{row.role}</strong>
+                      <span>{row.note}</span>
+                      <span>{row.visible} · {row.source} · {statusLabel(row.status)}</span>
+                    </div>
+                  ))}
+                </div>
+              </SectionCard>
+
+              <SectionCard title="Loop Engine-status" tone="warning" aside={<Badge tone="warning">delvis</Badge>}>
+                <div className="tos-list">
+                  {aiBrainLoopStages.map((row) => (
+                    <div key={row.step} className="tos-list-row">
+                      <strong>{row.step}: {row.label}</strong>
+                      <span>{row.note}</span>
+                      <span>{row.source} · {statusLabel(row.status)}</span>
+                    </div>
+                  ))}
+                </div>
+              </SectionCard>
+            </div>
+
+            <div className="tos-two-col">
+              <SectionCard title="AI Memory / Knowledge Base" tone="neutral">
+                <div className="tos-list">
+                  <div className="tos-list-row">
+                    <strong>Learning Connector</strong>
+                    <span>{statusLabel(learningStatus.status)}. Samlar testutfall och strategilärdomar.</span>
+                    <span>Syns i Learning och Supervisor.</span>
+                  </div>
+                  <div className="tos-list-row">
+                    <strong>Vector Memory</strong>
+                    <span>Finns som minneslager för liknande signaler och historiska mönster.</span>
+                    <span>Syns svagt i UI och bör lyftas senare.</span>
+                  </div>
+                  <div className="tos-list-row">
+                    <strong>Daytrading Learning</strong>
+                    <span>Finns som learning engine för paper- och testutfall.</span>
+                    <span>Read-only i denna vy.</span>
+                  </div>
+                </div>
+              </SectionCard>
+
+              <SectionCard title="AI Journal / Audit Trail" tone="warning">
+                <div className="tos-list">
+                  <div className="tos-list-row">
+                    <strong>Audit Trail</strong>
+                    <span>Finns som händelselogg för system, kandidater, paper och batch.</span>
+                    <span>Det är journal-liknande, men inte full AI Journal ännu.</span>
+                  </div>
+                  <div className="tos-list-row">
+                    <strong>AI Analyst-logg</strong>
+                    <span>{aiStatus.latestExists ? 'Senaste AI Analyst-resultat finns sparat.' : 'Ingen sparad AI Analyst-text visas här.'}</span>
+                    <span>{latestAiTimestamp ? timeText(latestAiTimestamp) : 'Tidsstämpel saknas'}</span>
+                  </div>
+                  <div className="tos-list-row">
+                    <strong>Nästa steg</strong>
+                    <span>Samla audit, learning och AI-anteckningar i en tydlig AI Journal senare.</span>
+                    <span>Fortfarande read-only.</span>
+                  </div>
+                </div>
+              </SectionCard>
+            </div>
+
+            <div className="tos-two-col">
+              <SectionCard title="Strategy Research Control" tone="blue">
+                <MeaningBlock
+                  meaning="AI får föreslå research och paper-only tester för strategier som inte är skyddade."
+                  missing={approvalRecommendations.length ? `${fmtNumber(approvalRecommendations.length)} förslag kräver manuell granskning eller mer data.` : 'Inga tydliga research-blockeringar i denna vy just nu.'}
+                  nextStep="Behåll trade-godkända strategier skyddade. Låt AI bara föreslå research eller manuell granskning."
+                />
+                <div className="tos-safety-line">
+                  <Badge tone="good">research</Badge>
+                  <Badge tone="good">paper-only</Badge>
+                  <Badge tone="warning">manuell granskning</Badge>
+                  <Badge tone="danger">ingen auto-apply</Badge>
+                </div>
+              </SectionCard>
+
+              <SectionCard title="Skyddade zoner" tone="danger">
+                <div className="tos-list">
+                  {protectedZones.map((zone) => (
+                    <div key={zone.name} className="tos-list-row">
+                      <strong>{zone.name}</strong>
+                      <span>{zone.note}</span>
+                      <span>{zone.status}</span>
+                    </div>
+                  ))}
+                </div>
+              </SectionCard>
+            </div>
+
+            <SectionCard title="Safety-flaggor" tone={safetyIsLocked ? 'good' : 'danger'}>
+              <div className="tos-detail-grid">
+                {aiBrainSafetyRows.map((row) => (
+                  <span key={row.label}>
+                    <b>{row.label}</b>
+                    {row.value}
+                  </span>
+                ))}
+              </div>
+              <div className="tos-safety-line">
+                {aiBrainSafetyRows.map((row) => (
+                  <Badge key={row.label} tone={row.good ? 'good' : 'danger'}>
+                    {row.label}: {row.value}
+                  </Badge>
+                ))}
+              </div>
+              <p className="tos-muted">Om någon flagga inte är säker ska AI Brain bara visa varning och inte fortsätta någon loop.</p>
+            </SectionCard>
+
+            <details className="tos-debug">
+              <summary>Visa tekniska källor</summary>
+              <pre>{JSON.stringify({
+                overview: '/api/supervisor/overview',
+                latestAi: '/api/ai/analyst/latest',
+                aiAnalystStatus: {
+                  provider: aiStatus.provider || null,
+                  enabled: aiStatus.enabled === true,
+                  model: aiStatus.model || null,
+                  latestExists: aiStatus.latestExists === true,
+                },
+                safety: overviewSafety(overview),
+                note: 'AI Brain Steg 1 använder bara redan hämtad read-only status i UI.',
+              }, null, 2)}</pre>
+            </details>
           </section>
         ) : null}
 
