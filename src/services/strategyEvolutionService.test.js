@@ -81,18 +81,68 @@ function assertSafety(safety) {
               winRate: 33.67,
               maxDrawdownPct: -1.89,
               trades: 98,
+              avgTradePct: 0.18,
+              bestTradePct: 2.2,
+              worstTradePct: -0.9,
+              stabilityAcrossSymbols: 0.72,
+              stabilityAcrossTimeframes: 0.7,
+              stabilityAcrossPeriods: 0.75,
+              dataQuality: 0.9,
             },
-            aiScore: 78,
             decision: 'promising',
             nextImprovement: 'Test RSI > 50 and rising SMA200',
           },
           {
             version: 2,
-            status: 'waiting_for_test',
+            status: 'tested',
             source: 'ai_generated',
             pineScriptPossible: true,
-            aiScore: null,
+            aiScore: 88,
+            decision: 'promising',
+            scoreDetails: {
+              reasons: ['Manual score still valid'],
+              warnings: [],
+              components: {
+                profitFactor: 24,
+                drawdown: 18,
+                winRate: 14,
+                sampleSize: 9,
+                stability: 18,
+                riskReward: 9,
+                dataQuality: 8,
+              },
+            },
+          },
+          {
+            version: 3,
+            source: 'ai_generated',
+            pineScriptPossible: true,
             decision: 'retest',
+          },
+        ],
+      },
+      {
+        strategyId: 'weak_strategy',
+        name: 'Weak Strategy',
+        versions: [
+          {
+            version: 1,
+            status: 'tested',
+            source: 'ai_generated',
+            pineScriptPossible: true,
+            testResult: {
+              profitFactor: 0.7,
+              winRate: 28,
+              maxDrawdownPct: -20,
+              trades: 10,
+              avgTradePct: -0.2,
+              bestTradePct: 0.8,
+              worstTradePct: -2,
+              stabilityAcrossSymbols: 0.25,
+              stabilityAcrossTimeframes: 0.3,
+              stabilityAcrossPeriods: 0.2,
+              dataQuality: 0.45,
+            },
           },
         ],
       },
@@ -105,18 +155,32 @@ function assertSafety(safety) {
 
   assert.equal(result.ok, true);
   assert.equal(result.status, 'ok');
-  assert.equal(result.items.length, 1);
+  assert.equal(result.items.length, 2);
   assert.equal(result.items[0].strategyId, 'aapl_sma20_sma200');
-  assert.equal(result.items[0].versions.length, 2);
-  assert.equal(result.items[0].versions[0].aiScore, 78);
+  assert.equal(result.items[0].versions.length, 3);
+  assert.equal(result.items[0].versions[0].aiScore, 75);
+  assert.equal(result.items[0].versions[0].band, 'promising');
   assert.equal(result.items[0].versions[0].scoreBand, 'promising');
+  assert.ok(Array.isArray(result.items[0].versions[0].scoreDetails.reasons), 'auto score details reasons');
+  assert.ok(result.items[0].versions[0].scoreDetails.reasons.includes('Strong profit factor'), 'auto score details reasons include PF');
   assert.equal(result.items[0].versions[0].testResult.trades, 98);
   assert.equal(result.items[0].versions[1].status, 'waiting_for_test');
-  assert.equal(result.summary.totalStrategies, 1);
-  assert.equal(result.summary.totalVersions, 2);
-  assert.equal(result.summary.promisingCount, 1);
-  assert.equal(result.summary.waitingForTestCount, 1);
-  assert.equal(result.summary.byDecision.promising, 1);
+  assert.equal(result.items[0].versions[1].aiScore, 88, 'existing aiScore preserved');
+  assert.equal(result.items[0].versions[1].band, 'strong_candidate', 'existing aiScore band derived');
+  assert.equal(result.items[0].versions[1].scoreDetails.reasons[0], 'Manual score still valid', 'existing score details preserved');
+  assert.equal(result.items[0].versions[2].status, 'waiting_for_test');
+  assert.equal(result.items[0].versions[2].aiScore, null);
+  assert.equal(result.items[0].versions[2].scoreDetails, null);
+  assert.equal(result.items[1].strategyId, 'weak_strategy');
+  assert.equal(result.items[1].versions[0].band, 'weak');
+  assert.equal(result.items[1].versions[0].aiScore < 40, true, 'weak score stays weak');
+  assert.equal(result.summary.totalStrategies, 2);
+  assert.equal(result.summary.totalVersions, 4);
+  assert.equal(result.summary.promisingCount >= 1, true);
+  assert.equal(result.summary.strongCandidateCount >= 1, true);
+  assert.equal(result.summary.needsImprovementCount >= 1, true);
+  assert.equal(result.summary.waitingForTestCount, 2);
+  assert.equal(result.summary.byDecision.promising >= 2, true);
   assertSafety(result.safety);
   assert.equal(after, before, 'service is read-only and does not mutate source file');
 }

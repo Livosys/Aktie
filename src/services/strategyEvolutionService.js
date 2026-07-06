@@ -10,6 +10,7 @@
 
 const fs = require('fs');
 const path = require('path');
+const researchScoreService = require('./researchScoreService');
 
 const DEFAULT_DATA_FILE = path.resolve(__dirname, '../../data/research/strategy-evolution.json');
 
@@ -96,15 +97,65 @@ function normalizeTestResult(value) {
     avgTradePct: numberOrNull(value.avgTradePct),
     bestTradePct: numberOrNull(value.bestTradePct),
     worstTradePct: numberOrNull(value.worstTradePct),
+    stabilityAcrossSymbols: numberOrNull(value.stabilityAcrossSymbols),
+    stabilityAcrossTimeframes: numberOrNull(value.stabilityAcrossTimeframes),
+    stabilityAcrossPeriods: numberOrNull(value.stabilityAcrossPeriods),
+    dataQuality: numberOrNull(value.dataQuality),
+  };
+}
+
+function normalizeScoreDetails(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  const components = value.components && typeof value.components === 'object' && !Array.isArray(value.components)
+    ? {
+        profitFactor: numberOrNull(value.components.profitFactor),
+        drawdown: numberOrNull(value.components.drawdown),
+        winRate: numberOrNull(value.components.winRate),
+        sampleSize: numberOrNull(value.components.sampleSize),
+        stability: numberOrNull(value.components.stability),
+        riskReward: numberOrNull(value.components.riskReward),
+        dataQuality: numberOrNull(value.components.dataQuality),
+      }
+    : null;
+  return {
+    reasons: Array.isArray(value.reasons) ? value.reasons.map((entry) => text(entry, '')).filter(Boolean) : [],
+    warnings: Array.isArray(value.warnings) ? value.warnings.map((entry) => text(entry, '')).filter(Boolean) : [],
+    components,
+  };
+}
+
+function computeScoreDetails(testResult, context = {}) {
+  const computed = researchScoreService.calculateResearchScore({
+    strategyId: context.strategyId || null,
+    version: context.version || null,
+    testResult,
+  });
+  return {
+    aiScore: computed.score,
+    band: computed.band,
+    scoreBand: computed.band,
+    scoreDetails: {
+      reasons: Array.isArray(computed.reasons) ? computed.reasons : [],
+      warnings: Array.isArray(computed.warnings) ? computed.warnings : [],
+      components: computed.components || null,
+    },
   };
 }
 
 function normalizeVersion(row = {}, index = 0) {
   const testResult = normalizeTestResult(row.testResult);
-  const status = normalizeStatus(row.status, testResult ? 'tested' : 'draft');
-  const aiScore = clampScore(row.aiScore);
+  const hasTestResult = Boolean(testResult);
+  const status = hasTestResult ? normalizeStatus(row.status, 'tested') : 'waiting_for_test';
+  const versionNumber = numberOrNull(row.version) || index + 1;
+  const existingAiScore = clampScore(row.aiScore);
+  const scoreDetails = normalizeScoreDetails(row.scoreDetails);
+  const computedScore = existingAiScore === null && hasTestResult
+    ? computeScoreDetails(testResult, { strategyId: row.strategyId || row.strategy_id || row.id, version: versionNumber })
+    : null;
+  const aiScore = existingAiScore !== null ? existingAiScore : computedScore?.aiScore ?? null;
+  const band = text(row.band || row.scoreBand, '') || (aiScore !== null ? scoreBand(aiScore) : null);
   return {
-    version: numberOrNull(row.version) || index + 1,
+    version: versionNumber,
     status,
     source: text(row.source, 'unknown'),
     pineScriptPossible: bool(row.pineScriptPossible, false),
@@ -113,7 +164,9 @@ function normalizeVersion(row = {}, index = 0) {
     hypothesis: text(row.hypothesis, ''),
     testResult,
     aiScore,
-    scoreBand: scoreBand(aiScore),
+    band,
+    scoreBand: band,
+    scoreDetails: existingAiScore !== null ? scoreDetails : (computedScore?.scoreDetails || scoreDetails),
     decision: normalizeDecision(row.decision),
     nextImprovement: text(row.nextImprovement, ''),
   };
@@ -167,9 +220,10 @@ function buildSummary(items) {
       summary.byStatus[version.status] = (summary.byStatus[version.status] || 0) + 1;
       if (version.decision) summary.byDecision[version.decision] = (summary.byDecision[version.decision] || 0) + 1;
 
-      if (version.aiScore >= 80 || version.scoreBand === 'strong_candidate') summary.strongCandidateCount += 1;
-      if (version.aiScore >= 70 || version.status === 'promising' || version.decision === 'promising') summary.promisingCount += 1;
-      if (version.status === 'needs_improvement' || version.decision === 'improve' || version.scoreBand === 'needs_improvement' || version.scoreBand === 'weak') {
+      const band = version.band || version.scoreBand;
+      if (version.aiScore >= 80 || band === 'strong_candidate') summary.strongCandidateCount += 1;
+      if (version.aiScore >= 70 || version.status === 'promising' || version.decision === 'promising' || band === 'promising') summary.promisingCount += 1;
+      if (version.status === 'needs_improvement' || version.decision === 'improve' || band === 'needs_improvement' || band === 'weak') {
         summary.needsImprovementCount += 1;
       }
       if (version.status === 'waiting_for_test' || !version.testResult) summary.waitingForTestCount += 1;
@@ -259,10 +313,12 @@ module.exports = {
   VERSION_STATUSES,
   VERSION_DECISIONS,
   normalizeTestResult,
+  normalizeScoreDetails,
   normalizeVersion,
   normalizeStrategy,
   scoreBand,
   buildSummary,
+  computeScoreDetails,
   createStrategyEvolutionService,
   defaultStrategyEvolutionService,
 };
