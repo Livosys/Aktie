@@ -17,6 +17,7 @@
 // no live trading. The feature flags below all default to OFF.
 
 const net = require('net');
+const { IBApi, EventName } = require('@stoqey/ib');
 const automationApprovalService = require('./automationApprovalService');
 const marketUniverseService = require('./marketUniverseService');
 const paperAllowlistService = require('./paperAllowlistService');
@@ -44,6 +45,13 @@ const NEXT_PHASE_LOCKED = Object.freeze({
 
 const PREVIEW_LIMIT = 3;
 const ALLOWED_MARKET_GROUPS = new Set(['stocks', 'mag7', 'nasdaq100']);
+const REQUIRED_STOP_LOSS_MIN_PCT = 0.10;
+const STOP_LOSS_POLICY = 'Minst 0,10 % krävs innan framtida IB Paper-execution';
+const PAPER_PORT = 4002;
+const DEFAULT_VERIFY_TIMEOUT_MS = 6000;
+const SESSION_VERIFY_TTL_MS = 5000;
+
+const sessionVerificationCache = new Map();
 
 // Feature flags. All OFF by default. Reading an env var can only ever turn a
 // flag ON for *preview rendering* — it can NEVER enable order submission or a
@@ -105,6 +113,187 @@ function tcpReachable(host, port, timeoutMs = 1000) {
   });
 }
 
+function parseManagedAccounts(accountsList) {
+  return String(accountsList || '')
+    .split(/[,\s]+/)
+    .map((item) => item.trim())
+    .filter(Boolean);
+}
+
+function isPaperAccountId(accountId) {
+  return /^DU/i.test(String(accountId || '').trim());
+}
+
+function buildVerificationBase(cfg) {
+  return {
+    ok: true,
+    dryRun: true,
+    safety: { ...SAFETY },
+    host: cfg.host,
+    port: cfg.port,
+    portConfigured: cfg.portConfigured,
+    clientIdConfigured: cfg.clientIdConfigured,
+    connectionCheckEnabled: cfg.checkEnabled,
+    gatewayReachable: false,
+    status: 'disabled',
+    paperMode: 'unknown',
+    paperModeVerified: false,
+    ibApiVerified: false,
+    paperAccountVerified: false,
+    managedAccounts: [],
+    managedAccountCount: 0,
+    paperAccountId: null,
+    sessionVerified: false,
+    orderSendingBlocked: true,
+    wouldCreateIbPaperOrder: false,
+    internalPaperTradingUnaffected: true,
+    passwordStored: false,
+    note: 'Read-only readiness. IBKR password is never stored. Log in manually in '
+      + 'IB Gateway / TWS with the Paper account. The endpoint performs TCP '
+      + 'reachability plus read-only nextValidId/managedAccounts verification. '
+      + 'No orders are sent.',
+  };
+}
+
+function buildVerificationResult(base, overrides = {}) {
+  const managedAccounts = Array.isArray(overrides.managedAccounts)
+    ? overrides.managedAccounts.filter(Boolean)
+    : [];
+  const paperAccountId = overrides.paperAccountId || managedAccounts.find(isPaperAccountId) || null;
+  const ibApiVerified = overrides.ibApiVerified === true;
+  const paperAccountVerified = overrides.paperAccountVerified === true;
+  const sessionVerified = overrides.sessionVerified === true || (ibApiVerified && paperAccountVerified);
+  const paperModeVerified = overrides.paperModeVerified === true || sessionVerified;
+
+  return {
+    ...base,
+    ...overrides,
+    managedAccounts,
+    managedAccountCount: managedAccounts.length,
+    paperAccountId,
+    ibApiVerified,
+    paperAccountVerified,
+    sessionVerified,
+    paperModeVerified,
+    paperMode: paperModeVerified ? 'paper_only' : (overrides.paperMode || 'unknown'),
+    status: overrides.status || (paperModeVerified ? 'verified' : base.status),
+    blockedReason: overrides.blockedReason || (paperModeVerified ? 'read_only_session_verified' : base.blockedReason || 'ib_api_not_verified'),
+  };
+}
+
+async function verifyPaperSession(cfg, options = {}) {
+  const timeoutMs = Number(options.timeoutMs || cfg.timeoutMs || DEFAULT_VERIFY_TIMEOUT_MS);
+  const cacheKey = `${cfg.host}:${cfg.port}:${cfg.clientId}`;
+  const cached = sessionVerificationCache.get(cacheKey);
+  if (cached && cached.expiresAt > Date.now()) {
+    return cached.value;
+  }
+
+  const base = buildVerificationBase(cfg);
+  if (!cfg.checkEnabled) {
+    return buildVerificationResult(base, {
+      gatewayReachable: false,
+      status: 'disabled',
+      blockedReason: 'ib_connection_check_disabled',
+    });
+  }
+
+  if (!cfg.portConfigured) {
+    return buildVerificationResult(base, {
+      gatewayReachable: false,
+      status: 'not_configured',
+      blockedReason: 'ib_gateway_not_configured',
+    });
+  }
+
+  const reachable = await tcpReachable(cfg.host, cfg.port, Math.min(timeoutMs, 1500));
+  if (!reachable) {
+    return buildVerificationResult(base, {
+      gatewayReachable: false,
+      status: 'unreachable',
+      blockedReason: 'ib_gateway_unreachable',
+    });
+  }
+
+  const value = await new Promise((resolve) => {
+    const client = new IBApi({ host: cfg.host, port: cfg.port, maxReqPerSec: 10 });
+    const state = {
+      gatewayReachable: true,
+      connected: false,
+      nextValidId: null,
+      managedAccounts: [],
+      error: null,
+      finished: false,
+    };
+
+    const finish = (overrides = {}) => {
+      if (state.finished) return;
+      state.finished = true;
+      clearTimeout(timer);
+      try { client.disconnect(); } catch (_) { /* ignore */ }
+      const ibApiVerified = state.nextValidId !== null;
+      const paperAccountVerified = state.managedAccounts.some(isPaperAccountId);
+      const sessionVerified = ibApiVerified && paperAccountVerified;
+      const baseResult = buildVerificationResult(base, {
+        gatewayReachable: true,
+        status: sessionVerified ? 'verified' : 'reachable',
+        blockedReason: sessionVerified
+          ? 'read_only_session_verified'
+          : (!ibApiVerified ? 'ib_api_not_verified' : 'paper_account_not_verified'),
+        ibApiVerified,
+        paperAccountVerified,
+        managedAccounts: state.managedAccounts,
+        paperAccountId: state.managedAccounts.find(isPaperAccountId) || null,
+        sessionVerified,
+        paperModeVerified: sessionVerified,
+        paperMode: sessionVerified ? 'paper_only' : 'unknown',
+        verificationMethod: 'nextValidId+managedAccounts',
+        connected: state.connected,
+        nextValidId: state.nextValidId,
+        error: state.error,
+        ...overrides,
+      });
+      sessionVerificationCache.set(cacheKey, {
+        expiresAt: Date.now() + SESSION_VERIFY_TTL_MS,
+        value: baseResult,
+      });
+      resolve(baseResult);
+    };
+
+    const timer = setTimeout(() => finish({ status: 'timeout', blockedReason: 'ib_api_not_verified' }), timeoutMs);
+    client.once(EventName.connected, () => {
+      state.connected = true;
+      try {
+        client.reqIds(1);
+        client.reqManagedAccts();
+      } catch (err) {
+        state.error = err?.message || String(err);
+        finish({ status: 'error', blockedReason: 'ib_api_not_verified' });
+      }
+    });
+    client.once(EventName.nextValidId, (orderId) => {
+      state.nextValidId = Number(orderId);
+      if (state.managedAccounts.length > 0) finish();
+    });
+    client.once(EventName.managedAccounts, (accountsList) => {
+      state.managedAccounts = parseManagedAccounts(accountsList);
+      if (state.nextValidId !== null) finish();
+    });
+    client.once(EventName.error, (err, code) => {
+      const message = err?.message || `IB error ${code || 'unknown'}`;
+      state.error = message;
+    });
+    try {
+      client.connect(cfg.clientId);
+    } catch (err) {
+      state.error = err?.message || String(err);
+      finish({ status: 'error', blockedReason: 'ib_gateway_unreachable' });
+    }
+  });
+
+  return value;
+}
+
 // Synchronous connection summary embedded in the status payload. Does NOT probe
 // the network (status stays sync); the dedicated readiness endpoint performs the
 // actual harmless TCP check.
@@ -152,6 +341,7 @@ function buildConnectionSummary() {
 // returns immediately without any network activity.
 async function getConnectionReadiness() {
   const cfg = getConnectionConfig();
+  const paperPortConfigured = (cfg.host === '127.0.0.1' || cfg.host === 'localhost') && Number(cfg.port) === PAPER_PORT;
   const base = {
     ok: true,
     dryRun: true,
@@ -160,9 +350,16 @@ async function getConnectionReadiness() {
     port: cfg.port,
     portConfigured: cfg.portConfigured,
     clientIdConfigured: cfg.clientIdConfigured,
+    paperPortConfigured,
     status: 'disabled',
     paperMode: 'unknown',
     paperModeVerified: false,
+    ibApiVerified: false,
+    paperAccountVerified: false,
+    managedAccounts: [],
+    managedAccountCount: 0,
+    paperAccountId: null,
+    sessionVerified: false,
     orderSendingBlocked: true,
     wouldCreateIbPaperOrder: false,
     internalPaperTradingUnaffected: true,
@@ -190,13 +387,24 @@ async function getConnectionReadiness() {
     };
   }
 
-  const reachable = await tcpReachable(cfg.host, cfg.port, 1000);
+  const verification = await verifyPaperSession(cfg, { timeoutMs: 6000 });
   return {
     ...base,
     connectionCheckEnabled: true,
-    gatewayReachable: reachable,
-    status: reachable ? 'reachable' : 'unreachable',
-    blockedReason: reachable ? 'reachable_read_only_no_orders' : 'ib_gateway_unreachable',
+    gatewayReachable: verification.gatewayReachable === true,
+    status: verification.status || (verification.gatewayReachable ? 'reachable' : 'unreachable'),
+    blockedReason: verification.blockedReason || (verification.gatewayReachable ? 'reachable_read_only_no_orders' : 'ib_gateway_unreachable'),
+    paperMode: verification.paperMode || 'unknown',
+    paperModeVerified: verification.paperModeVerified === true,
+    ibApiVerified: verification.ibApiVerified === true,
+    paperAccountVerified: verification.paperAccountVerified === true,
+    managedAccounts: verification.managedAccounts || [],
+    managedAccountCount: verification.managedAccountCount || 0,
+    paperAccountId: verification.paperAccountId || null,
+    sessionVerified: verification.sessionVerified === true,
+    verificationMethod: verification.verificationMethod || 'nextValidId+managedAccounts',
+    nextValidId: verification.nextValidId || null,
+    error: verification.error || null,
   };
 }
 
@@ -340,8 +548,10 @@ function getIbPaperOrderPreview(options = {}) {
     });
   const rawCandidates = Array.isArray(options.candidates)
     ? options.candidates
-    : Array.isArray(dailySelectionPreview?.candidates)
-      ? dailySelectionPreview.candidates
+    : Array.isArray(dailySelectionPreview?.allCandidates)
+      ? dailySelectionPreview.allCandidates
+      : Array.isArray(dailySelectionPreview?.candidates)
+        ? dailySelectionPreview.candidates
       : [];
 
   const classified = rawCandidates
@@ -349,11 +559,13 @@ function getIbPaperOrderPreview(options = {}) {
     .sort((a, b) => {
       if (a.selectionRank !== b.selectionRank) return b.selectionRank - a.selectionRank;
       return String(a.strategyId || '').localeCompare(String(b.strategyId || ''));
-    })
-    .slice(0, PREVIEW_LIMIT);
+    });
 
   const allowedCandidates = classified.filter((row) => row.allowedForIbPaperPreview);
   const blockedCandidates = classified.filter((row) => !row.allowedForIbPaperPreview);
+  const visibleAllowedCandidates = allowedCandidates.slice(0, PREVIEW_LIMIT);
+  const visibleBlockedCandidates = blockedCandidates.slice(0, Math.max(0, PREVIEW_LIMIT - visibleAllowedCandidates.length));
+  const visibleCandidates = [...visibleAllowedCandidates, ...visibleBlockedCandidates];
   const blockerCounts = {};
   for (const row of blockedCandidates) {
     for (const reason of row.blockers || []) {
@@ -362,12 +574,18 @@ function getIbPaperOrderPreview(options = {}) {
   }
   const totalAllowed = allowedCandidates.length;
   const totalBlocked = blockedCandidates.length;
+  const totalScanned = classified.length;
   const blockerSummary = Object.keys(blockerCounts).join(', ') || 'policygrindar';
-  const summaryNote = totalAllowed === PREVIEW_LIMIT
+  const summaryNote = totalAllowed >= PREVIEW_LIMIT
     ? 'Tre kandidater är tillåtna för IB Paper-preview idag.'
     : totalAllowed > 0
       ? `Endast ${totalAllowed} kandidat${totalAllowed === 1 ? '' : 'er'} uppfyller alla IB Paper-preview-grindar. Övriga blockerades av ${blockerSummary}.`
-      : `Inga kandidater uppfyller alla IB Paper-preview-grindar just nu. ${totalBlocked} kandidat${totalBlocked === 1 ? '' : 'er'} blockerades.`;
+      : `Inga IB Paper-previewkandidater är tillåtna just nu. ${totalBlocked} kandidat${totalBlocked === 1 ? '' : 'er'} blockerades.`;
+  const insufficientAllowedReason = totalAllowed >= PREVIEW_LIMIT
+    ? null
+    : totalAllowed > 0
+      ? `Endast ${totalAllowed} tillåtna kandidat${totalAllowed === 1 ? '' : 'er'} hittades. Blockerande filter: ${blockerSummary}.`
+      : `Inga tillåtna kandidat${totalBlocked === 1 ? '' : 'er'} hittades. Blockerande filter: ${blockerSummary}.`;
 
   return {
     ok: true,
@@ -382,20 +600,32 @@ function getIbPaperOrderPreview(options = {}) {
     liveTradingEnabled: false,
     orderSendingBlocked: true,
     wouldCreateIbPaperOrder: false,
-    candidates: classified,
+    requiredStopLossMinPct: REQUIRED_STOP_LOSS_MIN_PCT,
+    stopLossPolicy: STOP_LOSS_POLICY,
+    candidates: visibleCandidates,
+    visibleCandidates,
+    allowedCandidates,
+    blockedCandidates,
+    allCandidates: classified,
     generatedAt: new Date().toISOString(),
     summary: {
-      totalCandidates: classified.length,
+      totalCandidates: totalScanned,
+      totalScanned,
       allowedCandidates: totalAllowed,
       blockedCandidates: totalBlocked,
+      allowedVisibleCount: visibleAllowedCandidates.length,
+      blockedVisibleCount: visibleBlockedCandidates.length,
       availableAllowedCandidates: totalAllowed,
       availableBlockedCandidates: totalBlocked,
       previewSource: 'paperTradingRuntimeService._internal.buildDailySelectionPreview',
       noteSv: summaryNote,
+      insufficientAllowedReason,
       blockerCounts,
       cryptoBlocked: true,
       etfBlocked: true,
       qqqBlocked: true,
+      requiredStopLossMinPct: REQUIRED_STOP_LOSS_MIN_PCT,
+      stopLossPolicy: STOP_LOSS_POLICY,
     },
     source: {
       dailySelectionPreviewMode: dailySelectionPreview?.mode || 'preview_only',
@@ -548,6 +778,7 @@ module.exports = {
   getFeatureFlags,
   getConnectionConfig,
   getConnectionReadiness,
+  verifyPaperSession,
   getIbPaperStatus,
   getApprovedStrategiesPreview,
   getIbPaperOrderPreview,
@@ -555,6 +786,11 @@ module.exports = {
     safeUpper,
     safeLower,
     buildApprovedStrategyIndex,
+    parseManagedAccounts,
+    isPaperAccountId,
+    buildVerificationBase,
+    buildVerificationResult,
+    verifyPaperSession,
     inferDirection,
     classifySymbol,
     buildOrderPreviewCandidate,
