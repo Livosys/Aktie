@@ -10918,6 +10918,57 @@ body {
   overflow: hidden;
 }
 
+.sb-admin-section {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.sb-admin-title {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 6px 8px;
+  border-radius: 8px;
+  color: var(--muted);
+  font-size: 0.78rem;
+  justify-content: flex-start;
+}
+
+.premium-sidebar:hover .sb-admin-title,
+.premium-sidebar.is-open .sb-admin-title {
+  color: var(--text);
+}
+
+.sb-admin-icon {
+  width: 28px;
+  height: 28px;
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 8px;
+  background: rgba(148,163,184,0.12);
+  font-size: 0.95rem;
+}
+
+.sb-admin-label {
+  flex: 1;
+  text-align: left;
+  white-space: nowrap;
+  opacity: 0;
+  transition: opacity 0.15s ease 0.06s;
+}
+
+.premium-sidebar:hover .sb-admin-label,
+.premium-sidebar.is-open .sb-admin-label { opacity: 1; }
+
+.sb-admin-links {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
 
 .sb-theme-toggle,
 .sb-theme-status {

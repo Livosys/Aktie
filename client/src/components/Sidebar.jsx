@@ -1,7 +1,6 @@
-import React, { useState, useEffect } from 'react';
+import React from 'react';
 import { Link, useLocation } from 'react-router-dom';
 import { useAlerts } from '../alertContext.jsx';
-import { getTheme } from './ThemeToggle.jsx';
 
 const NAV_GROUPS = [
       {
@@ -12,13 +11,16 @@ const NAV_GROUPS = [
           { path: '/live',       label: 'Live / Signaler', icon: '♥', match: ['/', '/live', '/signalpuls', '/scanner', '/signaler', '/aktier', '/krypto', '/nasdaq'], accent: 'blue' },
           { path: '/paper-trading', label: 'Paper Trading', icon: '🧾', match: ['/paper-trading'], accent: 'green' },
           { path: '/futures-paper', label: 'Paper Futures', icon: '📈', match: ['/futures-paper', '/paper-futures'], accent: 'teal' },
-          { path: '/lab',        label: 'Lärdomar',        icon: '🧪', match: ['/lab', '/trading-lab', '/strategy-lab', '/replay', '/review-chart', '/intelligence', '/machine'], accent: 'orange' },
-          { path: '/insikter',   label: 'Historik',        icon: '📊', match: ['/insikter', '/resultat', '/setup-performance', '/historik', '/paper-trading'], accent: 'green' },
-          { path: '/system',     label: 'Teknik',          icon: '🛡️', match: ['/system', '/system-health', '/alerts', '/sakerhet', '/risk', '/risk-engine', '/safety', '/execution-safety'], accent: 'purple' },
           { path: '/interactive-brokers', label: 'Interactive Brokers', icon: '🔌', match: ['/interactive-brokers'], accent: 'blue' },
         ],
       },
 
+];
+
+const ADMIN_ITEMS = [
+  { path: '/lab',      label: 'Lärdomar', icon: '🧪', match: ['/lab', '/trading-lab', '/strategy-lab', '/replay', '/review-chart', '/intelligence', '/machine'], accent: 'orange' },
+  { path: '/insikter', label: 'Historik', icon: '📊', match: ['/insikter', '/resultat', '/setup-performance', '/historik', '/paper-trading'], accent: 'green' },
+  { path: '/system',   label: 'Teknik',   icon: '🛡️', match: ['/system', '/system-health', '/alerts', '/sakerhet', '/risk', '/risk-engine', '/safety', '/execution-safety'], accent: 'purple' },
 ];
 
 const ACCENT_CLASS = {
@@ -53,26 +55,6 @@ function NavItem({ item, onClose }) {
       {hasAlerts && <span className="sb-alert-pip" />}
       {active && <span className="sb-active-bar" />}
     </Link>
-  );
-}
-
-function ThemeStatus() {
-  const [theme, setThemeState] = useState(getTheme);
-
-  useEffect(() => {
-    function handler(e) { setThemeState(e.detail); }
-    window.addEventListener('themechange', handler);
-    return () => window.removeEventListener('themechange', handler);
-  }, []);
-
-  const isDark = theme === 'dark';
-  return (
-    <div className="sb-theme-status" aria-label="Temastatus">
-      <span className="sb-theme-track">
-        <span className={`sb-theme-thumb ${isDark ? 'thumb-dark' : 'thumb-light'}`} />
-      </span>
-      <span className="sb-theme-label">Tema: {isDark ? 'Mörkt läge' : 'Ljust läge'}</span>
-    </div>
   );
 }
 
@@ -119,7 +101,17 @@ export default function Sidebar({ open, onClose }) {
 
         {/* Footer */}
         <div className="sb-footer">
-          <ThemeStatus />
+          <div className="sb-admin-section" aria-label="Admin">
+            <div className="sb-admin-title">
+              <span className="sb-admin-icon">⚙️</span>
+              <span className="sb-admin-label">Admin</span>
+            </div>
+            <div className="sb-admin-links">
+              {ADMIN_ITEMS.map((item) => (
+                <NavItem key={item.path} item={item} onClose={onClose} />
+              ))}
+            </div>
+          </div>
           <div className="sb-footer-meta">
             <span>Trading OS</span>
             <span>Inga affärer utförs</span>
