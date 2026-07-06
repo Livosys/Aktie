@@ -12,6 +12,7 @@ const EXAMPLES = [
 function pageFromPath(pathname) {
   if (pathname.startsWith('/system')) return 'system';
   if (pathname.startsWith('/paper-trading')) return 'daytrading';
+  if (pathname.startsWith('/futures-paper')) return 'daytrading';
   if (pathname.startsWith('/lab')) return 'lab';
   return 'live';
 }
