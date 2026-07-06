@@ -112,6 +112,7 @@ const paperTradingRuntimeService = require('../services/paperTradingRuntimeServi
 const futuresPaperDeskService = require('../services/futuresPaperDeskService');
 const futuresPaperAccountService = require('../services/futuresPaperAccountService');
 const futuresPaperLedgerService = require('../services/futuresPaperLedgerService');
+const paperTradingTruthService = require('../services/paperTradingTruthService');
 const strategyPipelineTruthService = require('../services/strategyPipelineTruthService');
 const shortExitTruthService = require('../services/shortExitTruthService');
 const paperRiskPauseSummaryService = require('../services/paperRiskPauseSummaryService');
@@ -120,6 +121,11 @@ const tradingViewTestBlueprintService = require('../services/tradingViewTestBlue
 const paperTradeExplanationService = require('../services/paperTradeExplanationService');
 const lossReviewQueueService = require('../services/lossReviewQueueService');
 const tradingViewPaperReplayPreviewService = require('../services/tradingViewPaperReplayPreviewService');
+const interactiveBrokersTradeBlueprintService = require('../services/interactiveBrokersTradeBlueprintService');
+const interactiveBrokersPaperPreflightService = require('../services/interactiveBrokersPaperPreflightService');
+const interactiveBrokersPaperReadinessLoaderService = require('../services/interactiveBrokersPaperReadinessLoaderService');
+const interactiveBrokersPaperExecutionPreviewService = require('../services/interactiveBrokersPaperExecutionPreviewService');
+const interactiveBrokersGatewayHealthService = require('../services/interactiveBrokersGatewayHealthService');
 const tradingViewPreviewLogService = require('../services/tradingViewPreviewLogService');
 const TEST_LIVE_SEND_COOLDOWN_MS = 5 * 60 * 1000;
 let testLiveSendLastAt = 0;
@@ -3685,6 +3691,15 @@ router.get('/paper-trading/trade-explanations/:tradeId?', (req, res) => {
   }
 });
 
+router.get('/paper-trading/exit-profile-comparison', (req, res) => {
+  try {
+    const limit = req.query.limit || req.query.n || 131;
+    res.json(tradeOutcomeReplay.buildExitProfileComparison({ limit }));
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message, ...tradeOutcomeReplay.SAFETY });
+  }
+});
+
 router.get('/paper-trading/loss-review-queue', (req, res) => {
   try {
     res.json(lossReviewQueueService.defaultLossReviewQueueService.getLossReviewQueue());
@@ -4485,6 +4500,26 @@ router.get('/interactive-brokers/status', (req, res) => {
   try { res.json(interactiveBrokersPreviewService.getIbPaperStatus()); }
   catch (err) { res.status(500).json({ ok: false, error: err.message, safety: interactiveBrokersPreviewService.SAFETY }); }
 });
+router.get('/interactive-brokers/truth', async (req, res) => {
+  try {
+    res.json(await paperTradingTruthService.buildPaperTradingTruth({
+      limit: req.query.limit || req.query.n,
+      now: req.query.now || undefined,
+    }));
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message, safety: paperTradingTruthService.SAFETY });
+  }
+});
+router.get('/interactive-brokers/top-strategies', async (req, res) => {
+  try {
+    res.json(await paperTradingTruthService.buildTopStrategySelector({
+      limit: req.query.limit || req.query.n,
+      now: req.query.now || undefined,
+    }));
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message, safety: paperTradingTruthService.SAFETY });
+  }
+});
 router.get('/interactive-brokers/approved-strategies-preview', (req, res) => {
   try { res.json(interactiveBrokersPreviewService.getApprovedStrategiesPreview()); }
   catch (err) { res.status(500).json({ ok: false, error: err.message, safety: interactiveBrokersPreviewService.SAFETY }); }
@@ -4493,13 +4528,118 @@ router.get('/interactive-brokers/order-preview', (req, res) => {
   try { res.json(interactiveBrokersPreviewService.getIbPaperOrderPreview()); }
   catch (err) { res.status(500).json({ ok: false, error: err.message, safety: interactiveBrokersPreviewService.SAFETY }); }
 });
+router.get('/interactive-brokers/trade-blueprint', async (req, res) => {
+  try {
+    const truth = await paperTradingTruthService.buildPaperTradingTruth({
+      now: req.query.now || undefined,
+    });
+    res.json(await interactiveBrokersTradeBlueprintService.getTradeBlueprint({
+      now: req.query.now || undefined,
+      readiness: truth.ibPaper?.connectionReadiness || truth.readiness || undefined,
+      topStrategies: truth.topStrategies,
+    }));
+  }
+  catch (err) { res.status(500).json({ ok: false, error: err.message, safety: interactiveBrokersTradeBlueprintService.SAFETY }); }
+});
 // Read-only connection readiness. Never logs in, never sends orders; a harmless
 // TCP reachability probe only (disabled by default via IB_CONNECTION_CHECK_ENABLED).
 router.get('/interactive-brokers/connection-readiness', async (req, res) => {
   try { res.json(await interactiveBrokersPreviewService.getConnectionReadiness()); }
   catch (err) { res.status(500).json({ ok: false, error: err.message, safety: interactiveBrokersPreviewService.SAFETY }); }
 });
-
+router.get('/interactive-brokers/gateway-health', async (req, res) => {
+  try { res.json(await interactiveBrokersGatewayHealthService.getGatewayHealth()); }
+  catch (err) { res.status(500).json({ ok: false, error: err.message, safety: interactiveBrokersGatewayHealthService.SAFETY }); }
+});
+router.get('/interactive-brokers/paper-execution/status', async (req, res) => {
+  try {
+    const truth = await paperTradingTruthService.buildPaperTradingTruth({
+      now: req.query.now || undefined,
+    });
+    res.json(truth?.ibPaper?.executionStatus || await paperTradingTruthService.buildExecutionStatus({
+      now: req.query.now || undefined,
+      readiness: truth?.ibPaper?.connectionReadiness || truth?.readiness || undefined,
+    }));
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message, safety: paperTradingTruthService.SAFETY });
+  }
+});
+router.get('/interactive-brokers/execution-status', async (req, res) => {
+  try {
+    const truth = await paperTradingTruthService.buildPaperTradingTruth({
+      now: req.query.now || undefined,
+    });
+    res.json(truth?.ibPaper?.executionStatus || await paperTradingTruthService.buildExecutionStatus({
+      now: req.query.now || undefined,
+      readiness: truth?.ibPaper?.connectionReadiness || truth?.readiness || undefined,
+    }));
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message, safety: paperTradingTruthService.SAFETY });
+  }
+});
+router.post('/interactive-brokers/paper-execution-preview', async (req, res) => {
+  try {
+    const body = req.body && typeof req.body === 'object' ? req.body : {};
+    res.json(await interactiveBrokersPaperExecutionPreviewService.buildPaperExecutionPreview({
+      now: body.now || req.query.now || undefined,
+      body,
+    }));
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message, safety: interactiveBrokersPaperExecutionPreviewService.SAFETY });
+  }
+});
+router.post('/interactive-brokers/paper-execute/preflight', async (req, res) => {
+  try {
+    const body = req.body && typeof req.body === 'object' ? req.body : null;
+    if (!body) {
+      res.status(400).json({
+        ok: false,
+        error: 'invalid_payload',
+        safety: interactiveBrokersPaperPreflightService.SAFETY,
+      });
+      return;
+    }
+    const truth = await paperTradingTruthService.buildPaperTradingTruth({
+      now: body.now || req.query.now || undefined,
+    });
+    const executionStatus = truth?.ibPaper?.executionStatus || await paperTradingTruthService.buildExecutionStatus({
+      now: body.now || req.query.now || undefined,
+    });
+    const liveReadinessSnapshot = await interactiveBrokersPaperReadinessLoaderService.loadLiveIbPaperReadinessForPreflight({
+      staleReadiness: truth?.ibPaper?.connectionReadiness || truth?.readiness || executionStatus?.readiness || undefined,
+    });
+    const tradeBlueprint = await interactiveBrokersTradeBlueprintService.getTradeBlueprint({
+      now: body.now || req.query.now || undefined,
+      readiness: liveReadinessSnapshot,
+      topStrategies: truth?.topStrategies,
+    });
+    const selectedBlueprint = body.selectedBlueprint || tradeBlueprint?.selectedBlueprint || tradeBlueprint?.previewBlueprint || (Array.isArray(tradeBlueprint?.blueprints) ? tradeBlueprint.blueprints[0] : null) || null;
+    const response = await interactiveBrokersPaperPreflightService.buildPaperExecutionPreflight({
+      now: body.now || req.query.now || undefined,
+      blueprintId: body.blueprintId || body.selectedBlueprintId || selectedBlueprint?.blueprintId || null,
+      confirmationPhrase: body.confirmationPhrase || body.confirmationText || body.confirmText || '',
+      preflightOnly: true,
+      truth,
+      executionStatus,
+      tradeBlueprint,
+      selectedBlueprint,
+      readiness: liveReadinessSnapshot,
+      liveReadinessSnapshot,
+    });
+    res.json({
+      ...response,
+      routeName: 'interactive-brokers.paper-execute.preflight',
+      method: req.method,
+      authPresent: Boolean(req.headers.authorization || req.headers.cookie),
+      requestUserPresent: Boolean(req.user),
+      readinessSource: liveReadinessSnapshot.source || null,
+      liveReadinessLoaded: liveReadinessSnapshot.liveReadinessLoaded === true || liveReadinessSnapshot.source === 'live_connection_readiness',
+      staleTruthUsed: liveReadinessSnapshot.staleTruthUsed === true || liveReadinessSnapshot.source === 'stale_truth_fallback',
+    });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message, safety: interactiveBrokersPaperPreflightService.SAFETY });
+  }
+});
 // ── API 404 — never return HTML for unknown /api/* paths ──────────────────────
 router.use((req, res) => {
   res.status(404).json({ ok: false, error: 'API route not found' });
