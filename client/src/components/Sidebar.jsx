@@ -17,11 +17,34 @@ const NAV_GROUPS = [
 
 ];
 
-const ADMIN_ITEMS = [
-  { path: '/lab',      label: 'Lärdomar', icon: '🧪', match: ['/lab', '/trading-lab', '/strategy-lab', '/replay', '/review-chart', '/intelligence', '/machine'], accent: 'orange' },
-  { path: '/insikter', label: 'Historik', icon: '📊', match: ['/insikter', '/resultat', '/setup-performance', '/historik', '/paper-trading'], accent: 'green' },
-  { path: '/system',   label: 'Teknik',   icon: '🛡️', match: ['/system', '/system-health', '/alerts', '/sakerhet', '/risk', '/risk-engine', '/safety', '/execution-safety'], accent: 'purple' },
-];
+const ADMIN_ITEM = {
+  path: '/admin',
+  label: 'Admin',
+  icon: '⚙️',
+  match: [
+    '/admin',
+    '/lab',
+    '/trading-lab',
+    '/strategy-lab',
+    '/replay',
+    '/review-chart',
+    '/intelligence',
+    '/machine',
+    '/insikter',
+    '/resultat',
+    '/setup-performance',
+    '/historik',
+    '/system',
+    '/system-health',
+    '/alerts',
+    '/sakerhet',
+    '/risk',
+    '/risk-engine',
+    '/safety',
+    '/execution-safety',
+  ],
+  accent: 'purple',
+};
 
 const ACCENT_CLASS = {
   blue:   'sb-icon-blue',
@@ -102,15 +125,7 @@ export default function Sidebar({ open, onClose }) {
         {/* Footer */}
         <div className="sb-footer">
           <div className="sb-admin-section" aria-label="Admin">
-            <div className="sb-admin-title">
-              <span className="sb-admin-icon">⚙️</span>
-              <span className="sb-admin-label">Admin</span>
-            </div>
-            <div className="sb-admin-links">
-              {ADMIN_ITEMS.map((item) => (
-                <NavItem key={item.path} item={item} onClose={onClose} />
-              ))}
-            </div>
+            <NavItem item={ADMIN_ITEM} onClose={onClose} />
           </div>
           <div className="sb-footer-meta">
             <span>Trading OS</span>

@@ -16,6 +16,7 @@ import NarrowStateLabPage from './pages/NarrowStateLabPage.jsx';
 import PaperTradingPage from './pages/PaperTradingPage.jsx';
 import FuturesPaperDeskPage from './pages/FuturesPaperDeskPage.jsx';
 import InteractiveBrokersPage from './pages/InteractiveBrokersPage.jsx';
+import AdminPage from './pages/AdminPage.jsx';
 
 function RedirectWithSearch({ to }) {
   const { search } = useLocation();
@@ -44,6 +45,7 @@ export default function App() {
           <Route path="/daytrading"   element={<DaytradingPage />} />
           <Route path="/futures-paper" element={<FuturesPaperDeskPage />} />
           <Route path="/interactive-brokers" element={<InteractiveBrokersPage />} />
+          <Route path="/admin"        element={<AdminPage />} />
 
           {/* Legacy primary routes */}
           <Route path="/signalpuls"  element={<RedirectWithSearch to="/live" />} />
