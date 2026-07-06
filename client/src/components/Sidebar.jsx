@@ -13,6 +13,20 @@ const NAV_GROUPS = [
           { path: '/interactive-brokers', label: 'Interactive Brokers', icon: '🔌', match: ['/interactive-brokers'], accent: 'blue' },
         ],
       },
+      {
+        id: 'ai',
+        label: 'AI',
+        items: [
+          { path: '/ai',                 label: 'AI Översikt',     icon: '🧠', match: ['/ai'], accent: 'purple' },
+          { path: '/ai/learning',        label: 'Lärdomar',        icon: '📚', match: ['/ai/learning'], accent: 'purple' },
+          { path: '/ai/agents',          label: 'AI-agenter',      icon: '🤖', match: ['/ai/agents'], accent: 'purple' },
+          { path: '/ai/improvements',    label: 'Förbättringar',   icon: '💡', match: ['/ai/improvements'], accent: 'purple' },
+          { path: '/ai/pipeline',        label: 'Pipeline',        icon: '🔁', match: ['/ai/pipeline'], accent: 'purple' },
+          { path: '/ai/batch-replay',    label: 'Batch & Replay',  icon: '🧪', match: ['/ai/batch-replay'], accent: 'purple' },
+          { path: '/ai/recommendations', label: 'Rekommendationer', icon: '🎯', match: ['/ai/recommendations'], accent: 'purple' },
+          { path: '/ai/risks',           label: 'Risker',          icon: '⚠️', match: ['/ai/risks'], accent: 'purple' },
+        ],
+      },
 
 ];
 

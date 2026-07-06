@@ -18,6 +18,7 @@ import FuturesPaperDeskPage from './pages/FuturesPaperDeskPage.jsx';
 import InteractiveBrokersPage from './pages/InteractiveBrokersPage.jsx';
 import AdminPage from './pages/AdminPage.jsx';
 import PinescriptPage from './pages/PinescriptPage.jsx';
+import AiControlRoomPage from './pages/AiControlRoomPage.jsx';
 
 function RedirectWithSearch({ to }) {
   const { search } = useLocation();
@@ -49,6 +50,10 @@ export default function App() {
           <Route path="/admin"        element={<AdminPage />} />
           <Route path="/pinescript"   element={<PinescriptPage />} />
           <Route path="/pine-script"  element={<Navigate to="/pinescript" replace />} />
+
+          {/* AI Control Room — read-only */}
+          <Route path="/ai"          element={<AiControlRoomPage />} />
+          <Route path="/ai/:section" element={<AiControlRoomPage />} />
 
           {/* Legacy primary routes */}
           <Route path="/signalpuls"  element={<RedirectWithSearch to="/live" />} />
