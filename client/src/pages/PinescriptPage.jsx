@@ -225,6 +225,44 @@ function scoreTone(score, band) {
   return 'neutral';
 }
 
+function actionLabel(action) {
+  const labels = {
+    improve: 'Förbättra',
+    retest: 'Testa igen',
+    collect_more_data: 'Samla mer data',
+    promote_candidate: 'Promota kandidat',
+    reject: 'Förkasta',
+    wait_for_test: 'Väntar test',
+  };
+  return labels[action] || String(action || 'Okänd');
+}
+
+function priorityLabel(priority) {
+  const labels = {
+    critical: 'Kritisk',
+    high: 'Hög',
+    medium: 'Medel',
+    low: 'Låg',
+  };
+  return labels[priority] || String(priority || 'Okänd');
+}
+
+function changeTypeLabel(type) {
+  const labels = {
+    trend_filter: 'trend_filter',
+    momentum_filter: 'momentum_filter',
+    volume_filter: 'volume_filter',
+    volatility_filter: 'volatility_filter',
+    session_filter: 'session_filter',
+    stop_invalidation: 'stop_invalidation',
+    exit_rule: 'exit_rule',
+    sample_expansion: 'sample_expansion',
+    data_quality_check: 'data_quality_check',
+    keep_and_validate: 'keep_and_validate',
+  };
+  return labels[type] || String(type || 'okänd');
+}
+
 function latestVersion(strategy) {
   const versions = Array.isArray(strategy?.versions) ? strategy.versions : [];
   if (!versions.length) return null;
@@ -274,6 +312,7 @@ function StrategyEvolutionPanel({ state }) {
   const summary = data.summary || {};
   const items = Array.isArray(data.items) ? data.items : [];
   const target = data.targetScore || { min: 70, ideal: 80, type: 'ai_score', scale: '0-100' };
+  const recommendationSummary = summary.recommendationSummary || {};
   const visibleItems = items.slice(0, 6);
 
   return (
@@ -321,6 +360,35 @@ function StrategyEvolutionPanel({ state }) {
         <MetricPill label="Väntar test" value={formatNumber(summary.waitingForTestCount || 0)} />
       </div>
 
+      {summary.recommendationSummary ? (
+        <div style={{
+          marginTop: 14,
+          border: '1px solid var(--border)',
+          borderRadius: 14,
+          padding: 14,
+          background: 'color-mix(in srgb, var(--surface) 88%, transparent)',
+        }}
+        >
+          <div style={{ color: 'var(--muted)', fontSize: 11, fontWeight: 900, textTransform: 'uppercase', letterSpacing: '0.08em' }}>
+            Research Intelligence
+          </div>
+          <div style={{
+            display: 'grid',
+            gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))',
+            gap: 8,
+            marginTop: 10,
+          }}
+          >
+            <Badge tone="warning">Förbättra {formatNumber(recommendationSummary.improveCount || 0)}</Badge>
+            <Badge tone="info">Testa igen {formatNumber(recommendationSummary.retestCount || 0)}</Badge>
+            <Badge>Mer data {formatNumber(recommendationSummary.collectMoreDataCount || 0)}</Badge>
+            <Badge tone="success">Kandidater {formatNumber(recommendationSummary.promoteCandidateCount || 0)}</Badge>
+            <Badge tone="warning">Förkasta {formatNumber(recommendationSummary.rejectCount || 0)}</Badge>
+            <Badge>Väntar test {formatNumber(recommendationSummary.waitForTestCount || 0)}</Badge>
+          </div>
+        </div>
+      ) : null}
+
       {state.error ? (
         <div style={{
           marginTop: 14,
@@ -357,10 +425,8 @@ function StrategyEvolutionPanel({ state }) {
       {visibleItems.length ? (
         <div style={{ display: 'grid', gap: 12, marginTop: 16 }}>
           {visibleItems.map((strategy) => {
-            const version = latestVersion(strategy);
-            const result = version?.testResult || {};
-            const score = version?.aiScore;
-            const band = version?.scoreBand;
+            const versions = Array.isArray(strategy?.versions) ? strategy.versions : [];
+            const latest = latestVersion(strategy);
             return (
               <article
                 key={strategy.strategyId || strategy.name}
@@ -370,59 +436,223 @@ function StrategyEvolutionPanel({ state }) {
                   padding: 16,
                   background: 'color-mix(in srgb, var(--surface) 92%, transparent)',
                 }}
-              >
-                <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10, flexWrap: 'wrap', alignItems: 'flex-start' }}>
-                  <div>
-                    <div style={{ color: 'var(--muted)', fontSize: 11, fontWeight: 850, textTransform: 'uppercase', letterSpacing: '0.06em' }}>
-                      {strategy.strategyId || 'strategy'}
-                    </div>
-                    <h3 style={{ margin: '5px 0 6px', fontSize: 18, letterSpacing: 0 }}>{strategy.name || strategy.strategyId}</h3>
-                    <div style={{ color: 'var(--muted)', fontSize: 13 }}>
-                      Version {formatNumber(version?.version)} · {version?.status || 'okänd status'} · beslut {version?.decision || 'ej satt'}
-                    </div>
-                  </div>
-                  <Badge tone={scoreTone(score, band)}>
-                    {score === null || score === undefined ? 'AI-score saknas' : `AI-score ${formatNumber(score)}`} · {bandLabel(band)}
-                  </Badge>
-                </div>
-
-                <div style={{
-                  display: 'grid',
-                  gridTemplateColumns: 'repeat(auto-fit, minmax(120px, 1fr))',
-                  gap: 8,
-                  marginTop: 12,
-                }}
                 >
-                  <MetricPill label="Winrate" value={formatPercent(result.winRate)} />
-                  <MetricPill label="Profit factor" value={formatNumber(result.profitFactor)} />
-                  <MetricPill label="Net profit" value={formatPercent(result.netProfitPct)} />
-                  <MetricPill label="Max drawdown" value={formatPercent(result.maxDrawdownPct)} />
-                  <MetricPill label="Trades" value={formatNumber(result.trades)} />
-                </div>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10, flexWrap: 'wrap', alignItems: 'flex-start' }}>
+                    <div>
+                      <div style={{ color: 'var(--muted)', fontSize: 11, fontWeight: 850, textTransform: 'uppercase', letterSpacing: '0.06em' }}>
+                        {strategy.strategyId || 'strategy'}
+                      </div>
+                      <h3 style={{ margin: '5px 0 6px', fontSize: 18, letterSpacing: 0 }}>{strategy.name || strategy.strategyId}</h3>
+                      <div style={{ color: 'var(--muted)', fontSize: 13 }}>
+                        Senaste version {formatNumber(latest?.version)} · {latest?.status || 'okänd status'} · beslut {latest?.decision || 'ej satt'}
+                      </div>
+                    </div>
+                    <Badge tone={scoreTone(latest?.aiScore, latest?.scoreBand)}>
+                      {latest?.aiScore === null || latest?.aiScore === undefined
+                        ? 'AI-score saknas'
+                        : `AI-score ${formatNumber(latest.aiScore)}`}
+                      {' '}
+                      · {bandLabel(latest?.scoreBand)}
+                    </Badge>
+                  </div>
 
-                <div style={{
-                  display: 'grid',
-                  gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))',
-                  gap: 10,
-                  marginTop: 12,
-                  color: 'var(--muted)',
-                  fontSize: 13,
-                  lineHeight: 1.5,
-                }}
-                >
-                  <div>
-                    <strong style={{ color: 'var(--text)' }}>Hypotes:</strong>
-                    {' '}
-                    {version?.hypothesis || 'Ingen hypotes sparad ännu.'}
-                  </div>
-                  <div>
-                    <strong style={{ color: 'var(--text)' }}>Nästa förbättring:</strong>
-                    {' '}
-                    {version?.nextImprovement || 'Väntar på mer research-data.'}
-                  </div>
-                </div>
-              </article>
-            );
+                  {versions.length ? (
+                    <div style={{ display: 'grid', gap: 12, marginTop: 12 }}>
+                      {versions.map((version) => {
+                        const result = version?.testResult || {};
+                        const recommendation = version?.recommendation || {};
+                        const changes = Array.isArray(recommendation.suggestedChanges) ? recommendation.suggestedChanges : [];
+                        const weaknesses = Array.isArray(recommendation.weaknesses) ? recommendation.weaknesses : [];
+                        const nextPlan = recommendation.nextTestPlan || {};
+                        return (
+                          <div
+                            key={version?.version || `${strategy.strategyId}-version`}
+                            style={{
+                              border: '1px solid var(--border)',
+                              borderRadius: 14,
+                              padding: 14,
+                              background: 'color-mix(in srgb, var(--surface) 94%, transparent)',
+                            }}
+                          >
+                            <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10, flexWrap: 'wrap', alignItems: 'flex-start' }}>
+                              <div>
+                                <div style={{ color: 'var(--muted)', fontSize: 11, fontWeight: 850, textTransform: 'uppercase', letterSpacing: '0.06em' }}>
+                                  Version {formatNumber(version?.version)}
+                                </div>
+                                <div style={{ color: 'var(--muted)', fontSize: 13, marginTop: 3 }}>
+                                  {version?.status || 'okänd status'} · beslut {version?.decision || 'ej satt'}
+                                </div>
+                              </div>
+                              <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
+                                <Badge tone={scoreTone(version?.aiScore, version?.scoreBand)}>
+                                  {version?.aiScore === null || version?.aiScore === undefined
+                                    ? 'AI-score saknas'
+                                    : `AI-score ${formatNumber(version.aiScore)}`}
+                                  {' '}
+                                  · {bandLabel(version?.scoreBand)}
+                                </Badge>
+                                <Badge tone={recommendation.recommendedAction === 'promote_candidate' ? 'success' : recommendation.recommendedAction === 'improve' || recommendation.recommendedAction === 'reject' ? 'warning' : 'info'}>
+                                  {actionLabel(recommendation.recommendedAction)}
+                                </Badge>
+                                <Badge>{priorityLabel(recommendation.priority)}</Badge>
+                                <Badge tone="info">Read-only recommendation</Badge>
+                              </div>
+                            </div>
+
+                            <div style={{
+                              display: 'grid',
+                              gridTemplateColumns: 'repeat(auto-fit, minmax(120px, 1fr))',
+                              gap: 8,
+                              marginTop: 12,
+                            }}
+                            >
+                              <MetricPill label="Winrate" value={formatPercent(result.winRate)} />
+                              <MetricPill label="Profit factor" value={formatNumber(result.profitFactor)} />
+                              <MetricPill label="Net profit" value={formatPercent(result.netProfitPct)} />
+                              <MetricPill label="Max drawdown" value={formatPercent(result.maxDrawdownPct)} />
+                              <MetricPill label="Trades" value={formatNumber(result.trades)} />
+                            </div>
+
+                            <div style={{
+                              display: 'grid',
+                              gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))',
+                              gap: 10,
+                              marginTop: 12,
+                              color: 'var(--muted)',
+                              fontSize: 13,
+                              lineHeight: 1.5,
+                            }}
+                            >
+                              <div>
+                                <strong style={{ color: 'var(--text)' }}>Reason:</strong>
+                                {' '}
+                                {recommendation.reason || 'Ingen rekommendation ännu.'}
+                              </div>
+                              <div>
+                                <strong style={{ color: 'var(--text)' }}>Next safe test:</strong>
+                                {' '}
+                                {nextPlan.type || 'replay'}
+                                {' · '}
+                                dryRun={String(nextPlan.dryRun !== false)}
+                                {' · '}
+                                execution={String(Boolean(nextPlan.execution))}
+                                {' · '}
+                                broker={String(Boolean(nextPlan.broker))}
+                                {' · '}
+                                orders={String(Boolean(nextPlan.orders))}
+                              </div>
+                            </div>
+
+                            <div style={{ display: 'grid', gap: 10, marginTop: 12 }}>
+                              <div>
+                                <div style={{ color: 'var(--text)', fontSize: 13, fontWeight: 850, marginBottom: 6 }}>
+                                  Weaknesses
+                                </div>
+                                <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+                                  {weaknesses.length ? weaknesses.map((item) => (
+                                    <span key={`${version?.version}-${item}`} style={{
+                                      display: 'inline-flex',
+                                      alignItems: 'center',
+                                      padding: '5px 8px',
+                                      borderRadius: 999,
+                                      background: 'rgba(245,158,11,0.12)',
+                                      border: '1px solid rgba(245,158,11,0.26)',
+                                      fontSize: 12,
+                                      fontWeight: 750,
+                                    }}
+                                    >
+                                      {item}
+                                    </span>
+                                  )) : <span style={{ color: 'var(--muted)' }}>Inga tydliga svagheter ännu.</span>}
+                                </div>
+                              </div>
+
+                              <div>
+                                <div style={{ color: 'var(--text)', fontSize: 13, fontWeight: 850, marginBottom: 6 }}>
+                                  Suggested changes
+                                </div>
+                                <div style={{ display: 'grid', gap: 8 }}>
+                                  {changes.length ? changes.map((change) => (
+                                    <div key={`${version?.version}-${change.type}-${change.name}`} style={{
+                                      border: '1px solid var(--border)',
+                                      borderRadius: 12,
+                                      padding: 10,
+                                      background: 'rgba(255,255,255,0.02)',
+                                    }}
+                                    >
+                                      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+                                        <strong style={{ color: 'var(--text)' }}>{change.name || 'Förslag'}</strong>
+                                        <Badge>{changeTypeLabel(change.type)}</Badge>
+                                      </div>
+                                      <div style={{ marginTop: 4, color: 'var(--muted)', fontSize: 13, lineHeight: 1.5 }}>
+                                        {change.why || 'Ingen förklaring sparad ännu.'}
+                                      </div>
+                                    </div>
+                                  )) : (
+                                    <div style={{ color: 'var(--muted)', fontSize: 13 }}>
+                                      Ingen rekommendation ännu.
+                                    </div>
+                                  )}
+                                </div>
+                              </div>
+
+                              <div>
+                                <div style={{ color: 'var(--text)', fontSize: 13, fontWeight: 850, marginBottom: 6 }}>
+                                  Next safe test plan
+                                </div>
+                                <div style={{
+                                  border: '1px solid var(--border)',
+                                  borderRadius: 12,
+                                  padding: 10,
+                                  background: 'rgba(34,197,94,0.06)',
+                                  color: 'var(--muted)',
+                                  fontSize: 13,
+                                  lineHeight: 1.6,
+                                }}
+                                >
+                                  <div><strong style={{ color: 'var(--text)' }}>type:</strong> {nextPlan.type || 'replay'}</div>
+                                  <div><strong style={{ color: 'var(--text)' }}>dryRun:</strong> {String(Boolean(nextPlan.dryRun))}</div>
+                                  <div><strong style={{ color: 'var(--text)' }}>execution:</strong> {String(Boolean(nextPlan.execution))}</div>
+                                  <div><strong style={{ color: 'var(--text)' }}>broker:</strong> {String(Boolean(nextPlan.broker))}</div>
+                                  <div><strong style={{ color: 'var(--text)' }}>orders:</strong> {String(Boolean(nextPlan.orders))}</div>
+                                  <div><strong style={{ color: 'var(--text)' }}>symbols:</strong> {(Array.isArray(nextPlan.symbols) && nextPlan.symbols.length ? nextPlan.symbols.join(', ') : '–')}</div>
+                                  <div><strong style={{ color: 'var(--text)' }}>timeframes:</strong> {(Array.isArray(nextPlan.timeframes) && nextPlan.timeframes.length ? nextPlan.timeframes.join(', ') : '–')}</div>
+                                  <div><strong style={{ color: 'var(--text)' }}>lookbackDays:</strong> {formatNumber(nextPlan.lookbackDays)}</div>
+                                  <div><strong style={{ color: 'var(--text)' }}>reason:</strong> {nextPlan.reason || '–'}</div>
+                                </div>
+                              </div>
+
+                              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+                                <Badge tone="info">Read-only recommendation</Badge>
+                                <Badge>Ingen execution</Badge>
+                                <Badge>Ingen broker</Badge>
+                                <Badge>Ingen order</Badge>
+                                <Badge tone="success">Confidence {formatNumber(recommendation.confidence)}</Badge>
+                                {recommendation.blockedReason ? <Badge tone="warning">{recommendation.blockedReason}</Badge> : null}
+                              </div>
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  ) : (
+                    <div style={{
+                      marginTop: 12,
+                      color: 'var(--muted)',
+                      fontSize: 13,
+                      lineHeight: 1.55,
+                    }}
+                    >
+                      <div><strong style={{ color: 'var(--text)' }}>Hypotes:</strong> {latest?.hypothesis || 'Ingen hypotes sparad ännu.'}</div>
+                      <div style={{ marginTop: 6 }}>
+                        <strong style={{ color: 'var(--text)' }}>Nästa förbättring:</strong>
+                        {' '}
+                        {latest?.nextImprovement || 'Väntar på mer research-data.'}
+                      </div>
+                    </div>
+                  )}
+                </article>
+              );
           })}
         </div>
       ) : null}
