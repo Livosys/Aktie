@@ -9,6 +9,7 @@ const NAV_GROUPS = [
         items: [
           { path: '/live',       label: 'Live / Signaler', icon: '♥', match: ['/', '/live', '/signalpuls', '/scanner', '/signaler', '/aktier', '/krypto', '/nasdaq'], accent: 'blue' },
           { path: '/futures-paper', label: 'Paper Futures', icon: '📈', match: ['/futures-paper', '/paper-futures'], accent: 'teal' },
+          { path: '/pinescript', label: 'PineScript', icon: '⌘', match: ['/pinescript', '/pine-script'], accent: 'teal' },
           { path: '/interactive-brokers', label: 'Interactive Brokers', icon: '🔌', match: ['/interactive-brokers'], accent: 'blue' },
         ],
       },

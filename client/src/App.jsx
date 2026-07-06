@@ -17,6 +17,7 @@ import PaperTradingPage from './pages/PaperTradingPage.jsx';
 import FuturesPaperDeskPage from './pages/FuturesPaperDeskPage.jsx';
 import InteractiveBrokersPage from './pages/InteractiveBrokersPage.jsx';
 import AdminPage from './pages/AdminPage.jsx';
+import PinescriptPage from './pages/PinescriptPage.jsx';
 
 function RedirectWithSearch({ to }) {
   const { search } = useLocation();
@@ -46,6 +47,8 @@ export default function App() {
           <Route path="/futures-paper" element={<FuturesPaperDeskPage />} />
           <Route path="/interactive-brokers" element={<InteractiveBrokersPage />} />
           <Route path="/admin"        element={<AdminPage />} />
+          <Route path="/pinescript"   element={<PinescriptPage />} />
+          <Route path="/pine-script"  element={<Navigate to="/pinescript" replace />} />
 
           {/* Legacy primary routes */}
           <Route path="/signalpuls"  element={<RedirectWithSearch to="/live" />} />
