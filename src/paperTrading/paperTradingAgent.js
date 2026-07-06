@@ -196,6 +196,23 @@ function enrichTradeTimestamps(trade = {}, fallbackEnd = null) {
     last_update_at: lastUpdateAt,
     duration_seconds: seconds,
     duration_label: durationLabel(seconds),
+    durationMs: seconds * 1000,
+    durationLabel: durationLabel(seconds),
+    originalStopPct: trade.originalStopPct ?? trade.stopPct ?? null,
+    originalTargetPct: trade.originalTargetPct ?? trade.targetPct ?? null,
+    effectiveStopPct: trade.effectiveStopPct ?? trade.exitEngineStopPct ?? trade.stopPct ?? null,
+    trailingStopPct: trade.trailingStopPct ?? trade.exitEngineDecision?.trailing_stop_pct ?? null,
+    breakEvenActivated: trade.breakEvenActivated === true || trade.exitEngineDecision?.breakEvenActivated === true,
+    breakEvenThresholdPct: trade.breakEvenThresholdPct ?? trade.exitEngineDecision?.breakEvenThresholdPct ?? null,
+    exitEngineVersion: trade.exitEngineVersion || trade.exitEngineDecision?.exitEngineVersion || null,
+    exitProfile: trade.exitProfile || trade.exitEngineDecision?.exitProfile || null,
+    highestPriceDuringTrade: trade.highestPriceDuringTrade ?? null,
+    lowestPriceDuringTrade: trade.lowestPriceDuringTrade ?? null,
+    mfePct: trade.mfePct ?? trade.maxFavorablePct ?? null,
+    maePct: trade.maePct ?? trade.maxAdversePct ?? null,
+    statusAtEntry: trade.statusAtEntry ?? null,
+    entryQualityScore: trade.entryQualityScore ?? null,
+    entryQualityWarnings: Array.isArray(trade.entryQualityWarnings) ? trade.entryQualityWarnings : [],
   };
 }
 
@@ -832,6 +849,8 @@ function buildOpenTrade(c, gateDecision = null) {
     statusAtEntry:    c.status,
     confidenceScore:  c.confidenceScore ?? null,
     baseConfidenceScore: c.baseConfidenceScore ?? c.confidenceScore ?? null,
+    entryQualityScore: c.entryQualityScore ?? null,
+    entryQualityWarnings: Array.isArray(c.entryQualityWarnings) ? c.entryQualityWarnings : [],
     aiConfidenceAdjustment: c.aiConfidenceAdjustment ?? null,
     aiRiskFlag:      c.aiRiskFlag === true,
     aiAgentAnalysis: c.aiAgentAnalysis || null,
@@ -852,6 +871,8 @@ function buildOpenTrade(c, gateDecision = null) {
     stopPct:          profile.stopPct,
     maxHoldMinutes:   profile.maxHoldMinutes,
     paperRiskProfile:        profile,
+    exitProfile:             c.exitProfile || exitEngineService.DEFAULT_EXIT_PROFILE,
+    exitEngineVersion:       exitEngineService.SOURCE,
     paperRulesVersion:       PAPER_RULE_VERSION,
     ruleVersion:             PAPER_RULE_VERSION,
     compassBias,
@@ -907,8 +928,8 @@ function checkExit(trade, currentPrice) {
   const stop   = trade.stopPct        ?? STOP_PCT;
   const maxMin = trade.maxHoldMinutes ?? MAX_HOLD_MINUTES;
 
-  if (pnl >= target)  return { exitReason: 'TARGET_HIT', pnlPct: pnl, result: 'WIN',  exitPrice: currentPrice };
-  if (pnl <= -stop)   return { exitReason: 'STOP_HIT',   pnlPct: pnl, result: 'LOSS', exitPrice: currentPrice };
+  if (pnl >= target)  return { exitReason: 'TARGET_HIT', exitReasonCode: 'target_hit', exitSource: 'legacy_hard_rule', exitEngineVersion: 'legacy_hard_rule', exitProfile: 'legacy_hard_rule', pnlPct: pnl, result: 'WIN',  exitPrice: currentPrice };
+  if (pnl <= -stop)   return { exitReason: 'STOP_HIT',   exitReasonCode: 'stop_hit', exitSource: 'legacy_hard_rule', exitEngineVersion: 'legacy_hard_rule', exitProfile: 'legacy_hard_rule', pnlPct: pnl, result: 'LOSS', exitPrice: currentPrice };
   if (trade.exitEngineStopPct != null && pnl <= Number(trade.exitEngineStopPct)) {
     return {
       exitReason: 'EXIT_ENGINE_TIGHTENED_STOP',
@@ -922,7 +943,7 @@ function checkExit(trade, currentPrice) {
 
   const ageMin = (Date.now() - new Date(trade.entryTime).getTime()) / 60_000;
   if (ageMin >= maxMin)
-    return { exitReason: 'TIMEOUT', pnlPct: pnl, result: 'TIMEOUT', exitPrice: currentPrice };
+    return { exitReason: 'TIMEOUT', exitReasonCode: 'timeout', exitSource: 'legacy_hard_rule', exitEngineVersion: 'legacy_hard_rule', exitProfile: 'legacy_hard_rule', pnlPct: pnl, result: 'TIMEOUT', exitPrice: currentPrice };
 
   return null;
 }
@@ -932,8 +953,8 @@ function checkHardExit(trade, currentPrice) {
   const pnl    = calcPnlPct(trade, currentPrice);
   const target = trade.targetPct ?? TARGET_PCT;
   const stop   = trade.stopPct   ?? STOP_PCT;
-  if (pnl >= target)  return { exitReason: 'TARGET_HIT', pnlPct: pnl, result: 'WIN',  exitPrice: currentPrice };
-  if (pnl <= -stop)   return { exitReason: 'STOP_HIT',   pnlPct: pnl, result: 'LOSS', exitPrice: currentPrice };
+  if (pnl >= target)  return { exitReason: 'TARGET_HIT', exitReasonCode: 'target_hit', exitSource: 'legacy_hard_rule', exitEngineVersion: 'legacy_hard_rule', exitProfile: 'legacy_hard_rule', pnlPct: pnl, result: 'WIN',  exitPrice: currentPrice };
+  if (pnl <= -stop)   return { exitReason: 'STOP_HIT',   exitReasonCode: 'stop_hit', exitSource: 'legacy_hard_rule', exitEngineVersion: 'legacy_hard_rule', exitProfile: 'legacy_hard_rule', pnlPct: pnl, result: 'LOSS', exitPrice: currentPrice };
   if (trade.exitEngineStopPct != null && pnl <= Number(trade.exitEngineStopPct)) {
     return {
       exitReason: 'EXIT_ENGINE_TIGHTENED_STOP',
@@ -953,7 +974,7 @@ function checkTimeoutExit(trade, currentPrice) {
   const ageMin = (Date.now() - new Date(trade.entryTime).getTime()) / 60_000;
   if (ageMin < maxMin) return null;
   const pnl = calcPnlPct(trade, currentPrice);
-  return { exitReason: 'TIMEOUT', pnlPct: pnl, result: 'TIMEOUT', exitPrice: currentPrice };
+  return { exitReason: 'TIMEOUT', exitReasonCode: 'timeout', exitSource: 'legacy_hard_rule', exitEngineVersion: 'legacy_hard_rule', exitProfile: 'legacy_hard_rule', pnlPct: pnl, result: 'TIMEOUT', exitPrice: currentPrice };
 }
 
 // ── Intrabar tracking ─────────────────────────────────────────────────────────
@@ -1765,6 +1786,8 @@ function exitFromExitEngineDecision(trade, currentPrice, decision) {
     exitReason: `EXIT_ENGINE_${String(decision.exit_reason_code || 'exit').toUpperCase()}`,
     exitReasonCode: decision.exit_reason_code || 'exit_engine',
     exitSource: 'exit_engine_v1',
+    exitEngineVersion: decision.exitEngineVersion || decision.source || exitEngineService.SOURCE,
+    exitProfile: decision.exitProfile || null,
     exitEngineDecision: decision,
     pnlPct: pnl,
     result: pnl > 0 ? 'WIN' : pnl < 0 ? 'LOSS' : 'TIMEOUT',
@@ -3288,5 +3311,6 @@ module.exports = {
     buildLateRegularPullbackSkipEvent,
     shouldBlockLateRegularPullbackEntry,
     buildOpenTrade,
+    checkHardExit,
   },
 };

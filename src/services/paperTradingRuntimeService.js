@@ -292,6 +292,25 @@ function normalizeTrade(row = {}, statusOverride = null) {
     pnlPct: num(row.pnlPct ?? row.pnl_pct ?? row.pnl),
     entryPrice: num(row.entryPrice ?? row.entry_price),
     exitPrice: num(row.exitPrice ?? row.exit_price),
+    exitReasonCode: text(row.exitReasonCode || row.exit_reason_code || null),
+    exitSource: text(row.exitSource || row.exit_source || null),
+    exitProfile: text(row.exitProfile || row.exit_profile || null),
+    exitEngineVersion: text(row.exitEngineVersion || row.exit_engine_version || null),
+    durationMs: num(row.durationMs ?? row.duration_ms ?? null),
+    durationLabel: text(row.durationLabel || row.duration_label || null),
+    originalStopPct: num(row.originalStopPct ?? row.original_stop_pct ?? null),
+    originalTargetPct: num(row.originalTargetPct ?? row.original_target_pct ?? null),
+    effectiveStopPct: num(row.effectiveStopPct ?? row.effective_stop_pct ?? null),
+    trailingStopPct: num(row.trailingStopPct ?? row.trailing_stop_pct ?? null),
+    breakEvenActivated: row.breakEvenActivated === true || row.break_even_activated === true,
+    breakEvenThresholdPct: num(row.breakEvenThresholdPct ?? row.break_even_threshold_pct ?? null),
+    highestPriceDuringTrade: num(row.highestPriceDuringTrade ?? row.highest_price_during_trade ?? null),
+    lowestPriceDuringTrade: num(row.lowestPriceDuringTrade ?? row.lowest_price_during_trade ?? null),
+    mfePct: num(row.mfePct ?? row.maxFavorablePct ?? row.max_favorable_pct ?? null),
+    maePct: num(row.maePct ?? row.maxAdversePct ?? row.max_adverse_pct ?? null),
+    statusAtEntry: text(row.statusAtEntry || row.status_at_entry || null),
+    entryQualityScore: num(row.entryQualityScore ?? row.entry_quality_score ?? null),
+    entryQualityWarnings: Array.isArray(row.entryQualityWarnings) ? row.entryQualityWarnings : Array.isArray(row.entry_quality_warnings) ? row.entry_quality_warnings : [],
     blockedReason: null,
     paperOnly: true,
     status,
@@ -737,17 +756,24 @@ function buildDailySelectionPreview(options = {}) {
   const matrixById = new Map(matrixRows.map((row) => [row.id || row.strategy_id, row]));
   const allowRows = Array.isArray(allowlistStatus.allowlist) ? allowlistStatus.allowlist : [];
   const allowById = new Map(allowRows.map((row) => [row.id, row]));
+  const planRows = arr(plan.recommendedPaperCandidates);
+  const planById = new Map(planRows.map((row) => [row?.id, row]).filter(([id]) => Boolean(id)));
   const sources = loadDailySelectionSources(files);
   const cooldowns = readJson(files.state, {})?.cooldowns || {};
   const nowMs = now.getTime();
 
   const pool = [];
-  for (const plannedRow of arr(plan.recommendedPaperCandidates)) {
-    const strategyId = plannedRow?.id;
+  const candidateStrategyIds = new Set([
+    ...allowRows.filter((row) => row && row.approvedForPaperTesting === true).map((row) => row.id).filter(Boolean),
+    ...planRows.map((row) => row?.id).filter(Boolean),
+  ]);
+
+  for (const strategyId of candidateStrategyIds) {
     if (!strategyId) continue;
     const allowRow = allowById.get(strategyId);
     const matrixRow = matrixById.get(strategyId);
-    if (!allowRow || allowRow.readyForPaperRuntime !== true) continue;
+    const plannedRow = planById.get(strategyId) || null;
+    if (!allowRow || allowRow.approvedForPaperTesting !== true) continue;
     if (!matrixRow || matrixRow.paperRuntimeStatus !== 'active' || (Array.isArray(matrixRow.blockers) && matrixRow.blockers.length > 0)) continue;
 
     let activity = findLatestEligibleActivity(strategyId, sources, cooldowns, nowMs);
@@ -789,7 +815,12 @@ function buildDailySelectionPreview(options = {}) {
     mode: 'preview_only',
     selectionCount: limit,
     selectedCount: selected.length,
+    totalScanned: pool.length,
     candidates: selected.map((candidate) => ({
+      ...candidate,
+      safety: { ...SAFETY },
+    })),
+    allCandidates: pool.map((candidate) => ({
       ...candidate,
       safety: { ...SAFETY },
     })),

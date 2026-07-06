@@ -832,6 +832,43 @@ function useTradeExplanationLookup(trade, enabled) {
   return state;
 }
 
+function useExitProfileComparison(limit = 131) {
+  const [state, setState] = useState({ loading: true, data: null, error: null });
+
+  useEffect(() => {
+    let alive = true;
+    let activeController = null;
+    const load = () => {
+      if (activeController) activeController.abort();
+      activeController = new AbortController();
+      fetchJsonWithTimeout(`/api/paper-trading/exit-profile-comparison?limit=${encodeURIComponent(limit)}`, {
+        signal: activeController.signal,
+      })
+        .then((data) => {
+          if (!alive) return;
+          setState({ loading: false, error: null, data });
+        })
+        .catch((err) => {
+          if (!alive) return;
+          setState((prev) => ({
+            loading: false,
+            error: friendlyTradeExplanationError(err, 'Exit profile comparison är tillfälligt otillgängligt.'),
+            data: prev.data || null,
+          }));
+        });
+    };
+    load();
+    const t = setInterval(load, REFRESH_MS);
+    return () => {
+      alive = false;
+      clearInterval(t);
+      if (activeController) activeController.abort();
+    };
+  }, [limit]);
+
+  return state;
+}
+
 function explanationValue(value, fallback = 'unknown') {
   if (value === null || value === undefined) return fallback;
   if (typeof value === 'number' && Number.isFinite(value)) return value;
@@ -886,6 +923,11 @@ function ClosedTradeExplanationPanel({ explanation, trade, theme }) {
   const tradeLabel = trade?.symbol ? `${trade.symbol} · ${trade.strategy_id || trade.strategyId || 'unknown'}` : 'unknown';
   const mfePct = stats.mfePct == null ? '–' : `${stats.mfePct >= 0 ? '+' : ''}${Number(stats.mfePct).toFixed(2)}%`;
   const maePct = stats.maePct == null ? '–' : `${stats.maePct >= 0 ? '+' : ''}${Number(stats.maePct).toFixed(2)}%`;
+  const exitProfile = explanationValue(exit.exitProfile, 'unknown');
+  const exitSource = explanationValue(exit.exitSource, 'unknown');
+  const durationLabel = explanationValue(exit.durationLabel || trade?.durationLabel || trade?.duration_label, 'unknown');
+  const exitEngineVersion = explanationValue(exit.exitEngineVersion, 'unknown');
+  const entryQualityDecision = explanationValue(diagnosis.entryQualityGateDecision, 'pass');
 
   return (
     <div style={{
@@ -907,6 +949,12 @@ function ClosedTradeExplanationPanel({ explanation, trade, theme }) {
           </span>
           <span style={explanationBadgeStyle('info', false, theme)}>
             Exit type: {explanationValue(exit.exitType)}
+          </span>
+          <span style={explanationBadgeStyle(exitSource === 'exit_engine_v1' ? 'info' : 'neutral', false, theme)}>
+            Exit source: {exitSource}
+          </span>
+          <span style={explanationBadgeStyle('neutral', false, theme)}>
+            Profile: {exitProfile}
           </span>
           <span style={explanationBadgeStyle('neutral', false, theme)}>
             Safety: paper_only
@@ -930,6 +978,8 @@ function ClosedTradeExplanationPanel({ explanation, trade, theme }) {
             Gate stage: {explanationValue(entry.gateStage)}
             <br />
             Setup: {explanationValue(entry.setup)}
+            <br />
+            Entry quality: {entryQualityDecision}
           </div>
         </div>
 
@@ -939,9 +989,25 @@ function ClosedTradeExplanationPanel({ explanation, trade, theme }) {
           <div style={{ marginTop: 8, color: 'var(--text)', fontSize: 12, lineHeight: 1.5 }}>
             Reason: {explanationValue(exit.reason)}
             <br />
+            Reason code: {explanationValue(exit.exitReasonCode)}
+            <br />
             Exit type: {explanationValue(exit.exitType)}
             <br />
             Source: {explanationValue(exit.exitSource)}
+            <br />
+            Engine version: {exitEngineVersion}
+            <br />
+            Duration: {durationLabel}
+            <br />
+            Original stop/target: {explanationValue(exit.originalStopPct)} / {explanationValue(exit.originalTargetPct)}
+            <br />
+            Effective stop: {explanationValue(exit.effectiveStopPct)}
+            <br />
+            Trailing stop: {explanationValue(exit.trailingStopPct)}
+            <br />
+            Break-even aktiv: {String(exit.breakEvenActivated === true)}
+            <br />
+            Break-even threshold: {explanationValue(exit.breakEvenThresholdPct)}
           </div>
         </div>
 
@@ -970,6 +1036,12 @@ function ClosedTradeExplanationPanel({ explanation, trade, theme }) {
         <div style={{ border: '1px solid var(--border)', borderRadius: 14, padding: 12, background: 'var(--surface-2)' }}>
           <div style={{ color: 'var(--muted)', fontSize: 10, textTransform: 'uppercase', letterSpacing: '0.08em' }}>MAE</div>
           <div style={{ marginTop: 6, fontWeight: 900, color: 'var(--text)' }}>{maePct === '–' ? 'saknas i äldre loggning' : maePct}</div>
+        </div>
+        <div style={{ border: '1px solid var(--border)', borderRadius: 14, padding: 12, background: 'var(--surface-2)' }}>
+          <div style={{ color: 'var(--muted)', fontSize: 10, textTransform: 'uppercase', letterSpacing: '0.08em' }}>Entry quality notes</div>
+          <div style={{ marginTop: 6, fontWeight: 900, color: 'var(--text)', fontSize: 12, lineHeight: 1.5 }}>
+            {entry.wouldBlockLateEntry ? 'late entry · caution · 2m confirmation saknas' : entry.wouldRequire2mConfirmation ? '2m confirmation saknas' : 'ingen extra entry-blockering'}
+          </div>
         </div>
         <div style={{ border: '1px solid var(--border)', borderRadius: 14, padding: 12, background: 'var(--surface-2)' }}>
           <div style={{ color: 'var(--muted)', fontSize: 10, textTransform: 'uppercase', letterSpacing: '0.08em' }}>Learned</div>
@@ -1138,6 +1210,120 @@ function EntryQualityGatePanel({ gate, theme }) {
           ))}
         </div>
       ) : null}
+    </div>
+  );
+}
+
+function ExitProfileComparisonPanel({ comparison, theme }) {
+  if (!comparison) return null;
+  const baseline = comparison.baseline || {};
+  const profiles = Array.isArray(comparison.profiles) ? comparison.profiles : [];
+  const note = comparison.comparison_note || 'Read-only replay jämförelse.';
+
+  return (
+    <div style={sectionStyle()}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap', alignItems: 'flex-start', marginBottom: 12 }}>
+        <div>
+          <h2 style={{ margin: 0, fontSize: 22 }}>Exit profile comparison</h2>
+          <div style={{ ...mutedTextStyle(theme), marginTop: 4, fontSize: 13, lineHeight: 1.5 }}>{note}</div>
+        </div>
+        <span style={statusPillStyle('info', theme)}>{profiles.length} profiler</span>
+      </div>
+
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 10 }}>
+        <div style={{ border: '1px solid var(--border)', borderRadius: 12, padding: 14, background: 'var(--surface-2)' }}>
+          <div style={{ ...mutedTextStyle(theme), fontSize: 11, textTransform: 'uppercase', letterSpacing: '0.08em' }}>Trades</div>
+          <div style={{ marginTop: 6, fontSize: 20, fontWeight: 900, color: 'var(--text)' }}>{previewValue(baseline.trades, baseline.simulated_trades ?? 0)}</div>
+          <div style={{ marginTop: 4, ...mutedTextStyle(theme), fontSize: 12 }}>Baseline</div>
+        </div>
+        <div style={{ border: '1px solid var(--border)', borderRadius: 12, padding: 14, background: 'var(--surface-2)' }}>
+          <div style={{ ...mutedTextStyle(theme), fontSize: 11, textTransform: 'uppercase', letterSpacing: '0.08em' }}>Median duration</div>
+          <div style={{ marginTop: 6, fontSize: 20, fontWeight: 900, color: 'var(--text)' }}>{previewValue(baseline.median_duration_label, '–')}</div>
+          <div style={{ marginTop: 4, ...mutedTextStyle(theme), fontSize: 12 }}>Baseline</div>
+        </div>
+        <div style={{ border: '1px solid var(--border)', borderRadius: 12, padding: 14, background: 'var(--surface-2)' }}>
+          <div style={{ ...mutedTextStyle(theme), fontSize: 11, textTransform: 'uppercase', letterSpacing: '0.08em' }}>Winrate</div>
+          <div style={{ marginTop: 6, fontSize: 20, fontWeight: 900, color: 'var(--text)' }}>{previewValue(baseline.winrate)}%</div>
+          <div style={{ marginTop: 4, ...mutedTextStyle(theme), fontSize: 12 }}>Baseline</div>
+        </div>
+        <div style={{ border: '1px solid var(--border)', borderRadius: 12, padding: 14, background: 'var(--surface-2)' }}>
+          <div style={{ ...mutedTextStyle(theme), fontSize: 11, textTransform: 'uppercase', letterSpacing: '0.08em' }}>Median PnL</div>
+          <div style={{ marginTop: 6, fontSize: 20, fontWeight: 900, color: 'var(--text)' }}>{previewValue(baseline.median_pnl_pct)}%</div>
+          <div style={{ marginTop: 4, ...mutedTextStyle(theme), fontSize: 12 }}>Baseline</div>
+        </div>
+        <div style={{ border: '1px solid var(--border)', borderRadius: 12, padding: 14, background: 'var(--surface-2)' }}>
+          <div style={{ ...mutedTextStyle(theme), fontSize: 11, textTransform: 'uppercase', letterSpacing: '0.08em' }}>Avg PnL</div>
+          <div style={{ marginTop: 6, fontSize: 20, fontWeight: 900, color: 'var(--text)' }}>{previewValue(baseline.avg_pnl_pct)}%</div>
+          <div style={{ marginTop: 4, ...mutedTextStyle(theme), fontSize: 12 }}>Baseline</div>
+        </div>
+        <div style={{ border: '1px solid var(--border)', borderRadius: 12, padding: 14, background: 'var(--surface-2)' }}>
+          <div style={{ ...mutedTextStyle(theme), fontSize: 11, textTransform: 'uppercase', letterSpacing: '0.08em' }}>Max adverse</div>
+          <div style={{ marginTop: 6, fontSize: 20, fontWeight: 900, color: 'var(--text)' }}>{previewValue(baseline.max_adverse_excursion_pct)}%</div>
+          <div style={{ marginTop: 4, ...mutedTextStyle(theme), fontSize: 12 }}>Baseline</div>
+        </div>
+      </div>
+
+      <div style={{ marginTop: 12, padding: 12, borderRadius: 14, border: '1px solid var(--border)', background: 'var(--surface-2)', color: 'var(--text)', fontSize: 13, lineHeight: 1.55 }}>
+        Den här rapporten är bara replay/read-only. Baseline visas som utgångsläge och profilerna nedan jämförs mot den.
+      </div>
+
+      <div style={{ marginTop: 14, display: 'grid', gap: 10 }}>
+        {profiles.map((profile) => {
+          const better = profile.recommendation === 'Bättre än baseline';
+          const worse = profile.recommendation === 'Sämre än baseline';
+          const risky = profile.recommendation === 'Lovande men högre risk';
+          const tone = profile.degraded ? 'warning' : better ? 'success' : worse ? 'danger' : risky ? 'warning' : 'neutral';
+          const counts = [
+            `target ${previewValue(profile.target_hit_count, 0)}`,
+            `stop ${previewValue(profile.stop_hit_count, 0)}`,
+            `trailing ${previewValue(profile.trailing_stop_count, 0)}`,
+            `break-even ${previewValue(profile.break_even_count, 0)}`,
+            `momentum ${previewValue(profile.momentum_fade_count, 0)}`,
+            `timeout ${previewValue(profile.timeout_count, 0)}`,
+          ].join(' · ');
+          const statusText = profile.degraded ? `degraded${profile.degraded_reason ? `: ${profile.degraded_reason}` : ''}` : profile.data_status || 'ok';
+          const deltas = profile.delta_vs_baseline || {};
+          const formula = profile.volatility_formula || profile.stop_formula || profile.exit_formula || profile.description || '–';
+          return (
+            <div key={profile.id} style={{ border: '1px solid var(--border)', borderRadius: 14, padding: 14, background: 'var(--surface)' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap', alignItems: 'flex-start' }}>
+                <div>
+                  <div style={{ fontWeight: 900, color: 'var(--text)', fontSize: 15 }}>{profile.label}</div>
+                  <div style={{ marginTop: 4, color: 'var(--muted)', fontSize: 12, lineHeight: 1.5 }}>{profile.description}</div>
+                </div>
+                <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                  <span style={statusPillStyle(tone, theme)}>{profile.recommendation || '–'}</span>
+                  <span style={statusPillStyle('neutral', theme)}>{statusText}</span>
+                </div>
+              </div>
+
+              <div style={{ marginTop: 12, display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(170px, 1fr))', gap: 10 }}>
+                <MetricCard label="Trades" value={previewValue(profile.simulated_trades, 0)} tone="neutral" note={`Skippade: ${previewValue(profile.trades_skipped, 0)}`} />
+                <MetricCard label="Median duration" value={previewValue(profile.median_duration_label, '–')} tone="neutral" note={profile.degraded ? 'degraded' : null} />
+                <MetricCard label="Winrate" value={`${previewValue(profile.winrate, 2)}%`} tone="neutral" note={`Δ ${previewNumber(deltas.winrate, 2)} pp`} />
+                <MetricCard label="Median PnL" value={`${previewValue(profile.median_pnl_pct, 4)}%`} tone="neutral" note={`Δ ${previewNumber(deltas.median_pnl_pct, 4)}%`} />
+                <MetricCard label="Avg PnL" value={`${previewValue(profile.avg_pnl_pct, 4)}%`} tone="neutral" note={`Δ ${previewNumber(deltas.avg_pnl_pct, 4)}%`} />
+                <MetricCard label="Max adverse" value={`${previewValue(profile.max_adverse_excursion_pct, 4)}%`} tone="neutral" note={`Baseline ${previewValue(baseline.max_adverse_excursion_pct, 4)}%`} />
+              </div>
+
+              <div style={{ marginTop: 10, display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+                <span style={statusPillStyle('neutral', theme)}>target_hit {previewValue(profile.target_hit_count, 0)}</span>
+                <span style={statusPillStyle('neutral', theme)}>stop_hit {previewValue(profile.stop_hit_count, 0)}</span>
+                <span style={statusPillStyle('neutral', theme)}>trailing_stop {previewValue(profile.trailing_stop_count, 0)}</span>
+                <span style={statusPillStyle('neutral', theme)}>break_even {previewValue(profile.break_even_count, 0)}</span>
+                <span style={statusPillStyle('neutral', theme)}>momentum_fade {previewValue(profile.momentum_fade_count, 0)}</span>
+                <span style={statusPillStyle('neutral', theme)}>timeout {previewValue(profile.timeout_count, 0)}</span>
+              </div>
+
+              <div style={{ marginTop: 10, color: 'var(--text)', fontSize: 12, lineHeight: 1.6 }}>
+                {counts}
+                <br />
+                Formula: {formula}
+              </div>
+            </div>
+          );
+        })}
+      </div>
     </div>
   );
 }
@@ -2767,10 +2953,11 @@ export default function PaperTradingPage() {
     const list = [];
     if (runtimeState.error) list.push(`Paper runtime tillfälligt otillgängligt: ${runtimeState.error}`);
     if (explanationsState.error) list.push(`Trade explanations tillfälligt otillgängligt: ${explanationsState.error}`);
+    if (exitComparisonState.error) list.push(`Exit profile comparison tillfälligt otillgängligt: ${exitComparisonState.error}`);
     if (lossReviewState.error) list.push(`Loss review queue tillfälligt otillgängligt: ${lossReviewState.error}`);
     if (runtime?.status === 'degraded') list.push(`Degraded read-only data: ${(runtime.warnings || []).join(', ') || 'okänd källa'}`);
     return list;
-  }, [explanationsState.error, lossReviewState.error, runtimeState.error, runtime]);
+  }, [explanationsState.error, exitComparisonState.error, lossReviewState.error, runtimeState.error, runtime]);
 
   const openTrades = runtime?.openTrades || [];
   const closedTrades = runtime?.closedTrades || [];

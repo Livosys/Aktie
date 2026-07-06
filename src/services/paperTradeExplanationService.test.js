@@ -56,6 +56,18 @@ const trades = [
     exitReason: 'STOP_HIT',
     exitReasonCode: 'stop_hit',
     exitSource: 'exit_engine_v1',
+    exitProfile: 'paper_quality_v2',
+    exitEngineVersion: 'exit_engine_v1',
+    durationMs: 420000,
+    durationLabel: '7m',
+    originalStopPct: 0.25,
+    originalTargetPct: 0.4,
+    effectiveStopPct: 0.12,
+    trailingStopPct: 0.1,
+    breakEvenActivated: true,
+    breakEvenThresholdPct: 0.15,
+    entryQualityScore: 58,
+    entryQualityWarnings: ['late_entry', 'caution'],
     paperOnly: true,
     actions_allowed: false,
     can_place_orders: false,
@@ -163,8 +175,12 @@ assert.ok(aapl);
 assert.equal(aapl.tradeId, 'pt_1');
 assert.equal(aapl.entry.reason, 'Traden öppnades eftersom signalen passade testreglerna.');
 assert.equal(aapl.exit.exitType, 'stop_loss');
+assert.equal(aapl.exit.exitProfile, 'paper_quality_v2');
+assert.equal(aapl.exit.breakEvenActivated, true);
 assert.ok(aapl.entryQualityGate);
 assert.equal(aapl.entryQualityGate.checks.lateEntry.status, 'warn');
+assert.equal(aapl.entry.wouldBlockLateEntry, true);
+assert.equal(aapl.entry.entryQualityDecision, 'blocked_in_paper_quality_v2');
 assert.ok(Array.isArray(aapl.recommendations));
 assert.ok(aapl.recommendations.every((item) => item.safeActionOnly === true));
 assert.ok(aapl.tradeStats.mfePct > 0);
@@ -178,6 +194,7 @@ assert.equal(msft.entry.reason, 'Older log entry without tradeId.');
 assert.equal(msft.exit.exitType, 'take_profit');
 assert.equal(msft.diagnosis.tradeStats.mfePct, null);
 assert.ok(msft.entryQualityGate);
+assert.equal(msft.exit.exitSource, 'exit_engine_v1');
 assert.ok(Array.isArray(msft.missingFields));
 
 const tsla = list.items.find((item) => item.symbol === 'TSLA');

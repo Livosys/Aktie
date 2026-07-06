@@ -165,6 +165,21 @@ function normalizeTrade(row = {}) {
     openedAt,
     closedAt,
     source: text(row.source || row.mode || null),
+    durationMs: num(row.durationMs ?? row.duration_ms ?? null),
+    durationLabel: text(row.durationLabel || row.duration_label || null),
+    originalStopPct: num(row.originalStopPct ?? row.original_stop_pct ?? row.stopPct ?? row.stop_pct ?? null),
+    originalTargetPct: num(row.originalTargetPct ?? row.original_target_pct ?? row.targetPct ?? row.target_pct ?? null),
+    effectiveStopPct: num(row.effectiveStopPct ?? row.effective_stop_pct ?? row.exitEngineStopPct ?? row.exit_engine_stop_pct ?? null),
+    trailingStopPct: num(row.trailingStopPct ?? row.trailing_stop_pct ?? null),
+    breakEvenActivated: row.breakEvenActivated === true || row.break_even_activated === true || row.exitEngineDecision?.breakEvenActivated === true,
+    breakEvenThresholdPct: num(row.breakEvenThresholdPct ?? row.break_even_threshold_pct ?? row.exitEngineDecision?.breakEvenThresholdPct ?? null),
+    exitEngineVersion: text(row.exitEngineVersion || row.exit_engine_version || row.exitEngineDecision?.exitEngineVersion || null),
+    exitProfile: text(row.exitProfile || row.exit_profile || row.exitEngineDecision?.exitProfile || null),
+    highestPriceDuringTrade: num(row.highestPriceDuringTrade ?? row.highest_price_during_trade ?? null),
+    lowestPriceDuringTrade: num(row.lowestPriceDuringTrade ?? row.lowest_price_during_trade ?? null),
+    statusAtEntry: text(row.statusAtEntry || row.status_at_entry || null),
+    entryQualityScore: num(row.entryQualityScore ?? row.entry_quality_score ?? null),
+    entryQualityWarnings: Array.isArray(row.entryQualityWarnings) ? row.entryQualityWarnings : Array.isArray(row.entry_quality_warnings) ? row.entry_quality_warnings : [],
     tradeStats: {
       mfePct,
       maePct,
@@ -248,6 +263,8 @@ function explainEntry(trade, matchedEvents) {
     'unknown',
   );
   const setup = text(normalizeSetup(raw), 'unknown');
+  const wouldBlockLateEntry = String(status || '').toLowerCase() === 'caution' && String(setup || '').toUpperCase() === 'REGULAR_PULLBACK';
+  const wouldRequire2mConfirmation = wouldBlockLateEntry || /2m/.test(String(tradeEntryReason || reason || '').toLowerCase());
   const missing = [];
   if (!tradeEntryReason) missing.push('entryReason');
   if (!raw.entryReason && !raw.entryReasonSv) missing.push('entryReasonSv');
@@ -261,6 +278,13 @@ function explainEntry(trade, matchedEvents) {
     confidence,
     gateStage,
     setup,
+    wouldBlockLateEntry,
+    wouldRequire2mConfirmation,
+    entryQualityDecision: wouldBlockLateEntry
+      ? 'blocked_in_paper_quality_v2'
+      : wouldRequire2mConfirmation
+        ? 'requires_2m_confirmation'
+        : 'pass',
     signalStrength: confidence ?? num(raw.gateScore) ?? null,
     explanation: tradeEntryReason
       ? `Traden öppnades eftersom ${tradeEntryReason}`
@@ -281,6 +305,12 @@ function exitTypeFromTrade(trade, matchedEvents) {
   const exitReason = text(raw.exitReason || raw.exitReasonCode || raw.exitSource || null, '');
   const eventClosed = matchedEvents.find((event) => event.type === 'TRADE_CLOSED') || null;
   const reason = `${exitReason} ${eventClosed?.reason || eventClosed?.reasonSv || ''}`.toUpperCase();
+  const source = String(raw.exitSource || raw.exit_source || eventClosed?.exitSource || '').toLowerCase();
+  if (source.includes('legacy_hard_rule')) {
+    if (/TARGET|TAKE_PROFIT|TARGET_HIT/.test(reason)) return 'legacy_target_hit';
+    if (/STOP|STOP_HIT/.test(reason)) return 'legacy_stop_hit';
+    if (/TIMEOUT/.test(reason)) return 'legacy_timeout';
+  }
   if (/TIMEOUT/.test(reason)) return 'timeout';
   if (/TARGET|TAKE_PROFIT|TARGET_HIT/.test(reason)) return 'take_profit';
   if (/STOP|TRAILING_STOP|BREAK_EVEN|TIGHTENED_STOP|STOP_HIT/.test(reason)) return 'stop_loss';
@@ -294,12 +324,17 @@ function explainExit(trade, matchedEvents) {
   const raw = trade.raw || {};
   const eventClosed = matchedEvents.find((event) => event.type === 'TRADE_CLOSED') || null;
   const exitReason = text(raw.exitReason || raw.exitReasonCode || eventClosed?.reason || eventClosed?.reasonSv || null, null);
+  const exitReasonCode = text(raw.exitReasonCode || eventClosed?.exitReasonCode || null, 'unknown');
   const exitType = exitTypeFromTrade(trade, matchedEvents);
   const exitSource = text(raw.exitSource || eventClosed?.exitSource || null, 'unknown');
+  const exitProfile = text(raw.exitProfile || raw.exit_profile || null, 'unknown');
+  const exitEngineVersion = text(raw.exitEngineVersion || raw.exit_engine_version || null, 'unknown');
+  const durationLabel = text(raw.durationLabel || raw.duration_label || null, 'unknown');
   const missing = [];
   if (!raw.exitReason) missing.push('exitReason');
   if (!raw.exitReasonCode) missing.push('exitReasonCode');
   if (!raw.exitSource) missing.push('exitSource');
+  if (!raw.exitProfile) missing.push('exitProfile');
 
   let explanation = 'Exakt exitReason saknas i loggning.';
   if (exitReason) explanation = `Traden stängdes enligt ${exitReason}.`;
@@ -308,14 +343,32 @@ function explainExit(trade, matchedEvents) {
   else if (exitType === 'timeout') explanation = 'Traden stängdes när hålltiden gick ut.';
   else if (exitType === 'reversal') explanation = 'Traden stängdes när exitlogiken såg en reversering eller momentumförsvagning.';
 
+  if (raw.breakEvenActivated === true || raw.exitEngineDecision?.breakEvenActivated === true) {
+    explanation = 'Traden stängdes snabbt eftersom den adaptiva stoppen flyttades nära break-even.';
+  } else if (String(exitReason || '').toLowerCase().includes('momentum_fade')) {
+    explanation = 'Traden stängdes av momentum-fade innan target hann nås.';
+  }
+
   return {
     reason: exitReason || 'unknown',
+    exitReasonCode,
     exitType,
     explanation,
     exitSource,
+    exitProfile,
+    exitEngineVersion,
+    durationLabel,
+    originalStopPct: raw.originalStopPct ?? raw.stopPct ?? null,
+    originalTargetPct: raw.originalTargetPct ?? raw.targetPct ?? null,
+    effectiveStopPct: raw.effectiveStopPct ?? raw.exitEngineStopPct ?? null,
+    trailingStopPct: raw.trailingStopPct ?? null,
+    breakEvenActivated: raw.breakEvenActivated === true || raw.exitEngineDecision?.breakEvenActivated === true,
+    breakEvenThresholdPct: raw.breakEvenThresholdPct ?? raw.exitEngineDecision?.breakEvenThresholdPct ?? null,
+    highestPriceDuringTrade: raw.highestPriceDuringTrade ?? null,
+    lowestPriceDuringTrade: raw.lowestPriceDuringTrade ?? null,
     missingFields: missing,
     recommendedLogging: missing.length
-      ? ['exitReason', 'exitReasonCode', 'exitSource']
+      ? ['exitReason', 'exitReasonCode', 'exitSource', 'exitProfile']
       : [],
   };
 }
@@ -390,11 +443,17 @@ function buildDiagnosis(trade, entry, exit, nearbyEvents) {
     : hasExitEngine
       ? 'Exitengine användes och lämnar spår i loggen, men inte alla mellanliggande beslut är fullständigt beskrivna.'
       : 'Loggningen räcker för en grov analys, men mellanliggande prisväg saknas.';
+  const entryQualityGateDecision = entry.wouldBlockLateEntry
+    ? 'wouldBlockLateEntry'
+    : entry.wouldRequire2mConfirmation
+      ? 'wouldRequire2mConfirmation'
+      : 'pass';
   return {
     summary,
     whyWinOrLoss,
     lesson,
     possibleIssue,
+    entryQualityGateDecision,
     missingFields: Array.from(missing).sort(),
     tradeStats: {
       mfePct: stats.mfePct,

@@ -3,6 +3,24 @@
 const redisService = require('./redisService');
 
 const SOURCE = 'exit_engine_v1';
+const DEFAULT_EXIT_PROFILE = 'exit_engine_v1';
+const PAPER_QUALITY_V2_PROFILE = 'paper_quality_v2';
+
+const EXIT_PROFILE_OVERRIDES = Object.freeze({
+  [DEFAULT_EXIT_PROFILE]: {},
+  [PAPER_QUALITY_V2_PROFILE]: {
+    trailing_enabled: true,
+    trail_after_profit_pct: 0.10,
+    trailing_distance_pct: 0.10,
+    break_even_enabled: true,
+    break_even_after_profit_pct: 0.15,
+    near_target_enabled: true,
+    near_target_min_profit_pct: 0.15,
+    momentum_fade_enabled: true,
+    tighten_stop_enabled: true,
+    tighten_after_minutes: 8,
+  },
+});
 
 const KEYS = {
   config: 'exit:config',
@@ -122,6 +140,18 @@ function normalizeConfig(input = {}) {
   return next;
 }
 
+function normalizeExitProfile(value) {
+  return String(value || DEFAULT_EXIT_PROFILE).toLowerCase() === PAPER_QUALITY_V2_PROFILE
+    ? PAPER_QUALITY_V2_PROFILE
+    : DEFAULT_EXIT_PROFILE;
+}
+
+function applyExitProfileOverrides(exitConfig = {}, profile = DEFAULT_EXIT_PROFILE) {
+  const normalizedProfile = normalizeExitProfile(profile);
+  const overrides = EXIT_PROFILE_OVERRIDES[normalizedProfile] || {};
+  return normalizeConfig({ ...exitConfig, ...overrides });
+}
+
 async function getExitConfig() {
   const cached = await redisService.getJson(KEYS.config, null);
   if (cached && typeof cached === 'object') {
@@ -182,6 +212,10 @@ function getOpenedAt(openTrade = {}) {
   return openTrade.opened_at || openTrade.openedAt || openTrade.entryTime || openTrade.createdAt || null;
 }
 
+function getClosedAt(openTrade = {}, marketState = {}) {
+  return marketState.closed_at || marketState.closedAt || openTrade.closed_at || openTrade.closedAt || openTrade.exitTime || null;
+}
+
 function getTradeId(openTrade = {}) {
   return openTrade.id || openTrade.trade_id || openTrade.tradeId || null;
 }
@@ -229,6 +263,29 @@ function getAgeMinutes(openTrade = {}, marketState = {}) {
   const ts = new Date(openedAt).getTime();
   if (!Number.isFinite(ts)) return 0;
   return Math.max(0, (Date.now() - ts) / 60000);
+}
+
+function getDurationMs(openTrade = {}, marketState = {}) {
+  const openedAt = getOpenedAt(openTrade);
+  const closedAt = getClosedAt(openTrade, marketState);
+  const end = closedAt || marketState.timestamp || marketState.current_time || marketState.currentTime || null;
+  const a = openedAt ? new Date(openedAt).getTime() : NaN;
+  const b = end ? new Date(end).getTime() : NaN;
+  if (!Number.isFinite(a) || !Number.isFinite(b)) return null;
+  return Math.max(0, b - a);
+}
+
+function durationLabelFromMs(ms) {
+  const n = Number(ms);
+  if (!Number.isFinite(n)) return null;
+  const seconds = Math.max(0, Math.round(n / 1000));
+  if (seconds < 60) return `${seconds}s`;
+  const minutes = Math.floor(seconds / 60);
+  const rest = seconds % 60;
+  if (minutes < 60) return rest ? `${minutes}m ${rest}s` : `${minutes}m`;
+  const hours = Math.floor(minutes / 60);
+  const mins = minutes % 60;
+  return mins ? `${hours}h ${mins}m` : `${hours}h`;
 }
 
 function normalizeStrength(value, fallback = 'normal') {
@@ -307,9 +364,14 @@ function shouldExitOnMomentumFade(openTrade = {}, marketState = {}, exitConfig =
   const cfg = normalizeConfig(exitConfig);
   if (!cfg.enabled || !cfg.momentum_fade_enabled) return { ok: false };
   const pnl = getCurrentPnlPct(openTrade, marketState);
+  const ageMin = getAgeMinutes(openTrade, marketState);
+  const maxFav = Math.max(getMaxFavorablePct(openTrade, marketState), pnl);
   const momentum = normalizeStrength(marketState.momentum_strength, 'normal');
   const volume = normalizeStrength(marketState.volume_strength ?? openTrade.volumeState, 'normal');
-  if (momentum === 'fading' && pnl > 0 && volume !== 'strong') return { ok: true };
+  const profile = normalizeExitProfile(openTrade.exitProfile || marketState.exitProfile || cfg.exitProfile);
+  const minDuration = profile === PAPER_QUALITY_V2_PROFILE ? 4 : 0;
+  const minMfe = profile === PAPER_QUALITY_V2_PROFILE ? 0.08 : 0;
+  if (momentum === 'fading' && pnl > 0 && volume !== 'strong' && ageMin >= minDuration && maxFav >= minMfe) return { ok: true };
   return { ok: false };
 }
 
@@ -348,9 +410,16 @@ function isNearTimeout(openTrade = {}, marketState = {}, exitConfig = memoryConf
 
 function baseDecision(openTrade, marketState, exitConfig, patch = {}) {
   const cfg = normalizeConfig(exitConfig);
+  const profile = normalizeExitProfile(openTrade?.exitProfile || marketState?.exitProfile || cfg.exitProfile);
   const adaptiveTarget = calculateAdaptiveTarget(openTrade, marketState, cfg);
   const trailingStop = calculateTrailingStop(openTrade, marketState, cfg);
   const tightened = shouldTightenStop(openTrade, marketState, cfg);
+  const durationMs = getDurationMs(openTrade, marketState);
+  const entryQualityWarnings = Array.isArray(openTrade?.entryQualityWarnings)
+    ? openTrade.entryQualityWarnings
+    : Array.isArray(marketState?.entryQualityWarnings)
+      ? marketState.entryQualityWarnings
+      : [];
   return {
     ok: true,
     trade_id: getTradeId(openTrade),
@@ -365,9 +434,26 @@ function baseDecision(openTrade, marketState, exitConfig, patch = {}) {
     confidence: 50,
     warnings: [],
     source: SOURCE,
+    exitEngineVersion: SOURCE,
+    exitProfile: profile,
     replay_mode: openTrade?.replay_mode === true || marketState?.replay_mode === true,
     mode: openTrade?.replay_mode === true || marketState?.replay_mode === true ? 'replay' : 'paper',
     timestamp: nowIso(),
+    durationMs,
+    durationLabel: durationLabelFromMs(durationMs),
+    originalStopPct: getStopPct(openTrade),
+    originalTargetPct: getTargetPct(openTrade),
+    effectiveStopPct: tightened.new_stop_loss_pct ?? getStopPct(openTrade),
+    trailingStopPct: trailingStop,
+    breakEvenActivated: false,
+    breakEvenThresholdPct: cfg.break_even_after_profit_pct,
+    highestPriceDuringTrade: openTrade?.highestPriceDuringTrade ?? marketState?.highestPriceDuringTrade ?? null,
+    lowestPriceDuringTrade: openTrade?.lowestPriceDuringTrade ?? marketState?.lowestPriceDuringTrade ?? null,
+    mfePct: getMaxFavorablePct(openTrade, marketState),
+    maePct: getMaxAdversePct(openTrade, marketState),
+    statusAtEntry: openTrade?.statusAtEntry ?? marketState?.statusAtEntry ?? null,
+    entryQualityScore: openTrade?.entryQualityScore ?? marketState?.entryQualityScore ?? null,
+    entryQualityWarnings,
     ...patch,
   };
 }
@@ -417,7 +503,10 @@ async function updateStatus(patch = {}) {
 
 async function evaluateExit(openTrade = {}, marketState = {}, exitConfig = null) {
   const warnings = [];
-  const cfg = normalizeConfig(exitConfig || await getExitConfig());
+  const configured = exitConfig || await getExitConfig();
+  const profile = normalizeExitProfile(openTrade?.exitProfile || marketState?.exitProfile || configured?.exitProfile);
+  const cfg = applyExitProfileOverrides(configured, profile);
+  cfg.exitProfile = profile;
   let decision = baseDecision(openTrade || {}, marketState || {}, cfg);
 
   try {
@@ -542,6 +631,7 @@ async function evaluateExit(openTrade = {}, marketState = {}, exitConfig = null)
           exit_reason_code: 'break_even',
           new_stop_loss_pct: Math.max(be, tightened.new_stop_loss_pct || be),
           confidence: momentum === 'fading' ? 82 : 76,
+          breakEvenActivated: true,
         });
       } else if (!heldForTrailing && decision.exit_reason_code === 'hold' && tightened.ok) {
         decision = baseDecision(openTrade, marketState, cfg, {
@@ -550,6 +640,7 @@ async function evaluateExit(openTrade = {}, marketState = {}, exitConfig = null)
           exit_reason_code: be != null ? 'break_even' : 'hold',
           new_stop_loss_pct: tightened.new_stop_loss_pct,
           confidence: 70,
+          breakEvenActivated: be != null,
         });
       }
     }
@@ -564,6 +655,15 @@ async function evaluateExit(openTrade = {}, marketState = {}, exitConfig = null)
   }
 
   decision.warnings = Array.from(new Set([...(decision.warnings || []), ...warnings]));
+  decision.exitEngineVersion = SOURCE;
+  decision.exitProfile = profile;
+  decision.originalStopPct = decision.originalStopPct ?? getStopPct(openTrade);
+  decision.originalTargetPct = decision.originalTargetPct ?? getTargetPct(openTrade);
+  decision.effectiveStopPct = decision.effectiveStopPct ?? decision.new_stop_loss_pct ?? getStopPct(openTrade);
+  decision.trailingStopPct = decision.trailingStopPct ?? calculateTrailingStop(openTrade, marketState, cfg);
+  decision.breakEvenThresholdPct = decision.breakEvenThresholdPct ?? cfg.break_even_after_profit_pct;
+  decision.durationMs = decision.durationMs ?? getDurationMs(openTrade, marketState);
+  decision.durationLabel = decision.durationLabel ?? durationLabelFromMs(decision.durationMs);
   await persistEvaluation(decision);
   return decision;
 }
@@ -603,4 +703,8 @@ module.exports = {
   shouldTightenStop,
   getExitEngineStatus,
   updateExitConfig,
+  applyExitProfileOverrides,
+  normalizeExitProfile,
+  DEFAULT_EXIT_PROFILE,
+  PAPER_QUALITY_V2_PROFILE,
 };

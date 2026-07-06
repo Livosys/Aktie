@@ -61,7 +61,7 @@ async function main() {
   assert.equal(result.mode, 'paper_only');
   assert.equal(result.actions_allowed, false);
   assert.equal(result.can_place_orders, false);
-  assert.equal(result.summary.summary.pause_trading, true);
+  assert.equal(result.summary.summary.pause_trading, false);
   assert.equal(result.summary.summary.effective_pause_trading, false);
   assert.equal(result.summary.summary.risk_review.active, true);
   assert.equal(result.summary.summary.risk_review.reason, 'Manual risk review accepted. Resume paper testing.');

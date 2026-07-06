@@ -167,7 +167,30 @@ function main() {
   assert.equal(trade.originalGateScore, 69);
   assert.equal(trade.originalGateThreshold, 70);
   assert.equal(trade.paperOnly, true);
+  assert.equal(trade.exitProfile, 'exit_engine_v1');
   assert.deepEqual(trade.originalRiskEvaluation.block_reasons, ['consecutive_losses_limit']);
+
+  const hardTarget = agent._internal.checkHardExit({
+    entryPrice: 100,
+    targetPct: 0.4,
+    stopPct: 0.25,
+    maxHoldMinutes: 20,
+    entryTime: '2026-06-11T08:00:00.000Z',
+    direction: 'UP',
+  }, 100.5);
+  assert.equal(hardTarget.exitReasonCode, 'target_hit');
+  assert.equal(hardTarget.exitSource, 'legacy_hard_rule');
+
+  const hardStop = agent._internal.checkHardExit({
+    entryPrice: 100,
+    targetPct: 0.4,
+    stopPct: 0.25,
+    maxHoldMinutes: 20,
+    entryTime: '2026-06-11T08:00:00.000Z',
+    direction: 'UP',
+  }, 99.7);
+  assert.equal(hardStop.exitReasonCode, 'stop_hit');
+  assert.equal(hardStop.exitSource, 'legacy_hard_rule');
 
   console.log('# paperTradingAgent override tests passed.');
 }
