@@ -73,6 +73,7 @@ const MEMORY_EVENTS    = 100;
 const EVENT_DEDUPE_MS  = 60_000;
 const ALLOW_EMA_PAPER_TRADES = String(process.env.PAPER_ALLOW_EMA || 'false').toLowerCase() === 'true';
 const WEAK_VOLUME_STATES = new Set(['weak', 'low', 'very_low']);
+const LATE_REGULAR_PULLBACK_BLOCKED_REASON = 'Sen entry — kräver pullback eller ny 2m-bekräftelse';
 
 // ── Allowed signal families / subtypes ───────────────────────────────────────
 
@@ -266,6 +267,105 @@ function eventFromCandidate(type, c, reasonSv, decision = 'skipped') {
   };
 }
 
+function compactText(parts) {
+  return parts
+    .flatMap((part) => Array.isArray(part) ? part : [part])
+    .filter((part) => part != null && part !== '')
+    .map((part) => typeof part === 'string' ? part : JSON.stringify(part))
+    .join(' ');
+}
+
+function candidateEntryReasonText(c = {}) {
+  return compactText([
+    c.entryReasonSv,
+    c.entryReason,
+    c.decisionTextSv,
+    c.reasonSv,
+    c.reason,
+    c.primaryReason,
+    c.signalFamilyReasonSv,
+    c.simpleExplanationTextSv,
+    c.simpleExplanationSv,
+    c.extensionMeta?.reasonSv,
+    c.extensionMeta?.messageSv,
+    c.softBlockers,
+    c.blockers?.softBlockers,
+  ]);
+}
+
+function hasExplicitPositiveTwoMinuteConfirmation(c = {}) {
+  if (c.twoMinuteConfirmed === true) return true;
+  if (c.twoMinuteConfirmation === true) return true;
+  if (c.twoMinuteConfirmation?.confirmed === true) return true;
+  const status = String(c.twoMinuteConfirmation?.status || c.twoMinuteConfirmationStatus || '').toLowerCase();
+  return ['pass', 'confirmed', 'ok'].includes(status);
+}
+
+function hasExtendedMoveEvidence(c = {}) {
+  const extensionLevel = String(c.extensionLevel || c.extensionMeta?.level || '').toLowerCase();
+  if (extensionLevel && extensionLevel !== 'none') return true;
+  const text = candidateEntryReasonText(c).toLowerCase();
+  return /rörelsen har gått en bit|bevaka rekyl|ny 2m-bekräftelse|rörelsen kan redan vara sen|för långt gången|late entry|late move|extended move|already extended|utsträckt/.test(text);
+}
+
+function shouldBlockLateRegularPullbackEntry(c = {}) {
+  const strategyIds = [
+    c.canonical_strategy_id,
+    c.canonicalStrategyId,
+    c.strategyId,
+    c.strategy_id,
+    c.resolvedStrategyId,
+    c.sourceStrategyId,
+    c.setupId,
+  ].filter(Boolean).map((value) => String(value).toLowerCase());
+  const setupValues = [
+    c.setup,
+    c.setupType,
+    c.signalSubtype,
+    c.eventType,
+    c.signalFamily,
+  ].filter(Boolean).map((value) => String(value).toUpperCase());
+  const status = String(c.status || c.statusAtEntry || c.entryStatus || '').toLowerCase();
+
+  return strategyIds.includes('trend_continuation')
+    && setupValues.includes('REGULAR_PULLBACK')
+    && status === 'caution'
+    && hasExtendedMoveEvidence(c)
+    && !hasExplicitPositiveTwoMinuteConfirmation(c);
+}
+
+function buildLateRegularPullbackSkipEvent(candidate = {}, gateDecision = null) {
+  if (!shouldBlockLateRegularPullbackEntry(candidate)) return null;
+  const setup = candidate.setup || candidate.setupType || candidate.signalSubtype || candidate.eventType || null;
+  const statusAtEntry = candidate.statusAtEntry || candidate.status || candidate.entryStatus || null;
+  const originalEntryReason = candidateEntryReasonText(candidate) || null;
+  const effectiveGateDecision = gateDecision || candidate.gateDecision || null;
+  return {
+    ...eventFromCandidate('TRADE_SKIPPED', candidate, LATE_REGULAR_PULLBACK_BLOCKED_REASON, 'skipped'),
+    blockedReason: LATE_REGULAR_PULLBACK_BLOCKED_REASON,
+    setup,
+    setupType: setup,
+    statusAtEntry,
+    entryReasonSv: originalEntryReason,
+    originalEntryReason,
+    gateDecision: effectiveGateDecision,
+    gateScore: effectiveGateDecision?.gateScore ?? null,
+    gateThreshold: effectiveGateDecision?.threshold ?? null,
+    gateMode: effectiveGateDecision?.mode || null,
+    nearMissLearning: effectiveGateDecision?.nearMissLearning === true || candidate.nearMissLearning === true,
+    marketGateNearMissOverride: effectiveGateDecision?.marketGateNearMissOverride === true || candidate.marketGateNearMissOverride === true,
+    originalGateScore: effectiveGateDecision?.originalGateScore ?? candidate.originalGateScore ?? null,
+    originalGateThreshold: effectiveGateDecision?.originalGateThreshold ?? candidate.originalGateThreshold ?? null,
+    originalGateBlockedReason: effectiveGateDecision?.originalGateBlockedReason ?? candidate.originalGateBlockedReason ?? null,
+    paperOnly: true,
+    mode: 'paper_only',
+    actions_allowed: false,
+    can_place_orders: false,
+    live_trading_enabled: false,
+    broker_enabled: false,
+  };
+}
+
 function tradingLogDecisionForEvent(type, decision) {
   const upper = String(type || '').toUpperCase();
   if (upper === 'TRADE_OPENED') return 'paper_opened';
@@ -355,6 +455,27 @@ function shouldRecordEvent(event) {
 function appendEvent(input) {
   ensureDir();
   const meta = strategyMetadataOf(input);
+  const lateRegularPullbackMeta = input.blockedReason === LATE_REGULAR_PULLBACK_BLOCKED_REASON
+    ? {
+        setup: input.setup || input.setupType || input.signalSubtype || null,
+        setupType: input.setupType || input.setup || input.signalSubtype || null,
+        statusAtEntry: input.statusAtEntry || input.status || null,
+        entryReasonSv: input.entryReasonSv || input.originalEntryReason || input.decisionTextSv || input.entryReason || null,
+        originalEntryReason: input.originalEntryReason || input.entryReasonSv || input.decisionTextSv || input.entryReason || null,
+        gateDecision: safeEventValue(input.gateDecision || null),
+        nearMissLearning: input.nearMissLearning === true,
+        marketGateNearMissOverride: input.marketGateNearMissOverride === true,
+        originalGateScore: input.originalGateScore ?? null,
+        originalGateThreshold: input.originalGateThreshold ?? null,
+        originalGateBlockedReason: input.originalGateBlockedReason ?? null,
+        paperOnly: input.paperOnly === true,
+        mode: input.mode === 'paper_only' ? 'paper_only' : 'paper',
+        actions_allowed: input.actions_allowed === true,
+        can_place_orders: input.can_place_orders === true,
+        live_trading_enabled: input.live_trading_enabled === true,
+        broker_enabled: input.broker_enabled === true,
+      }
+    : {};
   const event = {
     eventId:         input.eventId   || makeEventId(),
     timestamp:       input.timestamp || new Date().toISOString(),
@@ -394,13 +515,14 @@ function appendEvent(input) {
     safetyBlockReasons: input.executionSafety?.paper_block_reasons || input.executionSafety?.block_reasons || input.safetyBlockReasons || [],
     safetyWarnings: input.executionSafety?.warnings || input.safetyWarnings || [],
     blockedReason:  input.blockedReason   || null,
+    ...lateRegularPullbackMeta,
     exitReasonCode: input.exitReasonCode || null,
     exitSource: input.exitSource || null,
     exitEngineDecision: safeEventValue(input.exitEngineDecision || null),
     hardBlockers:      input.hardBlockers      || [],
     extensionLevel:    input.extensionLevel    || null,
     twoMinuteConflict: input.twoMinuteConflict === true,
-    mode: 'paper',
+    mode: lateRegularPullbackMeta.mode || 'paper',
   };
 
   if (!event.type || !shouldRecordEvent(event)) return null;
@@ -2228,6 +2350,28 @@ async function runTick() {
           ruleVersion: persistedGateDecision.ruleVersion,
         });
 
+        const lateRegularPullbackCandidate = {
+          ...c,
+          strategyId: c.strategyId || c.strategy_id || resolvedStrategyId || runtimeStrategyForGate.strategy_id || null,
+          strategyName: c.strategyName || c.strategy_name || runtimeStrategyForGate.strategy_name || null,
+          runtimeStatus: c.runtimeStatus || runtimeStrategyForGate.runtime_status || null,
+        };
+        const lateRegularPullbackSkip = buildLateRegularPullbackSkipEvent(lateRegularPullbackCandidate, effectiveGateDecision);
+        if (lateRegularPullbackSkip) {
+          _bump('qualifiesRejected', null);
+          _recentRejections = [{
+            type:          'TRADE_SKIPPED',
+            symbol:        lateRegularPullbackCandidate.symbol,
+            marketGroup:   getMarketGroup(lateRegularPullbackCandidate.symbol) || lateRegularPullbackCandidate.marketGroup || 'UNKNOWN',
+            signalSubtype: lateRegularPullbackCandidate.signalSubtype || lateRegularPullbackCandidate.setup || null,
+            strategyId:    lateRegularPullbackCandidate.strategyId || null,
+            reason:        LATE_REGULAR_PULLBACK_BLOCKED_REASON,
+            timestamp:     new Date().toISOString(),
+          }, ..._recentRejections].slice(0, 100);
+          appendEvent(lateRegularPullbackSkip);
+          continue;
+        }
+
         let agentAnalysis = null;
         let aiAdjustment = 0;
         try {
@@ -3141,6 +3285,8 @@ module.exports = {
     applyManualRiskReviewOverride,
     buildEffectiveRiskReviewState,
     buildNearMissLearningGateDecision,
+    buildLateRegularPullbackSkipEvent,
+    shouldBlockLateRegularPullbackEntry,
     buildOpenTrade,
   },
 };

@@ -80,6 +80,63 @@ function main() {
   assert.equal(nearMiss.eligible, true);
   assert.equal(nearMiss.reasonCode, 'near_miss_learning_entry');
 
+  const latePullbackCandidate = {
+    symbol: 'ETHUSDT',
+    marketType: 'crypto',
+    status: 'caution',
+    nextMoveBias: 'UP',
+    signalFamily: 'REGULAR_PULLBACK',
+    signalSubtype: 'REGULAR_PULLBACK',
+    strategyId: 'trend_continuation',
+    confidenceScore: 68,
+    dataFreshness: 'LIVE',
+    decisionTextSv: 'Rörelsen har gått en bit. Bevaka rekyl eller ny 2m-bekräftelse.',
+  };
+  assert.equal(agent._internal.shouldBlockLateRegularPullbackEntry(latePullbackCandidate), true);
+  const latePullbackSkip = agent._internal.buildLateRegularPullbackSkipEvent(latePullbackCandidate, {
+    allowed: true,
+    mode: 'allow',
+    gateScore: 68,
+    threshold: 70,
+    nearMissLearning: true,
+  });
+  assert.equal(latePullbackSkip.type, 'TRADE_SKIPPED');
+  assert.equal(latePullbackSkip.blockedReason, 'Sen entry — kräver pullback eller ny 2m-bekräftelse');
+  assert.equal(latePullbackSkip.reasonSv, 'Sen entry — kräver pullback eller ny 2m-bekräftelse');
+  assert.equal(latePullbackSkip.strategyId, 'trend_continuation');
+  assert.equal(latePullbackSkip.symbol, 'ETHUSDT');
+  assert.equal(latePullbackSkip.setup, 'REGULAR_PULLBACK');
+  assert.equal(latePullbackSkip.statusAtEntry, 'caution');
+  assert.equal(latePullbackSkip.nearMissLearning, true);
+  assert.equal(latePullbackSkip.paperOnly, true);
+  assert.equal(latePullbackSkip.actions_allowed, false);
+  assert.equal(latePullbackSkip.can_place_orders, false);
+  assert.equal(latePullbackSkip.live_trading_enabled, false);
+  assert.equal(latePullbackSkip.broker_enabled, false);
+
+  assert.equal(agent._internal.shouldBlockLateRegularPullbackEntry({
+    ...latePullbackCandidate,
+    status: 'watch',
+  }), false);
+  assert.equal(agent._internal.buildLateRegularPullbackSkipEvent({
+    ...latePullbackCandidate,
+    status: 'watch',
+  }), null);
+
+  assert.equal(agent._internal.shouldBlockLateRegularPullbackEntry({
+    ...latePullbackCandidate,
+    strategyId: 'narrow_breakout',
+  }), false);
+  assert.equal(agent._internal.buildLateRegularPullbackSkipEvent({
+    ...latePullbackCandidate,
+    strategyId: 'narrow_breakout',
+  }), null);
+
+  assert.equal(agent._internal.shouldBlockLateRegularPullbackEntry({
+    ...latePullbackCandidate,
+    twoMinuteConfirmed: true,
+  }), false);
+
   const trade = agent._internal.buildOpenTrade({
     symbol: 'TSLA',
     marketType: 'stocks',
