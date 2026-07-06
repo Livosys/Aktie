@@ -865,6 +865,7 @@ const PARTIAL_RUNTIME_STRATEGY_IDS = new Set([
   'narrow_breakout',
   'narrow_state_expansion_long',
   'narrow_state_fakeout_reversal',
+  'narrow_fakeout_reversal_v1',
   'news_volatility_watch',
 ]);
 
@@ -897,6 +898,7 @@ function runtimeRawSignalsForStrategy(strategyId) {
     case 'narrow_state_expansion_long':
       return ['NARROW_BULL_ENTRY'];
     case 'narrow_state_fakeout_reversal':
+    case 'narrow_fakeout_reversal_v1':
       return ['NARROW_FAKEOUT'];
     case 'volume_spike_momentum':
       return ['VOLUME_SPIKE_MOMENTUM'];
@@ -998,6 +1000,7 @@ function missingDataForStrategy(strategy = {}) {
     case 'narrow_breakout':
     case 'narrow_state_expansion_long':
     case 'narrow_state_fakeout_reversal':
+    case 'narrow_fakeout_reversal_v1':
       return ['narrow_state_data'];
     case 'news_volatility_watch':
       return ['news_feed'];

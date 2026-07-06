@@ -256,6 +256,62 @@ function calcBreakoutOccurred(metrics, price, longTrigger, shortTrigger, atr14) 
   return false;
 }
 
+// ── Narrow Fakeout Reversal (paper/replay research) ──────────────────────────
+
+// fakeout = en candle i de senaste FAKEOUT_LOOKBACK färdiga candlarna bröt
+// utanför zonen som den såg ut FÖRE lookback-fönstret (zonen måste frysas där —
+// annars ingår utbrottscandlen i sin egen zon och ett brott kan aldrig mätas),
+// utbrottsvolymen bekräftade aldrig rörelsen, och nuvarande candle har stängt
+// tillbaka inne i zonen. Reversal-riktningen pekar mot zonens mitt/VWAP:
+// bearish efter misslyckat upp-brott, bullish efter misslyckat ned-brott.
+// Ren signal-/research-logik — skapar aldrig order.
+const FAKEOUT_LOOKBACK = 6;
+const FAKEOUT_MIN_NARROW_SCORE = 60;      // katalogregel: narrow_score_gte_60
+const FAKEOUT_VOLUME_CONFIRM_RATIO = 1.5; // >= 1.5x snittvolym = utbrottet bekräftades
+
+function calcFakeoutReversal({ candles2m, atr14, narrowScore }) {
+  const inactive = { active: false, direction: 'none', brokenSide: 'none', barsSinceBreak: null };
+  if (!Number.isFinite(atr14) || atr14 <= 0) return inactive;
+  if (!Array.isArray(candles2m) || candles2m.length < 8 + FAKEOUT_LOOKBACK + 1) return inactive;
+  if (!Number.isFinite(narrowScore) || narrowScore < FAKEOUT_MIN_NARROW_SCORE) return inactive;
+
+  const priorZone = recentRange(candles2m.slice(0, candles2m.length - FAKEOUT_LOOKBACK), 8);
+  if (!priorZone) return inactive;
+  const buffer = Math.max(0.05 * atr14, 0.02);
+  const breakHighLevel = priorZone.high + buffer;
+  const breakLowLevel = priorZone.low - buffer;
+
+  const lastClose = Number(candles2m[candles2m.length - 1]?.c);
+  if (!Number.isFinite(lastClose)) return inactive;
+  // fast_reentry_into_range: nuvarande candle har stängt inne i zonen igen
+  if (lastClose > priorZone.high || lastClose < priorZone.low) return inactive;
+
+  const volumes = candles2m.slice(-20)
+    .map((candle) => Number(candle?.v))
+    .filter((v) => Number.isFinite(v) && v > 0);
+  const avgVol = volumes.length ? volumes.reduce((sum, v) => sum + v, 0) / volumes.length : null;
+
+  // Senaste brott-candlen i lookback-fönstret (exkl. nuvarande candle) avgör.
+  for (let back = 2; back <= FAKEOUT_LOOKBACK + 1; back += 1) {
+    const bar = candles2m[candles2m.length - back];
+    if (!bar) break;
+    const high = Number(bar.h);
+    const low = Number(bar.l);
+    const brokeHigh = Number.isFinite(high) && high > breakHighLevel;
+    const brokeLow = Number.isFinite(low) && low < breakLowLevel;
+    if (!brokeHigh && !brokeLow) continue;
+    const vol = Number(bar.v);
+    // volume_not_confirming_breakout: kräver volymdata; ett utbrott med
+    // bekräftande volym är ett riktigt utbrott, inte ett fakeout.
+    if (avgVol === null || !Number.isFinite(vol)) return inactive;
+    if (vol >= avgVol * FAKEOUT_VOLUME_CONFIRM_RATIO) return inactive;
+    return brokeHigh
+      ? { active: true, direction: 'bearish', brokenSide: 'high', barsSinceBreak: back - 1 }
+      : { active: true, direction: 'bullish', brokenSide: 'low', barsSinceBreak: back - 1 };
+  }
+  return inactive;
+}
+
 // ── Trade Score ───────────────────────────────────────────────────────────────
 
 function calcTradeScore({ narrowScore, metrics, state, rsi14, position, elephantBar, threeFingerSpread, breakoutAlreadyOccurred, price, longTrigger, shortTrigger }) {
@@ -289,7 +345,7 @@ function scoreLabel(score) {
 
 // ── Event Type ────────────────────────────────────────────────────────────────
 
-function deriveEventType({ state, signal, position, threeFingerSpread, elephantBar, colorChange, breakoutAlreadyOccurred }) {
+function deriveEventType({ state, signal, position, threeFingerSpread, elephantBar, colorChange, breakoutAlreadyOccurred, fakeoutReversal }) {
   if (breakoutAlreadyOccurred) return 'BREAKOUT_ALREADY_OCCURRED';
 
   if (threeFingerSpread.active) {
@@ -299,6 +355,7 @@ function deriveEventType({ state, signal, position, threeFingerSpread, elephantB
   }
 
   if (state === 'HIGH_QUALITY_NARROW' || state === 'MEDIUM_NARROW') {
+    if (fakeoutReversal && fakeoutReversal.active) return 'NARROW_FAKEOUT';
     if (elephantBar.active && elephantBar.direction === 'bullish' && position >= 0) return 'BULLISH_ELEPHANT_BREAKOUT';
     if (elephantBar.active && elephantBar.direction === 'bearish' && position <= 0) return 'BEARISH_ELEPHANT_BREAKDOWN';
     if (colorChange.active && colorChange.direction === 'bullish') return 'BULLISH_COLOR_CHANGE';
@@ -322,9 +379,14 @@ function deriveEventType({ state, signal, position, threeFingerSpread, elephantB
 
 // ── Action & Reason (svenska) ─────────────────────────────────────────────────
 
-function deriveActionSv(state, eventType, breakoutAlreadyOccurred, threeFingerSpread) {
+function deriveActionSv(state, eventType, breakoutAlreadyOccurred, threeFingerSpread, fakeoutReversal) {
   if (threeFingerSpread.active) return 'Priset är för långt ifrån. Jaga inte.';
   if (breakoutAlreadyOccurred) return 'Utbrottet har redan hänt. Vänta på ny setup.';
+  if (eventType === 'NARROW_FAKEOUT') {
+    return fakeoutReversal && fakeoutReversal.direction === 'bearish'
+      ? 'Falskt utbrott uppåt — bevaka short tillbaka mot zonens mitt.'
+      : 'Falskt utbrott nedåt — bevaka long tillbaka mot zonens mitt.';
+  }
   if (state === 'HIGH_QUALITY_NARROW') {
     if (eventType === 'BULLISH_ELEPHANT_BREAKOUT') return 'Bevaka long över trigger';
     if (eventType === 'BEARISH_ELEPHANT_BREAKDOWN') return 'Bevaka short under trigger';
@@ -453,6 +515,7 @@ function classifyNarrowState({ symbol, price, candles2m, indicators, lastUpdate 
   const colorChange          = calcColorChange(candles2m, metrics, narrowType);
   const pullback             = calcPullback(metrics, rsi14);
   const breakoutAlreadyOccurred = calcBreakoutOccurred(metrics, price, longTrigger, shortTrigger, atr14);
+  const fakeoutReversal      = calcFakeoutReversal({ candles2m, atr14, narrowScore });
 
   // ── State assignment ──────────────────────────────────────────────────────
   let state;
@@ -524,11 +587,14 @@ function classifyNarrowState({ symbol, price, candles2m, indicators, lastUpdate 
   if (threeFingerSpread.active && signal !== 'NO_TRADE') signal = 'WAIT';
 
   // ── Event type ────────────────────────────────────────────────────────────
-  const eventType = deriveEventType({ state, signal, position, threeFingerSpread, elephantBar, colorChange, breakoutAlreadyOccurred });
+  const eventType = deriveEventType({ state, signal, position, threeFingerSpread, elephantBar, colorChange, breakoutAlreadyOccurred, fakeoutReversal });
 
   if (eventType === 'BULLISH_ELEPHANT_BREAKOUT' && !threeFingerSpread.active) signal = 'LONG_TRIGGERED';
   if (eventType === 'BEARISH_ELEPHANT_BREAKDOWN' && !threeFingerSpread.active) signal = 'SHORT_TRIGGERED';
   if (eventType === 'WIDE_REVERSAL_WATCH') signal = 'WIDE_REVERSAL_WATCH';
+  // Fakeout-reversal: WATCH-signal i reversal-riktningen (SHORT efter
+  // misslyckat upp-brott, LONG efter misslyckat ned-brott) — paper/replay-only.
+  if (eventType === 'NARROW_FAKEOUT') signal = fakeoutReversal.direction === 'bearish' ? 'SHORT_WATCH' : 'LONG_WATCH';
 
   // ── Scores ────────────────────────────────────────────────────────────────
   const tradeScore = calcTradeScore({ narrowScore, metrics, state, rsi14, position, elephantBar, threeFingerSpread, breakoutAlreadyOccurred, price, longTrigger, shortTrigger });
@@ -536,7 +602,7 @@ function classifyNarrowState({ symbol, price, candles2m, indicators, lastUpdate 
   const slabel = scoreLabel(tradeScore);
 
   // ── Swedish text ──────────────────────────────────────────────────────────
-  const actionSv = deriveActionSv(state, eventType, breakoutAlreadyOccurred, threeFingerSpread);
+  const actionSv = deriveActionSv(state, eventType, breakoutAlreadyOccurred, threeFingerSpread, fakeoutReversal);
   const reasonSv = deriveReasonSv(state, narrowType, metrics, rsi14, breakoutAlreadyOccurred, threeFingerSpread, colorChange);
 
   return {
@@ -601,6 +667,7 @@ function classifyNarrowState({ symbol, price, candles2m, indicators, lastUpdate 
     elephantBar,
     colorChange,
     pullback,
+    fakeoutReversal,
     eventType,
   };
 }
@@ -664,8 +731,9 @@ function makeResult(symbol, price, state, confidence, longTrigger, shortTrigger,
     elephantBar: eb,
     colorChange: cc,
     pullback: pb,
+    fakeoutReversal: { active: false, direction: 'none', brokenSide: 'none', barsSinceBreak: null },
     eventType: 'NO_TRADE',
   };
 }
 
-module.exports = { classifyNarrowState };
+module.exports = { classifyNarrowState, calcFakeoutReversal };

@@ -334,6 +334,7 @@ function classifySignalFamily(sig = {}) {
     narrowType === 'coil_flat' ||
     narrowType === 'attack_200' ||
     eventType === 'NARROW_WAIT' ||
+    eventType === 'NARROW_FAKEOUT' ||
     eventType === 'BULLISH_COLOR_CHANGE' ||
     eventType === 'BEARISH_COLOR_CHANGE' ||
     eventType === 'BULLISH_ELEPHANT_BREAKOUT' ||
@@ -341,13 +342,15 @@ function classifySignalFamily(sig = {}) {
 
   if (isNarrowContext) {
     const subtype =
-      eventType === 'NARROW_WAIT'
-        ? 'NARROW_WAIT'
-        : direction === 'UP'
-          ? 'NARROW_BULL_ENTRY'
-          : direction === 'DOWN'
-            ? 'NARROW_BEAR_ENTRY'
-            : 'NARROW_WAIT';
+      eventType === 'NARROW_FAKEOUT'
+        ? 'NARROW_FAKEOUT'
+        : eventType === 'NARROW_WAIT'
+          ? 'NARROW_WAIT'
+          : direction === 'UP'
+            ? 'NARROW_BULL_ENTRY'
+            : direction === 'DOWN'
+              ? 'NARROW_BEAR_ENTRY'
+              : 'NARROW_WAIT';
 
     const inferred = resolveStrategyMetadata(
       {
