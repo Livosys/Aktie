@@ -1,0 +1,594 @@
+'use strict';
+
+const storageService = require('./futuresPaperStorageService');
+const futuresPaperAccountService = require('./futuresPaperAccountService');
+
+const SAFETY = Object.freeze({
+  mode: 'paper_only',
+  actions_allowed: false,
+  can_place_orders: false,
+  live_trading_enabled: false,
+  broker_enabled: false,
+  paper_only: true,
+  live_enabled: false,
+  source: 'futures_paper_ledger',
+});
+
+const DEFAULT_POSITIONS = Object.freeze({
+  open: [],
+  closed: [],
+  updatedAt: null,
+});
+
+const FUTURES_META = Object.freeze({
+  MNQ: { pointValueUsd: 2, label: 'Nasdaq 100 Micro E-mini', exchange: 'CME', root: 'MNQ' },
+  MES: { pointValueUsd: 5, label: 'S&P 500 Micro E-mini', exchange: 'CME', root: 'MES' },
+});
+
+const MARGIN_RATE = 0.10;
+
+function nowIso(now = new Date()) {
+  return new Date(now).toISOString();
+}
+
+function round(value, decimals = 2) {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return 0;
+  const factor = 10 ** decimals;
+  return Math.round(n * factor) / factor;
+}
+
+function safeArray(value) {
+  return Array.isArray(value) ? value.filter(Boolean) : [];
+}
+
+function ensureFiniteNumber(value) {
+  const n = Number(value);
+  return Number.isFinite(n) ? n : null;
+}
+
+function createTradeId(now = new Date()) {
+  return `futures_trade_${now.getTime()}_${Math.random().toString(16).slice(2, 8)}`;
+}
+
+function normalizeRoot(root, symbol = '') {
+  const explicit = String(root || '').trim().toUpperCase();
+  if (FUTURES_META[explicit]) return explicit;
+  const symbolValue = String(symbol || '').trim().toUpperCase();
+  if (symbolValue.startsWith('MNQ')) return 'MNQ';
+  if (symbolValue.startsWith('MES')) return 'MES';
+  return null;
+}
+
+function normalizeSide(side) {
+  const value = String(side || '').trim().toLowerCase();
+  if (value === 'long' || value === 'short') return value;
+  return null;
+}
+
+function getPointValueUsd(root) {
+  const meta = FUTURES_META[root];
+  return meta ? meta.pointValueUsd : null;
+}
+
+function getMarketHoursState(now = new Date()) {
+  const current = new Date(now);
+  const day = current.getUTCDay();
+  const minutes = current.getUTCHours() * 60 + current.getUTCMinutes();
+  const maintenanceStart = 22 * 60;
+  const maintenanceEnd = 23 * 60;
+
+  let isOpen = false;
+  if (day >= 1 && day <= 4) isOpen = !(minutes >= maintenanceStart && minutes < maintenanceEnd);
+  else if (day === 5) isOpen = minutes < maintenanceStart;
+  else if (day === 0) isOpen = minutes >= maintenanceEnd;
+
+  return {
+    isOpen,
+    session: 'Globex',
+    timezone: 'UTC',
+    maintenanceWindow: '22:00-23:00 UTC',
+    warning: isOpen ? null : 'Globex-sessionen är stängd eller i underhållsfönster. Positionen hanteras ändå som intern simulation.',
+  };
+}
+
+function calculatePnlUsd({ root, entryPrice, exitPrice, side, contracts }) {
+  const pointValueUsd = getPointValueUsd(root);
+  const entry = ensureFiniteNumber(entryPrice);
+  const exit = ensureFiniteNumber(exitPrice);
+  const size = Number(contracts);
+  if (!pointValueUsd || !entry || !exit || !Number.isFinite(size) || size <= 0) {
+    return null;
+  }
+  const raw = side === 'short'
+    ? (entry - exit) * pointValueUsd * size
+    : (exit - entry) * pointValueUsd * size;
+  return round(raw, 2);
+}
+
+function toPositionView(position, fxUsdSek = 0) {
+  const root = normalizeRoot(position.root, position.symbol);
+  const pointValueUsd = getPointValueUsd(root) || 0;
+  const currentPrice = ensureFiniteNumber(position.currentPrice ?? position.entryPrice) ?? 0;
+  const entryPrice = ensureFiniteNumber(position.entryPrice) ?? 0;
+  const contracts = Number(position.contracts) || 0;
+  const unrealizedPnlUsd = position.status === 'open'
+    ? calculatePnlUsd({ root, entryPrice, exitPrice: currentPrice, side: position.side, contracts }) || 0
+    : ensureFiniteNumber(position.unrealizedPnlUsd) ?? 0;
+  const realizedPnlUsd = position.status === 'closed'
+    ? ensureFiniteNumber(position.realizedPnlUsd) ?? 0
+    : 0;
+  const unrealizedPnlSek = ensureFiniteNumber(position.unrealizedPnlSek);
+  const realizedPnlSek = position.status === 'closed'
+    ? (ensureFiniteNumber(position.realizedPnlSek) ?? round(realizedPnlUsd * fxUsdSek, 2))
+    : 0;
+
+  return {
+    tradeId: position.tradeId,
+    root,
+    symbol: position.symbol || root,
+    side: position.side,
+    contracts,
+    entryPrice,
+    currentPrice,
+    exitPrice: ensureFiniteNumber(position.exitPrice),
+    stopLoss: ensureFiniteNumber(position.stopLoss),
+    takeProfit: ensureFiniteNumber(position.takeProfit),
+    openedAt: position.openedAt || null,
+    closedAt: position.closedAt || null,
+    status: position.status || 'open',
+    strategyId: position.strategyId || null,
+    strategyName: position.strategyName || null,
+    entryReason: position.entryReason || null,
+    exitReason: position.exitReason || null,
+    unrealizedPnlUsd,
+    unrealizedPnlSek: position.status === 'open'
+      ? (unrealizedPnlSek ?? round(unrealizedPnlUsd * fxUsdSek, 2))
+      : 0,
+    realizedPnlUsd,
+    realizedPnlSek,
+  };
+}
+
+function createDefaultPositionsState(now = new Date()) {
+  return {
+    open: [],
+    closed: [],
+    updatedAt: nowIso(now),
+  };
+}
+
+function sum(values) {
+  return values.reduce((acc, value) => acc + (Number(value) || 0), 0);
+}
+
+function buildAccountState({ config, positionsState, now = new Date() }) {
+  const accountSeed = futuresPaperAccountService.createDefaultState(config || futuresPaperAccountService.DEFAULT_CONFIG, now);
+  const fxUsdSek = Number(config?.fxUsdSek ?? accountSeed.fxUsdSek ?? futuresPaperAccountService.DEFAULT_CONFIG.fxUsdSek) || futuresPaperAccountService.DEFAULT_CONFIG.fxUsdSek;
+  const openPositions = safeArray(positionsState?.open).map((position) => toPositionView(position, fxUsdSek));
+  const closedPositions = safeArray(positionsState?.closed).map((position) => toPositionView(position, fxUsdSek));
+  const startingBalanceSek = Number(config?.startingBalanceSek ?? accountSeed.startingBalanceSek ?? futuresPaperAccountService.DEFAULT_CONFIG.startingBalanceSek) || futuresPaperAccountService.DEFAULT_CONFIG.startingBalanceSek;
+  const realizedPnlSek = round(sum(closedPositions.map((position) => position.realizedPnlSek)), 2);
+  const unrealizedPnlSek = round(sum(openPositions.map((position) => position.unrealizedPnlSek)), 2);
+  const cashSek = round(startingBalanceSek + realizedPnlSek, 2);
+  const equitySek = round(cashSek + unrealizedPnlSek, 2);
+  const totalPnlSek = round(equitySek - startingBalanceSek, 2);
+  const dailyPnlSek = totalPnlSek;
+  const peakEquitySek = round(Math.max(startingBalanceSek, accountSeed.peakEquitySek || startingBalanceSek, equitySek), 2);
+  const drawdownSek = round(Math.max(0, peakEquitySek - equitySek), 2);
+  const drawdownPct = peakEquitySek > 0 ? round((drawdownSek / peakEquitySek) * 100, 2) : 0;
+  const openExposureSek = round(sum(openPositions.map((position) => {
+    const pointValueUsd = getPointValueUsd(position.root) || 0;
+    return (position.currentPrice || position.entryPrice || 0) * pointValueUsd * (position.contracts || 0) * fxUsdSek;
+  })), 2);
+  const usedMarginSek = round(openExposureSek * MARGIN_RATE, 2);
+  const availableMarginSek = round(Math.max(0, equitySek - usedMarginSek), 2);
+  const buyingPowerSek = round(Math.max(cashSek, availableMarginSek), 2);
+
+  return futuresPaperAccountService.buildAccountSnapshot({
+    config: {
+      currency: config?.currency || futuresPaperAccountService.DEFAULT_CONFIG.currency,
+      startingBalanceSek,
+      fxUsdSek,
+    },
+    state: {
+      currency: config?.currency || futuresPaperAccountService.DEFAULT_CONFIG.currency,
+      startingBalanceSek,
+      cashSek,
+      equitySek,
+      realizedPnlSek,
+      unrealizedPnlSek,
+      totalPnlSek,
+      dailyPnlSek,
+      peakEquitySek,
+      drawdownSek,
+      drawdownPct,
+      openExposureSek,
+      buyingPowerSek,
+      usedMarginSek,
+      availableMarginSek,
+      fxUsdSek,
+      updatedAt: nowIso(now),
+    },
+    updatedAt: nowIso(now),
+  });
+}
+
+function createFuturesPaperLedgerService(options = {}) {
+  const storage = options.storageService || storageService.defaultFuturesPaperStorageService;
+  const accountSvc = options.accountService || futuresPaperAccountService.defaultFuturesPaperAccountService;
+
+  function ensureFiles() {
+    storage.ensureDefaults(
+      futuresPaperAccountService.DEFAULT_CONFIG,
+      futuresPaperAccountService.createDefaultState(futuresPaperAccountService.DEFAULT_CONFIG),
+      createDefaultPositionsState(),
+    );
+  }
+
+  function readPositionsState() {
+    ensureFiles();
+    const raw = storage.readPositions(createDefaultPositionsState());
+    const open = safeArray(raw?.open).map((position) => toPositionView(position, Number(accountSvc.getFuturesPaperAccount().account?.fxUsdSek || futuresPaperAccountService.DEFAULT_CONFIG.fxUsdSek)));
+    const closed = safeArray(raw?.closed).map((position) => toPositionView(position, Number(accountSvc.getFuturesPaperAccount().account?.fxUsdSek || futuresPaperAccountService.DEFAULT_CONFIG.fxUsdSek)));
+    return {
+      open,
+      closed,
+      updatedAt: raw?.updatedAt || null,
+    };
+  }
+
+  function writePositionsState(state) {
+    const nextState = {
+      open: safeArray(state?.open).map((position) => ({ ...position })),
+      closed: safeArray(state?.closed).map((position) => ({ ...position })),
+      updatedAt: nowIso(),
+    };
+    storage.writePositions(nextState);
+    return nextState;
+  }
+
+  function readTrades(limit = null) {
+    ensureFiles();
+    const rows = storage.readTrades();
+    const slice = Number.isFinite(Number(limit)) && Number(limit) > 0 ? rows.slice(-Math.max(1, Math.min(1000, Number(limit)))) : rows;
+    return slice;
+  }
+
+  function persistEvent(type, payload = {}, now = new Date()) {
+    return storage.appendEvent({
+      eventId: `futures_ledger_${now.getTime()}_${Math.random().toString(16).slice(2, 8)}`,
+      type,
+      timestamp: nowIso(now),
+      ...payload,
+      ...SAFETY,
+    });
+  }
+
+  function persistAccountSnapshot(snapshot) {
+    const accountState = {
+      ...snapshot,
+      updatedAt: nowIso(),
+    };
+    storage.writeAccountState(accountState);
+    storage.appendEquityCurve({
+      timestamp: accountState.updatedAt,
+      currency: accountState.currency,
+      startingBalanceSek: accountState.startingBalanceSek,
+      cashSek: accountState.cashSek,
+      equitySek: accountState.equitySek,
+      realizedPnlSek: accountState.realizedPnlSek,
+      unrealizedPnlSek: accountState.unrealizedPnlSek,
+      totalPnlSek: accountState.totalPnlSek,
+      dailyPnlSek: accountState.dailyPnlSek,
+      peakEquitySek: accountState.peakEquitySek,
+      drawdownSek: accountState.drawdownSek,
+      drawdownPct: accountState.drawdownPct,
+      openExposureSek: accountState.openExposureSek,
+      buyingPowerSek: accountState.buyingPowerSek,
+      usedMarginSek: accountState.usedMarginSek,
+      availableMarginSek: accountState.availableMarginSek,
+      fxUsdSek: accountState.fxUsdSek,
+      ...SAFETY,
+    });
+    return accountState;
+  }
+
+  function getCurrentAccount() {
+    return accountSvc.getFuturesPaperAccount();
+  }
+
+  function getPositionsSummary(positionsState = null) {
+    const state = positionsState || readPositionsState();
+    return {
+      open: state.open,
+      closed: state.closed,
+      totalOpen: state.open.length,
+      totalClosed: state.closed.length,
+      updatedAt: state.updatedAt || null,
+    };
+  }
+
+  function getTradesSummary(limit = null) {
+    return {
+      trades: readTrades(limit),
+    };
+  }
+
+  function getFuturesPaperLedger({ limit = 50 } = {}) {
+    const now = new Date();
+    const account = getCurrentAccount();
+    const positions = getPositionsSummary(readPositionsState());
+    const trades = readTrades(limit);
+    const latestEvents = storage.readJsonl(storage.files.events).slice(-Math.max(1, Math.min(50, Number(limit) || 20)));
+    const market = getMarketHoursState(now);
+
+    return {
+      ok: true,
+      generatedAt: nowIso(now),
+      account: account.account || futuresPaperAccountService.createDefaultState(futuresPaperAccountService.DEFAULT_CONFIG),
+      accountConfig: account.config || futuresPaperAccountService.DEFAULT_CONFIG,
+      positions,
+      openPositions: positions.open,
+      closedTrades: positions.closed,
+      trades,
+      latestEvents,
+      market,
+      ...SAFETY,
+    };
+  }
+
+  function getFuturesPaperPositions() {
+    const bundle = getFuturesPaperLedger({ limit: 100 });
+    return {
+      ok: true,
+      generatedAt: bundle.generatedAt,
+      positions: bundle.positions,
+      openPositions: bundle.openPositions,
+      closedPositions: bundle.closedTrades,
+      market: bundle.market,
+      ...SAFETY,
+    };
+  }
+
+  function getFuturesPaperTrades({ limit = 100 } = {}) {
+    const bundle = getFuturesPaperLedger({ limit });
+    return {
+      ok: true,
+      generatedAt: bundle.generatedAt,
+      trades: bundle.trades,
+      totalTrades: bundle.trades.length,
+      ...SAFETY,
+    };
+  }
+
+  function openFuturesPaperPosition(input = {}) {
+    ensureFiles();
+    const now = input.now ? new Date(input.now) : new Date();
+    const root = normalizeRoot(input.root, input.symbol);
+    const side = normalizeSide(input.side);
+    const contracts = Number(input.contracts);
+    const entryPrice = ensureFiniteNumber(input.entryPrice);
+    const stopLoss = input.stopLoss == null || input.stopLoss === '' ? null : ensureFiniteNumber(input.stopLoss);
+    const takeProfit = input.takeProfit == null || input.takeProfit === '' ? null : ensureFiniteNumber(input.takeProfit);
+    const symbol = String(input.symbol || root || '').trim().toUpperCase() || null;
+    const strategyId = input.strategyId ? String(input.strategyId).trim() : null;
+    const strategyName = input.strategyName ? String(input.strategyName).trim() : null;
+    const entryReason = input.entryReason ? String(input.entryReason).trim() : null;
+    const account = getCurrentAccount();
+
+    if (!root) return { ok: false, error: 'invalid_root', ...SAFETY };
+    if (!side) return { ok: false, error: 'invalid_side', ...SAFETY };
+    if (!Number.isInteger(contracts) || contracts <= 0) return { ok: false, error: 'contracts_must_be_a_positive_integer', ...SAFETY };
+    if (!entryPrice || entryPrice <= 0) return { ok: false, error: 'entryPrice_must_be_greater_than_0', ...SAFETY };
+    if (stopLoss !== null && (!stopLoss || stopLoss <= 0)) return { ok: false, error: 'stopLoss_must_be_greater_than_0', ...SAFETY };
+    if (takeProfit !== null && (!takeProfit || takeProfit <= 0)) return { ok: false, error: 'takeProfit_must_be_greater_than_0', ...SAFETY };
+
+    const market = getMarketHoursState(now);
+    const positionsState = readPositionsState();
+    const currentAccount = account.account || futuresPaperAccountService.createDefaultState(futuresPaperAccountService.DEFAULT_CONFIG);
+    const position = {
+      tradeId: createTradeId(now),
+      root,
+      symbol: symbol || root,
+      side,
+      contracts,
+      entryPrice: round(entryPrice, 2),
+      currentPrice: round(entryPrice, 2),
+      stopLoss: stopLoss === null ? null : round(stopLoss, 2),
+      takeProfit: takeProfit === null ? null : round(takeProfit, 2),
+      openedAt: nowIso(now),
+      closedAt: null,
+      status: 'open',
+      strategyId,
+      strategyName,
+      entryReason,
+      exitReason: null,
+      unrealizedPnlUsd: 0,
+      unrealizedPnlSek: 0,
+      realizedPnlUsd: 0,
+      realizedPnlSek: 0,
+      marketHoursWarning: market.warning,
+    };
+
+    const nextPositionsState = {
+      open: [...safeArray(positionsState.open).map((row) => ({ ...row })), position],
+      closed: safeArray(positionsState.closed).map((row) => ({ ...row })),
+      updatedAt: nowIso(now),
+    };
+    writePositionsState(nextPositionsState);
+
+    const accountSnapshot = buildAccountState({
+      config: account.config || futuresPaperAccountService.DEFAULT_CONFIG,
+      positionsState: nextPositionsState,
+      now,
+    });
+    persistAccountSnapshot(accountSnapshot);
+
+    persistEvent('FUTURES_POSITION_OPENED', {
+      tradeId: position.tradeId,
+      root,
+      symbol: position.symbol,
+      side,
+      contracts,
+      entryPrice: position.entryPrice,
+      strategyId,
+      strategyName,
+      entryReason,
+      marketHoursWarning: market.warning,
+      account: accountSnapshot,
+      market,
+    }, now);
+
+    return {
+      ok: true,
+      position: toPositionView(position, accountSnapshot.fxUsdSek),
+      positions: getPositionsSummary(nextPositionsState),
+      account: accountSnapshot,
+      market,
+      marketHoursWarning: market.warning,
+      ...SAFETY,
+    };
+  }
+
+  function closeFuturesPaperPosition(input = {}) {
+    ensureFiles();
+    const now = input.now ? new Date(input.now) : new Date();
+    const tradeId = String(input.tradeId || '').trim();
+    const exitPrice = ensureFiniteNumber(input.exitPrice);
+    const exitReason = input.exitReason ? String(input.exitReason).trim() : 'manual_close';
+
+    if (!tradeId) return { ok: false, error: 'tradeId_is_required', ...SAFETY };
+    if (!exitPrice || exitPrice <= 0) return { ok: false, error: 'exitPrice_must_be_greater_than_0', ...SAFETY };
+
+    const positionsState = readPositionsState();
+    const openIndex = safeArray(positionsState.open).findIndex((row) => String(row.tradeId || '') === tradeId);
+    if (openIndex < 0) {
+      return { ok: false, error: 'open_position_not_found', ...SAFETY };
+    }
+
+    const openPosition = { ...positionsState.open[openIndex] };
+    const market = getMarketHoursState(now);
+    const account = getCurrentAccount();
+    const pnlUsd = calculatePnlUsd({
+      root: normalizeRoot(openPosition.root, openPosition.symbol),
+      entryPrice: openPosition.entryPrice,
+      exitPrice,
+      side: openPosition.side,
+      contracts: openPosition.contracts,
+    });
+    const fxUsdSek = Number(account.account?.fxUsdSek || account.config?.fxUsdSek || futuresPaperAccountService.DEFAULT_CONFIG.fxUsdSek) || futuresPaperAccountService.DEFAULT_CONFIG.fxUsdSek;
+    const pnlSek = round((pnlUsd || 0) * fxUsdSek, 2);
+    const closedPosition = {
+      ...openPosition,
+      currentPrice: round(exitPrice, 2),
+      exitPrice: round(exitPrice, 2),
+      closedAt: nowIso(now),
+      status: 'closed',
+      exitReason,
+      unrealizedPnlUsd: 0,
+      unrealizedPnlSek: 0,
+      realizedPnlUsd: pnlUsd || 0,
+      realizedPnlSek: pnlSek,
+      marketHoursWarning: market.warning,
+    };
+
+    const nextPositionsState = {
+      open: safeArray(positionsState.open).filter((row) => String(row.tradeId || '') !== tradeId),
+      closed: [...safeArray(positionsState.closed).map((row) => ({ ...row })), closedPosition],
+      updatedAt: nowIso(now),
+    };
+    writePositionsState(nextPositionsState);
+
+    const tradeRecord = {
+      ...closedPosition,
+      type: 'CLOSED_TRADE',
+      entryReason: closedPosition.entryReason || null,
+      exitReason,
+      marketHoursWarning: market.warning,
+      ...SAFETY,
+    };
+    storage.appendTrade(tradeRecord);
+
+    const accountSnapshot = buildAccountState({
+      config: account.config || futuresPaperAccountService.DEFAULT_CONFIG,
+      positionsState: nextPositionsState,
+      now,
+    });
+    persistAccountSnapshot(accountSnapshot);
+
+    persistEvent('FUTURES_POSITION_CLOSED', {
+      tradeId,
+      root: closedPosition.root,
+      symbol: closedPosition.symbol,
+      side: closedPosition.side,
+      contracts: closedPosition.contracts,
+      entryPrice: closedPosition.entryPrice,
+      exitPrice: round(exitPrice, 2),
+      realizedPnlUsd: closedPosition.realizedPnlUsd,
+      realizedPnlSek: closedPosition.realizedPnlSek,
+      exitReason,
+      marketHoursWarning: market.warning,
+      account: accountSnapshot,
+      market,
+    }, now);
+
+    return {
+      ok: true,
+      trade: toPositionView(closedPosition, accountSnapshot.fxUsdSek),
+      positions: getPositionsSummary(nextPositionsState),
+      account: accountSnapshot,
+      market,
+      marketHoursWarning: market.warning,
+      ...SAFETY,
+    };
+  }
+
+  function resetState() {
+    ensureFiles();
+    const defaultPositions = createDefaultPositionsState();
+    writePositionsState(defaultPositions);
+    return defaultPositions;
+  }
+
+  return {
+    SAFETY,
+    createDefaultPositionsState,
+    calculatePnlUsd,
+    getMarketHoursState,
+    readPositionsState,
+    writePositionsState,
+    getPositionsSummary,
+    getTradesSummary,
+    getFuturesPaperLedger,
+    getFuturesPaperPositions,
+    getFuturesPaperTrades,
+    openFuturesPaperPosition,
+    closeFuturesPaperPosition,
+    resetState,
+  };
+}
+
+const defaultFuturesPaperLedgerService = createFuturesPaperLedgerService();
+
+module.exports = {
+  SAFETY,
+  DEFAULT_POSITIONS,
+  FUTURES_META,
+  MARGIN_RATE,
+  nowIso,
+  round,
+  safeArray,
+  ensureFiniteNumber,
+  createTradeId,
+  normalizeRoot,
+  normalizeSide,
+  getPointValueUsd,
+  getMarketHoursState,
+  calculatePnlUsd,
+  toPositionView,
+  createDefaultPositionsState,
+  buildAccountState,
+  createFuturesPaperLedgerService,
+  defaultFuturesPaperLedgerService,
+};

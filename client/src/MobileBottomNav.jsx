@@ -7,6 +7,7 @@ export default function MobileBottomNav() {
   const tabs = [
     { id: 'live', label: 'Live', active: pathname.startsWith('/live'), to: '/live' },
     { id: 'paper-trading', label: 'Paper Trading', active: pathname.startsWith('/paper-trading'), to: '/paper-trading' },
+    { id: 'futures-paper', label: 'Futures', active: pathname.startsWith('/futures-paper') || pathname.startsWith('/paper-futures'), to: '/futures-paper' },
     { id: 'lab', label: 'Test Lab', active: pathname.startsWith('/lab'), to: '/lab' },
     { id: 'system', label: 'System', active: pathname.startsWith('/system'), to: '/system' },
   ];

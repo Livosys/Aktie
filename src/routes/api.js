@@ -109,6 +109,9 @@ const replayAutopilotService = require('../services/replayAutopilotService');
 const replayStatusService = require('../services/replayStatusService');
 const paperTradingStatusService = require('../services/paperTradingStatusService');
 const paperTradingRuntimeService = require('../services/paperTradingRuntimeService');
+const futuresPaperDeskService = require('../services/futuresPaperDeskService');
+const futuresPaperAccountService = require('../services/futuresPaperAccountService');
+const futuresPaperLedgerService = require('../services/futuresPaperLedgerService');
 const strategyPipelineTruthService = require('../services/strategyPipelineTruthService');
 const shortExitTruthService = require('../services/shortExitTruthService');
 const paperRiskPauseSummaryService = require('../services/paperRiskPauseSummaryService');
@@ -3437,6 +3440,139 @@ router.get('/paper-trading/runtime', (req, res) => {
     }));
   } catch (err) {
     res.status(500).json({ ok: false, error: err.message, ...paperTradingRuntimeService.SAFETY });
+  }
+});
+
+router.get('/futures-paper/runtime', (req, res) => {
+  try {
+    res.json(futuresPaperDeskService.buildFuturesPaperDeskRuntime({
+      startingBalance: req.query.startingBalance,
+      now: req.query.now || undefined,
+    }));
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message, ...futuresPaperDeskService.SAFETY });
+  }
+});
+
+router.get('/futures-paper/account', (req, res) => {
+  try {
+    res.json(futuresPaperAccountService.defaultFuturesPaperAccountService.getFuturesPaperAccount());
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message, ...futuresPaperAccountService.SAFETY });
+  }
+});
+
+router.post('/futures-paper/account/reset', (req, res) => {
+  try {
+    const body = req.body && typeof req.body === 'object' ? req.body : {};
+    if (body.live_trading_enabled === true || body.can_place_orders === true || body.actions_allowed === true || body.broker_enabled === true) {
+      return res.status(400).json({ ok: false, error: 'futures_paper_account_is_paper_only', ...futuresPaperAccountService.SAFETY });
+    }
+    const result = futuresPaperAccountService.defaultFuturesPaperAccountService.resetFuturesPaperAccount({
+      reason: body.reason || 'manual_reset',
+    });
+    res.status(result.ok ? 200 : 400).json(result);
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message, ...futuresPaperAccountService.SAFETY });
+  }
+});
+
+router.post('/futures-paper/account/set-balance', (req, res) => {
+  try {
+    const body = req.body && typeof req.body === 'object' ? req.body : {};
+    if (body.live_trading_enabled === true || body.can_place_orders === true || body.actions_allowed === true || body.broker_enabled === true) {
+      return res.status(400).json({ ok: false, error: 'futures_paper_account_is_paper_only', ...futuresPaperAccountService.SAFETY });
+    }
+    const result = futuresPaperAccountService.defaultFuturesPaperAccountService.setFuturesPaperBalance({
+      startingBalanceSek: body.startingBalanceSek ?? body.balanceSek ?? body.value,
+      reason: body.reason || 'manual_set_balance',
+    });
+    res.status(result.ok ? 200 : 400).json(result);
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message, ...futuresPaperAccountService.SAFETY });
+  }
+});
+
+router.get('/futures-paper/positions', (req, res) => {
+  try {
+    res.json(futuresPaperLedgerService.defaultFuturesPaperLedgerService.getFuturesPaperPositions());
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message, ...futuresPaperLedgerService.SAFETY });
+  }
+});
+
+router.get('/futures-paper/trades', (req, res) => {
+  try {
+    res.json(futuresPaperLedgerService.defaultFuturesPaperLedgerService.getFuturesPaperTrades({
+      limit: req.query.limit || req.query.n,
+    }));
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message, ...futuresPaperLedgerService.SAFETY });
+  }
+});
+
+router.post('/futures-paper/manual/open', (req, res) => {
+  try {
+    const body = req.body && typeof req.body === 'object' ? req.body : {};
+    if (body.live_trading_enabled === true || body.can_place_orders === true || body.actions_allowed === true || body.broker_enabled === true) {
+      return res.status(400).json({ ok: false, error: 'futures_paper_manual_open_is_paper_only', ...futuresPaperLedgerService.SAFETY });
+    }
+    const result = futuresPaperLedgerService.defaultFuturesPaperLedgerService.openFuturesPaperPosition({
+      now: body.now || undefined,
+      root: body.root,
+      symbol: body.symbol,
+      side: body.side,
+      contracts: body.contracts,
+      entryPrice: body.entryPrice,
+      stopLoss: body.stopLoss,
+      takeProfit: body.takeProfit,
+      strategyId: body.strategyId,
+      strategyName: body.strategyName,
+      entryReason: body.entryReason,
+    });
+    res.status(result.ok ? 200 : 400).json(result);
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message, ...futuresPaperLedgerService.SAFETY });
+  }
+});
+
+router.post('/futures-paper/manual/close', (req, res) => {
+  try {
+    const body = req.body && typeof req.body === 'object' ? req.body : {};
+    if (body.live_trading_enabled === true || body.can_place_orders === true || body.actions_allowed === true || body.broker_enabled === true) {
+      return res.status(400).json({ ok: false, error: 'futures_paper_manual_close_is_paper_only', ...futuresPaperLedgerService.SAFETY });
+    }
+    const result = futuresPaperLedgerService.defaultFuturesPaperLedgerService.closeFuturesPaperPosition({
+      now: body.now || undefined,
+      tradeId: body.tradeId,
+      exitPrice: body.exitPrice,
+      exitReason: body.exitReason,
+    });
+    res.status(result.ok ? 200 : 400).json(result);
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message, ...futuresPaperLedgerService.SAFETY });
+  }
+});
+
+router.get('/paper-trading/truth', async (req, res) => {
+  try {
+    res.json(await paperTradingTruthService.buildPaperTradingTruth({
+      limit: req.query.limit || req.query.n,
+      now: req.query.now || undefined,
+    }));
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message, safety: paperTradingTruthService.SAFETY });
+  }
+});
+
+router.get('/paper-trading/top-strategies', async (req, res) => {
+  try {
+    res.json(await paperTradingTruthService.buildTopStrategySelector({
+      limit: req.query.limit || req.query.n,
+      now: req.query.now || undefined,
+    }));
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message, safety: paperTradingTruthService.SAFETY });
   }
 });
 

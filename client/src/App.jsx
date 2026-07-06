@@ -14,6 +14,7 @@ import DaytradingPage   from './pages/DaytradingPage.jsx';
 import SupervisorBrainPage from './pages/SupervisorBrainPage.jsx';
 import NarrowStateLabPage from './pages/NarrowStateLabPage.jsx';
 import PaperTradingPage from './pages/PaperTradingPage.jsx';
+import FuturesPaperDeskPage from './pages/FuturesPaperDeskPage.jsx';
 import InteractiveBrokersPage from './pages/InteractiveBrokersPage.jsx';
 
 function RedirectWithSearch({ to }) {
@@ -41,6 +42,7 @@ export default function App() {
           <Route path="/insikter"     element={<ResultatPage />} />
           <Route path="/system"       element={<SystemPage />} />
           <Route path="/daytrading"   element={<DaytradingPage />} />
+          <Route path="/futures-paper" element={<FuturesPaperDeskPage />} />
           <Route path="/interactive-brokers" element={<InteractiveBrokersPage />} />
 
           {/* Legacy primary routes */}
@@ -80,6 +82,7 @@ export default function App() {
           <Route path="/system-health"     element={<Navigate to="/system?tab=health" replace />} />
           <Route path="/quality"           element={<Navigate to="/insikter?tab=ai" replace />} />
           <Route path="/paper-trading"     element={<PaperTradingPage />} />
+          <Route path="/paper-futures"     element={<Navigate to="/futures-paper" replace />} />
           <Route path="/risk-engine"       element={<Navigate to="/system?tab=safety" replace />} />
           <Route path="/exit-engine"       element={<Navigate to="/lab?tab=exits" replace />} />
           {/* Legacy alias: canonical safety lives at /system?tab=safety */}
