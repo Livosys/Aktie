@@ -118,6 +118,7 @@ const shortExitTruthService = require('../services/shortExitTruthService');
 const paperRiskPauseSummaryService = require('../services/paperRiskPauseSummaryService');
 const paperRiskReviewService = require('../services/paperRiskReviewService');
 const tradingViewTestBlueprintService = require('../services/tradingViewTestBlueprintService');
+const strategyEvolutionService = require('../services/strategyEvolutionService');
 const paperTradeExplanationService = require('../services/paperTradeExplanationService');
 const lossReviewQueueService = require('../services/lossReviewQueueService');
 const tradingViewPaperReplayPreviewService = require('../services/tradingViewPaperReplayPreviewService');
@@ -3638,6 +3639,22 @@ router.get('/paper-trading/tradingview-test-blueprints', (req, res) => {
     res.json(result);
   } catch (err) {
     res.status(500).json({ ok: false, error: err.message, ...tradingViewTestBlueprintService.SAFETY });
+  }
+});
+
+router.get('/research/strategy-evolution', (req, res) => {
+  try {
+    res.json(strategyEvolutionService.defaultStrategyEvolutionService.readStrategyEvolution());
+  } catch (err) {
+    res.status(500).json({
+      ok: false,
+      source: 'strategyEvolutionService',
+      status: 'error',
+      error: err.message,
+      targetScore: strategyEvolutionService.TARGET_SCORE,
+      safety: strategyEvolutionService.SAFETY,
+      items: [],
+    });
   }
 });
 
