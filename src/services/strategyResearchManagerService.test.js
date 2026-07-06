@@ -39,6 +39,14 @@ function testContract() {
     assert.equal(typeof rec.paperEligible, 'boolean', 'rec.paperEligible boolean');
     assert.ok(Array.isArray(rec.evidence), 'rec.evidence array');
     assert.ok(Array.isArray(rec.requiredBeforePaper), 'rec.requiredBeforePaper array');
+    assert.ok(rec.ai_strategy_control && typeof rec.ai_strategy_control === 'object', 'rec.ai_strategy_control object');
+    assert.equal(typeof rec.ai_strategy_control.vad_ai_sag, 'string', 'rec control what AI saw');
+    assert.equal(typeof rec.ai_strategy_control.varfor_det_spelar_roll, 'string', 'rec control why it matters');
+    assert.equal(typeof rec.ai_strategy_control.vad_ai_vill_forbattra, 'string', 'rec control improvement');
+    assert.ok(['lag', 'medel', 'hog', 'blockerad'].includes(rec.ai_strategy_control.riskniva), 'rec control risk level');
+    assert.equal(rec.ai_strategy_control.paverkar_trading, 'nej', 'rec control trading impact sv');
+    assert.equal(rec.ai_strategy_control.affects_trading, false, 'rec control trading impact machine');
+    assert.equal(typeof rec.ai_strategy_control.nasta_steg, 'string', 'rec control next step');
     assert.deepEqual(rec.safety, { paperOnly: true, canPlaceOrders: false, brokerEnabled: false }, 'rec.safety');
     // Hard invariant: never paper-eligible while approval is still required.
     if (rec.paperEligible) assert.equal(rec.requiresUserApproval, false, 'paperEligible implies no approval needed');

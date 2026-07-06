@@ -29,6 +29,8 @@ const LIMITS = Object.freeze({
 });
 
 const CERTIFICATE_SIMULATION_MODES = new Set(['off', 'underlying_only', 'estimated_leverage', 'real_certificate_data']);
+const LAB_BATCH_MIN_DAYS = 3;
+const LAB_BATCH_MIN_CANDLES = 500;
 
 const DATA_DIR = path.resolve(__dirname, '../../data/strategy-batches');
 const BATCHES_FILE = path.join(DATA_DIR, 'batches-v1.json');
@@ -141,13 +143,57 @@ function symbolCoverage(symbol) {
   }
 }
 
+function isCryptoSymbol(symbol) {
+  const value = String(symbol || '').trim().toUpperCase();
+  return /USDT$/.test(value) || ['BTCUSDT', 'ETHUSDT', 'SOLUSDT', 'XRPUSDT', 'DOGEUSDT', 'AVAXUSDT', 'LINKUSDT', 'BNBUSDT', 'ADAUSDT'].includes(value);
+}
+
+function isCryptoStrategy(strategy = {}) {
+  const id = String(strategy.id || strategy.strategy_id || '').toLowerCase();
+  const name = String(strategy.name || strategy.strategy_name || '').toLowerCase();
+  const market = String(strategy.market_group || strategy.market || strategy.category || strategy.type || '').toLowerCase();
+  return id.includes('crypto') || name.includes('crypto') || market === 'crypto';
+}
+
+function isLabArchivedMarket(market) {
+  const value = String(market || '').trim().toLowerCase();
+  return value === 'crypto' || value === 'crypto_certificates';
+}
+
+function labArchiveMeta(kind) {
+  return {
+    reason: 'crypto_lab_archived',
+    message: 'Crypto är arkiverat från Lab. Crypto kan fortfarande visas på Live-sidan.',
+    archivedFromLab: true,
+    archiveReason: 'crypto_lab_archived',
+    visibleOnLive: true,
+    kind,
+  };
+}
+
+function hasLabBatchHistoricalData(symbol, coverage = {}) {
+  if (isCryptoSymbol(symbol) || String(coverage.market_group || '').toLowerCase() === 'crypto') return false;
+  if (coverage.usable_for_batch === true) return true;
+  const days = Number(coverage.days_covered || 0);
+  const candles = Number(coverage.candles_count || coverage.candles_2m_count || 0);
+  return days >= LAB_BATCH_MIN_DAYS && candles >= LAB_BATCH_MIN_CANDLES;
+}
+
 function normalizeSymbolsForBatch(symbols) {
   const requested = symbols.map((s) => String(s).toUpperCase());
   const runnable = [];
   const skipped = [];
   for (const symbol of requested) {
+    if (isCryptoSymbol(symbol)) {
+      skipped.push({
+        symbol,
+        usable_for_batch: false,
+        ...labArchiveMeta('symbol'),
+      });
+      continue;
+    }
     const coverage = symbolCoverage(symbol);
-    if (coverage.usable_for_batch) {
+    if (hasLabBatchHistoricalData(symbol, coverage)) {
       runnable.push(symbol);
     } else {
       skipped.push({
@@ -185,6 +231,15 @@ function normalizeMarketsForBatch(markets, certificateSimulationMode) {
   const missingData = [];
 
   const consider = (id, fromAll) => {
+    if (isLabArchivedMarket(id)) {
+      const row = {
+        id,
+        label: id === 'crypto' ? 'Krypto' : 'Krypto-certifikat',
+        ...labArchiveMeta('market'),
+      };
+      skipped.push(row);
+      return;
+    }
     const group = marketUniverse.getGroup(id) || {};
     const control = byId.get(id) || {};
     const enabled = control.enabled_for_batch !== false && marketUniverse.groupEnabledFor(id, 'batch') !== false;
@@ -236,17 +291,27 @@ function defaultConfig(input = {}) {
   const today = nowIso().slice(0, 10);
   const catalog = daytradingCatalog.getCatalog().strategies;
   const strategyIds = safeArray(input.strategy_ids || input.strategyIds || input.strategies)
-    .filter((id) => daytradingCatalog.getStrategyById(id));
-  const selected = strategyIds.length ? strategyIds : catalog.slice(0, 3).map((s) => s.id);
+    .filter((id) => {
+      const strategy = daytradingCatalog.getStrategyById(id);
+      return strategy && !isCryptoStrategy(strategy);
+    });
+  const selected = strategyIds.length
+    ? strategyIds
+    : catalog.filter((strategy) => !isCryptoStrategy(strategy)).slice(0, 3).map((s) => s.id);
   const dateFrom = normalizeDate(input.date_from || input.dateFrom, today);
   const dateTo = normalizeDate(input.date_to || input.dateTo, dateFrom);
   const certificateSimulationMode = CERTIFICATE_SIMULATION_MODES.has(input.certificate_simulation_mode) ? input.certificate_simulation_mode : 'off';
-  const rawSymbols = safeArray(input.symbols).length ? safeArray(input.symbols).map((s) => s.toUpperCase()) : ['BTCUSDT', 'ETHUSDT', 'SOLUSDT', 'AAPL', 'TSLA', 'NVDA', 'QQQ'];
+  const rawSymbols = safeArray(input.symbols).length ? safeArray(input.symbols).map((s) => s.toUpperCase()) : ['AAPL', 'MSFT', 'NVDA', 'TSLA', 'META', 'AMZN', 'QQQ'];
   const rawMarkets = safeArray(input.markets || input.market_groups || input.marketGroups).length ? safeArray(input.markets || input.market_groups || input.marketGroups) : ['all'];
   const symbolPolicy = normalizeSymbolsForBatch(rawSymbols);
   const marketPolicy = normalizeMarketsForBatch(rawMarkets, certificateSimulationMode);
+  const archivedStrategies = safeArray(input.strategy_ids || input.strategyIds || input.strategies)
+    .map((id) => daytradingCatalog.getStrategyById(id))
+    .filter((strategy) => strategy && isCryptoStrategy(strategy))
+    .map((strategy) => ({ id: strategy.id, name: strategy.name, ...labArchiveMeta('strategy') }));
   return {
     strategy_ids: selected,
+    archived_lab_strategies: archivedStrategies,
     symbols: symbolPolicy.symbols,
     requested_symbols: symbolPolicy.requested_symbols,
     skipped_symbols: symbolPolicy.skipped_symbols,
@@ -291,6 +356,9 @@ function validateConfig(config) {
     warnings.skipped_symbols = config.skipped_symbols;
     warnings.skipped_reasons = config.skipped_reasons || config.skipped_symbols.map((row) => ({ symbol: row.symbol, reason: row.reason || 'missing_data' }));
   }
+  if (config.archived_lab_strategies?.length) {
+    warnings.archived_lab_strategies = config.archived_lab_strategies;
+  }
   if (config.skipped_markets?.length) {
     warnings.skipped_markets = config.skipped_markets;
     warnings.skipped_market_reasons = config.skipped_market_reasons || config.skipped_markets.map((row) => ({ id: row.id, reason: row.reason || 'missing_data' }));
@@ -299,6 +367,9 @@ function validateConfig(config) {
   if (config.symbols.length > LIMITS.maxSymbolsPerBatch) errors.symbols = `max_${LIMITS.maxSymbolsPerBatch}`;
   if (!config.symbols.length) {
     errors.missing_data = 'no_runnable_symbols';
+  }
+  if (!config.strategy_ids.length) {
+    errors.strategy_ids = 'no_lab_runnable_strategies';
   }
   if (!config.markets.length) {
     errors.market_data = config.disabled_markets?.length ? 'disabled_by_user' : 'missing_data';
@@ -328,7 +399,7 @@ function validateConfig(config) {
       ? 'missing_data'
       : null;
   const message = errors.missing_data
-    ? 'No runnable symbols with historical data'
+    ? 'Inga körbara aktie/index/ETF-symboler med historisk data hittades. Crypto är arkiverat från Lab och påverkar inte detta urval.'
     : errors.market_controls === 'disabled_by_user'
       ? 'En eller flera valda marknadsgrupper är avstängda av användaren.'
       : errors.market_data
@@ -363,6 +434,7 @@ function buildParameterGrid(configInput = {}) {
       skipped_symbols: config.skipped_symbols || [],
       skipped_reasons: config.skipped_reasons || [],
       skipped_markets: config.skipped_markets || [],
+      archived_lab_strategies: config.archived_lab_strategies || [],
       ...SAFETY,
     });
   }
@@ -421,6 +493,7 @@ function createBatchTest(input = {}) {
       skipped_symbols: config.skipped_symbols || [],
       skipped_reasons: config.skipped_reasons || [],
       skipped_markets: config.skipped_markets || [],
+      archived_lab_strategies: config.archived_lab_strategies || [],
       ...SAFETY,
     });
   }
@@ -443,6 +516,7 @@ function createBatchTest(input = {}) {
     skipped_symbols: config.skipped_symbols || [],
     skipped_reasons: config.skipped_reasons || [],
     skipped_markets: config.skipped_markets || [],
+    archived_lab_strategies: config.archived_lab_strategies || [],
     progress: {
       total: grid.count,
       completed: 0,
@@ -996,4 +1070,10 @@ module.exports = {
   buildParameterGrid,
   compareBatchResults,
   getLatestBatchComparison,
+  _internal: {
+    isCryptoSymbol,
+    isCryptoStrategy,
+    isLabArchivedMarket,
+    hasLabBatchHistoricalData,
+  },
 };

@@ -38,6 +38,8 @@ const SAFETY = Object.freeze({
   broker_enabled: false,
 });
 
+const aiStrategyPolicy = require('./aiStrategyControlPolicyService');
+
 // Safety stamp carried on every individual recommendation.
 const REC_SAFETY = Object.freeze({
   paperOnly: true,
@@ -84,6 +86,10 @@ function makeRecommendation({
   runtimeConnectionStatus = 'unknown',
   blockedReason = '',
 }) {
+  const requiresApproval = requiresUserApproval !== false;
+  const eligible = paperEligible === true && requiresApproval === false;
+  const evidenceList = arr(evidence).map((e) => text(e, '')).filter(Boolean);
+  const requiredList = arr(requiredBeforePaper);
   const runtimeStatus = ['ready', 'pending', 'unknown'].includes(runtimeConnectionStatus)
     ? runtimeConnectionStatus
     : 'unknown';
@@ -94,18 +100,27 @@ function makeRecommendation({
     baseStrategy: text(baseStrategy, ''),
     proposedStrategy: text(proposedStrategy, ''),
     reason: text(reason, ''),
-    evidence: arr(evidence).map((e) => text(e, '')).filter(Boolean),
-    requiredBeforePaper: arr(requiredBeforePaper),
+    evidence: evidenceList,
+    requiredBeforePaper: requiredList,
     // Hard safety invariant: a recommendation can never be paper-eligible while
     // it still requires user approval. This guarantees no auto-promotion path.
-    paperEligible: paperEligible === true && requiresUserApproval === false,
-    requiresUserApproval: requiresUserApproval !== false,
+    paperEligible: eligible,
+    requiresUserApproval: requiresApproval,
     // Paper-simulation runtime status — orthogonal to paperEligible. A strategy
     // can be an approved paper-only research candidate while its paper runtime is
     // still pending. Never implies broker/live trading.
     paperRuntimeReady: paperRuntimeReady === true,
     runtimeConnectionStatus: runtimeStatus,
     blockedReason: text(blockedReason, ''),
+    ai_strategy_control: buildAiStrategyControl({
+      type,
+      strategyId,
+      reason,
+      evidence: evidenceList,
+      requiredBeforePaper: requiredList,
+      paperEligible: eligible,
+      blockedReason,
+    }),
     safety: REC_SAFETY,
   };
 }
@@ -130,6 +145,72 @@ function compareRecommendations(a, b) {
   if (pr !== 0) return pr;
   if (a.paperEligible !== b.paperEligible) return a.paperEligible ? -1 : 1;
   return String(a.strategyId).localeCompare(String(b.strategyId));
+}
+
+function improvementTextFor(type, blockedReason) {
+  if (type === 'paper_candidate') return 'Bygga mer spårbar evidens innan någon framtida godkännandeprocess.';
+  if (type === 'run_replay') return 'Samla replay-underlag utan att ändra runtime eller trading.';
+  if (type === 'run_batch') return 'Jämföra parametrar och marknadslägen i batch utan orderpåverkan.';
+  if (type === 'collect_more_data') return 'Samla mer data innan strategin bedöms hårdare.';
+  if (type === 'pause_strategy') {
+    return blockedReason === 'weak_results'
+      ? 'Märka strategin som svag så den inte prioriteras i research.'
+      : 'Hålla strategin borta från automatisering tills blockeraren är löst.';
+  }
+  if (type === 'continue_strategy') return 'Fortsätta följa strategin read-only och jämföra nya resultat.';
+  return 'Förbättra strategiunderlaget utan att påverka trading.';
+}
+
+function riskLevelFor(type) {
+  if (type === 'paper_candidate') return 'medel';
+  return 'lag';
+}
+
+function nextStepFor(type, strategyId, paperEligible, requiredBeforePaper) {
+  const id = text(strategyId, 'strategin');
+  if (type === 'paper_candidate') {
+    return paperEligible
+      ? `${id}: fortsätt read-only/paper-only uppföljning. Ingen trading påverkas.`
+      : `${id}: samla mer evidens och be användaren besluta innan paper-allowlist.`;
+  }
+  if (type === 'run_replay') return `${id}: planera replay som säkert research-test.`;
+  if (type === 'run_batch') return `${id}: planera batchjämförelse med små, spårbara parametrar.`;
+  if (type === 'collect_more_data') return `${id}: samla mer replay/batch/learning-data först.`;
+  if (type === 'pause_strategy') return `${id}: markera som svag eller blockerad i analysen, inte i trade.`;
+  if (requiredBeforePaper.length) return `${id}: lös ${requiredBeforePaper.join(', ')} innan nästa steg.`;
+  return `${id}: fortsätt read-only analys.`;
+}
+
+function buildAiStrategyControl({
+  type,
+  strategyId,
+  reason,
+  evidence,
+  requiredBeforePaper,
+  paperEligible,
+  blockedReason,
+}) {
+  const id = text(strategyId, 'okänd strategi');
+  const evidenceText = arr(evidence).length
+    ? arr(evidence).join(' ')
+    : `${id}: ${text(reason, 'AI såg strategiunderlag som behöver bedömas.')}`;
+
+  return aiStrategyPolicy.buildRecommendationExplanation({
+    strategy: {
+      strategy_id: id,
+      status: paperEligible ? 'paper_only_research_approved' : 'research_only',
+    },
+    context: {
+      area: 'strategy_research',
+      operation: type,
+      affects_trading: false,
+    },
+    whatAiSaw: evidenceText,
+    whyItMatters: text(reason, 'Det avgör om strategin behöver mer data, lägre prioritet eller framtida manuell granskning.'),
+    improvement: improvementTextFor(type, blockedReason),
+    riskLevel: riskLevelFor(type),
+    nextStep: nextStepFor(type, strategyId, paperEligible, requiredBeforePaper),
+  });
 }
 
 // Detect research stagnation from read-only signals only. Deterministic given

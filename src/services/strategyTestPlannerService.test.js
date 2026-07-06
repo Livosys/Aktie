@@ -44,6 +44,13 @@ function makeRegistry() {
           status: 'deprecated',
           enabled: false,
         },
+        {
+          strategy_id: 'TRADE_APPROVED',
+          source: 'internal',
+          status: 'trade_approved',
+          enabled: true,
+          approvedForTrade: true,
+        },
       ];
     },
   };
@@ -110,6 +117,17 @@ function makeScoreService() {
       sample_size: 0,
       weaknesses: ['Deprecated/arkiverad strategi'],
       recommended_action: 'Håll pausad/deprecated. Nya paper entries rekommenderas inte.',
+    },
+    {
+      strategy_id: 'TRADE_APPROVED',
+      source: 'internal',
+      status: 'trade_approved',
+      score: 80,
+      confidence: 80,
+      sample_size: 50,
+      weaknesses: [],
+      recommended_action: 'Skyddad trade-strategi.',
+      approvedForTrade: true,
     },
   ];
 
@@ -181,6 +199,19 @@ function makeHistoryService() {
             batch_tests_count: 0,
           },
         },
+        TRADE_APPROVED: {
+          ok: true,
+          strategy_id: 'TRADE_APPROVED',
+          registry: {
+            status: 'trade_approved',
+            approvedForTrade: true,
+          },
+          history_summary: {
+            paper_trades_count: 20,
+            replay_tests_count: 5,
+            batch_tests_count: 5,
+          },
+        },
       };
       return map[strategyId] || {
         ok: true,
@@ -220,6 +251,18 @@ function makeHistoryService() {
   assert.equal(status.summary.tradingview_recommendations >= 1, true, 'tv recommendations present');
   assert.equal(status.summary.internal_recommendations >= 2, true, 'internal recommendations present');
   assert.equal(status.summary.skipped_paused_count, 2, 'paused/deprecated skipped count');
+  assert.equal(status.summary.protected_trade_strategy_count, 1, 'trade-approved strategy protected');
+  assert.equal(status.recommendations.some((row) => row.strategy_id === 'TRADE_APPROVED'), false, 'trade-approved strategy has no AI test recommendation');
+
+  for (const row of status.recommendations) {
+    assert.ok(row.ai_strategy_control && typeof row.ai_strategy_control === 'object', 'ai strategy control present');
+    assert.equal(typeof row.ai_strategy_control.vad_ai_sag, 'string', 'control what AI saw');
+    assert.equal(typeof row.ai_strategy_control.varfor_det_spelar_roll, 'string', 'control why matters');
+    assert.equal(typeof row.ai_strategy_control.vad_ai_vill_forbattra, 'string', 'control improvement');
+    assert.equal(row.ai_strategy_control.paverkar_trading, 'nej', 'control trading impact sv');
+    assert.equal(row.ai_strategy_control.affects_trading, false, 'control trading impact machine');
+    assert.equal(typeof row.ai_strategy_control.nasta_steg, 'string', 'control next step');
+  }
 
   const activeNoData = status.recommendations.find((row) => row.strategy_id === 'ACTIVE_NO_DATA');
   assert.ok(activeNoData, 'active no data recommendation');

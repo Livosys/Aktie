@@ -3,6 +3,7 @@
 const strategyRegistry = require('./strategyRegistryService');
 const strategyScore = require('./strategyScoreService');
 const strategyHistory = require('./strategyHistoryService');
+const aiStrategyPolicy = require('./aiStrategyControlPolicyService');
 
 const SAFETY = Object.freeze({
   actions_allowed: false,
@@ -71,6 +72,46 @@ function buildSafetyNote(testType) {
     return 'Read-only. Ingen körning startas och ingen state ändras.';
   }
   return 'Read-only. Rekommendationen startar inte testet automatiskt.';
+}
+
+function improvementTextFor(testType) {
+  if (testType === 'replay') return 'Samla replay-evidens innan strategin prioriteras högre.';
+  if (testType === 'batch') return 'Jämföra parametrar och marknadslägen utan att ändra runtime.';
+  if (testType === 'paper_observation') return 'Samla mer paper-only observation utan broker, order eller riskändring.';
+  if (testType === 'history_review') return 'Förklara svagheter historiskt utan att starta nya tester.';
+  return 'Förbättra strategiunderlaget utan att påverka trading.';
+}
+
+function nextStepTextFor(testType, strategyId) {
+  const id = safeString(strategyId) || 'strategin';
+  if (testType === 'replay') return `${id}: lägg upp en säker replayplan och granska resultatet.`;
+  if (testType === 'batch') return `${id}: kör eller planera liten batchjämförelse när det är godkänt.`;
+  if (testType === 'paper_observation') return `${id}: fortsätt read-only/paper-only observation och samla mer data.`;
+  if (testType === 'history_review') return `${id}: granska historiken och behåll som svag/pausad tills data säger annat.`;
+  return `${id}: fortsätt read-only analys.`;
+}
+
+function buildAiStrategyControl(context, testType, reason, expectedLearningValueText) {
+  return aiStrategyPolicy.buildRecommendationExplanation({
+    strategy: context.strategy || context,
+    context: {
+      area: 'strategy_test_planner',
+      operation: testType,
+      affects_trading: false,
+    },
+    whatAiSaw: reason,
+    whyItMatters: expectedLearningValueText || 'Testvärdet avgör om strategin behöver mer replay, batch eller observation.',
+    improvement: improvementTextFor(testType),
+    riskLevel: testType === 'paper_observation' ? 'medel' : 'lag',
+    nextStep: nextStepTextFor(testType, context.strategy_id),
+  });
+}
+
+function isProtectedTradeStrategy(context) {
+  return aiStrategyPolicy.isTradeApprovedStrategy(context) ||
+    aiStrategyPolicy.isTradeApprovedStrategy(context.strategy) ||
+    aiStrategyPolicy.isTradeApprovedStrategy(context.scoreRow) ||
+    aiStrategyPolicy.isTradeApprovedStrategy(context.historyRow?.registry);
 }
 
 function buildReason(context, testType) {
@@ -241,6 +282,11 @@ function createStrategyTestPlannerService(options = {}) {
     const recommendation = determineRecommendation(context);
     if (!recommendation) return null;
     const { testType, priority } = recommendation;
+    const reason = buildReason(context, testType);
+    const expectedLearning = expectedLearningValue(testType, {
+      sampleSize: context.sampleSize,
+      source: context.source,
+    });
     return {
       id: `${context.strategy_id}:${testType}`,
       strategy_id: context.strategy_id,
@@ -248,7 +294,7 @@ function createStrategyTestPlannerService(options = {}) {
       status: context.status,
       priority,
       test_type: testType,
-      reason: buildReason(context, testType),
+      reason,
       suggested_scope: buildScope(testType, {
         source: context.source,
         sampleSize: context.sampleSize,
@@ -256,11 +302,9 @@ function createStrategyTestPlannerService(options = {}) {
         replay: context.replay,
         batch: context.batch,
       }),
-      expected_learning_value: expectedLearningValue(testType, {
-        sampleSize: context.sampleSize,
-        source: context.source,
-      }),
+      expected_learning_value: expectedLearning,
       safety_note: buildSafetyNote(testType),
+      ai_strategy_control: buildAiStrategyControl(context, testType, reason, expectedLearning),
     };
   }
 
@@ -270,6 +314,7 @@ function createStrategyTestPlannerService(options = {}) {
     const scoreById = new Map(scoreRows.map((row) => [row.strategy_id, row]));
     const recommendations = [];
     let skippedPausedCount = 0;
+    let protectedTradeStrategyCount = 0;
 
     for (const strategy of strategies) {
       const scoreRow = scoreById.get(strategy.strategy_id) || null;
@@ -277,6 +322,10 @@ function createStrategyTestPlannerService(options = {}) {
         ? historyService.getStrategyHistory(strategy.strategy_id)
         : null;
       const context = buildContext(strategy, scoreRow, historyRow);
+      if (isProtectedTradeStrategy(context)) {
+        protectedTradeStrategyCount += 1;
+        continue;
+      }
       const isPausedLike = context.status === 'paused' || context.status === 'deprecated' || context.enabled === false;
       if (isPausedLike) skippedPausedCount += 1;
       const recommendation = buildRecommendation(context);
@@ -295,6 +344,7 @@ function createStrategyTestPlannerService(options = {}) {
       tradingview_recommendations: recommendations.filter((row) => row.source === 'tradingview').length,
       internal_recommendations: recommendations.filter((row) => row.source === 'internal').length,
       skipped_paused_count: skippedPausedCount,
+      protected_trade_strategy_count: protectedTradeStrategyCount,
     };
 
     return {
