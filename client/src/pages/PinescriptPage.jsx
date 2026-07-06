@@ -46,6 +46,14 @@ function friendlyBlueprintError(err) {
   return message || 'Blueprint-källa inte ansluten ännu';
 }
 
+function friendlyStrategyEvolutionError(err) {
+  const message = String(err?.message || '').trim();
+  if (/^HTTP 404$/i.test(message)) return 'Strategy Evolution-endpoint saknas ännu';
+  if (/Failed to fetch|NetworkError|Load failed/i.test(message)) return 'Strategy Evolution-data inte ansluten ännu';
+  if (/^timeout_after_\d+ms$/i.test(message)) return 'Strategy Evolution-data inte ansluten ännu (timeout)';
+  return message || 'Strategy Evolution-data inte ansluten ännu';
+}
+
 function usePineBlueprints() {
   const emptyPayload = useMemo(() => ({
     ok: true,
@@ -96,6 +104,71 @@ function usePineBlueprints() {
   return state;
 }
 
+function useStrategyEvolution() {
+  const emptyPayload = useMemo(() => ({
+    ok: true,
+    status: 'empty',
+    source: 'none',
+    targetScore: {
+      min: 70,
+      ideal: 80,
+      type: 'ai_score',
+      scale: '0-100',
+    },
+    safety: {
+      mode: 'paper_only',
+      actions_allowed: false,
+      can_place_orders: false,
+      live_trading_enabled: false,
+      broker_enabled: false,
+    },
+    items: [],
+    summary: {
+      totalStrategies: 0,
+      totalVersions: 0,
+      promisingCount: 0,
+      strongCandidateCount: 0,
+      needsImprovementCount: 0,
+      waitingForTestCount: 0,
+    },
+    warnings: [],
+  }), []);
+  const [state, setState] = useState({ loading: true, data: emptyPayload, error: null });
+
+  useEffect(() => {
+    let alive = true;
+    const controller = new AbortController();
+    setState((prev) => ({ ...prev, loading: true }));
+    fetchJsonWithTimeout('/api/research/strategy-evolution', { signal: controller.signal })
+      .then((data) => {
+        if (!alive) return;
+        const normalized = data && typeof data === 'object'
+          ? {
+              ...emptyPayload,
+              ...data,
+              items: Array.isArray(data.items) ? data.items : [],
+              summary: {
+                ...emptyPayload.summary,
+                ...(data.summary && typeof data.summary === 'object' ? data.summary : {}),
+              },
+              warnings: Array.isArray(data.warnings) ? data.warnings : [],
+            }
+          : emptyPayload;
+        setState({ loading: false, data: normalized, error: null });
+      })
+      .catch((err) => {
+        if (!alive) return;
+        setState({ loading: false, data: emptyPayload, error: friendlyStrategyEvolutionError(err) });
+      });
+    return () => {
+      alive = false;
+      controller.abort();
+    };
+  }, [emptyPayload]);
+
+  return state;
+}
+
 function Badge({ children, tone = 'neutral' }) {
   const colors = {
     neutral: 'rgba(148,163,184,0.16)',
@@ -121,6 +194,60 @@ function Badge({ children, tone = 'neutral' }) {
   );
 }
 
+function formatNumber(value, fallback = '–') {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return fallback;
+  return new Intl.NumberFormat('sv-SE', { maximumFractionDigits: 2 }).format(n);
+}
+
+function formatPercent(value, fallback = '–') {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return fallback;
+  return `${new Intl.NumberFormat('sv-SE', { maximumFractionDigits: 2 }).format(n)}%`;
+}
+
+function bandLabel(band) {
+  const labels = {
+    strong_candidate: 'Stark kandidat',
+    promising: 'Lovande',
+    watchlist: 'Bevaka',
+    needs_improvement: 'Behöver förbättras',
+    weak: 'Svag',
+    unscored: 'Ej score-satt',
+  };
+  return labels[band] || String(band || 'Okänd');
+}
+
+function scoreTone(score, band) {
+  if (Number(score) >= 80 || band === 'strong_candidate') return 'success';
+  if (Number(score) >= 70 || band === 'promising') return 'info';
+  if (band === 'needs_improvement' || band === 'weak') return 'warning';
+  return 'neutral';
+}
+
+function latestVersion(strategy) {
+  const versions = Array.isArray(strategy?.versions) ? strategy.versions : [];
+  if (!versions.length) return null;
+  return [...versions].sort((a, b) => Number(b?.version || 0) - Number(a?.version || 0))[0];
+}
+
+function MetricPill({ label, value }) {
+  return (
+    <div style={{
+      border: '1px solid var(--border)',
+      borderRadius: 12,
+      padding: '10px 12px',
+      background: 'color-mix(in srgb, var(--surface) 88%, transparent)',
+    }}
+    >
+      <div style={{ color: 'var(--muted)', fontSize: 11, fontWeight: 850, textTransform: 'uppercase', letterSpacing: '0.06em' }}>
+        {label}
+      </div>
+      <div style={{ marginTop: 4, fontSize: 18, fontWeight: 900 }}>{value}</div>
+    </div>
+  );
+}
+
 function ResearchCard({ title, meta, children }) {
   return (
     <article style={{
@@ -139,6 +266,167 @@ function ResearchCard({ title, meta, children }) {
         {children}
       </p>
     </article>
+  );
+}
+
+function StrategyEvolutionPanel({ state }) {
+  const data = state?.data || {};
+  const summary = data.summary || {};
+  const items = Array.isArray(data.items) ? data.items : [];
+  const target = data.targetScore || { min: 70, ideal: 80, type: 'ai_score', scale: '0-100' };
+  const visibleItems = items.slice(0, 6);
+
+  return (
+    <section style={{
+      border: '1px solid var(--border)',
+      borderRadius: 18,
+      padding: 20,
+      marginBottom: 18,
+      background: 'var(--surface)',
+    }}
+    >
+      <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap', alignItems: 'flex-start' }}>
+        <div>
+          <div style={{ color: 'var(--muted)', fontSize: 12, fontWeight: 900, textTransform: 'uppercase', letterSpacing: '0.08em' }}>
+            Strategy Evolution
+          </div>
+          <h2 style={{ margin: '6px 0 8px', fontSize: 24, letterSpacing: 0 }}>
+            Versioner, AI-score och nästa förbättring
+          </h2>
+          <p style={{ margin: 0, maxWidth: 760, color: 'var(--muted)', fontSize: 13, lineHeight: 1.6 }}>
+            Den här panelen läser bara research-data. Den startar inga tester, ändrar ingen strategi och
+            skickar inget till TradingView, broker eller orderflöde.
+          </p>
+        </div>
+        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
+          <Badge tone="info">Target {target.min}-{target.ideal}+ AI-score</Badge>
+          <Badge>{target.type || 'ai_score'} {target.scale || '0-100'}</Badge>
+          <Badge tone={data.status === 'ok' ? 'success' : data.status === 'error' ? 'warning' : 'neutral'}>
+            {state.loading ? 'Laddar' : data.status || 'empty'}
+          </Badge>
+        </div>
+      </div>
+
+      <div style={{
+        display: 'grid',
+        gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))',
+        gap: 10,
+        marginTop: 16,
+      }}
+      >
+        <MetricPill label="Strategier" value={formatNumber(summary.totalStrategies || 0)} />
+        <MetricPill label="Versioner" value={formatNumber(summary.totalVersions || 0)} />
+        <MetricPill label="Lovande >=70" value={formatNumber(summary.promisingCount || 0)} />
+        <MetricPill label="Starka >=80" value={formatNumber(summary.strongCandidateCount || 0)} />
+        <MetricPill label="Väntar test" value={formatNumber(summary.waitingForTestCount || 0)} />
+      </div>
+
+      {state.error ? (
+        <div style={{
+          marginTop: 14,
+          border: '1px solid rgba(245,158,11,0.28)',
+          borderRadius: 14,
+          padding: 14,
+          color: 'var(--muted)',
+          fontSize: 13,
+          lineHeight: 1.55,
+        }}
+        >
+          <strong style={{ color: 'var(--warning)' }}>{state.error}</strong>
+          <div>Visar lugn tomstatus. Sidan fortsätter utan att krascha.</div>
+        </div>
+      ) : null}
+
+      {!state.loading && !state.error && !items.length ? (
+        <div style={{
+          marginTop: 14,
+          border: '1px dashed var(--border)',
+          borderRadius: 14,
+          padding: 16,
+          color: 'var(--muted)',
+          fontSize: 13,
+          lineHeight: 1.55,
+        }}
+        >
+          Ingen strategy evolution-data ännu. Det är väntat tills
+          <code style={{ margin: '0 4px' }}>data/research/strategy-evolution.json</code>
+          fylls av replay/batch/backtest-resultat. Systemet är fortfarande read-only här.
+        </div>
+      ) : null}
+
+      {visibleItems.length ? (
+        <div style={{ display: 'grid', gap: 12, marginTop: 16 }}>
+          {visibleItems.map((strategy) => {
+            const version = latestVersion(strategy);
+            const result = version?.testResult || {};
+            const score = version?.aiScore;
+            const band = version?.scoreBand;
+            return (
+              <article
+                key={strategy.strategyId || strategy.name}
+                style={{
+                  border: '1px solid var(--border)',
+                  borderRadius: 14,
+                  padding: 16,
+                  background: 'color-mix(in srgb, var(--surface) 92%, transparent)',
+                }}
+              >
+                <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10, flexWrap: 'wrap', alignItems: 'flex-start' }}>
+                  <div>
+                    <div style={{ color: 'var(--muted)', fontSize: 11, fontWeight: 850, textTransform: 'uppercase', letterSpacing: '0.06em' }}>
+                      {strategy.strategyId || 'strategy'}
+                    </div>
+                    <h3 style={{ margin: '5px 0 6px', fontSize: 18, letterSpacing: 0 }}>{strategy.name || strategy.strategyId}</h3>
+                    <div style={{ color: 'var(--muted)', fontSize: 13 }}>
+                      Version {formatNumber(version?.version)} · {version?.status || 'okänd status'} · beslut {version?.decision || 'ej satt'}
+                    </div>
+                  </div>
+                  <Badge tone={scoreTone(score, band)}>
+                    {score === null || score === undefined ? 'AI-score saknas' : `AI-score ${formatNumber(score)}`} · {bandLabel(band)}
+                  </Badge>
+                </div>
+
+                <div style={{
+                  display: 'grid',
+                  gridTemplateColumns: 'repeat(auto-fit, minmax(120px, 1fr))',
+                  gap: 8,
+                  marginTop: 12,
+                }}
+                >
+                  <MetricPill label="Winrate" value={formatPercent(result.winRate)} />
+                  <MetricPill label="Profit factor" value={formatNumber(result.profitFactor)} />
+                  <MetricPill label="Net profit" value={formatPercent(result.netProfitPct)} />
+                  <MetricPill label="Max drawdown" value={formatPercent(result.maxDrawdownPct)} />
+                  <MetricPill label="Trades" value={formatNumber(result.trades)} />
+                </div>
+
+                <div style={{
+                  display: 'grid',
+                  gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))',
+                  gap: 10,
+                  marginTop: 12,
+                  color: 'var(--muted)',
+                  fontSize: 13,
+                  lineHeight: 1.5,
+                }}
+                >
+                  <div>
+                    <strong style={{ color: 'var(--text)' }}>Hypotes:</strong>
+                    {' '}
+                    {version?.hypothesis || 'Ingen hypotes sparad ännu.'}
+                  </div>
+                  <div>
+                    <strong style={{ color: 'var(--text)' }}>Nästa förbättring:</strong>
+                    {' '}
+                    {version?.nextImprovement || 'Väntar på mer research-data.'}
+                  </div>
+                </div>
+              </article>
+            );
+          })}
+        </div>
+      ) : null}
+    </section>
   );
 }
 
@@ -178,6 +466,7 @@ function PipelineStep({ index, title, text }) {
 export default function PinescriptPage() {
   const theme = useThemeMode();
   const blueprintState = usePineBlueprints();
+  const strategyEvolutionState = useStrategyEvolution();
 
   return (
     <main className="page" style={{ maxWidth: 1180, margin: '0 auto', padding: '32px 24px 56px' }}>
@@ -322,6 +611,7 @@ export default function PinescriptPage() {
         </section>
       ) : null}
 
+      <StrategyEvolutionPanel state={strategyEvolutionState} />
       <TradingViewTestBlueprintPanel data={blueprintState.data} theme={theme} />
       <TradingViewTestResultsPanel theme={theme} />
     </main>
