@@ -7,9 +7,7 @@ const NAV_GROUPS = [
         id: 'main',
         label: null,
         items: [
-          { path: '/supervisor', label: 'Trading OS', icon: '🧭', match: ['/supervisor', '/oversikt'], accent: 'blue' },
           { path: '/live',       label: 'Live / Signaler', icon: '♥', match: ['/', '/live', '/signalpuls', '/scanner', '/signaler', '/aktier', '/krypto', '/nasdaq'], accent: 'blue' },
-          { path: '/paper-trading', label: 'Paper Trading', icon: '🧾', match: ['/paper-trading'], accent: 'green' },
           { path: '/futures-paper', label: 'Paper Futures', icon: '📈', match: ['/futures-paper', '/paper-futures'], accent: 'teal' },
           { path: '/interactive-brokers', label: 'Interactive Brokers', icon: '🔌', match: ['/interactive-brokers'], accent: 'blue' },
         ],
@@ -23,6 +21,9 @@ const ADMIN_ITEM = {
   icon: '⚙️',
   match: [
     '/admin',
+    '/supervisor',
+    '/oversikt',
+    '/paper-trading',
     '/lab',
     '/trading-lab',
     '/strategy-lab',
