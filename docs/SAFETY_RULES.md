@@ -79,6 +79,34 @@ Several engines can produce watch-mode fields:
 
 Watch mode means manual review. It is not permission to trade automatically.
 
+## AI Strategy Control Zone
+
+AI may improve non-trade strategy research, read-only reports, replay/batch
+analysis, learning summaries, scoring explanations, test plans and diagnostics.
+
+AI must not modify or operate:
+
+- `/interactive-brokers`
+- Interactive Brokers components or services
+- IB submit / IB paper/manual execution
+- broker settings
+- order routes
+- account routes
+- approved trade strategies
+- order, broker, risk, live trading or execution paths
+
+Every AI strategy recommendation must state:
+
+- what AI saw
+- why it matters
+- what AI wants to improve
+- risk level
+- trading impact: no
+- next step in simple Swedish
+
+The machine-readable policy lives in
+`src/services/aiStrategyControlPolicyService.js`.
+
 ## Alert Engine Safety
 
 `src/alerts/alertEngine.js` can persist, dedupe, acknowledge, and derive alerts.

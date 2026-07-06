@@ -6,6 +6,11 @@ orderliknande språk.
 
 Nuvarande version är rule-based. Extern AI är avsiktligt inte inkopplad.
 
+För strategi-rekommendationer gäller dessutom
+`docs/AI_STRATEGY_CONTROL.md`: AI får förbättra icke-trade-strategier,
+testplaner, replay/batch/learning-resultat och read-only rapporter, men får inte
+röra Interactive Brokers, trade-godkända strategier, order, broker eller risk.
+
 ## Syfte
 
 AI Analyst ska:
@@ -85,6 +90,25 @@ Analyst-output har denna form:
   "modeLabel": "AI-läge: regelbaserad analys"
 }
 ```
+
+## Strategy Control Output
+
+Varje AI-rekommendation om strategier ska även bära ett enkelt kontrollblock:
+
+```json
+{
+  "vad_ai_sag": "",
+  "varfor_det_spelar_roll": "",
+  "vad_ai_vill_forbattra": "",
+  "riskniva": "lag | medel | hog | blockerad",
+  "paverkar_trading": "nej",
+  "affects_trading": false,
+  "nasta_steg": ""
+}
+```
+
+Detta fält är förklaring och skydd. Det får inte användas som order-, broker-
+eller riskmotor.
 
 ## nextImprovementSv
 

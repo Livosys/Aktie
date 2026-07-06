@@ -6,6 +6,11 @@ Trading OS ska utvecklas säkert, stegvis och spårbart.
 
 Ingen AI-agent får göra stora blandade ändringar utan att först förklara planen.
 
+AI Strategy Control-reglerna i `docs/AI_STRATEGY_CONTROL.md` gäller alltid:
+AI får förbättra icke-trade-strategier och read-only strategiunderlag, men får
+aldrig röra Interactive Brokers, trade-godkända strategier, order, broker eller
+risk utan separat beslut.
+
 ## Absoluta förbud
 
 Ändra aldrig följande utan uttryckligt beslut:
@@ -94,6 +99,7 @@ feat(ui): improve supervisor and narrow beginner guidance
 
 Fråga användaren innan:
 
+- commit
 - `git push`
 - `pm2 restart`
 - merge till main
@@ -103,7 +109,33 @@ Fråga användaren innan:
 - backendflödesändring
 - TradingView-kod
 - schedulerändring
+- schedulerändring som kör något nytt automatiskt
 - execution/paper queue-ändring
+- ändring i Interactive Brokers
+- ändring i trade-godkända strategier
+- ändring som påverkar order/trade/broker/risk
+
+## AI Strategy Control
+
+AI får arbeta självständigt med:
+
+- nya, svaga och icke-godkända research-strategier
+- replay-, batch- och learning-resultat
+- parameterförslag, scoring, förklaringar och testplaner
+- read-only rapporter och diagnostik
+
+AI får inte:
+
+- flytta strategi till trade-godkänd lista
+- auto-godkänna strategi för trading
+- använda buy/sell/execution
+- ändra risk automatiskt
+- skapa orderväg
+- röra `/interactive-brokers`, IB-komponenter eller IB-services
+
+Varje AI-rekommendation ska visa vad AI såg, varför det spelar roll, vad AI
+vill förbättra, risknivå, `påverkar trading: nej`, och nästa steg på enkel
+svenska.
 
 ## Tester efter UI-ändring
 

@@ -48,6 +48,15 @@ Systemet får aldrig:
 - auto-apply:a strategiändringar
 - bygga live trading-flöden
 
+## AI Strategy Control
+
+Se `docs/AI_STRATEGY_CONTROL.md`.
+
+AI får arbeta fritt med icke-trade-strategier, testplaner, replay/batch/learning
+och read-only förbättringar. AI får aldrig röra Interactive Brokers,
+trade-godkända strategier, order, broker, risk eller live trading utan separat
+beslut.
+
 ## Projektplats
 
 Serverprojekt:

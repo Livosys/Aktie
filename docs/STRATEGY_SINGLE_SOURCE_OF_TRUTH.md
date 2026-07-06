@@ -47,3 +47,21 @@ broker_enabled=false
 Detta steg ändrar inte broker, live trading, order, risk, scheduler-execution,
 TradingView-forwarding eller allowlist-beslut. Runtime-koppling (scanner/paper/
 learning ska använda normalizern) kommer som ett separat, verifierat steg senare.
+
+## AI Strategy Control
+
+AI får analysera och förbättra strategiunderlag för strategier som inte är
+trade-godkända. Det gäller nya strategier, svaga strategier, strategier som
+behöver mer data, replay/batch/learning-resultat, parameterförslag och
+testplaner.
+
+AI får inte:
+
+- göra en strategi trade-godkänd
+- ändra trade-godkända strategier
+- ändra approved trade-listor
+- påverka order, broker, risk eller live trading
+- röra Interactive Brokers-ytan
+
+Read-only paper/research-status är inte samma sak som trade-godkännande.
+Maskinläsbar policy: `src/services/aiStrategyControlPolicyService.js`.
