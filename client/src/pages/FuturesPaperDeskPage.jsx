@@ -249,6 +249,52 @@ function SafetyStrip({ safety }) {
   );
 }
 
+function ReadinessCard({ title, status, tone = 'neutral', children }) {
+  return (
+    <div style={{
+      border: '1px solid var(--border)',
+      background: 'var(--surface-2)',
+      borderRadius: 14,
+      padding: 14,
+      display: 'grid',
+      gap: 10,
+      alignContent: 'start',
+      minHeight: 160,
+    }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10, alignItems: 'flex-start', flexWrap: 'wrap' }}>
+        <strong style={{ fontSize: 14 }}>{title}</strong>
+        {status ? <Pill tone={tone}>{status}</Pill> : null}
+      </div>
+      <div style={{ display: 'grid', gap: 8, color: 'var(--muted)', fontSize: 13, lineHeight: 1.45 }}>
+        {children}
+      </div>
+    </div>
+  );
+}
+
+function ReadinessRow({ label, value }) {
+  return (
+    <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10, alignItems: 'baseline' }}>
+      <span>{label}</span>
+      <strong style={{ color: 'var(--text)', textAlign: 'right', fontSize: 12 }}>{value}</strong>
+    </div>
+  );
+}
+
+function MiniList({ items, emptyText }) {
+  if (!items.length) return <div>{emptyText}</div>;
+  return (
+    <div style={{ display: 'grid', gap: 6 }}>
+      {items.map((item, index) => (
+        <div key={item.key || index} style={{ display: 'flex', justifyContent: 'space-between', gap: 10, alignItems: 'center' }}>
+          <span style={{ color: 'var(--text)', fontWeight: 700 }}>{item.label}</span>
+          <span style={{ fontSize: 12 }}>{item.meta}</span>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 export default function FuturesPaperDeskPage() {
   const [refreshToken, setRefreshToken] = useState(0);
   const runtime = useFuturesDeskRuntime(refreshToken);
@@ -270,6 +316,20 @@ export default function FuturesPaperDeskPage() {
   const pnlTone = totalPnl > 0 ? 'success' : totalPnl < 0 ? 'danger' : 'neutral';
   const positionsCount = Number(positions.totalOpen || openPositions.length || 0) + Number(positions.totalClosed || closedTrades.length || 0);
   const readyText = market.isOpen ? 'Marknaden är öppen' : 'Marknaden är stängd';
+  const chartTradeCount = openPositions.length + closedTrades.length;
+  const readinessInstruments = ['MNQ', 'MES'].map((symbol) => {
+    const row = instruments.find((item) => String(item.symbol || item.root || '').toUpperCase() === symbol) || {};
+    return {
+      key: symbol,
+      label: symbol,
+      meta: `${row.name || (symbol === 'MNQ' ? 'Nasdaq 100 Micro E-mini Futures' : 'S&P 500 Micro E-mini Futures')} · tick ${row.tickSize ?? '0.25'} · ${fmtMoney(row.tickValueUsd ?? (symbol === 'MNQ' ? 0.5 : 1.25), 'USD', 2)} · planned`,
+    };
+  });
+  const strategyPreviewItems = strategies.slice(0, 3).map((row) => ({
+    key: row.strategyId || row.strategyName,
+    label: row.strategyName || row.strategyId || 'Okänd strategi',
+    meta: `${row.strategyId || 'strategy'} · kandidatkälla`,
+  }));
   const [balanceDraft, setBalanceDraft] = useState(String(account.startingBalanceSek ?? accountConfig.startingBalanceSek ?? 250000));
   const [accountActionError, setAccountActionError] = useState('');
   const [accountActionMessage, setAccountActionMessage] = useState('');
@@ -462,6 +522,67 @@ export default function FuturesPaperDeskPage() {
       ) : null}
 
       <SafetyStrip safety={data} />
+
+      <section style={{ ...sectionStyle(), marginTop: 14 }}>
+        <SectionHeader
+          eyebrow="Read-only"
+          title="Scanner och strategi-kontroll"
+          summary="Statuspanelen visar vad futures-desken kan göra just nu. Den aktiverar ingen automation, broker eller riktig orderväg."
+          action={<Pill tone="warning">Auto simulation OFF</Pill>}
+        />
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(260px, 1fr))', gap: 12 }}>
+          <ReadinessCard title="Scannerstatus" status="Planerad" tone="warning">
+            <ReadinessRow label="Futures scanner" value="Inte inkopplad ännu" />
+            <ReadinessRow label="Senaste scan" value="Ingen futures-scan ännu" />
+            <ReadinessRow label="Datakälla" value="Ingen separat MNQ/MES-feed ännu" />
+            <div>Den här futures-desken har konto, ledger och manuell simulation. Automatisk futures-scanning är inte inkopplad ännu.</div>
+          </ReadinessCard>
+
+          <ReadinessCard title="Auto paper-simulation" status="OFF" tone="warning">
+            <ReadinessRow label="Mode" value="paper_only" />
+            <ReadinessRow label="Broker" value="off" />
+            <ReadinessRow label="Real orders" value="blocked" />
+            <ReadinessRow label="Nästa steg" value="scanner -> candidate -> paper simulation" />
+            <div>Automatisk futures paper-simulation är inte aktiv ännu. Inga riktiga order kan skickas.</div>
+          </ReadinessCard>
+
+          <ReadinessCard title="Futures-symboler" status="MNQ / MES" tone="info">
+            <MiniList items={readinessInstruments} emptyText="MNQ och MES är planerade som första futures-symboler." />
+          </ReadinessCard>
+
+          <ReadinessCard title="Strategier" status="Kandidatkälla" tone="info">
+            <MiniList items={strategyPreviewItems} emptyText="Strategier visas när historisk strategy performance finns i runtime." />
+            <div>Strategier är kandidater, inte aktiva futures-auto-trades. Ingen futures allowlist är inkopplad ännu. Källa: historisk strategy performance.</div>
+          </ReadinessCard>
+
+          <ReadinessCard title="Senaste kandidater/signaler" status="Tomt" tone="neutral">
+            <ReadinessRow label="Kö" value="Inte inkopplad ännu" />
+            <ReadinessRow label="Status" value="Väntat i nuvarande fas" />
+            <div>Inga futures-kandidater ännu. Orsak: futures-scanner och candidate queue är inte inkopplade.</div>
+          </ReadinessCard>
+
+          <ReadinessCard title="Senaste blockerade signaler" status="Tomt" tone="neutral">
+            <ReadinessRow label="Blockerade futures-signaler" value="0" />
+            <ReadinessRow label="Orsak" value="Ingen scanner skickar kandidater" />
+            <div>Inga blockerade futures-signaler ännu eftersom ingen futures-scanner skickar kandidater till desken.</div>
+          </ReadinessCard>
+
+          <ReadinessCard title="Varför ingen trade togs" status="Förklaring" tone="warning">
+            <div>Auto simulation är OFF.</div>
+            <div>Ingen futures-scanner är inkopplad.</div>
+            <div>Ingen candidate queue finns ännu.</div>
+            <div>Chartdata skapas först från simulerade trades.</div>
+            <div>Broker/order är blockerade.</div>
+          </ReadinessCard>
+
+          <ReadinessCard title="Chart-status" status={chartTradeCount > 0 ? 'Preview-serie' : 'Ingen chartdata ännu'} tone={chartTradeCount > 0 ? 'info' : 'warning'}>
+            <ReadinessRow label="Chart mode" value="trade-preview" />
+            <ReadinessRow label="OHLC-feed" value="Inte inkopplad" />
+            <ReadinessRow label="Markers" value="När MNQ/MES har simulerade trades" />
+            <ReadinessRow label="Nuvarande orsak" value={chartTradeCount > 0 ? 'Simulerade trades finns' : 'Inga öppna/stängda trades'} />
+          </ReadinessCard>
+        </div>
+      </section>
 
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(190px, 1fr))', gap: 10, marginTop: 14 }}>
         <MetricCard label="Saldo" value={fmtMoney(balance, accountCurrency)} hint={`Startkapital ${fmtMoney(base, accountCurrency)}`} tone={pnlTone} />
