@@ -11,6 +11,7 @@
 const fs = require('fs');
 const path = require('path');
 const researchScoreService = require('./researchScoreService');
+const { buildImprovementRecommendation } = require('./strategyImprovementRecommendationService');
 
 const DEFAULT_DATA_FILE = path.resolve(__dirname, '../../data/research/strategy-evolution.json');
 
@@ -20,6 +21,23 @@ const SAFETY = Object.freeze({
   can_place_orders: false,
   live_trading_enabled: false,
   broker_enabled: false,
+});
+
+const SAFE_RECOMMENDATION = Object.freeze({
+  recommendedAction: 'wait_for_test',
+  priority: 'medium',
+  reason: 'No recommendation available yet.',
+  weaknesses: [],
+  suggestedChanges: [],
+  nextTestPlan: Object.freeze({
+    type: 'replay',
+    dryRun: true,
+    execution: false,
+    broker: false,
+    orders: false,
+  }),
+  confidence: 0,
+  blockedReason: 'recommendation_unavailable',
 });
 
 const TARGET_SCORE = Object.freeze({
@@ -124,6 +142,94 @@ function normalizeScoreDetails(value) {
   };
 }
 
+function textArray(value) {
+  if (!Array.isArray(value)) return [];
+  return value.map((entry) => text(entry, '')).filter(Boolean);
+}
+
+function firstText(value) {
+  if (Array.isArray(value)) {
+    return text(value.find((entry) => text(entry, '')), '');
+  }
+  return text(value, '');
+}
+
+function mergeMetadata(...values) {
+  const merged = {};
+  let hasAny = false;
+  for (const value of values) {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) continue;
+    Object.assign(merged, value);
+    hasAny = true;
+  }
+  return hasAny ? merged : null;
+}
+
+function normalizeRecommendation(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return SAFE_RECOMMENDATION;
+  const nextTestPlan = value.nextTestPlan && typeof value.nextTestPlan === 'object' && !Array.isArray(value.nextTestPlan)
+    ? {
+        type: text(value.nextTestPlan.type, 'replay'),
+        dryRun: bool(value.nextTestPlan.dryRun, true),
+        execution: bool(value.nextTestPlan.execution, false),
+        broker: bool(value.nextTestPlan.broker, false),
+        orders: bool(value.nextTestPlan.orders, false),
+        symbols: textArray(value.nextTestPlan.symbols),
+        timeframes: textArray(value.nextTestPlan.timeframes),
+        lookbackDays: numberOrNull(value.nextTestPlan.lookbackDays) || 180,
+        reason: text(value.nextTestPlan.reason, ''),
+      }
+    : SAFE_RECOMMENDATION.nextTestPlan;
+
+  const suggestedChanges = Array.isArray(value.suggestedChanges)
+    ? value.suggestedChanges
+      .filter((entry) => entry && typeof entry === 'object' && !Array.isArray(entry))
+      .map((entry) => ({
+        type: text(entry.type, ''),
+        name: text(entry.name, ''),
+        why: text(entry.why, ''),
+      }))
+      .filter((entry) => entry.type || entry.name || entry.why)
+    : [];
+
+  return {
+    recommendedAction: text(value.recommendedAction, SAFE_RECOMMENDATION.recommendedAction),
+    priority: text(value.priority, SAFE_RECOMMENDATION.priority),
+    reason: text(value.reason, SAFE_RECOMMENDATION.reason),
+    weaknesses: textArray(value.weaknesses),
+    suggestedChanges,
+    nextTestPlan,
+    confidence: numberOrNull(value.confidence) ?? 0,
+    blockedReason: value.blockedReason ? text(value.blockedReason, null) : null,
+  };
+}
+
+function buildRecommendation(row = {}, version = {}, normalizedVersion = {}) {
+  const recommendationInput = {
+    strategyId: row.strategyId || row.strategy_id || row.id || null,
+    name: row.name || null,
+    direction: firstText(version.direction || row.direction || normalizedVersion.direction || null),
+    timeframe: firstText(version.timeframe || version.timeframes || row.timeframe || row.timeframes || null),
+    symbols: Array.isArray(version.symbols)
+      ? version.symbols
+      : (Array.isArray(row.symbols) ? row.symbols : (version.symbol ? [version.symbol] : (row.symbol ? [row.symbol] : []))),
+    version: normalizedVersion.version,
+    status: normalizedVersion.status,
+    decision: normalizedVersion.decision || normalizeDecision(version.decision || row.decision),
+    aiScore: normalizedVersion.aiScore,
+    band: normalizedVersion.band,
+    scoreDetails: normalizedVersion.scoreDetails,
+    testResult: normalizedVersion.testResult,
+    metadata: mergeMetadata(row.metadata, version.metadata, row.meta, version.meta),
+  };
+
+  try {
+    return normalizeRecommendation(buildImprovementRecommendation(recommendationInput));
+  } catch (err) {
+    return SAFE_RECOMMENDATION;
+  }
+}
+
 function computeScoreDetails(testResult, context = {}) {
   const computed = researchScoreService.calculateResearchScore({
     strategyId: context.strategyId || null,
@@ -142,7 +248,7 @@ function computeScoreDetails(testResult, context = {}) {
   };
 }
 
-function normalizeVersion(row = {}, index = 0) {
+function normalizeVersion(row = {}, index = 0, strategyContext = {}) {
   const testResult = normalizeTestResult(row.testResult);
   const hasTestResult = Boolean(testResult);
   const status = hasTestResult ? normalizeStatus(row.status, 'tested') : 'waiting_for_test';
@@ -154,7 +260,7 @@ function normalizeVersion(row = {}, index = 0) {
     : null;
   const aiScore = existingAiScore !== null ? existingAiScore : computedScore?.aiScore ?? null;
   const band = text(row.band || row.scoreBand, '') || (aiScore !== null ? scoreBand(aiScore) : null);
-  return {
+  const normalizedVersion = {
     version: versionNumber,
     status,
     source: text(row.source, 'unknown'),
@@ -170,12 +276,16 @@ function normalizeVersion(row = {}, index = 0) {
     decision: normalizeDecision(row.decision),
     nextImprovement: text(row.nextImprovement, ''),
   };
+  return {
+    ...normalizedVersion,
+    recommendation: buildRecommendation(strategyContext, row, normalizedVersion),
+  };
 }
 
 function normalizeStrategy(row = {}, index = 0) {
   const strategyId = text(row.strategyId || row.strategy_id || row.id, `strategy_${index + 1}`);
   const versions = Array.isArray(row.versions)
-    ? row.versions.map((version, versionIndex) => normalizeVersion(version, versionIndex))
+    ? row.versions.map((version, versionIndex) => normalizeVersion(version, versionIndex, row))
     : [];
   return {
     strategyId,
@@ -210,6 +320,14 @@ function buildSummary(items) {
     strongCandidateCount: 0,
     needsImprovementCount: 0,
     waitingForTestCount: 0,
+    recommendationSummary: {
+      improveCount: 0,
+      retestCount: 0,
+      collectMoreDataCount: 0,
+      promoteCandidateCount: 0,
+      rejectCount: 0,
+      waitForTestCount: 0,
+    },
     byStatus: {},
     byDecision: {},
   };
@@ -227,6 +345,14 @@ function buildSummary(items) {
         summary.needsImprovementCount += 1;
       }
       if (version.status === 'waiting_for_test' || !version.testResult) summary.waitingForTestCount += 1;
+
+      const recommendationAction = version.recommendation && version.recommendation.recommendedAction;
+      if (recommendationAction === 'improve') summary.recommendationSummary.improveCount += 1;
+      if (recommendationAction === 'retest') summary.recommendationSummary.retestCount += 1;
+      if (recommendationAction === 'collect_more_data') summary.recommendationSummary.collectMoreDataCount += 1;
+      if (recommendationAction === 'promote_candidate') summary.recommendationSummary.promoteCandidateCount += 1;
+      if (recommendationAction === 'reject') summary.recommendationSummary.rejectCount += 1;
+      if (recommendationAction === 'wait_for_test') summary.recommendationSummary.waitForTestCount += 1;
     }
   }
 

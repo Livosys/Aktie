@@ -157,7 +157,7 @@ function deriveWeaknesses(ctx, input = {}) {
   const netProfitPct = normalizePercent(result.netProfitPct);
   const quality = normalizeRatio(result.dataQuality);
 
-  if (!ctx.testResult) weaknesses.add('missing_test_result');
+  if (!ctx.testResult && ctx.score === null) weaknesses.add('missing_test_result');
   if (ctx.testResult && (trades === null || trades < TARGETS.minTrades)) weaknesses.add('sample_size_too_small');
   if (ctx.testResult && quality !== null && quality < TARGETS.lowDataQuality) weaknesses.add('data_quality_low');
   if (ctx.testResult && quality === null && result.dataQuality !== undefined) weaknesses.add('data_quality_low');
@@ -306,6 +306,7 @@ function buildReason(weaknesses, ctx = {}) {
 function determineActionAndPriority(weaknesses, ctx = {}) {
   const score = ctx.score;
   const hasTestResult = Boolean(ctx.testResult);
+  const hasEvidence = hasTestResult || score !== null;
   const sampleTooSmall = weaknesses.includes('sample_size_too_small');
   const dataQualityLow = weaknesses.includes('data_quality_low');
   const drawdownHigh = weaknesses.includes('drawdown_too_high');
@@ -314,12 +315,45 @@ function determineActionAndPriority(weaknesses, ctx = {}) {
   const winrateWeak = weaknesses.includes('winrate_weak');
   const riskRewardWeak = weaknesses.includes('risk_reward_weak');
 
-  if (!hasTestResult) {
+  if (!hasEvidence) {
     return {
       recommendedAction: 'wait_for_test',
       priority: 'medium',
       blockedReason: 'missing_test_result',
       confidence: 20,
+    };
+  }
+
+  if (!hasTestResult && score !== null) {
+    if (score >= TARGETS.strongScore) {
+      return {
+        recommendedAction: 'promote_candidate',
+        priority: 'low',
+        blockedReason: null,
+        confidence: 88,
+      };
+    }
+    if (score >= TARGETS.score) {
+      return {
+        recommendedAction: 'retest',
+        priority: 'medium',
+        blockedReason: null,
+        confidence: 72,
+      };
+    }
+    if (score < 40) {
+      return {
+        recommendedAction: 'reject',
+        priority: 'high',
+        blockedReason: 'score_below_threshold',
+        confidence: 30,
+      };
+    }
+    return {
+      recommendedAction: 'improve',
+      priority: 'medium',
+      blockedReason: null,
+      confidence: 55,
     };
   }
 

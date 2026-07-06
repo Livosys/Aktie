@@ -161,6 +161,9 @@ function assertSafety(safety) {
   assert.equal(result.items[0].versions[0].aiScore, 75);
   assert.equal(result.items[0].versions[0].band, 'promising');
   assert.equal(result.items[0].versions[0].scoreBand, 'promising');
+  assert.equal(result.items[0].versions[0].recommendation.recommendedAction, 'retest');
+  assert.equal(result.items[0].versions[0].recommendation.priority, 'medium');
+  assert.ok(Array.isArray(result.items[0].versions[0].recommendation.weaknesses));
   assert.ok(Array.isArray(result.items[0].versions[0].scoreDetails.reasons), 'auto score details reasons');
   assert.ok(result.items[0].versions[0].scoreDetails.reasons.includes('Strong profit factor'), 'auto score details reasons include PF');
   assert.equal(result.items[0].versions[0].testResult.trades, 98);
@@ -168,12 +171,23 @@ function assertSafety(safety) {
   assert.equal(result.items[0].versions[1].aiScore, 88, 'existing aiScore preserved');
   assert.equal(result.items[0].versions[1].band, 'strong_candidate', 'existing aiScore band derived');
   assert.equal(result.items[0].versions[1].scoreDetails.reasons[0], 'Manual score still valid', 'existing score details preserved');
+  assert.equal(result.items[0].versions[1].recommendation.recommendedAction, 'promote_candidate');
+  assert.equal(result.items[0].versions[1].recommendation.priority, 'low');
+  assert.equal(result.items[0].versions[1].recommendation.nextTestPlan.dryRun, true);
+  assert.equal(result.items[0].versions[1].recommendation.nextTestPlan.execution, false);
+  assert.equal(result.items[0].versions[1].recommendation.nextTestPlan.broker, false);
+  assert.equal(result.items[0].versions[1].recommendation.nextTestPlan.orders, false);
   assert.equal(result.items[0].versions[2].status, 'waiting_for_test');
   assert.equal(result.items[0].versions[2].aiScore, null);
+  assert.equal(result.items[0].versions[2].recommendation.recommendedAction, 'wait_for_test');
+  assert.equal(result.items[0].versions[2].recommendation.blockedReason, 'missing_test_result');
   assert.equal(result.items[0].versions[2].scoreDetails, null);
   assert.equal(result.items[1].strategyId, 'weak_strategy');
   assert.equal(result.items[1].versions[0].band, 'weak');
   assert.equal(result.items[1].versions[0].aiScore < 40, true, 'weak score stays weak');
+  assert.equal(result.items[1].versions[0].recommendation.recommendedAction, 'collect_more_data');
+  assert.equal(result.items[1].versions[0].recommendation.priority, 'medium');
+  assert.equal(result.items[1].versions[0].recommendation.nextTestPlan.dryRun, true);
   assert.equal(result.summary.totalStrategies, 2);
   assert.equal(result.summary.totalVersions, 4);
   assert.equal(result.summary.promisingCount >= 1, true);
@@ -181,6 +195,12 @@ function assertSafety(safety) {
   assert.equal(result.summary.needsImprovementCount >= 1, true);
   assert.equal(result.summary.waitingForTestCount, 2);
   assert.equal(result.summary.byDecision.promising >= 2, true);
+  assert.equal(result.summary.recommendationSummary.promoteCandidateCount, 1);
+  assert.equal(result.summary.recommendationSummary.retestCount, 1);
+  assert.equal(result.summary.recommendationSummary.collectMoreDataCount, 1);
+  assert.equal(result.summary.recommendationSummary.waitForTestCount, 1);
+  assert.equal(result.summary.recommendationSummary.improveCount, 0);
+  assert.equal(result.summary.recommendationSummary.rejectCount, 0);
   assertSafety(result.safety);
   assert.equal(after, before, 'service is read-only and does not mutate source file');
 }
