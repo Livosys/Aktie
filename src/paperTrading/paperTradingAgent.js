@@ -1263,6 +1263,9 @@ function classifySkip(c, reason) {
   if (raw.includes('runtime_mapping_error')) {
     return { type: 'TRADE_SKIPPED', reasonSv: 'Skippad — runtime-mapping kunde inte läsas.' };
   }
+  if (raw.includes('setup_not_paper_entry')) {
+    return { type: 'TRADE_SKIPPED', reasonSv: 'Skippad — REGULAR_PULLBACK är inte en paper-entry-setup.' };
+  }
   if (raw.includes('gate blockerad') || raw.includes('data inte färsk — signal') || raw.includes('ema nedåt i crypto') || raw.includes('normal volym i crypto') || raw.includes('ema uppåt i crypto')) {
     return { type: 'GATE_BLOCKED', reasonSv: reason || 'Skippad — market gate blockerade signalen.' };
   }

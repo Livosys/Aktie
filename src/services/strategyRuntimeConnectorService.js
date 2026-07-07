@@ -641,6 +641,24 @@ function inferStrategyForSignal(signal = {}) {
       };
     }
     const strategy = catalog.getStrategyById(strategyId);
+    // Per-signal-flaggan i runtime-kartan vinner över strateginivåns runtime:
+    // REGULAR_PULLBACK är uttryckligen markerad som icke-paper-entry
+    // (can_create_paper_trade:false i kartan) och får inte öppna paper trades
+    // bara för att målstrategin (trend_continuation) är aktiv på strateginivå.
+    let setupNotPaperEntry = null;
+    if (raw === 'REGULAR_PULLBACK') {
+      let mapEntry = null;
+      try { mapEntry = findMapEntry(signal); } catch (_) { mapEntry = null; }
+      if (mapEntry && mapEntry.raw_signal === 'REGULAR_PULLBACK' && mapEntry.can_create_paper_trade === false) {
+        setupNotPaperEntry = {
+          can_create_paper_trade: false,
+          can_create_paper_trade_label: canCreateLabel(false),
+          blocked_reason_code: 'setup_not_paper_entry',
+          reason_sv: 'REGULAR_PULLBACK är inte en paper-entry-setup (setup_not_paper_entry).',
+          skip_reason_sv: 'REGULAR_PULLBACK är inte en paper-entry-setup (setup_not_paper_entry).',
+        };
+      }
+    }
     return {
       strategy_id: strategyId,
       strategyId: strategyId,
@@ -653,6 +671,7 @@ function inferStrategyForSignal(signal = {}) {
       resolvedStrategyName: metadata.resolvedStrategyName || strategy?.name || runtime.strategy_name || strategyId,
       mappingSource: metadata.mappingSource,
       ...runtime,
+      ...(setupNotPaperEntry || {}),
       raw_strategy: raw,
       signal_subtype: raw,
       mapping_source: metadata.mappingSource,
