@@ -9,12 +9,6 @@ const ADMIN_LINKS = [
     text: 'Översikt, systemstatus och huvudvy för Trading OS.',
   },
   {
-    to: '/paper-trading',
-    icon: '🧾',
-    title: 'Paper Trading',
-    text: 'Intern paper trading, testflöden och simulerade trades.',
-  },
-  {
     to: '/lab',
     icon: '🧪',
     title: 'Lärdomar',

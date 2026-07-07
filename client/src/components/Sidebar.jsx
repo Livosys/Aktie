@@ -4,13 +4,26 @@ import { useAlerts } from '../alertContext.jsx';
 
 const NAV_GROUPS = [
       {
-        id: 'main',
-        label: null,
+        id: 'marknad',
+        label: 'Marknad',
         items: [
           { path: '/live',       label: 'Live / Signaler', icon: '♥', match: ['/', '/live', '/signalpuls', '/scanner', '/signaler', '/aktier', '/krypto', '/nasdaq'], accent: 'blue' },
+        ],
+      },
+      {
+        id: 'paper',
+        label: 'Paper Trading',
+        items: [
+          { path: '/paper-trading', label: 'Paper Trading', icon: '🧾', match: ['/paper-trading'], accent: 'green' },
           { path: '/futures-paper', label: 'Paper Futures', icon: '📈', match: ['/futures-paper', '/paper-futures'], accent: 'teal' },
-          { path: '/pinescript', label: 'PineScript', icon: '⌘', match: ['/pinescript', '/pine-script'], accent: 'teal' },
           { path: '/interactive-brokers', label: 'Interactive Brokers', icon: '🔌', match: ['/interactive-brokers'], accent: 'blue' },
+        ],
+      },
+      {
+        id: 'analys',
+        label: 'Analys',
+        items: [
+          { path: '/pinescript', label: 'PineScript', icon: '⌘', match: ['/pinescript', '/pine-script'], accent: 'teal' },
         ],
       },
       {
@@ -31,7 +44,6 @@ const ADMIN_ITEM = {
     '/admin',
     '/supervisor',
     '/oversikt',
-    '/paper-trading',
     '/lab',
     '/trading-lab',
     '/strategy-lab',
