@@ -115,6 +115,31 @@ Data ligger under:
 - `data/futures-paper/candidates.json`
 - `data/futures-paper/price-feed-state.json`
 
+### FAS 6 - Automation Engine (paper-only)
+
+FAS 6 gjorde scannern strategidriven med samma godkännandekedja som interna
+Paper Trading.
+
+Regler:
+
+- strategikälla: `paperAllowlistService` (automationApprovalService) +
+  `strategyPerformanceReadService`; strategier utan data skippas med orsak
+- max trades per strategi: `FUTURES_PAPER_MAX_TRADES_PER_STRATEGY` (default 10),
+  block reason `max_strategy_trades_reached`
+- cooldown per strategi: `FUTURES_PAPER_STRATEGY_COOLDOWN_MINUTES` (default 60),
+  block reason `strategy_cooldown_active` med `lastTradeAt`/`nextAllowedAt`/
+  `cooldownMinutesRemaining`
+- scan history: `FUTURES_PAPER_SCAN_HISTORY_LIMIT` (default 10) i
+  `data/futures-paper/scan-history.json`
+- closed trades-vy: `FUTURES_PAPER_CLOSED_TRADES_LIMIT` (default 100), nyast först
+- auto-intervall: `FUTURES_PAPER_AUTO_INTERVAL_SECONDS` (default 60)
+
+Nya endpoints:
+
+- `GET /api/futures-paper/strategy-status`
+- `GET /api/futures-paper/scan-history`
+- `GET /api/futures-paper/closed-trades`
+
 ### FAS 4A - Trading Chart
 
 FAS 4A byggde den första chart-sektionen på `/futures-paper`.

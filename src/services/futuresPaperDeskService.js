@@ -196,6 +196,12 @@ function buildFuturesPaperDeskRuntime(options = {}) {
   const latestEvents = ledgerResult?.latestEvents || [];
   const scannerRuntime = options.scannerRuntime
     || futuresPaperScannerService.defaultFuturesPaperScannerService.getScannerRuntime({ now });
+  const strategyStatus = options.strategyStatus
+    || futuresPaperScannerService.defaultFuturesPaperScannerService.getStrategyStatus({ now });
+  const recentClosedTrades = options.recentClosedTrades
+    || futuresPaperLedgerService.defaultFuturesPaperLedgerService.getRecentClosedTrades({
+      limit: scannerRuntime?.engineConfig?.closedTradesLimit || 100,
+    });
 
   return {
     ok: true,
@@ -252,6 +258,15 @@ function buildFuturesPaperDeskRuntime(options = {}) {
     },
     autoSimulation: scannerRuntime?.autoSimulation || { enabled: false, intervalMs: null, timerActive: false },
     candidateQueue: scannerRuntime?.candidateQueue || { connected: false, length: 0, candidates: [] },
+    scanHistory: scannerRuntime?.scanHistory || [],
+    strategyStatus: strategyStatus?.strategies || [],
+    strategyStatusMeta: strategyStatus ? {
+      totalStrategies: strategyStatus.totalStrategies,
+      approvedStrategies: strategyStatus.approvedStrategies,
+      tradableNow: strategyStatus.tradableNow,
+      config: strategyStatus.config,
+    } : null,
+    recentClosedTrades: recentClosedTrades?.trades || [],
     dataFeed: scannerRuntime?.dataFeed || { source: 'none', simulated: false, fallback: false },
     quotes: scannerRuntime?.quotes || [],
     statusReasons: scannerRuntime?.statusReasons || [],

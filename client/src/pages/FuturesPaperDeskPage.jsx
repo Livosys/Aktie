@@ -316,6 +316,14 @@ export default function FuturesPaperDeskPage() {
   const statusReasons = Array.isArray(data?.statusReasons) ? data.statusReasons : [];
   const queueCandidates = Array.isArray(candidateQueue.candidates) ? candidateQueue.candidates : [];
   const autoSimOn = autoSimulation.enabled === true;
+  const scanHistory = Array.isArray(data?.scanHistory) ? data.scanHistory : [];
+  const strategyStatus = Array.isArray(data?.strategyStatus) ? data.strategyStatus : [];
+  const recentClosedTrades = Array.isArray(data?.recentClosedTrades) ? data.recentClosedTrades : [];
+  const lastScan = scanner.lastScanSummary || null;
+  const lastScanBlocked = [
+    ...(lastScan?.blockedByCooldown || []).map((row) => ({ ...row, label: 'cooldown' })),
+    ...(lastScan?.blockedByMaxTrades || []).map((row) => ({ ...row, label: 'max trades' })),
+  ];
   const accountCurrency = account.currency || account.baseCurrency || 'SEK';
   const totalPnl = Number(account.totalPnlSek || 0);
   const balance = Number(account.equitySek || account.cashSek || 0);
@@ -616,15 +624,24 @@ export default function FuturesPaperDeskPage() {
             </div>
           </ReadinessCard>
 
-          <ReadinessCard title="Senaste blockerade signaler" status="Info" tone="neutral">
-            <ReadinessRow label="Skippade i senaste scan" value={String(scanner.lastScanSummary?.skipped?.length ?? 0)} />
+          <ReadinessCard title="Senaste blockerade signaler" status={lastScanBlocked.length > 0 ? `${lastScanBlocked.length} blockerade` : 'Info'} tone={lastScanBlocked.length > 0 ? 'warning' : 'neutral'}>
+            <ReadinessRow label="Cooldown-blockerade" value={String(lastScan?.blockedByCooldown?.length ?? 0)} />
+            <ReadinessRow label="Max-limit-blockerade" value={String(lastScan?.blockedByMaxTrades?.length ?? 0)} />
+            <ReadinessRow label="Skippade strategier" value={String(lastScan?.skippedStrategies?.length ?? 0)} />
             <MiniList
-              items={(scanner.lastScanSummary?.skipped || []).slice(0, 3).map((row, index) => ({
-                key: `${row.symbol}_${index}`,
-                label: row.symbol,
-                meta: row.reason,
-              }))}
-              emptyText="Inga skippade symboler i senaste scan."
+              items={[
+                ...lastScanBlocked.slice(0, 3).map((row, index) => ({
+                  key: `blocked_${row.strategyId}_${index}`,
+                  label: row.strategyId,
+                  meta: row.reason,
+                })),
+                ...(lastScan?.skippedStrategies || []).slice(0, 2).map((row, index) => ({
+                  key: `skipped_${row.strategyId}_${index}`,
+                  label: row.strategyId,
+                  meta: row.reason,
+                })),
+              ]}
+              emptyText="Inga blockerade eller skippade strategier i senaste scan."
             />
           </ReadinessCard>
 
@@ -642,6 +659,28 @@ export default function FuturesPaperDeskPage() {
             <ReadinessRow label="Nuvarande orsak" value={chartTradeCount > 0 ? 'Simulerade trades finns' : 'Inga öppna/stängda trades'} />
           </ReadinessCard>
         </div>
+      </section>
+
+      <section style={{ ...sectionStyle(), marginTop: 14 }}>
+        <SectionHeader
+          eyebrow="Scan history"
+          title="Senaste 10 scans"
+          summary="Varje scan kontrollerar alla godkända strategier mot MNQ/MES med max trades- och cooldown-regler. Endast intern paper-simulation."
+        />
+        <CompactTable
+          rows={scanHistory.map((row) => ({ ...row, id: row.scanId }))}
+          emptyText="Inga scans ännu. Kör scannern eller slå på auto simulation."
+          columns={[
+            { key: 'startedAt', label: 'Tidpunkt', render: (row) => row.startedAt ? new Date(row.startedAt).toLocaleString('sv-SE') : '–' },
+            { key: 'strategiesChecked', label: 'Strategier', render: (row) => fmtNumber(row.strategiesChecked || 0) },
+            { key: 'candidatesCreated', label: 'Kandidater', render: (row) => fmtNumber(row.candidatesCreated || 0) },
+            { key: 'tradesOpened', label: 'Trades öppnade', render: (row) => fmtNumber(row.tradesOpened || 0) },
+            { key: 'blockedByCooldown', label: 'Cooldown-block', render: (row) => fmtNumber(row.blockedByCooldown?.length || 0) },
+            { key: 'blockedByMaxTrades', label: 'Max-block', render: (row) => fmtNumber(row.blockedByMaxTrades?.length || 0) },
+            { key: 'skippedStrategies', label: 'Skippade', render: (row) => fmtNumber(row.skippedStrategies?.length || 0) },
+            { key: 'status', label: 'Status', render: (row) => <Pill tone={row.status === 'completed' ? 'success' : 'warning'}>{row.status || '–'}</Pill> },
+          ]}
+        />
       </section>
 
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(190px, 1fr))', gap: 10, marginTop: 14 }}>
@@ -751,19 +790,28 @@ export default function FuturesPaperDeskPage() {
         <section style={sectionStyle()}>
           <SectionHeader
             eyebrow="Strategier"
-            title="Befintliga strategier som kandidatkälla"
-            summary="Vi använder redan bästa historiska strategier som grund för futures-desken."
+            title="Strategy status (godkända för paper-test)"
+            summary="Alla godkända strategier från paper-allowlisten med max trades- och cooldown-status. Endast intern paper-simulation, ingen broker."
           />
           <CompactTable
-            rows={strategies}
-            emptyText="Inga strategier med tillräcklig data ännu."
+            rows={strategyStatus.map((row) => ({ ...row, id: row.strategyId }))}
+            emptyText="Inga godkända strategier hittades i paper-allowlisten."
             columns={[
-              { key: 'strategyName', label: 'Strategi' },
-              { key: 'trades', label: 'Trades', render: (row) => fmtNumber(row.trades || 0) },
-              { key: 'winRate', label: 'Win rate', render: (row) => fmtPct(row.winRate ?? row.win_rate ?? 0) },
-              { key: 'avgPnl', label: 'Avg PnL', render: (row) => fmtMoney(row.avgPnl ?? row.avg_pnl ?? 0, 'SEK', 2) },
-              { key: 'score', label: 'Score', render: (row) => fmtNumber(row.score || 0) },
-              { key: 'bestSymbol', label: 'Bästa symbol', render: (row) => row.bestSymbol || '–' },
+              { key: 'strategyName', label: 'Strategi', render: (row) => (
+                <div>
+                  <div style={{ fontWeight: 700 }}>{row.strategyName}</div>
+                  <div style={{ color: 'var(--muted)', fontSize: 11 }}>{row.strategyId}{row.approved ? '' : ' · ej godkänd'}</div>
+                </div>
+              ) },
+              { key: 'tradesUsed', label: 'Trades', render: (row) => `${fmtNumber(row.tradesUsed || 0)} / ${fmtNumber(row.maxTrades || 10)}` },
+              { key: 'cooldown', label: 'Cooldown', render: (row) => row.cooldownActive ? `${fmtNumber(row.cooldownMinutesRemaining || 0)} min kvar` : '–' },
+              { key: 'lastTradeAt', label: 'Senaste trade', render: (row) => row.lastTradeAt ? new Date(row.lastTradeAt).toLocaleString('sv-SE') : '–' },
+              { key: 'nextAllowedAt', label: 'Nästa tillåten', render: (row) => row.canTradeNow ? 'Nu' : (row.nextAllowedAt ? new Date(row.nextAllowedAt).toLocaleString('sv-SE') : '–') },
+              { key: 'canTradeNow', label: 'Kan trada', render: (row) => (
+                <Pill tone={row.canTradeNow ? 'success' : 'warning'}>{row.canTradeNow ? 'Ja' : (row.blockReason || 'Nej')}</Pill>
+              ) },
+              { key: 'totalPnlSek', label: 'PnL', render: (row) => fmtMoney(row.totalPnlSek || 0, 'SEK') },
+              { key: 'winRate', label: 'Win rate', render: (row) => row.winRate == null ? '–' : fmtPct(row.winRate) },
             ]}
           />
         </section>
@@ -775,6 +823,33 @@ export default function FuturesPaperDeskPage() {
           accountCurrency={accountCurrency}
           onClosePosition={handleClosePosition}
         />
+
+        <section style={sectionStyle()}>
+          <SectionHeader
+            eyebrow="Trades"
+            title="Senaste 100 closed trades"
+            summary="Stängda simulerade futures paper trades, nyast först. Endast paper money."
+          />
+          <CompactTable
+            rows={recentClosedTrades.map((row) => ({ ...row, id: row.tradeId }))}
+            emptyText="Inga stängda simulerade trades ännu."
+            columns={[
+              { key: 'closedAt', label: 'Stängd', render: (row) => row.closedAt ? new Date(row.closedAt).toLocaleString('sv-SE') : '–' },
+              { key: 'symbol', label: 'Symbol' },
+              { key: 'direction', label: 'Riktning' },
+              { key: 'strategyName', label: 'Strategi', render: (row) => row.strategyName || row.strategyId || '–' },
+              { key: 'entryPrice', label: 'Entry', render: (row) => fmtNumber(row.entryPrice, 2) },
+              { key: 'exitPrice', label: 'Exit', render: (row) => fmtNumber(row.exitPrice, 2) },
+              { key: 'realizedPnlSek', label: 'PnL', render: (row) => (
+                <strong style={{ color: (row.realizedPnlSek || 0) > 0 ? 'var(--success)' : (row.realizedPnlSek || 0) < 0 ? 'var(--danger)' : 'var(--text)' }}>
+                  {fmtMoney(row.realizedPnlSek || 0, 'SEK')}
+                </strong>
+              ) },
+              { key: 'durationMinutes', label: 'Duration', render: (row) => row.durationMinutes == null ? '–' : `${fmtNumber(row.durationMinutes, 1)} min` },
+              { key: 'closeReason', label: 'Orsak', render: (row) => row.closeReason || '–' },
+            ]}
+          />
+        </section>
 
         <section style={sectionStyle()}>
           <SectionHeader

@@ -544,6 +544,50 @@ function createFuturesPaperLedgerService(options = {}) {
     };
   }
 
+  // Senaste stängda trades, nyast först, i ett komplett vy-format för UI/API.
+  function getRecentClosedTrades({ limit = 100 } = {}) {
+    ensureFiles();
+    const positionsState = readPositionsState();
+    const capped = Math.max(1, Math.min(1000, Number(limit) || 100));
+    const trades = safeArray(positionsState.closed)
+      .slice()
+      .sort((a, b) => (Date.parse(b.closedAt || '') || 0) - (Date.parse(a.closedAt || '') || 0))
+      .slice(0, capped)
+      .map((row) => {
+        const openedMs = Date.parse(row.openedAt || '') || 0;
+        const closedMs = Date.parse(row.closedAt || '') || 0;
+        const durationMinutes = openedMs && closedMs ? round((closedMs - openedMs) / 60000, 1) : null;
+        return {
+          tradeId: row.tradeId,
+          symbol: row.symbol || row.root,
+          strategyId: row.strategyId || null,
+          strategyName: row.strategyName || null,
+          direction: row.side,
+          contracts: row.contracts,
+          entryPrice: row.entryPrice,
+          exitPrice: row.exitPrice,
+          stopLoss: row.stopLoss,
+          takeProfit: row.takeProfit,
+          realizedPnlUsd: row.realizedPnlUsd,
+          realizedPnlSek: row.realizedPnlSek,
+          openedAt: row.openedAt,
+          closedAt: row.closedAt,
+          closeReason: row.exitReason || null,
+          durationMinutes,
+          source: 'futures_paper_desk',
+          paperOnly: true,
+        };
+      });
+    return {
+      ok: true,
+      generatedAt: nowIso(),
+      totalClosedTrades: safeArray(positionsState.closed).length,
+      limit: capped,
+      trades,
+      ...SAFETY,
+    };
+  }
+
   // Paper-only mark-to-market: uppdaterar currentPrice + orealiserad PnL på
   // öppna positioner utifrån simulerade priser och sparar nytt kontosnapshot.
   function markOpenPositionsToMarket({ prices = {}, now = new Date() } = {}) {
@@ -620,6 +664,7 @@ function createFuturesPaperLedgerService(options = {}) {
     getFuturesPaperTrades,
     openFuturesPaperPosition,
     closeFuturesPaperPosition,
+    getRecentClosedTrades,
     markOpenPositionsToMarket,
     resetState,
   };

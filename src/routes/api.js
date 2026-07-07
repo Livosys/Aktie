@@ -3652,6 +3652,34 @@ router.get('/futures-paper/price-feed', (req, res) => {
   }
 });
 
+router.get('/futures-paper/strategy-status', (req, res) => {
+  try {
+    res.json(futuresPaperScannerService.defaultFuturesPaperScannerService.getStrategyStatus({
+      now: req.query.now || undefined,
+    }));
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message, ...futuresPaperScannerService.SAFETY });
+  }
+});
+
+router.get('/futures-paper/scan-history', (req, res) => {
+  try {
+    res.json(futuresPaperScannerService.defaultFuturesPaperScannerService.getScanHistory());
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message, ...futuresPaperScannerService.SAFETY });
+  }
+});
+
+router.get('/futures-paper/closed-trades', (req, res) => {
+  try {
+    res.json(futuresPaperLedgerService.defaultFuturesPaperLedgerService.getRecentClosedTrades({
+      limit: req.query.limit || req.query.n || undefined,
+    }));
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message, ...futuresPaperLedgerService.SAFETY });
+  }
+});
+
 router.get('/paper-trading/truth', async (req, res) => {
   try {
     res.json(await paperTradingTruthService.buildPaperTradingTruth({
