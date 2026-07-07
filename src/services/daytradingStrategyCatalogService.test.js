@@ -90,4 +90,17 @@ resetState();
   assert.equal(internal.status, 'active', 'internal active preserved');
 }
 
+// ── inferStrategyForSignal: ingen fallback till trend_continuation ──
+{
+  // Okänd/systemsignal ska förbli omappad — inte felattribueras.
+  assert.equal(catalog.inferStrategyForSignal({ symbol: 'GOOGL', signalFamily: 'UNKNOWN', signalSubtype: 'NO_TRADE', marketType: 'stocks' }), null, 'NO_TRADE ska inte mappas till någon strategi');
+  assert.equal(catalog.inferStrategyForSignal({}), null, 'tom signal ska inte mappas till någon strategi');
+  assert.equal(catalog.inferStrategyForSignal({ symbol: 'SPY', signalSubtype: 'MARKET_CLOSED', marketType: 'stocks' }), null, 'MARKET_CLOSED ska inte mappas till någon strategi');
+
+  // Kända mönster ska fortsatt mappas som förut.
+  assert.equal(catalog.inferStrategyForSignal({ symbol: 'QQQ', signalSubtype: 'VWAP_RECLAIM_UP', marketType: 'stocks' })?.id, 'vwap_volume_breakout_long', 'VWAP reclaim mappas fortfarande');
+  assert.equal(catalog.inferStrategyForSignal({ symbol: 'QQQ', signalFamily: 'NARROW_STATE', marketType: 'stocks' })?.id, 'narrow_breakout', 'narrow mappas fortfarande');
+  assert.equal(catalog.inferStrategyForSignal({ symbol: 'BTCUSDT', marketType: 'crypto' })?.id, 'crypto_momentum_scalper', 'crypto mappas fortfarande');
+}
+
 console.log('Daytrading strategy catalog tests passed.');

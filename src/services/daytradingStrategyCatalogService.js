@@ -1125,7 +1125,10 @@ function inferStrategyForSignal(signal = {}) {
   if (family.includes('REVERSION') || family.includes('REVERSAL')) return getStrategyById('mean_reversion_vwap');
   if (sig.includes('SHORT')) return getStrategyById('resistance_rejection');
   if (sig.includes('LONG')) return getStrategyById('support_bounce');
-  return getStrategyById('trend_continuation');
+  // Okänd signal får INTE falla tillbaka till trend_continuation — den ska
+  // förbli omappad så att runtime blockerar den med tydlig reason i stället
+  // för att felattribueras. Alla call-sites hanterar null.
+  return null;
 }
 
 function getStatus() {
