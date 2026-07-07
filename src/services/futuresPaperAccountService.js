@@ -41,16 +41,23 @@ function clampMoney(value) {
   return round(n, 2);
 }
 
+// PnL-fält får vara negativa — clampMoney är bara för saldon/marginaler.
+function signedMoney(value) {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return null;
+  return round(n, 2);
+}
+
 function buildAccountSnapshot({ config, state, updatedAt = null } = {}) {
   const cfg = config && typeof config === 'object' ? config : DEFAULT_CONFIG;
   const st = state && typeof state === 'object' ? state : {};
   const startingBalanceSek = clampMoney(st.startingBalanceSek ?? cfg.startingBalanceSek ?? DEFAULT_CONFIG.startingBalanceSek) ?? DEFAULT_CONFIG.startingBalanceSek;
   const cashSek = clampMoney(st.cashSek ?? startingBalanceSek) ?? startingBalanceSek;
   const equitySek = clampMoney(st.equitySek ?? cashSek) ?? cashSek;
-  const realizedPnlSek = clampMoney(st.realizedPnlSek ?? 0) ?? 0;
-  const unrealizedPnlSek = clampMoney(st.unrealizedPnlSek ?? 0) ?? 0;
-  const totalPnlSek = clampMoney(st.totalPnlSek ?? (equitySek - startingBalanceSek)) ?? round(equitySek - startingBalanceSek, 2);
-  const dailyPnlSek = clampMoney(st.dailyPnlSek ?? totalPnlSek) ?? totalPnlSek;
+  const realizedPnlSek = signedMoney(st.realizedPnlSek ?? 0) ?? 0;
+  const unrealizedPnlSek = signedMoney(st.unrealizedPnlSek ?? 0) ?? 0;
+  const totalPnlSek = signedMoney(st.totalPnlSek ?? (equitySek - startingBalanceSek)) ?? round(equitySek - startingBalanceSek, 2);
+  const dailyPnlSek = signedMoney(st.dailyPnlSek ?? totalPnlSek) ?? totalPnlSek;
   const peakEquitySek = clampMoney(st.peakEquitySek ?? Math.max(startingBalanceSek, equitySek)) ?? Math.max(startingBalanceSek, equitySek);
   const drawdownSek = clampMoney(st.drawdownSek ?? Math.max(0, peakEquitySek - equitySek)) ?? Math.max(0, peakEquitySek - equitySek);
   const drawdownPct = peakEquitySek > 0 ? round((drawdownSek / peakEquitySek) * 100, 2) : 0;

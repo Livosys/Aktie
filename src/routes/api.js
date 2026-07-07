@@ -112,6 +112,8 @@ const paperTradingRuntimeService = require('../services/paperTradingRuntimeServi
 const futuresPaperDeskService = require('../services/futuresPaperDeskService');
 const futuresPaperAccountService = require('../services/futuresPaperAccountService');
 const futuresPaperLedgerService = require('../services/futuresPaperLedgerService');
+const futuresPaperScannerService = require('../services/futuresPaperScannerService');
+const futuresPaperPriceFeedService = require('../services/futuresPaperPriceFeedService');
 const paperTradingTruthService = require('../services/paperTradingTruthService');
 const strategyPipelineTruthService = require('../services/strategyPipelineTruthService');
 const shortExitTruthService = require('../services/shortExitTruthService');
@@ -3558,6 +3560,95 @@ router.post('/futures-paper/manual/close', (req, res) => {
     res.status(result.ok ? 200 : 400).json(result);
   } catch (err) {
     res.status(500).json({ ok: false, error: err.message, ...futuresPaperLedgerService.SAFETY });
+  }
+});
+
+// Paper-only guard för futures-scannerns POST-endpoints: blockerar varje
+// försök att smyga in live-/broker-flaggor. Ingen riktig orderväg finns här.
+function rejectIfNotFuturesPaperOnly(req, res) {
+  const body = req.body && typeof req.body === 'object' ? req.body : {};
+  const guardError = futuresPaperScannerService.assertPaperOnly(body);
+  if (guardError) {
+    res.status(400).json({ ok: false, error: guardError, ...futuresPaperScannerService.SAFETY });
+    return true;
+  }
+  return false;
+}
+
+router.get('/futures-paper/scanner', (req, res) => {
+  try {
+    res.json(futuresPaperScannerService.defaultFuturesPaperScannerService.getScannerRuntime({
+      now: req.query.now || undefined,
+    }));
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message, ...futuresPaperScannerService.SAFETY });
+  }
+});
+
+router.post('/futures-paper/scanner/run-once', (req, res) => {
+  try {
+    if (rejectIfNotFuturesPaperOnly(req, res)) return;
+    const result = futuresPaperScannerService.defaultFuturesPaperScannerService.runScannerOnce({
+      now: req.body?.now || undefined,
+    });
+    res.status(result.ok ? 200 : 400).json(result);
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message, ...futuresPaperScannerService.SAFETY });
+  }
+});
+
+router.get('/futures-paper/candidates', (req, res) => {
+  try {
+    res.json(futuresPaperScannerService.defaultFuturesPaperScannerService.getCandidates());
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message, ...futuresPaperScannerService.SAFETY });
+  }
+});
+
+router.post('/futures-paper/candidates/simulate', (req, res) => {
+  try {
+    if (rejectIfNotFuturesPaperOnly(req, res)) return;
+    const result = futuresPaperScannerService.defaultFuturesPaperScannerService.simulateCandidate({
+      candidateId: req.body?.candidateId || null,
+      now: req.body?.now || undefined,
+    });
+    res.status(result.ok ? 200 : 400).json(result);
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message, ...futuresPaperScannerService.SAFETY });
+  }
+});
+
+router.post('/futures-paper/simulation/tick', (req, res) => {
+  try {
+    if (rejectIfNotFuturesPaperOnly(req, res)) return;
+    const result = futuresPaperScannerService.defaultFuturesPaperScannerService.runSimulationTick({
+      now: req.body?.now || undefined,
+      source: 'manual_api',
+    });
+    res.status(result.ok ? 200 : 400).json(result);
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message, ...futuresPaperScannerService.SAFETY });
+  }
+});
+
+router.post('/futures-paper/auto-simulation', (req, res) => {
+  try {
+    if (rejectIfNotFuturesPaperOnly(req, res)) return;
+    const result = futuresPaperScannerService.defaultFuturesPaperScannerService.setAutoSimulation({
+      enabled: req.body?.enabled === true,
+      intervalMs: req.body?.intervalMs || null,
+    });
+    res.status(result.ok ? 200 : 400).json(result);
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message, ...futuresPaperScannerService.SAFETY });
+  }
+});
+
+router.get('/futures-paper/price-feed', (req, res) => {
+  try {
+    res.json(futuresPaperPriceFeedService.defaultFuturesPaperPriceFeedService.getQuotes());
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message, ...futuresPaperPriceFeedService.SAFETY });
   }
 });
 

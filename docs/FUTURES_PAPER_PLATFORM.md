@@ -92,6 +92,29 @@ Ledgern stödjer:
 - event-loggning
 - manuell öppna/stänga-simulering
 
+### FAS 5 - Scanner, candidate queue och auto-simulation (paper-only)
+
+FAS 5 kopplade in en intern paper-only scanner för MNQ/MES.
+
+Resultat:
+
+- `src/services/futuresPaperPriceFeedService.js` - simulerad fallback-prisfeed
+  (random walk runt rimliga MNQ/MES-nivåer, alltid märkt `simulated_fallback`)
+- `src/services/futuresPaperScannerService.js` - scanner, candidate queue och
+  auto-simulation med hård paper-only-gate (`assertPaperOnly`)
+- mark-to-market i ledgern (`markOpenPositionsToMarket`) och automatisk
+  stängning på stop loss / take profit
+- kandidater använder befintlig strategy performance; utan performance skapas
+  en dummy-kandidat märkt `testOnly: true`
+- auto-simulation är default AV, styrs via API/UI och kör bara intern
+  simulation (scanner -> kandidat -> paper position -> mark-to-market)
+
+Data ligger under:
+
+- `data/futures-paper/scanner-state.json`
+- `data/futures-paper/candidates.json`
+- `data/futures-paper/price-feed-state.json`
+
 ### FAS 4A - Trading Chart
 
 FAS 4A byggde den första chart-sektionen på `/futures-paper`.
@@ -131,6 +154,20 @@ Följande read-only eller paper-only endpoints används av Futures Paper Platfor
 - `GET /api/futures-paper/trades`
 - `POST /api/futures-paper/manual/open`
 - `POST /api/futures-paper/manual/close`
+
+### Scanner och simulation (FAS 5, paper-only)
+
+- `GET /api/futures-paper/scanner`
+- `POST /api/futures-paper/scanner/run-once`
+- `GET /api/futures-paper/candidates`
+- `POST /api/futures-paper/candidates/simulate`
+- `POST /api/futures-paper/simulation/tick`
+- `POST /api/futures-paper/auto-simulation`
+- `GET /api/futures-paper/price-feed`
+
+Alla POST-endpoints blockerar request-bodies som försöker sätta
+`live_trading_enabled`, `broker_enabled`, `can_place_orders`,
+`actions_allowed` eller `mode != paper_only`.
 
 ## Datafiler
 

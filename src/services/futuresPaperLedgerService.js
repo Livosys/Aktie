@@ -544,6 +544,61 @@ function createFuturesPaperLedgerService(options = {}) {
     };
   }
 
+  // Paper-only mark-to-market: uppdaterar currentPrice + orealiserad PnL på
+  // öppna positioner utifrån simulerade priser och sparar nytt kontosnapshot.
+  function markOpenPositionsToMarket({ prices = {}, now = new Date() } = {}) {
+    ensureFiles();
+    const positionsState = readPositionsState();
+    const account = getCurrentAccount();
+    const fxUsdSek = Number(account.account?.fxUsdSek || account.config?.fxUsdSek || futuresPaperAccountService.DEFAULT_CONFIG.fxUsdSek) || futuresPaperAccountService.DEFAULT_CONFIG.fxUsdSek;
+    let updated = 0;
+
+    const nextOpen = safeArray(positionsState.open).map((position) => {
+      const price = ensureFiniteNumber(prices[position.tradeId]);
+      if (!price || price <= 0) return { ...position };
+      const root = normalizeRoot(position.root, position.symbol);
+      const unrealizedPnlUsd = calculatePnlUsd({
+        root,
+        entryPrice: position.entryPrice,
+        exitPrice: price,
+        side: position.side,
+        contracts: position.contracts,
+      }) || 0;
+      updated += 1;
+      return {
+        ...position,
+        currentPrice: round(price, 2),
+        unrealizedPnlUsd,
+        unrealizedPnlSek: round(unrealizedPnlUsd * fxUsdSek, 2),
+      };
+    });
+
+    if (updated === 0) {
+      return { ok: true, updated: 0, ...SAFETY };
+    }
+
+    const nextPositionsState = {
+      open: nextOpen,
+      closed: safeArray(positionsState.closed).map((row) => ({ ...row })),
+      updatedAt: nowIso(now),
+    };
+    writePositionsState(nextPositionsState);
+    const accountSnapshot = buildAccountState({
+      config: account.config || futuresPaperAccountService.DEFAULT_CONFIG,
+      positionsState: nextPositionsState,
+      now,
+    });
+    persistAccountSnapshot(accountSnapshot);
+
+    return {
+      ok: true,
+      updated,
+      positions: getPositionsSummary(nextPositionsState),
+      account: accountSnapshot,
+      ...SAFETY,
+    };
+  }
+
   function resetState() {
     ensureFiles();
     const defaultPositions = createDefaultPositionsState();
@@ -565,6 +620,7 @@ function createFuturesPaperLedgerService(options = {}) {
     getFuturesPaperTrades,
     openFuturesPaperPosition,
     closeFuturesPaperPosition,
+    markOpenPositionsToMarket,
     resetState,
   };
 }

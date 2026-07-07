@@ -4,6 +4,7 @@ const marketUniverseService = require('./marketUniverseService');
 const strategyPerformanceReadService = require('./strategyPerformanceReadService');
 const futuresPaperAccountService = require('./futuresPaperAccountService');
 const futuresPaperLedgerService = require('./futuresPaperLedgerService');
+const futuresPaperScannerService = require('./futuresPaperScannerService');
 
 const SAFETY = Object.freeze({
   mode: 'paper_only',
@@ -193,6 +194,8 @@ function buildFuturesPaperDeskRuntime(options = {}) {
   const openPositions = ledgerResult?.openPositions || positions.open || [];
   const closedTrades = ledgerResult?.closedTrades || positions.closed || [];
   const latestEvents = ledgerResult?.latestEvents || [];
+  const scannerRuntime = options.scannerRuntime
+    || futuresPaperScannerService.defaultFuturesPaperScannerService.getScannerRuntime({ now });
 
   return {
     ok: true,
@@ -242,23 +245,34 @@ function buildFuturesPaperDeskRuntime(options = {}) {
       marketGroup: universe.groups?.mini_futures || null,
       selectedSymbols: instruments.map((row) => row.symbol),
       note: 'Futures-desken använder befintliga strategier som kandidatkällor och fokuserar på MNQ/MES.',
+      connected: Boolean(scannerRuntime?.scanner?.connected),
+      lastScanAt: scannerRuntime?.scanner?.lastScanAt || null,
+      lastScanSummary: scannerRuntime?.scanner?.lastScanSummary || null,
+      lastTickAt: scannerRuntime?.scanner?.lastTickAt || null,
     },
+    autoSimulation: scannerRuntime?.autoSimulation || { enabled: false, intervalMs: null, timerActive: false },
+    candidateQueue: scannerRuntime?.candidateQueue || { connected: false, length: 0, candidates: [] },
+    dataFeed: scannerRuntime?.dataFeed || { source: 'none', simulated: false, fallback: false },
+    quotes: scannerRuntime?.quotes || [],
+    statusReasons: scannerRuntime?.statusReasons || [],
     chart: {
       activeSymbol: 'MNQ',
       markerPlan: ['entry', 'exit', 'stop_loss', 'take_profit'],
-      description: 'Chart-markers kommer i nästa fas när simulated trades kopplas in.',
+      description: 'Chart-markers byggs från simulerade trades (entry, exit, stop loss, take profit).',
     },
     controls: {
-      manualTradingEnabled: false,
-      manualTradingNote: 'Manuell simulerad handel byggs i nästa fas.',
+      manualTradingEnabled: true,
+      manualTradingNote: 'Manuell simulerad handel och paper-scanner är aktiva. Endast intern simulation.',
       maxTradesPerDay: null,
-      maxOpenTrades: null,
+      maxOpenTrades: scannerRuntime?.scanner?.maxOpenPositions ?? null,
     },
     technical: {
       runtimeSource: 'futuresPaperDeskService',
       universeSource: 'marketUniverseService',
       strategySource: 'strategyPerformanceReadService',
       accountSource: 'futuresPaperAccountService',
+      scannerSource: 'futuresPaperScannerService',
+      priceFeedSource: 'futuresPaperPriceFeedService (simulated_fallback)',
     },
     ...SAFETY,
   };

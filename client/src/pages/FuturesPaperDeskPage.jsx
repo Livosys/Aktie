@@ -309,6 +309,13 @@ export default function FuturesPaperDeskPage() {
   const closedTrades = Array.isArray(data?.closedTrades) ? data.closedTrades : Array.isArray(positions.closed) ? positions.closed : [];
   const latestEvents = Array.isArray(data?.latestEvents) ? data.latestEvents : [];
   const market = data?.market || {};
+  const scanner = data?.scanner || {};
+  const autoSimulation = data?.autoSimulation || {};
+  const candidateQueue = data?.candidateQueue || {};
+  const dataFeed = data?.dataFeed || {};
+  const statusReasons = Array.isArray(data?.statusReasons) ? data.statusReasons : [];
+  const queueCandidates = Array.isArray(candidateQueue.candidates) ? candidateQueue.candidates : [];
+  const autoSimOn = autoSimulation.enabled === true;
   const accountCurrency = account.currency || account.baseCurrency || 'SEK';
   const totalPnl = Number(account.totalPnlSek || 0);
   const balance = Number(account.equitySek || account.cashSek || 0);
@@ -481,6 +488,35 @@ export default function FuturesPaperDeskPage() {
     }
   }
 
+  async function handleRunScannerOnce() {
+    try {
+      const result = await mutateLedger('/api/futures-paper/scanner/run-once', {});
+      setAccountActionMessage(`Scanner körd: ${result.scan?.candidatesAdded ?? 0} nya kandidater (simulerad fallback-data).`);
+    } catch (err) {
+      setAccountActionError(err?.message || 'Kunde inte köra futures-scannern.');
+    }
+  }
+
+  async function handleSimulateCandidate() {
+    try {
+      const result = await mutateLedger('/api/futures-paper/candidates/simulate', {});
+      setAccountActionMessage(`Simulerad position öppnad från kandidat: ${result.position?.symbol} ${result.position?.side}.`);
+    } catch (err) {
+      setAccountActionError(err?.message || 'Kunde inte simulera kandidat.');
+    }
+  }
+
+  async function handleToggleAutoSimulation() {
+    try {
+      const result = await mutateLedger('/api/futures-paper/auto-simulation', { enabled: !autoSimOn });
+      setAccountActionMessage(result.autoSimulation?.enabled
+        ? 'Auto simulation PÅ (endast intern paper-simulation).'
+        : 'Auto simulation AV.');
+    } catch (err) {
+      setAccountActionError(err?.message || 'Kunde inte ändra auto simulation.');
+    }
+  }
+
   const nextStep = useMemo(() => {
     if (!data) return 'Läser runtime...';
     if (openPositions.length > 0) return 'Följ öppna positioner och chart-markers.';
@@ -528,22 +564,32 @@ export default function FuturesPaperDeskPage() {
           eyebrow="Read-only"
           title="Scanner och strategi-kontroll"
           summary="Statuspanelen visar vad futures-desken kan göra just nu. Den aktiverar ingen automation, broker eller riktig orderväg."
-          action={<Pill tone="warning">Auto simulation OFF</Pill>}
+          action={<Pill tone={autoSimOn ? 'success' : 'warning'}>{autoSimOn ? 'Auto simulation PÅ' : 'Auto simulation är avstängd'}</Pill>}
         />
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(260px, 1fr))', gap: 12 }}>
-          <ReadinessCard title="Scannerstatus" status="Planerad" tone="warning">
-            <ReadinessRow label="Futures scanner" value="Inte inkopplad ännu" />
-            <ReadinessRow label="Senaste scan" value="Ingen futures-scan ännu" />
-            <ReadinessRow label="Datakälla" value="Ingen separat MNQ/MES-feed ännu" />
-            <div>Den här futures-desken har konto, ledger och manuell simulation. Automatisk futures-scanning är inte inkopplad ännu.</div>
+          <ReadinessCard title="Scannerstatus" status={scanner.connected ? 'Inkopplad' : 'Futures scanner saknas'} tone={scanner.connected ? 'success' : 'warning'}>
+            <ReadinessRow label="Futures scanner" value={scanner.connected ? 'Paper-only scanner aktiv' : 'Futures scanner saknas'} />
+            <ReadinessRow label="Senaste scan" value={scanner.lastScanAt ? new Date(scanner.lastScanAt).toLocaleString('sv-SE') : 'Ingen futures-scan ännu'} />
+            <ReadinessRow label="Datakälla" value={dataFeed.simulated ? 'Simulated data (fallback)' : dataFeed.source || 'Ingen separat MNQ/MES-feed ännu'} />
+            <div>Paper-only scanner för MNQ/MES. Priserna är simulerad fallback-data, inte riktig marknadsdata. Ingen broker eller riktig orderväg.</div>
+            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+              <button type="button" className="btn" onClick={handleRunScannerOnce}>Kör scanner en gång</button>
+            </div>
           </ReadinessCard>
 
-          <ReadinessCard title="Auto paper-simulation" status="OFF" tone="warning">
+          <ReadinessCard title="Auto paper-simulation" status={autoSimOn ? 'PÅ' : 'AV'} tone={autoSimOn ? 'success' : 'warning'}>
             <ReadinessRow label="Mode" value="paper_only" />
             <ReadinessRow label="Broker" value="off" />
             <ReadinessRow label="Real orders" value="blocked" />
-            <ReadinessRow label="Nästa steg" value="scanner -> candidate -> paper simulation" />
-            <div>Automatisk futures paper-simulation är inte aktiv ännu. Inga riktiga order kan skickas.</div>
+            <ReadinessRow label="Intervall" value={autoSimulation.intervalMs ? `${Math.round(autoSimulation.intervalMs / 1000)} s` : '–'} />
+            <div>{autoSimOn
+              ? 'Auto simulation kör scanner → kandidat → paper simulation internt. Inga riktiga order kan skickas.'
+              : 'Auto simulation är avstängd. Slå på för intern paper-simulation, eller kör scannern manuellt.'}</div>
+            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+              <button type="button" className="btn" onClick={handleToggleAutoSimulation}>
+                {autoSimOn ? 'Stäng av auto simulation' : 'Slå på auto simulation (paper)'}
+              </button>
+            </div>
           </ReadinessCard>
 
           <ReadinessCard title="Futures-symboler" status="MNQ / MES" tone="info">
@@ -555,29 +601,43 @@ export default function FuturesPaperDeskPage() {
             <div>Strategier är kandidater, inte aktiva futures-auto-trades. Ingen futures allowlist är inkopplad ännu. Källa: historisk strategy performance.</div>
           </ReadinessCard>
 
-          <ReadinessCard title="Senaste kandidater/signaler" status="Tomt" tone="neutral">
-            <ReadinessRow label="Kö" value="Inte inkopplad ännu" />
-            <ReadinessRow label="Status" value="Väntat i nuvarande fas" />
-            <div>Inga futures-kandidater ännu. Orsak: futures-scanner och candidate queue är inte inkopplade.</div>
+          <ReadinessCard title="Senaste kandidater/signaler" status={candidateQueue.connected ? `${queueCandidates.length} i kö` : 'Candidate queue saknas'} tone={queueCandidates.length > 0 ? 'info' : 'neutral'}>
+            <ReadinessRow label="Kö" value={candidateQueue.connected ? 'Inkopplad (paper-only)' : 'Candidate queue saknas'} />
+            <MiniList
+              items={queueCandidates.slice(0, 3).map((row) => ({
+                key: row.candidateId,
+                label: `${row.symbol} ${row.direction}`,
+                meta: `${row.strategyName || row.strategyId}${row.testOnly ? ' · test/simulation' : ''}`,
+              }))}
+              emptyText="Inga futures-kandidater i kön. Kör scannern för att skapa nya."
+            />
+            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+              <button type="button" className="btn" onClick={handleSimulateCandidate} disabled={queueCandidates.length === 0}>Simulera nästa kandidat</button>
+            </div>
           </ReadinessCard>
 
-          <ReadinessCard title="Senaste blockerade signaler" status="Tomt" tone="neutral">
-            <ReadinessRow label="Blockerade futures-signaler" value="0" />
-            <ReadinessRow label="Orsak" value="Ingen scanner skickar kandidater" />
-            <div>Inga blockerade futures-signaler ännu eftersom ingen futures-scanner skickar kandidater till desken.</div>
+          <ReadinessCard title="Senaste blockerade signaler" status="Info" tone="neutral">
+            <ReadinessRow label="Skippade i senaste scan" value={String(scanner.lastScanSummary?.skipped?.length ?? 0)} />
+            <MiniList
+              items={(scanner.lastScanSummary?.skipped || []).slice(0, 3).map((row, index) => ({
+                key: `${row.symbol}_${index}`,
+                label: row.symbol,
+                meta: row.reason,
+              }))}
+              emptyText="Inga skippade symboler i senaste scan."
+            />
           </ReadinessCard>
 
-          <ReadinessCard title="Varför ingen trade togs" status="Förklaring" tone="warning">
-            <div>Auto simulation är OFF.</div>
-            <div>Ingen futures-scanner är inkopplad.</div>
-            <div>Ingen candidate queue finns ännu.</div>
-            <div>Chartdata skapas först från simulerade trades.</div>
-            <div>Broker/order är blockerade.</div>
+          <ReadinessCard title="Varför ingen trade togs" status="Förklaring" tone={statusReasons.length > 1 ? 'warning' : 'success'}>
+            {statusReasons.length > 0
+              ? statusReasons.map((reason) => <div key={reason.code}>{reason.message}</div>)
+              : <div>Inga blockerande orsaker just nu.</div>}
+            <div>Broker/order är alltid blockerade i den här desken.</div>
           </ReadinessCard>
 
           <ReadinessCard title="Chart-status" status={chartTradeCount > 0 ? 'Preview-serie' : 'Ingen chartdata ännu'} tone={chartTradeCount > 0 ? 'info' : 'warning'}>
             <ReadinessRow label="Chart mode" value="trade-preview" />
-            <ReadinessRow label="OHLC-feed" value="Inte inkopplad" />
+            <ReadinessRow label="OHLC-feed" value={dataFeed.simulated ? 'Simulated data (fallback)' : 'Inte inkopplad'} />
             <ReadinessRow label="Markers" value="När MNQ/MES har simulerade trades" />
             <ReadinessRow label="Nuvarande orsak" value={chartTradeCount > 0 ? 'Simulerade trades finns' : 'Inga öppna/stängda trades'} />
           </ReadinessCard>
