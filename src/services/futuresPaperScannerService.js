@@ -18,6 +18,7 @@ const futuresPaperLedgerService = require('./futuresPaperLedgerService');
 const futuresPaperPriceFeedService = require('./futuresPaperPriceFeedService');
 const strategyPerformanceReadService = require('./strategyPerformanceReadService');
 const paperAllowlistService = require('./paperAllowlistService');
+const futuresTradingOsSignalAdapterService = require('./futuresTradingOsSignalAdapterService');
 
 const SAFETY = Object.freeze({
   mode: 'paper_only',
@@ -35,6 +36,7 @@ const MAX_QUEUE_LENGTH = 10;
 const MAX_OPEN_POSITIONS = 2;
 const STOP_LOSS_PCT = 0.3;
 const TAKE_PROFIT_PCT = 0.6;
+const ENGINE_TEST_MODE_ENV = 'FUTURES_PAPER_ENGINE_TEST_MODE';
 
 const BLOCK_REASON_MAX_TRADES = 'max_strategy_trades_reached';
 const BLOCK_REASON_COOLDOWN = 'strategy_cooldown_active';
@@ -48,12 +50,20 @@ function envInt(name, fallback) {
   return Number.isFinite(n) && n > 0 ? Math.floor(n) : fallback;
 }
 
+function envBool(name, fallback = false) {
+  const value = process.env[name];
+  if (value == null || value === '') return fallback;
+  return ['1', 'true', 'yes', 'on'].includes(String(value).trim().toLowerCase());
+}
+
 function createCandidateId(now = new Date()) {
-  return `futures_candidate_${now.getTime()}_${Math.random().toString(16).slice(2, 8)}`;
+  const ts = new Date(now).getTime();
+  return `futures_candidate_${Number.isFinite(ts) ? ts : Date.now()}_${Math.random().toString(16).slice(2, 8)}`;
 }
 
 function createScanId(now = new Date()) {
-  return `futures_scan_${now.getTime()}_${Math.random().toString(16).slice(2, 8)}`;
+  const ts = new Date(now).getTime();
+  return `futures_scan_${Number.isFinite(ts) ? ts : Date.now()}_${Math.random().toString(16).slice(2, 8)}`;
 }
 
 // Hård paper-only-gate: vägrar om något live-/broker-flöde efterfrågas.
@@ -72,6 +82,7 @@ function createFuturesPaperScannerService(options = {}) {
   const priceFeed = options.priceFeedService || futuresPaperPriceFeedService.defaultFuturesPaperPriceFeedService;
   const performanceService = options.performanceService || strategyPerformanceReadService;
   const allowlistService = options.allowlistService || paperAllowlistService;
+  const signalAdapter = options.signalAdapterService || futuresTradingOsSignalAdapterService.defaultFuturesTradingOsSignalAdapterService;
   const configOverrides = options.config || {};
   const stateFile = path.join(storage.rootDir, 'scanner-state.json');
   const candidatesFile = path.join(storage.rootDir, 'candidates.json');
@@ -90,6 +101,8 @@ function createFuturesPaperScannerService(options = {}) {
         ?? envInt('FUTURES_PAPER_CLOSED_TRADES_LIMIT', 100),
       autoIntervalSeconds: configOverrides.autoIntervalSeconds
         ?? envInt('FUTURES_PAPER_AUTO_INTERVAL_SECONDS', 60),
+      engineTestMode: configOverrides.engineTestMode
+        ?? envBool(ENGINE_TEST_MODE_ENV, false),
     };
   }
 
@@ -155,8 +168,9 @@ function createFuturesPaperScannerService(options = {}) {
   }
 
   function persistEvent(type, payload = {}, now = new Date()) {
+    const ts = new Date(now).getTime();
     return storage.appendEvent({
-      eventId: `futures_scanner_${now.getTime()}_${Math.random().toString(16).slice(2, 8)}`,
+      eventId: `futures_scanner_${Number.isFinite(ts) ? ts : Date.now()}_${Math.random().toString(16).slice(2, 8)}`,
       type,
       timestamp: nowIso(now),
       ...payload,
@@ -223,25 +237,58 @@ function createFuturesPaperScannerService(options = {}) {
     return { strategies, allowlistError };
   }
 
+  function isRealStrategyTrade(row = {}) {
+    return row.tradeType === 'trading_os_signal'
+      && row.usedRealStrategyLogic === true
+      && row.excludedFromStats === false;
+  }
+
+  function isExcludedTrade(row = {}) {
+    return row.excludedFromStats === true
+      || row.tradeType === 'engine_test'
+      || row.tradeType === 'manual_simulation'
+      || row.tradeType === 'curl_test'
+      || row.tradeType === 'cleanup'
+      || row.usedRealStrategyLogic !== true;
+  }
+
   // Trade-statistik per strategyId från ledgerns positioner (öppna + stängda).
   function getStrategyTradeStats(strategyId, positionsSummary = null) {
     const positions = positionsSummary || ledger.getPositionsSummary();
     const id = String(strategyId || '');
     const open = (positions.open || []).filter((row) => String(row.strategyId || '') === id);
     const closed = (positions.closed || []).filter((row) => String(row.strategyId || '') === id);
+    const realOpen = open.filter(isRealStrategyTrade);
+    const realClosed = closed.filter(isRealStrategyTrade);
+    const excluded = [...open, ...closed].filter(isExcludedTrade);
+    const testTrades = [...open, ...closed].filter((row) => row.tradeType && row.tradeType !== 'trading_os_signal');
     let lastTradeAtMs = 0;
     for (const row of [...open, ...closed]) {
       const openedMs = Date.parse(row.openedAt || '') || 0;
       const closedMs = Date.parse(row.closedAt || '') || 0;
       lastTradeAtMs = Math.max(lastTradeAtMs, openedMs, closedMs);
     }
+    const totalPnlAll = Math.round(closed.reduce((acc, row) => acc + (Number(row.realizedPnlSek) || 0), 0) * 100) / 100;
+    const totalPnlRealSignals = Math.round(realClosed.reduce((acc, row) => acc + (Number(row.realizedPnlSek) || 0), 0) * 100) / 100;
+    const winsAll = closed.filter((row) => (Number(row.realizedPnlSek) || 0) > 0).length;
+    const winsRealSignals = realClosed.filter((row) => (Number(row.realizedPnlSek) || 0) > 0).length;
     return {
       openTrades: open.length,
       closedTrades: closed.length,
       tradesUsed: open.length + closed.length,
+      totalTradesAll: open.length + closed.length,
+      totalTradesRealSignals: realOpen.length + realClosed.length,
+      realSignalOpenTrades: realOpen.length,
+      realSignalClosedTrades: realClosed.length,
+      testTrades: testTrades.length,
+      excludedTrades: excluded.length,
       lastTradeAt: lastTradeAtMs ? new Date(lastTradeAtMs).toISOString() : null,
-      totalPnlSek: Math.round(closed.reduce((acc, row) => acc + (Number(row.realizedPnlSek) || 0), 0) * 100) / 100,
-      wins: closed.filter((row) => (Number(row.realizedPnlSek) || 0) > 0).length,
+      totalPnlSek: totalPnlAll,
+      pnlAll: totalPnlAll,
+      pnlRealSignals: totalPnlRealSignals,
+      wins: winsAll,
+      winsAll,
+      winsRealSignals,
     };
   }
 
@@ -273,81 +320,139 @@ function createFuturesPaperScannerService(options = {}) {
       maxTrades: config.maxTradesPerStrategy,
       openTrades: stats.openTrades,
       closedTrades: stats.closedTrades,
+      totalTradesAll: stats.totalTradesAll,
+      totalTradesRealSignals: stats.totalTradesRealSignals,
+      realSignalOpenTrades: stats.realSignalOpenTrades,
+      realSignalClosedTrades: stats.realSignalClosedTrades,
+      testTrades: stats.testTrades,
+      excludedTrades: stats.excludedTrades,
       lastTradeAt: stats.lastTradeAt,
       nextAllowedAt,
       cooldownActive,
       cooldownMinutesRemaining,
       totalPnlSek: stats.totalPnlSek,
+      pnlAll: stats.pnlAll,
+      pnlRealSignals: stats.pnlRealSignals,
       wins: stats.wins,
+      winsAll: stats.winsAll,
+      winsRealSignals: stats.winsRealSignals,
     };
   }
 
-  function buildCandidate({ symbol, quote, strategy, now = new Date() }) {
+  function buildEngineTestCandidate({ symbol, quote, now = new Date() }) {
     const price = Number(quote?.price) || null;
     const previous = Number(quote?.previousPrice) || price;
     const direction = price != null && previous != null && price < previous ? 'short' : 'long';
     return {
       candidateId: createCandidateId(now),
       symbol,
+      futuresSymbol: symbol,
+      mappedFuturesSymbol: symbol,
       direction,
-      confidence: strategy.confidence ?? 0.5,
-      strategyId: strategy.strategyId,
-      strategyName: strategy.strategyName,
-      entryReason: `Paper-simulation: ${strategy.strategyName} + simulerad ${direction}-momentum på fallback-pris ${price ?? 'okänt'}.`,
+      confidence: 0.5,
+      strategyId: 'futures_paper_engine_test',
+      strategyName: 'Futures Paper Engine Test',
+      entryReason: `Engine-test: simulerad ${direction}-momentum på fallback-pris ${price ?? 'okänt'}.`,
       referencePrice: price,
+      entryPrice: price,
       priceSource: quote?.source || 'simulated_fallback',
       simulatedData: true,
-      testOnly: strategy.testOnly === true,
+      testOnly: true,
+      tradeType: 'engine_test',
+      signalSource: 'fallback_test',
+      dataSource: 'simulated_fallback',
+      usedRealStrategyLogic: false,
+      usedFallbackPrice: true,
+      excludedFromStats: true,
+      strategyLogicVersion: null,
+      originalSignalId: null,
+      originalSymbol: symbol,
+      originalMarket: 'mini_futures',
+      mappingReason: 'engine_test_no_trading_os_signal',
+      mappingConfidence: 1,
       timestamp: nowIso(now),
-      source: 'futures_paper_scanner',
+      source: 'futures_paper_scanner_engine_test',
       paperOnly: true,
       status: 'queued',
       ...SAFETY,
     };
   }
 
-  // DEL 4 + DEL 7: strategidriven scan med gates och scan history.
+  // Trading OS-driven scan: läs riktiga Trading OS-signaler via adapter och
+  // skapa endast futures-kandidater när signalen har riktning, risk och mapping.
   function runScannerOnce({ now = new Date() } = {}) {
     const startedAt = nowIso(now);
     const config = getEngineConfig();
     const feed = priceFeed.tickQuotes(now);
-    const { strategies, allowlistError } = getApprovedStrategySource();
+    const { allowlistError } = getApprovedStrategySource();
     const positionsSummary = ledger.getPositionsSummary();
     const queue = readQueue();
     const added = [];
     const skippedStrategies = [];
     const blockedByCooldown = [];
     const blockedByMaxTrades = [];
+    const signalsSkippedNoMapping = [];
+    const signalsSkippedNoRisk = [];
+    const signalsSkippedOther = [];
 
-    // Lediga symboler: ingen öppen position och ingen köad kandidat på symbolen.
     const busySymbols = new Set([
       ...(positionsSummary.open || []).map((row) => String(row.symbol || row.root || '').toUpperCase().slice(0, 3)),
       ...queue.map((row) => String(row.symbol || '').toUpperCase()),
     ]);
-    const freeSymbols = SCANNER_SYMBOLS.filter((symbol) => !busySymbols.has(symbol));
 
-    const scannableStrategies = strategies.length > 0
-      ? strategies
-      : [{
-        strategyId: 'futures_paper_test_dummy',
-        strategyName: 'Test/Simulation Dummy',
-        approved: false,
-        source: 'test_dummy_no_allowlist',
-        performance: null,
-        confidence: 0.5,
-        skipReason: null,
-        testOnly: true,
-      }];
+    const adapterResult = signalAdapter.getFuturesCandidates({
+      now,
+      quotes: feed.quotes || [],
+    });
+    const tradingOsCandidates = Array.isArray(adapterResult?.candidates) ? adapterResult.candidates : [];
+    const adapterSkipped = Array.isArray(adapterResult?.skipped) ? adapterResult.skipped : [];
+    for (const row of adapterSkipped) {
+      const target = row.skipReason === 'no_safe_futures_mapping'
+        ? signalsSkippedNoMapping
+        : row.skipReason === 'missing_trading_os_risk'
+          ? signalsSkippedNoRisk
+          : signalsSkippedOther;
+      target.push(row);
+    }
 
-    for (const strategy of scannableStrategies) {
-      if (strategy.skipReason) {
-        skippedStrategies.push({ strategyId: strategy.strategyId, reason: strategy.skipReason });
+    for (const candidate of tradingOsCandidates) {
+      const strategyId = String(candidate.strategyId || '');
+      const symbol = String(candidate.futuresSymbol || candidate.symbol || '').toUpperCase().slice(0, 3);
+      if (!strategyId) {
+        skippedStrategies.push({ strategyId: null, signalId: candidate.signalId || null, reason: 'missing_strategy_id' });
         continue;
       }
-      const gate = evaluateStrategyGate(strategy.strategyId, { now, positionsSummary });
+      if (!SCANNER_SYMBOLS.includes(symbol)) {
+        skippedStrategies.push({ strategyId, signalId: candidate.signalId || null, reason: 'unsupported_futures_symbol' });
+        continue;
+      }
+      if (busySymbols.has(symbol)) {
+        skippedStrategies.push({ strategyId, signalId: candidate.signalId || null, reason: 'futures_symbol_busy', symbol });
+        continue;
+      }
+      const hasQueuedCandidate = queue.some((row) => (
+        (candidate.signalId && row.signalId === candidate.signalId)
+        || (candidate.candidateId && row.candidateId === candidate.candidateId)
+        || (row.strategyId === strategyId && String(row.symbol || '').toUpperCase() === symbol)
+      )) || added.some((row) => (
+        (candidate.signalId && row.signalId === candidate.signalId)
+        || (candidate.candidateId && row.candidateId === candidate.candidateId)
+        || (row.strategyId === strategyId && String(row.symbol || '').toUpperCase() === symbol)
+      ));
+      if (hasQueuedCandidate) {
+        skippedStrategies.push({ strategyId, signalId: candidate.signalId || null, reason: 'candidate_already_queued' });
+        continue;
+      }
+      if (queue.length + added.length >= MAX_QUEUE_LENGTH) {
+        skippedStrategies.push({ strategyId, signalId: candidate.signalId || null, reason: 'queue_full' });
+        continue;
+      }
+
+      const gate = evaluateStrategyGate(strategyId, { now, positionsSummary });
       if (gate.blockReason === BLOCK_REASON_COOLDOWN) {
         blockedByCooldown.push({
-          strategyId: strategy.strategyId,
+          strategyId,
+          signalId: candidate.signalId || null,
           reason: BLOCK_REASON_COOLDOWN,
           lastTradeAt: gate.lastTradeAt,
           nextAllowedAt: gate.nextAllowedAt,
@@ -357,56 +462,71 @@ function createFuturesPaperScannerService(options = {}) {
       }
       if (gate.blockReason === BLOCK_REASON_MAX_TRADES) {
         blockedByMaxTrades.push({
-          strategyId: strategy.strategyId,
+          strategyId,
+          signalId: candidate.signalId || null,
           reason: BLOCK_REASON_MAX_TRADES,
           tradesUsed: gate.tradesUsed,
           maxTrades: gate.maxTrades,
         });
         continue;
       }
-      const hasQueuedCandidate = queue.some((row) => String(row.strategyId || '') === strategy.strategyId)
-        || added.some((row) => row.strategyId === strategy.strategyId);
-      if (hasQueuedCandidate) {
-        skippedStrategies.push({ strategyId: strategy.strategyId, reason: 'candidate_already_queued' });
-        continue;
+
+      added.push(candidate);
+      busySymbols.add(symbol);
+    }
+
+    let engineTestCandidates = [];
+    if (added.length === 0 && config.engineTestMode === true) {
+      const freeSymbol = SCANNER_SYMBOLS.find((symbol) => !busySymbols.has(symbol));
+      if (freeSymbol && queue.length < MAX_QUEUE_LENGTH) {
+        const quote = (feed.quotes || []).find((row) => row.root === freeSymbol || row.symbol === freeSymbol) || null;
+        const candidate = buildEngineTestCandidate({ symbol: freeSymbol, quote, now });
+        added.push(candidate);
+        engineTestCandidates = [candidate];
       }
-      if (queue.length + added.length >= MAX_QUEUE_LENGTH) {
-        skippedStrategies.push({ strategyId: strategy.strategyId, reason: 'queue_full' });
-        continue;
-      }
-      const symbol = freeSymbols.shift();
-      if (!symbol) {
-        skippedStrategies.push({ strategyId: strategy.strategyId, reason: 'no_free_symbol' });
-        continue;
-      }
-      const quote = feed.quotes.find((row) => row.root === symbol) || null;
-      added.push(buildCandidate({ symbol, quote, strategy, now }));
     }
 
     const nextQueue = writeQueue([...queue, ...added]);
     const finishedAt = nowIso();
+    const realSignalCandidates = added.filter((row) => row.tradeType === 'trading_os_signal');
     const scanRecord = {
       scanId: createScanId(now),
       startedAt,
       finishedAt,
       symbolsScanned: SCANNER_SYMBOLS,
-      strategiesChecked: scannableStrategies.length,
-      approvedStrategies: strategies.length,
+      strategiesChecked: tradingOsCandidates.length,
+      approvedStrategies: tradingOsCandidates.length,
       candidatesCreated: added.length,
       skippedStrategies,
       tradesOpened: 0,
+      tradesOpenedFromRealSignals: 0,
+      tradesOpenedFromTests: 0,
       blockedByCooldown,
       blockedByMaxTrades,
       dataSource: feed.feed.source,
-      simulatedData: true,
+      simulatedData: feed.feed.simulated === true,
       allowlistError: allowlistError || null,
+      tradingOsSignalsRead: adapterResult?.stats?.tradingOsSignalsRead || 0,
+      signalsMappedToFutures: adapterResult?.stats?.signalsMappedToFutures || 0,
+      signalsSkippedNoMapping: signalsSkippedNoMapping.length,
+      signalsSkippedNoRisk: signalsSkippedNoRisk.length,
+      signalsSkippedOther: signalsSkippedOther.length,
+      engineTestCandidates: engineTestCandidates.length,
+      realSignalCandidates: realSignalCandidates.length,
+      skippedSignalDetails: {
+        noMapping: signalsSkippedNoMapping.slice(0, 10),
+        noRisk: signalsSkippedNoRisk.slice(0, 10),
+        other: signalsSkippedOther.slice(0, 10),
+      },
       status: 'completed',
-      summary: `${scannableStrategies.length} strategier kontrollerade, ${added.length} kandidater, `
+      summary: `${adapterResult?.stats?.tradingOsSignalsRead || 0} Trading OS-signaler lästa, `
+        + `${realSignalCandidates.length} reala futures-kandidater, ${engineTestCandidates.length} engine-test, `
         + `${blockedByCooldown.length} cooldown-blockerade, ${blockedByMaxTrades.length} max-limit-blockerade, `
-        + `${skippedStrategies.length} skippade.`,
+        + `${signalsSkippedNoMapping.length} utan mapping, ${signalsSkippedNoRisk.length} utan risk.`,
       config: {
         maxTradesPerStrategy: config.maxTradesPerStrategy,
         cooldownMinutes: config.cooldownMinutes,
+        engineTestMode: config.engineTestMode,
       },
       ...SAFETY,
     };
@@ -469,18 +589,37 @@ function createFuturesPaperScannerService(options = {}) {
       return { ok: false, error: 'max_open_positions_reached', maxOpenPositions: MAX_OPEN_POSITIONS, ...SAFETY };
     }
 
+    const normalizedTradeType = candidate.tradeType || (candidate.usedRealStrategyLogic === true ? 'trading_os_signal' : 'engine_test');
+    const isRealSignalCandidate = normalizedTradeType === 'trading_os_signal' && candidate.usedRealStrategyLogic === true;
     const quote = priceFeed.getQuote(candidate.symbol, now);
-    const entryPrice = Number(quote?.price) || Number(candidate.referencePrice) || null;
+    const entryPrice = Number(candidate.entryPrice) || Number(candidate.referencePrice) || Number(quote?.price) || null;
     if (!entryPrice || entryPrice <= 0) {
       return { ok: false, error: 'no_simulated_price_available', ...SAFETY };
     }
 
     const tickSize = Number(quote?.tickSize) || 0.25;
-    const slDistance = entryPrice * (STOP_LOSS_PCT / 100);
-    const tpDistance = entryPrice * (TAKE_PROFIT_PCT / 100);
     const isShort = candidate.direction === 'short';
-    const stopLoss = futuresPaperPriceFeedService.roundToTick(isShort ? entryPrice + slDistance : entryPrice - slDistance, tickSize);
-    const takeProfit = futuresPaperPriceFeedService.roundToTick(isShort ? entryPrice - tpDistance : entryPrice + tpDistance, tickSize);
+    let stopLoss = Number(candidate.stopLoss) || null;
+    let takeProfit = Number(candidate.takeProfit) || null;
+    if ((!stopLoss || !takeProfit) && isRealSignalCandidate) {
+      return { ok: false, error: 'trading_os_signal_missing_risk_levels', candidate, ...SAFETY };
+    }
+    if (!stopLoss || !takeProfit) {
+      const slDistance = entryPrice * (STOP_LOSS_PCT / 100);
+      const tpDistance = entryPrice * (TAKE_PROFIT_PCT / 100);
+      stopLoss = futuresPaperPriceFeedService.roundToTick(isShort ? entryPrice + slDistance : entryPrice - slDistance, tickSize);
+      takeProfit = futuresPaperPriceFeedService.roundToTick(isShort ? entryPrice - tpDistance : entryPrice + tpDistance, tickSize);
+    } else {
+      stopLoss = futuresPaperPriceFeedService.roundToTick(stopLoss, tickSize);
+      takeProfit = futuresPaperPriceFeedService.roundToTick(takeProfit, tickSize);
+    }
+
+    const dataSource = candidate.dataSource || (candidate.usedFallbackPrice ? 'simulated_fallback' : quote?.source || 'simulated_fallback');
+    const usedFallbackPrice = candidate.usedFallbackPrice === true || dataSource === 'simulated_fallback' || quote?.fallback === true;
+    const excludedFromStats = candidate.excludedFromStats === true
+      || usedFallbackPrice
+      || normalizedTradeType !== 'trading_os_signal'
+      || candidate.usedRealStrategyLogic !== true;
 
     const result = ledger.openFuturesPaperPosition({
       now,
@@ -493,7 +632,27 @@ function createFuturesPaperScannerService(options = {}) {
       takeProfit,
       strategyId: candidate.strategyId,
       strategyName: candidate.strategyName,
-      entryReason: `${candidate.entryReason} [source=${candidate.source}, simulated_fallback_price]`,
+      entryReason: `${candidate.entryReason || 'Futures paper candidate'} [source=${candidate.source}, tradeType=${normalizedTradeType}, dataSource=${dataSource}]`,
+      tradeType: normalizedTradeType,
+      signalSource: candidate.signalSource || (isRealSignalCandidate ? 'trading_os' : 'fallback_test'),
+      dataSource,
+      usedRealStrategyLogic: candidate.usedRealStrategyLogic === true,
+      usedFallbackPrice,
+      excludedFromStats,
+      strategyLogicVersion: candidate.strategyLogicVersion || null,
+      originalSignalId: candidate.originalSignalId || candidate.signalId || null,
+      signalId: candidate.signalId || candidate.originalSignalId || null,
+      candidateId: candidate.candidateId || null,
+      originalSymbol: candidate.originalSymbol || null,
+      originalMarket: candidate.originalMarket || null,
+      mappedFuturesSymbol: candidate.mappedFuturesSymbol || candidate.futuresSymbol || candidate.symbol,
+      mappingReason: candidate.mappingReason || null,
+      mappingConfidence: candidate.mappingConfidence ?? null,
+      confidence: candidate.confidence ?? null,
+      riskReward: candidate.riskReward ?? null,
+      timeframe: candidate.timeframe || null,
+      riskSource: candidate.riskSource || null,
+      approvalReason: candidate.approvalReason || null,
     });
 
     if (!result.ok) {
@@ -508,6 +667,11 @@ function createFuturesPaperScannerService(options = {}) {
       entryPrice,
       stopLoss,
       takeProfit,
+      tradeType: normalizedTradeType,
+      signalSource: candidate.signalSource || null,
+      dataSource,
+      usedRealStrategyLogic: candidate.usedRealStrategyLogic === true,
+      excludedFromStats,
     }, now);
 
     return {
@@ -596,7 +760,13 @@ function createFuturesPaperScannerService(options = {}) {
         simulatedPositions.push(simulated.position);
       }
       if (simulatedPositions.length > 0) {
-        bumpLastScan({ tradesOpened: simulatedPositions.length });
+        const tradesOpenedFromRealSignals = simulatedPositions.filter((row) => row.tradeType === 'trading_os_signal' && row.usedRealStrategyLogic === true && row.excludedFromStats === false).length;
+        const tradesOpenedFromTests = simulatedPositions.length - tradesOpenedFromRealSignals;
+        bumpLastScan({
+          tradesOpened: simulatedPositions.length,
+          tradesOpenedFromRealSignals,
+          tradesOpenedFromTests,
+        });
       }
     }
 
@@ -606,6 +776,8 @@ function createFuturesPaperScannerService(options = {}) {
       scanned: Boolean(scan?.ok),
       candidatesAdded: scan?.scan?.candidatesCreated || 0,
       tradesOpened: simulatedPositions.length,
+      tradesOpenedFromRealSignals: simulatedPositions.filter((row) => row.tradeType === 'trading_os_signal' && row.usedRealStrategyLogic === true && row.excludedFromStats === false).length,
+      tradesOpenedFromTests: simulatedPositions.filter((row) => !(row.tradeType === 'trading_os_signal' && row.usedRealStrategyLogic === true && row.excludedFromStats === false)).length,
       simulatedTradeIds: simulatedPositions.map((row) => row.tradeId),
       autoClosed: (refresh.autoClosed || []).map((row) => row.tradeId),
       updatedPositions: refresh.updatedPositions,
@@ -695,8 +867,11 @@ function createFuturesPaperScannerService(options = {}) {
       })),
     ].map(({ strategy, approved }) => {
       const gate = evaluateStrategyGate(strategy.strategyId, { now, positionsSummary });
-      const winRate = gate.closedTrades > 0
-        ? Math.round((gate.wins / gate.closedTrades) * 10000) / 100
+      const winRateAll = gate.closedTrades > 0
+        ? Math.round((gate.winsAll / gate.closedTrades) * 10000) / 100
+        : null;
+      const winRateRealSignals = gate.realSignalClosedTrades > 0
+        ? Math.round((gate.winsRealSignals / gate.realSignalClosedTrades) * 10000) / 100
         : null;
       return {
         strategyId: strategy.strategyId,
@@ -709,6 +884,12 @@ function createFuturesPaperScannerService(options = {}) {
         maxTrades: gate.maxTrades,
         openTrades: gate.openTrades,
         closedTrades: gate.closedTrades,
+        totalTradesAll: gate.totalTradesAll,
+        totalTradesRealSignals: gate.totalTradesRealSignals,
+        realSignalOpenTrades: gate.realSignalOpenTrades,
+        realSignalClosedTrades: gate.realSignalClosedTrades,
+        testTrades: gate.testTrades,
+        excludedTrades: gate.excludedTrades,
         lastTradeAt: gate.lastTradeAt,
         nextAllowedAt: gate.nextAllowedAt,
         cooldownActive: gate.cooldownActive,
@@ -718,7 +899,11 @@ function createFuturesPaperScannerService(options = {}) {
           ? 'not_in_paper_allowlist'
           : strategy.skipReason || gate.blockReason,
         totalPnlSek: gate.totalPnlSek,
-        winRate,
+        pnlAll: gate.pnlAll,
+        pnlRealSignals: gate.pnlRealSignals,
+        winRate: winRateAll,
+        winRateAll,
+        winRateRealSignals,
       };
     });
 
@@ -766,6 +951,10 @@ function createFuturesPaperScannerService(options = {}) {
     reasons.push({ code: 'simulated_data', message: 'Simulated data: fallback-priser används, ingen riktig MNQ/MES-feed.' });
     if (queue.length === 0) {
       reasons.push({ code: 'empty_candidate_queue', message: 'Candidate queue är tom — kör scannern.' });
+    }
+    const lastScan = state.lastScanSummary || null;
+    if (queue.length === 0 && lastScan && Number(lastScan.realSignalCandidates || 0) === 0) {
+      reasons.push({ code: 'no_trading_os_signal_available', message: 'Ingen godkänd Trading OS-signal kunde adapteras till MNQ/MES i senaste scan.' });
     }
     return reasons;
   }

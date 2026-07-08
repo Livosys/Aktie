@@ -47,6 +47,11 @@ function ensureFiniteNumber(value) {
   return Number.isFinite(n) ? n : null;
 }
 
+function booleanValue(value, fallback = false) {
+  if (value === true || value === false) return value;
+  return fallback;
+}
+
 function createTradeId(now = new Date()) {
   return `futures_trade_${now.getTime()}_${Math.random().toString(16).slice(2, 8)}`;
 }
@@ -141,6 +146,26 @@ function toPositionView(position, fxUsdSek = 0) {
     strategyName: position.strategyName || null,
     entryReason: position.entryReason || null,
     exitReason: position.exitReason || null,
+    tradeType: position.tradeType || 'manual_simulation',
+    signalSource: position.signalSource || 'manual',
+    dataSource: position.dataSource || 'simulated_fallback',
+    usedRealStrategyLogic: position.usedRealStrategyLogic === true,
+    usedFallbackPrice: position.usedFallbackPrice !== false,
+    excludedFromStats: position.excludedFromStats !== false,
+    strategyLogicVersion: position.strategyLogicVersion || null,
+    originalSignalId: position.originalSignalId || position.signalId || null,
+    signalId: position.signalId || position.originalSignalId || null,
+    candidateId: position.candidateId || null,
+    originalSymbol: position.originalSymbol || null,
+    originalMarket: position.originalMarket || null,
+    mappedFuturesSymbol: position.mappedFuturesSymbol || position.symbol || root,
+    mappingReason: position.mappingReason || null,
+    mappingConfidence: ensureFiniteNumber(position.mappingConfidence),
+    confidence: ensureFiniteNumber(position.confidence),
+    riskReward: ensureFiniteNumber(position.riskReward),
+    timeframe: position.timeframe || null,
+    riskSource: position.riskSource || null,
+    approvalReason: position.approvalReason || null,
     unrealizedPnlUsd,
     unrealizedPnlSek: position.status === 'open'
       ? (unrealizedPnlSek ?? round(unrealizedPnlUsd * fxUsdSek, 2))
@@ -375,6 +400,15 @@ function createFuturesPaperLedgerService(options = {}) {
     const strategyId = input.strategyId ? String(input.strategyId).trim() : null;
     const strategyName = input.strategyName ? String(input.strategyName).trim() : null;
     const entryReason = input.entryReason ? String(input.entryReason).trim() : null;
+    const tradeType = input.tradeType ? String(input.tradeType).trim() : 'manual_simulation';
+    const signalSource = input.signalSource ? String(input.signalSource).trim() : (tradeType === 'trading_os_signal' ? 'trading_os' : 'manual');
+    const dataSource = input.dataSource ? String(input.dataSource).trim() : 'simulated_fallback';
+    const usedRealStrategyLogic = booleanValue(input.usedRealStrategyLogic, false);
+    const usedFallbackPrice = booleanValue(input.usedFallbackPrice, dataSource === 'simulated_fallback');
+    const excludedFromStats = booleanValue(
+      input.excludedFromStats,
+      !(tradeType === 'trading_os_signal' && usedRealStrategyLogic === true && usedFallbackPrice === false),
+    );
     const account = getCurrentAccount();
 
     if (!root) return { ok: false, error: 'invalid_root', ...SAFETY };
@@ -404,6 +438,26 @@ function createFuturesPaperLedgerService(options = {}) {
       strategyName,
       entryReason,
       exitReason: null,
+      tradeType,
+      signalSource,
+      dataSource,
+      usedRealStrategyLogic,
+      usedFallbackPrice,
+      excludedFromStats,
+      strategyLogicVersion: input.strategyLogicVersion || null,
+      originalSignalId: input.originalSignalId || input.signalId || null,
+      signalId: input.signalId || input.originalSignalId || null,
+      candidateId: input.candidateId || null,
+      originalSymbol: input.originalSymbol || null,
+      originalMarket: input.originalMarket || null,
+      mappedFuturesSymbol: input.mappedFuturesSymbol || symbol || root,
+      mappingReason: input.mappingReason || null,
+      mappingConfidence: ensureFiniteNumber(input.mappingConfidence),
+      confidence: ensureFiniteNumber(input.confidence),
+      riskReward: ensureFiniteNumber(input.riskReward),
+      timeframe: input.timeframe || null,
+      riskSource: input.riskSource || null,
+      approvalReason: input.approvalReason || null,
       unrealizedPnlUsd: 0,
       unrealizedPnlSek: 0,
       realizedPnlUsd: 0,
@@ -435,6 +489,16 @@ function createFuturesPaperLedgerService(options = {}) {
       strategyId,
       strategyName,
       entryReason,
+      tradeType,
+      signalSource,
+      dataSource,
+      usedRealStrategyLogic,
+      usedFallbackPrice,
+      excludedFromStats,
+      originalSignalId: position.originalSignalId,
+      originalSymbol: position.originalSymbol,
+      mappedFuturesSymbol: position.mappedFuturesSymbol,
+      mappingReason: position.mappingReason,
       marketHoursWarning: market.warning,
       account: accountSnapshot,
       market,
@@ -528,6 +592,16 @@ function createFuturesPaperLedgerService(options = {}) {
       realizedPnlUsd: closedPosition.realizedPnlUsd,
       realizedPnlSek: closedPosition.realizedPnlSek,
       exitReason,
+      tradeType: closedPosition.tradeType || 'manual_simulation',
+      signalSource: closedPosition.signalSource || 'manual',
+      dataSource: closedPosition.dataSource || 'simulated_fallback',
+      usedRealStrategyLogic: closedPosition.usedRealStrategyLogic === true,
+      usedFallbackPrice: closedPosition.usedFallbackPrice !== false,
+      excludedFromStats: closedPosition.excludedFromStats !== false,
+      originalSignalId: closedPosition.originalSignalId || closedPosition.signalId || null,
+      originalSymbol: closedPosition.originalSymbol || null,
+      mappedFuturesSymbol: closedPosition.mappedFuturesSymbol || closedPosition.symbol || closedPosition.root,
+      mappingReason: closedPosition.mappingReason || null,
       marketHoursWarning: market.warning,
       account: accountSnapshot,
       market,
@@ -574,6 +648,18 @@ function createFuturesPaperLedgerService(options = {}) {
           closedAt: row.closedAt,
           closeReason: row.exitReason || null,
           durationMinutes,
+          tradeType: row.tradeType || 'manual_simulation',
+          signalSource: row.signalSource || 'manual',
+          dataSource: row.dataSource || 'simulated_fallback',
+          usedRealStrategyLogic: row.usedRealStrategyLogic === true,
+          usedFallbackPrice: row.usedFallbackPrice !== false,
+          excludedFromStats: row.excludedFromStats !== false,
+          strategyLogicVersion: row.strategyLogicVersion || null,
+          originalSignalId: row.originalSignalId || row.signalId || null,
+          originalSymbol: row.originalSymbol || null,
+          mappedFuturesSymbol: row.mappedFuturesSymbol || row.symbol || row.root,
+          mappingReason: row.mappingReason || null,
+          mappingConfidence: ensureFiniteNumber(row.mappingConfidence),
           source: 'futures_paper_desk',
           paperOnly: true,
         };

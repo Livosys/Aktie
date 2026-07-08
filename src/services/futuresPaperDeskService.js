@@ -251,6 +251,7 @@ function buildFuturesPaperDeskRuntime(options = {}) {
       marketGroup: universe.groups?.mini_futures || null,
       selectedSymbols: instruments.map((row) => row.symbol),
       note: 'Futures-desken använder befintliga strategier som kandidatkällor och fokuserar på MNQ/MES.',
+      signalSource: 'trading_os_signal_adapter',
       connected: Boolean(scannerRuntime?.scanner?.connected),
       lastScanAt: scannerRuntime?.scanner?.lastScanAt || null,
       lastScanSummary: scannerRuntime?.scanner?.lastScanSummary || null,
@@ -284,10 +285,10 @@ function buildFuturesPaperDeskRuntime(options = {}) {
     technical: {
       runtimeSource: 'futuresPaperDeskService',
       universeSource: 'marketUniverseService',
-      strategySource: 'strategyPerformanceReadService',
+      strategySource: 'futuresTradingOsSignalAdapterService',
       accountSource: 'futuresPaperAccountService',
       scannerSource: 'futuresPaperScannerService',
-      priceFeedSource: 'futuresPaperPriceFeedService (simulated_fallback)',
+      priceFeedSource: scannerRuntime?.dataFeed?.source || 'futuresPaperPriceFeedService',
     },
     ...SAFETY,
   };

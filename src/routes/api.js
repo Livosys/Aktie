@@ -3538,6 +3538,12 @@ router.post('/futures-paper/manual/open', (req, res) => {
       strategyId: body.strategyId,
       strategyName: body.strategyName,
       entryReason: body.entryReason,
+      tradeType: 'manual_simulation',
+      signalSource: 'manual',
+      dataSource: body.dataSource || 'simulated_fallback',
+      usedRealStrategyLogic: false,
+      usedFallbackPrice: body.usedFallbackPrice !== false,
+      excludedFromStats: true,
     });
     res.status(result.ok ? 200 : 400).json(result);
   } catch (err) {

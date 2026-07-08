@@ -124,6 +124,27 @@ function fmtPct(value, digits = 1) {
   return `${sign}${num.toFixed(digits)}%`;
 }
 
+function tradeTypeLabel(type) {
+  const value = String(type || '').trim();
+  if (value === 'trading_os_signal') return 'Riktig Trading OS-signal';
+  if (value === 'manual_simulation') return 'Manuell simulation';
+  if (value === 'engine_test') return 'Testtrade';
+  if (value === 'curl_test') return 'Curl-test';
+  if (value === 'cleanup') return 'Cleanup';
+  return value || 'Testtrade';
+}
+
+function tradeTypeTone(type, excludedFromStats) {
+  if (type === 'trading_os_signal' && excludedFromStats !== true) return 'success';
+  if (type === 'manual_simulation') return 'info';
+  if (type === 'cleanup' || type === 'curl_test') return 'warning';
+  return 'warning';
+}
+
+function yesNo(value) {
+  return value === true ? 'Ja' : 'Nej';
+}
+
 function sectionStyle() {
   return {
     background: 'var(--surface)',
@@ -567,6 +588,15 @@ export default function FuturesPaperDeskPage() {
 
       <SafetyStrip safety={data} />
 
+      {dataFeed.source === 'simulated_fallback' || dataFeed.fallback === true ? (
+        <div style={{ ...sectionStyle(), marginTop: 14, borderColor: 'rgba(245,158,11,0.35)', background: 'rgba(245,158,11,0.08)' }}>
+          <strong style={{ color: 'var(--warning)' }}>Simulated fallback data används.</strong>
+          <div style={{ color: 'var(--muted)', marginTop: 6, fontSize: 13 }}>
+            Resultaten visar motortest och ska inte tolkas som riktig strategi-performance.
+          </div>
+        </div>
+      ) : null}
+
       <section style={{ ...sectionStyle(), marginTop: 14 }}>
         <SectionHeader
           eyebrow="Read-only"
@@ -579,7 +609,7 @@ export default function FuturesPaperDeskPage() {
             <ReadinessRow label="Futures scanner" value={scanner.connected ? 'Paper-only scanner aktiv' : 'Futures scanner saknas'} />
             <ReadinessRow label="Senaste scan" value={scanner.lastScanAt ? new Date(scanner.lastScanAt).toLocaleString('sv-SE') : 'Ingen futures-scan ännu'} />
             <ReadinessRow label="Datakälla" value={dataFeed.simulated ? 'Simulated data (fallback)' : dataFeed.source || 'Ingen separat MNQ/MES-feed ännu'} />
-            <div>Paper-only scanner för MNQ/MES. Priserna är simulerad fallback-data, inte riktig marknadsdata. Ingen broker eller riktig orderväg.</div>
+            <div>Paper-only scanner för MNQ/MES. Riktiga trades kräver Trading OS-signal med riktning och risk; fallback-data markeras som test/exkluderad.</div>
             <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
               <button type="button" className="btn" onClick={handleRunScannerOnce}>Kör scanner en gång</button>
             </div>
@@ -591,7 +621,7 @@ export default function FuturesPaperDeskPage() {
             <ReadinessRow label="Real orders" value="blocked" />
             <ReadinessRow label="Intervall" value={autoSimulation.intervalMs ? `${Math.round(autoSimulation.intervalMs / 1000)} s` : '–'} />
             <div>{autoSimOn
-              ? 'Auto simulation kör scanner → kandidat → paper simulation internt. Inga riktiga order kan skickas.'
+              ? 'Auto simulation kör Trading OS-signal → futures adapter → paper simulation internt. Inga riktiga order kan skickas.'
               : 'Auto simulation är avstängd. Slå på för intern paper-simulation, eller kör scannern manuellt.'}</div>
             <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
               <button type="button" className="btn" onClick={handleToggleAutoSimulation}>
@@ -606,7 +636,7 @@ export default function FuturesPaperDeskPage() {
 
           <ReadinessCard title="Strategier" status="Kandidatkälla" tone="info">
             <MiniList items={strategyPreviewItems} emptyText="Strategier visas när historisk strategy performance finns i runtime." />
-            <div>Strategier är kandidater, inte aktiva futures-auto-trades. Ingen futures allowlist är inkopplad ännu. Källa: historisk strategy performance.</div>
+            <div>StrategyId och strategyName är metadata. Futures-desken får inte skapa riktning utan Trading OS-signal.</div>
           </ReadinessCard>
 
           <ReadinessCard title="Senaste kandidater/signaler" status={candidateQueue.connected ? `${queueCandidates.length} i kö` : 'Candidate queue saknas'} tone={queueCandidates.length > 0 ? 'info' : 'neutral'}>
@@ -615,7 +645,7 @@ export default function FuturesPaperDeskPage() {
               items={queueCandidates.slice(0, 3).map((row) => ({
                 key: row.candidateId,
                 label: `${row.symbol} ${row.direction}`,
-                meta: `${row.strategyName || row.strategyId}${row.testOnly ? ' · test/simulation' : ''}`,
+                meta: `${row.strategyName || row.strategyId} · ${tradeTypeLabel(row.tradeType)} · ${row.dataSource || 'okänd data'}`,
               }))}
               emptyText="Inga futures-kandidater i kön. Kör scannern för att skapa nya."
             />
@@ -672,12 +702,15 @@ export default function FuturesPaperDeskPage() {
           emptyText="Inga scans ännu. Kör scannern eller slå på auto simulation."
           columns={[
             { key: 'startedAt', label: 'Tidpunkt', render: (row) => row.startedAt ? new Date(row.startedAt).toLocaleString('sv-SE') : '–' },
-            { key: 'strategiesChecked', label: 'Strategier', render: (row) => fmtNumber(row.strategiesChecked || 0) },
+            { key: 'tradingOsSignalsRead', label: 'OS-signaler', render: (row) => fmtNumber(row.tradingOsSignalsRead ?? row.strategiesChecked ?? 0) },
+            { key: 'signalsMappedToFutures', label: 'Mappade', render: (row) => fmtNumber(row.signalsMappedToFutures || 0) },
             { key: 'candidatesCreated', label: 'Kandidater', render: (row) => fmtNumber(row.candidatesCreated || 0) },
-            { key: 'tradesOpened', label: 'Trades öppnade', render: (row) => fmtNumber(row.tradesOpened || 0) },
+            { key: 'tradesOpenedFromRealSignals', label: 'Real opened', render: (row) => fmtNumber(row.tradesOpenedFromRealSignals || 0) },
+            { key: 'tradesOpenedFromTests', label: 'Test opened', render: (row) => fmtNumber(row.tradesOpenedFromTests || 0) },
             { key: 'blockedByCooldown', label: 'Cooldown-block', render: (row) => fmtNumber(row.blockedByCooldown?.length || 0) },
             { key: 'blockedByMaxTrades', label: 'Max-block', render: (row) => fmtNumber(row.blockedByMaxTrades?.length || 0) },
-            { key: 'skippedStrategies', label: 'Skippade', render: (row) => fmtNumber(row.skippedStrategies?.length || 0) },
+            { key: 'signalsSkippedNoMapping', label: 'No mapping', render: (row) => fmtNumber(row.signalsSkippedNoMapping || 0) },
+            { key: 'signalsSkippedNoRisk', label: 'No risk', render: (row) => fmtNumber(row.signalsSkippedNoRisk || 0) },
             { key: 'status', label: 'Status', render: (row) => <Pill tone={row.status === 'completed' ? 'success' : 'warning'}>{row.status || '–'}</Pill> },
           ]}
         />
@@ -803,15 +836,19 @@ export default function FuturesPaperDeskPage() {
                   <div style={{ color: 'var(--muted)', fontSize: 11 }}>{row.strategyId}{row.approved ? '' : ' · ej godkänd'}</div>
                 </div>
               ) },
-              { key: 'tradesUsed', label: 'Trades', render: (row) => `${fmtNumber(row.tradesUsed || 0)} / ${fmtNumber(row.maxTrades || 10)}` },
+              { key: 'tradesUsed', label: 'Trades all', render: (row) => `${fmtNumber(row.totalTradesAll ?? row.tradesUsed ?? 0)} / ${fmtNumber(row.maxTrades || 10)}` },
+              { key: 'totalTradesRealSignals', label: 'Real signals', render: (row) => fmtNumber(row.totalTradesRealSignals || 0) },
+              { key: 'testTrades', label: 'Test/exkl.', render: (row) => `${fmtNumber(row.testTrades || 0)} / ${fmtNumber(row.excludedTrades || 0)}` },
               { key: 'cooldown', label: 'Cooldown', render: (row) => row.cooldownActive ? `${fmtNumber(row.cooldownMinutesRemaining || 0)} min kvar` : '–' },
               { key: 'lastTradeAt', label: 'Senaste trade', render: (row) => row.lastTradeAt ? new Date(row.lastTradeAt).toLocaleString('sv-SE') : '–' },
               { key: 'nextAllowedAt', label: 'Nästa tillåten', render: (row) => row.canTradeNow ? 'Nu' : (row.nextAllowedAt ? new Date(row.nextAllowedAt).toLocaleString('sv-SE') : '–') },
               { key: 'canTradeNow', label: 'Kan trada', render: (row) => (
                 <Pill tone={row.canTradeNow ? 'success' : 'warning'}>{row.canTradeNow ? 'Ja' : (row.blockReason || 'Nej')}</Pill>
               ) },
-              { key: 'totalPnlSek', label: 'PnL', render: (row) => fmtMoney(row.totalPnlSek || 0, 'SEK') },
-              { key: 'winRate', label: 'Win rate', render: (row) => row.winRate == null ? '–' : fmtPct(row.winRate) },
+              { key: 'pnlAll', label: 'PnL all', render: (row) => fmtMoney(row.pnlAll ?? row.totalPnlSek ?? 0, 'SEK') },
+              { key: 'pnlRealSignals', label: 'PnL real', render: (row) => fmtMoney(row.pnlRealSignals || 0, 'SEK') },
+              { key: 'winRateAll', label: 'WR all', render: (row) => row.winRateAll == null && row.winRate == null ? '–' : fmtPct(row.winRateAll ?? row.winRate) },
+              { key: 'winRateRealSignals', label: 'WR real', render: (row) => row.winRateRealSignals == null ? '–' : fmtPct(row.winRateRealSignals) },
             ]}
           />
         </section>
@@ -838,6 +875,15 @@ export default function FuturesPaperDeskPage() {
               { key: 'symbol', label: 'Symbol' },
               { key: 'direction', label: 'Riktning' },
               { key: 'strategyName', label: 'Strategi', render: (row) => row.strategyName || row.strategyId || '–' },
+              { key: 'tradeType', label: 'Typ', render: (row) => (
+                <Pill tone={tradeTypeTone(row.tradeType, row.excludedFromStats)}>{tradeTypeLabel(row.tradeType)}</Pill>
+              ) },
+              { key: 'signalSource', label: 'Signal source', render: (row) => row.signalSource || '–' },
+              { key: 'dataSource', label: 'Data', render: (row) => (
+                <Pill tone={row.dataSource === 'simulated_fallback' ? 'warning' : 'success'}>{row.dataSource || '–'}</Pill>
+              ) },
+              { key: 'usedRealStrategyLogic', label: 'Real logic', render: (row) => yesNo(row.usedRealStrategyLogic) },
+              { key: 'excludedFromStats', label: 'Exkl.', render: (row) => yesNo(row.excludedFromStats) },
               { key: 'entryPrice', label: 'Entry', render: (row) => fmtNumber(row.entryPrice, 2) },
               { key: 'exitPrice', label: 'Exit', render: (row) => fmtNumber(row.exitPrice, 2) },
               { key: 'realizedPnlSek', label: 'PnL', render: (row) => (
@@ -968,7 +1014,8 @@ export default function FuturesPaperDeskPage() {
             rows={[
               { key: 'Runtime', value: 'futuresPaperDeskService', detail: data?.technical?.runtimeSource || '–' },
               { key: 'Universe', value: 'marketUniverseService', detail: data?.technical?.universeSource || '–' },
-              { key: 'Strategier', value: 'strategyPerformanceReadService', detail: data?.technical?.strategySource || '–' },
+              { key: 'Strategier', value: 'Trading OS signal adapter', detail: data?.technical?.strategySource || '–' },
+              { key: 'Datafeed', value: dataFeed.source || '–', detail: data?.technical?.priceFeedSource || '–' },
               { key: 'Session', value: market.session || 'Globex', detail: market.description || '–' },
             ]}
             columns={[
