@@ -9,7 +9,10 @@
 // - strategikälla = samma godkännandekedja som interna Paper Trading
 //   (paperAllowlistService -> automationApprovalService)
 // - max N trades per strategyId (FUTURES_PAPER_MAX_TRADES_PER_STRATEGY, default 10)
-// - cooldown per strategyId (FUTURES_PAPER_STRATEGY_COOLDOWN_MINUTES, default 60)
+// - cooldown per strategyId (FUTURES_PAPER_STRATEGY_COOLDOWN_MINUTES om satt,
+//   annars central STRATEGY_COOLDOWN_MINUTES, default 30 — strategyTradeControlService)
+// - strategy family-exklusivitet: endast bästa kandidaten i en familj per scan,
+//   öppen position i familjen blockerar nya, family cooldown (default 30 min)
 // - scan history (FUTURES_PAPER_SCAN_HISTORY_LIMIT, default 10)
 
 const path = require('path');
@@ -19,6 +22,7 @@ const futuresPaperPriceFeedService = require('./futuresPaperPriceFeedService');
 const strategyPerformanceReadService = require('./strategyPerformanceReadService');
 const paperAllowlistService = require('./paperAllowlistService');
 const futuresTradingOsSignalAdapterService = require('./futuresTradingOsSignalAdapterService');
+const strategyTradeControl = require('./strategyTradeControlService');
 
 const SAFETY = Object.freeze({
   mode: 'paper_only',
@@ -39,7 +43,12 @@ const TAKE_PROFIT_PCT = 0.6;
 const ENGINE_TEST_MODE_ENV = 'FUTURES_PAPER_ENGINE_TEST_MODE';
 
 const BLOCK_REASON_MAX_TRADES = 'max_strategy_trades_reached';
-const BLOCK_REASON_COOLDOWN = 'strategy_cooldown_active';
+const BLOCK_REASON_COOLDOWN = strategyTradeControl.BLOCK_REASON_STRATEGY_COOLDOWN;
+const FAMILY_BLOCK_REASONS = new Set([
+  strategyTradeControl.BLOCK_REASON_FAMILY_NOT_BEST,
+  strategyTradeControl.BLOCK_REASON_FAMILY_POSITION_OPEN,
+  strategyTradeControl.BLOCK_REASON_FAMILY_COOLDOWN,
+]);
 
 function nowIso(now = new Date()) {
   return new Date(now).toISOString();
@@ -90,11 +99,17 @@ function createFuturesPaperScannerService(options = {}) {
   let autoTimer = null;
 
   function getEngineConfig() {
+    const controlConfig = strategyTradeControl.getStrategyTradeControlConfig();
     return {
       maxTradesPerStrategy: configOverrides.maxTradesPerStrategy
         ?? envInt('FUTURES_PAPER_MAX_TRADES_PER_STRATEGY', 10),
+      // Befintlig futures-env respekteras om satt; annars central default 30 min.
       cooldownMinutes: configOverrides.cooldownMinutes
-        ?? envInt('FUTURES_PAPER_STRATEGY_COOLDOWN_MINUTES', 60),
+        ?? envInt('FUTURES_PAPER_STRATEGY_COOLDOWN_MINUTES', controlConfig.cooldownMinutes),
+      familyCooldownMinutes: configOverrides.familyCooldownMinutes
+        ?? controlConfig.familyCooldownMinutes,
+      familyExclusiveEnabled: configOverrides.familyExclusiveEnabled
+        ?? controlConfig.familyExclusiveEnabled,
       scanHistoryLimit: configOverrides.scanHistoryLimit
         ?? envInt('FUTURES_PAPER_SCAN_HISTORY_LIMIT', 10),
       closedTradesLimit: configOverrides.closedTradesLimit
@@ -292,10 +307,54 @@ function createFuturesPaperScannerService(options = {}) {
     };
   }
 
-  // DEL 2 + DEL 3: max trades per strategi och cooldown per strategi.
-  function evaluateStrategyGate(strategyId, { now = new Date(), positionsSummary = null } = {}) {
+  // Familj för en futures-kandidat: explicit fält → katalog-family → rå signalFamily.
+  function familyOfCandidate(candidate = {}) {
+    return strategyTradeControl.resolveStrategyFamily({
+      strategyId: candidate.strategyId || null,
+      strategyFamily: candidate.strategyFamily || null,
+      signalFamily: candidate.rawSignalSummary?.signalFamily || candidate.signalFamily || null,
+    });
+  }
+
+  function familyOfPosition(row = {}) {
+    return strategyTradeControl.resolveStrategyFamily({
+      strategyId: row.strategyId || null,
+      strategyFamily: row.strategyFamily || null,
+      signalFamily: null,
+    });
+  }
+
+  // Family-statistik från ledgern: öppna positioner + senaste trade i familjen.
+  function getFamilyTradeStats(strategyFamily, positionsSummary = null) {
+    const family = String(strategyFamily || '').trim().toLowerCase();
+    if (!family) return { strategyFamily: null, openTrades: 0, lastTradeAt: null };
+    const positions = positionsSummary || ledger.getPositionsSummary();
+    const inFamily = (row) => familyOfPosition(row) === family;
+    const open = (positions.open || []).filter(inFamily);
+    const closed = (positions.closed || []).filter(inFamily);
+    let lastTradeAtMs = 0;
+    for (const row of [...open, ...closed]) {
+      const openedMs = Date.parse(row.openedAt || '') || 0;
+      const closedMs = Date.parse(row.closedAt || '') || 0;
+      lastTradeAtMs = Math.max(lastTradeAtMs, openedMs, closedMs);
+    }
+    return {
+      strategyFamily: family,
+      openTrades: open.length,
+      lastTradeAt: lastTradeAtMs ? new Date(lastTradeAtMs).toISOString() : null,
+    };
+  }
+
+  // DEL 2 + DEL 3: max trades, cooldown per strategi samt strategy family gate.
+  function evaluateStrategyGate(strategyId, {
+    now = new Date(),
+    positionsSummary = null,
+    strategyFamily = null,
+    familyRank = null,
+  } = {}) {
     const config = getEngineConfig();
-    const stats = getStrategyTradeStats(strategyId, positionsSummary);
+    const positions = positionsSummary || ledger.getPositionsSummary();
+    const stats = getStrategyTradeStats(strategyId, positions);
     const cooldownMs = config.cooldownMinutes * 60_000;
     const nowMs = new Date(now).getTime();
     const lastTradeMs = stats.lastTradeAt ? Date.parse(stats.lastTradeAt) : 0;
@@ -305,17 +364,43 @@ function createFuturesPaperScannerService(options = {}) {
       ? Math.ceil((lastTradeMs + cooldownMs - nowMs) / 60_000)
       : 0;
 
+    const resolvedFamily = strategyFamily
+      || strategyTradeControl.resolveStrategyFamily({ strategyId });
+    const familyStats = getFamilyTradeStats(resolvedFamily, positions);
+    const familyGate = strategyTradeControl.evaluateFamilyGate({
+      strategyFamily: familyStats.strategyFamily,
+      familyRank,
+      familyHasOpenPosition: familyStats.openTrades > 0,
+      familyLastTradeAt: familyStats.lastTradeAt,
+      now,
+      config: {
+        familyCooldownMinutes: config.familyCooldownMinutes,
+        familyExclusiveEnabled: config.familyExclusiveEnabled,
+      },
+    });
+
     let blockReason = null;
     if (stats.tradesUsed >= config.maxTradesPerStrategy) {
       blockReason = BLOCK_REASON_MAX_TRADES;
     } else if (cooldownActive) {
       blockReason = BLOCK_REASON_COOLDOWN;
+    } else if (familyGate.familyBlockReason) {
+      blockReason = familyGate.familyBlockReason;
     }
 
     return {
       strategyId,
       canTradeNow: blockReason === null,
       blockReason,
+      strategyFamily: familyStats.strategyFamily,
+      familyRank: familyGate.familyRank,
+      familyGateDecision: familyGate.familyGateDecision,
+      familyBlockReason: familyGate.familyBlockReason,
+      familyOpenTrades: familyStats.openTrades,
+      familyLastTradeAt: familyStats.lastTradeAt,
+      familyNextAllowedAt: familyGate.familyNextAllowedAt,
+      familyCooldownMinutesRemaining: familyGate.familyCooldownMinutesRemaining,
+      strategyCooldownDecision: cooldownActive ? 'blocked' : 'allowed',
       tradesUsed: stats.tradesUsed,
       maxTrades: config.maxTradesPerStrategy,
       openTrades: stats.openTrades,
@@ -391,6 +476,7 @@ function createFuturesPaperScannerService(options = {}) {
     const skippedStrategies = [];
     const blockedByCooldown = [];
     const blockedByMaxTrades = [];
+    const blockedByFamilyGate = [];
     const signalsSkippedNoMapping = [];
     const signalsSkippedNoRisk = [];
     const signalsSkippedOther = [];
@@ -415,8 +501,16 @@ function createFuturesPaperScannerService(options = {}) {
       target.push(row);
     }
 
+    // Family-exklusivitet: rangordna kandidaterna inom sina familjer så att
+    // endast bästa kandidaten (högst confidence) i varje familj kan gå vidare.
+    const familyRanks = strategyTradeControl.rankFamilyCandidates(tradingOsCandidates, {
+      familyOf: familyOfCandidate,
+    });
+
     for (const candidate of tradingOsCandidates) {
       const strategyId = String(candidate.strategyId || '');
+      const familyMeta = familyRanks.get(candidate)
+        || { strategyFamily: familyOfCandidate(candidate), familyRank: null, isBestInFamily: true };
       const symbol = String(candidate.futuresSymbol || candidate.symbol || '').toUpperCase().slice(0, 3);
       if (!strategyId) {
         skippedStrategies.push({ strategyId: null, signalId: candidate.signalId || null, reason: 'missing_strategy_id' });
@@ -448,7 +542,31 @@ function createFuturesPaperScannerService(options = {}) {
         continue;
       }
 
-      const gate = evaluateStrategyGate(strategyId, { now, positionsSummary });
+      // Family-exklusivitet gäller även mot kandidater som redan står i kön
+      // (från tidigare scans) — endast en kandidat per familj åt gången.
+      if (config.familyExclusiveEnabled && familyMeta.strategyFamily) {
+        const familyAlreadyQueued = [...queue, ...added].some((row) => (
+          (row.strategyFamily || familyOfCandidate(row)) === familyMeta.strategyFamily
+        ));
+        if (familyAlreadyQueued) {
+          blockedByFamilyGate.push({
+            strategyId,
+            signalId: candidate.signalId || null,
+            reason: strategyTradeControl.BLOCK_REASON_FAMILY_NOT_BEST,
+            strategyFamily: familyMeta.strategyFamily,
+            familyRank: familyMeta.familyRank,
+            detail: 'family_candidate_already_queued',
+          });
+          continue;
+        }
+      }
+
+      const gate = evaluateStrategyGate(strategyId, {
+        now,
+        positionsSummary,
+        strategyFamily: familyMeta.strategyFamily,
+        familyRank: familyMeta.familyRank,
+      });
       if (gate.blockReason === BLOCK_REASON_COOLDOWN) {
         blockedByCooldown.push({
           strategyId,
@@ -470,6 +588,29 @@ function createFuturesPaperScannerService(options = {}) {
         });
         continue;
       }
+      if (FAMILY_BLOCK_REASONS.has(gate.blockReason)) {
+        blockedByFamilyGate.push({
+          strategyId,
+          signalId: candidate.signalId || null,
+          reason: gate.blockReason,
+          strategyFamily: gate.strategyFamily,
+          familyRank: gate.familyRank,
+          familyOpenTrades: gate.familyOpenTrades,
+          familyLastTradeAt: gate.familyLastTradeAt,
+          nextAllowedAt: gate.familyNextAllowedAt,
+          familyCooldownMinutesRemaining: gate.familyCooldownMinutesRemaining,
+        });
+        continue;
+      }
+
+      // Uppgift 5-metadata: kandidaten bär family/cooldown-beslutet vidare
+      // in i kön, simuleringen och ledger-positionen.
+      candidate.strategyFamily = familyMeta.strategyFamily || null;
+      candidate.familyRank = familyMeta.familyRank ?? null;
+      candidate.familyGateDecision = gate.familyGateDecision;
+      candidate.familyBlockReason = null;
+      candidate.strategyCooldownDecision = gate.strategyCooldownDecision || 'allowed';
+      candidate.nextAllowedAt = null;
 
       added.push(candidate);
       busySymbols.add(symbol);
@@ -503,6 +644,7 @@ function createFuturesPaperScannerService(options = {}) {
       tradesOpenedFromTests: 0,
       blockedByCooldown,
       blockedByMaxTrades,
+      blockedByFamilyGate,
       dataSource: feed.feed.source,
       simulatedData: feed.feed.simulated === true,
       allowlistError: allowlistError || null,
@@ -522,10 +664,13 @@ function createFuturesPaperScannerService(options = {}) {
       summary: `${adapterResult?.stats?.tradingOsSignalsRead || 0} Trading OS-signaler lästa, `
         + `${realSignalCandidates.length} reala futures-kandidater, ${engineTestCandidates.length} engine-test, `
         + `${blockedByCooldown.length} cooldown-blockerade, ${blockedByMaxTrades.length} max-limit-blockerade, `
+        + `${blockedByFamilyGate.length} family-gate-blockerade, `
         + `${signalsSkippedNoMapping.length} utan mapping, ${signalsSkippedNoRisk.length} utan risk.`,
       config: {
         maxTradesPerStrategy: config.maxTradesPerStrategy,
         cooldownMinutes: config.cooldownMinutes,
+        familyCooldownMinutes: config.familyCooldownMinutes,
+        familyExclusiveEnabled: config.familyExclusiveEnabled,
         engineTestMode: config.engineTestMode,
       },
       ...SAFETY,
@@ -572,7 +717,11 @@ function createFuturesPaperScannerService(options = {}) {
     }
     const candidate = queue[index];
 
-    const gate = evaluateStrategyGate(candidate.strategyId, { now });
+    const gate = evaluateStrategyGate(candidate.strategyId, {
+      now,
+      strategyFamily: candidate.strategyFamily || familyOfCandidate(candidate),
+      familyRank: candidate.familyRank ?? null,
+    });
     if (!gate.canTradeNow) {
       return {
         ok: false,
@@ -632,6 +781,10 @@ function createFuturesPaperScannerService(options = {}) {
       takeProfit,
       strategyId: candidate.strategyId,
       strategyName: candidate.strategyName,
+      strategyFamily: candidate.strategyFamily || gate.strategyFamily || null,
+      familyRank: candidate.familyRank ?? null,
+      familyGateDecision: candidate.familyGateDecision || gate.familyGateDecision || null,
+      strategyCooldownDecision: candidate.strategyCooldownDecision || gate.strategyCooldownDecision || 'allowed',
       entryReason: `${candidate.entryReason || 'Futures paper candidate'} [source=${candidate.source}, tradeType=${normalizedTradeType}, dataSource=${dataSource}]`,
       tradeType: normalizedTradeType,
       signalSource: candidate.signalSource || (isRealSignalCandidate ? 'trading_os' : 'fallback_test'),
@@ -753,7 +906,11 @@ function createFuturesPaperScannerService(options = {}) {
         const openCount = (ledger.getPositionsSummary().open || []).length;
         if (openCount >= MAX_OPEN_POSITIONS) break;
         const queue = readQueue();
-        const nextCandidate = queue.find((row) => evaluateStrategyGate(row.strategyId, { now }).canTradeNow);
+        const nextCandidate = queue.find((row) => evaluateStrategyGate(row.strategyId, {
+          now,
+          strategyFamily: row.strategyFamily || familyOfCandidate(row),
+          familyRank: row.familyRank ?? null,
+        }).canTradeNow);
         if (!nextCandidate) break;
         const simulated = simulateCandidate({ candidateId: nextCandidate.candidateId, now });
         if (!simulated.ok) break;
@@ -894,6 +1051,12 @@ function createFuturesPaperScannerService(options = {}) {
         nextAllowedAt: gate.nextAllowedAt,
         cooldownActive: gate.cooldownActive,
         cooldownMinutesRemaining: gate.cooldownMinutesRemaining,
+        strategyFamily: gate.strategyFamily,
+        familyGateDecision: gate.familyGateDecision,
+        familyBlockReason: gate.familyBlockReason,
+        familyOpenTrades: gate.familyOpenTrades,
+        familyNextAllowedAt: gate.familyNextAllowedAt,
+        familyCooldownMinutesRemaining: gate.familyCooldownMinutesRemaining,
         canTradeNow: approved && !strategy.skipReason && gate.canTradeNow,
         blockReason: !approved
           ? 'not_in_paper_allowlist'
@@ -1023,6 +1186,8 @@ function createFuturesPaperScannerService(options = {}) {
     readScannerState,
     getApprovedStrategySource,
     getStrategyTradeStats,
+    getFamilyTradeStats,
+    familyOfCandidate,
     evaluateStrategyGate,
     runScannerOnce,
     getCandidates,

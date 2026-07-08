@@ -605,6 +605,7 @@ const STRATEGIES = Object.freeze([
   strategy({
     id: 'vwap_momentum_long',
     name: 'VWAP Momentum Long',
+    family: 'vwap_family',
     explanation: 'Pris återtar VWAP med stark volym.',
     market_group: 'all',
     signal_rules: ['price_reclaims_vwap', 'volume_above_average', 'momentum_up', 'avoid_extended_entry'],
@@ -617,6 +618,7 @@ const STRATEGIES = Object.freeze([
   strategy({
     id: 'vwap_rejection_short',
     name: 'VWAP Rejection Short',
+    family: 'vwap_family',
     explanation: 'Pris avvisas vid VWAP och tappar styrka.',
     market_group: 'all',
     signal_rules: ['price_rejects_vwap', 'lower_high_near_vwap', 'volume_confirms_down_move', 'momentum_fades'],
@@ -629,6 +631,7 @@ const STRATEGIES = Object.freeze([
   strategy({
     id: 'opening_range_breakout',
     name: 'Opening Range Breakout',
+    family: 'opening_range_family',
     explanation: 'Bryter över/under första 5/15/30 min range.',
     market_group: 'stocks',
     signal_rules: ['opening_range_defined', 'breaks_range_with_volume', 'holds_break_level', 'market_open_only'],
@@ -640,6 +643,7 @@ const STRATEGIES = Object.freeze([
   strategy({
     id: 'opening_range_fakeout',
     name: 'Opening Range Fakeout',
+    family: 'opening_range_family',
     explanation: 'Bryter range men faller tillbaka.',
     market_group: 'stocks',
     signal_rules: ['opening_range_defined', 'range_break_fails', 'closes_back_inside_range', 'volume_exhaustion'],
@@ -651,6 +655,7 @@ const STRATEGIES = Object.freeze([
   strategy({
     id: 'ema_pullback_continuation',
     name: 'EMA Pullback Continuation',
+    family: 'ema_trend_family',
     explanation: 'Trend + rekyl mot EMA + fortsättning.',
     market_group: 'all',
     signal_rules: ['ema_trend_aligned', 'pullback_to_ema', 'continuation_candle', 'no_major_index_conflict'],
@@ -662,6 +667,7 @@ const STRATEGIES = Object.freeze([
   strategy({
     id: 'ema_breakdown',
     name: 'EMA Breakdown',
+    family: 'ema_trend_family',
     explanation: 'Pris tappar EMA med volym.',
     market_group: 'all',
     signal_rules: ['price_loses_ema', 'volume_expands', 'lower_low_confirmed', 'avoid_chop'],
@@ -674,6 +680,7 @@ const STRATEGIES = Object.freeze([
   strategy({
     id: 'narrow_breakout',
     name: 'Narrow Breakout',
+    family: 'narrow_state',
     explanation: 'Lugnt läge följt av snabb rörelse.',
     market_group: 'all',
     signal_rules: ['narrow_state_detected', 'range_compression', 'breakout_candle', 'relative_volume_rising'],
@@ -685,6 +692,7 @@ const STRATEGIES = Object.freeze([
   strategy({
     id: 'volume_spike_momentum',
     name: 'Volume Spike Momentum',
+    family: 'volume_breakout_family',
     explanation: 'Ovanligt hög volym + snabb rörelse.',
     market_group: 'all',
     signal_rules: ['relative_volume_spike', 'fast_price_expansion', 'spread_not_extreme', 'follow_through_required'],
@@ -696,6 +704,7 @@ const STRATEGIES = Object.freeze([
   strategy({
     id: 'vwap_volume_breakout_long',
     name: 'VWAP Volume Breakout Long',
+    family: 'vwap_family',
     description_sv: 'Pris bryter upp över VWAP med stark volym.',
     simple_explanation_sv: 'Systemet letar efter när priset går över en viktig nivå och många köpare kommer in samtidigt.',
     engines_used: ['VWAP-återtagning', 'Volymtopp', 'Stark rörelse'],
@@ -713,6 +722,7 @@ const STRATEGIES = Object.freeze([
   strategy({
     id: 'vwap_failed_breakout_short',
     name: 'VWAP Failed Breakout Short',
+    family: 'vwap_family',
     description_sv: 'Pris försöker bryta över VWAP men faller snabbt tillbaka.',
     simple_explanation_sv: 'Systemet letar efter falska uppgångar där priset tappar styrka.',
     engines_used: ['VWAP-avvisning', 'Volymtopp', 'Rekyl/medelvärde'],
@@ -730,6 +740,7 @@ const STRATEGIES = Object.freeze([
   strategy({
     id: 'narrow_state_expansion_long',
     name: 'Narrow State Expansion Long',
+    family: 'narrow_state',
     description_sv: 'Lugnt och ihoptryckt pris bryter upp med stark volym.',
     simple_explanation_sv: 'Systemet väntar på att priset ska vara lugnt först och sedan röra sig starkt uppåt.',
     engines_used: ['Narrow State', 'Utbrott', 'Volymtopp', 'Stark rörelse'],
@@ -747,6 +758,7 @@ const STRATEGIES = Object.freeze([
   strategy({
     id: 'narrow_state_fakeout_reversal',
     name: 'Narrow State Fakeout Reversal',
+    family: 'narrow_state',
     description_sv: 'Pris bryter ut från narrow state men vänder snabbt tillbaka.',
     simple_explanation_sv: 'Systemet letar efter falska utbrott där priset lurar marknaden och sedan vänder.',
     engines_used: ['Narrow State', 'Utbrott', 'Rekyl/medelvärde'],
@@ -837,6 +849,7 @@ const STRATEGIES = Object.freeze([
   strategy({
     id: 'volume_spike_continuation',
     name: 'Volume Spike Continuation',
+    family: 'volume_breakout_family',
     description_sv: 'Ovanligt hög volym följs av fortsatt rörelse i samma riktning.',
     simple_explanation_sv: 'Systemet letar efter stark volym som fortsätter driva priset.',
     engines_used: ['Volymtopp', 'Stark rörelse', 'Utbrott'],
@@ -854,6 +867,7 @@ const STRATEGIES = Object.freeze([
   strategy({
     id: 'pullback_to_vwap_long',
     name: 'Pullback To VWAP Long',
+    family: 'vwap_family',
     description_sv: 'Pris är i upptrend, går tillbaka till VWAP och studsar upp.',
     simple_explanation_sv: 'Systemet väntar på en liten paus i en uppgång och försöker hitta ny fortsättning upp.',
     engines_used: ['VWAP-återtagning', 'EMA-trend', 'EMA-rekyl'],
@@ -888,6 +902,7 @@ const STRATEGIES = Object.freeze([
   strategy({
     id: 'index_supported_momentum_long',
     name: 'Index Supported Momentum Long',
+    family: 'index_family',
     description_sv: 'Aktie visar momentum upp samtidigt som QQQ/SPY stödjer rörelsen.',
     simple_explanation_sv: 'Systemet tar bara aktiesignaler när stora index också hjälper till.',
     engines_used: ['Stark rörelse', 'Volymtopp', 'Indexbekräftelse'],
@@ -905,6 +920,7 @@ const STRATEGIES = Object.freeze([
   strategy({
     id: 'crypto_fast_momentum',
     name: 'Crypto Fast Momentum',
+    family: 'crypto_momentum_family',
     description_sv: 'Krypto rör sig snabbt med stark volym och kort hålltid.',
     simple_explanation_sv: 'Systemet letar efter snabba kryptorörelser och försöker stänga tidigt.',
     engines_used: ['Stark rörelse', 'Volymtopp', 'Utbrott'],
@@ -922,6 +938,7 @@ const STRATEGIES = Object.freeze([
   strategy({
     id: 'opening_range_retest_long',
     name: 'Opening Range Retest Long',
+    family: 'opening_range_family',
     description_sv: 'Pris bryter opening range, testar nivån igen och fortsätter upp.',
     simple_explanation_sv: 'Systemet väntar inte bara på första utbrottet, utan även på att priset bekräftar nivån igen.',
     engines_used: ['Opening Range', 'Utbrott', 'Volymtopp', 'Stark rörelse'],
@@ -939,6 +956,7 @@ const STRATEGIES = Object.freeze([
   strategy({
     id: 'mean_reversion_vwap',
     name: 'Mean Reversion VWAP',
+    family: 'vwap_family',
     explanation: 'Överreaktion tillbaka mot VWAP.',
     market_group: 'all',
     signal_rules: ['price_extended_from_vwap', 'momentum_exhaustion', 'reversal_candle', 'target_vwap_mean'],
@@ -950,6 +968,7 @@ const STRATEGIES = Object.freeze([
   strategy({
     id: 'trend_continuation',
     name: 'Trend Continuation',
+    family: 'ema_trend_family',
     explanation: 'Stark trend + paus + fortsättning.',
     market_group: 'all',
     signal_rules: ['trend_confirmed', 'pause_or_flag', 'breaks_pause_in_trend_direction', 'volume_not_weak'],
@@ -985,6 +1004,7 @@ const STRATEGIES = Object.freeze([
   strategy({
     id: 'index_confirmed_long',
     name: 'Index Confirmed Long',
+    family: 'index_family',
     explanation: 'Aktie long bara om QQQ/SPY stödjer.',
     market_group: 'stocks',
     signal_rules: ['stock_long_setup', 'qqq_or_spy_bullish', 'index_not_breaking_down', 'market_compass_aligned'],
@@ -997,6 +1017,7 @@ const STRATEGIES = Object.freeze([
   strategy({
     id: 'index_confirmed_short',
     name: 'Index Confirmed Short',
+    family: 'index_family',
     explanation: 'Aktie short om QQQ/SPY är svag.',
     market_group: 'stocks',
     signal_rules: ['stock_short_setup', 'qqq_or_spy_bearish', 'index_not_reclaiming', 'market_compass_aligned'],
@@ -1009,6 +1030,7 @@ const STRATEGIES = Object.freeze([
   strategy({
     id: 'crypto_momentum_scalper',
     name: 'Crypto Momentum Scalper',
+    family: 'crypto_momentum_family',
     explanation: 'Krypto + stark volym + kort hålltid.',
     market_group: 'crypto',
     signal_rules: ['crypto_symbol', 'strong_relative_volume', 'fast_momentum', 'short_hold_only'],
@@ -1020,6 +1042,7 @@ const STRATEGIES = Object.freeze([
   strategy({
     id: 'low_volatility_breakout',
     name: 'Low Volatility Breakout',
+    family: 'volume_breakout_family',
     explanation: 'Låg volatilitet -> breakout.',
     market_group: 'all',
     signal_rules: ['low_volatility_regime', 'tight_range', 'range_break', 'volume_expansion'],
@@ -1042,6 +1065,7 @@ const STRATEGIES = Object.freeze([
   strategy({
     id: 'gap_continuation',
     name: 'Gap Continuation',
+    family: 'gap_family',
     explanation: 'Gap upp/ned fortsätter.',
     market_group: 'stocks',
     signal_rules: ['opening_gap', 'gap_holds', 'volume_confirms_direction', 'no_immediate_fade'],
@@ -1053,6 +1077,7 @@ const STRATEGIES = Object.freeze([
   strategy({
     id: 'gap_fade',
     name: 'Gap Fade',
+    family: 'gap_family',
     explanation: 'Gap upp/ned fylls tillbaka.',
     market_group: 'stocks',
     signal_rules: ['opening_gap', 'failed_continuation', 'moves_back_toward_prior_close', 'volume_fade_or_reversal'],

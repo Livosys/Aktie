@@ -51,6 +51,7 @@ const paperRiskReviewService                    = require('../services/paperRisk
 const marketUniverse                            = require('../services/marketUniverseService');
 const learningConnector                         = require('../services/learningConnectorService');
 const learningEngine                            = require('../services/daytradingLearningEngineService');
+const strategyTradeControl                      = require('../services/strategyTradeControlService');
 
 // ── Paths ─────────────────────────────────────────────────────────────────────
 
@@ -90,6 +91,8 @@ function defaultState() {
     enabled:            false,
     openTrades:         [],
     cooldowns:          {},   // { symbol: isoTimestamp }
+    strategyCooldowns:  {},   // { strategyId: isoTimestamp } senaste öppnade/stängda trade per strategi
+    familyCooldowns:    {},   // { strategyFamily: isoTimestamp } senaste trade per strategy family
     seenSignalIds:      [],   // rolling last-200 to block duplicate signalIds
     emaFilterStartedAt: null, // ISO timestamp when PAPER_ALLOW_EMA=false took effect
     conservativeMode:   false, // auto-set when v2 underperforms (≥30 trades, TO>70% or avgPnl<0)
@@ -114,6 +117,8 @@ function loadState() {
       ...saved,
       openTrades:    Array.isArray(saved.openTrades)    ? saved.openTrades    : [],
       cooldowns:     saved.cooldowns                    || {},
+      strategyCooldowns: saved.strategyCooldowns        || {},
+      familyCooldowns:   saved.familyCooldowns          || {},
       seenSignalIds: Array.isArray(saved.seenSignalIds) ? saved.seenSignalIds : [],
     };
   } catch {
@@ -717,6 +722,33 @@ function qualifiesForEntry(c, state, opts = {}) {
   return { ok: true };
 }
 
+// ── Strategy trade control helpers ───────────────────────────────────────────
+
+// Familj för en paper-kandidat/trade: explicit strategyFamily → katalogens
+// family-fält (via strategyId) → rå signalFamily-etikett → null.
+function paperCandidateFamily(c = {}, strategyId = null) {
+  return strategyTradeControl.resolveStrategyFamily({
+    strategyId: strategyId || c.strategyId || c.strategy_id || c.resolvedStrategyId || c.sourceStrategyId || null,
+    strategyFamily: c.strategyFamily || null,
+    signalFamily: c.signalFamily || null,
+  });
+}
+
+function strategyControlReasonSv(control = {}) {
+  switch (control.blockReason) {
+    case strategyTradeControl.BLOCK_REASON_STRATEGY_COOLDOWN:
+      return `Strategi-cooldown aktiv — ${control.cooldownMinutesRemaining} min kvar innan ${control.strategyId || 'strategin'} får öppna ny paper-trade.`;
+    case strategyTradeControl.BLOCK_REASON_FAMILY_POSITION_OPEN:
+      return `Family gate: en paper-trade är redan öppen i familjen ${control.strategyFamily}.`;
+    case strategyTradeControl.BLOCK_REASON_FAMILY_COOLDOWN:
+      return `Family cooldown aktiv för ${control.strategyFamily} — ${control.familyCooldownMinutesRemaining} min kvar.`;
+    case strategyTradeControl.BLOCK_REASON_FAMILY_NOT_BEST:
+      return `Family gate: inte bästa kandidaten i familjen ${control.strategyFamily} just nu (rank ${control.familyRank}).`;
+    default:
+      return 'Strategy trade control blockerade entry.';
+  }
+}
+
 // ── Crypto helpers ────────────────────────────────────────────────────────────
 
 function isCryptoMarket(c) {
@@ -834,6 +866,10 @@ function buildOpenTrade(c, gateDecision = null) {
     direction:        c.nextMoveBias,
     strategyId:       c.strategyId || c.strategy_id || c.resolvedStrategyId || c.sourceStrategyId || null,
     strategyName:     c.strategyName || c.strategy_name || c.resolvedStrategyName || c.sourceStrategyName || null,
+    strategyFamily:   c.strategyFamily || null,
+    familyRank:       c.familyRank ?? null,
+    familyGateDecision: c.familyGateDecision || null,
+    strategyCooldownDecision: c.strategyCooldownDecision || null,
     entryTime:        openedAt,
     opened_at:        openedAt,
     closed_at:        null,
@@ -2093,6 +2129,20 @@ async function runTick() {
         mode: 'paper',
       });
       state.cooldowns[trade.symbol] = now;
+      // Uppdatera strategi- och family-cooldown även vid close (30 min-regeln
+      // gäller från senaste öppnade ELLER stängda trade).
+      {
+        const closedStrategyId = trade.resolvedStrategyId || trade.strategyId || trade.strategy_id || null;
+        if (closedStrategyId) {
+          if (!state.strategyCooldowns) state.strategyCooldowns = {};
+          state.strategyCooldowns[closedStrategyId] = now;
+        }
+        const closedFamily = trade.strategyFamily || paperCandidateFamily(trade);
+        if (closedFamily) {
+          if (!state.familyCooldowns) state.familyCooldowns = {};
+          state.familyCooldowns[closedFamily] = now;
+        }
+      }
       console.log(`[paper-trading] CLOSE ${trade.symbol} ${exit.result} ${exit.pnlPct?.toFixed(2)}% @ ${exit.exitPrice}`);
       changed = true;
       if (!state.conservativeMode) checkAndApplySafetyAlert(state);
@@ -2139,6 +2189,17 @@ async function runTick() {
 
     // Count all scanner candidates before loop filters
     for (const c of candidates) _bump('scannerCandidates', 'candidates');
+
+    // Strategy family-exklusivitet: rangordna tickens kandidater inom sina
+    // familjer (högst confidence = rank 1). Endast bästa kandidaten i en familj
+    // får öppna trade vid samma tillfälle.
+    const familyRanks = strategyTradeControl.rankFamilyCandidates(candidates, {
+      familyOf: (row) => paperCandidateFamily(row),
+      scoreOf: (row) => {
+        const n = Number(row?.confidenceScore ?? row?.confidence ?? row?.score);
+        return Number.isFinite(n) ? n : 0;
+      },
+    });
 
     for (const c of candidates) {
       if (state.openTrades.length >= MAX_OPEN_TRADES) {
@@ -2242,6 +2303,59 @@ async function runTick() {
           });
           continue;
         }
+
+        // ── Strategy Trade Control ────────────────────────────────────────────
+        // 30 min cooldown per strategyId + strategy family gate (öppen trade i
+        // familjen, family cooldown, endast bästa kandidaten i familjen).
+        // Paper-only regelkontroll — påverkar aldrig live/broker-vägar.
+        const controlConfig = strategyTradeControl.getStrategyTradeControlConfig();
+        const familyMeta = familyRanks.get(c) || {};
+        const controlFamily = paperCandidateFamily(c, resolvedStrategyId);
+        const familyHasOpenPosition = Boolean(controlFamily) && state.openTrades.some((t) => (
+          (t.strategyFamily || paperCandidateFamily(t)) === controlFamily
+        ));
+        const control = strategyTradeControl.evaluateStrategyTradeControl({
+          strategyId: resolvedStrategyId || null,
+          strategyName: runtimeStrategyForGate.strategy_name || null,
+          strategyFamily: controlFamily,
+          // Rank från tickens för-pass gäller bara om familjen är densamma där.
+          familyRank: familyMeta.strategyFamily === controlFamily ? familyMeta.familyRank : null,
+          lastTradeAt: resolvedStrategyId ? (state.strategyCooldowns || {})[resolvedStrategyId] : null,
+          familyHasOpenPosition,
+          familyLastTradeAt: controlFamily ? (state.familyCooldowns || {})[controlFamily] : null,
+          config: controlConfig,
+        });
+        if (!control.allowed) {
+          _bump('qualifiesRejected', null);
+          _recentRejections = [{
+            type:          'STRATEGY_CONTROL_BLOCKED',
+            symbol:        c.symbol,
+            marketGroup:   getMarketGroup(c.symbol) || c.marketGroup || 'UNKNOWN',
+            signalSubtype: c.signalSubtype || null,
+            strategyId:    resolvedStrategyId || null,
+            reason:        control.blockReason,
+            timestamp:     new Date().toISOString(),
+          }, ..._recentRejections].slice(0, 100);
+          appendEvent({
+            ...eventFromCandidate('GATE_BLOCKED', c, strategyControlReasonSv(control), 'blocked'),
+            blockedReason: control.blockReason,
+            strategyId: resolvedStrategyId || null,
+            strategyName: runtimeStrategyForGate.strategy_name || null,
+            strategyFamily: control.strategyFamily,
+            familyRank: control.familyRank,
+            familyGateDecision: control.familyGateDecision,
+            familyBlockReason: control.familyBlockReason,
+            strategyCooldownDecision: control.strategyCooldownDecision,
+            nextAllowedAt: control.nextAllowedAt,
+          });
+          continue;
+        }
+        // Uppgift 5-metadata: kandidaten (och därmed traden) bär beslutet.
+        if (!c.strategyId && resolvedStrategyId) c.strategyId = resolvedStrategyId;
+        c.strategyFamily = control.strategyFamily;
+        c.familyRank = control.familyRank;
+        c.familyGateDecision = control.familyGateDecision;
+        c.strategyCooldownDecision = control.strategyCooldownDecision;
 
         const check = qualifiesForEntry(c, state, { isApproved });
         if (!check.ok) {
@@ -2581,6 +2695,20 @@ async function runTick() {
           const trade = buildOpenTrade(candidateWithAgent, effectiveGateDecision);
           _bump('tradesOpened', 'opened');
           state.openTrades.push(trade);
+          // Starta strategi- och family-cooldown direkt vid open (30 min-regeln
+          // räknar både öppnade och stängda trades).
+          {
+            const openedAtIso = new Date().toISOString();
+            const openedStrategyId = trade.resolvedStrategyId || trade.strategyId || resolvedStrategyId || null;
+            if (openedStrategyId) {
+              if (!state.strategyCooldowns) state.strategyCooldowns = {};
+              state.strategyCooldowns[openedStrategyId] = openedAtIso;
+            }
+            if (trade.strategyFamily) {
+              if (!state.familyCooldowns) state.familyCooldowns = {};
+              state.familyCooldowns[trade.strategyFamily] = openedAtIso;
+            }
+          }
         if (c.signalId) state.seenSignalIds = [...state.seenSignalIds, c.signalId].slice(-200);
         recordPaperTradeToLearning('opened', trade);
         if (agentAnalysis) recordAgentAnalysisToLearning(agentAnalysis, candidateWithAgent);
@@ -2614,6 +2742,15 @@ async function runTick() {
   const cutoff = Date.now() - (COOLDOWN_MINUTES * 2 * 60_000);
   for (const [sym, ts] of Object.entries(state.cooldowns)) {
     if (new Date(ts).getTime() < cutoff) { delete state.cooldowns[sym]; changed = true; }
+  }
+  const controlCfg = strategyTradeControl.getStrategyTradeControlConfig();
+  const strategyCutoff = Date.now() - (controlCfg.cooldownMinutes * 2 * 60_000);
+  for (const [sid, ts] of Object.entries(state.strategyCooldowns || {})) {
+    if (new Date(ts).getTime() < strategyCutoff) { delete state.strategyCooldowns[sid]; changed = true; }
+  }
+  const familyCutoff = Date.now() - (controlCfg.familyCooldownMinutes * 2 * 60_000);
+  for (const [fam, ts] of Object.entries(state.familyCooldowns || {})) {
+    if (new Date(ts).getTime() < familyCutoff) { delete state.familyCooldowns[fam]; changed = true; }
   }
 
   if (changed) saveState(state);
@@ -2739,6 +2876,11 @@ function getStatus() {
     openTrades,
     openCount:      openTrades.length,
     cooldowns:      state.cooldowns,
+    strategyControl: {
+      ...strategyTradeControl.getStrategyTradeControlConfig(),
+      strategyCooldowns: state.strategyCooldowns || {},
+      familyCooldowns:   state.familyCooldowns || {},
+    },
     filters: {
       ruleVersion:          PAPER_RULE_VERSION,
       allowEmaPaperTrades:  ALLOW_EMA_PAPER_TRADES,
@@ -3308,6 +3450,8 @@ module.exports = {
   appendGateDecision,
   loadGateDecisionHistory,
   _internal: {
+    paperCandidateFamily,
+    strategyControlReasonSv,
     applyManualRiskReviewOverride,
     buildEffectiveRiskReviewState,
     buildNearMissLearningGateDecision,
