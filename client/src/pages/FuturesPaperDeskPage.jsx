@@ -1,6 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
-import FuturesPaperChart from '../components/FuturesPaperChart.jsx';
 
 const REFRESH_MS = 20_000;
 const FETCH_TIMEOUT_MS = 7_000;
@@ -344,6 +343,7 @@ export default function FuturesPaperDeskPage() {
   const lastScanBlocked = [
     ...(lastScan?.blockedByCooldown || []).map((row) => ({ ...row, label: 'cooldown' })),
     ...(lastScan?.blockedByMaxTrades || []).map((row) => ({ ...row, label: 'max trades' })),
+    ...(lastScan?.blockedByFamilyGate || []).map((row) => ({ ...row, label: `family gate (${row.strategyFamily || 'okänd familj'})` })),
   ];
   const accountCurrency = account.currency || account.baseCurrency || 'SEK';
   const totalPnl = Number(account.totalPnlSek || 0);
@@ -352,7 +352,6 @@ export default function FuturesPaperDeskPage() {
   const pnlTone = totalPnl > 0 ? 'success' : totalPnl < 0 ? 'danger' : 'neutral';
   const positionsCount = Number(positions.totalOpen || openPositions.length || 0) + Number(positions.totalClosed || closedTrades.length || 0);
   const readyText = market.isOpen ? 'Marknaden är öppen' : 'Marknaden är stängd';
-  const chartTradeCount = openPositions.length + closedTrades.length;
   const readinessInstruments = ['MNQ', 'MES'].map((symbol) => {
     const row = instruments.find((item) => String(item.symbol || item.root || '').toUpperCase() === symbol) || {};
     return {
@@ -369,48 +368,10 @@ export default function FuturesPaperDeskPage() {
   const [balanceDraft, setBalanceDraft] = useState(String(account.startingBalanceSek ?? accountConfig.startingBalanceSek ?? 250000));
   const [accountActionError, setAccountActionError] = useState('');
   const [accountActionMessage, setAccountActionMessage] = useState('');
-  const [openDraft, setOpenDraft] = useState({
-    root: 'MNQ',
-    side: 'long',
-    contracts: '1',
-    entryPrice: '',
-    stopLoss: '',
-    takeProfit: '',
-    strategyId: strategies[0]?.strategyId || 'trend_continuation',
-    strategyName: strategies[0]?.strategyName || 'Trend Continuation',
-    entryReason: 'Intern paper-simulering',
-  });
-  const [closeDrafts, setCloseDrafts] = useState({});
-
   useEffect(() => {
     const next = account.startingBalanceSek ?? accountConfig.startingBalanceSek ?? 250000;
     setBalanceDraft(String(next));
   }, [account.startingBalanceSek, accountConfig.startingBalanceSek]);
-
-  useEffect(() => {
-    setOpenDraft((current) => {
-      const strategy = strategies[0] || {};
-      const nextRoot = current.root || 'MNQ';
-      return {
-        ...current,
-        root: nextRoot,
-        strategyId: current.strategyId || strategy.strategyId || 'trend_continuation',
-        strategyName: current.strategyName || strategy.strategyName || 'Trend Continuation',
-      };
-    });
-  }, [strategies]);
-
-  useEffect(() => {
-    setCloseDrafts((current) => {
-      const next = { ...current };
-      openPositions.forEach((position) => {
-        if (next[position.tradeId] == null) {
-          next[position.tradeId] = String(position.currentPrice ?? position.entryPrice ?? '');
-        }
-      });
-      return next;
-    });
-  }, [openPositions]);
 
   async function mutateAccount(endpoint, body) {
     setAccountActionError('');
@@ -467,56 +428,6 @@ export default function FuturesPaperDeskPage() {
     }
   }
 
-  async function handleOpenPosition() {
-    try {
-      const strategy = strategies[0] || {};
-      const result = await mutateLedger('/api/futures-paper/manual/open', {
-        root: openDraft.root,
-        symbol: openDraft.root,
-        side: openDraft.side,
-        contracts: Number(openDraft.contracts),
-        entryPrice: Number(openDraft.entryPrice),
-        stopLoss: openDraft.stopLoss === '' ? undefined : Number(openDraft.stopLoss),
-        takeProfit: openDraft.takeProfit === '' ? undefined : Number(openDraft.takeProfit),
-        strategyId: openDraft.strategyId || strategy.strategyId || 'trend_continuation',
-        strategyName: openDraft.strategyName || strategy.strategyName || 'Trend Continuation',
-        entryReason: openDraft.entryReason || 'Intern paper-simulering',
-      });
-      setAccountActionMessage(
-        result.marketHoursWarning
-          ? `Simulerad position öppnad. ${result.marketHoursWarning}`
-          : 'Simulerad position öppnad.'
-      );
-      setOpenDraft((current) => ({
-        ...current,
-        contracts: '1',
-        entryPrice: '',
-        stopLoss: '',
-        takeProfit: '',
-      }));
-    } catch (err) {
-      setAccountActionError(err?.message || 'Kunde inte öppna simulerad position.');
-    }
-  }
-
-  async function handleClosePosition(tradeId) {
-    try {
-      const closePrice = Number(closeDrafts[tradeId]);
-      const result = await mutateLedger('/api/futures-paper/manual/close', {
-        tradeId,
-        exitPrice: closePrice,
-        exitReason: 'manual_close_from_ui',
-      });
-      setAccountActionMessage(
-        result.marketHoursWarning
-          ? `Simulerad position stängd. ${result.marketHoursWarning}`
-          : 'Simulerad position stängd.'
-      );
-    } catch (err) {
-      setAccountActionError(err?.message || 'Kunde inte stänga simulerad position.');
-    }
-  }
-
   async function handleRunScannerOnce() {
     try {
       const result = await mutateLedger('/api/futures-paper/scanner/run-once', {});
@@ -548,7 +459,7 @@ export default function FuturesPaperDeskPage() {
 
   const nextStep = useMemo(() => {
     if (!data) return 'Läser runtime...';
-    if (openPositions.length > 0) return 'Följ öppna positioner och chart-markers.';
+    if (openPositions.length > 0) return 'Följ öppna positioner i tabellen nedan.';
     if (market.isOpen) return 'Nästa steg är att koppla in simulatorn för MNQ/MES.';
     return 'Nästa öppning följer Globex-sessionen.';
   }, [data, market.isOpen, openPositions.length]);
@@ -567,7 +478,7 @@ export default function FuturesPaperDeskPage() {
           <div>
             <h1 style={{ margin: 0, fontSize: 30, lineHeight: 1.1 }}>Futures Paper Desk</h1>
             <p style={{ margin: '8px 0 0', color: 'var(--muted)', maxWidth: 860, fontSize: 14, lineHeight: 1.5 }}>
-              Separat paper-only desk för MNQ och MES med simulerat kapital, framtida manuella trades och chart-markers.
+              Separat paper-only desk för MNQ och MES med simulerat kapital, driven av Trading OS-signaler.
               Inga riktiga order, ingen broker och ingen live-execution.
             </p>
           </div>
@@ -682,12 +593,6 @@ export default function FuturesPaperDeskPage() {
             <div>Broker/order är alltid blockerade i den här desken.</div>
           </ReadinessCard>
 
-          <ReadinessCard title="Chart-status" status={chartTradeCount > 0 ? 'Preview-serie' : 'Ingen chartdata ännu'} tone={chartTradeCount > 0 ? 'info' : 'warning'}>
-            <ReadinessRow label="Chart mode" value="trade-preview" />
-            <ReadinessRow label="OHLC-feed" value={dataFeed.simulated ? 'Simulated data (fallback)' : 'Inte inkopplad'} />
-            <ReadinessRow label="Markers" value="När MNQ/MES har simulerade trades" />
-            <ReadinessRow label="Nuvarande orsak" value={chartTradeCount > 0 ? 'Simulerade trades finns' : 'Inga öppna/stängda trades'} />
-          </ReadinessCard>
         </div>
       </section>
 
@@ -695,7 +600,7 @@ export default function FuturesPaperDeskPage() {
         <SectionHeader
           eyebrow="Scan history"
           title="Senaste 10 scans"
-          summary="Varje scan kontrollerar alla godkända strategier mot MNQ/MES med max trades- och cooldown-regler. Endast intern paper-simulation."
+          summary="Varje scan kontrollerar alla godkända strategier mot MNQ/MES med max trades-, 30 min cooldown- och family gate-regler. Endast intern paper-simulation."
         />
         <CompactTable
           rows={scanHistory.map((row) => ({ ...row, id: row.scanId }))}
@@ -824,7 +729,7 @@ export default function FuturesPaperDeskPage() {
           <SectionHeader
             eyebrow="Strategier"
             title="Strategy status (godkända för paper-test)"
-            summary="Alla godkända strategier från paper-allowlisten med max trades- och cooldown-status. Endast intern paper-simulation, ingen broker."
+            summary="Alla godkända strategier från paper-allowlisten med max trades-, 30 min cooldown- och family gate-status. Endast intern paper-simulation, ingen broker."
           />
           <CompactTable
             rows={strategyStatus.map((row) => ({ ...row, id: row.strategyId }))}
@@ -839,6 +744,7 @@ export default function FuturesPaperDeskPage() {
               { key: 'tradesUsed', label: 'Trades all', render: (row) => `${fmtNumber(row.totalTradesAll ?? row.tradesUsed ?? 0)} / ${fmtNumber(row.maxTrades || 10)}` },
               { key: 'totalTradesRealSignals', label: 'Real signals', render: (row) => fmtNumber(row.totalTradesRealSignals || 0) },
               { key: 'testTrades', label: 'Test/exkl.', render: (row) => `${fmtNumber(row.testTrades || 0)} / ${fmtNumber(row.excludedTrades || 0)}` },
+              { key: 'strategyFamily', label: 'Familj', render: (row) => row.strategyFamily || '–' },
               { key: 'cooldown', label: 'Cooldown', render: (row) => row.cooldownActive ? `${fmtNumber(row.cooldownMinutesRemaining || 0)} min kvar` : '–' },
               { key: 'lastTradeAt', label: 'Senaste trade', render: (row) => row.lastTradeAt ? new Date(row.lastTradeAt).toLocaleString('sv-SE') : '–' },
               { key: 'nextAllowedAt', label: 'Nästa tillåten', render: (row) => row.canTradeNow ? 'Nu' : (row.nextAllowedAt ? new Date(row.nextAllowedAt).toLocaleString('sv-SE') : '–') },
@@ -853,13 +759,44 @@ export default function FuturesPaperDeskPage() {
           />
         </section>
 
-        <FuturesPaperChart
-          instruments={instruments}
-          openPositions={openPositions}
-          closedTrades={closedTrades}
-          accountCurrency={accountCurrency}
-          onClosePosition={handleClosePosition}
-        />
+        <section style={sectionStyle()}>
+          <SectionHeader
+            eyebrow="UI-läge"
+            title="Chart och manuell simulation är avstängda"
+            summary="Futures Paper Desk visar nu bara strategi-, scanner-, konto- och tradehistorik. Manuell trade-entry och stökig chart-preview är borttagen för att hålla sidan ren."
+          />
+        </section>
+
+        <section style={sectionStyle()}>
+          <SectionHeader
+            eyebrow="Positioner"
+            title="Öppna positioner"
+            summary="Simulerade öppna futures paper-positioner. Stängs automatiskt av stop loss/take profit i simuleringen. Endast paper money."
+          />
+          <CompactTable
+            rows={openPositions.map((row) => ({ ...row, id: row.tradeId }))}
+            emptyText="Inga öppna simulerade positioner just nu."
+            columns={[
+              { key: 'openedAt', label: 'Öppnad', render: (row) => row.openedAt ? new Date(row.openedAt).toLocaleString('sv-SE') : '–' },
+              { key: 'symbol', label: 'Symbol', render: (row) => row.symbol || row.root || '–' },
+              { key: 'side', label: 'Riktning', render: (row) => row.side || '–' },
+              { key: 'contracts', label: 'Kontrakt', render: (row) => fmtNumber(row.contracts || 0) },
+              { key: 'entryPrice', label: 'Entry', render: (row) => fmtNumber(row.entryPrice, 2) },
+              { key: 'currentPrice', label: 'Current', render: (row) => fmtNumber(row.currentPrice, 2) },
+              { key: 'stopLoss', label: 'SL', render: (row) => row.stopLoss == null ? '–' : fmtNumber(row.stopLoss, 2) },
+              { key: 'takeProfit', label: 'TP', render: (row) => row.takeProfit == null ? '–' : fmtNumber(row.takeProfit, 2) },
+              { key: 'unrealizedPnlSek', label: 'PnL', render: (row) => (
+                <strong style={{ color: (row.unrealizedPnlSek || 0) > 0 ? 'var(--success)' : (row.unrealizedPnlSek || 0) < 0 ? 'var(--danger)' : 'var(--text)' }}>
+                  {fmtMoney(row.unrealizedPnlSek || 0, accountCurrency)}
+                </strong>
+              ) },
+              { key: 'strategyName', label: 'Strategi', render: (row) => row.strategyName || row.strategyId || '–' },
+              { key: 'tradeType', label: 'Typ', render: (row) => (
+                <Pill tone={tradeTypeTone(row.tradeType, row.excludedFromStats)}>{tradeTypeLabel(row.tradeType)}</Pill>
+              ) },
+            ]}
+          />
+        </section>
 
         <section style={sectionStyle()}>
           <SectionHeader
@@ -895,113 +832,6 @@ export default function FuturesPaperDeskPage() {
               { key: 'closeReason', label: 'Orsak', render: (row) => row.closeReason || '–' },
             ]}
           />
-        </section>
-
-        <section style={sectionStyle()}>
-          <SectionHeader
-            eyebrow="Manuell simulation"
-            title="Öppna simulerad position"
-            summary="Paper-only intern simulation för MNQ/MES. Inga riktiga order eller broker-anrop."
-          />
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 10 }}>
-            <label style={{ display: 'grid', gap: 6 }}>
-              <span style={{ color: 'var(--muted)', fontSize: 12 }}>Root</span>
-              <select
-                value={openDraft.root}
-                onChange={(event) => setOpenDraft((current) => ({ ...current, root: event.target.value }))}
-                style={{ border: '1px solid var(--border)', borderRadius: 10, padding: '10px 12px', background: 'var(--surface)', color: 'var(--text)' }}
-              >
-                <option value="MNQ">MNQ</option>
-                <option value="MES">MES</option>
-              </select>
-            </label>
-            <label style={{ display: 'grid', gap: 6 }}>
-              <span style={{ color: 'var(--muted)', fontSize: 12 }}>Riktning</span>
-              <select
-                value={openDraft.side}
-                onChange={(event) => setOpenDraft((current) => ({ ...current, side: event.target.value }))}
-                style={{ border: '1px solid var(--border)', borderRadius: 10, padding: '10px 12px', background: 'var(--surface)', color: 'var(--text)' }}
-              >
-                <option value="long">long</option>
-                <option value="short">short</option>
-              </select>
-            </label>
-            <label style={{ display: 'grid', gap: 6 }}>
-              <span style={{ color: 'var(--muted)', fontSize: 12 }}>Kontrakt</span>
-              <input
-                type="number"
-                min="1"
-                step="1"
-                value={openDraft.contracts}
-                onChange={(event) => setOpenDraft((current) => ({ ...current, contracts: event.target.value }))}
-                style={{ border: '1px solid var(--border)', borderRadius: 10, padding: '10px 12px', background: 'var(--surface)', color: 'var(--text)' }}
-              />
-            </label>
-            <label style={{ display: 'grid', gap: 6 }}>
-              <span style={{ color: 'var(--muted)', fontSize: 12 }}>Entry price</span>
-              <input
-                type="number"
-                min="0"
-                step="0.25"
-                value={openDraft.entryPrice}
-                onChange={(event) => setOpenDraft((current) => ({ ...current, entryPrice: event.target.value }))}
-                style={{ border: '1px solid var(--border)', borderRadius: 10, padding: '10px 12px', background: 'var(--surface)', color: 'var(--text)' }}
-              />
-            </label>
-            <label style={{ display: 'grid', gap: 6 }}>
-              <span style={{ color: 'var(--muted)', fontSize: 12 }}>Stop loss</span>
-              <input
-                type="number"
-                min="0"
-                step="0.25"
-                value={openDraft.stopLoss}
-                onChange={(event) => setOpenDraft((current) => ({ ...current, stopLoss: event.target.value }))}
-                style={{ border: '1px solid var(--border)', borderRadius: 10, padding: '10px 12px', background: 'var(--surface)', color: 'var(--text)' }}
-              />
-            </label>
-            <label style={{ display: 'grid', gap: 6 }}>
-              <span style={{ color: 'var(--muted)', fontSize: 12 }}>Take profit</span>
-              <input
-                type="number"
-                min="0"
-                step="0.25"
-                value={openDraft.takeProfit}
-                onChange={(event) => setOpenDraft((current) => ({ ...current, takeProfit: event.target.value }))}
-                style={{ border: '1px solid var(--border)', borderRadius: 10, padding: '10px 12px', background: 'var(--surface)', color: 'var(--text)' }}
-              />
-            </label>
-          </div>
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 10, marginTop: 10 }}>
-            <label style={{ display: 'grid', gap: 6 }}>
-              <span style={{ color: 'var(--muted)', fontSize: 12 }}>Strategy ID</span>
-              <input
-                value={openDraft.strategyId}
-                onChange={(event) => setOpenDraft((current) => ({ ...current, strategyId: event.target.value }))}
-                style={{ border: '1px solid var(--border)', borderRadius: 10, padding: '10px 12px', background: 'var(--surface)', color: 'var(--text)' }}
-              />
-            </label>
-            <label style={{ display: 'grid', gap: 6 }}>
-              <span style={{ color: 'var(--muted)', fontSize: 12 }}>Strategy name</span>
-              <input
-                value={openDraft.strategyName}
-                onChange={(event) => setOpenDraft((current) => ({ ...current, strategyName: event.target.value }))}
-                style={{ border: '1px solid var(--border)', borderRadius: 10, padding: '10px 12px', background: 'var(--surface)', color: 'var(--text)' }}
-              />
-            </label>
-          </div>
-          <label style={{ display: 'grid', gap: 6, marginTop: 10 }}>
-            <span style={{ color: 'var(--muted)', fontSize: 12 }}>Entry reason</span>
-            <textarea
-              rows={3}
-              value={openDraft.entryReason}
-              onChange={(event) => setOpenDraft((current) => ({ ...current, entryReason: event.target.value }))}
-              style={{ border: '1px solid var(--border)', borderRadius: 10, padding: '10px 12px', background: 'var(--surface)', color: 'var(--text)', resize: 'vertical' }}
-            />
-          </label>
-          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center', marginTop: 12 }}>
-            <button type="button" className="btn" onClick={handleOpenPosition}>Öppna simulerad position</button>
-            <Pill tone="warning">Paper-only · inga riktiga order</Pill>
-          </div>
         </section>
 
         <section style={sectionStyle()}>
