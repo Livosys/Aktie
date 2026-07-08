@@ -1,0 +1,44 @@
+//@version=5
+// ─────────────────────────────────────────────────────────────
+// TRADING OS METADATA (obligatoriskt — fyll i alla fält)
+// strategyId:          <id i daytradingStrategyCatalogService>
+// strategyName:        <namn exakt som i Trading OS-katalogen>
+// pineVersion:         1.0.0
+// backendLogicVersion: <git-sha eller katalogversion som denna fil speglar>
+// signalSource:        tradingview_pine
+// timeframe:           2m
+// direction:           long|short|both
+// exitLogic:           fixed|trailing|partial|time|volatility
+// riskModel:           r_multiple_0_3pct
+// paritet:             <datum + resultat för senaste paritetstest mot backend>
+// ─────────────────────────────────────────────────────────────
+strategy("TRADING_OS_TEMPLATE — ersätt", overlay=true, pyramiding=0)
+
+// === PARAMETRAR (spegla backend-strategins parametrar 1:1) ===
+emaLen = input.int(20, "EMA length")
+
+// === LOGIK (måste motsvara backend-logiken — ingen egen förbättring här;
+//     förbättringar går via batch/replay → Trading OS-katalogen → ny version) ===
+ema = ta.ema(close, emaLen)
+longCond  = false // ersätt med backend-ekvivalent entry-villkor
+shortCond = false
+
+// === ENTRY/EXIT-NIVÅER (skickas i webhook-payload) ===
+entryPrice = close
+stopLoss   = close * 0.997   // exempel: 0,3 % — spegla backend
+takeProfit = close * 1.006
+
+if longCond
+    strategy.entry("L", strategy.long)
+if shortCond
+    strategy.entry("S", strategy.short)
+
+// === ALERT → webhook POST /api/tradingview/webhook ===
+// Payload måste bära full metadata; okänt strategyId får aldrig skapa paper-trade.
+alertPayload = '{"strategyId":"<id>","strategyName":"<namn>","pineVersion":"1.0.0",' +
+     '"backendLogicVersion":"<sha>","signalSource":"tradingview_pine","timeframe":"2m",' +
+     '"direction":"' + (longCond ? "long" : "short") + '",' +
+     '"entry":' + str.tostring(entryPrice) + ',"stopLoss":' + str.tostring(stopLoss) + ',' +
+     '"takeProfit":' + str.tostring(takeProfit) + ',"exitLogic":"fixed","riskModel":"r_multiple_0_3pct"}'
+if longCond or shortCond
+    alert(alertPayload, alert.freq_once_per_bar_close)
