@@ -3072,26 +3072,42 @@ export default function PaperTradingPage() {
       )}
 
       {activeTab === 'positioner' && (
-        <DataTable
-          title="Open paper trades"
-          subtitle="Aktiva paper-only positioner från state.json"
-          rows={openTrades}
-          emptyText="Inga öppna paper trades just nu."
-          rowKey={(row, index) => row.tradeId || `${row.symbol}-${index}`}
-          columns={[
-            { key: 'symbol', label: 'Symbol' },
-            { key: 'strategy_id', label: 'Canonical strategy_id' },
-            { key: 'setup', label: 'Setup' },
-            { key: 'direction', label: 'Direction' },
-            { key: 'source', label: 'Source' },
-            { key: 'opened_at', label: 'Opened', render: (row) => fmtTime(row.opened_at) },
-            { key: 'paperOnly', label: 'paperOnly', render: (row) => String(row.paperOnly === true) },
-          ]}
-        />
+        <>
+          <WhyNoTradesPanel
+            runtime={runtime}
+            allowlist={allowlistState.data}
+            riskPauseSummary={riskPauseSummaryState.data}
+            gateStatus={gateStatusState.data}
+            onRefresh={() => setRefreshKey((t) => t + 1)}
+          />
+          <DataTable
+            title="Open paper trades"
+            subtitle="Aktiva paper-only positioner från state.json"
+            rows={openTrades}
+            emptyText="Inga öppna paper trades just nu."
+            rowKey={(row, index) => row.tradeId || `${row.symbol}-${index}`}
+            columns={[
+              { key: 'symbol', label: 'Symbol' },
+              { key: 'strategy_id', label: 'Canonical strategy_id' },
+              { key: 'setup', label: 'Setup' },
+              { key: 'direction', label: 'Direction' },
+              { key: 'source', label: 'Source' },
+              { key: 'opened_at', label: 'Opened', render: (row) => fmtTime(row.opened_at) },
+              { key: 'paperOnly', label: 'paperOnly', render: (row) => String(row.paperOnly === true) },
+            ]}
+          />
+        </>
       )}
 
       {activeTab === 'trades' && (
         <>
+          <WhyNoTradesPanel
+            runtime={runtime}
+            allowlist={allowlistState.data}
+            riskPauseSummary={riskPauseSummaryState.data}
+            gateStatus={gateStatusState.data}
+            onRefresh={() => setRefreshKey((t) => t + 1)}
+          />
           <DataTable
             title="Closed paper trades"
             subtitle={`Senaste closed trades. Total closed i runtime: ${summary.closedCount ?? 0}`}
