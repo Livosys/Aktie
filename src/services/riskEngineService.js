@@ -36,7 +36,15 @@ const DEFAULT_RISK_CONFIG = Object.freeze({
   pause_after_consecutive_losses: true,
   allow_agent_block: true,
   allow_memory_block: true,
+  // How the consecutive-loss streak is derived. 'off' (default) = legacy: count
+  // trailing losses until a WIN. 'daily' = only losses on the current UTC day.
+  // 'rolling_hours' = only losses within consecutive_loss_window_hours.
+  // Does NOT change max_consecutive_losses or the pause logic itself.
+  consecutive_loss_reset: 'off',
+  consecutive_loss_window_hours: 24,
 });
+
+const CONSECUTIVE_LOSS_RESET_MODES = new Set(['off', 'daily', 'rolling_hours']);
 
 const CONFIG_BOUNDS = Object.freeze({
   risk_per_trade_pct: { min: 0.1, max: 5 },
@@ -46,6 +54,7 @@ const CONFIG_BOUNDS = Object.freeze({
   max_consecutive_losses: { min: 1, max: 20, integer: true },
   min_confidence: { min: 0, max: 100 },
   max_spread_pct: { min: 0.01, max: 5 },
+  consecutive_loss_window_hours: { min: 1, max: 168, integer: true },
 });
 
 const SAFE_CONFIG_FIELDS = new Set([
@@ -66,6 +75,8 @@ const SAFE_CONFIG_FIELDS = new Set([
   'pause_after_consecutive_losses',
   'allow_agent_block',
   'allow_memory_block',
+  'consecutive_loss_reset',
+  'consecutive_loss_window_hours',
 ]);
 
 let memoryConfig = { ...DEFAULT_RISK_CONFIG };
@@ -156,6 +167,10 @@ function normalizeConfig(input = {}) {
   out.pause_after_consecutive_losses = boolValue(out.pause_after_consecutive_losses, true);
   out.allow_agent_block = boolValue(out.allow_agent_block, true);
   out.allow_memory_block = boolValue(out.allow_memory_block, true);
+  out.consecutive_loss_reset = CONSECUTIVE_LOSS_RESET_MODES.has(String(out.consecutive_loss_reset || '').toLowerCase())
+    ? String(out.consecutive_loss_reset).toLowerCase()
+    : DEFAULT_RISK_CONFIG.consecutive_loss_reset;
+  out.consecutive_loss_window_hours = Math.round(clamp(out.consecutive_loss_window_hours, 1, 168));
   return out;
 }
 
@@ -188,6 +203,13 @@ function validatePartialConfig(partialConfig = {}) {
       const n = numberOrNull(value);
       if (n == null || n < 1000 || n > 1000000000) rejected[key] = 'must_be_1000_to_1000000000';
       else accepted[key] = n;
+      continue;
+    }
+
+    if (key === 'consecutive_loss_reset') {
+      const m = String(value || '').toLowerCase();
+      if (!CONSECUTIVE_LOSS_RESET_MODES.has(m)) rejected[key] = 'must_be_off_daily_or_rolling_hours';
+      else accepted[key] = m;
       continue;
     }
 

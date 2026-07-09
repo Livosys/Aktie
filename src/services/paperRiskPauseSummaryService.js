@@ -13,6 +13,7 @@ const path = require('path');
 
 const riskEngineService = require('./riskEngineService');
 const tradeStats = require('./tradeStatsService');
+const consecutiveLossWindow = require('./consecutiveLossWindowService');
 
 const ROOT = path.resolve(__dirname, '../..');
 const DEFAULT_FILES = Object.freeze({
@@ -103,24 +104,16 @@ function isRiskPauseEvent(row = {}) {
   return type === 'RISK_PAUSE_TRIGGERED' || /consecutive_losses_limit|systempaus/.test(reason);
 }
 
-function buildConsecutiveLossState(closedTrades) {
-  const sorted = arr(closedTrades)
-    .slice()
-    .sort((a, b) => String(eventTime(a) || '').localeCompare(String(eventTime(b) || '')));
-
-  let consecutiveLosses = 0;
-  let lastLossAt = null;
-  for (const trade of sorted.slice().reverse()) {
-    const result = normalizeResult(trade);
-    if (result === 'LOSS') {
-      consecutiveLosses += 1;
-      if (!lastLossAt) lastLossAt = eventTime(trade);
-      continue;
-    }
-    if (result === 'WIN') break;
-  }
-
-  return { consecutive_losses: consecutiveLosses, last_loss_at: lastLossAt };
+function buildConsecutiveLossState(closedTrades, riskConfig = null) {
+  // Delegated to the shared helper so the summary and the live entry-path count
+  // consecutive losses identically. Uses this service's own result/time
+  // accessors so mode 'off' is byte-for-byte the historical behavior.
+  return consecutiveLossWindow.computeConsecutiveLosses(arr(closedTrades), {
+    mode: riskConfig ? riskConfig.consecutive_loss_reset : 'off',
+    windowHours: riskConfig ? riskConfig.consecutive_loss_window_hours : undefined,
+    getResult: (trade) => normalizeResult(trade),
+    getTime: (trade) => eventTime(trade),
+  });
 }
 
 function buildLatestRiskPauseEvent(events) {
@@ -193,7 +186,7 @@ async function buildPaperRiskPauseSummary(options = {}) {
   const trades = readJsonl(files.trades);
   const events = readJsonl(files.events);
   const closedTrades = trades.filter((row) => normalizeResult(row) !== 'OPEN');
-  const riskState = buildConsecutiveLossState(closedTrades);
+  const riskState = buildConsecutiveLossState(closedTrades, riskConfig);
   const pauseReasons = [];
   if (riskConfig.pause_after_consecutive_losses && riskState.consecutive_losses >= riskConfig.max_consecutive_losses) {
     pauseReasons.push('consecutive_losses_limit');

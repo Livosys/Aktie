@@ -38,6 +38,7 @@ const redisService                              = require('../services/redisServ
 const agentReasoningService                     = require('../services/agentReasoningService');
 const vectorMemoryService                       = require('../services/vectorMemoryService');
 const riskEngineService                         = require('../services/riskEngineService');
+const consecutiveLossWindow                     = require('../services/consecutiveLossWindowService');
 const exitEngineService                         = require('../services/exitEngineService');
 const executionSafetyService                    = require('../services/executionSafetyService');
 const auditTrail                                = require('../services/auditTrailService');
@@ -1873,7 +1874,7 @@ function cachePaperState(state, source) {
   void redisService.setJson('signal:cooldowns', snapshot.cooldowns, 300);
 }
 
-function buildRiskAccountState(state) {
+function buildRiskAccountState(state, riskConfig = null) {
   const today = new Date().toISOString().slice(0, 10);
   const closed = loadClosedTrades()
     .filter((t) => t.result !== 'OPEN')
@@ -1883,16 +1884,16 @@ function buildRiskAccountState(state) {
   const dailyTrades = todayEvents.filter((e) => e.type === 'TRADE_OPENED').length;
   const dailyPnlPct = todayClosed.reduce((sum, t) => sum + (Number(t.pnlPct) || 0), 0);
 
-  let consecutiveLosses = 0;
-  let lastLossAt = null;
-  for (const trade of [...closed].reverse()) {
-    if (trade.result === 'LOSS') {
-      consecutiveLosses += 1;
-      if (!lastLossAt) lastLossAt = trade.exitTime || trade.entryTime || null;
-      continue;
-    }
-    if (trade.result === 'WIN') break;
-  }
+  // Consecutive-loss streak via the shared helper (same source of truth as the
+  // risk-pause summary). With mode 'off' (default) this is identical to the
+  // legacy trailing-count-until-WIN behavior.
+  const { consecutive_losses: consecutiveLosses, last_loss_at: lastLossAt } =
+    consecutiveLossWindow.computeConsecutiveLosses(closed, {
+      mode: riskConfig ? riskConfig.consecutive_loss_reset : 'off',
+      windowHours: riskConfig ? riskConfig.consecutive_loss_window_hours : undefined,
+      getResult: (t) => t.result,
+      getTime: (t) => t.exitTime || t.entryTime || null,
+    });
 
   return {
     balance: riskEngineService.DEFAULT_RISK_CONFIG.account_balance,
@@ -2545,7 +2546,7 @@ async function runTick() {
         const riskProfile = getPaperRiskProfile(candidateWithAgent);
         const riskConfig = await riskEngineService.getRiskConfig();
         const riskAccountState = {
-          ...buildRiskAccountState(state),
+          ...buildRiskAccountState(state, riskConfig),
           balance: riskConfig.account_balance,
           equity: riskConfig.account_balance,
           _riskConfig: riskConfig,
