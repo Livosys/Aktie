@@ -3041,18 +3041,6 @@ export default function PaperTradingPage() {
 
       <PaperAllowlistManager runtime={runtime} allowlist={allowlistState.data} refreshKey={refreshKey} onRefresh={() => setRefreshKey((t) => t + 1)} />
 
-      {tradingViewBlueprintState.loading && !tradingViewBlueprintState.data ? (
-        <div style={sectionStyle()}>Hämtar TradingView Test Blueprint...</div>
-      ) : null}
-
-      {tradingViewBlueprintState.error ? (
-        <div style={{ ...sectionStyle(), borderColor: 'rgba(245, 158, 11, 0.22)', background: 'var(--surface-2)' }}>
-          <div style={{ color: 'var(--warning)', fontWeight: 700 }}>{tradingViewBlueprintState.error}</div>
-        </div>
-      ) : null}
-
-      <TradingViewTestBlueprintPanel data={tradingViewBlueprintState.data} theme={theme} />
-
       <TradingViewTestResultsPanel theme={theme} />
 
       <PaperCandidatePanel mode="paper" />

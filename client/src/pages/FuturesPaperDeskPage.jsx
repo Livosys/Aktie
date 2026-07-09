@@ -317,6 +317,15 @@ function MiniList({ items, emptyText }) {
 
 export default function FuturesPaperDeskPage() {
   const [refreshToken, setRefreshToken] = useState(0);
+  const TABS = [
+    { id: 'oversikt', label: 'Översikt' },
+    { id: 'konto', label: 'Konto' },
+    { id: 'positioner', label: 'Positioner' },
+    { id: 'trades', label: 'Trades' },
+    { id: 'runtime', label: 'Runtime' },
+    { id: 'teknik', label: 'Teknisk info' },
+  ];
+  const [activeTab, setActiveTab] = useState('oversikt');
   const runtime = useFuturesDeskRuntime(refreshToken);
   const accountState = useFuturesDeskAccount(refreshToken);
   const data = runtime.data;
@@ -508,6 +517,26 @@ export default function FuturesPaperDeskPage() {
         </div>
       ) : null}
 
+      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginTop: 14 }} role="tablist">
+        {TABS.map((tab) => (
+          <button
+            key={tab.id}
+            type="button"
+            onClick={() => setActiveTab(tab.id)}
+            className="btn"
+            style={{
+              background: activeTab === tab.id ? 'var(--surface-2)' : 'transparent',
+              borderColor: activeTab === tab.id ? 'var(--blue)' : 'var(--border)',
+              color: activeTab === tab.id ? 'var(--text)' : 'var(--muted)',
+              fontWeight: activeTab === tab.id ? 800 : 600,
+            }}
+          >
+            {tab.label}
+          </button>
+        ))}
+      </div>
+
+      {activeTab === 'runtime' && (
       <section style={{ ...sectionStyle(), marginTop: 14 }}>
         <SectionHeader
           eyebrow="Read-only"
@@ -595,7 +624,9 @@ export default function FuturesPaperDeskPage() {
 
         </div>
       </section>
+      )}
 
+      {activeTab === 'runtime' && (
       <section style={{ ...sectionStyle(), marginTop: 14 }}>
         <SectionHeader
           eyebrow="Scan history"
@@ -620,7 +651,9 @@ export default function FuturesPaperDeskPage() {
           ]}
         />
       </section>
+      )}
 
+      {activeTab === 'oversikt' && (
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(190px, 1fr))', gap: 10, marginTop: 14 }}>
         <MetricCard label="Saldo" value={fmtMoney(balance, accountCurrency)} hint={`Startkapital ${fmtMoney(base, accountCurrency)}`} tone={pnlTone} />
         <MetricCard label="PnL" value={fmtMoney(totalPnl, accountCurrency)} hint={`Dagens saldo just nu`} tone={pnlTone} />
@@ -628,8 +661,10 @@ export default function FuturesPaperDeskPage() {
         <MetricCard label="Stängda" value={fmtNumber(positions.totalClosed || 0)} hint="Simulerade stängda positioner" />
         <MetricCard label="Fokus" value="MNQ / MES" hint={readyText} tone={market.isOpen ? 'success' : 'warning'} />
       </div>
+      )}
 
-      <div style={{ display: 'grid', gridTemplateColumns: '1.2fr 0.8fr', gap: 14, marginTop: 14 }}>
+      {activeTab === 'konto' && (
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr', gap: 14, marginTop: 14 }}>
         <section style={sectionStyle()}>
           <SectionHeader
             eyebrow="Konto"
@@ -689,7 +724,11 @@ export default function FuturesPaperDeskPage() {
             )}
           </div>
         </section>
+      </div>
+      )}
 
+      {activeTab === 'oversikt' && (
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr', gap: 14, marginTop: 14 }}>
         <section style={sectionStyle()}>
           <SectionHeader
             eyebrow="Session"
@@ -723,8 +762,10 @@ export default function FuturesPaperDeskPage() {
           </div>
         </section>
       </div>
+      )}
 
       <div style={{ display: 'grid', gridTemplateColumns: '1fr', gap: 14, marginTop: 14 }}>
+        {activeTab === 'runtime' && (
         <section style={sectionStyle()}>
           <SectionHeader
             eyebrow="Strategier"
@@ -758,7 +799,9 @@ export default function FuturesPaperDeskPage() {
             ]}
           />
         </section>
+        )}
 
+        {activeTab === 'teknik' && (
         <section style={sectionStyle()}>
           <SectionHeader
             eyebrow="UI-läge"
@@ -766,7 +809,9 @@ export default function FuturesPaperDeskPage() {
             summary="Futures Paper Desk visar nu bara strategi-, scanner-, konto- och tradehistorik. Manuell trade-entry och stökig chart-preview är borttagen för att hålla sidan ren."
           />
         </section>
+        )}
 
+        {activeTab === 'positioner' && (
         <section style={sectionStyle()}>
           <SectionHeader
             eyebrow="Positioner"
@@ -797,7 +842,9 @@ export default function FuturesPaperDeskPage() {
             ]}
           />
         </section>
+        )}
 
+        {activeTab === 'trades' && (
         <section style={sectionStyle()}>
           <SectionHeader
             eyebrow="Trades"
@@ -833,7 +880,9 @@ export default function FuturesPaperDeskPage() {
             ]}
           />
         </section>
+        )}
 
+        {activeTab === 'teknik' && (
         <section style={sectionStyle()}>
           <SectionHeader
             eyebrow="Tekniskt"
@@ -855,6 +904,7 @@ export default function FuturesPaperDeskPage() {
             ]}
           />
         </section>
+        )}
       </div>
     </div>
   );

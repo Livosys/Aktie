@@ -65,7 +65,7 @@ const CARD_STYLE = {
   border: '1px solid rgba(148,163,184,0.18)',
   borderRadius: 16,
   padding: 20,
-  background: 'rgba(15, 23, 42, 0.35)',
+  background: 'var(--surface-2)',
   marginBottom: 16,
 };
 
@@ -390,7 +390,7 @@ function Badge({ ok, labelTrue, labelFalse }) {
 function Row({ label, children }) {
   return (
     <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '6px 0', gap: 12 }}>
-      <span style={{ color: '#94a3b8' }}>{label}</span>
+      <span style={{ color: 'var(--muted)' }}>{label}</span>
       <span style={{ textAlign: 'right' }}>{children}</span>
     </div>
   );
@@ -622,21 +622,21 @@ function CandidateCard({ candidate }) {
       }}
     >
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap' }}>
-        <strong style={{ color: '#e2e8f0' }}>
+        <strong style={{ color: 'var(--text)' }}>
           {candidate.symbol || '–'} · {candidate.strategyName || candidate.strategyId || 'Okänd strategi'}
         </strong>
         <Badge ok={ok} labelTrue="Tillåten" labelFalse="Blockerad" />
       </div>
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: 8, marginTop: 10, fontSize: 14 }}>
-        <div><span style={{ color: '#94a3b8' }}>Strategi:</span> {candidate.strategyId || '–'}</div>
-        <div><span style={{ color: '#94a3b8' }}>Riktning:</span> {candidate.direction || 'unknown'}</div>
-        <div><span style={{ color: '#94a3b8' }}>Källa:</span> {candidate.source || '–'}</div>
+        <div><span style={{ color: 'var(--muted)' }}>Strategi:</span> {candidate.strategyId || '–'}</div>
+        <div><span style={{ color: 'var(--muted)' }}>Riktning:</span> {candidate.direction || 'unknown'}</div>
+        <div><span style={{ color: 'var(--muted)' }}>Källa:</span> {candidate.source || '–'}</div>
         <div>
-          <span style={{ color: '#94a3b8' }}>Confidence/score:</span>{' '}
+          <span style={{ color: 'var(--muted)' }}>Confidence/score:</span>{' '}
           {candidate.confidence ?? candidate.gateScore ?? '–'}
         </div>
       </div>
-      <div style={{ marginTop: 10, color: '#cbd5e1', lineHeight: 1.55 }}>
+      <div style={{ marginTop: 10, color: 'var(--text)', lineHeight: 1.55 }}>
         {candidate.reasonSv || 'Förhandsvisning endast. Inga order skickas ännu.'}
       </div>
       {blockers.length > 0 && (
@@ -649,7 +649,7 @@ function CandidateCard({ candidate }) {
                 padding: '2px 10px',
                 borderRadius: 999,
                 fontSize: 12,
-                color: '#fca5a5',
+                color: 'var(--danger)',
                 border: '1px solid rgba(248,113,113,0.35)',
                 background: 'rgba(248,113,113,0.08)',
               }}
@@ -684,7 +684,7 @@ function BlueprintCard({ blueprint }) {
       }}
     >
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap' }}>
-        <strong style={{ color: '#e2e8f0' }}>
+        <strong style={{ color: 'var(--text)' }}>
           {blueprint?.symbol || '–'} · {blueprint?.strategyName || blueprint?.strategyId || 'Okänd strategi'}
         </strong>
         <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
@@ -694,31 +694,31 @@ function BlueprintCard({ blueprint }) {
         </div>
       </div>
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: 8, marginTop: 10, fontSize: 14 }}>
-        <div><span style={{ color: '#94a3b8' }}>Blueprint ID:</span> {blueprint?.blueprintId || '–'}</div>
-        <div><span style={{ color: '#94a3b8' }}>Candidate ID:</span> {blueprint?.candidateId || '–'}</div>
-        <div><span style={{ color: '#94a3b8' }}>Top 3 rank:</span> {blueprint?.top3Rank ?? '–'}</div>
-        <div><span style={{ color: '#94a3b8' }}>Källa:</span> {blueprint?.top3Source || '–'}</div>
-        <div><span style={{ color: '#94a3b8' }}>Riktning:</span> {blueprint?.direction || 'unknown'}</div>
-        <div><span style={{ color: '#94a3b8' }}>Side:</span> {blueprint?.side || '–'}</div>
-        <div><span style={{ color: '#94a3b8' }}>Entry:</span> {blueprint?.entryReferencePrice ?? blueprint?.entryPrice ?? '–'}</div>
-        <div><span style={{ color: '#94a3b8' }}>Stop loss:</span> {blueprint?.stopLoss ?? blueprint?.stopLossPrice ?? '–'}</div>
-        <div><span style={{ color: '#94a3b8' }}>TP1:</span> {blueprint?.takeProfit1 ?? '–'}</div>
-        <div><span style={{ color: '#94a3b8' }}>TP2:</span> {blueprint?.takeProfit2 ?? '–'}</div>
-        <div><span style={{ color: '#94a3b8' }}>RR:</span> {blueprint?.riskReward ?? blueprint?.riskRewardRatio ?? '–'}</div>
-        <div><span style={{ color: '#94a3b8' }}>Quantity:</span> {blueprint?.quantity ?? '–'} ({blueprint?.quantityStatus || 'unknown'})</div>
+        <div><span style={{ color: 'var(--muted)' }}>Blueprint ID:</span> {blueprint?.blueprintId || '–'}</div>
+        <div><span style={{ color: 'var(--muted)' }}>Candidate ID:</span> {blueprint?.candidateId || '–'}</div>
+        <div><span style={{ color: 'var(--muted)' }}>Top 3 rank:</span> {blueprint?.top3Rank ?? '–'}</div>
+        <div><span style={{ color: 'var(--muted)' }}>Källa:</span> {blueprint?.top3Source || '–'}</div>
+        <div><span style={{ color: 'var(--muted)' }}>Riktning:</span> {blueprint?.direction || 'unknown'}</div>
+        <div><span style={{ color: 'var(--muted)' }}>Side:</span> {blueprint?.side || '–'}</div>
+        <div><span style={{ color: 'var(--muted)' }}>Entry:</span> {blueprint?.entryReferencePrice ?? blueprint?.entryPrice ?? '–'}</div>
+        <div><span style={{ color: 'var(--muted)' }}>Stop loss:</span> {blueprint?.stopLoss ?? blueprint?.stopLossPrice ?? '–'}</div>
+        <div><span style={{ color: 'var(--muted)' }}>TP1:</span> {blueprint?.takeProfit1 ?? '–'}</div>
+        <div><span style={{ color: 'var(--muted)' }}>TP2:</span> {blueprint?.takeProfit2 ?? '–'}</div>
+        <div><span style={{ color: 'var(--muted)' }}>RR:</span> {blueprint?.riskReward ?? blueprint?.riskRewardRatio ?? '–'}</div>
+        <div><span style={{ color: 'var(--muted)' }}>Quantity:</span> {blueprint?.quantity ?? '–'} ({blueprint?.quantityStatus || 'unknown'})</div>
       </div>
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: 8, marginTop: 10, fontSize: 14 }}>
-        <div><span style={{ color: '#94a3b8' }}>Stop loss %:</span> {blueprint?.stopLossPct ?? blueprint?.stopLossDistancePct ?? '–'}</div>
-        <div><span style={{ color: '#94a3b8' }}>Min stop loss:</span> {blueprint?.minStopLossPct ?? blueprint?.requiredStopLossMinPct ?? '–'}</div>
-        <div><span style={{ color: '#94a3b8' }}>Risk %:</span> {blueprint?.riskPct ?? '–'}</div>
-        <div><span style={{ color: '#94a3b8' }}>Risk amount:</span> {blueprint?.riskAmount ?? '–'} {blueprint?.riskAmountCurrency || ''}</div>
-        <div><span style={{ color: '#94a3b8' }}>Estimated notional:</span> {blueprint?.estimatedNotional ?? '–'} {blueprint?.currency || ''}</div>
-        <div><span style={{ color: '#94a3b8' }}>Expires:</span> {blueprint?.expiresAt || '–'}</div>
-        <div><span style={{ color: '#94a3b8' }}>Blueprint ready:</span> {blueprintReady ? 'Ja' : 'Nej'}</div>
-        <div><span style={{ color: '#94a3b8' }}>Manual approval ready:</span> {manualApprovalReady ? 'Ja' : 'Nej'}</div>
-        <div><span style={{ color: '#94a3b8' }}>Execution ready:</span> {executionReady ? 'Ja' : 'Nej'}</div>
+        <div><span style={{ color: 'var(--muted)' }}>Stop loss %:</span> {blueprint?.stopLossPct ?? blueprint?.stopLossDistancePct ?? '–'}</div>
+        <div><span style={{ color: 'var(--muted)' }}>Min stop loss:</span> {blueprint?.minStopLossPct ?? blueprint?.requiredStopLossMinPct ?? '–'}</div>
+        <div><span style={{ color: 'var(--muted)' }}>Risk %:</span> {blueprint?.riskPct ?? '–'}</div>
+        <div><span style={{ color: 'var(--muted)' }}>Risk amount:</span> {blueprint?.riskAmount ?? '–'} {blueprint?.riskAmountCurrency || ''}</div>
+        <div><span style={{ color: 'var(--muted)' }}>Estimated notional:</span> {blueprint?.estimatedNotional ?? '–'} {blueprint?.currency || ''}</div>
+        <div><span style={{ color: 'var(--muted)' }}>Expires:</span> {blueprint?.expiresAt || '–'}</div>
+        <div><span style={{ color: 'var(--muted)' }}>Blueprint ready:</span> {blueprintReady ? 'Ja' : 'Nej'}</div>
+        <div><span style={{ color: 'var(--muted)' }}>Manual approval ready:</span> {manualApprovalReady ? 'Ja' : 'Nej'}</div>
+        <div><span style={{ color: 'var(--muted)' }}>Execution ready:</span> {executionReady ? 'Ja' : 'Nej'}</div>
       </div>
-      <div style={{ marginTop: 10, color: '#cbd5e1', lineHeight: 1.55 }}>
+      <div style={{ marginTop: 10, color: 'var(--text)', lineHeight: 1.55 }}>
         <div>Account mode: {blueprint?.accountMode || 'ib_paper'}</div>
         <div>Order type: {blueprint?.orderType || 'LMT'}</div>
         <div>TIF: {blueprint?.timeInForce || 'DAY'}</div>
@@ -726,13 +726,13 @@ function BlueprintCard({ blueprint }) {
         <div>Inga order skapas</div>
         <div>Inga order skickas</div>
         <div>Blueprint only</div>
-        {blueprint?.warnings?.length ? <div style={{ marginTop: 8, color: '#93c5fd' }}>Warnings: {blueprint.warnings.join(', ')}</div> : null}
-        {displayBlockedReason ? <div style={{ marginTop: 8, color: '#fbbf24' }}>BlockedReason: {displayBlockedReason}</div> : null}
+        {blueprint?.warnings?.length ? <div style={{ marginTop: 8, color: 'var(--blue)' }}>Warnings: {blueprint.warnings.join(', ')}</div> : null}
+        {displayBlockedReason ? <div style={{ marginTop: 8, color: 'var(--warning)' }}>BlockedReason: {displayBlockedReason}</div> : null}
         {currentBlockers.length > 0 ? (
-          <div style={{ marginTop: 8, color: '#fca5a5' }}>Blockers: {currentBlockers.join(', ')}</div>
+          <div style={{ marginTop: 8, color: 'var(--danger)' }}>Blockers: {currentBlockers.join(', ')}</div>
         ) : null}
         {historicalExecutionBlockers.length > 0 ? (
-          <div style={{ marginTop: 8, color: '#fbbf24' }}>Historisk/blueprint-blocker: {historicalExecutionBlockers.join(', ')}</div>
+          <div style={{ marginTop: 8, color: 'var(--warning)' }}>Historisk/blueprint-blocker: {historicalExecutionBlockers.join(', ')}</div>
         ) : null}
       </div>
     </div>
@@ -746,7 +746,7 @@ function ManualApprovalCard({ manualApproval, selectedBlueprint, selectedBluepri
   return (
     <div style={{ border: '1px solid rgba(251,191,36,0.35)', borderRadius: 14, padding: 14, background: 'rgba(251,191,36,0.06)' }}>
       <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap' }}>
-        <strong style={{ color: '#e2e8f0' }}>Manual approval panel</strong>
+        <strong style={{ color: 'var(--text)' }}>Manual approval panel</strong>
         <Badge
           ok={approval.approvalStatus === 'waiting_for_user' || approval.approvalStatus === 'ready_for_future_execution'}
           labelTrue={approval.approvalStatus || 'waiting_for_user'}
@@ -754,22 +754,22 @@ function ManualApprovalCard({ manualApproval, selectedBlueprint, selectedBluepri
         />
       </div>
       <div style={{ marginTop: 10, display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: 8, fontSize: 14 }}>
-        <div><span style={{ color: '#94a3b8' }}>Required phrase:</span> {approval.requiredConfirmationPhrase || 'CONFIRM PAPER TRADE'}</div>
-        <div><span style={{ color: '#94a3b8' }}>Confirmation entered:</span> {approval.confirmationEntered === true ? 'Ja' : 'Nej'}</div>
-        <div><span style={{ color: '#94a3b8' }}>Approval status:</span> {approval.approvalStatus || 'not_available'}</div>
-        <div><span style={{ color: '#94a3b8' }}>Pending blueprints:</span> {pendingCount}</div>
-        <div><span style={{ color: '#94a3b8' }}>Created at:</span> {approval.createdAt || '–'}</div>
-        <div><span style={{ color: '#94a3b8' }}>Expires at:</span> {approval.expiresAt || '–'}</div>
+        <div><span style={{ color: 'var(--muted)' }}>Required phrase:</span> {approval.requiredConfirmationPhrase || 'CONFIRM PAPER TRADE'}</div>
+        <div><span style={{ color: 'var(--muted)' }}>Confirmation entered:</span> {approval.confirmationEntered === true ? 'Ja' : 'Nej'}</div>
+        <div><span style={{ color: 'var(--muted)' }}>Approval status:</span> {approval.approvalStatus || 'not_available'}</div>
+        <div><span style={{ color: 'var(--muted)' }}>Pending blueprints:</span> {pendingCount}</div>
+        <div><span style={{ color: 'var(--muted)' }}>Created at:</span> {approval.createdAt || '–'}</div>
+        <div><span style={{ color: 'var(--muted)' }}>Expires at:</span> {approval.expiresAt || '–'}</div>
       </div>
-      <div style={{ marginTop: 10, color: '#cbd5e1', lineHeight: 1.55 }}>
+      <div style={{ marginTop: 10, color: 'var(--text)', lineHeight: 1.55 }}>
         <div>Selected blueprint: {selected ? `${selected.symbol || '–'} · ${selected.strategyName || selected.strategyId || '–'}` : (selectedBlueprintLoadStatus === 'loading' ? 'Laddar…' : 'none')}</div>
         <div>Manual approval required: yes</div>
         <div>Execution remains blocked in this phase.</div>
         {Array.isArray(approval.blockers) && approval.blockers.length > 0 ? (
-          <div style={{ marginTop: 8, color: '#fca5a5' }}>Blockers: {approval.blockers.join(', ')}</div>
+          <div style={{ marginTop: 8, color: 'var(--danger)' }}>Blockers: {approval.blockers.join(', ')}</div>
         ) : null}
         {Array.isArray(approval.warnings) && approval.warnings.length > 0 ? (
-          <div style={{ marginTop: 8, color: '#93c5fd' }}>Warnings: {approval.warnings.join(', ')}</div>
+          <div style={{ marginTop: 8, color: 'var(--blue)' }}>Warnings: {approval.warnings.join(', ')}</div>
         ) : null}
       </div>
     </div>
@@ -1373,7 +1373,7 @@ export default function InteractiveBrokersPage() {
     <div className="page" style={{ maxWidth: 920, margin: '0 auto', padding: '32px 24px' }}>
       <div className="page-head" style={{ marginBottom: 16 }}>
         <h1>Interactive Brokers Paper</h1>
-        <p style={{ color: '#94a3b8', lineHeight: 1.6 }}>
+        <p style={{ color: 'var(--muted)', lineHeight: 1.6 }}>
           Interactive Brokers Paper är separat från intern paper trading.
           {' '}IB Paper API och safe preview är verifierade.
           {' '}Real submit är låst och inga order skickas från denna vy.
@@ -1383,7 +1383,7 @@ export default function InteractiveBrokersPage() {
       {loading && <div style={CARD_STYLE}>Laddar…</div>}
       {!loading && hasAnyError && (
         <div style={{ ...CARD_STYLE, borderColor: 'rgba(251,191,36,0.35)', background: 'rgba(251,191,36,0.06)' }}>
-          <strong style={{ color: '#fbbf24' }}>Vissa IB-sektioner kunde inte laddas just nu. Sidan visar partiella värden där det går.</strong>
+          <strong style={{ color: 'var(--warning)' }}>Vissa IB-sektioner kunde inte laddas just nu. Sidan visar partiella värden där det går.</strong>
         </div>
       )}
 
@@ -1392,7 +1392,7 @@ export default function InteractiveBrokersPage() {
           <div style={CARD_STYLE}>
             <h2 style={{ marginTop: 0 }}>IB Paper Control Room</h2>
             {errors.status && (
-              <div style={{ color: '#fbbf24', marginBottom: 12 }}>
+              <div style={{ color: 'var(--warning)', marginBottom: 12 }}>
                 API-status kunde inte laddas. Detalj: {errors.status}
               </div>
             )}
@@ -1441,7 +1441,7 @@ export default function InteractiveBrokersPage() {
             <Row label="Dry-run / läsläge">
               <Badge ok={statusView.dryRun === true} labelTrue="Ja" labelFalse="Nej" />
             </Row>
-            <p style={{ color: '#94a3b8', marginBottom: 0, marginTop: 12, lineHeight: 1.6 }}>
+            <p style={{ color: 'var(--muted)', marginBottom: 0, marginTop: 12, lineHeight: 1.6 }}>
               IB Paper API och preview är verifierade. Real submit är fortfarande låst bakom manuell final gate, och IB Gateway Read-Only API är inte ändrat.
             </p>
           </div>
@@ -1449,7 +1449,7 @@ export default function InteractiveBrokersPage() {
           <div style={{ ...CARD_STYLE, borderColor: 'rgba(59,130,246,0.35)' }}>
             <h2 style={{ marginTop: 0 }}>IB Gateway Control</h2>
             {errors.gatewayHealth && (
-              <div style={{ color: '#fbbf24', marginBottom: 12 }}>
+              <div style={{ color: 'var(--warning)', marginBottom: 12 }}>
                 Gateway-status kunde inte laddas. Detalj: {errors.gatewayHealth}
               </div>
             )}
@@ -1491,7 +1491,7 @@ export default function InteractiveBrokersPage() {
               <code>{gatewayHealthView.lastCheckedAt ? new Date(gatewayHealthView.lastCheckedAt).toLocaleString('sv-SE') : 'okänt'}</code>
             </Row>
             <Row label="Nästa åtgärd">
-              <code style={{ color: gatewayHealthView.nextActionSv === 'Allt ser OK ut' ? '#4ade80' : '#fbbf24' }}>
+              <code style={{ color: gatewayHealthView.nextActionSv === 'Allt ser OK ut' ? '#4ade80' : 'var(--warning)' }}>
                 {gatewayHealthView.nextActionSv || 'Kan inte avgöra status'}
               </code>
             </Row>
@@ -1500,7 +1500,7 @@ export default function InteractiveBrokersPage() {
                 <code>{gatewayHealthView.gatewayProcessCommand}</code>
               </Row>
             )}
-            <p style={{ color: '#94a3b8', marginBottom: 0, marginTop: 12, lineHeight: 1.6 }}>
+            <p style={{ color: 'var(--muted)', marginBottom: 0, marginTop: 12, lineHeight: 1.6 }}>
               Trading OS kan visa och starta IB Gateway, men ska inte kringgå IBKR:s säkerhetsinloggning.
               {' '}Om login krävs öppnar du Gateway-login och godkänner med IBKR Mobile/2FA.
             </p>
@@ -1524,12 +1524,12 @@ export default function InteractiveBrokersPage() {
               <Badge ok={executionStatusView.paperAccountVerified === true} labelTrue="true" labelFalse="false" />
             </Row>
             <Row label="Orsak (blockedReason)">
-              <code style={{ color: '#fbbf24' }}>{executionStatusBlockedReason || executionPreviewView.blockedReason || 'none'}</code>
+              <code style={{ color: 'var(--warning)' }}>{executionStatusBlockedReason || executionPreviewView.blockedReason || 'none'}</code>
             </Row>
             <Row label="Aktuella blockers">
               <code>{executionStatusBlockers.length > 0 ? executionStatusBlockers.join(', ') : 'none'}</code>
             </Row>
-            <p style={{ color: '#94a3b8', marginBottom: 0, marginTop: 12, lineHeight: 1.6 }}>
+            <p style={{ color: 'var(--muted)', marginBottom: 0, marginTop: 12, lineHeight: 1.6 }}>
               Execution feature är aktiv för IB Paper-preview, men real submit är låst.
               Inga order skickas. Blueprint-blockers från äldre flaggläge visas inte som huvudorsak när aktuell execution-status är enabled.
             </p>
@@ -1537,11 +1537,11 @@ export default function InteractiveBrokersPage() {
 
           <div style={{ ...CARD_STYLE, borderColor: 'rgba(34,197,94,0.35)' }}>
             <h2 style={{ marginTop: 0 }}>IB Paper Execution Preview</h2>
-            <p style={{ color: '#94a3b8', marginTop: 0, lineHeight: 1.6 }}>
+            <p style={{ color: 'var(--muted)', marginTop: 0, lineHeight: 1.6 }}>
               Preview skickar ingen order. UI anropar endast <code>/api/interactive-brokers/paper-execution-preview</code> med dryRun=true och mockOnly=true.
             </p>
             {errors.executionPreview && (
-              <div style={{ color: '#fbbf24', marginBottom: 12 }}>
+              <div style={{ color: 'var(--warning)', marginBottom: 12 }}>
                 Preview kunde inte laddas. Detalj: {errors.executionPreview}
               </div>
             )}
@@ -1579,14 +1579,14 @@ export default function InteractiveBrokersPage() {
 
           <div style={CARD_STYLE}>
             <h2 style={{ marginTop: 0 }}>Anslutnings-readiness (IB Gateway/TWS)</h2>
-            <div style={{ color: '#94a3b8', marginTop: 0, marginBottom: 12, lineHeight: 1.7 }}>
+            <div style={{ color: 'var(--muted)', marginTop: 0, marginBottom: 12, lineHeight: 1.7 }}>
               • IBKR-lösenord sparas inte i Trading OS.<br />
               • Logga in manuellt i IB Gateway/TWS med Paper-kontot.<br />
               • Connection check är endast läsning.<br />
               Trading OS gör read-only TCP-check och läsande session-/konto-verifiering mot IB Gateway. Order är fortfarande blockerade.
             </div>
             {errors.readiness && (
-              <div style={{ color: '#fbbf24', marginBottom: 12 }}>
+              <div style={{ color: 'var(--warning)', marginBottom: 12 }}>
                 Readiness kunde inte laddas. Detalj: {errors.readiness}
               </div>
             )}
@@ -1625,7 +1625,7 @@ export default function InteractiveBrokersPage() {
               <Badge ok={executionPreviewView.realSubmitAllowed !== true} labelTrue="Låst" labelFalse="Öppen" />
             </Row>
             <Row label="Orsak (blockedReason)">
-              <code style={{ color: '#fbbf24' }}>{conn.blockedReason || 'unknown'}</code>
+              <code style={{ color: 'var(--warning)' }}>{conn.blockedReason || 'unknown'}</code>
             </Row>
           </div>
 
@@ -1678,7 +1678,7 @@ export default function InteractiveBrokersPage() {
                   : 'none'}
               </code>
             </Row>
-            <div style={{ marginTop: 10, color: '#94a3b8', lineHeight: 1.6 }}>
+            <div style={{ marginTop: 10, color: 'var(--muted)', lineHeight: 1.6 }}>
               Same read-only truth as Paper Trading. No live trading, no broker execution, no real orders.
               {' '}Blueprint, manual approval and execution status are separated.
             </div>
@@ -1686,23 +1686,23 @@ export default function InteractiveBrokersPage() {
 
           <div style={CARD_STYLE}>
             <h2 style={{ marginTop: 0 }}>Godkända strategier för framtida IB Paper-preview</h2>
-            <p style={{ color: '#94a3b8', marginTop: 0, lineHeight: 1.6 }}>
+            <p style={{ color: 'var(--muted)', marginTop: 0, lineHeight: 1.6 }}>
               Endast redan godkända strategier visas här (läses från systemets befintliga
               approval/allowlist). Ingen ny approval skapas och inga regler ändras.
             </p>
             {sourceDegraded && (
-              <div style={{ color: '#fbbf24', padding: '8px 0' }}>
+              <div style={{ color: 'var(--warning)', padding: '8px 0' }}>
                 Approval/allowlist-källan är inte tillgänglig just nu — visar tom lista eller degraderad status.
               </div>
             )}
             {strategies.length === 0 ? (
-              <div style={{ color: '#94a3b8', padding: '8px 0' }}>
+              <div style={{ color: 'var(--muted)', padding: '8px 0' }}>
                 Inga godkända strategier hittades. (Empty status — inte ett fel.)
               </div>
             ) : (
               <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 14 }}>
                 <thead>
-                  <tr style={{ textAlign: 'left', color: '#94a3b8' }}>
+                  <tr style={{ textAlign: 'left', color: 'var(--muted)' }}>
                     <th style={{ padding: '6px 8px' }}>Strategi</th>
                     <th style={{ padding: '6px 8px' }}>ID</th>
                     <th style={{ padding: '6px 8px' }}>Paper-runtime</th>
@@ -1712,7 +1712,7 @@ export default function InteractiveBrokersPage() {
                   {strategies.map((s) => (
                     <tr key={s.id} style={{ borderTop: '1px solid rgba(148,163,184,0.12)' }}>
                       <td style={{ padding: '6px 8px' }}>{s.name}</td>
-                      <td style={{ padding: '6px 8px' }}><code style={{ color: '#94a3b8' }}>{s.id}</code></td>
+                      <td style={{ padding: '6px 8px' }}><code style={{ color: 'var(--muted)' }}>{s.id}</code></td>
                       <td style={{ padding: '6px 8px' }}>
                         <Badge ok={s.paperRuntimeReady === true} labelTrue="Redo" labelFalse={s.runtimeConnectionStatus || 'väntar'} />
                       </td>
@@ -1725,18 +1725,18 @@ export default function InteractiveBrokersPage() {
 
           <div style={{ ...CARD_STYLE, borderColor: 'rgba(59,130,246,0.35)' }}>
             <h2 style={{ marginTop: 0 }}>Dagens IB Paper-preview</h2>
-            <p style={{ color: '#94a3b8', marginTop: 0, lineHeight: 1.6 }}>
+            <p style={{ color: 'var(--muted)', marginTop: 0, lineHeight: 1.6 }}>
               Förhandsvisning endast. Inga order skickas ännu.
               {' '}Previewn bygger på Trading OS-kandidater och visar varför varje kandidat är tillåten eller blockerad.
             </p>
-            <div style={{ color: '#94a3b8', marginTop: 0, marginBottom: 12, lineHeight: 1.7 }}>
+            <div style={{ color: 'var(--muted)', marginTop: 0, marginBottom: 12, lineHeight: 1.7 }}>
               • Max {ibPreview.maxPerDay || PREVIEW_LIMIT} kandidater per dag.<br />
               • Crypto/ETF/QQQ blockerat i denna fas.<br />
               • Endast approved strategies och tydlig riktning visas som tillåtna.<br />
               • Stop loss-policy: minst {stopLossMinPct.toFixed(2)}% krävs innan framtida IB Paper-execution.
             </div>
             {errors.orderPreview && (
-              <div style={{ color: '#fbbf24', marginBottom: 12 }}>
+              <div style={{ color: 'var(--warning)', marginBottom: 12 }}>
                 Order-preview kunde inte laddas. Detalj: {errors.orderPreview}
               </div>
             )}
@@ -1758,11 +1758,11 @@ export default function InteractiveBrokersPage() {
             <Row label="Order skickas ännu">
               <Badge ok={ibPreview.orderSendingBlocked === true} labelTrue="Nej" labelFalse="Ja" />
             </Row>
-            <div style={{ marginTop: 12, padding: '12px 14px', borderRadius: 12, background: 'rgba(37,99,235,0.08)', border: '1px solid rgba(59,130,246,0.22)', color: '#dbeafe', lineHeight: 1.6 }}>
+            <div style={{ marginTop: 12, padding: '12px 14px', borderRadius: 12, background: 'rgba(37,99,235,0.08)', border: '1px solid rgba(59,130,246,0.22)', color: 'var(--blue)', lineHeight: 1.6 }}>
               {previewSummary.noteSv || 'Förhandsvisning endast. Inga order skickas ännu.'}
             </div>
             {previewSummary.insufficientAllowedReason && (
-              <div style={{ marginTop: 10, color: '#fbbf24', lineHeight: 1.5 }}>
+              <div style={{ marginTop: 10, color: 'var(--warning)', lineHeight: 1.5 }}>
                 {previewSummary.insufficientAllowedReason}
               </div>
             )}
@@ -1770,7 +1770,7 @@ export default function InteractiveBrokersPage() {
             <div style={{ marginTop: 16 }}>
               <h3 style={{ margin: '0 0 10px 0' }}>Tillåtna kandidater</h3>
               {allowedPreviewCandidates.length === 0 ? (
-                <div style={{ color: '#94a3b8' }}>
+                <div style={{ color: 'var(--muted)' }}>
                   Inga IB Paper-previewkandidater är tillåtna just nu.
                 </div>
               ) : (
@@ -1785,7 +1785,7 @@ export default function InteractiveBrokersPage() {
             <div style={{ marginTop: 16 }}>
               <h3 style={{ margin: '0 0 10px 0' }}>Blockerade diagnoser</h3>
               {blockedPreviewCandidates.length === 0 ? (
-                <div style={{ color: '#94a3b8' }}>
+                <div style={{ color: 'var(--muted)' }}>
                   Inga blockerade diagnoser att visa.
                 </div>
               ) : (
@@ -1800,11 +1800,11 @@ export default function InteractiveBrokersPage() {
 
           <div style={{ ...CARD_STYLE, borderColor: 'rgba(168,85,247,0.35)' }}>
             <h2 style={{ marginTop: 0 }}>Dry-run execution scaffold</h2>
-            <p style={{ color: '#94a3b8', marginTop: 0, lineHeight: 1.6 }}>
+            <p style={{ color: 'var(--muted)', marginTop: 0, lineHeight: 1.6 }}>
               Detta är bara en plan-/stomvy. Den sammanställer read-only preview-data till en framtida exekveringsstruktur utan att öppna broker, kö eller orderväg.
             </p>
             {errors.scaffold && (
-              <div style={{ color: '#fbbf24', marginBottom: 12 }}>
+              <div style={{ color: 'var(--warning)', marginBottom: 12 }}>
                 Scaffold kunde inte laddas. Detalj: {errors.scaffold}
               </div>
             )}
@@ -1826,7 +1826,7 @@ export default function InteractiveBrokersPage() {
             <Row label="Live broker-execution">
               <Badge ok={scaffoldView.liveTradingEnabled === false} labelTrue="Av" labelFalse="På" />
             </Row>
-            <div style={{ marginTop: 12, padding: '12px 14px', borderRadius: 12, background: 'rgba(168,85,247,0.08)', border: '1px solid rgba(168,85,247,0.22)', color: '#ede9fe', lineHeight: 1.6 }}>
+            <div style={{ marginTop: 12, padding: '12px 14px', borderRadius: 12, background: 'rgba(168,85,247,0.08)', border: '1px solid rgba(168,85,247,0.22)', color: 'var(--purple)', lineHeight: 1.6 }}>
               {scaffoldView.note || 'Dry-run scaffold only. No queue, no broker, no send path, no real order path.'}
             </div>
 
@@ -1853,12 +1853,12 @@ export default function InteractiveBrokersPage() {
                 <h3 style={{ margin: '0 0 10px 0' }}>Scaffold-steg</h3>
                 <div style={{ display: 'grid', gap: 10 }}>
                   {scaffoldSteps.map((step) => (
-                    <div key={step.id} style={{ border: '1px solid rgba(148,163,184,0.14)', borderRadius: 12, padding: 12, background: 'rgba(15,23,42,0.22)' }}>
+                    <div key={step.id} style={{ border: '1px solid rgba(148,163,184,0.14)', borderRadius: 12, padding: 12, background: 'var(--surface-2)' }}>
                       <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10, flexWrap: 'wrap' }}>
-                        <strong style={{ color: '#e2e8f0' }}>{step.labelSv || step.id}</strong>
+                        <strong style={{ color: 'var(--text)' }}>{step.labelSv || step.id}</strong>
                         <Badge ok={step.status === 'ready'} labelTrue="Redo" labelFalse="Blockerad" />
                       </div>
-                      <div style={{ marginTop: 8, color: '#cbd5e1', lineHeight: 1.5 }}>{step.detailSv || 'Read-only step'}</div>
+                      <div style={{ marginTop: 8, color: 'var(--text)', lineHeight: 1.5 }}>{step.detailSv || 'Read-only step'}</div>
                     </div>
                   ))}
                 </div>
@@ -1868,18 +1868,18 @@ export default function InteractiveBrokersPage() {
 
           <div style={{ ...CARD_STYLE, borderColor: 'rgba(14,165,233,0.35)' }}>
             <h2 style={{ marginTop: 0 }}>IB Paper Trade Blueprint</h2>
-            <p style={{ color: '#94a3b8', marginTop: 0, lineHeight: 1.6 }}>
+            <p style={{ color: 'var(--muted)', marginTop: 0, lineHeight: 1.6 }}>
               Trade Blueprint är read-only och kan vara redo för IB Paper-preview.
               {' '}Real submit är låst och ingen order kan skickas från denna vy.
             </p>
-            <div style={{ marginTop: 0, padding: '12px 14px', borderRadius: 12, background: 'rgba(14,165,233,0.08)', border: '1px solid rgba(14,165,233,0.22)', color: '#e0f2fe', lineHeight: 1.6 }}>
+            <div style={{ marginTop: 0, padding: '12px 14px', borderRadius: 12, background: 'rgba(14,165,233,0.08)', border: '1px solid rgba(14,165,233,0.22)', color: 'var(--blue)', lineHeight: 1.6 }}>
               <div>Förhandsvisning endast</div>
               <div>Inga order skapas</div>
               <div>Inga order skickas</div>
               <div>Blueprint only</div>
             </div>
             {errors.blueprint && (
-              <div style={{ color: '#fbbf24', marginTop: 12 }}>
+              <div style={{ color: 'var(--warning)', marginTop: 12 }}>
                 Blueprint kunde inte laddas. Detalj: {errors.blueprint}
               </div>
             )}
@@ -1913,12 +1913,12 @@ export default function InteractiveBrokersPage() {
             <Row label="Min stop loss">
               <code>{Number(tradeBlueprintView.requiredStopLossMinPct ?? 0.10).toFixed(2)}%</code>
             </Row>
-            <div style={{ marginTop: 12, padding: '12px 14px', borderRadius: 12, background: 'rgba(14,165,233,0.06)', border: '1px solid rgba(14,165,233,0.18)', color: '#dbeafe', lineHeight: 1.6 }}>
+            <div style={{ marginTop: 12, padding: '12px 14px', borderRadius: 12, background: 'rgba(14,165,233,0.06)', border: '1px solid rgba(14,165,233,0.18)', color: 'var(--blue)', lineHeight: 1.6 }}>
               {tradeBlueprintView.note || 'Trade Blueprint is read-only. No order is created or sent.'}
             </div>
 
             {tradeBlueprints.length === 0 ? (
-              <div style={{ marginTop: 12, color: '#94a3b8' }}>
+              <div style={{ marginTop: 12, color: 'var(--muted)' }}>
                 Inga blueprint-kandidater att visa just nu.
               </div>
             ) : (
@@ -1940,7 +1940,7 @@ export default function InteractiveBrokersPage() {
 
           <div style={{ ...CARD_STYLE, borderColor: 'rgba(59,130,246,0.34)' }}>
             <h2 style={{ marginTop: 0 }}>First IB Paper Order Preflight</h2>
-            <p style={{ color: '#94a3b8', marginTop: 0, lineHeight: 1.6 }}>
+            <p style={{ color: 'var(--muted)', marginTop: 0, lineHeight: 1.6 }}>
               Preflight skickar ingen order. Den kontrollerar bara om systemet är redo för en framtida manuellt godkänd IB Paper-order.
             </p>
             <Row label="Selected blueprint">
@@ -1969,8 +1969,8 @@ export default function InteractiveBrokersPage() {
                 padding: '10px 12px',
                 borderRadius: 10,
                 border: '1px solid rgba(148,163,184,0.24)',
-                background: 'rgba(15,23,42,0.5)',
-                color: '#e2e8f0',
+                background: 'var(--surface-2)',
+                color: 'var(--text)',
                 marginTop: 10,
                 marginBottom: 10,
               }}
@@ -1985,7 +1985,7 @@ export default function InteractiveBrokersPage() {
                 borderRadius: 10,
                 border: '1px solid rgba(59,130,246,0.28)',
                 background: preflightSubmitDisabled ? 'rgba(59,130,246,0.08)' : 'rgba(59,130,246,0.18)',
-                color: preflightSubmitDisabled ? '#94a3b8' : '#dbeafe',
+                color: preflightSubmitDisabled ? 'var(--muted)' : 'var(--blue)',
                 fontWeight: 700,
                 cursor: preflightSubmitDisabled ? 'not-allowed' : 'pointer',
               }}
@@ -2003,7 +2003,7 @@ export default function InteractiveBrokersPage() {
                 borderRadius: 10,
                 border: '1px solid rgba(56,189,248,0.28)',
                 background: preflightSubmitDisabled ? 'rgba(56,189,248,0.08)' : 'rgba(56,189,248,0.18)',
-                color: preflightSubmitDisabled ? '#94a3b8' : '#dbeafe',
+                color: preflightSubmitDisabled ? 'var(--muted)' : 'var(--blue)',
                 fontWeight: 700,
                 cursor: preflightSubmitDisabled ? 'not-allowed' : 'pointer',
               }}
@@ -2011,7 +2011,7 @@ export default function InteractiveBrokersPage() {
               {protectiveReadinessStatus === 'loading' ? 'Kör bracket-readiness...' : 'Kör bracket-readiness'}
             </button>
             {paperPreflightResult && (
-              <div style={{ marginTop: 12, padding: '12px 14px', borderRadius: 12, background: 'rgba(15,23,42,0.34)', border: '1px solid rgba(148,163,184,0.16)', color: '#cbd5e1', lineHeight: 1.55 }}>
+              <div style={{ marginTop: 12, padding: '12px 14px', borderRadius: 12, background: 'var(--surface-2)', border: '1px solid rgba(148,163,184,0.16)', color: 'var(--text)', lineHeight: 1.55 }}>
                 <div><strong>Status:</strong> {paperPreflightResult.ok ? 'ok' : 'blocked/error'}</div>
                 <div><strong>accepted:</strong> {paperPreflightResult.accepted === true ? 'true' : 'false'}</div>
                 <div><strong>readyForFirstPaperOrder:</strong> {paperPreflightResult.readyForFirstPaperOrder === true ? 'true' : 'false'}</div>
@@ -2048,10 +2048,10 @@ export default function InteractiveBrokersPage() {
 
           <div style={{ ...CARD_STYLE, borderColor: 'rgba(34,197,94,0.34)' }}>
             <h2 style={{ marginTop: 0 }}>Manuell IB Paper bracket-submit</h2>
-            <div style={{ marginTop: -4, marginBottom: 10, color: '#93c5fd', fontSize: 13 }}>
+            <div style={{ marginTop: -4, marginBottom: 10, color: 'var(--blue)', fontSize: 13 }}>
               IB Paper UI version: <code>{IB_PAPER_UI_VERSION}</code>
             </div>
-            <p style={{ color: '#94a3b8', marginTop: 0, lineHeight: 1.6 }}>
+            <p style={{ color: 'var(--muted)', marginTop: 0, lineHeight: 1.6 }}>
               Detta är IB Paper. Inga riktiga pengar. Exakt en bracket-order: Entry + Stop Loss + Take Profit.
               {' '}Knappen öppnas först när alla gates är gröna och användaren gör en manuell bekräftelse.
             </p>
@@ -2173,7 +2173,7 @@ export default function InteractiveBrokersPage() {
               <Badge ok={manualPaperLoading ? null : finalGateStatusView?.submitReady === true} labelTrue="Ja" labelFalse={readinessFalseLabel(protectiveReadinessStatus, 'Nej')} />
             </Row>
 
-            <div style={{ marginTop: 12, padding: '12px 14px', borderRadius: 12, background: 'rgba(34,197,94,0.08)', border: '1px solid rgba(34,197,94,0.18)', color: '#dcfce7', lineHeight: 1.6 }}>
+            <div style={{ marginTop: 12, padding: '12px 14px', borderRadius: 12, background: 'rgba(34,197,94,0.08)', border: '1px solid rgba(34,197,94,0.18)', color: 'var(--success)', lineHeight: 1.6 }}>
               Manuell bekräftelse krävs. Ingen automatisk submit körs från agenten.
             </div>
 
@@ -2191,8 +2191,8 @@ export default function InteractiveBrokersPage() {
                 padding: '10px 12px',
                 borderRadius: 10,
                 border: '1px solid rgba(148,163,184,0.24)',
-                background: 'rgba(15,23,42,0.5)',
-                color: '#e2e8f0',
+                background: 'var(--surface-2)',
+                color: 'var(--text)',
                 marginTop: 10,
                 marginBottom: 10,
               }}
@@ -2208,8 +2208,8 @@ export default function InteractiveBrokersPage() {
                 padding: '10px 12px',
                 borderRadius: 10,
                 border: '1px solid rgba(148,163,184,0.24)',
-                background: 'rgba(15,23,42,0.5)',
-                color: '#e2e8f0',
+                background: 'var(--surface-2)',
+                color: 'var(--text)',
                 marginBottom: 10,
               }}
             />
@@ -2224,28 +2224,28 @@ export default function InteractiveBrokersPage() {
                 padding: '10px 12px',
                 borderRadius: 10,
                 border: '1px solid rgba(148,163,184,0.24)',
-                background: 'rgba(15,23,42,0.5)',
-                color: '#e2e8f0',
+                background: 'var(--surface-2)',
+                color: 'var(--text)',
                 marginBottom: 10,
               }}
             />
-            <label style={{ display: 'flex', gap: 10, alignItems: 'center', color: '#cbd5e1', marginBottom: 8 }}>
+            <label style={{ display: 'flex', gap: 10, alignItems: 'center', color: 'var(--text)', marginBottom: 8 }}>
               <input type="checkbox" checked={oneShotAckPaperOnly} onChange={(e) => setOneShotAckPaperOnly(e.target.checked)} />
               Jag förstår att detta är IB Paper
             </label>
-            <label style={{ display: 'flex', gap: 10, alignItems: 'center', color: '#cbd5e1', marginBottom: 8 }}>
+            <label style={{ display: 'flex', gap: 10, alignItems: 'center', color: 'var(--text)', marginBottom: 8 }}>
               <input type="checkbox" checked={oneShotAckNoLiveTrading} onChange={(e) => setOneShotAckNoLiveTrading(e.target.checked)} />
               Jag förstår att detta inte är live trading
             </label>
-            <label style={{ display: 'flex', gap: 10, alignItems: 'center', color: '#cbd5e1', marginBottom: 8 }}>
+            <label style={{ display: 'flex', gap: 10, alignItems: 'center', color: 'var(--text)', marginBottom: 8 }}>
               <input type="checkbox" checked={oneShotAckOneOrderOnly} onChange={(e) => setOneShotAckOneOrderOnly(e.target.checked)} />
               Jag förstår att endast en bracket-order får skickas
             </label>
-            <label style={{ display: 'flex', gap: 10, alignItems: 'center', color: '#cbd5e1', marginBottom: 8 }}>
+            <label style={{ display: 'flex', gap: 10, alignItems: 'center', color: 'var(--text)', marginBottom: 8 }}>
               <input type="checkbox" checked={oneShotAckBracketOrder} onChange={(e) => setOneShotAckBracketOrder(e.target.checked)} />
               Jag förstår att detta är en bracket-order med tre legs
             </label>
-            <label style={{ display: 'flex', gap: 10, alignItems: 'center', color: '#cbd5e1', marginBottom: 8 }}>
+            <label style={{ display: 'flex', gap: 10, alignItems: 'center', color: 'var(--text)', marginBottom: 8 }}>
               <input type="checkbox" checked={oneShotAckNoRetry} onChange={(e) => setOneShotAckNoRetry(e.target.checked)} />
               Jag förstår att ingen retry ska göras
             </label>
@@ -2259,7 +2259,7 @@ export default function InteractiveBrokersPage() {
                 borderRadius: 10,
                 border: '1px solid rgba(34,197,94,0.28)',
                 background: manualPaperBracketSubmitDisabled ? 'rgba(34,197,94,0.08)' : 'rgba(34,197,94,0.18)',
-                color: manualPaperBracketSubmitDisabled ? '#94a3b8' : '#dcfce7',
+                color: manualPaperBracketSubmitDisabled ? 'var(--muted)' : 'var(--success)',
                 fontWeight: 700,
                 cursor: manualPaperBracketSubmitDisabled ? 'not-allowed' : 'pointer',
                 marginTop: 8,
@@ -2267,7 +2267,7 @@ export default function InteractiveBrokersPage() {
             >
               {paperOneShotSubmitting ? 'Skickar IB Paper bracket-order...' : 'Skicka IB Paper bracket-order'}
             </button>
-            <div style={{ marginTop: 10, color: '#94a3b8', fontSize: 13, lineHeight: 1.5 }}>
+            <div style={{ marginTop: 10, color: 'var(--muted)', fontSize: 13, lineHeight: 1.5 }}>
               {stableIbPaperSnapshot.loadingState === 'loading'
                 ? 'Laddar IB Paper-status…'
                 : (manualPaperBracketSubmitState.helperReady === true
@@ -2275,7 +2275,7 @@ export default function InteractiveBrokersPage() {
                   : 'Väntar på full IB Paper-readiness.')}
             </div>
             {paperOneShotResult && (
-              <div style={{ marginTop: 12, padding: '12px 14px', borderRadius: 12, background: 'rgba(15,23,42,0.34)', border: '1px solid rgba(148,163,184,0.16)', color: '#cbd5e1', lineHeight: 1.55 }}>
+              <div style={{ marginTop: 12, padding: '12px 14px', borderRadius: 12, background: 'var(--surface-2)', border: '1px solid rgba(148,163,184,0.16)', color: 'var(--text)', lineHeight: 1.55 }}>
                 <div><strong>accepted:</strong> {paperOneShotResult.accepted === true ? 'true' : 'false'}</div>
                 <div><strong>helperReady:</strong> {paperOneShotResult.helperReady === true ? 'true' : 'false'}</div>
                 <div><strong>bracketSubmissionPlanReady:</strong> {paperOneShotResult.bracketSubmissionPlanReady === true ? 'true' : 'false'}</div>
@@ -2300,7 +2300,7 @@ export default function InteractiveBrokersPage() {
 
           <div style={{ ...CARD_STYLE, borderColor: 'rgba(56,189,248,0.34)' }}>
             <h2 style={{ marginTop: 0 }}>Protective Order / Bracket Plan</h2>
-            <p style={{ color: '#94a3b8', marginTop: 0, lineHeight: 1.6 }}>
+            <p style={{ color: 'var(--muted)', marginTop: 0, lineHeight: 1.6 }}>
               {stableIbPaperSnapshot.loadingState === 'loading'
                 ? 'Laddar skydds-/bracket-status…'
                 : '3-leg submit-helper är verifierad i mock. Riktig IB Paper submit är fortfarande låst tills Fas 4G-2.'}
@@ -2376,7 +2376,7 @@ export default function InteractiveBrokersPage() {
               <code>Ingen order skickas i denna fas.</code>
             </Row>
             {protectivePlanChecks.length > 0 && (
-              <div style={{ marginTop: 12, padding: '12px 14px', borderRadius: 12, background: 'rgba(15,23,42,0.34)', border: '1px solid rgba(148,163,184,0.16)', color: '#cbd5e1', lineHeight: 1.55 }}>
+              <div style={{ marginTop: 12, padding: '12px 14px', borderRadius: 12, background: 'var(--surface-2)', border: '1px solid rgba(148,163,184,0.16)', color: 'var(--text)', lineHeight: 1.55 }}>
                 <strong>Checks:</strong>
                 <ul style={{ margin: '8px 0 0 18px', padding: 0 }}>
                   {protectivePlanChecks.slice(0, 8).map((check) => (
@@ -2391,7 +2391,7 @@ export default function InteractiveBrokersPage() {
 
           <div style={{ ...CARD_STYLE, borderColor: 'rgba(250,204,21,0.34)' }}>
             <h2 style={{ marginTop: 0 }}>Arm First IB Paper One-Shot</h2>
-            <p style={{ color: '#94a3b8', marginTop: 0, lineHeight: 1.6 }}>
+            <p style={{ color: 'var(--muted)', marginTop: 0, lineHeight: 1.6 }}>
               Arming skickar ingen order. Det öppnar bara ett tidsbegränsat fönster för en framtida separat godkänd IB Paper-order.
             </p>
             <Row label="selected blueprint">
@@ -2456,8 +2456,8 @@ export default function InteractiveBrokersPage() {
                 padding: '10px 12px',
                 borderRadius: 10,
                 border: '1px solid rgba(148,163,184,0.24)',
-                background: 'rgba(15,23,42,0.5)',
-                color: '#e2e8f0',
+                background: 'var(--surface-2)',
+                color: 'var(--text)',
                 marginTop: 10,
                 marginBottom: 10,
               }}
@@ -2473,20 +2473,20 @@ export default function InteractiveBrokersPage() {
                 padding: '10px 12px',
                 borderRadius: 10,
                 border: '1px solid rgba(148,163,184,0.24)',
-                background: 'rgba(15,23,42,0.5)',
-                color: '#e2e8f0',
+                background: 'var(--surface-2)',
+                color: 'var(--text)',
                 marginBottom: 10,
               }}
             />
-            <label style={{ display: 'flex', gap: 10, alignItems: 'center', color: '#cbd5e1', marginBottom: 8 }}>
+            <label style={{ display: 'flex', gap: 10, alignItems: 'center', color: 'var(--text)', marginBottom: 8 }}>
               <input type="checkbox" checked={oneShotAckPaperOnly} onChange={(e) => setOneShotAckPaperOnly(e.target.checked)} />
               Jag förstår att detta endast gäller IB Paper
             </label>
-            <label style={{ display: 'flex', gap: 10, alignItems: 'center', color: '#cbd5e1', marginBottom: 8 }}>
+            <label style={{ display: 'flex', gap: 10, alignItems: 'center', color: 'var(--text)', marginBottom: 8 }}>
               <input type="checkbox" checked={oneShotAckNoLiveTrading} onChange={(e) => setOneShotAckNoLiveTrading(e.target.checked)} />
               Jag förstår att ingen live trading används
             </label>
-            <label style={{ display: 'flex', gap: 10, alignItems: 'center', color: '#cbd5e1', marginBottom: 8 }}>
+            <label style={{ display: 'flex', gap: 10, alignItems: 'center', color: 'var(--text)', marginBottom: 8 }}>
               <input type="checkbox" checked={oneShotAckOneOrderOnly} onChange={(e) => setOneShotAckOneOrderOnly(e.target.checked)} />
               Jag förstår att bara en order får skickas
             </label>
@@ -2503,8 +2503,8 @@ export default function InteractiveBrokersPage() {
                 padding: '10px 12px',
                 borderRadius: 10,
                 border: '1px solid rgba(148,163,184,0.24)',
-                background: 'rgba(15,23,42,0.5)',
-                color: '#e2e8f0',
+                background: 'var(--surface-2)',
+                color: 'var(--text)',
                 marginBottom: 10,
               }}
             />
@@ -2518,7 +2518,7 @@ export default function InteractiveBrokersPage() {
                 borderRadius: 10,
                 border: '1px solid rgba(250,204,21,0.28)',
                 background: armSubmitDisabled ? 'rgba(250,204,21,0.08)' : 'rgba(250,204,21,0.18)',
-                color: armSubmitDisabled ? '#94a3b8' : '#fef08a',
+                color: armSubmitDisabled ? 'var(--muted)' : '#fef08a',
                 fontWeight: 700,
                 cursor: armSubmitDisabled ? 'not-allowed' : 'pointer',
               }}
@@ -2536,14 +2536,14 @@ export default function InteractiveBrokersPage() {
                 borderRadius: 10,
                 border: '1px solid rgba(248,113,113,0.28)',
                 background: (!armStatusView?.armed || disarmSubmitting) ? 'rgba(248,113,113,0.08)' : 'rgba(248,113,113,0.18)',
-                color: (!armStatusView?.armed || disarmSubmitting) ? '#94a3b8' : '#fecaca',
+                color: (!armStatusView?.armed || disarmSubmitting) ? 'var(--muted)' : '#fecaca',
                 fontWeight: 700,
                 cursor: (!armStatusView?.armed || disarmSubmitting) ? 'not-allowed' : 'pointer',
               }}
             >
               {disarmSubmitting ? 'Avbryter...' : 'Avbryt arm'}
             </button>
-            <div style={{ marginTop: 12, padding: '12px 14px', borderRadius: 12, background: 'rgba(15,23,42,0.34)', border: '1px solid rgba(148,163,184,0.16)', color: '#cbd5e1', lineHeight: 1.55 }}>
+            <div style={{ marginTop: 12, padding: '12px 14px', borderRadius: 12, background: 'var(--surface-2)', border: '1px solid rgba(148,163,184,0.16)', color: 'var(--text)', lineHeight: 1.55 }}>
               <div><strong>armed:</strong> {armStatusView?.armed === true ? 'true' : 'false'}</div>
               <div><strong>armId:</strong> {armStatusView?.armId || 'none'}</div>
               <div><strong>expiresAt:</strong> {armStatusView?.expiresAt || 'none'}</div>
@@ -2564,18 +2564,18 @@ export default function InteractiveBrokersPage() {
 
           <div style={{ ...CARD_STYLE, borderColor: 'rgba(34,197,94,0.35)' }}>
             <h2 style={{ marginTop: 0 }}>IB Paper Execution</h2>
-            <p style={{ color: '#94a3b8', marginTop: 0, lineHeight: 1.6 }}>
+            <p style={{ color: 'var(--muted)', marginTop: 0, lineHeight: 1.6 }}>
               IB Paper API och preview är verifierade. Real submit är fortfarande låst bakom manuell final gate och Read-Only API är inte ändrat.
               {' '}Ingen live trading används och ingen order skickas från denna vy.
             </p>
-            <div style={{ marginTop: 0, padding: '12px 14px', borderRadius: 12, background: 'rgba(34,197,94,0.06)', border: '1px solid rgba(34,197,94,0.18)', color: '#dcfce7', lineHeight: 1.6 }}>
+            <div style={{ marginTop: 0, padding: '12px 14px', borderRadius: 12, background: 'rgba(34,197,94,0.06)', border: '1px solid rgba(34,197,94,0.18)', color: 'var(--success)', lineHeight: 1.6 }}>
               <div>Förhandsvisning endast</div>
               <div>Inga live trading-åtgärder</div>
               <div>Paper-only execution</div>
               <div>Order kan inte skickas utan explicit bekräftelse</div>
             </div>
             {errors.executionStatus && (
-              <div style={{ color: '#fbbf24', marginTop: 12 }}>
+              <div style={{ color: 'var(--warning)', marginTop: 12 }}>
                 Execution-status kunde inte laddas. Detalj: {errors.executionStatus}
               </div>
             )}
@@ -2619,12 +2619,12 @@ export default function InteractiveBrokersPage() {
               <code>{executionStatusView.manualApproval?.approvalStatus || truthManualApproval?.approvalStatus || 'not_available'}</code>
             </Row>
             <div style={{ marginTop: 12, borderTop: '1px solid rgba(148,163,184,0.12)', paddingTop: 12 }}>
-              <div style={{ color: '#cbd5e1', marginBottom: 8, lineHeight: 1.5 }}>
+              <div style={{ color: 'var(--text)', marginBottom: 8, lineHeight: 1.5 }}>
                 Selected blueprint:
                 {' '}
                 {selectedPaperBlueprint ? `${selectedPaperBlueprint.symbol} · ${selectedPaperBlueprint.strategyName || selectedPaperBlueprint.strategyId} · ${formatDirection(selectedPaperBlueprint.direction)}` : (selectedBlueprintResolution.loadStatus === 'loading' ? 'Laddar…' : 'none')}
               </div>
-              <div style={{ color: '#94a3b8', marginBottom: 8, lineHeight: 1.5 }}>
+              <div style={{ color: 'var(--muted)', marginBottom: 8, lineHeight: 1.5 }}>
                 Blueprint source: {selectedBlueprintResolution.source || 'none'} ·
                 {' '}
                 Fallback: {selectedBlueprintResolution.isFallback === true ? 'Ja' : 'Nej'} ·
@@ -2632,17 +2632,17 @@ export default function InteractiveBrokersPage() {
                 Load: {selectedBlueprintResolution.loadStatus || 'idle'}
                 {selectedBlueprintResolution.loadError ? ` (${selectedBlueprintResolution.loadError})` : ''}
               </div>
-              <div style={{ color: '#94a3b8', marginBottom: 8, lineHeight: 1.5 }}>
+              <div style={{ color: 'var(--muted)', marginBottom: 8, lineHeight: 1.5 }}>
                 Blueprint ready: {selectedPaperBlueprint?.blueprintReady === true ? 'Ja' : 'Nej'} ·
                 {' '}
                 Manual approval ready: {selectedPaperBlueprint?.manualApprovalReady === true ? 'Ja' : 'Nej'} ·
                 {' '}
                 Execution ready: {selectedPaperBlueprint?.executionReady === true ? 'Ja' : 'Nej'}
               </div>
-              <div style={{ color: '#94a3b8', marginBottom: 8, lineHeight: 1.5 }}>
+              <div style={{ color: 'var(--muted)', marginBottom: 8, lineHeight: 1.5 }}>
                 Approval phrase: <code>{truthManualApproval?.requiredConfirmationPhrase || 'CONFIRM PAPER TRADE'}</code>
               </div>
-              <div style={{ color: '#94a3b8', marginBottom: 8, lineHeight: 1.5 }}>
+              <div style={{ color: 'var(--muted)', marginBottom: 8, lineHeight: 1.5 }}>
                 Skickeknappen är låst i UI. Använd preview för diagnos; ingen order skickas.
               </div>
               <input
@@ -2656,8 +2656,8 @@ export default function InteractiveBrokersPage() {
                   padding: '10px 12px',
                   borderRadius: 10,
                   border: '1px solid rgba(148,163,184,0.24)',
-                  background: 'rgba(15,23,42,0.5)',
-                  color: '#e2e8f0',
+                  background: 'var(--surface-2)',
+                  color: 'var(--text)',
                   marginBottom: 10,
                 }}
               />
@@ -2671,7 +2671,7 @@ export default function InteractiveBrokersPage() {
                   borderRadius: 10,
                   border: '1px solid rgba(34,197,94,0.28)',
                   background: paperExecutionSubmitDisabled ? 'rgba(34,197,94,0.08)' : 'rgba(34,197,94,0.18)',
-                  color: paperExecutionSubmitDisabled ? '#94a3b8' : '#dcfce7',
+                  color: paperExecutionSubmitDisabled ? 'var(--muted)' : 'var(--success)',
                   fontWeight: 700,
                   cursor: paperExecutionSubmitDisabled ? 'not-allowed' : 'pointer',
                 }}
@@ -2679,7 +2679,7 @@ export default function InteractiveBrokersPage() {
                 {paperExecutionSubmitting ? 'Skickar...' : 'IB Paper submit låst'}
               </button>
               {paperExecutionResult && (
-                <div style={{ marginTop: 12, padding: '12px 14px', borderRadius: 12, background: 'rgba(15,23,42,0.34)', border: '1px solid rgba(148,163,184,0.16)', color: '#cbd5e1', lineHeight: 1.55 }}>
+                <div style={{ marginTop: 12, padding: '12px 14px', borderRadius: 12, background: 'var(--surface-2)', border: '1px solid rgba(148,163,184,0.16)', color: 'var(--text)', lineHeight: 1.55 }}>
                   <div><strong>Status:</strong> {paperExecutionResult.ok ? 'ok' : 'blocked/error'}</div>
                   <div><strong>blockedReason:</strong> {paperExecutionResult.blockedReason || 'none'}</div>
                   <div><strong>submitted:</strong> {paperExecutionResult.submitted === true ? 'true' : 'false'}</div>
@@ -2705,7 +2705,7 @@ export default function InteractiveBrokersPage() {
             <Row label="Manuellt godkännande krävs">
               <Badge ok={nextPhase.manualApprovalRequired === true} labelTrue="Ja" labelFalse="Nej" />
             </Row>
-            <p style={{ color: '#94a3b8', marginBottom: 0, marginTop: 12, lineHeight: 1.6 }}>
+            <p style={{ color: 'var(--muted)', marginBottom: 0, marginTop: 12, lineHeight: 1.6 }}>
               Inga framtida steg (order-kö, broker-execution, live trading) kan aktiveras härifrån.
               Varje steg kräver explicit manuellt godkännande och en separat byggnation.
             </p>
@@ -2716,7 +2716,7 @@ export default function InteractiveBrokersPage() {
             <Row label="Intern paper trading opåverkad">
               <Badge ok={statusView.internalPaperTradingUnaffected === true} labelTrue="Ja" labelFalse="Nej" />
             </Row>
-            <p style={{ color: '#94a3b8', marginBottom: 0, marginTop: 12, lineHeight: 1.6 }}>
+            <p style={{ color: 'var(--muted)', marginBottom: 0, marginTop: 12, lineHeight: 1.6 }}>
               Den interna paper trading-funktionen körs helt separat och är oförändrad.
               Den här vyn läser endast status och godkända strategier.
             </p>
