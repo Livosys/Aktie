@@ -4,7 +4,12 @@ import SystemHealthPage from './SystemHealthPage.jsx';
 import AlertsPage from './AlertsPage.jsx';
 import { BlockersTab, RiskTab, SafetyTab } from './SakerhetsPage.jsx';
 import { ConfigScopeBadge, PlatformEmptyState, PlatformSafetyBar } from '../components/PlatformControls.jsx';
-import { DashboardShell } from '../components/dashboard/DashboardKit.jsx';
+import {
+  ActivityList,
+  BarChart,
+  ChartCard,
+  DashboardShell,
+} from '../components/dashboard/DashboardKit.jsx';
 import { useUnifiedConfig } from '../hooks/useUnifiedConfig.js';
 
 const TABS = [
@@ -64,6 +69,24 @@ function OverviewTab() {
   const learningState = componentState((data?.components || []).filter((c) => c.area === 'Learning'));
   const providerState = componentState((data?.components || []).filter((c) => c.area === 'Providers'));
   const safetyState = 'Låst';
+  const componentBars = (data?.components || []).length
+    ? [
+        { label: 'OK', value: counts.ok, tone: 'good' },
+        { label: 'Varning', value: counts.stale, tone: 'warning' },
+        { label: 'Fel', value: counts.broken, tone: 'danger' },
+      ]
+    : [];
+  const componentActivity = (data?.components || []).slice(0, 7).map((component, index) => ({
+    id: component.id || `${component.area || 'component'}-${index}`,
+    title: component.name || component.label || component.area || 'Systemkomponent',
+    meta: component.messageSv || component.message || component.status || 'Ingen detalj',
+    time: component.updatedAt || component.lastUpdated || null,
+    tone: component.status === 'ON'
+      ? 'good'
+      : component.status === 'BROKEN'
+        ? 'danger'
+        : 'warning',
+  }));
 
   if (loading) return <div className="sys-loading">Kontrollerar systemet...</div>;
 
@@ -78,6 +101,15 @@ function OverviewTab() {
         <span className={`sys-state sys-state-${(data?.overallStatus || 'unknown').toLowerCase()}`}>
           {data?.overallStatus || 'UNKNOWN'}
         </span>
+      </div>
+
+      <div className="dash-grid-2">
+        <ChartCard title="Komponentstatus" subtitle="Fördelning från befintlig systemhälsa" tone="purple">
+          <BarChart bars={componentBars} emptyText="Systemkomponenter saknas ännu." />
+        </ChartCard>
+        <ChartCard title="Health-aktivitet" subtitle="Senaste lästa komponentstatusar" tone="warning">
+          <ActivityList items={componentActivity} emptyText="Ingen komponentstatus finns ännu." />
+        </ChartCard>
       </div>
 
       <div className="sys-metrics">

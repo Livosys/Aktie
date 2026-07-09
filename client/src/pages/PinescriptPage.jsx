@@ -1,9 +1,17 @@
 import React, { useEffect, useMemo, useState } from 'react';
+import { DashboardShell } from '../components/dashboard/DashboardKit.jsx';
 import TradingViewTestBlueprintPanel from '../components/TradingViewTestBlueprintPanel.jsx';
 import TradingViewTestResultsPanel from '../components/TradingViewTestResultsPanel.jsx';
 import tradingViewTestBlueprintFallback from '../utils/tradingview-test-blueprints.json';
 
 const FETCH_TIMEOUT_MS = 6500;
+const PINE_SAFETY = Object.freeze({
+  mode: 'paper_only',
+  actions_allowed: false,
+  can_place_orders: false,
+  live_trading_enabled: false,
+  broker_enabled: false,
+});
 
 async function fetchJsonWithTimeout(url, { timeoutMs = FETCH_TIMEOUT_MS, signal } = {}) {
   const controller = new AbortController();
@@ -699,34 +707,12 @@ export default function PinescriptPage() {
   const strategyEvolutionState = useStrategyEvolution();
 
   return (
-    <main className="page" style={{ maxWidth: 1180, margin: '0 auto', padding: '32px 24px 56px' }}>
-      <section style={{
-        border: '1px solid var(--border)',
-        borderRadius: 18,
-        padding: 22,
-        marginBottom: 18,
-        background: 'var(--surface)',
-      }}
-      >
-        <div style={{ color: 'var(--muted)', fontSize: 12, fontWeight: 900, textTransform: 'uppercase', letterSpacing: '0.08em' }}>
-          Automatisk research-loop
-        </div>
-        <h1 style={{ margin: '6px 0 8px', fontSize: 32, letterSpacing: 0 }}>PineScript</h1>
-        <p style={{ margin: 0, maxWidth: 760, color: 'var(--muted)', lineHeight: 1.6 }}>
-          Trading OS ska själv skapa strategi- och Pine-versioner, köra replay/batch/backtest,
-          läsa resultat och förbättra svaga versioner. PineScript är export, visualisering
-          och validering - inte execution eller orderflöde.
-        </p>
-        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginTop: 14 }}>
-          <Badge tone="success">mode=paper_only</Badge>
-          <Badge>actions_allowed=false</Badge>
-          <Badge>can_place_orders=false</Badge>
-          <Badge>live_trading_enabled=false</Badge>
-          <Badge>broker_enabled=false</Badge>
-          <Badge tone="info">Read-only</Badge>
-        </div>
-      </section>
-
+    <DashboardShell
+      title="PineScript"
+      subtitle="Automatisk research-loop för strategi- och Pine-versioner, replay, batch och validering. Export och visualisering – aldrig execution eller orderflöde."
+      safety={PINE_SAFETY}
+    >
+    <main className="page" style={{ width: '100%', maxWidth: 1180, margin: '0 auto', padding: '0 0 40px' }}>
       <section style={{
         display: 'grid',
         gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 320px), 1fr))',
@@ -845,5 +831,6 @@ export default function PinescriptPage() {
       <TradingViewTestBlueprintPanel data={blueprintState.data} theme={theme} />
       <TradingViewTestResultsPanel theme={theme} />
     </main>
+    </DashboardShell>
   );
 }

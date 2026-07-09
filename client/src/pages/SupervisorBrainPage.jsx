@@ -1,6 +1,11 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { DashboardShell } from '../components/dashboard/DashboardKit.jsx';
+import {
+  ActivityList,
+  BarChart,
+  ChartCard,
+  DashboardShell,
+} from '../components/dashboard/DashboardKit.jsx';
 
 const REFRESH_MS = 30_000;
 
@@ -769,6 +774,23 @@ export default function SupervisorBrainPage() {
       tone: statusTone(learningStatus.status),
     },
   ];
+  const pipelineBars = data.overview
+    ? [
+        { label: 'Batch', value: batchResultRows, tone: 'purple' },
+        { label: 'Replay', value: totalReplayRuns, tone: 'warning' },
+        { label: 'Paper', value: Number(paperStatus.count || 0), tone: 'good' },
+        { label: 'Learning', value: learningOutcomeCount, tone: 'blue' },
+      ]
+    : [];
+  const supervisorActivity = liveEvents.slice(0, 6).map((event, index) => ({
+    id: event.id || event.eventId || `${event.type || 'event'}-${index}`,
+    title: text(first(event.title, event.type, event.eventType), 'Systemhändelse'),
+    meta: text(first(event.reasonSv, event.reason, event.message, event.status, event.symbol), 'Ingen detalj'),
+    time: first(event.timestamp, event.createdAt, event.updatedAt)
+      ? timeText(first(event.timestamp, event.createdAt, event.updatedAt))
+      : null,
+    tone: statusTone(first(event.status, event.severity, 'neutral')),
+  }));
 
   return (
     <DashboardShell
@@ -788,6 +810,17 @@ export default function SupervisorBrainPage() {
 
         {data.loading ? (
           <div className="tos-loading">Laddar Trading OS-pipelinen…</div>
+        ) : null}
+
+        {activeSection === 'oversikt' ? (
+          <div className="dash-grid-2">
+            <ChartCard title="Pipeline-fördelning" subtitle="Befintliga resultat och observationer" tone="purple">
+              <BarChart bars={pipelineBars} emptyText="Pipeline-data saknas ännu." />
+            </ChartCard>
+            <ChartCard title="Senaste aktivitet" subtitle="Read-only events från Supervisor" tone="warning">
+              <ActivityList items={supervisorActivity} emptyText="Ingen systemaktivitet finns ännu." />
+            </ChartCard>
+          </div>
         ) : null}
 
         {activeSection === 'oversikt' ? (

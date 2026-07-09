@@ -5,6 +5,7 @@ import ReviewChartPage from './ReviewChartPage.jsx';
 import IntelligencePage from './IntelligencePage.jsx';
 import { AdvancedModeToggle, ConfigScopeBadge, PlatformEmptyState, PlatformSafetyBar, useAdvancedMode } from '../components/PlatformControls.jsx';
 import PaperCandidatePanel from '../components/PaperCandidatePanel.jsx';
+import { DashboardShell, DashboardTabs } from '../components/dashboard/DashboardKit.jsx';
 import {
   DEFAULT_TRADING_LAB_EXITS as DEFAULT_EXITS,
   DEFAULT_TRADING_LAB_PARAMS as DEFAULT_PARAMS,
@@ -12,6 +13,14 @@ import {
   useUnifiedConfig,
 } from '../hooks/useUnifiedConfig.js';
 import { SignalAge, TradingViewLink } from '../shared.jsx';
+
+const LAB_SAFETY = Object.freeze({
+  mode: 'paper_only',
+  actions_allowed: false,
+  can_place_orders: false,
+  live_trading_enabled: false,
+  broker_enabled: false,
+});
 
 // ── Default configs ───────────────────────────────────────────────────────────
 const TOGGLE_META = [
@@ -4212,20 +4221,54 @@ function AgentDebateTab() {
   );
 }
 
-// ── Tab bar ───────────────────────────────────────────────────────────────────
-const TABS = [
-  { key: 'strategier',    label: 'Strategier',    icon: '🧩' },
-  { key: 'batch',         label: 'Kör historiskt batch-test',     icon: '🧪' },
-  { key: 'marknader',     label: 'Marknader',     icon: '🌍' },
-  { key: 'sliders',       label: 'Sliders',        icon: '🎚️' },
-  { key: 'exits',         label: 'Exits',         icon: '↘️' },
-  { key: 'replay',        label: 'Spela upp historiska signaler',        icon: '▶️' },
-  { key: 'ai_agent',      label: 'Föreslå testplan',      icon: '🤖' },
-  { key: 'agent_debate',  label: 'Beslutsråd', icon: '💡' },
-  { key: 'adaptive',      label: 'Visa lärande från tester', icon: '🧠' },
-  { key: 'review',        label: 'Graf',          icon: '⌁' },
-  { key: 'candidates',    label: 'Kandidater',    icon: '◎' },
+// ── Lab navigation ────────────────────────────────────────────────────────────
+// Legacy query ids remain the content keys so existing links and redirects keep
+// working. The dashboard navigation only groups them into five clearer areas.
+const LAB_CONTENT_TABS = new Set([
+  'strategier',
+  'batch',
+  'replay',
+  'review',
+  'candidates',
+  'adaptive',
+  'marknader',
+  'sliders',
+  'exits',
+  'ai_agent',
+  'agent_debate',
+]);
+
+const PRIMARY_TABS = [
+  { id: 'overview', label: 'Översikt' },
+  { id: 'batch', label: 'Batch' },
+  { id: 'replay', label: 'Replay' },
+  { id: 'results', label: 'Resultat' },
+  { id: 'technical', label: 'Teknik' },
 ];
+
+const RESULT_TABS = [
+  { id: 'review', label: 'Graf' },
+  { id: 'candidates', label: 'Kandidater' },
+  { id: 'adaptive', label: 'Learning' },
+];
+
+const TECHNICAL_TABS = [
+  { id: 'marknader', label: 'Marknader' },
+  { id: 'sliders', label: 'Sliders' },
+  { id: 'exits', label: 'Exits' },
+  { id: 'ai_agent', label: 'AI-agent' },
+  { id: 'agent_debate', label: 'Beslutsråd' },
+];
+
+const RESULT_TAB_IDS = new Set(RESULT_TABS.map((item) => item.id));
+const TECHNICAL_TAB_IDS = new Set(TECHNICAL_TABS.map((item) => item.id));
+
+function primaryTabFor(contentTab) {
+  if (contentTab === 'batch' || contentTab === 'replay') return contentTab;
+  if (RESULT_TAB_IDS.has(contentTab)) return 'results';
+  if (TECHNICAL_TAB_IDS.has(contentTab)) return 'technical';
+  return 'overview';
+}
 
 // ── Main page ─────────────────────────────────────────────────────────────────
 export default function TradingLabPage() {
@@ -4237,11 +4280,20 @@ export default function TradingLabPage() {
   } = useUnifiedConfig('lab');
   const [advancedMode, setAdvancedMode] = useAdvancedMode();
   const requestedTab = searchParams.get('tab') || 'strategier';
-  const tab = TABS.some(t => t.key === requestedTab) ? requestedTab : 'strategier';
+  const tab = LAB_CONTENT_TABS.has(requestedTab) ? requestedTab : 'strategier';
+  const primaryTab = primaryTabFor(tab);
   const { toggles, params, exits } = test.tradingLabConfig;
 
   function changeTab(next) {
     setSearchParams(next === 'strategier' ? {} : { tab: next });
+  }
+
+  function changePrimaryTab(next) {
+    if (next === primaryTab) return;
+    if (next === 'overview') changeTab('strategier');
+    else if (next === 'results') changeTab('review');
+    else if (next === 'technical') changeTab('marknader');
+    else changeTab(next);
   }
 
   function setToggle(key, val) {
@@ -4275,11 +4327,18 @@ export default function TradingLabPage() {
   const activeSignalCount = TOGGLE_META.filter(m => toggles[m.key]).length;
 
   return (
+    <DashboardShell
+      title="Trading Lab"
+      subtitle="Batch, replay, testparametrar och analys i paper-only-läge. Befintliga Lab-funktioner är oförändrade."
+      safety={LAB_SAFETY}
+      tabs={PRIMARY_TABS}
+      activeTab={primaryTab}
+      onTab={changePrimaryTab}
+    >
     <div className="tl-page">
-      {/* Header */}
+      {/* Lab controls */}
       <div className="tl-page-header">
         <div className="tl-page-title-row">
-          <h1 className="tl-page-title">🧪 LAB</h1>
           <div className="tl-page-meta">
             <span className="tl-active-count">{activeSignalCount} aktiva motorer</span>
             <ConfigScopeBadge scope="test" />
@@ -4287,28 +4346,18 @@ export default function TradingLabPage() {
             <button className="tl-reset-btn" onClick={resetAll} type="button">Återställ</button>
           </div>
         </div>
-        <p className="tl-page-sub">
-          Lab påverkar inte vilka strategier som kör paper trades. Här kör du bara test, replay, batch, parametrar och analys.
-        </p>
       </div>
 
       <PlatformSafetyBar />
       <SafetyNote />
 
-      {/* Tab bar */}
-      <div className="tl-tabs">
-        {TABS.map(t => (
-          <button
-            key={t.key}
-            className={`tl-tab${tab === t.key ? ' tl-tab-active' : ''}`}
-            onClick={() => changeTab(t.key)}
-            type="button"
-          >
-            <span>{t.icon}</span>
-            <span>{t.label}</span>
-          </button>
-        ))}
-      </div>
+      {primaryTab === 'results' && (
+        <DashboardTabs tabs={RESULT_TABS} active={tab} onChange={changeTab} />
+      )}
+
+      {primaryTab === 'technical' && (
+        <DashboardTabs tabs={TECHNICAL_TABS} active={tab} onChange={changeTab} />
+      )}
 
       {/* Tab: Signaler */}
       {tab === 'strategier' && (
@@ -4520,5 +4569,6 @@ export default function TradingLabPage() {
         <Link to="/system?tab=safety" className="tl-bottom-link">🛡️ SYSTEM</Link>
       </div>
     </div>
+    </DashboardShell>
   );
 }

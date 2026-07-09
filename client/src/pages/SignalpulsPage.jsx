@@ -3,6 +3,7 @@ import { Link, useSearchParams } from 'react-router-dom';
 import { enrichWithDecisions, getBestSignal, getTopN, isAvoidSignal } from '../decisionEngine.js';
 import { SignalAge, SignalImportanceTimes, TradingViewLink } from '../shared.jsx';
 import { AdvancedModeToggle, ConfigScopeBadge, PlatformEmptyState, PlatformSafetyBar, useAdvancedMode } from '../components/PlatformControls.jsx';
+import { DashboardShell } from '../components/dashboard/DashboardKit.jsx';
 import TradeReplayPanel from '../components/TradeReplayPanel.jsx';
 import { useUnifiedConfig } from '../hooks/useUnifiedConfig.js';
 
@@ -1475,6 +1476,7 @@ export default function SignalpulsPage() {
   const bestScore = bestSignal?._pulseScore ?? 0;
 
   return (
+    <DashboardShell>
     <div className="sp-page">
       <PlatformSafetyBar />
 
@@ -1623,5 +1625,6 @@ export default function SignalpulsPage() {
         <Link to="/system?tab=safety" className="sp-quick-btn sp-qb-safety">🛡️ SYSTEM Safety</Link>
       </div>
     </div>
+    </DashboardShell>
   );
 }

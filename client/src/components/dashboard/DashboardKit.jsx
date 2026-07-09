@@ -7,11 +7,13 @@ import { Link, useLocation } from 'react-router-dom';
 
 const TOP_LINKS = [
   { to: '/supervisor', label: 'Supervisor' },
+  { to: '/live', label: 'Live Trading' },
   { to: '/paper-trading', label: 'Paper Trading' },
   { to: '/futures-paper', label: 'Futures Paper' },
   { to: '/interactive-brokers', label: 'Interactive Brokers' },
   { to: '/ai', label: 'AI' },
   { to: '/system', label: 'System' },
+  { to: '/pinescript', label: 'PineScript' },
   { to: '/lab?tab=batch', label: 'Batch Lab' },
   { to: '/lab?tab=replay', label: 'Replay Lab' },
 ];
@@ -84,13 +86,12 @@ export function DashboardShell({ title, subtitle, safety, tabs, activeTab, onTab
   return (
     <div className="dash-page">
       <DashboardTopNav />
-      {(title || subtitle || safety) ? (
+      {(title || subtitle) ? (
         <header className="dash-head">
           <div className="dash-head-copy">
             {title ? <h1>{title}</h1> : null}
             {subtitle ? <p>{subtitle}</p> : null}
           </div>
-          {safety ? <SafetyBadges safety={safety} /> : null}
         </header>
       ) : null}
       {tabs && tabs.length ? <DashboardTabs tabs={tabs} active={activeTab} onChange={onTab} /> : null}
