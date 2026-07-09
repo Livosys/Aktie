@@ -15480,6 +15480,20 @@ body {
   color: #f59e0b; border-radius: 8px; padding: 8px 10px;
   font-size: 12px; font-weight: 800;
 }
+.replay-preset-row { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 6px; }
+.replay-preset-btn { font-size: 11px; padding: 4px 8px; }
+.replay-preset-syms { opacity: .7; font-weight: 600; }
+.replay-symbol-legend {
+  display: flex; flex-wrap: wrap; gap: 10px; margin-top: 6px;
+  font-size: 11px; color: var(--text-muted);
+}
+.replay-symbol-legend strong { color: var(--text); }
+.rpl-daily-banner {
+  border: 1px solid rgba(96,165,250,.3); background: rgba(96,165,250,.08);
+  color: var(--text); border-radius: 8px; padding: 8px 12px;
+  font-size: 12px; margin-bottom: 10px;
+}
+.rpl-daily-banner strong { color: #93c5fd; }
 .res-activity-row em { color: var(--text-muted); font-style: normal; text-align: right; }
 .res-activity-time { font-variant-numeric: tabular-nums; }
 .res-mini-action,

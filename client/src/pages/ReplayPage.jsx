@@ -44,9 +44,31 @@ function decisionClass(decision, pnl) {
 }
 
 async function api(path, options) {
-  const res = await fetch(path, options);
+  const method = (options && options.method) || 'GET';
+  let res;
+  try {
+    res = await fetch(path, options);
+  } catch (netErr) {
+    // fetch() rejects only on network-level failures (offline, CORS block,
+    // connection reset). Surface WHICH request failed instead of a bare
+    // "Failed to fetch".
+    const err = new Error('Kunde inte nå servern (nätverksfel).');
+    err.detail = { endpoint: path, method, status: 'network_error', cause: netErr?.message || String(netErr) };
+    throw err;
+  }
   const json = await res.json().catch(() => ({}));
-  if (!res.ok || json.ok === false) throw new Error(json.error || `API ${res.status}`);
+  if (!res.ok || json.ok === false) {
+    const err = new Error(json.error || `HTTP ${res.status}`);
+    err.detail = {
+      endpoint: path,
+      method,
+      status: res.status,
+      backendError: json.error || null,
+      blockedSymbols: json.blockedSymbols || null,
+      allowedSymbols: json.allowedSymbols || null,
+    };
+    throw err;
+  }
   return json;
 }
 
@@ -61,7 +83,7 @@ function useReplaySessions() {
       setSessions(json.sessions || []);
       setError(null);
     } catch (err) {
-      setError(err.message);
+      setError(err);
     } finally {
       setLoading(false);
     }
@@ -108,9 +130,52 @@ function useReplayDetail(sessionId) {
   return { session, summary, events, loading, refresh };
 }
 
+// Replay symbol focus is the US market underlying the CME micro futures.
+// MNQ/MES are the micro-future instruments but have no replay candles and sit
+// outside the replay research-scope (S&P / Nasdaq / Crypto), so the runnable
+// default is their US-market proxies QQQ (Nasdaq 100 / MNQ) and SPY (S&P 500 / MES).
+const SYMBOL_PRESETS = [
+  { key: 'proxy', label: 'US market-proxy', symbols: 'QQQ,SPY', hint: 'QQQ = Nasdaq 100 (MNQ), SPY = S&P 500 (MES) — körbar replay-data' },
+  { key: 'futures', label: 'Futures-fokus', symbols: 'MNQ,MES', hint: 'MNQ = Nasdaq 100 Micro E-mini, MES = S&P 500 Micro E-mini — saknar replay-candles, använd proxy' },
+  { key: 'legacy', label: 'Aktier / legacy', symbols: 'TSLA,NVDA', hint: 'Äldre aktie-fokus. Finns kvar i historiken men är inte längre standard.' },
+];
+const SYMBOL_LABELS = {
+  MNQ: 'Nasdaq 100 Micro E-mini (futures)',
+  MES: 'S&P 500 Micro E-mini (futures)',
+  QQQ: 'Nasdaq 100 proxy',
+  SPY: 'S&P 500 proxy',
+};
+// Futures instruments that have no replay candles / are outside replay-scope.
+const FUTURES_WITHOUT_CANDLES = new Set(['MNQ', 'MES', 'NQ', 'ES', 'MYM', 'M2K', 'RTY', 'YM']);
+
+function parseSymbols(raw) {
+  return String(raw || '').split(',').map((s) => s.trim().toUpperCase()).filter(Boolean);
+}
+
+function ErrorDetail({ title, error }) {
+  const [showRaw, setShowRaw] = useState(false);
+  if (!error) return null;
+  const detail = error.detail || {};
+  return (
+    <div className="replay-data-warning" style={{ borderColor: 'rgba(239,68,68,0.35)' }}>
+      <div style={{ fontWeight: 800 }}>{title}</div>
+      {detail.endpoint && <div>Endpoint: <code>{detail.method || 'GET'} {detail.endpoint}</code></div>}
+      {detail.status !== undefined && <div>Status: <strong>{String(detail.status)}</strong></div>}
+      <div>Orsak: <strong>{error.message || 'Okänt fel'}</strong></div>
+      {Array.isArray(detail.blockedSymbols) && detail.blockedSymbols.length > 0 && (
+        <div>Blockerade symboler: <strong>{detail.blockedSymbols.map((b) => b.normalized || b.symbol || b).join(', ')}</strong></div>
+      )}
+      <button type="button" className="btn" style={{ marginTop: 6 }} onClick={() => setShowRaw((v) => !v)}>
+        {showRaw ? 'Dölj tekniskt' : 'Visa tekniskt'}
+      </button>
+      {showRaw && <pre style={{ whiteSpace: 'pre-wrap', marginTop: 6, fontSize: 11 }}>{JSON.stringify(detail, null, 2)}</pre>}
+    </div>
+  );
+}
+
 function CreateSessionForm({ onCreated }) {
   const [form, setForm] = useState({
-    symbols: 'TSLA,NVDA',
+    symbols: 'QQQ,SPY',
     date_from: todayMinus(6),
     date_to: todayMinus(6),
     timeframe: '2m',
@@ -161,16 +226,18 @@ function CreateSessionForm({ onCreated }) {
       });
       onCreated(json.session.id);
     } catch (err) {
-      setError(err.message);
+      setError(err);
     } finally {
       setSubmitting(false);
     }
   }
 
-  const selectedCoverage = form.symbols.split(',').map((s) => s.trim().toUpperCase()).filter(Boolean)
+  const selectedSymbols = parseSymbols(form.symbols);
+  const selectedCoverage = selectedSymbols
     .map((symbol) => coverageMap[symbol])
     .filter(Boolean);
   const replayWarnings = selectedCoverage.filter((row) => !row.usable_for_replay);
+  const futuresSelected = selectedSymbols.filter((s) => FUTURES_WITHOUT_CANDLES.has(s));
 
   return (
     <div className="rpl-form">
@@ -184,8 +251,34 @@ function CreateSessionForm({ onCreated }) {
         <div className="rpl-form-grid replay-v2-form-grid">
           <label className="rpl-form-group rpl-form-group-wide">
             <span className="rpl-form-label">Symboler</span>
+            <div className="replay-preset-row">
+              {SYMBOL_PRESETS.map((preset) => (
+                <button
+                  type="button"
+                  key={preset.key}
+                  className={`btn replay-preset-btn${form.symbols.toUpperCase() === preset.symbols ? ' rpl-run-card-active' : ''}`}
+                  title={preset.hint}
+                  onClick={() => set('symbols', preset.symbols)}
+                >
+                  {preset.label} <span className="replay-preset-syms">({preset.symbols})</span>
+                </button>
+              ))}
+            </div>
             <input className="rpl-form-input" value={form.symbols} onChange={(e) => set('symbols', e.target.value)} />
+            {selectedSymbols.some((s) => SYMBOL_LABELS[s]) && (
+              <div className="replay-symbol-legend">
+                {selectedSymbols.filter((s) => SYMBOL_LABELS[s]).map((s) => (
+                  <span key={s}><strong>{s}</strong> = {SYMBOL_LABELS[s]}</span>
+                ))}
+              </div>
+            )}
           </label>
+          {futuresSelected.length > 0 && (
+            <div className="rpl-form-group rpl-form-group-wide replay-data-warning">
+              {futuresSelected.join(', ')} saknar replay-candles och ligger utanför replay-scope (S&P / Nasdaq / Crypto).
+              Använd proxy i stället: <strong>QQQ</strong> (Nasdaq 100 / MNQ), <strong>SPY</strong> (S&P 500 / MES).
+            </div>
+          )}
           {replayWarnings.length > 0 && (
             <div className="rpl-form-group rpl-form-group-wide replay-data-warning">
               För lite historik för säkert test: {replayWarnings.map((row) => row.symbol).join(', ')}.
@@ -236,8 +329,8 @@ function CreateSessionForm({ onCreated }) {
           <button className="rpl-btn-submit" type="submit" disabled={submitting}>
             {submitting ? 'Skapar...' : 'Skapa testkörning'}
           </button>
-          {error && <span className="rpl-form-error">{error}</span>}
         </div>
+        <ErrorDetail title="Replay kunde inte skapas" error={error} />
       </form>
     </div>
   );
@@ -434,8 +527,39 @@ function DecisionList({ title, rows }) {
   );
 }
 
+// Daily/autopilot replay lives in a DIFFERENT store than the manual sessions
+// below (runs vs sessions). Read-only surface of the latest daily run so Lab and
+// Supervisor show the same "senaste replay"-sanning from /api/status/replay.
+function useLatestDailyReplay() {
+  const [latest, setLatest] = useState(undefined); // undefined=loading, null=none
+  useEffect(() => {
+    let alive = true;
+    fetch('/api/status/replay')
+      .then((r) => (r.ok ? r.json() : null))
+      .then((d) => { if (alive) setLatest(d?.latestReplay || null); })
+      .catch(() => { if (alive) setLatest(null); });
+    return () => { alive = false; };
+  }, []);
+  return latest;
+}
+
+function LatestDailyReplayBanner({ latest }) {
+  if (latest === undefined) return <div className="rpl-daily-banner">Senaste dagliga replay: laddar…</div>;
+  if (!latest) return <div className="rpl-daily-banner">Ingen daglig replay sparad ännu.</div>;
+  const day = latest.createdAt ? new Date(latest.createdAt).toLocaleDateString('sv-SE') : (latest.period?.to || 'okänt datum');
+  return (
+    <div className="rpl-daily-banner">
+      <strong>Senaste dagliga replay</strong> ({latest.replayMode || 'daily'}) · {day} ·{' '}
+      {(latest.symbols || []).join(', ') || 'Saknas'} · {latest.totalEvents ?? 0} events ·{' '}
+      {latest.totalCandles ?? 0} candles · snittbetyg {latest.avgTradeScore ?? '–'}
+    </div>
+  );
+}
+
 export default function ReplayPage() {
   const [selectedId, setSelectedId] = useState(null);
+  const [actionError, setActionError] = useState(null);
+  const latestDaily = useLatestDailyReplay();
   const { sessions, loading, error, refresh } = useReplaySessions();
   const { session, summary, events, refresh: refreshDetail } = useReplayDetail(selectedId);
 
@@ -450,9 +574,14 @@ export default function ReplayPage() {
 
   async function runAction(action) {
     if (!selectedId) return;
-    await api(`/api/replay/sessions/${selectedId}/${action}`, { method: 'POST' });
-    await refresh();
-    await refreshDetail();
+    setActionError(null);
+    try {
+      await api(`/api/replay/sessions/${selectedId}/${action}`, { method: 'POST' });
+      await refresh();
+      await refreshDetail();
+    } catch (err) {
+      setActionError(err);
+    }
   }
 
   const blockedRows = useMemo(() => summary?.blocked_trades || [], [summary]);
@@ -471,7 +600,9 @@ export default function ReplayPage() {
         </div>
       </div>
 
-      {error && <div className="market-banner">{error}</div>}
+      <LatestDailyReplayBanner latest={latestDaily} />
+      {error && <ErrorDetail title="Kunde inte hämta replay-sessioner" error={error} />}
+      {actionError && <ErrorDetail title="Replay-åtgärden misslyckades" error={actionError} />}
       <CreateSessionForm onCreated={created} />
 
       <div className="sec">

@@ -110,6 +110,15 @@ function requireAuthForMutations(req, res, next) {
   if (path === '/optimization/batch-replay-paper-candidates/create') {
     return next();
   }
+  // Replay Intelligence sessions are isolated paper-only test runs
+  // (replay_mode:true, live_trading_disabled:true). Create/run/pause/stop only
+  // simulate historical candles into an in-memory/file session — they never
+  // place orders, touch a broker, the allowlist, risk config or the scheduler.
+  // Same UI-exposure + paper-only model as the research endpoints above.
+  if (req.method === 'POST'
+    && (path === '/replay/sessions' || /^\/replay\/sessions\/[^/]+\/(run|pause|stop)$/.test(path))) {
+    return next();
+  }
   if (req.method === 'GET' || req.method === 'HEAD' || req.method === 'OPTIONS') {
     return next();
   }
