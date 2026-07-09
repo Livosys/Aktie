@@ -1300,6 +1300,9 @@ function classifySkip(c, reason) {
   if (raw.includes('runtime_mapping_error')) {
     return { type: 'TRADE_SKIPPED', reasonSv: 'Skippad — runtime-mapping kunde inte läsas.' };
   }
+  if (raw.includes('narrow_wait_not_paper_entry') || raw.includes('narrow_wait är ett vänteläge')) {
+    return { type: 'TRADE_SKIPPED', reasonSv: 'Skippad — NARROW_WAIT är ett vänteläge och inte en paper-entry-setup.' };
+  }
   if (raw.includes('setup_not_paper_entry')) {
     return { type: 'TRADE_SKIPPED', reasonSv: 'Skippad — REGULAR_PULLBACK är inte en paper-entry-setup.' };
   }

@@ -559,6 +559,34 @@ function findMapEntry(signal = {}) {
   return null;
 }
 
+function nonPaperEntryOverrideFor(entry = null) {
+  if (!entry || entry.can_create_paper_trade !== false) return null;
+  const raw = upper(entry.raw_signal || entry.signal_subtype);
+  if (raw === 'EMA_PULLBACK_UP' || raw === 'EMA_PULLBACK_DOWN') return null;
+  const code = raw === 'REGULAR_PULLBACK'
+    ? 'setup_not_paper_entry'
+    : `${raw.toLowerCase()}_not_paper_entry`;
+  const reason = raw === 'REGULAR_PULLBACK'
+    ? 'REGULAR_PULLBACK är inte en paper-entry-setup (setup_not_paper_entry).'
+    : raw === 'NARROW_WAIT'
+      ? 'NARROW_WAIT är ett vänteläge och inte en paper-entry-setup.'
+      : `${raw} är inte en paper-entry-setup (${code}).`;
+  return {
+    can_create_paper_trade: false,
+    can_create_paper_trade_label: canCreateLabel(false),
+    blocked_reason_code: code,
+    reason_sv: reason,
+    skip_reason_sv: reason,
+  };
+}
+
+function exactNonPaperEntryOverrideForSignal(signal = {}, raw = rawSignalOf(signal)) {
+  let mapEntry = null;
+  try { mapEntry = findMapEntry(signal); } catch (_) { mapEntry = null; }
+  if (!mapEntry || mapEntry.raw_signal !== raw) return null;
+  return nonPaperEntryOverrideFor(mapEntry);
+}
+
 function inferStrategyForSignal(signal = {}) {
   let raw = 'UNKNOWN';
   let strategyId = null;
@@ -641,24 +669,10 @@ function inferStrategyForSignal(signal = {}) {
       };
     }
     const strategy = catalog.getStrategyById(strategyId);
-    // Per-signal-flaggan i runtime-kartan vinner över strateginivåns runtime:
-    // REGULAR_PULLBACK är uttryckligen markerad som icke-paper-entry
-    // (can_create_paper_trade:false i kartan) och får inte öppna paper trades
-    // bara för att målstrategin (trend_continuation) är aktiv på strateginivå.
-    let setupNotPaperEntry = null;
-    if (raw === 'REGULAR_PULLBACK') {
-      let mapEntry = null;
-      try { mapEntry = findMapEntry(signal); } catch (_) { mapEntry = null; }
-      if (mapEntry && mapEntry.raw_signal === 'REGULAR_PULLBACK' && mapEntry.can_create_paper_trade === false) {
-        setupNotPaperEntry = {
-          can_create_paper_trade: false,
-          can_create_paper_trade_label: canCreateLabel(false),
-          blocked_reason_code: 'setup_not_paper_entry',
-          reason_sv: 'REGULAR_PULLBACK är inte en paper-entry-setup (setup_not_paper_entry).',
-          skip_reason_sv: 'REGULAR_PULLBACK är inte en paper-entry-setup (setup_not_paper_entry).',
-        };
-      }
-    }
+    // Exact per-signal flags in the runtime map win over strategy-level runtime:
+    // setups marked can_create_paper_trade:false must not open paper trades just
+    // because their target strategy is active or explicitly approved.
+    const setupNotPaperEntry = exactNonPaperEntryOverrideForSignal(signal, raw);
     return {
       strategy_id: strategyId,
       strategyId: strategyId,
@@ -717,6 +731,7 @@ function inferStrategyForSignal(signal = {}) {
     return {
       ...entry,
       ...runtime,
+      ...(nonPaperEntryOverrideFor(entry) || {}),
       raw_strategy: raw,
       signal_subtype: raw,
       runtime_comment_sv: runtime.runtime_comment_sv || runtime.comment_sv || entry.comment_sv,
