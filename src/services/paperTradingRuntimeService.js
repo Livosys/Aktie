@@ -433,11 +433,20 @@ function recordKey(row = {}) {
  * it merely counts reasons that already exist on the events. Fault-isolated by
  * construction (a bad row is skipped, never throws).
  */
+// Risk lifecycle / status event types that are NOT per-candidate blockers.
+// A RISK_PAUSE_TRIGGERED is a one-time risk-state transition, and a
+// PAPER_RISK_REVIEW_RESUMED is the OPPOSITE of a block (it re-enables entries).
+// Counting either as a "blocker reason" makes the breakdown misleading — they
+// belong to the risk-pause summary, not to the reasons individual candidates
+// were skipped. Excluded here so the breakdown reflects real candidate blocks.
+const NON_BLOCKER_EVENT_TYPES = new Set(['RISK_PAUSE_TRIGGERED', 'PAPER_RISK_REVIEW_RESUMED']);
+
 function buildBlockerBreakdown(events, options = {}) {
   const maxSymbols = Number.isFinite(options.maxSymbols) ? options.maxSymbols : 6;
   const groups = new Map();
   let totalBlocked = 0;
   for (const ev of arr(events)) {
+    if (ev && NON_BLOCKER_EVENT_TYPES.has(String(ev.type || '').toUpperCase())) continue;
     const reason = text(ev && ev.blockedReason, null);
     if (!reason) continue;
     totalBlocked += 1;
