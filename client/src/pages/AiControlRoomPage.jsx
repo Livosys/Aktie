@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
+import { DashboardShell } from '../components/dashboard/DashboardKit.jsx';
 
 // ── AI Control Room ───────────────────────────────────────────────────────────
 // Read-only översikt över systemets AI-delar: vad de gör, vad de lärt sig och
@@ -786,6 +787,7 @@ export default function AiControlRoomPage() {
   }, [loading, sources, activeId]);
 
   return (
+    <DashboardShell>
     <div style={{ maxWidth: 1080, margin: '0 auto', padding: '18px 16px 60px' }}>
       <div style={{ marginBottom: 4, display: 'flex', alignItems: 'baseline', gap: 10, flexWrap: 'wrap' }}>
         <h1 style={{ fontSize: 22, fontWeight: 800, margin: 0 }}>AI Control Room</h1>
@@ -814,5 +816,6 @@ export default function AiControlRoomPage() {
       <SafetyRow sources={sources} />
       {body}
     </div>
+    </DashboardShell>
   );
 }

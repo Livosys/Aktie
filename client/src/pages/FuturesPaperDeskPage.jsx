@@ -1,4 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
+import { DashboardShell } from '../components/dashboard/DashboardKit.jsx';
 import { Link } from 'react-router-dom';
 
 const REFRESH_MS = 20_000;
@@ -474,39 +475,28 @@ export default function FuturesPaperDeskPage() {
   }, [data, market.isOpen, openPositions.length]);
 
   return (
-    <div style={{ maxWidth: 1440, margin: '0 auto', padding: '20px 18px 28px' }}>
-      <div style={{ marginBottom: 16 }}>
-        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, alignItems: 'center', marginBottom: 10 }}>
-          <Pill tone="info">Paper Futures</Pill>
-          <Pill tone="neutral">MNQ först</Pill>
-          <Pill tone="neutral">MES först</Pill>
-          <Pill tone="success">paper_only</Pill>
-          <Pill tone="warning">ingen broker</Pill>
-        </div>
-        <div style={{ display: 'flex', justifyContent: 'space-between', gap: 14, flexWrap: 'wrap', alignItems: 'flex-end' }}>
-          <div>
-            <h1 style={{ margin: 0, fontSize: 30, lineHeight: 1.1 }}>Futures Paper Desk</h1>
-            <p style={{ margin: '8px 0 0', color: 'var(--muted)', maxWidth: 860, fontSize: 14, lineHeight: 1.5 }}>
-              Separat paper-only desk för MNQ och MES med simulerat kapital, driven av Trading OS-signaler.
-              Inga riktiga order, ingen broker och ingen live-execution.
-            </p>
-          </div>
-          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-            <Link to="/paper-trading" className="btn">Till Paper Trading</Link>
-            <Link to="/live" className="btn">Till Live</Link>
-            <Link to="/lab" className="btn">Till Lab</Link>
-          </div>
-        </div>
-      </div>
-
+    <DashboardShell
+      title="Futures Paper Desk"
+      subtitle="Separat paper-only desk för MNQ och MES med simulerat kapital, driven av Trading OS-signaler. Inga riktiga order, ingen broker och ingen live-execution."
+      safety={data}
+      tabs={TABS}
+      activeTab={activeTab}
+      onTab={setActiveTab}
+      kpis={[
+        { label: 'Läge', value: 'paper_only', tone: 'good' },
+        { label: 'Saldo', value: fmtMoney(balance, accountCurrency), tone: 'blue' },
+        { label: 'PnL', value: fmtMoney(totalPnl, accountCurrency), tone: pnlTone },
+        { label: 'Öppna', value: fmtNumber(positions.totalOpen || 0), tone: 'blue' },
+        { label: 'Stängda', value: fmtNumber(positions.totalClosed || 0) },
+        { label: 'Marknad', value: market.isOpen ? 'Öppen' : 'Stängd', tone: market.isOpen ? 'good' : 'warning' },
+      ]}
+    >
       {runtime.error ? (
         <div style={{ ...sectionStyle(), marginBottom: 16, borderColor: 'rgba(239,68,68,0.35)' }}>
           <strong style={{ color: 'var(--danger)' }}>Runtime kunde inte läsas</strong>
           <div style={{ color: 'var(--muted)', marginTop: 6, fontSize: 13 }}>{runtime.error}</div>
         </div>
       ) : null}
-
-      <SafetyStrip safety={data} />
 
       {dataFeed.source === 'simulated_fallback' || dataFeed.fallback === true ? (
         <div style={{ ...sectionStyle(), marginTop: 14, borderColor: 'rgba(245,158,11,0.35)', background: 'rgba(245,158,11,0.08)' }}>
@@ -516,25 +506,6 @@ export default function FuturesPaperDeskPage() {
           </div>
         </div>
       ) : null}
-
-      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginTop: 14 }} role="tablist">
-        {TABS.map((tab) => (
-          <button
-            key={tab.id}
-            type="button"
-            onClick={() => setActiveTab(tab.id)}
-            className="btn"
-            style={{
-              background: activeTab === tab.id ? 'var(--surface-2)' : 'transparent',
-              borderColor: activeTab === tab.id ? 'var(--blue)' : 'var(--border)',
-              color: activeTab === tab.id ? 'var(--text)' : 'var(--muted)',
-              fontWeight: activeTab === tab.id ? 800 : 600,
-            }}
-          >
-            {tab.label}
-          </button>
-        ))}
-      </div>
 
       {activeTab === 'runtime' && (
       <section style={{ ...sectionStyle(), marginTop: 14 }}>
@@ -906,6 +877,6 @@ export default function FuturesPaperDeskPage() {
         </section>
         )}
       </div>
-    </div>
+    </DashboardShell>
   );
 }

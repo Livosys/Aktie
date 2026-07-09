@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
+import { DashboardShell } from '../components/dashboard/DashboardKit.jsx';
 import PaperCandidatePanel from '../components/PaperCandidatePanel.jsx';
 import TradingViewTestBlueprintPanel from '../components/TradingViewTestBlueprintPanel.jsx';
 import TradingViewTestResultsPanel from '../components/TradingViewTestResultsPanel.jsx';
@@ -3001,6 +3002,7 @@ export default function PaperTradingPage() {
   }
 
   return (
+    <DashboardShell>
     <div className="page-wrap">
       <div className="page-hero">
         <div className="hero-left">
@@ -3227,5 +3229,6 @@ export default function PaperTradingPage() {
         ]}
       />
     </div>
+    </DashboardShell>
   );
 }

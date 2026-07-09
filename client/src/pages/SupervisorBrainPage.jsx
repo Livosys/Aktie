@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
+import { DashboardShell } from '../components/dashboard/DashboardKit.jsx';
 
 const REFRESH_MS = 30_000;
 
@@ -717,6 +718,7 @@ export default function SupervisorBrainPage() {
   ];
 
   return (
+    <DashboardShell>
     <div className="research-lab-page tradingos-page">
       <main className="research-main tradingos-main">
         <header className="tos-hero">
@@ -1665,5 +1667,6 @@ export default function SupervisorBrainPage() {
         </footer>
       </main>
     </div>
+    </DashboardShell>
   );
 }

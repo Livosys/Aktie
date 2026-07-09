@@ -1,4 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
+import { DashboardShell } from '../components/dashboard/DashboardKit.jsx';
 import {
   REQUIRED_FINAL_EXECUTION_COMMAND,
   REQUIRED_CONFIRMATION_PHRASE,
@@ -1370,6 +1371,7 @@ export default function InteractiveBrokersPage() {
   }
 
   return (
+    <DashboardShell>
     <div className="page" style={{ maxWidth: 920, margin: '0 auto', padding: '32px 24px' }}>
       <div className="page-head" style={{ marginBottom: 16 }}>
         <h1>Interactive Brokers Paper</h1>
@@ -2724,5 +2726,6 @@ export default function InteractiveBrokersPage() {
         </>
       )}
     </div>
+    </DashboardShell>
   );
 }
