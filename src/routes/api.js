@@ -46,6 +46,7 @@ const redisService                                      = require('../services/r
 const agentReasoningService                            = require('../services/agentReasoningService');
 const vectorMemoryService                              = require('../services/vectorMemoryService');
 const replayIntelligenceService                        = require('../services/replayIntelligenceService');
+const researchMarketScope                              = require('../config/researchMarketScope');
 const riskEngineService                                = require('../services/riskEngineService');
 const exitEngineService                                = require('../services/exitEngineService');
 const exitCalibrationService                           = require('../services/exitCalibrationService');
@@ -2995,8 +2996,19 @@ router.post('/replay/run', async (req, res) => {
     return res.status(400).json({ ok: false, error: 'mode must be scan_only | with_outcomes | debug' });
   }
 
+  // Research-scope gate: replay only accepts the S&P / Nasdaq / Crypto universe.
+  const scopePartition = researchMarketScope.partitionResearchSymbols(symbols);
+  if (scopePartition.blocked.length) {
+    return res.status(400).json({
+      ok: false,
+      error: 'Symboler utanför research-scope (S&P, Nasdaq, Crypto) är blockerade.',
+      blockedSymbols: scopePartition.blocked,
+      allowedSymbols: scopePartition.allowed,
+    });
+  }
+
   try {
-    const { runId, summary } = await runReplay({ symbols, start, end, mode });
+    const { runId, summary } = await runReplay({ symbols: scopePartition.allowed, start, end, mode });
     res.json({ ok: true, runId, summary });
   } catch (err) {
     res.status(500).json({ ok: false, error: err.message });

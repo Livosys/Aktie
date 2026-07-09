@@ -4,6 +4,7 @@ const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 const daytradingCatalog = require('./daytradingStrategyCatalogService');
+const researchScope = require('../config/researchMarketScope');
 const strategyPerformance = require('./strategyPerformanceService');
 const auditTrail = require('./auditTrailService');
 const eventLogService = require('./eventLogService');
@@ -184,6 +185,15 @@ function normalizeSymbolsForBatch(symbols) {
   const runnable = [];
   const skipped = [];
   for (const symbol of requested) {
+    if (!researchScope.isResearchAllowedSymbol(symbol)) {
+      skipped.push({
+        symbol,
+        usable_for_batch: false,
+        reason: 'outside_research_scope',
+        message: 'Symbolen ligger utanför research-scope (S&P, Nasdaq, Crypto).',
+      });
+      continue;
+    }
     if (isCryptoSymbol(symbol)) {
       skipped.push({
         symbol,

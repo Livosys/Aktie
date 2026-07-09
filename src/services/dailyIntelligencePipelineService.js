@@ -6,6 +6,7 @@ const crypto = require('crypto');
 
 const { fetchAlpacaBars, isEnabled: alpacaEnabled, hasCredentials } = require('../data/alpacaDataService');
 const { fetchBinanceKlines } = require('../data/binanceDataService');
+const researchScope = require('../config/researchMarketScope');
 const { saveRawBars, saveCandles2m, loadCandles, countCandles, getDatesInRange } = require('../data/marketDataStore');
 const { aggregate1mTo2m, aggregateBars, filterComplete } = require('../data/candleAggregator');
 const { runReplay } = require('../scanner/replayEngine');
@@ -222,7 +223,8 @@ async function fetchSymbolData(symbol, date) {
 }
 
 async function fetchDailyMarketData(ctx) {
-  const symbols = ctx.symbols || DEFAULT_SYMBOLS;
+  // Research-scope gate: daily auto-pipeline only touches the allowed universe.
+  const symbols = researchScope.filterResearchSymbols(ctx.symbols || DEFAULT_SYMBOLS);
   const date = ctx.date;
   const bySymbol = {};
   const warnings = [];
@@ -253,7 +255,8 @@ async function fetchDailyMarketData(ctx) {
 }
 
 function verifyHistoricalData(ctx) {
-  const symbols = ctx.symbols || DEFAULT_SYMBOLS;
+  // Research-scope gate: daily auto-pipeline only touches the allowed universe.
+  const symbols = researchScope.filterResearchSymbols(ctx.symbols || DEFAULT_SYMBOLS);
   const date = ctx.date;
   const bySymbol = {};
   const warnings = [];

@@ -6,6 +6,7 @@ const crypto = require('crypto');
 
 const daytradingStrategyCatalog = require('./daytradingStrategyCatalogService');
 const marketUniverse = require('./marketUniverseService');
+const researchScope = require('../config/researchMarketScope');
 
 const DATA_DIR = path.resolve(__dirname, '../../data/strategy-test-autopilot');
 const CONFIG_FILE = path.join(DATA_DIR, 'config.json');
@@ -318,7 +319,9 @@ function buildSelections(config, options = {}) {
   const requestedTimeframes = uniqueStrings(options.allowed_timeframes || options.timeframes || config.allowed_timeframes, { limit: MAX_TIMEFRAMES });
 
   const validStrategies = requestedStrategies.filter((id) => Boolean(daytradingStrategyCatalog.getStrategyById(id)));
-  const validSymbols = requestedSymbols.filter((symbol) => marketUniverse.symbolEnabledFor(symbol, 'replay'));
+  const validSymbols = requestedSymbols
+    .filter((symbol) => researchScope.isResearchAllowedSymbol(symbol))
+    .filter((symbol) => marketUniverse.symbolEnabledFor(symbol, 'replay'));
   const validTimeframes = requestedTimeframes.length ? requestedTimeframes : [];
 
   return {

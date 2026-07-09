@@ -22,6 +22,7 @@ const { fetchAlpacaBars, isEnabled: alpacaEnabled, hasCredentials } = require('.
 const { fetchBinanceKlines }  = require('../data/binanceDataService');
 const { saveRawBars, saveCandles2m } = require('../data/marketDataStore');
 const { aggregate1mTo2m, filterComplete } = require('../data/candleAggregator');
+const researchScope = require('../config/researchMarketScope');
 const { runHistoricalScan }   = require('../scanner/historicalScanner');
 const { runReplay }           = require('../scanner/replayEngine');
 const { analyzeOutcomes }     = require('../scanner/signalOutcomeAnalyzer');
@@ -167,9 +168,12 @@ async function runAutoMachine({ lookbackDays, groups }) {
     result.end   = end;
 
     // ── Resolve symbols ───────────────────────────────────────────────────────
-    const symbols = [];
-    if (groups.includes('stocks'))  symbols.push(...STOCK_SYMBOLS_DEFAULT);
-    if (groups.includes('crypto'))  symbols.push(...CRYPTO_SYMBOLS_DEFAULT);
+    const rawSymbols = [];
+    if (groups.includes('stocks'))  rawSymbols.push(...STOCK_SYMBOLS_DEFAULT);
+    if (groups.includes('crypto'))  rawSymbols.push(...CRYPTO_SYMBOLS_DEFAULT);
+
+    // Research-scope gate: auto-backfill/replay only touches the allowed universe.
+    const symbols = researchScope.filterResearchSymbols(rawSymbols);
 
     const stockSyms  = symbols.filter((s) => !isCrypto(s));
     const cryptoSyms = symbols.filter((s) =>  isCrypto(s));

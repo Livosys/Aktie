@@ -11,6 +11,7 @@ const riskEngineService = require('./riskEngineService');
 const exitEngineService = require('./exitEngineService');
 const executionSafetyService = require('./executionSafetyService');
 const marketUniverse = require('./marketUniverseService');
+const researchScope = require('../config/researchMarketScope');
 const notificationEngineV2 = require('../alerts/notificationEngineV2');
 const learningConnector = require('./learningConnectorService');
 const { loadCandles } = require('../data/marketDataStore');
@@ -123,6 +124,14 @@ function normalizeConfig(config = {}) {
     : [];
   if (!symbols.length) throw new Error('symbols array required');
 
+  // Research-scope gate: replay may only run S&P / Nasdaq / Crypto universe.
+  const scopePartition = researchScope.partitionResearchSymbols(symbols);
+  if (!scopePartition.allowed.length) {
+    const blockedList = scopePartition.blocked.map((b) => b.normalized || b.symbol).join(', ');
+    throw new Error(`Alla valda symboler ligger utanför research-scope (S&P, Nasdaq, Crypto). Blockerade: ${blockedList}`);
+  }
+  const scopedSymbols = scopePartition.allowed;
+
   const dateFrom = String(config.date_from || config.start || '').slice(0, 10);
   const dateTo = String(config.date_to || config.end || '').slice(0, 10);
   if (!/^\d{4}-\d{2}-\d{2}$/.test(dateFrom) || !/^\d{4}-\d{2}-\d{2}$/.test(dateTo)) {
@@ -139,10 +148,10 @@ function normalizeConfig(config = {}) {
   const riskProfile = String(config.risk_profile || 'normal').toLowerCase();
   if (!VALID_RISK.has(riskProfile)) throw new Error('risk_profile must be conservative, normal or aggressive');
 
-  const skippedByMarketControls = [...new Set(symbols)]
+  const skippedByMarketControls = [...new Set(scopedSymbols)]
     .filter((symbol) => !marketUniverse.symbolEnabledFor(symbol, 'replay'))
     .map((symbol) => ({ symbol, reason: 'Marknadsgruppen är avstängd för replay från Daytrading.' }));
-  const replaySymbols = [...new Set(symbols)]
+  const replaySymbols = [...new Set(scopedSymbols)]
     .filter((symbol) => marketUniverse.symbolEnabledFor(symbol, 'replay'))
     .slice(0, 50);
   if (!replaySymbols.length) throw new Error('Alla valda symboler är avstängda för replay i Daytrading.');
@@ -151,6 +160,7 @@ function normalizeConfig(config = {}) {
   return {
     symbols: replaySymbols,
     requested_symbols: [...new Set(symbols)].slice(0, 50),
+    skipped_by_research_scope: scopePartition.blocked,
     skipped_by_market_controls: skippedByMarketControls,
     date_from: dateFrom,
     date_to: dateTo,
