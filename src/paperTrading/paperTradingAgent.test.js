@@ -2,6 +2,7 @@
 
 const assert = require('assert/strict');
 const agent = require('./paperTradingAgent');
+const strategyRuntimeConnector = require('../services/strategyRuntimeConnectorService');
 
 function main() {
   const baseRisk = {
@@ -136,6 +137,115 @@ function main() {
     ...latePullbackCandidate,
     twoMinuteConfirmed: true,
   }), false);
+
+  const mixedNarrowCandidate = {
+    symbol: 'NVDA',
+    marketType: 'stocks',
+    price: 100,
+    status: 'watch',
+    nextMoveBias: 'DOWN',
+    signal: 'SHORT_TRIGGERED',
+    eventType: 'BEARISH_ELEPHANT_BREAKDOWN',
+    signalFamily: 'NARROW_COMPRESSION',
+    signalSubtype: 'NARROW_BEAR_ENTRY',
+    strategyId: 'resistance_rejection',
+    strategy_id: 'resistance_rejection',
+    strategyName: 'Resistance Rejection',
+    strategy_name: 'Resistance Rejection',
+    sourceStrategyId: 'narrow_breakout',
+    sourceStrategyName: 'Narrow Breakout',
+    resolvedStrategyId: 'resistance_rejection',
+    resolvedStrategyName: 'Resistance Rejection',
+    mappingSource: 'legacy_fallback',
+    confidenceScore: 72,
+    dataFreshness: 'LIVE',
+    volumeState: 'normal',
+  };
+  const mixedRuntimeDecision = strategyRuntimeConnector.canCreatePaperTradeForSignal(mixedNarrowCandidate);
+  assert.equal(mixedRuntimeDecision.allowed, true, 'mixed narrow runtime ska vara allowed');
+  assert.equal(mixedRuntimeDecision.strategy?.strategy_id, 'narrow_breakout', 'mixed narrow runtime ska resolvas till narrow_breakout');
+
+  const normalizedMixed = agent._internal.normalizeCandidateStrategyMetadata(mixedNarrowCandidate, mixedRuntimeDecision);
+  const mixedEvent = agent._internal.eventFromCandidate('GATE_ALLOWED', normalizedMixed, 'Gate godkänd.', 'allowed');
+  assert.equal(mixedEvent.strategyId, 'narrow_breakout');
+  assert.equal(mixedEvent.resolvedStrategyId, 'narrow_breakout');
+  assert.equal(mixedEvent.strategyName, 'Narrow Breakout');
+  assert.equal(mixedEvent.mappingSource, 'runtime_map');
+  assert.equal(mixedEvent.signalFamily, 'NARROW_COMPRESSION');
+  assert.equal(mixedEvent.signalSubtype, 'NARROW_BEAR_ENTRY');
+  assert.equal(mixedEvent.originalStrategyMetadata.strategyId, 'resistance_rejection');
+  assert.equal(mixedEvent.originalStrategyMetadata.resolvedStrategyId, 'resistance_rejection');
+  assert.equal(mixedEvent.runtimeStrategyMetadata.strategyId, 'narrow_breakout');
+  assert.notEqual(mixedEvent.strategyId, 'resistance_rejection');
+  assert.notEqual(mixedEvent.mappingSource, 'legacy_fallback');
+
+  const closedMixed = agent._internal.normalizeCandidateStrategyMetadata({
+    ...mixedNarrowCandidate,
+    dataFreshness: 'MARKET_CLOSED',
+    marketClosed: true,
+  }, mixedRuntimeDecision);
+  const marketClosedEvent = agent._internal.eventFromCandidate('MARKET_CLOSED', closedMixed, 'Skippad — marknaden är stängd.');
+  assert.equal(marketClosedEvent.strategyId, 'narrow_breakout');
+  assert.equal(marketClosedEvent.resolvedStrategyId, 'narrow_breakout');
+  assert.equal(marketClosedEvent.mappingSource, 'runtime_map');
+  assert.notEqual(marketClosedEvent.mappingSource, 'legacy_fallback');
+
+  const normalizedTrade = agent._internal.buildOpenTrade(normalizedMixed, {
+    allowed: true,
+    mode: 'allow',
+    gateScore: 75,
+    threshold: 70,
+  });
+  assert.equal(normalizedTrade.strategyId, 'narrow_breakout');
+  assert.equal(normalizedTrade.resolvedStrategyId, 'narrow_breakout');
+  assert.equal(normalizedTrade.strategyName, 'Narrow Breakout');
+  assert.equal(normalizedTrade.mappingSource, 'runtime_map');
+  assert.equal(normalizedTrade.originalStrategyMetadata.strategyId, 'resistance_rejection');
+
+  const narrowWait = strategyRuntimeConnector.canCreatePaperTradeForSignal({
+    symbol: 'NVDA',
+    marketType: 'stocks',
+    signalFamily: 'NARROW_COMPRESSION',
+    signalSubtype: 'NARROW_WAIT',
+    status: 'watch',
+    nextMoveBias: 'DOWN',
+    strategyId: 'narrow_breakout',
+  });
+  assert.equal(narrowWait.allowed, false, 'NARROW_WAIT ska fortsatt blockas');
+  assert.equal(narrowWait.strategy?.blocked_reason_code, 'narrow_wait_not_paper_entry');
+
+  const regularPullback = strategyRuntimeConnector.canCreatePaperTradeForSignal({
+    symbol: 'NVDA',
+    marketType: 'stocks',
+    signalSubtype: 'REGULAR_PULLBACK',
+    status: 'watch',
+    nextMoveBias: 'DOWN',
+    strategyId: 'trend_continuation',
+  });
+  assert.equal(regularPullback.allowed, false, 'REGULAR_PULLBACK ska fortsatt blockas');
+  assert.equal(regularPullback.strategy?.blocked_reason_code, 'setup_not_paper_entry');
+
+  const normalResistanceCandidate = {
+    symbol: 'NVDA',
+    marketType: 'stocks',
+    price: 100,
+    status: 'watch',
+    nextMoveBias: 'DOWN',
+    signal: 'SHORT_TRIGGERED',
+    eventType: 'BEARISH_ELEPHANT_BREAKDOWN',
+    signalSubtype: 'RESISTANCE_REJECTION_SHORT',
+    strategyId: 'resistance_rejection',
+    strategy_id: 'resistance_rejection',
+    resolvedStrategyId: 'resistance_rejection',
+    mappingSource: 'legacy_fallback',
+  };
+  const normalResistanceDecision = strategyRuntimeConnector.canCreatePaperTradeForSignal(normalResistanceCandidate);
+  assert.equal(normalResistanceDecision.allowed, true, 'normal resistance_rejection ska fortsatt vara allowed via runtime');
+  const normalizedResistance = agent._internal.normalizeCandidateStrategyMetadata(normalResistanceCandidate, normalResistanceDecision);
+  const resistanceEvent = agent._internal.eventFromCandidate('GATE_ALLOWED', normalizedResistance, 'Gate godkänd.', 'allowed');
+  assert.equal(resistanceEvent.strategyId, 'resistance_rejection');
+  assert.equal(resistanceEvent.resolvedStrategyId, 'resistance_rejection');
+  assert.notEqual(resistanceEvent.strategyId, 'narrow_breakout');
 
   const trade = agent._internal.buildOpenTrade({
     symbol: 'TSLA',

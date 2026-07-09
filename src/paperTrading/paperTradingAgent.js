@@ -261,6 +261,55 @@ function strategyMetadataOf(input = {}) {
   };
 }
 
+function normalizeCandidateStrategyMetadata(candidate = {}, runtimeDecision = {}) {
+  const runtimeStrategy = runtimeDecision?.strategy || {};
+  const strategyId = runtimeStrategy.strategy_id || runtimeStrategy.strategyId || runtimeStrategy.resolvedStrategyId || null;
+  const strategyName = runtimeStrategy.strategy_name || runtimeStrategy.strategyName || runtimeStrategy.resolvedStrategyName || null;
+  const resolvedStrategyId = runtimeStrategy.resolvedStrategyId || strategyId || null;
+  const resolvedStrategyName = runtimeStrategy.resolvedStrategyName || strategyName || null;
+  const mappingSource = runtimeDecision.mappingSource || runtimeStrategy.mappingSource || runtimeStrategy.mapping_source || null;
+
+  if (!strategyId && !strategyName && !resolvedStrategyId && !resolvedStrategyName && !mappingSource) {
+    return { ...candidate };
+  }
+
+  const originalStrategyMetadata = candidate.originalStrategyMetadata || {
+    strategyId: candidate.strategyId || candidate.strategy_id || null,
+    strategyName: candidate.strategyName || candidate.strategy_name || null,
+    sourceStrategyId: candidate.sourceStrategyId || null,
+    sourceStrategyName: candidate.sourceStrategyName || null,
+    resolvedStrategyId: candidate.resolvedStrategyId || null,
+    resolvedStrategyName: candidate.resolvedStrategyName || null,
+    mappingSource: candidate.mappingSource || null,
+  };
+
+  const runtimeStrategyMetadata = {
+    strategyId: strategyId || null,
+    strategyName: strategyName || null,
+    resolvedStrategyId: resolvedStrategyId || null,
+    resolvedStrategyName: resolvedStrategyName || null,
+    mappingSource: mappingSource || null,
+  };
+
+  const normalized = {
+    ...candidate,
+    originalStrategyMetadata,
+    runtimeStrategyMetadata,
+  };
+  if (strategyId) {
+    normalized.strategyId = strategyId;
+    normalized.strategy_id = strategyId;
+  }
+  if (strategyName) {
+    normalized.strategyName = strategyName;
+    normalized.strategy_name = strategyName;
+  }
+  if (resolvedStrategyId) normalized.resolvedStrategyId = resolvedStrategyId;
+  if (resolvedStrategyName) normalized.resolvedStrategyName = resolvedStrategyName;
+  if (mappingSource) normalized.mappingSource = mappingSource;
+  return normalized;
+}
+
 function eventFromCandidate(type, c, reasonSv, decision = 'skipped') {
   const meta = strategyMetadataOf(c);
   return {
@@ -286,6 +335,8 @@ function eventFromCandidate(type, c, reasonSv, decision = 'skipped') {
     resolvedStrategyId: meta.resolvedStrategyId,
     resolvedStrategyName: meta.resolvedStrategyName,
     mappingSource: meta.mappingSource,
+    ...(c?.originalStrategyMetadata ? { originalStrategyMetadata: safeEventValue(c.originalStrategyMetadata) } : {}),
+    ...(c?.runtimeStrategyMetadata ? { runtimeStrategyMetadata: safeEventValue(c.runtimeStrategyMetadata) } : {}),
     mode: 'paper',
   };
 }
@@ -931,6 +982,8 @@ function buildOpenTrade(c, gateDecision = null) {
     resolvedStrategyId:      c.resolvedStrategyId || c.strategyId || c.strategy_id || c.setupId || null,
     resolvedStrategyName:    c.resolvedStrategyName || c.strategyName || c.strategy_name || null,
     mappingSource:           c.mappingSource || (c.strategyId || c.strategy_id || c.sourceStrategyId || c.setupId ? 'explicit' : 'unknown'),
+    ...(c.originalStrategyMetadata ? { originalStrategyMetadata: safeEventValue(c.originalStrategyMetadata) } : {}),
+    ...(c.runtimeStrategyMetadata ? { runtimeStrategyMetadata: safeEventValue(c.runtimeStrategyMetadata) } : {}),
     // intrabar tracking — updated every tick while trade is open
     maxFavorablePct:         null,
     maxAdversePct:           null,
@@ -2283,9 +2336,10 @@ async function runTick() {
         // is bypassed for approved strategies where it would conflict (e.g. EMA
         // pause), per the supervisor's "prefer the approved allowlist" rule.
         const runtimeStrategyForGate = runtimeDecision.strategy || {};
+        const runtimeCandidate = normalizeCandidateStrategyMetadata(c, runtimeDecision);
         const resolvedStrategyId = runtimeStrategyForGate.strategy_id
           || runtimeStrategyForGate.strategyId
-          || paperApprovalGate.resolveStrategyId(c);
+          || paperApprovalGate.resolveStrategyId(runtimeCandidate);
         const isApproved = paperApprovalGate.isApprovedStrategyId(resolvedStrategyId);
         if (!isApproved) {
           _bump('qualifiesRejected', null);
@@ -2299,7 +2353,7 @@ async function runTick() {
             timestamp:     new Date().toISOString(),
           }, ..._recentRejections].slice(0, 100);
           appendEvent({
-            ...eventFromCandidate('GATE_BLOCKED', c, 'Blockerad: strategin är inte på den godkända allowlist:en (endast paper-only research-kandidater tillåts).', 'blocked'),
+            ...eventFromCandidate('GATE_BLOCKED', runtimeCandidate, 'Blockerad: strategin är inte på den godkända allowlist:en (endast paper-only research-kandidater tillåts).', 'blocked'),
             blockedReason: paperApprovalGate.NOT_APPROVED_REASON,
             runtimeStatus: runtimeStrategyForGate.runtime_status || null,
             strategyId:    resolvedStrategyId || null,
@@ -2314,7 +2368,7 @@ async function runTick() {
         // Paper-only regelkontroll — påverkar aldrig live/broker-vägar.
         const controlConfig = strategyTradeControl.getStrategyTradeControlConfig();
         const familyMeta = familyRanks.get(c) || {};
-        const controlFamily = paperCandidateFamily(c, resolvedStrategyId);
+        const controlFamily = paperCandidateFamily(runtimeCandidate, resolvedStrategyId);
         const familyHasOpenPosition = Boolean(controlFamily) && state.openTrades.some((t) => (
           (t.strategyFamily || paperCandidateFamily(t)) === controlFamily
         ));
@@ -2341,7 +2395,7 @@ async function runTick() {
             timestamp:     new Date().toISOString(),
           }, ..._recentRejections].slice(0, 100);
           appendEvent({
-            ...eventFromCandidate('GATE_BLOCKED', c, strategyControlReasonSv(control), 'blocked'),
+            ...eventFromCandidate('GATE_BLOCKED', runtimeCandidate, strategyControlReasonSv(control), 'blocked'),
             blockedReason: control.blockReason,
             strategyId: resolvedStrategyId || null,
             strategyName: runtimeStrategyForGate.strategy_name || null,
@@ -2360,6 +2414,11 @@ async function runTick() {
         c.familyRank = control.familyRank;
         c.familyGateDecision = control.familyGateDecision;
         c.strategyCooldownDecision = control.strategyCooldownDecision;
+        if (!runtimeCandidate.strategyId && resolvedStrategyId) runtimeCandidate.strategyId = resolvedStrategyId;
+        runtimeCandidate.strategyFamily = control.strategyFamily;
+        runtimeCandidate.familyRank = control.familyRank;
+        runtimeCandidate.familyGateDecision = control.familyGateDecision;
+        runtimeCandidate.strategyCooldownDecision = control.strategyCooldownDecision;
 
         const check = qualifiesForEntry(c, state, { isApproved });
         if (!check.ok) {
@@ -2374,7 +2433,7 @@ async function runTick() {
             timestamp:     new Date().toISOString(),
           }, ..._recentRejections].slice(0, 100);
           const skip = classifySkip(c, check.reason);
-          appendEvent(eventFromCandidate(skip.type, c, skip.reasonSv));
+          appendEvent(eventFromCandidate(skip.type, runtimeCandidate, skip.reasonSv));
           continue;
         }
         _bump('qualifiesPassed', 'qualPassed');
@@ -2388,7 +2447,7 @@ async function runTick() {
           const observeReasonSv = gateDecision.observeOnlyReasonSv
             || gateDecision.warnings?.[0]
             || 'Agenten observerar bara.';
-          appendEvent(eventFromCandidate('GATE_OBSERVE_ONLY', c, observeReasonSv, 'observe_only'));
+          appendEvent(eventFromCandidate('GATE_OBSERVE_ONLY', runtimeCandidate, observeReasonSv, 'observe_only'));
           const gateDecisionTs = new Date().toISOString();
           const persistedGateDecision = appendGateDecision(gateDecision, c, { timestamp: gateDecisionTs });
           recordGateDecision({
@@ -2415,7 +2474,7 @@ async function runTick() {
             const gateReasonSv = gateDecision.reasons[0]
               || `Gate blockerad (poäng ${gateDecision.gateScore}/${gateDecision.threshold}).`;
             appendEvent({
-              ...eventFromCandidate('GATE_BLOCKED', c, gateReasonSv),
+              ...eventFromCandidate('GATE_BLOCKED', runtimeCandidate, gateReasonSv),
               gateScore:     gateDecision.gateScore,
               gateThreshold: gateDecision.threshold,
               gateMode:      gateDecision.mode,
@@ -2452,7 +2511,7 @@ async function runTick() {
           _bump('gateAllowed', 'gateAllowed');
           _bump('gateNearMissLearning', 'gateNearMissLearning');
           appendEvent({
-            ...eventFromCandidate('PAPER_NEAR_MISS_LEARNING_ENTRY', c, nearMissDecision.reasonSv, 'allowed'),
+            ...eventFromCandidate('PAPER_NEAR_MISS_LEARNING_ENTRY', runtimeCandidate, nearMissDecision.reasonSv, 'allowed'),
             gateScore: gateDecision.gateScore,
             gateThreshold: gateDecision.threshold,
             gateMode: 'allow',
@@ -2472,7 +2531,7 @@ async function runTick() {
         } else {
           _bump('gateAllowed', 'gateAllowed');
           appendEvent({
-            ...eventFromCandidate('GATE_ALLOWED', c, gateDecision.reasons?.[0] || gateDecision.warnings?.[0] || 'Gate godkänd.', 'allowed'),
+            ...eventFromCandidate('GATE_ALLOWED', runtimeCandidate, gateDecision.reasons?.[0] || gateDecision.warnings?.[0] || 'Gate godkänd.', 'allowed'),
             gateScore: gateDecision.gateScore,
             gateThreshold: gateDecision.threshold,
             gateMode: gateDecision.mode,
@@ -2495,10 +2554,10 @@ async function runTick() {
         });
 
         const lateRegularPullbackCandidate = {
-          ...c,
-          strategyId: c.strategyId || c.strategy_id || resolvedStrategyId || runtimeStrategyForGate.strategy_id || null,
-          strategyName: c.strategyName || c.strategy_name || runtimeStrategyForGate.strategy_name || null,
-          runtimeStatus: c.runtimeStatus || runtimeStrategyForGate.runtime_status || null,
+          ...runtimeCandidate,
+          strategyId: runtimeCandidate.strategyId || runtimeCandidate.strategy_id || resolvedStrategyId || runtimeStrategyForGate.strategy_id || null,
+          strategyName: runtimeCandidate.strategyName || runtimeCandidate.strategy_name || runtimeStrategyForGate.strategy_name || null,
+          runtimeStatus: runtimeCandidate.runtimeStatus || runtimeStrategyForGate.runtime_status || null,
         };
         const lateRegularPullbackSkip = buildLateRegularPullbackSkipEvent(lateRegularPullbackCandidate, effectiveGateDecision);
         if (lateRegularPullbackSkip) {
@@ -2570,6 +2629,7 @@ async function runTick() {
         candidateWithAgent.originalRiskEvaluation = originalRiskEvaluation;
         candidateWithAgent.riskEvaluation = effectiveRiskEvaluation;
         candidateWithAgent.riskReviewOverrideActive = riskReviewOverrideActive;
+        const runtimeCandidateWithAgent = normalizeCandidateStrategyMetadata(candidateWithAgent, runtimeDecision);
 
         if (originalRiskEvaluation?.pause_trading) {
           const originalPauseReasons = Array.isArray(originalRiskEvaluation.pause_reasons)
@@ -2578,7 +2638,7 @@ async function runTick() {
           appendEvent({
             ...eventFromCandidate(
               'RISK_PAUSE_TRIGGERED',
-              candidateWithAgent,
+              runtimeCandidateWithAgent,
               `Systempaus — ${originalPauseReasons.join(', ') || 'riskgräns nådd'}.`,
               'skipped',
             ),
@@ -2616,7 +2676,7 @@ async function runTick() {
 
         if (!effectiveRiskEvaluation.allowed) {
           appendEvent({
-            ...eventFromCandidate('RISK_BLOCKED', candidateWithAgent, `Riskmotor blockerade: ${effectiveRiskEvaluation.block_reasons.join(', ')}.`, 'skipped'),
+            ...eventFromCandidate('RISK_BLOCKED', runtimeCandidateWithAgent, `Riskmotor blockerade: ${effectiveRiskEvaluation.block_reasons.join(', ')}.`, 'skipped'),
             aiConfidenceAdjustment: aiAdjustment,
             aiAgentAnalysis: agentAnalysis,
             riskEvaluation: effectiveRiskEvaluation,
@@ -2646,7 +2706,7 @@ async function runTick() {
             timestamp: new Date().toISOString(),
           };
           appendEvent({
-            ...eventFromCandidate('SAFETY_BLOCKED', candidateWithAgent, 'Säkerhetsmotor blockerade entry: safety_error_fail_closed.', 'skipped'),
+            ...eventFromCandidate('SAFETY_BLOCKED', runtimeCandidateWithAgent, 'Säkerhetsmotor blockerade entry: safety_error_fail_closed.', 'skipped'),
             aiConfidenceAdjustment: aiAdjustment,
             aiAgentAnalysis: agentAnalysis,
             riskEvaluation: effectiveRiskEvaluation,
@@ -2672,7 +2732,7 @@ async function runTick() {
             ? executionSafety.paper_block_reasons
             : executionSafety.block_reasons || [];
           appendEvent({
-            ...eventFromCandidate('SAFETY_BLOCKED', candidateWithAgent, `Säkerhetsmotor blockerade entry: ${reasons.join(', ') || 'safety_block'}.`, 'skipped'),
+            ...eventFromCandidate('SAFETY_BLOCKED', runtimeCandidateWithAgent, `Säkerhetsmotor blockerade entry: ${reasons.join(', ') || 'safety_block'}.`, 'skipped'),
             aiConfidenceAdjustment: aiAdjustment,
             aiAgentAnalysis: agentAnalysis,
             riskEvaluation: effectiveRiskEvaluation,
@@ -2693,10 +2753,10 @@ async function runTick() {
           continue;
         }
 
-          candidateWithAgent.riskEvaluation = effectiveRiskEvaluation;
-          candidateWithAgent.executionSafety = executionSafety;
-          candidateWithAgent.riskReviewOverrideActive = riskReviewOverrideActive;
-          const trade = buildOpenTrade(candidateWithAgent, effectiveGateDecision);
+          runtimeCandidateWithAgent.riskEvaluation = effectiveRiskEvaluation;
+          runtimeCandidateWithAgent.executionSafety = executionSafety;
+          runtimeCandidateWithAgent.riskReviewOverrideActive = riskReviewOverrideActive;
+          const trade = buildOpenTrade(runtimeCandidateWithAgent, effectiveGateDecision);
           _bump('tradesOpened', 'opened');
           state.openTrades.push(trade);
           // Starta strategi- och family-cooldown direkt vid open (30 min-regeln
@@ -2717,7 +2777,7 @@ async function runTick() {
         recordPaperTradeToLearning('opened', trade);
         if (agentAnalysis) recordAgentAnalysisToLearning(agentAnalysis, candidateWithAgent);
           appendEvent({
-            ...eventFromCandidate('TRADE_OPENED', candidateWithAgent, openedReasonSv(candidateWithAgent), 'opened'),
+            ...eventFromCandidate('TRADE_OPENED', runtimeCandidateWithAgent, openedReasonSv(candidateWithAgent), 'opened'),
             aiConfidenceAdjustment: aiAdjustment,
             riskEvaluation: effectiveRiskEvaluation,
             riskReviewOverrideActive,
@@ -3461,6 +3521,8 @@ module.exports = {
     buildNearMissLearningGateDecision,
     buildLateRegularPullbackSkipEvent,
     shouldBlockLateRegularPullbackEntry,
+    normalizeCandidateStrategyMetadata,
+    eventFromCandidate,
     buildOpenTrade,
     checkHardExit,
   },
