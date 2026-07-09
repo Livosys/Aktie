@@ -158,13 +158,15 @@ function isCryptoStrategy(strategy = {}) {
 
 function isLabArchivedMarket(market) {
   const value = String(market || '').trim().toLowerCase();
-  return value === 'crypto' || value === 'crypto_certificates';
+  // Crypto majors (BTC/ETH/SOL) are research-active in Lab. Only crypto
+  // certificates remain archived/blocked from Lab-batch.
+  return value === 'crypto_certificates';
 }
 
 function labArchiveMeta(kind) {
   return {
     reason: 'crypto_lab_archived',
-    message: 'Crypto är arkiverat från Lab. Crypto kan fortfarande visas på Live-sidan.',
+    message: 'Krypto-certifikat är arkiverat/blockerat från Lab-batch.',
     archivedFromLab: true,
     archiveReason: 'crypto_lab_archived',
     visibleOnLive: true,
@@ -173,7 +175,7 @@ function labArchiveMeta(kind) {
 }
 
 function hasLabBatchHistoricalData(symbol, coverage = {}) {
-  if (isCryptoSymbol(symbol) || String(coverage.market_group || '').toLowerCase() === 'crypto') return false;
+  // Crypto majors go through the same coverage/threshold gate as other symbols.
   if (coverage.usable_for_batch === true) return true;
   const days = Number(coverage.days_covered || 0);
   const candles = Number(coverage.candles_count || coverage.candles_2m_count || 0);
@@ -191,14 +193,6 @@ function normalizeSymbolsForBatch(symbols) {
         usable_for_batch: false,
         reason: 'outside_research_scope',
         message: 'Symbolen ligger utanför research-scope (S&P, Nasdaq, Crypto).',
-      });
-      continue;
-    }
-    if (isCryptoSymbol(symbol)) {
-      skipped.push({
-        symbol,
-        usable_for_batch: false,
-        ...labArchiveMeta('symbol'),
       });
       continue;
     }
@@ -300,11 +294,11 @@ function normalizeMarketsForBatch(markets, certificateSimulationMode) {
 function defaultConfig(input = {}) {
   const today = nowIso().slice(0, 10);
   const catalog = daytradingCatalog.getCatalog().strategies;
+  // Crypto majors are research-active, so crypto strategies are selectable.
   const strategyIds = safeArray(input.strategy_ids || input.strategyIds || input.strategies)
-    .filter((id) => {
-      const strategy = daytradingCatalog.getStrategyById(id);
-      return strategy && !isCryptoStrategy(strategy);
-    });
+    .filter((id) => Boolean(daytradingCatalog.getStrategyById(id)));
+  // When nothing is selected, default to the first three stock strategies so a
+  // blank run does not pair crypto strategies with the default stock symbols.
   const selected = strategyIds.length
     ? strategyIds
     : catalog.filter((strategy) => !isCryptoStrategy(strategy)).slice(0, 3).map((s) => s.id);
@@ -315,10 +309,10 @@ function defaultConfig(input = {}) {
   const rawMarkets = safeArray(input.markets || input.market_groups || input.marketGroups).length ? safeArray(input.markets || input.market_groups || input.marketGroups) : ['all'];
   const symbolPolicy = normalizeSymbolsForBatch(rawSymbols);
   const marketPolicy = normalizeMarketsForBatch(rawMarkets, certificateSimulationMode);
-  const archivedStrategies = safeArray(input.strategy_ids || input.strategyIds || input.strategies)
-    .map((id) => daytradingCatalog.getStrategyById(id))
-    .filter((strategy) => strategy && isCryptoStrategy(strategy))
-    .map((strategy) => ({ id: strategy.id, name: strategy.name, ...labArchiveMeta('strategy') }));
+  // Crypto majors are no longer archived from Lab, so no crypto strategies are
+  // reported as archived. crypto_certificates strategies (if any) stay excluded
+  // via the market-archive gate, not here.
+  const archivedStrategies = [];
   return {
     strategy_ids: selected,
     archived_lab_strategies: archivedStrategies,
@@ -409,7 +403,7 @@ function validateConfig(config) {
       ? 'missing_data'
       : null;
   const message = errors.missing_data
-    ? 'Inga körbara aktie/index/ETF-symboler med historisk data hittades. Crypto är arkiverat från Lab och påverkar inte detta urval.'
+    ? 'Inga körbara symboler med historisk data hittades inom research-scope (S&P, Nasdaq, Crypto).'
     : errors.market_controls === 'disabled_by_user'
       ? 'En eller flera valda marknadsgrupper är avstängda av användaren.'
       : errors.market_data

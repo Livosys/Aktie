@@ -2017,7 +2017,7 @@ function MarketsTab() {
 
   const { groups = {}, symbols = [] } = data;
   const labGroups = Object.fromEntries(Object.entries(groups).filter(([key, grp]) => !isLabArchivedMarket({ id: key, ...grp })));
-  const labSymbols = symbols.filter((sym) => !isCryptoSymbol(sym.symbol) && !isLabArchivedMarket(sym.marketGroup || sym.group));
+  const labSymbols = symbols.filter((sym) => (!isCryptoSymbol(sym.symbol) || isResearchCryptoMajor(sym.symbol)) && !isLabArchivedMarket(sym.marketGroup || sym.group));
   const groupEntries = Object.entries(labGroups).sort((a, b) => (Number(a[1]?.priority) || 99) - (Number(b[1]?.priority) || 99));
   const scannerGroups = groupEntries.filter(([, grp]) => grp.section !== 'test' && !grp.test_only);
   const testGroups = groupEntries.filter(([, grp]) => grp.section === 'test' || grp.test_only);
@@ -2030,7 +2030,7 @@ function MarketsTab() {
         <span>Marknader och riskinstrument styrs från Daytrading. Lab visar detta endast för analys/test.</span>
       </div>
       <div className="batch-info">
-        Crypto är arkiverat från Lab. Crypto kan fortfarande visas på Live-sidan.
+        Crypto research är aktivt för BTC, ETH och SOL inom S&P/Nasdaq/Crypto-scope.
       </div>
       <div className="mu-group-grid">
         {scannerGroups.map(([key, grp]) => (
@@ -2141,6 +2141,14 @@ function isCryptoSymbol(symbol) {
   return CRYPTO_SYMBOL_HINTS.has(s) || /USDT$/.test(s);
 }
 
+// Research-scope crypto majors that are active in Lab-batch. Mirror of the
+// crypto entries in src/config/researchMarketScope.js (RESEARCH_ALLOWED_SYMBOLS).
+// Any other crypto stays blocked via outside_research_scope.
+const RESEARCH_CRYPTO_MAJORS = new Set(['BTCUSDT', 'ETHUSDT', 'SOLUSDT']);
+function isResearchCryptoMajor(symbol) {
+  return RESEARCH_CRYPTO_MAJORS.has(String(symbol || '').trim().toUpperCase());
+}
+
 function isCryptoStrategy(strategy = {}) {
   const id = String(strategy.id || strategy.strategy_id || '').toLowerCase();
   const name = String(strategy.name || strategy.strategy_name || '').toLowerCase();
@@ -2153,11 +2161,13 @@ function isLabArchivedMarket(market) {
     return isLabArchivedMarket(market.id || market.group_id || market.marketGroup || market.group || market.product_type);
   }
   const value = String(market || '').trim().toLowerCase();
-  return value === 'crypto' || value === 'crypto_certificates';
+  // Crypto majors (BTC/ETH/SOL) are research-active. Only crypto certificates
+  // remain archived/blocked from Lab-batch.
+  return value === 'crypto_certificates';
 }
 
 function hasLabBatchHistoricalData(row = {}) {
-  if (isCryptoSymbol(row.symbol) || String(row.market_group || row.marketGroup || '').toLowerCase() === 'crypto') return false;
+  // Crypto majors go through the same coverage/threshold gate as other symbols.
   if (row.usable_for_batch === true) return true;
   const days = Number(row.days_covered || 0);
   const candles = Number(row.candles_count || row.candles_2m_count || 0);
@@ -2206,7 +2216,8 @@ const BATCH_MARKET_TYPE_LABELS = {
 };
 
 const BATCH_BLOCKED_REASON_LABELS = {
-  crypto_archived: 'Crypto är arkiverat från Lab',
+  outside_research_scope: 'Utanför research-scope (S&P, Nasdaq, Crypto majors BTC/ETH/SOL)',
+  crypto_archived: 'Crypto-certifikat är arkiverat/blockerat från Lab',
   no_local_history: 'Saknar lokal historik',
   date_outside_coverage: 'Valt datum ligger utanför lokal historik',
   unknown_market: 'Okänd marknad – ingen lokal coverage',
@@ -2225,14 +2236,14 @@ function buildBatchCompatibility(symbols, coverageMap = {}, form = {}) {
       const marketType = batchMarketType(symbol, coverage);
       const earliestLocalCandle = isoDay(coverage.first_candle_at);
       const latestLocalCandle = isoDay(coverage.last_candle_at);
-      const cryptoArchived = marketType === 'crypto';
-      const hasLocalHistory = !cryptoArchived && hasLabBatchHistoricalData(coverage);
+      const cryptoOutsideScope = marketType === 'crypto' && !isResearchCryptoMajor(symbol);
+      const hasLocalHistory = !cryptoOutsideScope && hasLabBatchHistoricalData(coverage);
       let runnable = false;
       let blockedReason = '';
       let suggestedFrom = earliestLocalCandle;
       let suggestedTo = latestLocalCandle;
-      if (cryptoArchived) {
-        blockedReason = 'crypto_archived';
+      if (cryptoOutsideScope) {
+        blockedReason = 'outside_research_scope';
       } else if (!hasLocalHistory) {
         blockedReason = marketType === 'unknown' ? 'unknown_market' : 'no_local_history';
       } else if (selectedFrom && selectedTo && earliestLocalCandle && latestLocalCandle
@@ -2259,7 +2270,9 @@ function resolvePresetStrategyIds(preset, catalog = []) {
   const allowed = new Set(preset.allowedGroups || ['all']);
   const isCompatible = (strategy) => {
     const group = String(strategy.market_group || strategy.market || 'all').toLowerCase();
-    return !isCryptoStrategy(strategy) && allowed.has(group);
+    // Crypto strategies are allowed when the preset's market group allows crypto;
+    // stock presets (allowedGroups without 'crypto') still exclude them by group.
+    return allowed.has(group);
   };
   const byId = new Map(catalog.map((s) => [s.id, s]));
   const picked = [];
@@ -2887,7 +2900,7 @@ function BatchTestTab() {
       fetch('/api/strategy-batches').then(r => r.ok ? r.json() : null).catch(() => null),
       fetch('/api/data-coverage/symbols').then(r => r.ok ? r.json() : null).catch(() => null),
     ]);
-    setCatalog((cat?.strategies || []).filter((strategy) => !isCryptoStrategy(strategy)));
+    setCatalog(cat?.strategies || []);
     setBatches(list?.batches || []);
     const map = {};
     (coverage?.symbols || []).forEach((row) => { map[row.symbol] = row; });
@@ -2960,13 +2973,12 @@ function BatchTestTab() {
   }
 
   function payload() {
-    const symbols = csvSymbols(form.symbols).filter((symbol) => !isCryptoSymbol(symbol));
+    // Crypto majors (BTC/ETH/SOL) are research-active; other crypto is dropped
+    // here and also gated server-side by researchMarketScope.
+    const symbols = csvSymbols(form.symbols).filter((symbol) => !isCryptoSymbol(symbol) || isResearchCryptoMajor(symbol));
     const markets = (form.markets || []).filter((market) => market === 'all' || !isLabArchivedMarket(market));
     return {
-      strategy_ids: form.strategy_ids.filter((id) => {
-        const strategy = catalog.find((row) => row.id === id);
-        return strategy && !isCryptoStrategy(strategy);
-      }),
+      strategy_ids: form.strategy_ids.filter((id) => Boolean(catalog.find((row) => row.id === id))),
       markets: markets.length ? markets : ['all'],
       certificate_simulation_mode: form.certificate_simulation_mode,
       symbols,
@@ -3080,11 +3092,12 @@ function BatchTestTab() {
   const selectedProviderMissing = marketOptions.filter((m) => form.markets.includes(m.id) && m.dataStatus === 'needs_provider');
   const batchBlocked = selectedProviderMissing.length > 0 && form.certificate_simulation_mode !== 'underlying_only';
   const batchCoverageWarnings = csvSymbols(form.symbols)
-    .filter((symbol) => !isCryptoSymbol(symbol))
+    .filter((symbol) => !isCryptoSymbol(symbol) || isResearchCryptoMajor(symbol))
     .map((symbol) => coverageMap[symbol])
     .filter(Boolean)
     .filter((row) => !hasLabBatchHistoricalData(row));
-  const archivedSymbols = csvSymbols(form.symbols).filter(isCryptoSymbol);
+  // Crypto majors are research-active; only crypto outside BTC/ETH/SOL is excluded.
+  const archivedSymbols = csvSymbols(form.symbols).filter((s) => isCryptoSymbol(s) && !isResearchCryptoMajor(s));
   const mixedMarkets = hasMixedMarkets(csvSymbols(form.symbols));
 
   // Frontend-only körbarhetsmodell. Bestämmer vad UI får visa/blockera —
@@ -3102,15 +3115,11 @@ function BatchTestTab() {
   const selectedToDay = isoDay(form.date_to);
   const dateOutsideLocal = !!(commonFrom && commonTo && selectedFromDay && selectedToDay && (selectedFromDay < commonFrom || selectedToDay > commonTo));
   const recommendedSymbols = symbolsWithHistory.map((r) => r.symbol);
-  const cryptoStrategySelected = form.strategy_ids
-    .map((id) => catalog.find((row) => row.id === id))
-    .filter((s) => s && isCryptoStrategy(s));
   const missingStrategies = form.strategy_ids.length === 0;
   const missingTimeframes = (form.timeframes || []).length === 0;
   const noRunnableSymbols = runnableRows.length === 0;
   const batchReady = !noRunnableSymbols && blockedRows.length === 0 && !mixedMarkets
-    && !dateOutsideLocal && !missingStrategies && !missingTimeframes && !batchBlocked
-    && cryptoStrategySelected.length === 0;
+    && !dateOutsideLocal && !missingStrategies && !missingTimeframes && !batchBlocked;
   // Justerar BARA frontend-val (symboler + datum). Startar aldrig batch/backfill.
   function applyRecommendedBatch() {
     setForm((prev) => ({
@@ -3297,7 +3306,7 @@ function BatchTestTab() {
             Välj ett förval så fylls rätt symboler, strategier och timeframes i för en marknad. Förval startar aldrig en batch automatiskt — du kör den själv.
           </div>
           <div className="batch-info">
-            Crypto är arkiverat från Lab. Crypto kan fortfarande visas på Live-sidan.
+            Crypto research är aktivt för BTC, ETH och SOL inom S&P/Nasdaq/Crypto-scope. Övrig crypto blockeras.
           </div>
           <div className="batch-preset-row">
             {BATCH_MARKET_PRESETS.map((preset) => (
@@ -3381,7 +3390,7 @@ function BatchTestTab() {
           )}
           {archivedSymbols.length > 0 && (
             <div className="batch-warning">
-              Crypto är arkiverat från Lab Batch och exkluderas: {archivedSymbols.join(', ')}. Crypto kan fortfarande visas på Live-sidan.
+              Crypto utanför research-scope (endast BTC/ETH/SOL tillåts) exkluderas: {archivedSymbols.join(', ')}.
             </div>
           )}
           {batchCoverageWarnings.length > 0 && (
@@ -3486,13 +3495,10 @@ function BatchTestTab() {
                   <li>Vald period ligger delvis utanför lokal historik ({commonFrom || '–'} → {commonTo || '–'}).</li>
                 )}
                 {archivedSymbols.length > 0 && (
-                  <li>Crypto är arkiverat från Lab och exkluderas: <strong>{archivedSymbols.join(', ')}</strong></li>
+                  <li>Crypto utanför research-scope (endast BTC/ETH/SOL) exkluderas: <strong>{archivedSymbols.join(', ')}</strong></li>
                 )}
                 {mixedMarkets && (
                   <li>Blandade marknader (crypto + aktier) i samma batch — dela upp i separata batchar.</li>
-                )}
-                {cryptoStrategySelected.length > 0 && (
-                  <li>Strategier som inte passar vald marknad: <strong>{cryptoStrategySelected.map((s) => s.name || s.id).join(', ')}</strong></li>
                 )}
                 {missingStrategies && <li>Inga strategier valda.</li>}
                 {missingTimeframes && <li>Ingen timeframe vald.</li>}
