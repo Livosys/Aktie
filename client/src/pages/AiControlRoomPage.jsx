@@ -1,6 +1,11 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { Link, useParams } from 'react-router-dom';
-import { DashboardShell } from '../components/dashboard/DashboardKit.jsx';
+import { Link, useNavigate, useParams } from 'react-router-dom';
+import {
+  ActivityList,
+  BarChart,
+  ChartCard,
+  DashboardShell,
+} from '../components/dashboard/DashboardKit.jsx';
 
 // ── AI Control Room ───────────────────────────────────────────────────────────
 // Read-only översikt över systemets AI-delar: vad de gör, vad de lärt sig och
@@ -16,14 +21,14 @@ const SAFETY_FLAGS = [
 ];
 
 const SECTIONS = [
-  { id: 'oversikt', path: '/ai', label: 'AI Översikt', icon: '🧠' },
-  { id: 'learning', path: '/ai/learning', label: 'Lärdomar', icon: '📚' },
-  { id: 'agents', path: '/ai/agents', label: 'AI-agenter', icon: '🤖' },
-  { id: 'improvements', path: '/ai/improvements', label: 'Förbättringar', icon: '💡' },
-  { id: 'pipeline', path: '/ai/pipeline', label: 'Pipeline', icon: '🔁' },
-  { id: 'batch-replay', path: '/ai/batch-replay', label: 'Batch & Replay', icon: '🧪' },
-  { id: 'recommendations', path: '/ai/recommendations', label: 'Rekommendationer', icon: '🎯' },
-  { id: 'risks', path: '/ai/risks', label: 'Risker', icon: '⚠️' },
+  { id: 'oversikt', path: '/ai', label: 'AI Översikt' },
+  { id: 'learning', path: '/ai/learning', label: 'Lärdomar' },
+  { id: 'agents', path: '/ai/agents', label: 'AI-agenter' },
+  { id: 'improvements', path: '/ai/improvements', label: 'Förbättringar' },
+  { id: 'pipeline', path: '/ai/pipeline', label: 'Pipeline' },
+  { id: 'batch-replay', path: '/ai/batch-replay', label: 'Batch & Replay' },
+  { id: 'recommendations', path: '/ai/recommendations', label: 'Rekommendationer' },
+  { id: 'risks', path: '/ai/risks', label: 'Risker' },
 ];
 
 const PIPELINE_STEPS = [
@@ -769,8 +774,56 @@ function RisksSection({ sources }) {
 
 export default function AiControlRoomPage() {
   const { section } = useParams();
+  const navigate = useNavigate();
   const activeId = SECTIONS.some((s) => s.id === section) ? section : 'oversikt';
   const { loading, sources } = useAiData();
+  const safetySource = ['allowlist', 'narrowAutopilot', 'narrowPerformance', 'supervisor']
+    .map((key) => sourceData(sources, key))
+    .find(Boolean) || {};
+  const dashboardSafety = safetySource.safety && typeof safetySource.safety === 'object'
+    ? { ...safetySource, ...safetySource.safety }
+    : safetySource;
+  const agents = buildAgents(sources);
+  const activeAgents = agents.filter((agent) => ['ok', 'ready', 'dry-run'].includes(String(agent.status).toLowerCase())).length;
+  const degradedAgents = agents.filter((agent) => ['degraded', 'no_data', 'empty', 'av'].includes(String(agent.status).toLowerCase())).length;
+  const learning = sourceData(sources, 'narrowPerformance') || {};
+  const sourceCounts = learning.summary?.sourceCounts || {};
+  const autopilot = sourceData(sources, 'narrowAutopilot') || {};
+  const learningBars = learning.summary?.sourceCounts
+    ? [
+        { label: 'Batch', value: Number(sourceCounts.batch || 0), tone: 'purple' },
+        { label: 'Replay', value: Number(sourceCounts.replay || 0), tone: 'warning' },
+        { label: 'Paper', value: Number(sourceCounts.paper || 0), tone: 'good' },
+      ]
+    : [];
+  const recommendedTest = learning.recommendedNextTest || autopilot.autopilot?.recommendedNextTest || null;
+  const lastAutopilotEvent = autopilot.autopilot?.lastEvent || null;
+  const aiActivity = [
+    recommendedTest ? {
+      id: 'recommended-test',
+      title: recommendedTest.title || recommendedTest.strategy_id || 'Rekommenderat test',
+      meta: recommendedTest.reason || 'Ingen motivering angiven.',
+      time: recommendedTest.createdAt ? fmtTime(recommendedTest.createdAt) : null,
+      tone: 'blue',
+    } : null,
+    lastAutopilotEvent ? {
+      id: 'autopilot-event',
+      title: lastAutopilotEvent.event || lastAutopilotEvent.status || 'Autopilot-status',
+      meta: Array.isArray(lastAutopilotEvent.warnings) && lastAutopilotEvent.warnings.length
+        ? lastAutopilotEvent.warnings.join(', ')
+        : (lastAutopilotEvent.message || 'Dry-run status uppdaterad.'),
+      time: lastAutopilotEvent.timestamp ? fmtTime(lastAutopilotEvent.timestamp) : null,
+      tone: lastAutopilotEvent.event === 'run_blocked' ? 'warning' : 'good',
+    } : null,
+  ].filter(Boolean);
+  const kpis = [
+    { label: 'AI-delar', value: agents.length, hint: `${activeAgents} aktiva`, tone: 'blue' },
+    { label: 'Degraded / no data', value: degradedAgents, hint: 'Datakällor som behöver underlag', tone: degradedAgents ? 'warning' : 'good' },
+    { label: 'Batch-rader', value: sourceCounts.batch ?? '–', hint: 'Learning-underlag', tone: 'neutral' },
+    { label: 'Replay-rader', value: sourceCounts.replay ?? '–', hint: 'Learning-underlag', tone: (sourceCounts.replay || 0) > 0 ? 'good' : 'warning' },
+    { label: 'Paper-rader', value: sourceCounts.paper ?? '–', hint: 'Learning-underlag', tone: (sourceCounts.paper || 0) > 0 ? 'good' : 'warning' },
+    { label: 'Autopilot', value: autopilot.scheduler?.dryRunOnly ? 'Dry-run' : (autopilot.scheduler?.enabled ? 'Aktiv' : 'Paus'), hint: 'Planerar men auto-applicerar inte', tone: autopilot.scheduler?.dryRunOnly ? 'good' : 'warning' },
+  ];
 
   const body = useMemo(() => {
     if (loading) return <div style={{ ...mutedStyle, padding: 20 }}>Hämtar AI-status…</div>;
@@ -787,35 +840,26 @@ export default function AiControlRoomPage() {
   }, [loading, sources, activeId]);
 
   return (
-    <DashboardShell>
-    <div style={{ maxWidth: 1080, margin: '0 auto', padding: '18px 16px 60px' }}>
-      <div style={{ marginBottom: 4, display: 'flex', alignItems: 'baseline', gap: 10, flexWrap: 'wrap' }}>
-        <h1 style={{ fontSize: 22, fontWeight: 800, margin: 0 }}>AI Control Room</h1>
-        <span style={{ fontSize: 12.5, ...mutedStyle }}>Analyserar · jämför · lär sig · föreslår — utför aldrig</span>
-      </div>
-      <div style={{ margin: '12px 0 14px', display: 'flex', gap: 6, flexWrap: 'wrap' }}>
-        {SECTIONS.map((s) => (
-          <Link
-            key={s.id}
-            to={s.path}
-            style={{
-              padding: '6px 12px',
-              borderRadius: 999,
-              fontSize: 12.5,
-              fontWeight: 700,
-              textDecoration: 'none',
-              border: `1px solid ${activeId === s.id ? 'var(--accent)' : 'var(--border)'}`,
-              background: activeId === s.id ? 'rgba(56,189,248,0.12)' : 'var(--surface)',
-              color: activeId === s.id ? 'var(--accent)' : 'var(--text)',
-            }}
-          >
-            {s.icon} {s.label}
-          </Link>
-        ))}
-      </div>
-      <SafetyRow sources={sources} />
+    <DashboardShell
+      title="AI Control Room"
+      subtitle="Analyserar, jämför, lär sig och föreslår i read-only-läge. Ingenting auto-appliceras."
+      safety={dashboardSafety}
+      tabs={SECTIONS}
+      activeTab={activeId}
+      onTab={(id) => navigate(SECTIONS.find((item) => item.id === id)?.path || '/ai')}
+      kpis={kpis}
+    >
+      {activeId === 'oversikt' ? (
+        <div className="dash-grid-2">
+          <ChartCard title="Learning-underlag" subtitle="Verkliga rader per befintlig datakälla" tone="purple">
+            <BarChart bars={learningBars} emptyText="Learning-underlag saknas ännu." />
+          </ChartCard>
+          <ChartCard title="Senaste AI-aktivitet" subtitle="Rekommendation och autopilot, read-only" tone="warning">
+            <ActivityList items={aiActivity} emptyText="Ingen AI-aktivitet finns ännu." />
+          </ChartCard>
+        </div>
+      ) : null}
       {body}
-    </div>
     </DashboardShell>
   );
 }

@@ -5,19 +5,34 @@ import { DashboardShell } from '../components/dashboard/DashboardKit.jsx';
 const REFRESH_MS = 30_000;
 
 const SECTIONS = [
-  { id: 'controlroom', label: 'Kontrollrum' },
-  { id: 'brain', label: 'AI Brain' },
-  { id: 'live', label: 'Aktivitet' },
-  { id: 'data', label: 'Data' },
-  { id: 'replay', label: 'Replay' },
-  { id: 'batch', label: 'Batch' },
+  { id: 'oversikt', label: 'Översikt' },
+  { id: 'safety', label: 'Safety' },
+  { id: 'autopilot', label: 'Autopilot' },
+  { id: 'tester', label: 'Tester' },
   { id: 'strategies', label: 'Strategier' },
   { id: 'learning', label: 'Learning' },
-  { id: 'research', label: 'Strategiforskning' },
-  { id: 'ai', label: 'AI Analyst' },
-  { id: 'paper', label: 'Paper Trading' },
-  { id: 'tech', label: 'Teknik' },
+  { id: 'risks', label: 'Risker' },
+  { id: 'teknik', label: 'Teknik' },
 ];
+
+const SECTION_GROUP = {
+  controlroom: 'oversikt',
+  brain: 'autopilot',
+  live: 'teknik',
+  data: 'teknik',
+  replay: 'tester',
+  batch: 'tester',
+  strategies: 'strategies',
+  research: 'strategies',
+  learning: 'learning',
+  ai: 'risks',
+  paper: 'safety',
+  tech: 'teknik',
+};
+
+function sectionGroup(sectionId) {
+  return SECTION_GROUP[sectionId] || sectionId;
+}
 
 function apiJson(url, options = {}) {
   return fetch(url, { credentials: 'same-origin', ...options }).then(async (res) => {
@@ -400,7 +415,7 @@ function DryRunTestCard() {
 }
 
 export default function SupervisorBrainPage() {
-  const [activeSection, setActiveSection] = useState('controlroom');
+  const [activeSection, setActiveSection] = useState('oversikt');
   const data = useTradingOsData();
 
   const overview = data.overview || {};
@@ -576,7 +591,7 @@ export default function SupervisorBrainPage() {
     },
   ];
 
-  const activeStage = pipelineStages.find((stage) => stage.sectionId === activeSection) || pipelineStages[0];
+  const activeStage = pipelineStages.find((stage) => sectionGroup(stage.sectionId) === activeSection) || pipelineStages[0];
   const systemHealthBlock = overview.blocks?.system_health || {};
   const systemHealthSummary = systemHealthBlock.summary || {};
   const systemHealthStatus = first(systemHealthSummary.overallStatus, systemHealthBlock.status, overview.status);
@@ -716,30 +731,57 @@ export default function SupervisorBrainPage() {
     { label: 'live_trading_enabled', value: String(overviewSafety(overview).live_trading_enabled), good: overviewSafety(overview).live_trading_enabled === false },
     { label: 'broker_enabled', value: String(overviewSafety(overview).broker_enabled), good: overviewSafety(overview).broker_enabled === false },
   ];
+  const supervisorKpis = [
+    {
+      label: 'Supervisor',
+      value: statusLabel(overview.status),
+      hint: data.updatedAt ? `Uppdaterad ${timeText(data.updatedAt)}` : 'Ingen uppdatering ännu',
+      tone: statusTone(overview.status),
+    },
+    {
+      label: 'Safety',
+      value: safetyIsLocked ? 'Låst' : 'Kontrollera',
+      hint: overviewSafety(overview).mode,
+      tone: safetyIsLocked ? 'good' : 'danger',
+    },
+    {
+      label: 'Paper trades',
+      value: fmtNumber(paperStatus.count || 0),
+      hint: statusLabel(paperStatus.status),
+      tone: statusTone(paperStatus.status),
+    },
+    {
+      label: 'Batchtester',
+      value: fmtNumber(batchStatus.totalBatches || 0),
+      hint: latestBatch ? timeText(first(latestBatch.completedAt, latestBatch.startedAt)) : 'Ingen batch ännu',
+      tone: statusTone(batchStatus.status),
+    },
+    {
+      label: 'Replay',
+      value: fmtNumber(totalReplayRuns),
+      hint: latestReplay ? timeText(first(latestReplay.createdAt, latestReplay.timestamp)) : 'Ingen replay ännu',
+      tone: statusTone(replayStatus.status),
+    },
+    {
+      label: 'Learning',
+      value: fmtNumber(learningOutcomeCount),
+      hint: statusLabel(learningStatus.status),
+      tone: statusTone(learningStatus.status),
+    },
+  ];
 
   return (
-    <DashboardShell>
+    <DashboardShell
+      title="Supervisor"
+      subtitle="Samlad paper-only status för safety, tester, strategier, learning och nästa säkra steg."
+      safety={overviewSafety(overview)}
+      tabs={SECTIONS}
+      activeTab={activeSection}
+      onTab={setActiveSection}
+      kpis={supervisorKpis}
+    >
     <div className="research-lab-page tradingos-page">
       <main className="research-main tradingos-main">
-        <header className="tos-hero">
-          <div className="tos-hero-copy">
-            <div className="tos-eyebrow">Trading OS v2</div>
-            <h1>Learning pipeline för test, mätning och nästa säkra test</h1>
-            <p>
-              Trading OS är en lärande testplattform. Målet är att testa strategier, mäta resultat,
-              jämföra strategier, lära av utfallet och föreslå nästa test utan broker, riktiga order eller livehandel.
-            </p>
-          </div>
-          <div className="tos-hero-status">
-            <Badge tone={safetyIsLocked ? 'good' : 'danger'}>{safetyIsLocked ? 'paper_only aktivt' : 'Kontrollera safety'}</Badge>
-            <Badge tone="good">inga riktiga order</Badge>
-            <Badge tone="good">broker avstängd</Badge>
-            <Badge tone="good">ingen livehandel</Badge>
-            <span>Uppdaterad {timeText(data.updatedAt)}</span>
-            {data.refreshing ? <small>Hämtar ny status…</small> : null}
-          </div>
-        </header>
-
         {data.error ? (
           <div className="tos-alert tos-alert-warning">{data.error}</div>
         ) : null}
@@ -748,20 +790,7 @@ export default function SupervisorBrainPage() {
           <div className="tos-loading">Laddar Trading OS-pipelinen…</div>
         ) : null}
 
-        <nav className="tos-section-nav" aria-label="Trading OS-sektioner">
-          {SECTIONS.map((section) => (
-            <button
-              key={section.id}
-              type="button"
-              className={`tos-section-tab${activeSection === section.id ? ' is-active' : ''}`}
-              onClick={() => setActiveSection(section.id)}
-            >
-              {section.label}
-            </button>
-          ))}
-        </nav>
-
-        {activeSection === 'controlroom' ? (
+        {activeSection === 'oversikt' ? (
           <section className="tos-section">
             <div className="tos-section-head">
               <div>
@@ -845,8 +874,8 @@ export default function SupervisorBrainPage() {
                 <PipelineStage
                   key={stage.name}
                   stage={stage}
-                  active={activeStage.sectionId === stage.sectionId}
-                  onSelect={setActiveSection}
+                  active={sectionGroup(stage.sectionId) === activeSection}
+                  onSelect={(sectionId) => setActiveSection(sectionGroup(sectionId))}
                 />
               ))}
             </div>
@@ -882,19 +911,26 @@ export default function SupervisorBrainPage() {
           </section>
         ) : null}
 
-        {activeSection === 'brain' ? (
+        {activeSection === 'autopilot' ? (
           <section className="tos-section">
             <div className="tos-section-head">
               <div>
-                <div className="tos-eyebrow">AI Brain</div>
-                <h2>Read-only status för AI-delarna</h2>
-                <p>Den här vyn visar vad som redan finns. Den startar inget, ändrar inget och kan inte handla.</p>
+                <div className="tos-eyebrow">Autopilot</div>
+                <h2>Read-only planering och AI-loop</h2>
+                <p>Autopiloterna planerar i dry-run. Den här vyn startar inget, ändrar inget och kan inte handla.</p>
               </div>
               <Badge tone={safetyIsLocked ? 'good' : 'danger'}>{safetyIsLocked ? 'Safety låst' : 'Kontrollera safety'}</Badge>
             </div>
 
+            <div className="tos-metrics-grid">
+              <Metric label="Replay autopilot" value={statusLabel(overview.replayAutopilotSummary?.status)} help={timeText(overview.replayAutopilotSummary?.nextRun)} tone={statusTone(overview.replayAutopilotSummary?.status)} />
+              <Metric label="Batch autopilot" value={statusLabel(overview.batchAutopilotSummary?.status)} help={timeText(overview.batchAutopilotSummary?.nextRun)} tone={statusTone(overview.batchAutopilotSummary?.status)} />
+              <Metric label="Läge" value="Dry-run" help="Planerar men exekverar inte." tone="good" />
+              <Metric label="Senaste blockerare" value={text(first(overview.replayAutopilotSummary?.lastBlockedReason, overview.batchAutopilotSummary?.lastBlockedReason), 'Ingen')} help="Read-only status." tone="warning" />
+            </div>
+
             <SectionCard
-              title="AI Brain status"
+              title="AI- och loopstatus"
               tone={safetyIsLocked ? 'good' : 'danger'}
               aside={<Badge tone="blue">read-only</Badge>}
             >
@@ -1049,7 +1085,7 @@ export default function SupervisorBrainPage() {
           </section>
         ) : null}
 
-        {activeSection === 'live' ? (
+        {activeSection === 'teknik' ? (
           <section className="tos-section">
             <div className="tos-section-head">
               <div>
@@ -1101,7 +1137,7 @@ export default function SupervisorBrainPage() {
           </section>
         ) : null}
 
-        {activeSection === 'data' ? (
+        {activeSection === 'teknik' ? (
           <section className="tos-section">
             <div className="tos-section-head">
               <div>
@@ -1166,7 +1202,7 @@ export default function SupervisorBrainPage() {
           </section>
         ) : null}
 
-        {activeSection === 'replay' ? (
+        {activeSection === 'tester' ? (
           <section className="tos-section">
             <div className="tos-section-head">
               <div>
@@ -1221,7 +1257,7 @@ export default function SupervisorBrainPage() {
           </section>
         ) : null}
 
-        {activeSection === 'batch' ? (
+        {activeSection === 'tester' ? (
           <section className="tos-section">
             <div className="tos-section-head">
               <div>
@@ -1393,7 +1429,7 @@ export default function SupervisorBrainPage() {
           </section>
         ) : null}
 
-        {activeSection === 'research' ? (
+        {activeSection === 'strategies' ? (
           <section className="tos-section">
             <div className="tos-section-head">
               <div>
@@ -1459,7 +1495,7 @@ export default function SupervisorBrainPage() {
           </section>
         ) : null}
 
-        {activeSection === 'ai' ? (
+        {activeSection === 'risks' ? (
           <section className="tos-section">
             <div className="tos-section-head">
               <div>
@@ -1520,7 +1556,7 @@ export default function SupervisorBrainPage() {
           </section>
         ) : null}
 
-        {activeSection === 'paper' ? (
+        {activeSection === 'safety' ? (
           <section className="tos-section">
             <div className="tos-section-head">
               <div>
@@ -1592,7 +1628,7 @@ export default function SupervisorBrainPage() {
           </section>
         ) : null}
 
-        {activeSection === 'tech' ? (
+        {activeSection === 'teknik' ? (
           <section className="tos-section">
             <div className="tos-section-head">
               <div>

@@ -12,16 +12,21 @@ const TOP_LINKS = [
   { to: '/interactive-brokers', label: 'Interactive Brokers' },
   { to: '/ai', label: 'AI' },
   { to: '/system', label: 'System' },
+  { to: '/lab?tab=batch', label: 'Batch Lab' },
+  { to: '/lab?tab=replay', label: 'Replay Lab' },
 ];
 
 export function DashboardTopNav() {
-  const { pathname } = useLocation();
+  const { pathname, search } = useLocation();
+  const currentLocation = `${pathname}${search}`;
   return (
     <nav className="dash-topnav" aria-label="Dashboard">
       <div className="dash-topnav-brand">Trading OS</div>
       <div className="dash-topnav-links">
         {TOP_LINKS.map((link) => {
-          const active = pathname === link.to || pathname.startsWith(`${link.to}/`);
+          const active = link.to.includes('?')
+            ? currentLocation === link.to
+            : pathname === link.to || pathname.startsWith(`${link.to}/`);
           return (
             <Link key={link.to} to={link.to} className={`dash-topnav-link${active ? ' is-active' : ''}`}>
               {link.label}

@@ -4,21 +4,24 @@ import SystemHealthPage from './SystemHealthPage.jsx';
 import AlertsPage from './AlertsPage.jsx';
 import { BlockersTab, RiskTab, SafetyTab } from './SakerhetsPage.jsx';
 import { ConfigScopeBadge, PlatformEmptyState, PlatformSafetyBar } from '../components/PlatformControls.jsx';
+import { DashboardShell } from '../components/dashboard/DashboardKit.jsx';
 import { useUnifiedConfig } from '../hooks/useUnifiedConfig.js';
 
 const TABS = [
-  { key: 'overview', label: 'Översikt', icon: '⚙️' },
-  { key: 'health', label: 'Hälsa', icon: '🩺' },
-  { key: 'providers', label: 'Providers', icon: '🔌' },
-  { key: 'logs', label: 'Loggar', icon: '🔔' },
-  { key: 'safety', label: 'Safety', icon: '🛡️' },
-  { key: 'debug', label: 'Debug', icon: '🧰' },
+  { key: 'overview', label: 'Översikt' },
+  { key: 'health', label: 'Health' },
+  { key: 'providers', label: 'Data' },
+  { key: 'logs', label: 'Loggar' },
+  { key: 'safety', label: 'Safety' },
+  { key: 'debug', label: 'Teknik' },
 ];
 
 const SAFETY_FLAGS = Object.freeze({
+  mode: 'paper_only',
   actions_allowed: false,
   can_place_orders: false,
   live_trading_enabled: false,
+  broker_enabled: false,
 });
 
 function componentState(items) {
@@ -165,27 +168,16 @@ export default function SystemPage() {
   }
 
   return (
+    <DashboardShell
+      title="System"
+      subtitle="Teknisk status, datakällor och safety. Ingen strategi- eller runtime-styrning görs här."
+      safety={SAFETY_FLAGS}
+      tabs={TABS.map((item) => ({ id: item.key, label: item.label }))}
+      activeTab={active}
+      onTab={setTab}
+    >
     <div className="sys-page">
       <PlatformSafetyBar />
-
-      <div className="sys-page-header">
-        <h1 className="sys-page-title">🛡 SYSTEM</h1>
-        <p className="sys-page-sub">Teknisk status och safety. Ingen strategi- eller runtime-styrning görs här.</p>
-      </div>
-
-      <div className="sys-tabs">
-        {TABS.map(t => (
-          <button
-            key={t.key}
-            className={`sys-tab${active === t.key ? ' sys-tab-active' : ''}`}
-            onClick={() => setTab(t.key)}
-            type="button"
-          >
-            <span>{t.icon}</span>
-            <span>{t.label}</span>
-          </button>
-        ))}
-      </div>
 
       {active === 'overview' && <OverviewTab />}
       {active === 'health' && <SystemHealthPage />}
@@ -194,5 +186,6 @@ export default function SystemPage() {
       {active === 'safety' && <SafetyOverviewTab />}
       {active === 'debug' && <DebugTab />}
     </div>
+    </DashboardShell>
   );
 }
