@@ -421,6 +421,44 @@ function recordKey(row = {}) {
   );
 }
 
+/**
+ * Blocker breakdown — read-only observability.
+ *
+ * Pure aggregation over already-normalized runtime events: groups blocked /
+ * skipped events by their human-readable `blockedReason` so /paper-trading can
+ * show clearly WHY no paper trades open on a given day.
+ *
+ * This is analysis only. It never mutates state, never changes any paper-entry
+ * gate, strategy, allowlist, family gate, scheduler, risk or execution logic —
+ * it merely counts reasons that already exist on the events. Fault-isolated by
+ * construction (a bad row is skipped, never throws).
+ */
+function buildBlockerBreakdown(events, options = {}) {
+  const maxSymbols = Number.isFinite(options.maxSymbols) ? options.maxSymbols : 6;
+  const groups = new Map();
+  let totalBlocked = 0;
+  for (const ev of arr(events)) {
+    const reason = text(ev && ev.blockedReason, null);
+    if (!reason) continue;
+    totalBlocked += 1;
+    let entry = groups.get(reason);
+    if (!entry) {
+      entry = { reason, count: 0, symbols: [], _symbolSet: new Set() };
+      groups.set(reason, entry);
+    }
+    entry.count += 1;
+    const sym = text(ev.symbol, null);
+    if (sym && sym !== '–' && !entry._symbolSet.has(sym)) {
+      entry._symbolSet.add(sym);
+      if (entry.symbols.length < maxSymbols) entry.symbols.push(sym);
+    }
+  }
+  const reasons = [...groups.values()]
+    .map(({ _symbolSet, ...rest }) => rest)
+    .sort((a, b) => b.count - a.count || String(a.reason).localeCompare(String(b.reason)));
+  return { totalBlocked, reasonCount: reasons.length, reasons };
+}
+
 function buildStrategies(openTrades, closedTrades, blockedCandidates, recentEvents) {
   const map = new Map();
   const bump = (strategyId, update) => {
@@ -870,6 +908,7 @@ function buildPaperTradingRuntime(options = {}) {
   const limitedClosedTrades = closedTrades.slice(0, limit);
   const limitedRecentEvents = recentEvents.slice(0, limit);
   const strategies = buildStrategies(limitedOpenTrades, limitedClosedTrades, blockedCandidates, limitedRecentEvents).slice(0, limit);
+  const blockerBreakdown = buildBlockerBreakdown(limitedRecentEvents);
   const mergedRecords = uniqueBy(
     [...limitedOpenTrades, ...limitedClosedTrades, ...blockedCandidates, ...limitedRecentEvents].sort(newestFirst),
     recordKey,
@@ -913,6 +952,7 @@ function buildPaperTradingRuntime(options = {}) {
     closedTrades: limitedClosedTrades,
     recentEvents: limitedRecentEvents,
     blockedCandidates,
+    blockerBreakdown,
     strategies,
     strategyPerformance,
     dailySelectionPreview,
@@ -955,6 +995,7 @@ module.exports = {
     normalizeGateDecision,
     strategyMeta,
     buildStrategies,
+    buildBlockerBreakdown,
     buildDailySelectionPreview,
     normalizeLearningOutcome,
     normalizeOptimizationCandidate,

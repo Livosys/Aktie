@@ -2970,6 +2970,7 @@ export default function PaperTradingPage() {
   const blockedCandidates = runtime?.blockedCandidates || [];
   const recentEvents = runtime?.recentEvents || [];
   const strategies = runtime?.strategies || [];
+  const blockerBreakdown = runtime?.blockerBreakdown || null;
   const dailySelectionPreview = runtime?.dailySelectionPreview || null;
   const selectedClosedTrade = useMemo(() => {
     if (!expandedTradeKey) return null;
@@ -3181,6 +3182,20 @@ export default function PaperTradingPage() {
       {activeTab === 'runtime' && (
         <>
           <SummaryGrid runtime={runtime} />
+          <DataTable
+            title="Blocker breakdown"
+            subtitle={blockerBreakdown
+              ? `Varför inga paper trades öppnas — aggregerat per orsak för de senaste ${recentEvents.length} events (${blockerBreakdown.totalBlocked} blockerade, ${blockerBreakdown.reasonCount} orsaker). Read-only observability.`
+              : 'Aggregerad summering av blocker reasons. Read-only observability.'}
+            rows={blockerBreakdown?.reasons || []}
+            emptyText="Inga blockerade events i senaste runtime-fönstret."
+            rowKey={(row, index) => row.reason || `reason-${index}`}
+            columns={[
+              { key: 'reason', label: 'Blocker reason' },
+              { key: 'count', label: 'Antal' },
+              { key: 'symbols', label: 'Exempel-symboler', render: (row) => (Array.isArray(row.symbols) && row.symbols.length ? row.symbols.join(', ') : '–') },
+            ]}
+          />
           <StrategyPipelineTruthPanel
             pipeline={strategyPipelineTruthState.data}
             loading={strategyPipelineTruthState.loading}
