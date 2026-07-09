@@ -739,10 +739,23 @@ function buildTradeExplanations(options = {}) {
   };
 }
 
+// Parse the trades and events files once so callers that resolve many
+// lookups in a loop (e.g. the loss-review queue) can reuse the result
+// instead of re-reading + re-parsing the (large) files per lookup.
+function preloadExplanationSources(options = {}) {
+  const files = { ...DEFAULT_FILES, ...(options.files || {}) };
+  return {
+    files,
+    tradeRows: findTradeRows({ files }),
+    eventRows: readJsonl(files.events).map(normalizeEvent),
+  };
+}
+
 function buildTradeExplanationLookup(options = {}) {
   const files = { ...DEFAULT_FILES, ...(options.files || {}) };
-  const trades = findTradeRows({ files });
-  const events = readJsonl(files.events).map(normalizeEvent);
+  const sources = options.sources || null;
+  const trades = sources ? sources.tradeRows : findTradeRows({ files });
+  const events = sources ? sources.eventRows : readJsonl(files.events).map(normalizeEvent);
   const trade = findMatchingTrade(trades, options.lookup || options);
 
   if (!trade) {
@@ -779,6 +792,7 @@ module.exports = {
   SAFETY,
   buildTradeExplanations,
   buildTradeExplanationLookup,
+  preloadExplanationSources,
   _internal: {
     clampLimit,
     normalizeTrade,

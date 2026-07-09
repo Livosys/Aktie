@@ -469,6 +469,7 @@ function buildTradeContext(trade, options) {
     ? options.resolveTradeExplanation(trade)
     : explanationService.buildTradeExplanationLookup({
       files: options.files,
+      sources: options.sources,
       lookup: {
         tradeId: trade.tradeId || null,
         symbol: trade.symbol || null,
@@ -508,7 +509,13 @@ function createLossReviewQueueService(options = {}) {
 
   function buildLossReviewQueue() {
     const closedTrades = loadClosedTrades();
-    const tradeContexts = closedTrades.map((trade) => buildTradeContext(trade, { ...options, files }));
+    const explanationService = options.explanationService || paperTradeExplanationService;
+    // Read + parse trades/events once and reuse for every loss trade's
+    // explanation lookup, instead of re-parsing the files per trade (O(N²)).
+    const sources = typeof explanationService.preloadExplanationSources === 'function'
+      ? explanationService.preloadExplanationSources({ files })
+      : undefined;
+    const tradeContexts = closedTrades.map((trade) => buildTradeContext(trade, { ...options, files, sources }));
     const { groups, summary, missingFields } = aggregateLosses(closedTrades, tradeContexts);
 
     return {
