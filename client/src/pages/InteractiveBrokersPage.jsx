@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { DashboardShell } from '../components/dashboard/DashboardKit.jsx';
+import { DashboardShell, EmptyState } from '../components/dashboard/DashboardKit.jsx';
 import {
   REQUIRED_FINAL_EXECUTION_COMMAND,
   REQUIRED_CONFIRMATION_PHRASE,
@@ -26,6 +26,14 @@ const REFRESH_MS = 20_000;
 const FETCH_TIMEOUT_MS = 6_500;
 const PREVIEW_LIMIT = 3;
 const IB_PAPER_UI_VERSION = '4G-2G-stable-snapshot';
+const IBKR_TABS = [
+  { id: 'oversikt', label: 'Översikt' },
+  { id: 'status', label: 'Status' },
+  { id: 'konto', label: 'Konto' },
+  { id: 'gateway', label: 'Gateway' },
+  { id: 'paper-only', label: 'Paper Only' },
+  { id: 'teknik', label: 'Teknik' },
+];
 const SAFE_EXECUTION_PREVIEW_BODY = Object.freeze({
   symbol: 'QQQ',
   action: 'BUY',
@@ -379,7 +387,7 @@ function Badge({ ok, labelTrue, labelFalse }) {
         fontSize: 12,
         fontWeight: 600,
         background: good ? 'rgba(34,197,94,0.15)' : 'rgba(248,113,113,0.15)',
-        color: good ? '#4ade80' : '#f87171',
+        color: good ? 'var(--success)' : 'var(--danger)',
         border: `1px solid ${good ? 'rgba(34,197,94,0.4)' : 'rgba(248,113,113,0.4)'}`,
       }}
     >
@@ -778,6 +786,7 @@ function ManualApprovalCard({ manualApproval, selectedBlueprint, selectedBluepri
 }
 
 export default function InteractiveBrokersPage() {
+  const [activeTab, setActiveTab] = useState('oversikt');
   const [state, setState] = useState({
     loading: true,
     errors: {
@@ -1232,6 +1241,53 @@ export default function InteractiveBrokersPage() {
     stableIbPaperSnapshot.account?.paperAccountIdMasked,
     stableIbPaperSnapshot.account?.paperAccountId,
   );
+  const gatewayConnected = gatewayHealthView.connected === true || gatewayHealthView.authenticated === true;
+  const gatewayStatus = gatewayConnected
+    ? 'Ansluten'
+    : gatewayHealthView.gatewayProcessRunning === true
+      ? 'Aktiv'
+      : 'Inaktiv';
+  const connectionStatus = conn.status || (conn.gatewayReachable === true ? 'reachable' : 'unknown');
+  const kpis = [
+    {
+      label: 'Gateway-status',
+      value: gatewayStatus,
+      hint: gatewayHealthView.lastCheckedAt
+        ? `Kontrollerad ${new Date(gatewayHealthView.lastCheckedAt).toLocaleString('sv-SE')}`
+        : 'Ingen färsk kontrolltid',
+      tone: gatewayConnected ? 'good' : gatewayHealthView.gatewayProcessRunning ? 'warning' : 'danger',
+    },
+    {
+      label: 'Broker enabled',
+      value: String(safety.broker_enabled === true),
+      hint: safety.broker_enabled === true ? 'Kontrollera safety' : 'Broker är avstängd',
+      tone: safety.broker_enabled === true ? 'danger' : 'good',
+    },
+    {
+      label: 'Live trading',
+      value: String(safety.live_trading_enabled === true),
+      hint: safety.live_trading_enabled === true ? 'Kontrollera safety' : 'Live trading är avstängd',
+      tone: safety.live_trading_enabled === true ? 'danger' : 'good',
+    },
+    {
+      label: 'Paper-only status',
+      value: safety.mode || 'paper_only',
+      hint: `orders=${String(safety.can_place_orders === true)}`,
+      tone: safety.mode === 'paper_only' && safety.can_place_orders === false ? 'good' : 'warning',
+    },
+    {
+      label: 'Paper account',
+      value: resolvedPaperAccountId || 'Saknas',
+      hint: executionStatusView.paperAccountVerified === true ? 'Verifierat paper-konto' : 'Inte verifierat',
+      tone: executionStatusView.paperAccountVerified === true ? 'blue' : 'warning',
+    },
+    {
+      label: 'Connection / sync',
+      value: connectionStatus,
+      hint: executionStatusView.ibApiVerified === true ? 'IB API verifierat' : 'IB API ej verifierat',
+      tone: conn.gatewayReachable === true && executionStatusView.ibApiVerified === true ? 'good' : 'warning',
+    },
+  ];
 
   async function handlePaperPreflight() {
     setPaperPreflightSubmitting(true);
@@ -1371,17 +1427,16 @@ export default function InteractiveBrokersPage() {
   }
 
   return (
-    <DashboardShell>
-    <div className="page" style={{ maxWidth: 920, margin: '0 auto', padding: '32px 24px' }}>
-      <div className="page-head" style={{ marginBottom: 16 }}>
-        <h1>Interactive Brokers Paper</h1>
-        <p style={{ color: 'var(--muted)', lineHeight: 1.6 }}>
-          Interactive Brokers Paper är separat från intern paper trading.
-          {' '}IB Paper API och safe preview är verifierade.
-          {' '}Real submit är låst och inga order skickas från denna vy.
-        </p>
-      </div>
-
+    <DashboardShell
+      title="Interactive Brokers Paper"
+      subtitle="Status, gateway och befintlig IB Paper-data i ett paper-only kontrollrum. Ingen live trading aktiveras här."
+      safety={safety}
+      tabs={IBKR_TABS}
+      activeTab={activeTab}
+      onTab={setActiveTab}
+      kpis={kpis}
+    >
+    <div className="ibkr-dashboard">
       {loading && <div style={CARD_STYLE}>Laddar…</div>}
       {!loading && hasAnyError && (
         <div style={{ ...CARD_STYLE, borderColor: 'rgba(251,191,36,0.35)', background: 'rgba(251,191,36,0.06)' }}>
@@ -1391,7 +1446,32 @@ export default function InteractiveBrokersPage() {
 
       {!loading && (
         <>
-          <div style={CARD_STYLE}>
+          <div hidden={activeTab !== 'konto'} style={CARD_STYLE}>
+            <h2 style={{ marginTop: 0 }}>Paper-konto</h2>
+            {resolvedPaperAccountId || (Array.isArray(conn.managedAccounts) && conn.managedAccounts.length) ? (
+              <>
+                <Row label="Paper account">
+                  <code>{resolvedPaperAccountId || 'Saknas'}</code>
+                </Row>
+                <Row label="Account mode">
+                  <code>{stableIbPaperSnapshot.accountMode || conn.accountMode || 'ib_paper'}</code>
+                </Row>
+                <Row label="Managed accounts">
+                  <code>{Array.isArray(conn.managedAccounts) && conn.managedAccounts.length ? conn.managedAccounts.join(', ') : 'inga'}</code>
+                </Row>
+                <Row label="Paper account verified">
+                  <Badge ok={executionStatusView.paperAccountVerified === true} labelTrue="Ja" labelFalse="Nej" />
+                </Row>
+                <Row label="Paper session verified">
+                  <Badge ok={conn.paperModeVerified === true} labelTrue="Ja" labelFalse="Nej" />
+                </Row>
+              </>
+            ) : (
+              <EmptyState text="Ingen IBKR paper-kontodata är tillgänglig ännu." />
+            )}
+          </div>
+
+          <div hidden={activeTab !== 'oversikt'} style={CARD_STYLE}>
             <h2 style={{ marginTop: 0 }}>IB Paper Control Room</h2>
             {errors.status && (
               <div style={{ color: 'var(--warning)', marginBottom: 12 }}>
@@ -1448,7 +1528,7 @@ export default function InteractiveBrokersPage() {
             </p>
           </div>
 
-          <div style={{ ...CARD_STYLE, borderColor: 'rgba(59,130,246,0.35)' }}>
+          <div hidden={activeTab !== 'gateway'} style={{ ...CARD_STYLE, borderColor: 'rgba(59,130,246,0.35)' }}>
             <h2 style={{ marginTop: 0 }}>IB Gateway Control</h2>
             {errors.gatewayHealth && (
               <div style={{ color: 'var(--warning)', marginBottom: 12 }}>
@@ -1493,7 +1573,7 @@ export default function InteractiveBrokersPage() {
               <code>{gatewayHealthView.lastCheckedAt ? new Date(gatewayHealthView.lastCheckedAt).toLocaleString('sv-SE') : 'okänt'}</code>
             </Row>
             <Row label="Nästa åtgärd">
-              <code style={{ color: gatewayHealthView.nextActionSv === 'Allt ser OK ut' ? '#4ade80' : 'var(--warning)' }}>
+              <code style={{ color: gatewayHealthView.nextActionSv === 'Allt ser OK ut' ? 'var(--success)' : 'var(--warning)' }}>
                 {gatewayHealthView.nextActionSv || 'Kan inte avgöra status'}
               </code>
             </Row>
@@ -1508,7 +1588,7 @@ export default function InteractiveBrokersPage() {
             </p>
           </div>
 
-          <div style={{ ...CARD_STYLE, borderColor: 'rgba(248,113,113,0.35)' }}>
+          <div hidden={activeTab !== 'status'} style={{ ...CARD_STYLE, borderColor: 'rgba(248,113,113,0.35)' }}>
             <h2 style={{ marginTop: 0 }}>Execution status</h2>
             <Row label="Paper-route">
               <Badge ok={executionStatusView.executionEnabled === true} labelTrue="Aktiv, submit låst" labelFalse="Av" />
@@ -1537,7 +1617,7 @@ export default function InteractiveBrokersPage() {
             </p>
           </div>
 
-          <div style={{ ...CARD_STYLE, borderColor: 'rgba(34,197,94,0.35)' }}>
+          <div hidden={activeTab !== 'status'} style={{ ...CARD_STYLE, borderColor: 'rgba(34,197,94,0.35)' }}>
             <h2 style={{ marginTop: 0 }}>IB Paper Execution Preview</h2>
             <p style={{ color: 'var(--muted)', marginTop: 0, lineHeight: 1.6 }}>
               Preview skickar ingen order. UI anropar endast <code>/api/interactive-brokers/paper-execution-preview</code> med dryRun=true och mockOnly=true.
@@ -1579,7 +1659,7 @@ export default function InteractiveBrokersPage() {
             </Row>
           </div>
 
-          <div style={CARD_STYLE}>
+          <div hidden={activeTab !== 'gateway'} style={CARD_STYLE}>
             <h2 style={{ marginTop: 0 }}>Anslutnings-readiness (IB Gateway/TWS)</h2>
             <div style={{ color: 'var(--muted)', marginTop: 0, marginBottom: 12, lineHeight: 1.7 }}>
               • IBKR-lösenord sparas inte i Trading OS.<br />
@@ -1631,7 +1711,7 @@ export default function InteractiveBrokersPage() {
             </Row>
           </div>
 
-          <div style={CARD_STYLE}>
+          <div hidden={activeTab !== 'status'} style={CARD_STYLE}>
             <h2 style={{ marginTop: 0 }}>Safety-status</h2>
             <Row label="mode">
               <code>{safety.mode || 'paper_only'}</code>
@@ -1650,7 +1730,7 @@ export default function InteractiveBrokersPage() {
             </Row>
           </div>
 
-          <div style={CARD_STYLE}>
+          <div hidden={activeTab !== 'oversikt'} style={CARD_STYLE}>
             <h2 style={{ marginTop: 0 }}>Canonical truth</h2>
             <Row label="Top 3 selected">
               <code>{truthReadiness?.selectedCount ?? truthTopStrategies.length ?? 0}/{truthReadiness?.selectionCount ?? 3}</code>
@@ -1686,7 +1766,7 @@ export default function InteractiveBrokersPage() {
             </div>
           </div>
 
-          <div style={CARD_STYLE}>
+          <div hidden={activeTab !== 'paper-only'} style={CARD_STYLE}>
             <h2 style={{ marginTop: 0 }}>Godkända strategier för framtida IB Paper-preview</h2>
             <p style={{ color: 'var(--muted)', marginTop: 0, lineHeight: 1.6 }}>
               Endast redan godkända strategier visas här (läses från systemets befintliga
@@ -1725,7 +1805,7 @@ export default function InteractiveBrokersPage() {
             )}
           </div>
 
-          <div style={{ ...CARD_STYLE, borderColor: 'rgba(59,130,246,0.35)' }}>
+          <div hidden={activeTab !== 'paper-only'} style={{ ...CARD_STYLE, borderColor: 'rgba(59,130,246,0.35)' }}>
             <h2 style={{ marginTop: 0 }}>Dagens IB Paper-preview</h2>
             <p style={{ color: 'var(--muted)', marginTop: 0, lineHeight: 1.6 }}>
               Förhandsvisning endast. Inga order skickas ännu.
@@ -1800,7 +1880,7 @@ export default function InteractiveBrokersPage() {
             </div>
           </div>
 
-          <div style={{ ...CARD_STYLE, borderColor: 'rgba(168,85,247,0.35)' }}>
+          <div hidden={activeTab !== 'teknik'} style={{ ...CARD_STYLE, borderColor: 'rgba(168,85,247,0.35)' }}>
             <h2 style={{ marginTop: 0 }}>Dry-run execution scaffold</h2>
             <p style={{ color: 'var(--muted)', marginTop: 0, lineHeight: 1.6 }}>
               Detta är bara en plan-/stomvy. Den sammanställer read-only preview-data till en framtida exekveringsstruktur utan att öppna broker, kö eller orderväg.
@@ -1868,7 +1948,7 @@ export default function InteractiveBrokersPage() {
             )}
           </div>
 
-          <div style={{ ...CARD_STYLE, borderColor: 'rgba(14,165,233,0.35)' }}>
+          <div hidden={activeTab !== 'paper-only'} style={{ ...CARD_STYLE, borderColor: 'rgba(14,165,233,0.35)' }}>
             <h2 style={{ marginTop: 0 }}>IB Paper Trade Blueprint</h2>
             <p style={{ color: 'var(--muted)', marginTop: 0, lineHeight: 1.6 }}>
               Trade Blueprint är read-only och kan vara redo för IB Paper-preview.
@@ -1940,7 +2020,7 @@ export default function InteractiveBrokersPage() {
           </div>
         </div>
 
-          <div style={{ ...CARD_STYLE, borderColor: 'rgba(59,130,246,0.34)' }}>
+          <div hidden={activeTab !== 'paper-only'} style={{ ...CARD_STYLE, borderColor: 'rgba(59,130,246,0.34)' }}>
             <h2 style={{ marginTop: 0 }}>First IB Paper Order Preflight</h2>
             <p style={{ color: 'var(--muted)', marginTop: 0, lineHeight: 1.6 }}>
               Preflight skickar ingen order. Den kontrollerar bara om systemet är redo för en framtida manuellt godkänd IB Paper-order.
@@ -2048,7 +2128,7 @@ export default function InteractiveBrokersPage() {
             </Row>
           </div>
 
-          <div style={{ ...CARD_STYLE, borderColor: 'rgba(34,197,94,0.34)' }}>
+          <div hidden={activeTab !== 'paper-only'} style={{ ...CARD_STYLE, borderColor: 'rgba(34,197,94,0.34)' }}>
             <h2 style={{ marginTop: 0 }}>Manuell IB Paper bracket-submit</h2>
             <div style={{ marginTop: -4, marginBottom: 10, color: 'var(--blue)', fontSize: 13 }}>
               IB Paper UI version: <code>{IB_PAPER_UI_VERSION}</code>
@@ -2300,7 +2380,7 @@ export default function InteractiveBrokersPage() {
             )}
           </div>
 
-          <div style={{ ...CARD_STYLE, borderColor: 'rgba(56,189,248,0.34)' }}>
+          <div hidden={activeTab !== 'teknik'} style={{ ...CARD_STYLE, borderColor: 'rgba(56,189,248,0.34)' }}>
             <h2 style={{ marginTop: 0 }}>Protective Order / Bracket Plan</h2>
             <p style={{ color: 'var(--muted)', marginTop: 0, lineHeight: 1.6 }}>
               {stableIbPaperSnapshot.loadingState === 'loading'
@@ -2391,7 +2471,7 @@ export default function InteractiveBrokersPage() {
             )}
           </div>
 
-          <div style={{ ...CARD_STYLE, borderColor: 'rgba(250,204,21,0.34)' }}>
+          <div hidden={activeTab !== 'paper-only'} style={{ ...CARD_STYLE, borderColor: 'rgba(250,204,21,0.34)' }}>
             <h2 style={{ marginTop: 0 }}>Arm First IB Paper One-Shot</h2>
             <p style={{ color: 'var(--muted)', marginTop: 0, lineHeight: 1.6 }}>
               Arming skickar ingen order. Det öppnar bara ett tidsbegränsat fönster för en framtida separat godkänd IB Paper-order.
@@ -2520,7 +2600,7 @@ export default function InteractiveBrokersPage() {
                 borderRadius: 10,
                 border: '1px solid rgba(250,204,21,0.28)',
                 background: armSubmitDisabled ? 'rgba(250,204,21,0.08)' : 'rgba(250,204,21,0.18)',
-                color: armSubmitDisabled ? 'var(--muted)' : '#fef08a',
+                color: armSubmitDisabled ? 'var(--muted)' : 'var(--warning)',
                 fontWeight: 700,
                 cursor: armSubmitDisabled ? 'not-allowed' : 'pointer',
               }}
@@ -2538,7 +2618,7 @@ export default function InteractiveBrokersPage() {
                 borderRadius: 10,
                 border: '1px solid rgba(248,113,113,0.28)',
                 background: (!armStatusView?.armed || disarmSubmitting) ? 'rgba(248,113,113,0.08)' : 'rgba(248,113,113,0.18)',
-                color: (!armStatusView?.armed || disarmSubmitting) ? 'var(--muted)' : '#fecaca',
+                color: (!armStatusView?.armed || disarmSubmitting) ? 'var(--muted)' : 'var(--danger)',
                 fontWeight: 700,
                 cursor: (!armStatusView?.armed || disarmSubmitting) ? 'not-allowed' : 'pointer',
               }}
@@ -2564,7 +2644,7 @@ export default function InteractiveBrokersPage() {
             </div>
           </div>
 
-          <div style={{ ...CARD_STYLE, borderColor: 'rgba(34,197,94,0.35)' }}>
+          <div hidden={activeTab !== 'paper-only'} style={{ ...CARD_STYLE, borderColor: 'rgba(34,197,94,0.35)' }}>
             <h2 style={{ marginTop: 0 }}>IB Paper Execution</h2>
             <p style={{ color: 'var(--muted)', marginTop: 0, lineHeight: 1.6 }}>
               IB Paper API och preview är verifierade. Real submit är fortfarande låst bakom manuell final gate och Read-Only API är inte ändrat.
@@ -2693,7 +2773,7 @@ export default function InteractiveBrokersPage() {
             </div>
           </div>
 
-          <div style={{ ...CARD_STYLE, borderColor: 'rgba(251,191,36,0.35)' }}>
+          <div hidden={activeTab !== 'teknik'} style={{ ...CARD_STYLE, borderColor: 'rgba(251,191,36,0.35)' }}>
             <h2 style={{ marginTop: 0 }}>Nästa fas — låst</h2>
             <Row label="Paper order-kö">
               <Badge ok={nextPhase.paperOrderQueue?.locked !== false} labelTrue="Låst" labelFalse="Öppen" />
@@ -2713,7 +2793,7 @@ export default function InteractiveBrokersPage() {
             </p>
           </div>
 
-          <div style={{ ...CARD_STYLE, borderColor: 'rgba(34,197,94,0.3)' }}>
+          <div hidden={activeTab !== 'oversikt'} style={{ ...CARD_STYLE, borderColor: 'rgba(34,197,94,0.3)' }}>
             <h2 style={{ marginTop: 0 }}>Separation från intern paper trading</h2>
             <Row label="Intern paper trading opåverkad">
               <Badge ok={statusView.internalPaperTradingUnaffected === true} labelTrue="Ja" labelFalse="Nej" />
