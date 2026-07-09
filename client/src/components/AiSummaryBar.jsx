@@ -1,6 +1,8 @@
 import React, { useMemo } from 'react';
 import { useUnifiedConfig } from '../hooks/useUnifiedConfig.js';
 
+const AI_SUMMARY_RESOURCES = ['systemHealth', 'marketRegime', 'prioritySummary'];
+
 function bestStrategy(weights) {
   const key = weights?.topStrategies?.[0];
   const labels = {
@@ -22,7 +24,7 @@ function marketText(regime) {
 }
 
 export default function AiSummaryBar() {
-  const { global, test } = useUnifiedConfig('core');
+  const { global, test } = useUnifiedConfig(AI_SUMMARY_RESOURCES);
   const regime = test.marketRegime;
   const health = global.systemHealth;
   const priority = test.prioritySummary;
