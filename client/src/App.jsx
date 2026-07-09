@@ -1,24 +1,25 @@
-import React from 'react';
+import React, { Suspense, lazy } from 'react';
 import { Routes, Route, Navigate, useLocation } from 'react-router-dom';
 import AppShell from './layout/AppShell.jsx';
 import MobileBottomNav from './MobileBottomNav.jsx';
 import AiCopilot from './components/AiCopilot.jsx';
 import { AlertProvider, HeroToastContainer } from './alertContext.jsx';
 
-// New primary pages
-import SignalpulsPage   from './pages/SignalpulsPage.jsx';
-import TradingLabPage   from './pages/TradingLabPage.jsx';
-import ResultatPage     from './pages/ResultatPage.jsx';
-import SystemPage       from './pages/SystemPage.jsx';
-import DaytradingPage   from './pages/DaytradingPage.jsx';
-import SupervisorBrainPage from './pages/SupervisorBrainPage.jsx';
-import NarrowStateLabPage from './pages/NarrowStateLabPage.jsx';
-import PaperTradingPage from './pages/PaperTradingPage.jsx';
-import FuturesPaperDeskPage from './pages/FuturesPaperDeskPage.jsx';
-import InteractiveBrokersPage from './pages/InteractiveBrokersPage.jsx';
-import AdminPage from './pages/AdminPage.jsx';
-import PinescriptPage from './pages/PinescriptPage.jsx';
-import AiControlRoomPage from './pages/AiControlRoomPage.jsx';
+// New primary pages — lazy-loaded so each route ships as its own chunk
+// instead of one large initial bundle. Paths/redirects/logic are unchanged.
+const SignalpulsPage   = lazy(() => import('./pages/SignalpulsPage.jsx'));
+const TradingLabPage   = lazy(() => import('./pages/TradingLabPage.jsx'));
+const ResultatPage     = lazy(() => import('./pages/ResultatPage.jsx'));
+const SystemPage       = lazy(() => import('./pages/SystemPage.jsx'));
+const DaytradingPage   = lazy(() => import('./pages/DaytradingPage.jsx'));
+const SupervisorBrainPage = lazy(() => import('./pages/SupervisorBrainPage.jsx'));
+const NarrowStateLabPage = lazy(() => import('./pages/NarrowStateLabPage.jsx'));
+const PaperTradingPage = lazy(() => import('./pages/PaperTradingPage.jsx'));
+const FuturesPaperDeskPage = lazy(() => import('./pages/FuturesPaperDeskPage.jsx'));
+const InteractiveBrokersPage = lazy(() => import('./pages/InteractiveBrokersPage.jsx'));
+const AdminPage = lazy(() => import('./pages/AdminPage.jsx'));
+const PinescriptPage = lazy(() => import('./pages/PinescriptPage.jsx'));
+const AiControlRoomPage = lazy(() => import('./pages/AiControlRoomPage.jsx'));
 
 function RedirectWithSearch({ to }) {
   const { search } = useLocation();
@@ -27,11 +28,16 @@ function RedirectWithSearch({ to }) {
   return <Navigate to={`${to}${suffix}`} replace />;
 }
 
+function PageFallback() {
+  return <div className="tos-loading" style={{ margin: '24px' }}>Laddar…</div>;
+}
+
 export default function App() {
   return (
     <AlertProvider>
       <AppShell>
         <HeroToastContainer />
+        <Suspense fallback={<PageFallback />}>
         <Routes>
           {/* Trading OS v2 */}
           <Route path="/"             element={<Navigate to="/supervisor" replace />} />
@@ -105,6 +111,7 @@ export default function App() {
           <Route path="/risk"              element={<Navigate to="/system?tab=safety" replace />} />
           <Route path="/exit"              element={<Navigate to="/lab?tab=exits" replace />} />
         </Routes>
+        </Suspense>
       </AppShell>
       <MobileBottomNav />
       <AiCopilot />
