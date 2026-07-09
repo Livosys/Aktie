@@ -610,6 +610,7 @@ function createFuturesPaperScannerService(options = {}) {
       candidate.familyGateDecision = gate.familyGateDecision;
       candidate.familyBlockReason = null;
       candidate.strategyCooldownDecision = gate.strategyCooldownDecision || 'allowed';
+      candidate.strategyCooldownBlockReason = null;
       candidate.nextAllowedAt = null;
 
       added.push(candidate);
@@ -784,7 +785,13 @@ function createFuturesPaperScannerService(options = {}) {
       strategyFamily: candidate.strategyFamily || gate.strategyFamily || null,
       familyRank: candidate.familyRank ?? null,
       familyGateDecision: candidate.familyGateDecision || gate.familyGateDecision || null,
+      familyBlockReason: candidate.familyBlockReason || gate.familyBlockReason || null,
       strategyCooldownDecision: candidate.strategyCooldownDecision || gate.strategyCooldownDecision || 'allowed',
+      strategyCooldownBlockReason: candidate.strategyCooldownBlockReason
+        || (gate.strategyCooldownDecision === 'blocked' ? gate.blockReason : null),
+      nextAllowedAt: gate.blockReason
+        ? (candidate.nextAllowedAt || gate.familyNextAllowedAt || gate.nextAllowedAt || null)
+        : null,
       entryReason: `${candidate.entryReason || 'Futures paper candidate'} [source=${candidate.source}, tradeType=${normalizedTradeType}, dataSource=${dataSource}]`,
       tradeType: normalizedTradeType,
       signalSource: candidate.signalSource || (isRealSignalCandidate ? 'trading_os' : 'fallback_test'),

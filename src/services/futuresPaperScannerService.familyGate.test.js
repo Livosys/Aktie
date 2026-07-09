@@ -141,7 +141,10 @@ assert.equal(simulated.position.strategyId, 'vwap_momentum_long');
 assert.equal(simulated.position.strategyFamily, 'vwap_family');
 assert.equal(simulated.position.familyRank, 1);
 assert.equal(simulated.position.familyGateDecision, 'allowed');
+assert.equal(simulated.position.familyBlockReason, null);
 assert.equal(simulated.position.strategyCooldownDecision, 'allowed');
+assert.equal(simulated.position.strategyCooldownBlockReason, null);
+assert.equal(simulated.position.nextAllowedAt, null);
 assert.equal(simulated.can_place_orders, false);
 assert.equal(simulated.live_trading_enabled, false);
 
@@ -170,6 +173,24 @@ const closed = ledger.closeFuturesPaperPosition({
   exitReason: 'take_profit_hit',
 });
 assert.equal(closed.ok, true);
+assert.equal(closed.trade.strategyFamily, 'vwap_family');
+assert.equal(closed.trade.familyRank, 1);
+assert.equal(closed.trade.familyGateDecision, 'allowed');
+assert.equal(closed.trade.familyBlockReason, null);
+assert.equal(closed.trade.strategyCooldownDecision, 'allowed');
+assert.equal(closed.trade.strategyCooldownBlockReason, null);
+assert.equal(closed.trade.nextAllowedAt, null);
+
+const recentClosed = ledger.getRecentClosedTrades({ limit: 10 });
+const closedView = recentClosed.trades.find((row) => row.tradeId === simulated.position.tradeId);
+assert.ok(closedView, 'stängd trade ska finnas i recent closed output');
+assert.equal(closedView.strategyFamily, 'vwap_family');
+assert.equal(closedView.familyRank, 1);
+assert.equal(closedView.familyGateDecision, 'allowed');
+assert.equal(closedView.familyBlockReason, null);
+assert.equal(closedView.strategyCooldownDecision, 'allowed');
+assert.equal(closedView.strategyCooldownBlockReason, null);
+assert.equal(closedView.nextAllowedAt, null);
 
 // ── Scan 3a (11:10): samma strategyId 10 min efter trade → strategy cooldown ─
 const t2 = '2026-07-08T11:10:00.000Z';

@@ -25,6 +25,13 @@ const openMnq = ledgerSvc.openFuturesPaperPosition({
   takeProfit: 20020,
   strategyId: 'trend_continuation',
   strategyName: 'Trend Continuation',
+  strategyFamily: 'ema_trend_family',
+  familyRank: 1,
+  familyGateDecision: 'allowed',
+  familyBlockReason: null,
+  strategyCooldownDecision: 'allowed',
+  strategyCooldownBlockReason: null,
+  nextAllowedAt: null,
   entryReason: 'Signal confirmed',
 });
 
@@ -32,6 +39,13 @@ assert.equal(openMnq.ok, true);
 assert.equal(openMnq.position.root, 'MNQ');
 assert.equal(openMnq.position.status, 'open');
 assert.equal(openMnq.position.unrealizedPnlUsd, 0);
+assert.equal(openMnq.position.strategyFamily, 'ema_trend_family');
+assert.equal(openMnq.position.familyRank, 1);
+assert.equal(openMnq.position.familyGateDecision, 'allowed');
+assert.equal(openMnq.position.familyBlockReason, null);
+assert.equal(openMnq.position.strategyCooldownDecision, 'allowed');
+assert.equal(openMnq.position.strategyCooldownBlockReason, null);
+assert.equal(openMnq.position.nextAllowedAt, null);
 assert.equal(openMnq.positions.totalOpen, 1);
 assert.equal(openMnq.mode, 'paper_only');
 assert.equal(openMnq.actions_allowed, false);
@@ -45,12 +59,18 @@ const openMes = ledgerSvc.openFuturesPaperPosition({
   entryPrice: 5000,
   stopLoss: 5010,
   takeProfit: 4980,
-  strategyId: 'trend_continuation',
-  strategyName: 'Trend Continuation',
+  strategyId: 'resistance_rejection',
+  strategyName: 'Resistance Rejection',
   entryReason: 'Momentum fade',
 });
 
 assert.equal(openMes.ok, true);
+assert.equal(openMes.position.strategyFamily, null);
+assert.equal(openMes.position.familyRank, null);
+assert.equal(openMes.position.familyGateDecision, 'not_applicable');
+assert.equal(openMes.position.familyBlockReason, null);
+assert.equal(openMes.position.strategyCooldownDecision, 'not_applicable');
+assert.equal(openMes.position.strategyCooldownBlockReason, null);
 assert.equal(openMes.positions.totalOpen, 2);
 
 const closeMnq = ledgerSvc.closeFuturesPaperPosition({
@@ -64,6 +84,10 @@ assert.equal(closeMnq.ok, true);
 assert.equal(closeMnq.trade.status, 'closed');
 assert.equal(closeMnq.trade.realizedPnlUsd, 4);
 assert.equal(closeMnq.trade.realizedPnlSek, 42);
+assert.equal(closeMnq.trade.strategyFamily, 'ema_trend_family');
+assert.equal(closeMnq.trade.familyRank, 1);
+assert.equal(closeMnq.trade.familyGateDecision, 'allowed');
+assert.equal(closeMnq.trade.strategyCooldownDecision, 'allowed');
 assert.equal(closeMnq.positions.totalOpen, 1);
 assert.equal(closeMnq.positions.totalClosed, 1);
 
@@ -86,6 +110,10 @@ assert.equal(ledger.positions.totalOpen, 0);
 assert.equal(ledger.positions.totalClosed, 2);
 assert.equal(ledger.openPositions.length, 0);
 assert.equal(ledger.closedTrades.length, 2);
+assert.equal(ledger.closedTrades[0].strategyFamily, 'ema_trend_family');
+assert.equal(ledger.closedTrades[0].familyRank, 1);
+assert.equal(ledger.closedTrades[0].familyGateDecision, 'allowed');
+assert.equal(ledger.closedTrades[0].strategyCooldownDecision, 'allowed');
 assert.equal(ledger.trades.length, 2);
 assert.equal(ledger.account.realizedPnlSek, 147);
 assert.equal(ledger.account.cashSek, 250147);

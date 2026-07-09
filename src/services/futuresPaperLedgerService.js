@@ -2,6 +2,7 @@
 
 const storageService = require('./futuresPaperStorageService');
 const futuresPaperAccountService = require('./futuresPaperAccountService');
+const strategyTradeControl = require('./strategyTradeControlService');
 
 const SAFETY = Object.freeze({
   mode: 'paper_only',
@@ -50,6 +51,30 @@ function ensureFiniteNumber(value) {
 function booleanValue(value, fallback = false) {
   if (value === true || value === false) return value;
   return fallback;
+}
+
+function optionalText(value) {
+  const text = String(value || '').trim();
+  return text || null;
+}
+
+function normalizeStrategyControlMetadata(position = {}) {
+  const strategyId = optionalText(position.strategyId);
+  const strategyFamily = strategyTradeControl.resolveStrategyFamily({
+    strategyId,
+    strategyFamily: optionalText(position.strategyFamily),
+  });
+  return {
+    strategyFamily,
+    familyRank: strategyFamily ? ensureFiniteNumber(position.familyRank) : null,
+    familyGateDecision: strategyFamily
+      ? (optionalText(position.familyGateDecision) || 'not_applicable')
+      : 'not_applicable',
+    familyBlockReason: strategyFamily ? optionalText(position.familyBlockReason) : null,
+    strategyCooldownDecision: optionalText(position.strategyCooldownDecision) || 'not_applicable',
+    strategyCooldownBlockReason: optionalText(position.strategyCooldownBlockReason),
+    nextAllowedAt: optionalText(position.nextAllowedAt),
+  };
 }
 
 function createTradeId(now = new Date()) {
@@ -113,6 +138,7 @@ function calculatePnlUsd({ root, entryPrice, exitPrice, side, contracts }) {
 
 function toPositionView(position, fxUsdSek = 0) {
   const root = normalizeRoot(position.root, position.symbol);
+  const strategyControlMetadata = normalizeStrategyControlMetadata(position);
   const pointValueUsd = getPointValueUsd(root) || 0;
   const currentPrice = ensureFiniteNumber(position.currentPrice ?? position.entryPrice) ?? 0;
   const entryPrice = ensureFiniteNumber(position.entryPrice) ?? 0;
@@ -144,10 +170,7 @@ function toPositionView(position, fxUsdSek = 0) {
     status: position.status || 'open',
     strategyId: position.strategyId || null,
     strategyName: position.strategyName || null,
-    strategyFamily: position.strategyFamily || null,
-    familyRank: ensureFiniteNumber(position.familyRank),
-    familyGateDecision: position.familyGateDecision || null,
-    strategyCooldownDecision: position.strategyCooldownDecision || null,
+    ...strategyControlMetadata,
     entryReason: position.entryReason || null,
     exitReason: position.exitReason || null,
     tradeType: position.tradeType || 'manual_simulation',
@@ -413,6 +436,16 @@ function createFuturesPaperLedgerService(options = {}) {
       input.excludedFromStats,
       !(tradeType === 'trading_os_signal' && usedRealStrategyLogic === true && usedFallbackPrice === false),
     );
+    const strategyControlMetadata = normalizeStrategyControlMetadata({
+      strategyId,
+      strategyFamily: input.strategyFamily,
+      familyRank: input.familyRank,
+      familyGateDecision: input.familyGateDecision,
+      familyBlockReason: input.familyBlockReason,
+      strategyCooldownDecision: input.strategyCooldownDecision,
+      strategyCooldownBlockReason: input.strategyCooldownBlockReason,
+      nextAllowedAt: input.nextAllowedAt,
+    });
     const account = getCurrentAccount();
 
     if (!root) return { ok: false, error: 'invalid_root', ...SAFETY };
@@ -440,10 +473,7 @@ function createFuturesPaperLedgerService(options = {}) {
       status: 'open',
       strategyId,
       strategyName,
-      strategyFamily: input.strategyFamily ? String(input.strategyFamily).trim().toLowerCase() : null,
-      familyRank: ensureFiniteNumber(input.familyRank),
-      familyGateDecision: input.familyGateDecision ? String(input.familyGateDecision).trim() : null,
-      strategyCooldownDecision: input.strategyCooldownDecision ? String(input.strategyCooldownDecision).trim() : null,
+      ...strategyControlMetadata,
       entryReason,
       exitReason: null,
       tradeType,
@@ -496,6 +526,7 @@ function createFuturesPaperLedgerService(options = {}) {
       entryPrice: position.entryPrice,
       strategyId,
       strategyName,
+      ...strategyControlMetadata,
       entryReason,
       tradeType,
       signalSource,
@@ -600,6 +631,7 @@ function createFuturesPaperLedgerService(options = {}) {
       realizedPnlUsd: closedPosition.realizedPnlUsd,
       realizedPnlSek: closedPosition.realizedPnlSek,
       exitReason,
+      ...normalizeStrategyControlMetadata(closedPosition),
       tradeType: closedPosition.tradeType || 'manual_simulation',
       signalSource: closedPosition.signalSource || 'manual',
       dataSource: closedPosition.dataSource || 'simulated_fallback',
@@ -640,6 +672,7 @@ function createFuturesPaperLedgerService(options = {}) {
         const closedMs = Date.parse(row.closedAt || '') || 0;
         const durationMinutes = openedMs && closedMs ? round((closedMs - openedMs) / 60000, 1) : null;
         return {
+          ...normalizeStrategyControlMetadata(row),
           tradeId: row.tradeId,
           symbol: row.symbol || row.root,
           strategyId: row.strategyId || null,
