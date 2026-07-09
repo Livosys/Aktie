@@ -1120,9 +1120,12 @@ function runtimeProfileForStrategy(strategyId, savedConfig = {}) {
   };
 }
 
-function runtimeProfileSnapshot(strategyId, savedConfig = {}) {
+function runtimeProfileSnapshot(strategyId, savedConfig = {}, statsMap = null) {
   const profile = runtimeProfileForStrategy(strategyId, savedConfig);
-  const { stats } = tradeStatsByStrategy();
+  // Reuse a precomputed stats map when the caller already built one
+  // (e.g. getStrategyRuntimeSummary loops over the whole catalog), instead
+  // of re-parsing the large trades file once per strategy.
+  const stats = statsMap || tradeStatsByStrategy().stats;
   const stat = stats.get(strategyId) || {};
   return {
     ...profile,
@@ -1235,9 +1238,9 @@ function baseRuntimeForStrategy(strategyId, savedConfig = {}) {
   return profile;
 }
 
-function getRuntimeStatusForStrategy(strategyId) {
+function getRuntimeStatusForStrategy(strategyId, statsMap = null) {
   const savedConfig = readControlConfig().strategies?.[strategyId] || {};
-  return runtimeProfileSnapshot(strategyId, savedConfig);
+  return runtimeProfileSnapshot(strategyId, savedConfig, statsMap);
 }
 
 function canCreatePaperTradeForSignal(signal = {}) {
@@ -1271,7 +1274,7 @@ function getStrategyRuntimeSummary() {
   const { trades, stats } = tradeStatsByStrategy();
   const events = readJsonl(EVENTS_FILE).filter((row) => withinWindow(row));
   const strategies = catalogRows.map((strategy) => {
-    const runtime = getRuntimeStatusForStrategy(strategy.id);
+    const runtime = getRuntimeStatusForStrategy(strategy.id, stats);
     const stat = stats.get(strategy.id) || {};
     return {
       ...strategy,
