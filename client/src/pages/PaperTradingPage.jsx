@@ -1,13 +1,20 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { DashboardShell } from '../components/dashboard/DashboardKit.jsx';
+import { DashboardShell, EmptyState } from '../components/dashboard/DashboardKit.jsx';
 import PaperCandidatePanel from '../components/PaperCandidatePanel.jsx';
-import TradingViewTestBlueprintPanel from '../components/TradingViewTestBlueprintPanel.jsx';
 import TradingViewTestResultsPanel from '../components/TradingViewTestResultsPanel.jsx';
-import tradingViewTestBlueprintFallback from '../utils/tradingview-test-blueprints.json';
 
 const REFRESH_MS = 15_000;
 const FETCH_TIMEOUT_MS = 6_500;
+const PAPER_TABS = [
+  { id: 'oversikt', label: 'Översikt' },
+  { id: 'konto', label: 'Konto' },
+  { id: 'positioner', label: 'Positioner' },
+  { id: 'trades', label: 'Trades' },
+  { id: 'runtime', label: 'Runtime' },
+  { id: 'loss-review', label: 'Loss Review' },
+  { id: 'teknik', label: 'Teknik' },
+];
 
 async function fetchJsonWithTimeout(url, { timeoutMs = FETCH_TIMEOUT_MS, signal } = {}) {
   const controller = new AbortController();
@@ -544,25 +551,6 @@ function friendlyTradeExplanationError(err, fallback) {
   return message || fallback;
 }
 
-function friendlyBlueprintError(err) {
-  const message = String(err?.message || '').trim();
-  if (/^HTTP 404$/i.test(message)) return 'Blueprint-data saknas ännu';
-  if (/Failed to fetch|NetworkError|Load failed/i.test(message)) return 'Blueprint-källa inte ansluten ännu';
-  if (/^timeout_after_\d+ms$/i.test(message)) return 'Blueprint-källa inte ansluten ännu (timeout)';
-  return message || 'Blueprint-källa inte ansluten ännu';
-}
-
-async function fetchTradingViewBlueprintPayload() {
-  try {
-    return await fetchJsonWithTimeout('/api/paper-trading/tradingview-test-blueprints');
-  } catch (err) {
-    const message = String(err?.message || '').trim();
-    const isConnectivityIssue = /^HTTP 404$/i.test(message) || /Failed to fetch|NetworkError|Load failed/i.test(message);
-    if (!isConnectivityIssue) throw err;
-    return tradingViewTestBlueprintFallback;
-  }
-}
-
 function friendlyLossReviewError(err, fallback) {
   return friendlyTradeExplanationError(err, fallback);
 }
@@ -706,49 +694,6 @@ function useApprovalPreview(refreshKey = 0) {
       });
     return () => { alive = false; };
   }, [refreshKey]);
-  return state;
-}
-
-function useTradingViewBlueprints(refreshKey = 0) {
-  const [state, setState] = useState({ loading: true, data: null, error: null });
-  const emptyPayload = useMemo(() => ({
-    ok: true,
-    status: 'empty',
-    source: 'none',
-    blueprints: [],
-    summary: {
-      strategies: 0,
-      pineScriptPossible: 0,
-      needsAttention: 0,
-      directionBoth: 0,
-    },
-  }), []);
-
-  useEffect(() => {
-    let alive = true;
-    setState((prev) => ({ ...prev, loading: true }));
-    fetchTradingViewBlueprintPayload()
-      .then((data) => {
-        if (!alive) return;
-        const normalized = data && typeof data === 'object'
-          ? {
-              ...data,
-              source: data.source || (Array.isArray(data.blueprints) && data.blueprints.length ? 'file' : 'none'),
-            }
-          : emptyPayload;
-        setState({ loading: false, data: normalized, error: null });
-      })
-      .catch((err) => {
-        if (!alive) return;
-        setState({
-          loading: false,
-          data: emptyPayload,
-          error: friendlyBlueprintError(err),
-        });
-      });
-    return () => { alive = false; };
-  }, [emptyPayload, refreshKey]);
-
   return state;
 }
 
@@ -2925,11 +2870,11 @@ export default function PaperTradingPage() {
   const theme = useThemeMode();
   const [refreshKey, setRefreshKey] = useState(0);
   const [marketRefreshKey, setMarketRefreshKey] = useState(0);
+  const [activeTab, setActiveTab] = useState('oversikt');
   const safetyState = useSafetyStatus(refreshKey);
   const gateStatusState = useGateStatus(refreshKey);
   const riskPauseSummaryState = useRiskPauseSummary(refreshKey);
   const approvalPreviewState = useApprovalPreview(refreshKey);
-  const tradingViewBlueprintState = useTradingViewBlueprints(refreshKey);
   const runtimeState = usePaperRuntime(50);
   const explanationsState = useTradeExplanations(50);
   const exitComparisonState = useExitProfileComparison(131);
@@ -2941,6 +2886,66 @@ export default function PaperTradingPage() {
   const [lossReviewPreview, setLossReviewPreview] = useState({ loadingGroupId: null, groupId: null, data: null, error: null });
   const runtime = runtimeState.data;
   const summary = runtime?.summary || {};
+  const performanceSummary = runtime?.strategyPerformance?.summary || {};
+  const paperAccount = runtime?.account || null;
+  const accountValue = paperAccount?.equity ?? paperAccount?.balance ?? paperAccount?.cash ?? null;
+  const dashboardSafety = runtime?.safety || safetyState.data?.status || safetyState.data || runtime || {};
+  const paperPnl = Number(performanceSummary.netPnlPct);
+  const paperStatus = runtimeState.loading && !runtime
+    ? 'Laddar'
+    : runtimeState.error
+      ? 'Degraded'
+      : runtime?.status || 'Okänd';
+  const kpis = [
+    {
+      label: 'Paper status',
+      value: paperStatus,
+      hint: 'Read-only paper runtime',
+      tone: runtimeState.error ? 'warning' : runtime?.status === 'ok' ? 'good' : 'neutral',
+    },
+    {
+      label: 'Equity / balans',
+      value: accountValue == null ? '–' : String(accountValue),
+      hint: accountValue == null ? 'Ingen kontodata i runtime' : 'Paper-konto',
+      tone: 'blue',
+    },
+    {
+      label: 'Paper PnL',
+      value: Number.isFinite(paperPnl) ? fmtPct(paperPnl) : '–',
+      hint: 'Netto från strategy performance',
+      tone: paperPnl > 0 ? 'good' : paperPnl < 0 ? 'danger' : 'neutral',
+    },
+    {
+      label: 'Antal trades',
+      value: performanceSummary.closedTrades ?? summary.closedCount ?? 0,
+      hint: 'Performance-underlag',
+      tone: 'blue',
+    },
+    {
+      label: 'Öppna positioner',
+      value: summary.openCount ?? 0,
+      hint: 'Aktiva paper-only trades',
+      tone: (summary.openCount ?? 0) > 0 ? 'warning' : 'neutral',
+    },
+    {
+      label: 'Stängda trades',
+      value: summary.closedCount ?? 0,
+      hint: `Visar ${Array.isArray(runtime?.closedTrades) ? runtime.closedTrades.length : 0} senaste`,
+      tone: 'neutral',
+    },
+    {
+      label: 'Win rate',
+      value: performanceSummary.winRatePct == null ? '–' : `${Number(performanceSummary.winRatePct).toFixed(1)}%`,
+      hint: 'Strategy performance',
+      tone: Number(performanceSummary.winRatePct) >= 50 ? 'good' : 'warning',
+    },
+    {
+      label: 'Runtime status',
+      value: runtime?.status || (runtimeState.loading ? 'Laddar' : 'Okänd'),
+      hint: `Senaste event ${fmtTime(summary.latestEventAt)}`,
+      tone: runtime?.status === 'ok' ? 'good' : runtimeState.error ? 'danger' : 'neutral',
+    },
+  ];
   const explanationsByKey = useMemo(() => {
     const map = new Map();
     const items = Array.isArray(explanationsState.data?.items) ? explanationsState.data.items : [];
@@ -3002,51 +3007,15 @@ export default function PaperTradingPage() {
   }
 
   return (
-    <DashboardShell>
-    <div className="page-wrap">
-      <div className="page-hero">
-        <div className="hero-left">
-          <div className="hero-title">Paper trading</div>
-          <div className="hero-sub">Read-only runtimevy för paper-only-systemet.</div>
-        </div>
-      </div>
-
-      <PaperControlRoomPanel
-        runtime={runtime}
-        safetyStatus={safetyState.data}
-        gateStatus={gateStatusState.data}
-        approvalPreview={approvalPreviewState.data}
-        allowlist={allowlistState.data}
-      />
-
-      <SafetyBanner safety={runtime?.safety || runtime} />
-
-      <TopStrategySelectorPanel preview={dailySelectionPreview} />
-
-      <PaperMarketsPanel refreshKey={marketRefreshKey} onRefresh={() => setMarketRefreshKey((t) => t + 1)} />
-
-      <DailySelectionPreviewPanel preview={dailySelectionPreview} />
-
-      <WhyNoTradesPanel
-        runtime={runtime}
-        allowlist={allowlistState.data}
-        riskPauseSummary={riskPauseSummaryState.data}
-        gateStatus={gateStatusState.data}
-        onRefresh={() => setRefreshKey((t) => t + 1)}
-      />
-
-      <StrategyPipelineTruthPanel
-        pipeline={strategyPipelineTruthState.data}
-        loading={strategyPipelineTruthState.loading}
-        error={strategyPipelineTruthState.error}
-      />
-
-      <PaperAllowlistManager runtime={runtime} allowlist={allowlistState.data} refreshKey={refreshKey} onRefresh={() => setRefreshKey((t) => t + 1)} />
-
-      <TradingViewTestResultsPanel theme={theme} />
-
-      <PaperCandidatePanel mode="paper" />
-
+    <DashboardShell
+      title="Paper Trading"
+      subtitle="Read-only kontrollrum för paper-only runtime, positioner, resultat och loss review."
+      safety={dashboardSafety}
+      tabs={PAPER_TABS}
+      activeTab={activeTab}
+      onTab={setActiveTab}
+      kpis={kpis}
+    >
       {runtimeState.loading && !runtime ? (
         <div style={sectionStyle()}>Hämtar paper runtime...</div>
       ) : null}
@@ -3059,176 +3028,239 @@ export default function PaperTradingPage() {
         </div>
       ) : null}
 
-      <SummaryGrid runtime={runtime} />
+      {activeTab === 'oversikt' && (
+        <>
+          <PaperControlRoomPanel
+            runtime={runtime}
+            safetyStatus={safetyState.data}
+            gateStatus={gateStatusState.data}
+            approvalPreview={approvalPreviewState.data}
+            allowlist={allowlistState.data}
+          />
+          <SafetyBanner safety={dashboardSafety} />
+          <TopStrategySelectorPanel preview={dailySelectionPreview} />
+          <DailySelectionPreviewPanel preview={dailySelectionPreview} />
+          <WhyNoTradesPanel
+            runtime={runtime}
+            allowlist={allowlistState.data}
+            riskPauseSummary={riskPauseSummaryState.data}
+            gateStatus={gateStatusState.data}
+            onRefresh={() => setRefreshKey((t) => t + 1)}
+          />
+        </>
+      )}
 
-      <ExitProfileComparisonPanel comparison={exitComparisonState.data} theme={theme} />
-
-      <ShortExitTruthPanel
-        shortExit={shortExitTruthState.data}
-        loading={shortExitTruthState.loading}
-        error={shortExitTruthState.error}
-      />
-
-      <DataTable
-        title="Open paper trades"
-        subtitle="Aktiva paper-only positioner från state.json"
-        rows={openTrades}
-        emptyText="Inga öppna paper trades just nu."
-        rowKey={(row, index) => row.tradeId || `${row.symbol}-${index}`}
-        columns={[
-          { key: 'symbol', label: 'Symbol' },
-          { key: 'strategy_id', label: 'Canonical strategy_id' },
-          { key: 'setup', label: 'Setup' },
-          { key: 'direction', label: 'Direction' },
-          { key: 'source', label: 'Source' },
-          { key: 'opened_at', label: 'Opened', render: (row) => fmtTime(row.opened_at) },
-          { key: 'paperOnly', label: 'paperOnly', render: (row) => String(row.paperOnly === true) },
-        ]}
-      />
-
-      <DataTable
-        title="Closed paper trades"
-        subtitle={`Senaste closed trades. Total closed i runtime: ${summary.closedCount ?? 0}`}
-        rows={closedTrades}
-        emptyText="Inga stängda paper trades ännu."
-        rowKey={(row, index) => tradeLookupKey(row) || `${row.symbol}-${index}`}
-        columns={[
-          { key: 'symbol', label: 'Symbol' },
-          { key: 'strategy_id', label: 'Canonical strategy_id' },
-          { key: 'setup', label: 'Setup' },
-          { key: 'result', label: 'Result', render: (row) => <span style={{ color: toneForResult(row.result), fontWeight: 700 }}>{row.result || '–'}</span> },
-          { key: 'pnlPct', label: 'PnL %', render: (row) => <span style={{ color: toneForResult(row.result) }}>{fmtPct(row.pnlPct)}</span> },
-          { key: 'opened_at', label: 'Opened', render: (row) => fmtTime(row.opened_at) },
-          { key: 'closed_at', label: 'Closed', render: (row) => fmtTime(row.closed_at) },
-          { key: 'source', label: 'Source' },
-          { key: 'paperOnly', label: 'paperOnly', render: (row) => String(row.paperOnly === true) },
-          {
-            key: 'why',
-            label: 'Why',
-            render: (row) => {
-              const key = tradeLookupKey(row);
-              const isOpen = expandedTradeKey === key;
-              return (
-                <button
-                  type="button"
-                  onClick={() => setExpandedTradeKey(isOpen ? null : key)}
-                  style={{
-                    ...explanationBadgeStyle(isOpen ? 'info' : 'neutral'),
-                    cursor: 'pointer',
-                    whiteSpace: 'nowrap',
-                    border: isOpen ? '1px solid rgba(56,189,248,0.22)' : '1px solid var(--border)',
-                  }}
-                >
-                  {isOpen ? 'Dölj' : 'Visa varför'}
-                </button>
-              );
-            },
-          },
-        ]}
-      />
-      <LossReviewQueuePanel
-        review={lossReviewState.data}
-        loading={lossReviewState.loading}
-        error={lossReviewState.error}
-        theme={theme}
-        previewState={lossReviewPreview}
-        onPreviewGroup={loadLossReviewPreview}
-      />
-      {expandedTradeKey ? (
-        <div style={{ marginTop: -10, marginBottom: 18 }}>
-          {activeClosedTradeExplanation ? (
-            <>
-              <ClosedTradeExplanationPanel explanation={activeClosedTradeExplanation} trade={selectedClosedTrade} theme={theme} />
-              <EntryQualityGatePanel gate={activeClosedTradeExplanation.entryQualityGate} theme={theme} />
-            </>
-          ) : selectedLookup.loading ? (
-            <div style={{ ...sectionStyle(), borderColor: 'rgba(56,189,248,0.18)', background: 'var(--surface-2)' }}>
-              <strong>Hämtar förklaring...</strong>
-              <div style={{ marginTop: 4, ...mutedTextStyle(theme), fontSize: 13 }}>
-                Läser read-only historik för att matcha traden mot loggen.
-              </div>
-            </div>
-          ) : selectedLookup.error ? (
-            <div style={{ ...sectionStyle(), borderColor: 'rgba(245, 158, 11, 0.18)', background: 'var(--surface-2)' }}>
-              <strong>Trade explanations tillfälligt otillgängligt</strong>
-              <div style={{ marginTop: 4, ...mutedTextStyle(theme), fontSize: 13 }}>
-                {selectedLookup.error}
-              </div>
-            </div>
-          ) : selectedLookupDiagnosis ? (
-            <div style={{ ...sectionStyle(), borderColor: 'rgba(245, 158, 11, 0.18)', background: 'var(--surface-2)' }}>
-              <strong>Förklaring saknas för denna trade eftersom äldre logg saknar matchande ID/tid.</strong>
-              <div style={{ marginTop: 4, ...mutedTextStyle(theme), fontSize: 13, lineHeight: 1.5 }}>
-                Orsak: {explanationValue(selectedLookupDiagnosis.reason)}
-                <br />
-                Sökt symbol: {explanationValue(selectedLookupDiagnosis.searchedSymbol)}
-                <br />
-                Sökt strategyId: {explanationValue(selectedLookupDiagnosis.searchedStrategyId)}
-                <br />
-                Sökt openedAt: {explanationValue(selectedLookupDiagnosis.searchedOpenedAt)}
-                <br />
-                Tillgänglig närmaste match: {selectedLookupDiagnosis.availableClosestMatch ? `${selectedLookupDiagnosis.availableClosestMatch.symbol} · ${selectedLookupDiagnosis.availableClosestMatch.strategyId || 'unknown'} · ${fmtTime(selectedLookupDiagnosis.availableClosestMatch.openedAt)}` : 'ingen'}
-              </div>
-            </div>
+      {activeTab === 'konto' && (
+        <div style={sectionStyle()}>
+          {paperAccount ? (
+            <DataTable
+              title="Paper-konto"
+              subtitle="Kontodata från befintlig paper runtime."
+              rows={Object.entries(paperAccount).map(([key, value]) => ({ key, value }))}
+              emptyText="Ingen kontodata i paper runtime."
+              rowKey={(row) => row.key}
+              columns={[
+                { key: 'key', label: 'Fält' },
+                { key: 'value', label: 'Värde', render: (row) => String(row.value ?? '–') },
+              ]}
+            />
           ) : (
-            <div style={{ ...sectionStyle(), borderColor: 'rgba(245, 158, 11, 0.18)', background: 'var(--surface-2)' }}>
-              <strong>Saknas i loggning</strong>
-              <div style={{ marginTop: 4, ...mutedTextStyle(theme), fontSize: 13 }}>
-                Trade-explanation kunde inte matchas mot historiken. Kontrollera tradeId eller symbol + strategyId + openedAt.
-              </div>
-            </div>
+            <EmptyState text="Paper runtime innehåller ingen separat konto- eller equity-datakälla ännu." />
           )}
         </div>
-      ) : null}
+      )}
 
-      <DataTable
-        title="Blocked candidates"
-        subtitle="Signaler som stoppades innan paper trade skapades"
-        rows={blockedCandidates}
-        emptyText="Inga blocked candidates i senaste runtime-fönstret."
-        rowKey={(row, index) => row.eventId || `${row.symbol}-${index}`}
-        columns={[
-          { key: 'symbol', label: 'Symbol' },
-          { key: 'strategy_id', label: 'Canonical strategy_id' },
-          { key: 'gateStage', label: 'Gate stage' },
-          { key: 'blockedReason', label: 'Blocked reason' },
-          { key: 'timestamp', label: 'Timestamp', render: (row) => fmtTime(row.timestamp) },
-          { key: 'source', label: 'Source' },
-        ]}
-      />
+      {activeTab === 'positioner' && (
+        <DataTable
+          title="Open paper trades"
+          subtitle="Aktiva paper-only positioner från state.json"
+          rows={openTrades}
+          emptyText="Inga öppna paper trades just nu."
+          rowKey={(row, index) => row.tradeId || `${row.symbol}-${index}`}
+          columns={[
+            { key: 'symbol', label: 'Symbol' },
+            { key: 'strategy_id', label: 'Canonical strategy_id' },
+            { key: 'setup', label: 'Setup' },
+            { key: 'direction', label: 'Direction' },
+            { key: 'source', label: 'Source' },
+            { key: 'opened_at', label: 'Opened', render: (row) => fmtTime(row.opened_at) },
+            { key: 'paperOnly', label: 'paperOnly', render: (row) => String(row.paperOnly === true) },
+          ]}
+        />
+      )}
 
-      <DataTable
-        title="Latest paper events"
-        subtitle="Senaste paper-only runtime-events"
-        rows={recentEvents}
-        emptyText="Inga paper events ännu."
-        rowKey={(row, index) => row.eventId || `${row.symbol}-${index}`}
-        columns={[
-          { key: 'type', label: 'Event type' },
-          { key: 'symbol', label: 'Symbol' },
-          { key: 'strategy_id', label: 'Canonical strategy_id' },
-          { key: 'timestamp', label: 'Timestamp', render: (row) => fmtTime(row.timestamp) },
-          { key: 'reason', label: 'Reason / result', render: (row) => row.blockedReason || row.result || row.status || '–' },
-          { key: 'source', label: 'Source' },
-        ]}
-      />
+      {activeTab === 'trades' && (
+        <>
+          <DataTable
+            title="Closed paper trades"
+            subtitle={`Senaste closed trades. Total closed i runtime: ${summary.closedCount ?? 0}`}
+            rows={closedTrades}
+            emptyText="Inga stängda paper trades ännu."
+            rowKey={(row, index) => tradeLookupKey(row) || `${row.symbol}-${index}`}
+            columns={[
+              { key: 'symbol', label: 'Symbol' },
+              { key: 'strategy_id', label: 'Canonical strategy_id' },
+              { key: 'setup', label: 'Setup' },
+              { key: 'result', label: 'Result', render: (row) => <span style={{ color: toneForResult(row.result), fontWeight: 700 }}>{row.result || '–'}</span> },
+              { key: 'pnlPct', label: 'PnL %', render: (row) => <span style={{ color: toneForResult(row.result) }}>{fmtPct(row.pnlPct)}</span> },
+              { key: 'opened_at', label: 'Opened', render: (row) => fmtTime(row.opened_at) },
+              { key: 'closed_at', label: 'Closed', render: (row) => fmtTime(row.closed_at) },
+              { key: 'source', label: 'Source' },
+              { key: 'paperOnly', label: 'paperOnly', render: (row) => String(row.paperOnly === true) },
+              {
+                key: 'why',
+                label: 'Why',
+                render: (row) => {
+                  const key = tradeLookupKey(row);
+                  const isOpen = expandedTradeKey === key;
+                  return (
+                    <button
+                      type="button"
+                      onClick={() => setExpandedTradeKey(isOpen ? null : key)}
+                      style={{
+                        ...explanationBadgeStyle(isOpen ? 'info' : 'neutral'),
+                        cursor: 'pointer',
+                        whiteSpace: 'nowrap',
+                        border: isOpen ? '1px solid rgba(56,189,248,0.22)' : '1px solid var(--border)',
+                      }}
+                    >
+                      {isOpen ? 'Dölj' : 'Visa varför'}
+                    </button>
+                  );
+                },
+              },
+            ]}
+          />
+          {expandedTradeKey ? (
+            <div>
+              {activeClosedTradeExplanation ? (
+                <>
+                  <ClosedTradeExplanationPanel explanation={activeClosedTradeExplanation} trade={selectedClosedTrade} theme={theme} />
+                  <EntryQualityGatePanel gate={activeClosedTradeExplanation.entryQualityGate} theme={theme} />
+                </>
+              ) : selectedLookup.loading ? (
+                <div style={{ ...sectionStyle(), borderColor: 'rgba(56,189,248,0.18)', background: 'var(--surface-2)' }}>
+                  <strong>Hämtar förklaring...</strong>
+                  <div style={{ marginTop: 4, ...mutedTextStyle(theme), fontSize: 13 }}>
+                    Läser read-only historik för att matcha traden mot loggen.
+                  </div>
+                </div>
+              ) : selectedLookup.error ? (
+                <div style={{ ...sectionStyle(), borderColor: 'rgba(245, 158, 11, 0.18)', background: 'var(--surface-2)' }}>
+                  <strong>Trade explanations tillfälligt otillgängligt</strong>
+                  <div style={{ marginTop: 4, ...mutedTextStyle(theme), fontSize: 13 }}>{selectedLookup.error}</div>
+                </div>
+              ) : selectedLookupDiagnosis ? (
+                <div style={{ ...sectionStyle(), borderColor: 'rgba(245, 158, 11, 0.18)', background: 'var(--surface-2)' }}>
+                  <strong>Förklaring saknas för denna trade eftersom äldre logg saknar matchande ID/tid.</strong>
+                  <div style={{ marginTop: 4, ...mutedTextStyle(theme), fontSize: 13, lineHeight: 1.5 }}>
+                    Orsak: {explanationValue(selectedLookupDiagnosis.reason)}
+                    <br />
+                    Sökt symbol: {explanationValue(selectedLookupDiagnosis.searchedSymbol)}
+                    <br />
+                    Sökt strategyId: {explanationValue(selectedLookupDiagnosis.searchedStrategyId)}
+                    <br />
+                    Sökt openedAt: {explanationValue(selectedLookupDiagnosis.searchedOpenedAt)}
+                    <br />
+                    Tillgänglig närmaste match: {selectedLookupDiagnosis.availableClosestMatch ? `${selectedLookupDiagnosis.availableClosestMatch.symbol} · ${selectedLookupDiagnosis.availableClosestMatch.strategyId || 'unknown'} · ${fmtTime(selectedLookupDiagnosis.availableClosestMatch.openedAt)}` : 'ingen'}
+                  </div>
+                </div>
+              ) : (
+                <div style={{ ...sectionStyle(), borderColor: 'rgba(245, 158, 11, 0.18)', background: 'var(--surface-2)' }}>
+                  <strong>Saknas i loggning</strong>
+                  <div style={{ marginTop: 4, ...mutedTextStyle(theme), fontSize: 13 }}>
+                    Trade-explanation kunde inte matchas mot historiken. Kontrollera tradeId eller symbol + strategyId + openedAt.
+                  </div>
+                </div>
+              )}
+            </div>
+          ) : null}
+        </>
+      )}
 
-      <DataTable
-        title="Strategy summary"
-        subtitle="Aggregerat per canonical strategy_id"
-        rows={strategies}
-        emptyText="Inga strategier i runtime-fönstret ännu."
-        rowKey={(row, index) => row.strategy_id || `strategy-${index}`}
-        columns={[
-          { key: 'strategy_id', label: 'Canonical strategy_id' },
-          { key: 'openCount', label: 'Open' },
-          { key: 'closedCount', label: 'Closed' },
-          { key: 'blockedCount', label: 'Blocked' },
-          { key: 'latestEventType', label: 'Latest event' },
-          { key: 'latestEventAt', label: 'Latest at', render: (row) => fmtTime(row.latestEventAt) },
-        ]}
-      />
-    </div>
+      {activeTab === 'runtime' && (
+        <>
+          <SummaryGrid runtime={runtime} />
+          <StrategyPipelineTruthPanel
+            pipeline={strategyPipelineTruthState.data}
+            loading={strategyPipelineTruthState.loading}
+            error={strategyPipelineTruthState.error}
+          />
+          <DataTable
+            title="Blocked candidates"
+            subtitle="Signaler som stoppades innan paper trade skapades"
+            rows={blockedCandidates}
+            emptyText="Inga blocked candidates i senaste runtime-fönstret."
+            rowKey={(row, index) => row.eventId || `${row.symbol}-${index}`}
+            columns={[
+              { key: 'symbol', label: 'Symbol' },
+              { key: 'strategy_id', label: 'Canonical strategy_id' },
+              { key: 'gateStage', label: 'Gate stage' },
+              { key: 'blockedReason', label: 'Blocked reason' },
+              { key: 'timestamp', label: 'Timestamp', render: (row) => fmtTime(row.timestamp) },
+              { key: 'source', label: 'Source' },
+            ]}
+          />
+          <DataTable
+            title="Latest paper events"
+            subtitle="Senaste paper-only runtime-events"
+            rows={recentEvents}
+            emptyText="Inga paper events ännu."
+            rowKey={(row, index) => row.eventId || `${row.symbol}-${index}`}
+            columns={[
+              { key: 'type', label: 'Event type' },
+              { key: 'symbol', label: 'Symbol' },
+              { key: 'strategy_id', label: 'Canonical strategy_id' },
+              { key: 'timestamp', label: 'Timestamp', render: (row) => fmtTime(row.timestamp) },
+              { key: 'reason', label: 'Reason / result', render: (row) => row.blockedReason || row.result || row.status || '–' },
+              { key: 'source', label: 'Source' },
+            ]}
+          />
+          <DataTable
+            title="Strategy summary"
+            subtitle="Aggregerat per canonical strategy_id"
+            rows={strategies}
+            emptyText="Inga strategier i runtime-fönstret ännu."
+            rowKey={(row, index) => row.strategy_id || `strategy-${index}`}
+            columns={[
+              { key: 'strategy_id', label: 'Canonical strategy_id' },
+              { key: 'openCount', label: 'Open' },
+              { key: 'closedCount', label: 'Closed' },
+              { key: 'blockedCount', label: 'Blocked' },
+              { key: 'latestEventType', label: 'Latest event' },
+              { key: 'latestEventAt', label: 'Latest at', render: (row) => fmtTime(row.latestEventAt) },
+            ]}
+          />
+        </>
+      )}
+
+      {activeTab === 'loss-review' && (
+        <>
+          <LossReviewQueuePanel
+            review={lossReviewState.data}
+            loading={lossReviewState.loading}
+            error={lossReviewState.error}
+            theme={theme}
+            previewState={lossReviewPreview}
+            onPreviewGroup={loadLossReviewPreview}
+          />
+          <ExitProfileComparisonPanel comparison={exitComparisonState.data} theme={theme} />
+          <ShortExitTruthPanel
+            shortExit={shortExitTruthState.data}
+            loading={shortExitTruthState.loading}
+            error={shortExitTruthState.error}
+          />
+        </>
+      )}
+
+      {activeTab === 'teknik' && (
+        <>
+          <PaperMarketsPanel refreshKey={marketRefreshKey} onRefresh={() => setMarketRefreshKey((t) => t + 1)} />
+          <PaperAllowlistManager runtime={runtime} allowlist={allowlistState.data} refreshKey={refreshKey} onRefresh={() => setRefreshKey((t) => t + 1)} />
+          <TradingViewTestResultsPanel theme={theme} />
+          <PaperCandidatePanel mode="paper" />
+        </>
+      )}
     </DashboardShell>
   );
 }
