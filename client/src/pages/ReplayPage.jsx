@@ -614,6 +614,12 @@ export default function ReplayPage() {
         <>
           <div className="sec">
             <SectionHeader icon="" title="Status" desc={`${session.config.symbols.join(', ')} · ${session.config.date_from} -> ${session.config.date_to} · ${session.config.speed}`} />
+            {Array.isArray(session.config.data_gaps) && session.config.data_gaps.length > 0 && (
+              <div className="replay-data-warning">
+                Datagap – kördes inte (ingen replay-data):{' '}
+                {session.config.data_gaps.map((g) => `${g.symbol} (needs_provider${g.proxy ? `, proxy ${g.proxy}` : ''})`).join(', ')}.
+              </div>
+            )}
             <ControlBar
               session={session}
               onRun={() => runAction('run')}

@@ -25,6 +25,7 @@ const RESEARCH_GROUP_LABELS = Object.freeze({
   sp500: 'S&P 500',
   nasdaq100: 'Nasdaq 100',
   crypto: 'Crypto',
+  us_micro_futures: 'US Micro Futures',
 });
 
 // Explicit symbol -> research group map. This is the single source of truth
@@ -53,6 +54,41 @@ const RESEARCH_ALLOWED_SYMBOLS = Object.freeze(Object.keys(RESEARCH_SYMBOL_GROUP
 
 const ALLOWED_SYMBOL_SET = new Set(RESEARCH_ALLOWED_SYMBOLS);
 const ALLOWED_GROUP_SET = new Set(RESEARCH_ALLOWED_GROUPS);
+
+// ── US micro futures (CME, USD) — replay-only, flag-gated ──────────────────────
+// MNQ/MES are intentionally NOT part of the shared research universe above (that
+// universe is used by batch / replay / autopilot / autoMachine / daily). They are
+// only admitted for the 'replay' context AND only when the feature flag is on, so
+// data-less futures symbols can never leak into batch/autopilot runs. Contract
+// specs mirror futuresPaperDeskService (single source stays there; duplicated
+// here only as read-only metadata for scope/mapping — no P/L math in this module).
+const FUTURES_SYMBOL_META = Object.freeze({
+  MNQ: Object.freeze({ group: 'us_micro_futures', root: 'MNQ', tvSymbol: 'CME_MINI:MNQ1!', underlying: 'Nasdaq 100', proxy: 'QQQ', contractSize: 2, tickSize: 0.25, tickValueUsd: 0.50 }),
+  MES: Object.freeze({ group: 'us_micro_futures', root: 'MES', tvSymbol: 'CME_MINI:MES1!', underlying: 'S&P 500', proxy: 'SPY', contractSize: 5, tickSize: 0.25, tickValueUsd: 1.25 }),
+});
+const FUTURES_SYMBOL_SET = new Set(Object.keys(FUTURES_SYMBOL_META));
+const FUTURES_ALLOWED_CONTEXTS = new Set(['replay']);
+
+// Feature flag: futures replay-scope is OFF unless explicitly enabled, so this
+// change is inert until an operator turns it on (rollback = unset the env var).
+function futuresScopeEnabled() {
+  return String(process.env.REPLAY_FUTURES_SCOPE_ENABLED || '').toLowerCase() === 'true';
+}
+
+function contextAllowsFutures(context) {
+  return futuresScopeEnabled() && FUTURES_ALLOWED_CONTEXTS.has(String(context || '').trim().toLowerCase());
+}
+
+// Read-only mapping accessor for MNQ/MES metadata (null for non-futures).
+function getFuturesSymbolMeta(symbol) {
+  const norm = normalizeResearchSymbol(symbol);
+  return norm && FUTURES_SYMBOL_META[norm] ? FUTURES_SYMBOL_META[norm] : null;
+}
+
+function isFuturesSymbol(symbol) {
+  const norm = normalizeResearchSymbol(symbol);
+  return norm !== '' && FUTURES_SYMBOL_SET.has(norm);
+}
 
 /**
  * Normalize a symbol into canonical research form: trimmed, upper-cased,
@@ -113,8 +149,9 @@ function filterResearchSymbols(symbols) {
  * Split a list of symbols into { allowed, blocked } where blocked entries carry
  * a reason. Preserves order. Useful for surfacing blockedSymbols in run/start.
  */
-function partitionResearchSymbols(symbols) {
+function partitionResearchSymbols(symbols, options = {}) {
   const list = Array.isArray(symbols) ? symbols : (symbols === null || symbols === undefined ? [] : [symbols]);
+  const allowFutures = contextAllowsFutures(options.context);
   const seen = new Set();
   const allowed = [];
   const blocked = [];
@@ -128,6 +165,17 @@ function partitionResearchSymbols(symbols) {
     seen.add(norm);
     if (ALLOWED_SYMBOL_SET.has(norm)) {
       allowed.push(norm);
+    } else if (allowFutures && FUTURES_SYMBOL_SET.has(norm)) {
+      allowed.push(norm);
+    } else if (FUTURES_SYMBOL_SET.has(norm)) {
+      // Known futures symbol, but not admitted in this context / flag is off.
+      const meta = FUTURES_SYMBOL_META[norm];
+      blocked.push({
+        symbol: String(raw),
+        normalized: norm,
+        reason: 'futures_scope_disabled',
+        message: `US micro futures (${norm}) är endast tillgängligt i replay och kräver REPLAY_FUTURES_SCOPE_ENABLED. Proxy: ${meta.proxy}.`,
+      });
     } else {
       blocked.push({
         symbol: String(raw),
@@ -162,4 +210,10 @@ module.exports = {
   filterResearchSymbols,
   partitionResearchSymbols,
   getResearchMarketGroups,
+  // US micro futures scope/mapping (replay-only, flag-gated)
+  FUTURES_SYMBOL_META,
+  futuresScopeEnabled,
+  contextAllowsFutures,
+  getFuturesSymbolMeta,
+  isFuturesSymbol,
 };

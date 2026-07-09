@@ -14,7 +14,7 @@ const marketUniverse = require('./marketUniverseService');
 const researchScope = require('../config/researchMarketScope');
 const notificationEngineV2 = require('../alerts/notificationEngineV2');
 const learningConnector = require('./learningConnectorService');
-const { loadCandles } = require('../data/marketDataStore');
+const { loadCandles, hasCandlesInRange } = require('../data/marketDataStore');
 const { toScannerFormat } = require('../data/candleAggregator');
 const { calcIndicators } = require('../scanner/indicators');
 const { classifyNarrowState } = require('../scanner/narrowState');
@@ -124,8 +124,10 @@ function normalizeConfig(config = {}) {
     : [];
   if (!symbols.length) throw new Error('symbols array required');
 
-  // Research-scope gate: replay may only run S&P / Nasdaq / Crypto universe.
-  const scopePartition = researchScope.partitionResearchSymbols(symbols);
+  // Research-scope gate: replay accepts S&P / Nasdaq / Crypto, plus US micro
+  // futures (MNQ/MES) only when REPLAY_FUTURES_SCOPE_ENABLED is on (context-gated
+  // so futures never leak into batch/autopilot).
+  const scopePartition = researchScope.partitionResearchSymbols(symbols, { context: 'replay' });
   if (!scopePartition.allowed.length) {
     const blockedList = scopePartition.blocked.map((b) => b.normalized || b.symbol).join(', ');
     throw new Error(`Alla valda symboler ligger utanför research-scope (S&P, Nasdaq, Crypto). Blockerade: ${blockedList}`);
@@ -151,17 +153,52 @@ function normalizeConfig(config = {}) {
   const skippedByMarketControls = [...new Set(scopedSymbols)]
     .filter((symbol) => !marketUniverse.symbolEnabledFor(symbol, 'replay'))
     .map((symbol) => ({ symbol, reason: 'Marknadsgruppen är avstängd för replay från Daytrading.' }));
-  const replaySymbols = [...new Set(scopedSymbols)]
+  const marketEnabledSymbols = [...new Set(scopedSymbols)]
     .filter((symbol) => marketUniverse.symbolEnabledFor(symbol, 'replay'))
     .slice(0, 50);
-  if (!replaySymbols.length) throw new Error('Alla valda symboler är avstängda för replay i Daytrading.');
+  if (!marketEnabledSymbols.length) throw new Error('Alla valda symboler är avstängda för replay i Daytrading.');
 
+  // Data-availability gate: a scope-allowed symbol without candles (e.g. MNQ/MES
+  // before a futures provider is wired) must NOT run as a silent empty replay.
+  // Split into runnable (has candles) and dataGaps so the caller can surface an
+  // honest "needs data" state instead of fabricating a zero-candle session.
+  const dataGaps = [];
+  const replaySymbols = [];
+  for (const symbol of marketEnabledSymbols) {
+    const availability = hasCandlesInRange(symbol, dateFrom, dateTo, timeframe);
+    if (availability.available) {
+      replaySymbols.push(symbol);
+    } else {
+      const meta = researchScope.getFuturesSymbolMeta(symbol);
+      dataGaps.push({
+        symbol,
+        reason: 'no_replay_candles',
+        status: 'needs_provider',
+        message: meta
+          ? `${symbol} saknar replay-candles (needs_provider). Använd proxy ${meta.proxy} tills futures-data är inkopplad.`
+          : `${symbol} saknar replay-candles i valt datumintervall.`,
+        proxy: meta ? meta.proxy : null,
+      });
+    }
+  }
+  if (!replaySymbols.length) {
+    const gapList = dataGaps.map((g) => g.symbol).join(', ') || marketEnabledSymbols.join(', ');
+    throw new Error(`Ingen replay-data finns för valda symboler (${gapList}). Välj symboler med candle-data (t.ex. QQQ/SPY) eller aktivera futures-data.`);
+  }
+
+  const symbolMeta = {};
+  for (const symbol of [...replaySymbols, ...dataGaps.map((g) => g.symbol)]) {
+    const meta = researchScope.getFuturesSymbolMeta(symbol);
+    if (meta) symbolMeta[symbol] = meta;
+  }
 
   return {
     symbols: replaySymbols,
     requested_symbols: [...new Set(symbols)].slice(0, 50),
     skipped_by_research_scope: scopePartition.blocked,
     skipped_by_market_controls: skippedByMarketControls,
+    data_gaps: dataGaps,
+    symbol_meta: symbolMeta,
     date_from: dateFrom,
     date_to: dateTo,
     timeframe,

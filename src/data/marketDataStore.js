@@ -162,6 +162,25 @@ function loadCandles(symbol, start, end, timeframe = '2m') {
 /**
  * Check whether any data exists for a symbol/date/timeframe.
  */
+// Read-only availability probe over a date range. Used by replay to detect
+// symbols that have NO candles (e.g. MNQ/MES before a futures provider is wired)
+// so it can surface a clear "needs data" state instead of a silent empty run.
+function hasCandlesInRange(symbol, start, end, timeframe = '2m') {
+  const dates = getDatesInRange(start, end);
+  let candleCount = 0;
+  let firstDate = null;
+  let lastDate = null;
+  for (const date of dates) {
+    const n = countCandles(symbol, date, timeframe);
+    if (n > 0) {
+      candleCount += n;
+      if (!firstDate) firstDate = date;
+      lastDate = date;
+    }
+  }
+  return { available: candleCount > 0, candleCount, firstDate, lastDate };
+}
+
 function hasData(symbol, date, timeframe = '2m') {
   if (timeframe === '2m') {
     const newPath    = filePath(candles2mDir(symbol), date);
@@ -256,6 +275,7 @@ module.exports = {
   saveCandles2m,
   loadCandles,
   hasData,
+  hasCandlesInRange,
   listAvailableDates,
   listSymbols,
   countCandles,
