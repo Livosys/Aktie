@@ -3590,6 +3590,8 @@ function aggregateFuturesStrategy(view, perfMap) {
       direction: view.direction,
       market: view.market,
       catalogStatus: view.catalogStatus,
+      status: view.catalogStatus,
+      signalRules: Array.isArray(view.signalRules) ? view.signalRules : [],
     },
     compatibility: view.compatibility,
     approval: view.approval,

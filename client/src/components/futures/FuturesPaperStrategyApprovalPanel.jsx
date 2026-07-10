@@ -7,17 +7,23 @@ import {
   availableActions,
   buildMutationRequest,
   compatibilityLabel,
+  compatibilityExplanation,
   compatibilityTone,
   duplicateReason,
+  emptyOperatorCredentials,
   filterCounts,
   interpretMutationResult,
   isDuplicate,
   leaderRows,
+  mutationFollowUp,
+  operatorMutationPreflight,
   provenanceLabel,
   resultSummary,
+  strategyDetailFields,
   statusLabel,
   statusTone,
   strategyId as pickStrategyId,
+  toggleExpandedStrategyId,
 } from '../../lib/futuresPaperStrategyApproval.mjs';
 
 // Futures Paper Strategy Approval — knappar + tabell (paper_only).
@@ -34,7 +40,7 @@ async function fetchJson(url, timeoutMs = FETCH_TIMEOUT_MS) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
-    const res = await fetch(url, { signal: controller.signal, credentials: 'include' });
+    const res = await fetch(url, { signal: controller.signal, credentials: 'omit' });
     const data = await res.json().catch(() => null);
     if (!res.ok) {
       const msg = (data && (data.error || data.reason)) || `HTTP ${res.status}`;
@@ -47,6 +53,27 @@ async function fetchJson(url, timeoutMs = FETCH_TIMEOUT_MS) {
   } finally {
     clearTimeout(timer);
   }
+}
+
+async function fetchMutation(url, options, timeoutMs = FETCH_TIMEOUT_MS) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetch(url, { ...options, signal: controller.signal });
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function parseResponseBody(res) {
+  if (!res) return null;
+  const contentType = String(res.headers && res.headers.get ? res.headers.get('content-type') || '' : '');
+  if (contentType.includes('application/json')) {
+    return res.json().catch(() => null);
+  }
+  const text = await res.text().catch(() => '');
+  const trimmed = String(text || '').trim();
+  return trimmed ? { error: trimmed } : null;
 }
 
 const card = {
@@ -105,6 +132,117 @@ function fmtSek(value) {
   const n = Number(value);
   if (!Number.isFinite(n)) return '–';
   return `${n >= 0 ? '' : ''}${n.toLocaleString('sv-SE', { maximumFractionDigits: 2 })} kr`;
+}
+
+function formatDetailValue(value) {
+  if (Array.isArray(value)) return value.length ? value.join(', ') : '[]';
+  if (value === null || value === undefined || value === '') return 'saknas';
+  if (typeof value === 'object') return JSON.stringify(value);
+  return String(value);
+}
+
+function OperatorLoginPanel({ visible, credentialsSet, form, setForm, onForget, onCancel }) {
+  if (!visible && !credentialsSet) return null;
+  return (
+    <div style={{ ...card, borderColor: 'var(--warning, #9a6700)' }}>
+      <div style={{ fontWeight: 700, marginBottom: 6 }}>Operatörsinloggning</div>
+      <div style={{ fontSize: 12, color: 'var(--muted,#6b7280)', marginBottom: 10 }}>
+        Mutationer använder dashboardens befintliga Basic Auth. Uppgifterna sparas bara i den här flikens minne.
+      </div>
+      {credentialsSet ? (
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+          <Badge tone="success">Operatörsheader redo</Badge>
+          <button
+            type="button"
+            onClick={onForget}
+            style={{ cursor: 'pointer', background: 'transparent', border: '1px solid var(--border,#ddd)', borderRadius: 8, padding: '4px 10px', fontSize: 12, color: 'inherit' }}
+          >
+            Glöm
+          </button>
+          <button
+            type="button"
+            onClick={onCancel}
+            style={{ cursor: 'pointer', background: 'transparent', border: '1px solid var(--border,#ddd)', borderRadius: 8, padding: '4px 10px', fontSize: 12, color: 'inherit' }}
+          >
+            Avbryt
+          </button>
+        </div>
+      ) : (
+        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+          <input
+            type="text"
+            value={form.username}
+            autoComplete="username"
+            onChange={(e) => setForm((f) => ({ ...f, username: e.target.value }))}
+            placeholder="Användarnamn"
+            style={{ border: '1px solid var(--border,#ddd)', borderRadius: 8, padding: '6px 8px', minWidth: 160, background: 'var(--surface,#fff)', color: 'inherit' }}
+          />
+          <input
+            type="password"
+            value={form.password}
+            autoComplete="current-password"
+            onChange={(e) => setForm((f) => ({ ...f, password: e.target.value }))}
+            placeholder="Lösenord"
+            style={{ border: '1px solid var(--border,#ddd)', borderRadius: 8, padding: '6px 8px', minWidth: 160, background: 'var(--surface,#fff)', color: 'inherit' }}
+          />
+          <span style={{ color: 'var(--muted,#6b7280)', fontSize: 12 }}>
+            Fyll i och kör åtgärden igen.
+          </span>
+          <button
+            type="button"
+            onClick={onCancel}
+            style={{ cursor: 'pointer', background: 'transparent', border: '1px solid var(--border,#ddd)', borderRadius: 8, padding: '6px 10px', fontSize: 12, color: 'inherit' }}
+          >
+            Avbryt
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function ReadyInfoCard() {
+  return (
+    <div style={{ ...card, borderColor: 'var(--accent, #3b82f6)' }}>
+      <div style={{ fontWeight: 700, marginBottom: 6 }}>
+        Redo betyder tekniskt kompatibel med Futures Paper — inte att strategin är lönsam.
+      </div>
+      <div style={{ fontSize: 13, color: 'var(--muted,#6b7280)', marginBottom: 6 }}>
+        För att vara Redo måste strategin ha:
+      </div>
+      <ul style={{ margin: 0, paddingLeft: 20, fontSize: 13, color: 'var(--muted,#6b7280)' }}>
+        <li>canonical strategy ID</li>
+        <li>verifierad signalproducent eller end-to-end-bevis</li>
+        <li>säker MNQ/MES-mappning</li>
+        <li>giltig riktning</li>
+        <li>stop/target-mappning</li>
+        <li>ingen blockerande dublett eller pausstatus</li>
+      </ul>
+    </div>
+  );
+}
+
+function StrategyDetails({ strategy }) {
+  const explanation = compatibilityExplanation(strategy);
+  const fields = strategyDetailFields(strategy);
+  return (
+    <div style={{ padding: 12, border: '1px solid var(--border,#e2e2e2)', borderRadius: 8, background: 'var(--surface-2,#fafafa)' }}>
+      <div style={{ fontWeight: 700, marginBottom: 6 }}>{explanation.title}</div>
+      <div style={{ display: 'grid', gap: 3, marginBottom: 12, color: 'var(--muted,#6b7280)', fontSize: 13 }}>
+        {explanation.lines.map((line) => <div key={line}>{line}</div>)}
+      </div>
+      <div style={{ display: 'grid', gridTemplateColumns: 'minmax(180px, 240px) minmax(280px, 1fr)', gap: '4px 12px', fontSize: 12 }}>
+        {fields.map((field) => (
+          <React.Fragment key={field.label}>
+            <div style={{ fontFamily: 'var(--mono, monospace)', color: 'var(--muted,#6b7280)' }}>{field.label}</div>
+            <div style={{ fontFamily: 'var(--mono, monospace)', whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>
+              {formatDetailValue(field.value)}
+            </div>
+          </React.Fragment>
+        ))}
+      </div>
+    </div>
+  );
 }
 
 function ProgressCell({ strategy }) {
@@ -186,7 +324,10 @@ export default function FuturesPaperStrategyApprovalPanel() {
   const [state, setState] = useState({ loading: true, error: null, data: null });
   const [filter, setFilter] = useState('all');
   const [busyId, setBusyId] = useState(null);
-  const [rowMessage, setRowMessage] = useState({ id: null, tone: 'muted', text: null });
+  const [rowMessage, setRowMessage] = useState({ id: null, tone: 'muted', text: null, detail: null });
+  const [expandedId, setExpandedId] = useState(null);
+  const [showOperatorLogin, setShowOperatorLogin] = useState(false);
+  const [operatorForm, setOperatorForm] = useState(() => emptyOperatorCredentials());
 
   const load = useCallback(async () => {
     setState((s) => ({ ...s, loading: true }));
@@ -210,6 +351,7 @@ export default function FuturesPaperStrategyApprovalPanel() {
 
   const degraded = Boolean(state.data && state.data.degraded);
   const safety = state.data || {};
+  const operatorCredentials = operatorForm.username && operatorForm.password ? operatorForm : null;
 
   const runAction = useCallback(async (strategy, actionId) => {
     const id = pickStrategyId(strategy);
@@ -220,32 +362,48 @@ export default function FuturesPaperStrategyApprovalPanel() {
       if (!window.confirm(meta.confirm)) return;
     }
     setBusyId(id);
-    setRowMessage({ id: null, tone: 'muted', text: null });
-    const { url, options } = buildMutationRequest(id, actionId);
-    let res = null; let data = null; let err = null;
-    try {
-      res = await fetch(url, options);
-      data = await res.json().catch(() => null);
-    } catch (e) {
-      err = e;
-    }
-    const result = interpretMutationResult(res, data, err);
-    if (!result.ok) {
-      // Ingen optimistisk statusändring — behåll serverns senaste status, visa fel.
-      setRowMessage({ id, tone: 'danger', text: result.message });
+    setRowMessage({ id: null, tone: 'muted', text: null, detail: null });
+    const preflight = operatorMutationPreflight(operatorCredentials);
+    if (!preflight.ok) {
+      setShowOperatorLogin(true);
+      setRowMessage({
+        id,
+        tone: 'danger',
+        text: preflight.message,
+        detail: preflight.technicalDetail,
+      });
       setBusyId(null);
       return;
     }
-    // Lyckad mutation → hämta ALLTID om listan (serverns verkliga status vinner).
+    const { url, options } = buildMutationRequest(id, actionId, operatorCredentials);
+    let res = null; let data = null; let err = null;
     try {
-      await load();
+      res = await fetchMutation(url, options);
+      data = await parseResponseBody(res);
+      const result = interpretMutationResult(res, data, null);
+      if (!result.ok) {
+        // Ingen optimistisk statusändring — behåll serverns senaste status, visa fel.
+        setRowMessage({ id, tone: 'danger', text: result.message, detail: result.technicalDetail });
+        return;
+      }
+      // Lyckad mutation → hämta ALLTID om listan (serverns verkliga status vinner).
+      const followUp = mutationFollowUp(result);
+      if (followUp.refetch) await load();
       setRowMessage({ id, tone: 'success', text: result.changed ? 'Uppdaterad.' : 'Ingen ändring (redan i det läget).' });
     } catch (e) {
-      setRowMessage({ id, tone: 'warning', text: 'Åtgärd klar, men listan kunde inte hämtas om.' });
+      err = e;
+      const result = interpretMutationResult(res, data, err);
+      if (res && res.ok && data && data.ok !== false) {
+        setRowMessage({ id, tone: 'warning', text: 'Åtgärd klar, men listan kunde inte hämtas om.' });
+      } else {
+        setRowMessage({ id, tone: 'danger', text: result.message, detail: result.technicalDetail });
+      }
     } finally {
+      setOperatorForm(emptyOperatorCredentials());
+      setShowOperatorLogin(false);
       setBusyId(null);
     }
-  }, [load]);
+  }, [load, operatorCredentials]);
 
   return (
     <div>
@@ -259,6 +417,23 @@ export default function FuturesPaperStrategyApprovalPanel() {
           broker_enabled={String(safety.broker_enabled ?? false)}
         </div>
       </div>
+
+      <ReadyInfoCard />
+
+      <OperatorLoginPanel
+        visible={showOperatorLogin}
+        credentialsSet={Boolean(operatorCredentials)}
+        form={operatorForm}
+        setForm={setOperatorForm}
+        onForget={() => {
+          setOperatorForm(emptyOperatorCredentials());
+          setShowOperatorLogin(true);
+        }}
+        onCancel={() => {
+          setOperatorForm(emptyOperatorCredentials());
+          setShowOperatorLogin(false);
+        }}
+      />
 
       {degraded ? (
         <div style={{ ...card, borderColor: 'var(--danger, #cf222e)' }}>
@@ -327,6 +502,7 @@ export default function FuturesPaperStrategyApprovalPanel() {
             <table style={table}>
               <thead>
                 <tr>
+                  <th style={th}>Detaljer</th>
                   <th style={th}>Strategi</th>
                   <th style={th}>Strategy ID</th>
                   <th style={th}>Futures-kompatibilitet</th>
@@ -344,54 +520,79 @@ export default function FuturesPaperStrategyApprovalPanel() {
                   const busy = busyId === id;
                   const msg = rowMessage.id === id ? rowMessage : null;
                   const catalog = s.catalog || {};
+                  const expanded = expandedId === id;
                   return (
-                    <tr key={id}>
-                      <td style={{ ...td, fontWeight: 600 }}>
-                        {catalog.displayName || id}
-                        {catalog.family ? <div style={{ fontWeight: 400, fontSize: 11, color: 'var(--muted,#6b7280)' }}>{catalog.family}</div> : null}
-                      </td>
-                      <td style={{ ...td, fontFamily: 'var(--mono, monospace)', fontSize: 12 }}>{id}</td>
-                      <td style={td}>
-                        <Badge tone={compatibilityTone(s)}>{compatibilityLabel(s)}</Badge>
-                      </td>
-                      <td style={td}>
-                        <Badge tone={statusTone(s)}>{statusLabel(s)}</Badge>
-                      </td>
-                      <td style={td}><ProgressCell strategy={s} /></td>
-                      <td style={td}><ResultCell strategy={s} /></td>
-                      <td style={{ ...td, textAlign: 'right' }}>
-                        {dup ? (
-                          <Badge tone="warning">{duplicateReason(s)}</Badge>
-                        ) : actions.length === 0 ? (
-                          <span style={{ color: 'var(--muted, #6b7280)', fontSize: 12 }}>
-                            {statusLabel(s) === 'Borttagen' ? 'Borttagen' : 'Behöver Futures-anpassning'}
-                          </span>
-                        ) : (
-                          <div style={{ display: 'inline-flex', gap: 6, justifyContent: 'flex-end', flexWrap: 'wrap' }}>
-                            {actions.map((actionId) => {
-                              const meta = ACTION_META[actionId];
-                              return (
-                                <button
-                                  key={actionId}
-                                  type="button"
-                                  disabled={busy || degraded}
-                                  onClick={() => runAction(s, actionId)}
-                                  style={actionButtonStyle(meta.tone, busy || degraded)}
-                                  title={degraded ? 'Blockerat i degraderat läge' : meta.label}
-                                >
-                                  {busy ? '…' : meta.label}
-                                </button>
-                              );
-                            })}
-                          </div>
-                        )}
-                        {msg && msg.text ? (
-                          <div style={{ marginTop: 4, fontSize: 12, color: TONES[msg.tone] ? TONES[msg.tone].color : 'var(--muted,#6b7280)' }}>
-                            {msg.text}
-                          </div>
-                        ) : null}
-                      </td>
-                    </tr>
+                    <React.Fragment key={id}>
+                      <tr>
+                        <td style={td}>
+                          <button
+                            type="button"
+                            onClick={() => setExpandedId((current) => toggleExpandedStrategyId(current, id))}
+                            style={{ cursor: 'pointer', background: 'transparent', border: '1px solid var(--border,#ddd)', borderRadius: 8, padding: '4px 8px', fontSize: 12, fontWeight: 700, color: 'inherit', whiteSpace: 'nowrap' }}
+                            aria-expanded={expanded}
+                          >
+                            {expanded ? 'Dölj detaljer' : 'Visa varför'}
+                          </button>
+                        </td>
+                        <td style={{ ...td, fontWeight: 600 }}>
+                          {catalog.displayName || id}
+                          {catalog.family ? <div style={{ fontWeight: 400, fontSize: 11, color: 'var(--muted,#6b7280)' }}>{catalog.family}</div> : null}
+                        </td>
+                        <td style={{ ...td, fontFamily: 'var(--mono, monospace)', fontSize: 12 }}>{id}</td>
+                        <td style={td}>
+                          <Badge tone={compatibilityTone(s)}>{compatibilityLabel(s)}</Badge>
+                        </td>
+                        <td style={td}>
+                          <Badge tone={statusTone(s)}>{statusLabel(s)}</Badge>
+                        </td>
+                        <td style={td}><ProgressCell strategy={s} /></td>
+                        <td style={td}><ResultCell strategy={s} /></td>
+                        <td style={{ ...td, textAlign: 'right' }}>
+                          {dup ? (
+                            <Badge tone="warning">{duplicateReason(s)}</Badge>
+                          ) : actions.length === 0 ? (
+                            <span style={{ color: 'var(--muted, #6b7280)', fontSize: 12 }}>
+                              {statusLabel(s) === 'Borttagen' ? 'Borttagen' : 'Behöver Futures-anpassning'}
+                            </span>
+                          ) : (
+                            <div style={{ display: 'inline-flex', gap: 6, justifyContent: 'flex-end', flexWrap: 'wrap' }}>
+                              {actions.map((actionId) => {
+                                const meta = ACTION_META[actionId];
+                                return (
+                                  <button
+                                    key={actionId}
+                                    type="button"
+                                    disabled={busy || degraded}
+                                    onClick={() => runAction(s, actionId)}
+                                    style={actionButtonStyle(meta.tone, busy || degraded)}
+                                    title={degraded ? 'Blockerat i degraderat läge' : meta.label}
+                                  >
+                                    {busy ? '…' : meta.label}
+                                  </button>
+                                );
+                              })}
+                            </div>
+                          )}
+                          {msg && msg.text ? (
+                            <div style={{ marginTop: 4, fontSize: 12, color: TONES[msg.tone] ? TONES[msg.tone].color : 'var(--muted,#6b7280)' }}>
+                              {msg.text}
+                              {msg.detail ? (
+                                <div style={{ marginTop: 2, color: 'var(--muted,#6b7280)', fontFamily: 'var(--mono, monospace)' }}>
+                                  Teknisk detalj: {msg.detail}
+                                </div>
+                              ) : null}
+                            </div>
+                          ) : null}
+                        </td>
+                      </tr>
+                      {expanded ? (
+                        <tr>
+                          <td style={{ ...td, borderBottom: '1px solid var(--border,#eee)' }} colSpan={8}>
+                            <StrategyDetails strategy={s} />
+                          </td>
+                        </tr>
+                      ) : null}
+                    </React.Fragment>
                   );
                 })}
               </tbody>

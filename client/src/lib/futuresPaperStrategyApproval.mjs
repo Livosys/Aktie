@@ -172,6 +172,127 @@ export function provenanceLabel(prov) {
   }
 }
 
+// ── Radexpansion / kompatibilitetsdetaljer ──────────────────────────────────
+
+export function toggleExpandedStrategyId(currentId, nextId) {
+  const current = safeStr(currentId);
+  const next = safeStr(nextId);
+  if (!next) return current;
+  return current === next ? null : next;
+}
+
+const STATUS_LABELS = Object.freeze({
+  verified: 'verifierad',
+  missing: 'saknas',
+  supported: 'stöds',
+  unsupported: 'stöds inte',
+  unknown: 'okänd',
+});
+
+function statusValueLabel(value) {
+  const v = safeStr(value);
+  return v && STATUS_LABELS[v] ? STATUS_LABELS[v] : (v || 'saknas');
+}
+
+function listValue(value) {
+  if (Array.isArray(value)) return value.filter((v) => v !== null && v !== undefined && String(v).trim() !== '').map(String);
+  if (value === null || value === undefined || value === '') return [];
+  return [String(value)];
+}
+
+export function blockingReasonLabel(reason, strategy = null) {
+  const r = safeStr(reason);
+  const replacement = replacementId(strategy);
+  switch (r) {
+    case 'no_verified_signal_producer':
+      return 'Ingen verifierad signalproducent når Futures Paper-scannern.';
+    case 'duplicate_strategy':
+      return `Den här strategin ersätts av ${replacement || CANONICAL_FAKEOUT_ID}.`;
+    case 'no_safe_futures_mapping':
+      return 'Strategin saknar säker mappning till MNQ/MES.';
+    case 'catalog_status_paused':
+      return 'Strategin är pausad i canonical katalog och kan inte godkännas.';
+    case 'unverified_symbol_mapping':
+      return 'Symbolmappningen är inte verifierad för Futures Paper.';
+    case 'no_risk_mapping':
+      return 'Stop och mål saknar säker Futures Paper-mappning.';
+    case 'no_direction_mapping':
+      return 'Riktningen saknar säker Futures Paper-mappning.';
+    case 'unknown_strategy_id':
+      return 'Strategin saknas i backendens canonical katalog.';
+    default:
+      return r ? `Backend blockerar: ${r}.` : 'Ingen blockeringsorsak från backend.';
+  }
+}
+
+export function compatibilityExplanation(strategy) {
+  const c = (strategy && strategy.compatibility) || {};
+  const compat = compatibility(strategy);
+  const reasons = listValue(c.blockingReasons);
+  const replacement = safeStr(c.canonicalReplacementId);
+  const roots = listValue(c.allowedRoots || c.roots);
+  const lines = [];
+  let title = compatibilityLabel(strategy);
+
+  if (compat === COMPAT.READY) {
+    title = 'Redo';
+    if (c.producerStatus === 'verified') lines.push('En verifierad signalproducent finns.');
+    if (c.symbolMappingStatus === 'supported') lines.push(`Strategin kan mappas till ${roots.length ? roots.join('/') : 'MNQ/MES'}.`);
+    if (c.riskMappingStatus === 'supported') lines.push('Stop och mål kan översättas till Futures Paper.');
+    if (lines.length === 0) lines.push('Backend markerar strategin som tekniskt kompatibel.');
+    return { title, lines };
+  }
+
+  if (replacement || reasons.includes('duplicate_strategy')) {
+    title = 'Dublett';
+    lines.push(`Den här strategin ersätts av ${replacement || CANONICAL_FAKEOUT_ID}.`);
+    lines.push('Använd den canonical strategin i stället.');
+    return { title, lines };
+  }
+
+  if (reasons.includes('no_safe_futures_mapping')) {
+    title = 'Ej stödd';
+    const market = safeStr(strategy && strategy.catalog && strategy.catalog.market);
+    if (market === 'crypto') lines.push('Strategin är byggd för crypto och saknar säker mappning till MNQ/MES.');
+    else lines.push('Strategin saknar säker mappning till MNQ/MES.');
+    return { title, lines };
+  }
+
+  if (reasons.includes('catalog_status_paused')) {
+    title = 'Blockerad';
+    lines.push('Strategin är pausad i canonical katalog och kan inte godkännas.');
+    return { title, lines };
+  }
+
+  if (compat === COMPAT.NEEDS_MAPPING) title = 'Behöver Futures-anpassning';
+  for (const reason of reasons) lines.push(blockingReasonLabel(reason, strategy));
+  if (lines.length === 0) lines.push('Backend markerar att strategin behöver Futures-anpassning.');
+  return { title, lines };
+}
+
+export function strategyDetailFields(strategy) {
+  const s = strategy && typeof strategy === 'object' ? strategy : {};
+  const c = s.compatibility || {};
+  const catalog = s.catalog || {};
+  const approval = s.approval || {};
+  return [
+    { label: 'compatibility', value: c.compatibility ?? null },
+    { label: 'producerStatus', value: c.producerStatus ?? null },
+    { label: 'producerEvidence', value: c.producerEvidence ?? null },
+    { label: 'adapterStatus', value: c.adapterStatus ?? null },
+    { label: 'riskMappingStatus', value: c.riskMappingStatus ?? null },
+    { label: 'symbolMappingStatus', value: c.symbolMappingStatus ?? null },
+    { label: 'blockingReasons', value: c.blockingReasons || [] },
+    { label: 'canonicalReplacementId', value: c.canonicalReplacementId ?? null },
+    { label: 'allowedRoots', value: c.allowedRoots || c.roots || [] },
+    { label: 'catalog.status', value: catalog.status || catalog.catalogStatus || null },
+    { label: 'catalog.signalRules', value: catalog.signalRules || catalog.signal_rules || [] },
+    { label: 'approval.status', value: approval.status ?? null },
+    { label: 'currentTest', value: s.currentTest || null },
+    { label: 'historicalPerformance', value: s.historicalPerformance || null },
+  ];
+}
+
 // ── Topplistor (leaders) ─────────────────────────────────────────────────────
 // Mappar backendens leaders-block till visningsrader. Ändrar inga värden.
 export const LEADER_ROWS = Object.freeze([
@@ -287,13 +408,55 @@ export function mutationEndpoint(id, actionId) {
   return `/api/futures-paper/strategies/${safeId}/${meta.endpointAction}`;
 }
 
-export function buildMutationRequest(id, actionId) {
+export function isFuturesPaperMutationEndpoint(url) {
+  return /^\/api\/futures-paper\/strategies\/[^/]+\/(approve|pause|resume|remove)$/.test(String(url || ''));
+}
+
+function base64Encode(value) {
+  const raw = String(value);
+  if (typeof btoa === 'function') return btoa(raw);
+  if (typeof Buffer !== 'undefined') return Buffer.from(raw, 'utf8').toString('base64');
+  throw new Error('base64_encoder_unavailable');
+}
+
+export function emptyOperatorCredentials() {
+  return { username: '', password: '' };
+}
+
+export function buildBasicAuthHeader(credentials) {
+  const c = credentials && typeof credentials === 'object' ? credentials : {};
+  const username = safeStr(c.username);
+  const password = c.password === null || c.password === undefined ? null : String(c.password);
+  if (!username || password === null || password === '') return null;
+  return `Basic ${base64Encode(`${username}:${password}`)}`;
+}
+
+export function operatorMutationPreflight(credentials) {
+  const c = credentials && typeof credentials === 'object' ? credentials : {};
+  const username = safeStr(c.username);
+  const password = c.password === null || c.password === undefined ? null : String(c.password);
+  if (username && password !== null && password !== '') {
+    return { ok: true, authRequired: false, message: null, technicalDetail: null };
+  }
   return {
-    url: mutationEndpoint(id, actionId),
+    ok: false,
+    authRequired: true,
+    message: 'Du måste logga in som operatör för att ändra strategier.',
+    technicalDetail: 'Ingen operatörsheader skickad. Mutation stoppad i dashboarden före POST.',
+  };
+}
+
+export function buildMutationRequest(id, actionId, operatorCredentials = null) {
+  const url = mutationEndpoint(id, actionId);
+  const headers = { 'Content-Type': 'application/json' };
+  const authHeader = buildBasicAuthHeader(operatorCredentials);
+  if (authHeader && isFuturesPaperMutationEndpoint(url)) headers.Authorization = authHeader;
+  return {
+    url,
     options: {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      credentials: 'include',
+      headers,
+      credentials: 'omit',
       body: JSON.stringify({ ...SAFETY_BODY }),
     },
   };
@@ -302,25 +465,51 @@ export function buildMutationRequest(id, actionId) {
 // Tolkar backendsvar → { ok, changed, status, message }. Ändrar ALDRIG status
 // optimistiskt: vi litar bara på serverns status och hämtar om listan efteråt.
 export function interpretMutationResult(res, data, err) {
+  const httpStatus = res && Number(res.status) ? Number(res.status) : null;
   if (err) {
-    return { ok: false, changed: false, status: null, message: err.message || 'network_error' };
+    const name = safeStr(err.name) || 'Error';
+    return {
+      ok: false,
+      changed: false,
+      status: null,
+      httpStatus: null,
+      reason: null,
+      message: 'Kunde inte nå servern. Kontrollera anslutningen.',
+      technicalDetail: `Network error: ${name}`,
+      authRequired: false,
+      forbidden: false,
+      networkError: true,
+    };
   }
   const body = data && typeof data === 'object' ? data : {};
   const httpOk = res && typeof res.ok === 'boolean' ? res.ok : true;
   const ok = httpOk && body.ok !== false;
   if (!ok) {
+    const reason = sanitizeCredentialText(safeStr(body.reason) || safeStr(body.error) || '');
     return {
       ok: false,
       changed: false,
       status: body.status || null,
-      message: mutationErrorMessage(body),
+      httpStatus,
+      reason,
+      message: mutationErrorMessage(body, httpStatus),
+      technicalDetail: mutationTechnicalDetail(httpStatus, body),
+      authRequired: httpStatus === 401,
+      forbidden: httpStatus === 403,
+      networkError: false,
     };
   }
   return {
     ok: true,
     changed: body.changed === true,
     status: safeStr(body.status),
+    httpStatus,
+    reason: safeStr(body.reason),
     message: null,
+    technicalDetail: null,
+    authRequired: false,
+    forbidden: false,
+    networkError: false,
   };
 }
 
@@ -336,12 +525,46 @@ const ERROR_MESSAGES = Object.freeze({
   futures_strategy_approval_is_paper_only: 'Blockerat: endast paper-only tillåts.',
 });
 
-export function mutationErrorMessage(body) {
+export function mutationErrorMessage(body, httpStatus = null) {
   const b = body && typeof body === 'object' ? body : {};
-  const reason = safeStr(b.reason) || safeStr(b.error);
+  const reason = sanitizeCredentialText(safeStr(b.reason) || safeStr(b.error) || '');
+  if (httpStatus === 401) return 'Du måste logga in som operatör för att ändra strategier.';
+  if (httpStatus === 403) return 'Du har inte behörighet att ändra strategier.';
+  if (httpStatus === 503) return 'Approval-status är degraded. Ändringar är tillfälligt blockerade.';
+  if ((httpStatus === 409 || httpStatus === 422) && reason) return ERROR_MESSAGES[reason] || `Backend blockerar åtgärden: ${reason}`;
   if (reason && ERROR_MESSAGES[reason]) return ERROR_MESSAGES[reason];
   if (reason) return `Åtgärden misslyckades: ${reason}`;
   return 'Åtgärden misslyckades. Serverns senaste status behålls.';
+}
+
+export function sanitizeCredentialText(value) {
+  return String(value || '')
+    .replace(/Basic\s+[A-Za-z0-9+/=._~-]+/gi, 'Basic [redacted]')
+    .replace(/(authorization\s*[=:]\s*)[^\s,;]+/gi, '$1[redacted]')
+    .replace(/(password\s*[=:]\s*)[^\s,;]+/gi, '$1[redacted]')
+    .replace(/(username\s*[=:]\s*)[^\s,;]+/gi, '$1[redacted]');
+}
+
+export function mutationTechnicalDetail(httpStatus, body) {
+  const b = body && typeof body === 'object' ? body : {};
+  const parts = [];
+  if (httpStatus) parts.push(`HTTP ${httpStatus}`);
+  const status = safeStr(b.status);
+  const reason = safeStr(b.reason) || safeStr(b.error);
+  if (status) parts.push(`status=${status}`);
+  if (reason) parts.push(`reason=${reason}`);
+  if (Array.isArray(b.blockingReasons) && b.blockingReasons.length) {
+    parts.push(`blockingReasons=${b.blockingReasons.map(String).join(',')}`);
+  }
+  if (safeStr(b.canonicalReplacementId)) parts.push(`canonicalReplacementId=${safeStr(b.canonicalReplacementId)}`);
+  return sanitizeCredentialText(parts.join(' · ') || 'Ingen teknisk detalj från backend.');
+}
+
+export function mutationFollowUp(result) {
+  return {
+    refetch: Boolean(result && result.ok),
+    optimisticStatus: null,
+  };
 }
 
 export const SIM_WARNING =

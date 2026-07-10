@@ -243,9 +243,39 @@ test('listStrategies returns all catalog strategies, safety, no secrets', () => 
   assert.ok(info.count >= 33);
   assert.strictEqual(info.mode, 'paper_only');
   assert.strictEqual(info.broker_enabled, false);
+  const ready = info.strategies.find((s) => s.strategyId === 'narrow_breakout');
+  assert.ok(Array.isArray(ready.signalRules), 'backend view exposes catalog signal rules');
+  assert.ok(Array.isArray(ready.compatibility.allowedRoots), 'backend view exposes allowed roots');
   const json = JSON.stringify(info);
   for (const re of [/api[_-]?key/i, /secret/i, /password/i, /token/i, /credential/i, /bearer/i]) {
     assert.ok(!re.test(json), `sensitive term ${re}`);
+  }
+});
+
+// 19) Dagens READY-lista kommer från backendens kompatibilitet och producerEvidence.
+test('READY list is backend-derived with producer evidence', () => {
+  reset();
+  const info = service.listStrategies();
+  const expected = new Map([
+    ['ema_breakdown', 'closed_trades'],
+    ['ema_pullback_continuation', 'both'],
+    ['low_volatility_breakout', 'closed_trades'],
+    ['narrow_breakout', 'both'],
+    ['narrow_fakeout_reversal_v1', 'both'],
+    ['narrow_state_expansion_long', 'both'],
+    ['resistance_rejection', 'closed_trades'],
+    ['trend_continuation', 'both'],
+    ['vwap_failed_breakout_short', 'both'],
+    ['vwap_volume_breakout_long', 'scanner_emitter'],
+  ]);
+  const ready = new Map(
+    info.strategies
+      .filter((s) => s.compatibility && s.compatibility.compatibility === service.COMPAT.READY)
+      .map((s) => [s.strategyId, s.compatibility.producerEvidence]),
+  );
+  assert.deepStrictEqual([...ready.keys()].sort(), [...expected.keys()].sort());
+  for (const [id, evidence] of expected.entries()) {
+    assert.strictEqual(ready.get(id), evidence, `${id} READY evidence`);
   }
 });
 

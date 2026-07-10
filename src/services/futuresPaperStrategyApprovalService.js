@@ -397,6 +397,7 @@ function buildStrategyView(id, { store, closedTs, degraded }) {
     direction: (catalogStrategy && catalogStrategy.direction) || null,
     market: (catalogStrategy && (catalogStrategy.market || catalogStrategy.market_group)) || null,
     catalogStatus: (catalogStrategy && (catalogStrategy.status || catalogStrategy.catalog_status)) || 'unknown',
+    signalRules: (catalogStrategy && Array.isArray(catalogStrategy.signal_rules)) ? [...catalogStrategy.signal_rules] : [],
     approval: {
       status: entry ? entry.status : null,
       source: entry ? entry.source : null,
@@ -413,6 +414,7 @@ function buildStrategyView(id, { store, closedTs, degraded }) {
       riskMappingStatus: compatibility.riskMappingStatus,
       symbolMappingStatus: compatibility.symbolMappingStatus,
       roots: compatibility.roots,
+      allowedRoots: compatibility.roots,
       blockingReasons: compatibility.blockingReasons,
       canonicalReplacementId: compatibility.canonicalReplacementId,
     },
