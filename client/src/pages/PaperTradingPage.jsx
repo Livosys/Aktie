@@ -2866,6 +2866,270 @@ function ShortExitTruthPanel({ shortExit, loading, error }) {
   );
 }
 
+function PaperTradesTab({ runtime, allowlist, riskPauseSummary, gateStatus, onRefresh, theme }) {
+  const explanationsState = useTradeExplanations(50);
+  const [expandedTradeKey, setExpandedTradeKey] = useState(null);
+  const summary = runtime?.summary || {};
+  const closedTrades = runtime?.closedTrades || [];
+  const explanationsByKey = useMemo(() => {
+    const map = new Map();
+    const items = Array.isArray(explanationsState.data?.items) ? explanationsState.data.items : [];
+    items.forEach((item) => {
+      const key = tradeLookupKey(item);
+      if (key) map.set(key, item);
+    });
+    return map;
+  }, [explanationsState.data]);
+  const selectedClosedTrade = useMemo(() => {
+    if (!expandedTradeKey) return null;
+    return closedTrades.find((row) => {
+      const key = tradeLookupKey(row);
+      return key === expandedTradeKey;
+    }) || null;
+  }, [closedTrades, expandedTradeKey]);
+  const closedTradeExplanation = expandedTradeKey ? explanationsByKey.get(expandedTradeKey) || null : null;
+  const selectedLookup = useTradeExplanationLookup(
+    selectedClosedTrade,
+    Boolean(expandedTradeKey && selectedClosedTrade && !closedTradeExplanation),
+  );
+  const selectedLookupData = selectedLookup.data;
+  const selectedLookupExplanation = selectedLookupData?.found ? selectedLookupData.tradeExplanation : null;
+  const selectedLookupDiagnosis = selectedLookupData?.found === false ? selectedLookupData.diagnosis : null;
+  const activeClosedTradeExplanation = closedTradeExplanation || selectedLookupExplanation || null;
+
+  return (
+    <>
+      <WhyNoTradesPanel
+        runtime={runtime}
+        allowlist={allowlist}
+        riskPauseSummary={riskPauseSummary}
+        gateStatus={gateStatus}
+        onRefresh={onRefresh}
+      />
+      {explanationsState.error ? (
+        <div style={{ ...sectionStyle(), borderColor: 'rgba(245, 158, 11, 0.22)', background: 'var(--surface-2)' }}>
+          <div style={{ color: 'var(--warning)' }}>
+            Trade explanations tillfälligt otillgängligt: {explanationsState.error}
+          </div>
+        </div>
+      ) : null}
+      <DataTable
+        title="Closed paper trades"
+        subtitle={`Senaste closed trades. Total closed i runtime: ${summary.closedCount ?? 0}`}
+        rows={closedTrades}
+        emptyText="Inga stängda paper trades ännu."
+        rowKey={(row, index) => tradeLookupKey(row) || `${row.symbol}-${index}`}
+        columns={[
+          { key: 'symbol', label: 'Symbol' },
+          { key: 'strategy_id', label: 'Canonical strategy_id' },
+          { key: 'setup', label: 'Setup' },
+          { key: 'result', label: 'Result', render: (row) => <span style={{ color: toneForResult(row.result), fontWeight: 700 }}>{row.result || '–'}</span> },
+          { key: 'pnlPct', label: 'PnL %', render: (row) => <span style={{ color: toneForResult(row.result) }}>{fmtPct(row.pnlPct)}</span> },
+          { key: 'opened_at', label: 'Opened', render: (row) => fmtTime(row.opened_at) },
+          { key: 'closed_at', label: 'Closed', render: (row) => fmtTime(row.closed_at) },
+          { key: 'source', label: 'Source' },
+          { key: 'paperOnly', label: 'paperOnly', render: (row) => String(row.paperOnly === true) },
+          {
+            key: 'why',
+            label: 'Why',
+            render: (row) => {
+              const key = tradeLookupKey(row);
+              const isOpen = expandedTradeKey === key;
+              return (
+                <button
+                  type="button"
+                  onClick={() => setExpandedTradeKey(isOpen ? null : key)}
+                  style={{
+                    ...explanationBadgeStyle(isOpen ? 'info' : 'neutral'),
+                    cursor: 'pointer',
+                    whiteSpace: 'nowrap',
+                    border: isOpen ? '1px solid rgba(56,189,248,0.22)' : '1px solid var(--border)',
+                  }}
+                >
+                  {isOpen ? 'Dölj' : 'Visa varför'}
+                </button>
+              );
+            },
+          },
+        ]}
+      />
+      {expandedTradeKey ? (
+        <div>
+          {activeClosedTradeExplanation ? (
+            <>
+              <ClosedTradeExplanationPanel explanation={activeClosedTradeExplanation} trade={selectedClosedTrade} theme={theme} />
+              <EntryQualityGatePanel gate={activeClosedTradeExplanation.entryQualityGate} theme={theme} />
+            </>
+          ) : selectedLookup.loading ? (
+            <div style={{ ...sectionStyle(), borderColor: 'rgba(56,189,248,0.18)', background: 'var(--surface-2)' }}>
+              <strong>Hämtar förklaring...</strong>
+              <div style={{ marginTop: 4, ...mutedTextStyle(theme), fontSize: 13 }}>
+                Läser read-only historik för att matcha traden mot loggen.
+              </div>
+            </div>
+          ) : selectedLookup.error ? (
+            <div style={{ ...sectionStyle(), borderColor: 'rgba(245, 158, 11, 0.18)', background: 'var(--surface-2)' }}>
+              <strong>Trade explanations tillfälligt otillgängligt</strong>
+              <div style={{ marginTop: 4, ...mutedTextStyle(theme), fontSize: 13 }}>{selectedLookup.error}</div>
+            </div>
+          ) : selectedLookupDiagnosis ? (
+            <div style={{ ...sectionStyle(), borderColor: 'rgba(245, 158, 11, 0.18)', background: 'var(--surface-2)' }}>
+              <strong>Förklaring saknas för denna trade eftersom äldre logg saknar matchande ID/tid.</strong>
+              <div style={{ marginTop: 4, ...mutedTextStyle(theme), fontSize: 13, lineHeight: 1.5 }}>
+                Orsak: {explanationValue(selectedLookupDiagnosis.reason)}
+                <br />
+                Sökt symbol: {explanationValue(selectedLookupDiagnosis.searchedSymbol)}
+                <br />
+                Sökt strategyId: {explanationValue(selectedLookupDiagnosis.searchedStrategyId)}
+                <br />
+                Sökt openedAt: {explanationValue(selectedLookupDiagnosis.searchedOpenedAt)}
+                <br />
+                Tillgänglig närmaste match: {selectedLookupDiagnosis.availableClosestMatch ? `${selectedLookupDiagnosis.availableClosestMatch.symbol} · ${selectedLookupDiagnosis.availableClosestMatch.strategyId || 'unknown'} · ${fmtTime(selectedLookupDiagnosis.availableClosestMatch.openedAt)}` : 'ingen'}
+              </div>
+            </div>
+          ) : (
+            <div style={{ ...sectionStyle(), borderColor: 'rgba(245, 158, 11, 0.18)', background: 'var(--surface-2)' }}>
+              <strong>Saknas i loggning</strong>
+              <div style={{ marginTop: 4, ...mutedTextStyle(theme), fontSize: 13 }}>
+                Trade-explanation kunde inte matchas mot historiken. Kontrollera tradeId eller symbol + strategyId + openedAt.
+              </div>
+            </div>
+          )}
+        </div>
+      ) : null}
+    </>
+  );
+}
+
+function PaperRuntimeTab({ runtime, refreshKey }) {
+  const strategyPipelineTruthState = useStrategyPipelineTruth(refreshKey);
+  const blockedCandidates = runtime?.blockedCandidates || [];
+  const recentEvents = runtime?.recentEvents || [];
+  const strategies = runtime?.strategies || [];
+  const blockerBreakdown = runtime?.blockerBreakdown || null;
+
+  return (
+    <>
+      <SummaryGrid runtime={runtime} />
+      <DataTable
+        title="Blocker breakdown"
+        subtitle={blockerBreakdown
+          ? `Varför inga paper trades öppnas — aggregerat per orsak för de senaste ${recentEvents.length} events (${blockerBreakdown.totalBlocked} blockerade, ${blockerBreakdown.reasonCount} orsaker). Read-only observability.`
+          : 'Aggregerad summering av blocker reasons. Read-only observability.'}
+        rows={blockerBreakdown?.reasons || []}
+        emptyText="Inga blockerade events i senaste runtime-fönstret."
+        rowKey={(row, index) => row.reason || `reason-${index}`}
+        columns={[
+          { key: 'reason', label: 'Blocker reason' },
+          { key: 'count', label: 'Antal' },
+          { key: 'symbols', label: 'Exempel-symboler', render: (row) => (Array.isArray(row.symbols) && row.symbols.length ? row.symbols.join(', ') : '–') },
+        ]}
+      />
+      <StrategyPipelineTruthPanel
+        pipeline={strategyPipelineTruthState.data}
+        loading={strategyPipelineTruthState.loading}
+        error={strategyPipelineTruthState.error}
+      />
+      <DataTable
+        title="Blocked candidates"
+        subtitle="Signaler som stoppades innan paper trade skapades"
+        rows={blockedCandidates}
+        emptyText="Inga blocked candidates i senaste runtime-fönstret."
+        rowKey={(row, index) => row.eventId || `${row.symbol}-${index}`}
+        columns={[
+          { key: 'symbol', label: 'Symbol' },
+          { key: 'strategy_id', label: 'Canonical strategy_id' },
+          { key: 'gateStage', label: 'Gate stage' },
+          { key: 'blockedReason', label: 'Blocked reason' },
+          { key: 'timestamp', label: 'Timestamp', render: (row) => fmtTime(row.timestamp) },
+          { key: 'source', label: 'Source' },
+        ]}
+      />
+      <DataTable
+        title="Latest paper events"
+        subtitle="Senaste paper-only runtime-events"
+        rows={recentEvents}
+        emptyText="Inga paper events ännu."
+        rowKey={(row, index) => row.eventId || `${row.symbol}-${index}`}
+        columns={[
+          { key: 'type', label: 'Event type' },
+          { key: 'symbol', label: 'Symbol' },
+          { key: 'strategy_id', label: 'Canonical strategy_id' },
+          { key: 'timestamp', label: 'Timestamp', render: (row) => fmtTime(row.timestamp) },
+          { key: 'reason', label: 'Reason / result', render: (row) => row.blockedReason || row.result || row.status || '–' },
+          { key: 'source', label: 'Source' },
+        ]}
+      />
+      <DataTable
+        title="Strategy summary"
+        subtitle="Aggregerat per canonical strategy_id"
+        rows={strategies}
+        emptyText="Inga strategier i runtime-fönstret ännu."
+        rowKey={(row, index) => row.strategy_id || `strategy-${index}`}
+        columns={[
+          { key: 'strategy_id', label: 'Canonical strategy_id' },
+          { key: 'openCount', label: 'Open' },
+          { key: 'closedCount', label: 'Closed' },
+          { key: 'blockedCount', label: 'Blocked' },
+          { key: 'latestEventType', label: 'Latest event' },
+          { key: 'latestEventAt', label: 'Latest at', render: (row) => fmtTime(row.latestEventAt) },
+        ]}
+      />
+    </>
+  );
+}
+
+function PaperLossReviewTab({ refreshKey, theme }) {
+  const exitComparisonState = useExitProfileComparison(131);
+  const lossReviewState = useLossReviewQueue(refreshKey);
+  const shortExitTruthState = useShortExitTruth(refreshKey);
+  const [lossReviewPreview, setLossReviewPreview] = useState({ loadingGroupId: null, groupId: null, data: null, error: null });
+
+  async function loadLossReviewPreview(groupId) {
+    const id = String(groupId || '').trim();
+    if (!id) return;
+    setLossReviewPreview({ loadingGroupId: id, groupId: id, data: null, error: null });
+    try {
+      const data = await fetchJsonWithTimeout(`/api/paper-trading/loss-review-queue/${encodeURIComponent(id)}/test-preview`);
+      if (!data?.ok) throw new Error(data?.error || 'Kunde inte bygga loss-review preview.');
+      setLossReviewPreview({ loadingGroupId: null, groupId: id, data, error: null });
+    } catch (err) {
+      setLossReviewPreview({
+        loadingGroupId: null,
+        groupId: id,
+        data: null,
+        error: friendlyLossReviewError(err, 'Loss review preview är tillfälligt otillgängligt.'),
+      });
+    }
+  }
+
+  return (
+    <>
+      {exitComparisonState.error ? (
+        <div style={{ ...sectionStyle(), borderColor: 'rgba(245, 158, 11, 0.22)', background: 'var(--surface-2)' }}>
+          <div style={{ color: 'var(--warning)' }}>
+            Exit profile comparison tillfälligt otillgängligt: {exitComparisonState.error}
+          </div>
+        </div>
+      ) : null}
+      <LossReviewQueuePanel
+        review={lossReviewState.data}
+        loading={lossReviewState.loading}
+        error={lossReviewState.error}
+        theme={theme}
+        previewState={lossReviewPreview}
+        onPreviewGroup={loadLossReviewPreview}
+      />
+      <ExitProfileComparisonPanel comparison={exitComparisonState.data} theme={theme} />
+      <ShortExitTruthPanel
+        shortExit={shortExitTruthState.data}
+        loading={shortExitTruthState.loading}
+        error={shortExitTruthState.error}
+      />
+    </>
+  );
+}
+
 export default function PaperTradingPage() {
   const theme = useThemeMode();
   const [refreshKey, setRefreshKey] = useState(0);
@@ -2876,14 +3140,7 @@ export default function PaperTradingPage() {
   const riskPauseSummaryState = useRiskPauseSummary(refreshKey);
   const approvalPreviewState = useApprovalPreview(refreshKey);
   const runtimeState = usePaperRuntime(50);
-  const explanationsState = useTradeExplanations(50);
-  const exitComparisonState = useExitProfileComparison(131);
-  const lossReviewState = useLossReviewQueue(refreshKey);
   const allowlistState = usePaperAllowlist(refreshKey);
-  const strategyPipelineTruthState = useStrategyPipelineTruth(refreshKey);
-  const shortExitTruthState = useShortExitTruth(refreshKey);
-  const [expandedTradeKey, setExpandedTradeKey] = useState(null);
-  const [lossReviewPreview, setLossReviewPreview] = useState({ loadingGroupId: null, groupId: null, data: null, error: null });
   const runtime = runtimeState.data;
   const summary = runtime?.summary || {};
   const performanceSummary = runtime?.strategyPerformance?.summary || {};
@@ -2946,66 +3203,15 @@ export default function PaperTradingPage() {
       tone: runtime?.status === 'ok' ? 'good' : runtimeState.error ? 'danger' : 'neutral',
     },
   ];
-  const explanationsByKey = useMemo(() => {
-    const map = new Map();
-    const items = Array.isArray(explanationsState.data?.items) ? explanationsState.data.items : [];
-    items.forEach((item) => {
-      const key = tradeLookupKey(item);
-      if (key) map.set(key, item);
-    });
-    return map;
-  }, [explanationsState.data]);
   const warnings = useMemo(() => {
     const list = [];
     if (runtimeState.error) list.push(`Paper runtime tillfälligt otillgängligt: ${runtimeState.error}`);
-    if (explanationsState.error) list.push(`Trade explanations tillfälligt otillgängligt: ${explanationsState.error}`);
-    if (exitComparisonState.error) list.push(`Exit profile comparison tillfälligt otillgängligt: ${exitComparisonState.error}`);
-    if (lossReviewState.error) list.push(`Loss review queue tillfälligt otillgängligt: ${lossReviewState.error}`);
     if (runtime?.status === 'degraded') list.push(`Degraded read-only data: ${(runtime.warnings || []).join(', ') || 'okänd källa'}`);
     return list;
-  }, [explanationsState.error, exitComparisonState.error, lossReviewState.error, runtimeState.error, runtime]);
+  }, [runtimeState.error, runtime]);
 
   const openTrades = runtime?.openTrades || [];
-  const closedTrades = runtime?.closedTrades || [];
-  const blockedCandidates = runtime?.blockedCandidates || [];
-  const recentEvents = runtime?.recentEvents || [];
-  const strategies = runtime?.strategies || [];
-  const blockerBreakdown = runtime?.blockerBreakdown || null;
   const dailySelectionPreview = runtime?.dailySelectionPreview || null;
-  const selectedClosedTrade = useMemo(() => {
-    if (!expandedTradeKey) return null;
-    return closedTrades.find((row) => {
-      const key = tradeLookupKey(row);
-      return key === expandedTradeKey;
-    }) || null;
-  }, [closedTrades, expandedTradeKey]);
-  const closedTradeExplanation = expandedTradeKey ? explanationsByKey.get(expandedTradeKey) || null : null;
-  const selectedLookup = useTradeExplanationLookup(
-    selectedClosedTrade,
-    Boolean(expandedTradeKey && selectedClosedTrade && !closedTradeExplanation),
-  );
-  const selectedLookupData = selectedLookup.data;
-  const selectedLookupExplanation = selectedLookupData?.found ? selectedLookupData.tradeExplanation : null;
-  const selectedLookupDiagnosis = selectedLookupData?.found === false ? selectedLookupData.diagnosis : null;
-  const activeClosedTradeExplanation = closedTradeExplanation || selectedLookupExplanation || null;
-
-  async function loadLossReviewPreview(groupId) {
-    const id = String(groupId || '').trim();
-    if (!id) return;
-    setLossReviewPreview({ loadingGroupId: id, groupId: id, data: null, error: null });
-    try {
-      const data = await fetchJsonWithTimeout(`/api/paper-trading/loss-review-queue/${encodeURIComponent(id)}/test-preview`);
-      if (!data?.ok) throw new Error(data?.error || 'Kunde inte bygga loss-review preview.');
-      setLossReviewPreview({ loadingGroupId: null, groupId: id, data, error: null });
-    } catch (err) {
-      setLossReviewPreview({
-        loadingGroupId: null,
-        groupId: id,
-        data: null,
-        error: friendlyLossReviewError(err, 'Loss review preview är tillfälligt otillgängligt.'),
-      });
-    }
-  }
 
   return (
     <DashboardShell
@@ -3100,188 +3306,22 @@ export default function PaperTradingPage() {
       )}
 
       {activeTab === 'trades' && (
-        <>
-          <WhyNoTradesPanel
-            runtime={runtime}
-            allowlist={allowlistState.data}
-            riskPauseSummary={riskPauseSummaryState.data}
-            gateStatus={gateStatusState.data}
-            onRefresh={() => setRefreshKey((t) => t + 1)}
-          />
-          <DataTable
-            title="Closed paper trades"
-            subtitle={`Senaste closed trades. Total closed i runtime: ${summary.closedCount ?? 0}`}
-            rows={closedTrades}
-            emptyText="Inga stängda paper trades ännu."
-            rowKey={(row, index) => tradeLookupKey(row) || `${row.symbol}-${index}`}
-            columns={[
-              { key: 'symbol', label: 'Symbol' },
-              { key: 'strategy_id', label: 'Canonical strategy_id' },
-              { key: 'setup', label: 'Setup' },
-              { key: 'result', label: 'Result', render: (row) => <span style={{ color: toneForResult(row.result), fontWeight: 700 }}>{row.result || '–'}</span> },
-              { key: 'pnlPct', label: 'PnL %', render: (row) => <span style={{ color: toneForResult(row.result) }}>{fmtPct(row.pnlPct)}</span> },
-              { key: 'opened_at', label: 'Opened', render: (row) => fmtTime(row.opened_at) },
-              { key: 'closed_at', label: 'Closed', render: (row) => fmtTime(row.closed_at) },
-              { key: 'source', label: 'Source' },
-              { key: 'paperOnly', label: 'paperOnly', render: (row) => String(row.paperOnly === true) },
-              {
-                key: 'why',
-                label: 'Why',
-                render: (row) => {
-                  const key = tradeLookupKey(row);
-                  const isOpen = expandedTradeKey === key;
-                  return (
-                    <button
-                      type="button"
-                      onClick={() => setExpandedTradeKey(isOpen ? null : key)}
-                      style={{
-                        ...explanationBadgeStyle(isOpen ? 'info' : 'neutral'),
-                        cursor: 'pointer',
-                        whiteSpace: 'nowrap',
-                        border: isOpen ? '1px solid rgba(56,189,248,0.22)' : '1px solid var(--border)',
-                      }}
-                    >
-                      {isOpen ? 'Dölj' : 'Visa varför'}
-                    </button>
-                  );
-                },
-              },
-            ]}
-          />
-          {expandedTradeKey ? (
-            <div>
-              {activeClosedTradeExplanation ? (
-                <>
-                  <ClosedTradeExplanationPanel explanation={activeClosedTradeExplanation} trade={selectedClosedTrade} theme={theme} />
-                  <EntryQualityGatePanel gate={activeClosedTradeExplanation.entryQualityGate} theme={theme} />
-                </>
-              ) : selectedLookup.loading ? (
-                <div style={{ ...sectionStyle(), borderColor: 'rgba(56,189,248,0.18)', background: 'var(--surface-2)' }}>
-                  <strong>Hämtar förklaring...</strong>
-                  <div style={{ marginTop: 4, ...mutedTextStyle(theme), fontSize: 13 }}>
-                    Läser read-only historik för att matcha traden mot loggen.
-                  </div>
-                </div>
-              ) : selectedLookup.error ? (
-                <div style={{ ...sectionStyle(), borderColor: 'rgba(245, 158, 11, 0.18)', background: 'var(--surface-2)' }}>
-                  <strong>Trade explanations tillfälligt otillgängligt</strong>
-                  <div style={{ marginTop: 4, ...mutedTextStyle(theme), fontSize: 13 }}>{selectedLookup.error}</div>
-                </div>
-              ) : selectedLookupDiagnosis ? (
-                <div style={{ ...sectionStyle(), borderColor: 'rgba(245, 158, 11, 0.18)', background: 'var(--surface-2)' }}>
-                  <strong>Förklaring saknas för denna trade eftersom äldre logg saknar matchande ID/tid.</strong>
-                  <div style={{ marginTop: 4, ...mutedTextStyle(theme), fontSize: 13, lineHeight: 1.5 }}>
-                    Orsak: {explanationValue(selectedLookupDiagnosis.reason)}
-                    <br />
-                    Sökt symbol: {explanationValue(selectedLookupDiagnosis.searchedSymbol)}
-                    <br />
-                    Sökt strategyId: {explanationValue(selectedLookupDiagnosis.searchedStrategyId)}
-                    <br />
-                    Sökt openedAt: {explanationValue(selectedLookupDiagnosis.searchedOpenedAt)}
-                    <br />
-                    Tillgänglig närmaste match: {selectedLookupDiagnosis.availableClosestMatch ? `${selectedLookupDiagnosis.availableClosestMatch.symbol} · ${selectedLookupDiagnosis.availableClosestMatch.strategyId || 'unknown'} · ${fmtTime(selectedLookupDiagnosis.availableClosestMatch.openedAt)}` : 'ingen'}
-                  </div>
-                </div>
-              ) : (
-                <div style={{ ...sectionStyle(), borderColor: 'rgba(245, 158, 11, 0.18)', background: 'var(--surface-2)' }}>
-                  <strong>Saknas i loggning</strong>
-                  <div style={{ marginTop: 4, ...mutedTextStyle(theme), fontSize: 13 }}>
-                    Trade-explanation kunde inte matchas mot historiken. Kontrollera tradeId eller symbol + strategyId + openedAt.
-                  </div>
-                </div>
-              )}
-            </div>
-          ) : null}
-        </>
+        <PaperTradesTab
+          runtime={runtime}
+          allowlist={allowlistState.data}
+          riskPauseSummary={riskPauseSummaryState.data}
+          gateStatus={gateStatusState.data}
+          onRefresh={() => setRefreshKey((t) => t + 1)}
+          theme={theme}
+        />
       )}
 
       {activeTab === 'runtime' && (
-        <>
-          <SummaryGrid runtime={runtime} />
-          <DataTable
-            title="Blocker breakdown"
-            subtitle={blockerBreakdown
-              ? `Varför inga paper trades öppnas — aggregerat per orsak för de senaste ${recentEvents.length} events (${blockerBreakdown.totalBlocked} blockerade, ${blockerBreakdown.reasonCount} orsaker). Read-only observability.`
-              : 'Aggregerad summering av blocker reasons. Read-only observability.'}
-            rows={blockerBreakdown?.reasons || []}
-            emptyText="Inga blockerade events i senaste runtime-fönstret."
-            rowKey={(row, index) => row.reason || `reason-${index}`}
-            columns={[
-              { key: 'reason', label: 'Blocker reason' },
-              { key: 'count', label: 'Antal' },
-              { key: 'symbols', label: 'Exempel-symboler', render: (row) => (Array.isArray(row.symbols) && row.symbols.length ? row.symbols.join(', ') : '–') },
-            ]}
-          />
-          <StrategyPipelineTruthPanel
-            pipeline={strategyPipelineTruthState.data}
-            loading={strategyPipelineTruthState.loading}
-            error={strategyPipelineTruthState.error}
-          />
-          <DataTable
-            title="Blocked candidates"
-            subtitle="Signaler som stoppades innan paper trade skapades"
-            rows={blockedCandidates}
-            emptyText="Inga blocked candidates i senaste runtime-fönstret."
-            rowKey={(row, index) => row.eventId || `${row.symbol}-${index}`}
-            columns={[
-              { key: 'symbol', label: 'Symbol' },
-              { key: 'strategy_id', label: 'Canonical strategy_id' },
-              { key: 'gateStage', label: 'Gate stage' },
-              { key: 'blockedReason', label: 'Blocked reason' },
-              { key: 'timestamp', label: 'Timestamp', render: (row) => fmtTime(row.timestamp) },
-              { key: 'source', label: 'Source' },
-            ]}
-          />
-          <DataTable
-            title="Latest paper events"
-            subtitle="Senaste paper-only runtime-events"
-            rows={recentEvents}
-            emptyText="Inga paper events ännu."
-            rowKey={(row, index) => row.eventId || `${row.symbol}-${index}`}
-            columns={[
-              { key: 'type', label: 'Event type' },
-              { key: 'symbol', label: 'Symbol' },
-              { key: 'strategy_id', label: 'Canonical strategy_id' },
-              { key: 'timestamp', label: 'Timestamp', render: (row) => fmtTime(row.timestamp) },
-              { key: 'reason', label: 'Reason / result', render: (row) => row.blockedReason || row.result || row.status || '–' },
-              { key: 'source', label: 'Source' },
-            ]}
-          />
-          <DataTable
-            title="Strategy summary"
-            subtitle="Aggregerat per canonical strategy_id"
-            rows={strategies}
-            emptyText="Inga strategier i runtime-fönstret ännu."
-            rowKey={(row, index) => row.strategy_id || `strategy-${index}`}
-            columns={[
-              { key: 'strategy_id', label: 'Canonical strategy_id' },
-              { key: 'openCount', label: 'Open' },
-              { key: 'closedCount', label: 'Closed' },
-              { key: 'blockedCount', label: 'Blocked' },
-              { key: 'latestEventType', label: 'Latest event' },
-              { key: 'latestEventAt', label: 'Latest at', render: (row) => fmtTime(row.latestEventAt) },
-            ]}
-          />
-        </>
+        <PaperRuntimeTab runtime={runtime} refreshKey={refreshKey} />
       )}
 
       {activeTab === 'loss-review' && (
-        <>
-          <LossReviewQueuePanel
-            review={lossReviewState.data}
-            loading={lossReviewState.loading}
-            error={lossReviewState.error}
-            theme={theme}
-            previewState={lossReviewPreview}
-            onPreviewGroup={loadLossReviewPreview}
-          />
-          <ExitProfileComparisonPanel comparison={exitComparisonState.data} theme={theme} />
-          <ShortExitTruthPanel
-            shortExit={shortExitTruthState.data}
-            loading={shortExitTruthState.loading}
-            error={shortExitTruthState.error}
-          />
-        </>
+        <PaperLossReviewTab refreshKey={refreshKey} theme={theme} />
       )}
 
       {activeTab === 'teknik' && (
