@@ -1347,6 +1347,13 @@ function classifySkip(c, reason) {
   if (raw.includes('runtime_status=no_entry_rule')) {
     return { type: 'TRADE_SKIPPED', reasonSv: 'Skippad — strategin är på men saknar entry-regel.' };
   }
+  if (
+    raw.includes('runtime_partial_missing_crypto_signal_context') ||
+    raw.includes('saknar crypto signal context') ||
+    raw.includes('missing crypto_signal_context')
+  ) {
+    return { type: 'TRADE_SKIPPED', reasonSv: 'Runtime partial — saknar crypto signal context.' };
+  }
   if (raw.includes('runtime_status=not_connected')) {
     return { type: 'TRADE_SKIPPED', reasonSv: 'Skippad — signalen är inte kopplad till katalogstrategi.' };
   }
@@ -2318,12 +2325,15 @@ async function runTick() {
             reason:        runtimeDecision.reason || 'runtime_status=unknown',
             timestamp:     new Date().toISOString(),
           }, ..._recentRejections].slice(0, 100);
-          const skip = classifySkip(c, runtimeDecision.reason);
+          const skip = classifySkip(c, runtimeDecision.blocked_reason_code || runtimeDecision.reason);
           appendEvent({
             ...eventFromCandidate(skip.type, c, skip.reasonSv),
             runtimeStatus: runtimeStrategy.runtime_status || null,
             strategyId: runtimeStrategy.strategy_id || null,
             strategyName: runtimeStrategy.strategy_name || null,
+            blockedReason: runtimeDecision.blocked_reason_code || null,
+            blockedReasonCode: runtimeDecision.blocked_reason_code || null,
+            runtimeReasonSv: runtimeDecision.reasonSv || runtimeDecision.reason || null,
           });
           continue;
         }
@@ -3523,6 +3533,7 @@ module.exports = {
     shouldBlockLateRegularPullbackEntry,
     normalizeCandidateStrategyMetadata,
     eventFromCandidate,
+    classifySkip,
     buildOpenTrade,
     checkHardExit,
   },

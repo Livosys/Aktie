@@ -13,6 +13,9 @@ const SAFETY = Object.freeze({
   paper_only: true,
 });
 
+const RUNTIME_PARTIAL_MISSING_CRYPTO_SIGNAL_CONTEXT = 'runtime_partial_missing_crypto_signal_context';
+const RUNTIME_PARTIAL_MISSING_CRYPTO_SIGNAL_CONTEXT_SV = 'Runtime partial — saknar crypto signal context.';
+
 const TRADES_FILE = path.resolve(__dirname, '../../data/paper-trading/trades.jsonl');
 const EVENTS_FILE = path.resolve(__dirname, '../../data/paper-trading/events.jsonl');
 const STATE_FILE = path.resolve(__dirname, '../../data/paper-trading/state.json');
@@ -1043,11 +1046,22 @@ function missingDataForStrategy(strategy = {}) {
   }
 }
 
-function reasonForStrategy(strategy, runtimeStatus) {
+function blockedReasonCodeForRuntime(strategy, runtimeStatus, missingData = []) {
+  if (!strategy || runtimeStatus === 'not_connected') return 'runtime_not_connected';
+  if (runtimeStatus === 'disabled') return 'runtime_disabled';
+  if (runtimeStatus === 'partial') {
+    if (missingData.includes('crypto_signal_context')) return RUNTIME_PARTIAL_MISSING_CRYPTO_SIGNAL_CONTEXT;
+    return 'runtime_partial_missing_data';
+  }
+  return null;
+}
+
+function reasonForStrategy(strategy, runtimeStatus, missingData = null) {
   if (!strategy) return 'Strategin saknar runtime-metadata.';
   if (runtimeStatus === 'disabled') return 'Strategin är avstängd av användaren.';
   if (runtimeStatus === 'partial') {
-    const missing = missingDataForStrategy(strategy);
+    const missing = Array.isArray(missingData) ? missingData : missingDataForStrategy(strategy);
+    if (missing.includes('crypto_signal_context')) return RUNTIME_PARTIAL_MISSING_CRYPTO_SIGNAL_CONTEXT_SV;
     return `Partial: missing ${missing.join(', ')}.`;
   }
   return `Ready: ${strategy.name || strategy.id} entry available for paper/replay/batch only.`;
@@ -1101,7 +1115,8 @@ function runtimeProfileForStrategy(strategyId, savedConfig = {}) {
   const rawSignals = runtimeRawSignalsForStrategy(strategyId);
   const requiredData = requiredDataForStrategy(strategy);
   const missingData = runtimeStatusAfter === 'partial' ? missingDataForStrategy(strategy) : [];
-  const reasonSv = reasonForStrategy(strategy, runtimeStatusAfter);
+  const reasonSv = reasonForStrategy(strategy, runtimeStatusAfter, missingData);
+  const blockedReasonCode = blockedReasonCodeForRuntime(strategy, runtimeStatusAfter, missingData);
   const strategyFamily = strategy.engines_used?.[0] || strategy.market_label || strategy.market_group || 'UNKNOWN';
   const mappingConfidence = runtimeStatusAfter === 'active' ? 'high' : runtimeStatusAfter === 'partial' ? 'medium' : 'low';
 
@@ -1120,6 +1135,8 @@ function runtimeProfileForStrategy(strategyId, savedConfig = {}) {
     runtime_raw_signals: rawSignals,
     required_data: requiredData,
     missing_data: missingData,
+    blocked_reason_code: blockedReasonCode,
+    blockedReasonCode,
     reason_sv: reasonSv,
     skip_reason_sv: runtimeStatusAfter === 'partial' ? reasonSv : null,
     runtime_comment_sv: reasonSv,
@@ -1266,11 +1283,17 @@ function canCreatePaperTradeForSignal(signal = {}) {
       && inferred.entry_rule_implemented === true
       && inferred.runtime_status === 'active'
       && inferred.can_create_paper_trade === true;
+    const reason = allowed ? null : inferred.skip_reason_sv || inferred.reason_sv || `runtime_status=${inferred.runtime_status}`;
+    const blockedReasonCode = allowed ? null : inferred.blocked_reason_code || null;
     return {
       ok: true,
       allowed,
       strategy: inferred,
-      reason: allowed ? null : inferred.skip_reason_sv || inferred.reason_sv || `runtime_status=${inferred.runtime_status}`,
+      reason,
+      reason_sv: reason,
+      reasonSv: reason,
+      blocked_reason_code: blockedReasonCode,
+      blockedReasonCode,
       ...SAFETY,
     };
   } catch (err) {

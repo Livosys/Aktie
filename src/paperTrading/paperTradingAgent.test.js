@@ -213,6 +213,8 @@ function main() {
   });
   assert.equal(narrowWait.allowed, false, 'NARROW_WAIT ska fortsatt blockas');
   assert.equal(narrowWait.strategy?.blocked_reason_code, 'narrow_wait_not_paper_entry');
+  const narrowWaitSkip = agent._internal.classifySkip({}, narrowWait.blocked_reason_code || narrowWait.reason);
+  assert.equal(narrowWaitSkip.reasonSv, 'Skippad — NARROW_WAIT är ett vänteläge och inte en paper-entry-setup.');
 
   const regularPullback = strategyRuntimeConnector.canCreatePaperTradeForSignal({
     symbol: 'NVDA',
@@ -224,6 +226,21 @@ function main() {
   });
   assert.equal(regularPullback.allowed, false, 'REGULAR_PULLBACK ska fortsatt blockas');
   assert.equal(regularPullback.strategy?.blocked_reason_code, 'setup_not_paper_entry');
+  const regularPullbackSkip = agent._internal.classifySkip({}, regularPullback.blocked_reason_code || regularPullback.reason);
+  assert.equal(regularPullbackSkip.reasonSv, 'Skippad — REGULAR_PULLBACK är inte en paper-entry-setup.');
+
+  const cryptoMomentumVwapPartial = strategyRuntimeConnector.canCreatePaperTradeForSignal({
+    symbol: 'BTCUSDT',
+    marketType: 'crypto',
+    signalFamily: 'VWAP_RECLAIM_REJECTION',
+    signalSubtype: 'VWAP_RECLAIM_UP',
+    strategyId: 'crypto_momentum_scalper',
+  });
+  assert.equal(cryptoMomentumVwapPartial.allowed, false, 'crypto_momentum_scalper VWAP ska fortsatt blockas när runtime är partial');
+  assert.equal(cryptoMomentumVwapPartial.blocked_reason_code, 'runtime_partial_missing_crypto_signal_context');
+  const cryptoMomentumVwapSkip = agent._internal.classifySkip({}, cryptoMomentumVwapPartial.blocked_reason_code || cryptoMomentumVwapPartial.reason);
+  assert.equal(cryptoMomentumVwapSkip.type, 'TRADE_SKIPPED');
+  assert.equal(cryptoMomentumVwapSkip.reasonSv, 'Runtime partial — saknar crypto signal context.');
 
   const normalResistanceCandidate = {
     symbol: 'NVDA',
