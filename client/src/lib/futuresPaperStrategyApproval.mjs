@@ -423,6 +423,14 @@ export function emptyOperatorCredentials() {
   return { username: '', password: '' };
 }
 
+export function passwordInputType(passwordVisible) {
+  return passwordVisible ? 'text' : 'password';
+}
+
+export function passwordToggleLabel(passwordVisible) {
+  return passwordVisible ? 'Dölj lösenord' : 'Visa lösenord';
+}
+
 export function buildBasicAuthHeader(credentials) {
   const c = credentials && typeof credentials === 'object' ? credentials : {};
   const username = safeStr(c.username);

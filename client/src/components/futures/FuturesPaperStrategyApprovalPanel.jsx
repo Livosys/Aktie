@@ -17,6 +17,8 @@ import {
   leaderRows,
   mutationFollowUp,
   operatorMutationPreflight,
+  passwordInputType,
+  passwordToggleLabel,
   provenanceLabel,
   resultSummary,
   strategyDetailFields,
@@ -141,62 +143,105 @@ function formatDetailValue(value) {
   return String(value);
 }
 
-function OperatorLoginPanel({ visible, credentialsSet, form, setForm, onForget, onCancel }) {
-  if (!visible && !credentialsSet) return null;
+function OperatorLoginPanel({
+  visible,
+  pendingAction,
+  form,
+  setForm,
+  passwordVisible,
+  onTogglePassword,
+  onSubmit,
+  onCancel,
+  busy,
+}) {
+  if (!visible) return null;
+  const meta = pendingAction ? ACTION_META[pendingAction.actionId] : null;
+  const actionText = pendingAction && meta ? `${meta.label} · ${pendingAction.id}` : 'Välj en strategiåtgärd först.';
+  const submitDisabled = busy || !pendingAction || !form.username || !form.password;
   return (
-    <div style={{ ...card, borderColor: 'var(--warning, #9a6700)' }}>
-      <div style={{ fontWeight: 700, marginBottom: 6 }}>Operatörsinloggning</div>
-      <div style={{ fontSize: 12, color: 'var(--muted,#6b7280)', marginBottom: 10 }}>
-        Mutationer använder dashboardens befintliga Basic Auth. Uppgifterna sparas bara i den här flikens minne.
-      </div>
-      {credentialsSet ? (
-        <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
-          <Badge tone="success">Operatörsheader redo</Badge>
-          <button
-            type="button"
-            onClick={onForget}
-            style={{ cursor: 'pointer', background: 'transparent', border: '1px solid var(--border,#ddd)', borderRadius: 8, padding: '4px 10px', fontSize: 12, color: 'inherit' }}
-          >
-            Glöm
-          </button>
-          <button
-            type="button"
-            onClick={onCancel}
-            style={{ cursor: 'pointer', background: 'transparent', border: '1px solid var(--border,#ddd)', borderRadius: 8, padding: '4px 10px', fontSize: 12, color: 'inherit' }}
-          >
-            Avbryt
-          </button>
+    <div
+      role="dialog"
+      aria-modal="true"
+      aria-label="Operatörsinloggning"
+      style={{
+        position: 'fixed',
+        inset: 0,
+        zIndex: 1000,
+        display: 'grid',
+        placeItems: 'center',
+        padding: 16,
+        background: 'rgba(15, 23, 42, 0.35)',
+      }}
+    >
+      <form
+        onSubmit={(e) => {
+          e.preventDefault();
+          if (!submitDisabled) onSubmit();
+        }}
+        style={{
+          ...card,
+          width: 'min(460px, 100%)',
+          borderColor: 'var(--warning, #9a6700)',
+          background: 'var(--surface,#fff)',
+          boxShadow: '0 18px 60px rgba(15, 23, 42, 0.22)',
+        }}
+      >
+        <div style={{ fontWeight: 700, marginBottom: 6 }}>Operatörsinloggning</div>
+        <div style={{ fontSize: 12, color: 'var(--muted,#6b7280)', marginBottom: 10 }}>
+          Mutationer använder dashboardens befintliga Basic Auth. Uppgifterna sparas bara i den här flikens minne.
         </div>
-      ) : (
-        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+        <div style={{ fontSize: 12, color: 'var(--muted,#6b7280)', marginBottom: 12 }}>
+          Åtgärd: {actionText}
+        </div>
+        <label style={{ display: 'grid', gap: 4, fontSize: 12, fontWeight: 700, marginBottom: 10 }}>
+          Användarnamn
           <input
             type="text"
             value={form.username}
             autoComplete="username"
             onChange={(e) => setForm((f) => ({ ...f, username: e.target.value }))}
             placeholder="Användarnamn"
-            style={{ border: '1px solid var(--border,#ddd)', borderRadius: 8, padding: '6px 8px', minWidth: 160, background: 'var(--surface,#fff)', color: 'inherit' }}
+            style={{ border: '1px solid var(--border,#ddd)', borderRadius: 8, padding: '8px 10px', background: 'var(--surface,#fff)', color: 'inherit' }}
           />
+        </label>
+        <label style={{ display: 'grid', gap: 4, fontSize: 12, fontWeight: 700, marginBottom: 10 }}>
+          Lösenord
           <input
-            type="password"
+            type={passwordInputType(passwordVisible)}
             value={form.password}
             autoComplete="current-password"
             onChange={(e) => setForm((f) => ({ ...f, password: e.target.value }))}
             placeholder="Lösenord"
-            style={{ border: '1px solid var(--border,#ddd)', borderRadius: 8, padding: '6px 8px', minWidth: 160, background: 'var(--surface,#fff)', color: 'inherit' }}
+            style={{ border: '1px solid var(--border,#ddd)', borderRadius: 8, padding: '8px 10px', background: 'var(--surface,#fff)', color: 'inherit' }}
           />
-          <span style={{ color: 'var(--muted,#6b7280)', fontSize: 12 }}>
-            Fyll i och kör åtgärden igen.
-          </span>
+        </label>
+        <div style={{ display: 'flex', gap: 8, justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap' }}>
           <button
             type="button"
-            onClick={onCancel}
+            aria-pressed={passwordVisible}
+            onClick={onTogglePassword}
             style={{ cursor: 'pointer', background: 'transparent', border: '1px solid var(--border,#ddd)', borderRadius: 8, padding: '6px 10px', fontSize: 12, color: 'inherit' }}
           >
-            Avbryt
+            {passwordToggleLabel(passwordVisible)}
           </button>
+          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
+            <button
+              type="button"
+              onClick={onCancel}
+              style={{ cursor: 'pointer', background: 'transparent', border: '1px solid var(--border,#ddd)', borderRadius: 8, padding: '8px 12px', fontSize: 12, color: 'inherit' }}
+            >
+              Avbryt
+            </button>
+            <button
+              type="submit"
+              disabled={submitDisabled}
+              style={{ cursor: submitDisabled ? 'not-allowed' : 'pointer', background: submitDisabled ? 'var(--border,#ddd)' : 'var(--accent,#2563eb)', border: '1px solid var(--accent,#2563eb)', borderRadius: 8, padding: '8px 12px', fontSize: 12, color: submitDisabled ? 'var(--muted,#6b7280)' : '#fff', fontWeight: 700 }}
+            >
+              {busy ? 'Skickar…' : 'Logga in och fortsätt'}
+            </button>
+          </div>
         </div>
-      )}
+      </form>
     </div>
   );
 }
@@ -327,7 +372,9 @@ export default function FuturesPaperStrategyApprovalPanel() {
   const [rowMessage, setRowMessage] = useState({ id: null, tone: 'muted', text: null, detail: null });
   const [expandedId, setExpandedId] = useState(null);
   const [showOperatorLogin, setShowOperatorLogin] = useState(false);
+  const [pendingOperatorAction, setPendingOperatorAction] = useState(null);
   const [operatorForm, setOperatorForm] = useState(() => emptyOperatorCredentials());
+  const [operatorPasswordVisible, setOperatorPasswordVisible] = useState(false);
 
   const load = useCallback(async () => {
     setState((s) => ({ ...s, loading: true }));
@@ -351,19 +398,37 @@ export default function FuturesPaperStrategyApprovalPanel() {
 
   const degraded = Boolean(state.data && state.data.degraded);
   const safety = state.data || {};
-  const operatorCredentials = operatorForm.username && operatorForm.password ? operatorForm : null;
 
-  const runAction = useCallback(async (strategy, actionId) => {
+  const clearOperatorDialog = useCallback(() => {
+    setOperatorForm(emptyOperatorCredentials());
+    setOperatorPasswordVisible(false);
+    setPendingOperatorAction(null);
+    setShowOperatorLogin(false);
+  }, []);
+
+  const beginOperatorLogin = useCallback((strategy = null, actionId = null) => {
     const id = pickStrategyId(strategy);
-    if (!id) return;
-    const meta = ACTION_META[actionId];
-    if (meta && meta.confirm) {
-      // eslint-disable-next-line no-alert
-      if (!window.confirm(meta.confirm)) return;
+    setOperatorForm(emptyOperatorCredentials());
+    setOperatorPasswordVisible(false);
+    setPendingOperatorAction(id && actionId ? { id, actionId } : null);
+    setShowOperatorLogin(true);
+    if (id && actionId) {
+      setRowMessage({ id, tone: 'muted', text: 'Logga in som operatör för att fortsätta.', detail: null });
     }
+  }, []);
+
+  const submitOperatorLogin = useCallback(async () => {
+    const pending = pendingOperatorAction;
+    if (!pending) {
+      setRowMessage({ id: null, tone: 'danger', text: 'Välj en strategiåtgärd först.', detail: null });
+      clearOperatorDialog();
+      return;
+    }
+    const { id, actionId } = pending;
+    const meta = ACTION_META[actionId];
     setBusyId(id);
     setRowMessage({ id: null, tone: 'muted', text: null, detail: null });
-    const preflight = operatorMutationPreflight(operatorCredentials);
+    const preflight = operatorMutationPreflight(operatorForm);
     if (!preflight.ok) {
       setShowOperatorLogin(true);
       setRowMessage({
@@ -375,7 +440,15 @@ export default function FuturesPaperStrategyApprovalPanel() {
       setBusyId(null);
       return;
     }
-    const { url, options } = buildMutationRequest(id, actionId, operatorCredentials);
+    if (meta && meta.confirm) {
+      // eslint-disable-next-line no-alert
+      if (!window.confirm(meta.confirm)) {
+        clearOperatorDialog();
+        setBusyId(null);
+        return;
+      }
+    }
+    const { url, options } = buildMutationRequest(id, actionId, operatorForm);
     let res = null; let data = null; let err = null;
     try {
       res = await fetchMutation(url, options);
@@ -399,11 +472,10 @@ export default function FuturesPaperStrategyApprovalPanel() {
         setRowMessage({ id, tone: 'danger', text: result.message, detail: result.technicalDetail });
       }
     } finally {
-      setOperatorForm(emptyOperatorCredentials());
-      setShowOperatorLogin(false);
+      clearOperatorDialog();
       setBusyId(null);
     }
-  }, [load, operatorCredentials]);
+  }, [clearOperatorDialog, load, operatorForm, pendingOperatorAction]);
 
   return (
     <div>
@@ -420,19 +492,26 @@ export default function FuturesPaperStrategyApprovalPanel() {
 
       <ReadyInfoCard />
 
+      <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: 12 }}>
+        <button
+          type="button"
+          onClick={() => beginOperatorLogin()}
+          style={{ cursor: 'pointer', background: 'transparent', border: '1px solid var(--border,#ddd)', borderRadius: 8, padding: '8px 12px', fontSize: 13, fontWeight: 700, color: 'inherit' }}
+        >
+          Operatörsinloggning
+        </button>
+      </div>
+
       <OperatorLoginPanel
         visible={showOperatorLogin}
-        credentialsSet={Boolean(operatorCredentials)}
+        pendingAction={pendingOperatorAction}
         form={operatorForm}
         setForm={setOperatorForm}
-        onForget={() => {
-          setOperatorForm(emptyOperatorCredentials());
-          setShowOperatorLogin(true);
-        }}
-        onCancel={() => {
-          setOperatorForm(emptyOperatorCredentials());
-          setShowOperatorLogin(false);
-        }}
+        passwordVisible={operatorPasswordVisible}
+        onTogglePassword={() => setOperatorPasswordVisible((visiblePassword) => !visiblePassword)}
+        onSubmit={submitOperatorLogin}
+        onCancel={clearOperatorDialog}
+        busy={Boolean(pendingOperatorAction && busyId === pendingOperatorAction.id)}
       />
 
       {degraded ? (
@@ -563,7 +642,7 @@ export default function FuturesPaperStrategyApprovalPanel() {
                                     key={actionId}
                                     type="button"
                                     disabled={busy || degraded}
-                                    onClick={() => runAction(s, actionId)}
+                                    onClick={() => beginOperatorLogin(s, actionId)}
                                     style={actionButtonStyle(meta.tone, busy || degraded)}
                                     title={degraded ? 'Blockerat i degraderat läge' : meta.label}
                                   >
