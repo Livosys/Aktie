@@ -1,8 +1,5 @@
-import React, { useState, useEffect } from 'react';
+import React, { Suspense, lazy, useState, useEffect } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
-import ReplayPage from './ReplayPage.jsx';
-import ReviewChartPage from './ReviewChartPage.jsx';
-import IntelligencePage from './IntelligencePage.jsx';
 import { AdvancedModeToggle, ConfigScopeBadge, PlatformEmptyState, PlatformSafetyBar, useAdvancedMode } from '../components/PlatformControls.jsx';
 import PaperCandidatePanel from '../components/PaperCandidatePanel.jsx';
 import { DashboardShell, DashboardTabs } from '../components/dashboard/DashboardKit.jsx';
@@ -14,6 +11,9 @@ import {
 } from '../hooks/useUnifiedConfig.js';
 import { SignalAge, TradingViewLink } from '../shared.jsx';
 
+const ReplayPage = lazy(() => import('./ReplayPage.jsx'));
+const ReviewChartPage = lazy(() => import('./ReviewChartPage.jsx'));
+
 const LAB_SAFETY = Object.freeze({
   mode: 'paper_only',
   actions_allowed: false,
@@ -21,6 +21,10 @@ const LAB_SAFETY = Object.freeze({
   live_trading_enabled: false,
   broker_enabled: false,
 });
+
+function LabPanelFallback() {
+  return <div className="tl-tab-content">Laddar panel...</div>;
+}
 
 // ── Default configs ───────────────────────────────────────────────────────────
 const TOGGLE_META = [
@@ -4557,11 +4561,19 @@ export default function TradingLabPage() {
       {tab === 'agent_debate' && <AgentDebateTab />}
 
       {tab === 'replay' && (
-        <div className="tl-embedded-page"><ReplayPage /></div>
+        <div className="tl-embedded-page">
+          <Suspense fallback={<LabPanelFallback />}>
+            <ReplayPage />
+          </Suspense>
+        </div>
       )}
 
       {tab === 'review' && (
-        <div className="tl-embedded-page"><ReviewChartPage /></div>
+        <div className="tl-embedded-page">
+          <Suspense fallback={<LabPanelFallback />}>
+            <ReviewChartPage />
+          </Suspense>
+        </div>
       )}
 
       {tab === 'adaptive' && <AdaptiveIntelligenceTab />}
