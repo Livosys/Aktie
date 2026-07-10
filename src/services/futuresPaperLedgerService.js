@@ -247,28 +247,42 @@ function toPositionView(position, fxUsdSek = 0) {
     netPnlUsd: isClosed ? realizedPnlUsd : round(grossPnlUsd - entryFeeUsd, 2),
     netPnlSek: isClosed ? realizedPnlSek : round((grossPnlUsd - entryFeeUsd) * fxUsdSek, 2),
 
-    // Additiv MFE/MAE-instrumentering. Äldre trades saknar fälten → null /
-    // 'unknown_legacy'. hasExcursionData sant först när prisbanan mätts.
-    highestPriceWhileOpen: ensureFiniteNumber(position.highestPriceWhileOpen),
-    lowestPriceWhileOpen: ensureFiniteNumber(position.lowestPriceWhileOpen),
-    maximumFavorableExcursionPoints: ensureFiniteNumber(position.maximumFavorableExcursionPoints),
-    maximumAdverseExcursionPoints: ensureFiniteNumber(position.maximumAdverseExcursionPoints),
-    maximumFavorableExcursionSek: ensureFiniteNumber(position.maximumFavorableExcursionSek),
-    maximumAdverseExcursionSek: ensureFiniteNumber(position.maximumAdverseExcursionSek),
-    maximumFavorableExcursionR: ensureFiniteNumber(position.maximumFavorableExcursionR),
-    maximumAdverseExcursionR: ensureFiniteNumber(position.maximumAdverseExcursionR),
-    peakUnrealizedPnlSek: ensureFiniteNumber(position.peakUnrealizedPnlSek),
-    gaveBackFromPeakSek: ensureFiniteNumber(position.gaveBackFromPeakSek),
-    initialStopPrice: ensureFiniteNumber(position.initialStopPrice),
-    initialTargetPrice: ensureFiniteNumber(position.initialTargetPrice),
-    initialRiskPoints: ensureFiniteNumber(position.initialRiskPoints),
-    initialRiskSek: ensureFiniteNumber(position.initialRiskSek),
-    finalStopPrice: ensureFiniteNumber(position.finalStopPrice),
-    exitType: position.exitType || (isClosed ? 'unknown_legacy' : null),
+    // Additiv MFE/MAE-instrumentering (maskad för legacy-positioner).
+    ...buildExcursionView(position, isClosed),
+  };
+}
+
+// Läsvy för excursion-fälten. Strikt null-normalisering (saknat värde blir
+// ALDRIG 0) + legacy-maskning: en position utan mfeMaeSource exponerar samtliga
+// MFE/MAE-mått som null, även om rå storage råkar innehålla gamla skräpvärden
+// (t.ex. lowestPriceWhileOpen=0). Provenance/exitType behålls som legacy.
+function buildExcursionView(position = {}, isClosed = false) {
+  const en = excursionService.normalizeExcursionNumber;
+  const instrumented = excursionService.isInstrumented(position);
+  const measure = (value) => (instrumented ? en(value) : null);
+  return {
+    highestPriceWhileOpen: measure(position.highestPriceWhileOpen),
+    lowestPriceWhileOpen: measure(position.lowestPriceWhileOpen),
+    maximumFavorableExcursionPoints: measure(position.maximumFavorableExcursionPoints),
+    maximumAdverseExcursionPoints: measure(position.maximumAdverseExcursionPoints),
+    maximumFavorableExcursionSek: measure(position.maximumFavorableExcursionSek),
+    maximumAdverseExcursionSek: measure(position.maximumAdverseExcursionSek),
+    maximumFavorableExcursionR: measure(position.maximumFavorableExcursionR),
+    maximumAdverseExcursionR: measure(position.maximumAdverseExcursionR),
+    peakUnrealizedPnlSek: measure(position.peakUnrealizedPnlSek),
+    gaveBackFromPeakSek: measure(position.gaveBackFromPeakSek),
+    initialStopPrice: measure(position.initialStopPrice),
+    initialTargetPrice: measure(position.initialTargetPrice),
+    initialRiskPoints: measure(position.initialRiskPoints),
+    initialRiskSek: measure(position.initialRiskSek),
+    finalStopPrice: measure(position.finalStopPrice),
+    exitType: instrumented
+      ? (position.exitType || (isClosed ? 'unknown_legacy' : null))
+      : (isClosed ? 'unknown_legacy' : null),
     mfeMaeSource: position.mfeMaeSource || null,
-    priceFeedSource: position.priceFeedSource || position.dataSource || null,
-    measurementQuality: position.measurementQuality || null,
-    hasExcursionData: position.mfeMaeSource != null,
+    priceFeedSource: instrumented ? (position.priceFeedSource || position.dataSource || null) : null,
+    measurementQuality: instrumented ? (position.measurementQuality || null) : null,
+    hasExcursionData: instrumented,
   };
 }
 

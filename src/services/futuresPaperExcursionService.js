@@ -20,10 +20,22 @@ const EXIT_TYPE = Object.freeze({
   UNKNOWN_LEGACY: 'unknown_legacy',
 });
 
+// Strikt numerisk normalisering: saknat värde (null/undefined/'') blir ALDRIG 0.
+// Endast verkliga finita nummer (inkl. talet 0 och strängen "0") passerar.
+// Exporteras så ledgerns läsvy kan använda samma strikta regel för excursion-
+// fält i stället för en generell helper som gör Number(null) === 0.
 function num(value) {
   if (value === null || value === undefined || value === '') return null;
   const n = Number(value);
   return Number.isFinite(n) ? n : null;
+}
+
+// En position räknas som instrumenterad först när initExcursion körts vid open
+// (mfeMaeSource satt). Legacy-positioner (öppnade före instrumenteringen) saknar
+// det och ska ALDRIG få high/low/MFE/MAE beräknade — annars coercas saknade fält
+// till 0 och falsk excursion uppstår.
+function isInstrumented(tracking) {
+  return !!(tracking && tracking.mfeMaeSource != null);
 }
 
 // De enda fält excursion-instrumenteringen äger. Funktionerna returnerar bara
@@ -159,6 +171,10 @@ function recompute(tracking, { entryPrice, side, pointValueUsd, contracts, fxUsd
 // Vik in ett observerat pris. Highest/lowest uppdateras monotont; MFE/MAE räknas
 // om. Muterar inte input (returnerar ny kopia).
 function applyPriceObservation(tracking, { price, entryPrice, side, pointValueUsd, contracts, fxUsdSek } = {}) {
+  // Legacy-guard: uninstrumenterade positioner uppdaterar ingen excursion.
+  // Returnerar {} → ledgerns mark-to-market lämnar excursion-fälten orörda
+  // (currentPrice/unrealized/konto uppdateras fortfarande av anroparen).
+  if (!isInstrumented(tracking)) return {};
   const p = num(price);
   const next = { ...(tracking || {}) };
   if (p == null || p <= 0) return next;
@@ -183,6 +199,9 @@ function finalizeExcursion(tracking, {
   contracts = 0,
   fxUsdSek = 0,
 } = {}) {
+  // Legacy-guard: uninstrumenterade positioner får inga excursion-slutvärden.
+  // exitType lämnas åt läsvyn (unknown_legacy); PnL/exit-pris är oberört.
+  if (!isInstrumented(tracking)) return {};
   let next = { ...(tracking || {}) };
   const px = num(exitPrice);
   if (px != null && px > 0) {
@@ -198,6 +217,9 @@ function finalizeExcursion(tracking, {
 
 module.exports = {
   EXIT_TYPE,
+  EXCURSION_KEYS,
+  normalizeExcursionNumber: num,
+  isInstrumented,
   classifyExitType,
   initExcursion,
   recompute,

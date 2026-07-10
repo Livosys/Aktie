@@ -159,4 +159,52 @@ const ctx = (side, entryPrice) => ({ entryPrice, side, pointValueUsd: PV, contra
   assert.equal(t.gaveBackFromPeakSek, 0, 'ingen topp → 0 giveback');
 }
 
+// 17. Strikt null-normalisering: saknat värde blir ALDRIG 0, men äkta 0/"0" gäller.
+{
+  const n = svc.normalizeExcursionNumber;
+  assert.equal(n(null), null, 'null → null (ej 0)');
+  assert.equal(n(undefined), null, 'undefined → null');
+  assert.equal(n(''), null, 'tom sträng → null');
+  assert.equal(n(0), 0, 'talet 0 → 0');
+  assert.equal(n('0'), 0, 'strängen "0" → 0');
+  assert.equal(n(29910.5), 29910.5, 'finit tal passerar');
+  assert.equal(n(NaN), null, 'NaN → null');
+  assert.equal(n('abc'), null, 'icke-numerisk sträng → null');
+}
+
+// 18. isInstrumented: bara positioner med mfeMaeSource räknas som instrumenterade.
+{
+  assert.equal(svc.isInstrumented({ mfeMaeSource: 'runtime_price_updates' }), true);
+  assert.equal(svc.isInstrumented({ mfeMaeSource: null }), false, 'legacy null');
+  assert.equal(svc.isInstrumented({}), false, 'saknar fältet');
+  assert.equal(svc.isInstrumented(null), false, 'null-position');
+}
+
+// 19. Legacy-guard: applyPriceObservation gör INGEN excursionberäkning utan
+// mfeMaeSource (returnerar {} → ledgern lämnar fälten orörda).
+{
+  // Legacy-position med skräpfält (som live-buggen skapade): low=0.
+  const legacy = { highestPriceWhileOpen: 29962.75, lowestPriceWhileOpen: 0, mfeMaeSource: undefined };
+  const out = svc.applyPriceObservation(legacy, { price: 29860, ...ctx('short', 29910.5) });
+  assert.deepEqual(out, {}, 'legacy → tomt objekt, ingen falsk MFE');
+  assert.equal(legacy.lowestPriceWhileOpen, 0, 'input orörd');
+}
+
+// 20. Legacy-guard: finalizeExcursion sätter inga excursion-slutvärden utan
+// mfeMaeSource (exitType lämnas åt läsvyn).
+{
+  const legacy = { highestPriceWhileOpen: 29962.75, lowestPriceWhileOpen: 0 };
+  const out = svc.finalizeExcursion(legacy, { exitPrice: 29835.75, exitReason: 'take_profit_hit', grossPnlSek: 500, ...ctx('short', 29910.5) });
+  assert.deepEqual(out, {}, 'legacy close → inga falska excursion-fält');
+}
+
+// 21. Instrumenterad long med legitimt nollvärde (MFE 0 vid ren förlust) förstörs ej.
+{
+  let t = svc.initExcursion({ entryPrice: 100, side: 'long', stopLoss: 95, pointValueUsd: PV, contracts: SIZE, fxUsdSek: FX });
+  t = svc.applyPriceObservation(t, { price: 98, ...ctx('long', 100) }); // aldrig över entry
+  assert.equal(t.maximumFavorableExcursionPoints, 0, 'äkta 0 MFE bevaras');
+  assert.equal(t.maximumFavorableExcursionSek, 0);
+  assert.equal(t.mfeMaeSource, 'runtime_price_updates', 'fortsatt instrumenterad');
+}
+
 console.log('futuresPaperExcursionService.test.js passed');
