@@ -3,6 +3,7 @@
 const storageService = require('./futuresPaperStorageService');
 const futuresPaperAccountService = require('./futuresPaperAccountService');
 const strategyTradeControl = require('./strategyTradeControlService');
+const futuresContractCatalog = require('./futuresContractCatalogService');
 
 const SAFETY = Object.freeze({
   mode: 'paper_only',
@@ -21,10 +22,22 @@ const DEFAULT_POSITIONS = Object.freeze({
   updatedAt: null,
 });
 
-const FUTURES_META = Object.freeze({
-  MNQ: { pointValueUsd: 2, label: 'Nasdaq 100 Micro E-mini', exchange: 'CME', root: 'MNQ' },
-  MES: { pointValueUsd: 5, label: 'S&P 500 Micro E-mini', exchange: 'CME', root: 'MES' },
-});
+// Kontraktsmeta ägs numera av futuresContractCatalogService (MNQ/MES/NQ/ES).
+// Behålls som härledd vy för bakåtkompatibilitet med tidigare importörer.
+const FUTURES_META = Object.freeze(
+  Object.fromEntries(
+    Object.values(futuresContractCatalog.FUTURES_CONTRACTS).map((contract) => [
+      contract.root,
+      {
+        pointValueUsd: contract.pointValueUsd,
+        label: contract.name,
+        exchange: contract.exchange,
+        root: contract.root,
+        commissionPerSideUsd: contract.defaultCommissionPerSideUsd,
+      },
+    ]),
+  ),
+);
 
 const MARGIN_RATE = 0.10;
 
@@ -82,12 +95,7 @@ function createTradeId(now = new Date()) {
 }
 
 function normalizeRoot(root, symbol = '') {
-  const explicit = String(root || '').trim().toUpperCase();
-  if (FUTURES_META[explicit]) return explicit;
-  const symbolValue = String(symbol || '').trim().toUpperCase();
-  if (symbolValue.startsWith('MNQ')) return 'MNQ';
-  if (symbolValue.startsWith('MES')) return 'MES';
-  return null;
+  return futuresContractCatalog.normalizeRoot(root, symbol);
 }
 
 function normalizeSide(side) {
@@ -97,8 +105,16 @@ function normalizeSide(side) {
 }
 
 function getPointValueUsd(root) {
-  const meta = FUTURES_META[root];
-  return meta ? meta.pointValueUsd : null;
+  return futuresContractCatalog.getPointValueUsd(root);
+}
+
+function getCommissionPerSideUsd(root) {
+  return futuresContractCatalog.getCommissionPerSideUsd(root);
+}
+
+// Simulerad avgift i USD för ett antal sidor (1 = open eller close, 2 = round trip).
+function calcCommissionUsd(root, contracts, sides = 1) {
+  return futuresContractCatalog.commissionUsd(root, contracts, sides);
 }
 
 function getMarketHoursState(now = new Date()) {
@@ -154,6 +170,25 @@ function toPositionView(position, fxUsdSek = 0) {
     ? (ensureFiniteNumber(position.realizedPnlSek) ?? round(realizedPnlUsd * fxUsdSek, 2))
     : 0;
 
+  // Simulerad courtage/fee. entryFee dras vid open, exitFee tillkommer vid close.
+  const isClosed = position.status === 'closed';
+  const commissionPerSideUsd = ensureFiniteNumber(position.commissionPerSideUsd)
+    ?? getCommissionPerSideUsd(root) ?? 0;
+  const entryFeeUsd = ensureFiniteNumber(position.entryFeeUsd)
+    ?? round(commissionPerSideUsd * contracts, 2);
+  const exitFeeUsd = isClosed
+    ? (ensureFiniteNumber(position.exitFeeUsd) ?? round(commissionPerSideUsd * contracts, 2))
+    : 0;
+  const feesUsd = round(entryFeeUsd + exitFeeUsd, 2);
+  const entryFeeSek = round(entryFeeUsd * fxUsdSek, 2);
+  const exitFeeSek = round(exitFeeUsd * fxUsdSek, 2);
+  const feesSek = round(feesUsd * fxUsdSek, 2);
+  // Gross = ren prisrörelse (utan avgifter). Net = gross − avgifter.
+  const grossPnlUsd = isClosed
+    ? (ensureFiniteNumber(position.grossPnlUsd) ?? round(realizedPnlUsd + feesUsd, 2))
+    : unrealizedPnlUsd;
+  const grossPnlSek = round(grossPnlUsd * fxUsdSek, 2);
+
   return {
     tradeId: position.tradeId,
     root,
@@ -199,6 +234,17 @@ function toPositionView(position, fxUsdSek = 0) {
       : 0,
     realizedPnlUsd,
     realizedPnlSek,
+    commissionPerSideUsd,
+    entryFeeUsd,
+    entryFeeSek,
+    exitFeeUsd,
+    exitFeeSek,
+    feesUsd,
+    feesSek,
+    grossPnlUsd,
+    grossPnlSek,
+    netPnlUsd: isClosed ? realizedPnlUsd : round(grossPnlUsd - entryFeeUsd, 2),
+    netPnlSek: isClosed ? realizedPnlSek : round((grossPnlUsd - entryFeeUsd) * fxUsdSek, 2),
   };
 }
 
@@ -220,9 +266,15 @@ function buildAccountState({ config, positionsState, now = new Date() }) {
   const openPositions = safeArray(positionsState?.open).map((position) => toPositionView(position, fxUsdSek));
   const closedPositions = safeArray(positionsState?.closed).map((position) => toPositionView(position, fxUsdSek));
   const startingBalanceSek = Number(config?.startingBalanceSek ?? accountSeed.startingBalanceSek ?? futuresPaperAccountService.DEFAULT_CONFIG.startingBalanceSek) || futuresPaperAccountService.DEFAULT_CONFIG.startingBalanceSek;
+  // Realiserad PnL på stängda trades är redan netto (gross − avgifter).
   const realizedPnlSek = round(sum(closedPositions.map((position) => position.realizedPnlSek)), 2);
   const unrealizedPnlSek = round(sum(openPositions.map((position) => position.unrealizedPnlSek)), 2);
-  const cashSek = round(startingBalanceSek + realizedPnlSek, 2);
+  // Entry-avgiften dras från cash redan vid open (öppna positioner har den kvar
+  // som en dragning tills de stängs, då den ingår i den realiserade nettosiffran).
+  const openEntryFeesSek = round(sum(openPositions.map((position) => position.entryFeeSek)), 2);
+  const closedFeesSek = round(sum(closedPositions.map((position) => position.feesSek)), 2);
+  const totalFeesSek = round(closedFeesSek + openEntryFeesSek, 2);
+  const cashSek = round(startingBalanceSek + realizedPnlSek - openEntryFeesSek, 2);
   const equitySek = round(cashSek + unrealizedPnlSek, 2);
   const totalPnlSek = round(equitySek - startingBalanceSek, 2);
   const dailyPnlSek = totalPnlSek;
@@ -259,6 +311,7 @@ function buildAccountState({ config, positionsState, now = new Date() }) {
       buyingPowerSek,
       usedMarginSek,
       availableMarginSek,
+      totalFeesSek,
       fxUsdSek,
       updatedAt: nowIso(now),
     },
@@ -458,6 +511,10 @@ function createFuturesPaperLedgerService(options = {}) {
     const market = getMarketHoursState(now);
     const positionsState = readPositionsState();
     const currentAccount = account.account || futuresPaperAccountService.createDefaultState(futuresPaperAccountService.DEFAULT_CONFIG);
+    const fxUsdSek = Number(account.account?.fxUsdSek || account.config?.fxUsdSek || futuresPaperAccountService.DEFAULT_CONFIG.fxUsdSek) || futuresPaperAccountService.DEFAULT_CONFIG.fxUsdSek;
+    const commissionPerSideUsd = getCommissionPerSideUsd(root) ?? 0;
+    const entryFeeUsd = calcCommissionUsd(root, contracts, 1);
+    const entryFeeSek = round(entryFeeUsd * fxUsdSek, 2);
     const position = {
       tradeId: createTradeId(now),
       root,
@@ -500,6 +557,15 @@ function createFuturesPaperLedgerService(options = {}) {
       unrealizedPnlSek: 0,
       realizedPnlUsd: 0,
       realizedPnlSek: 0,
+      commissionPerSideUsd,
+      entryFeeUsd,
+      entryFeeSek,
+      exitFeeUsd: 0,
+      exitFeeSek: 0,
+      feesUsd: entryFeeUsd,
+      feesSek: entryFeeSek,
+      grossPnlUsd: 0,
+      grossPnlSek: 0,
       marketHoursWarning: market.warning,
     };
 
@@ -573,15 +639,28 @@ function createFuturesPaperLedgerService(options = {}) {
     const openPosition = { ...positionsState.open[openIndex] };
     const market = getMarketHoursState(now);
     const account = getCurrentAccount();
-    const pnlUsd = calculatePnlUsd({
-      root: normalizeRoot(openPosition.root, openPosition.symbol),
+    const closeRoot = normalizeRoot(openPosition.root, openPosition.symbol);
+    // Gross = ren prisrörelse (pointValue · kontrakt), utan avgifter.
+    const grossPnlUsd = calculatePnlUsd({
+      root: closeRoot,
       entryPrice: openPosition.entryPrice,
       exitPrice,
       side: openPosition.side,
       contracts: openPosition.contracts,
     });
     const fxUsdSek = Number(account.account?.fxUsdSek || account.config?.fxUsdSek || futuresPaperAccountService.DEFAULT_CONFIG.fxUsdSek) || futuresPaperAccountService.DEFAULT_CONFIG.fxUsdSek;
-    const pnlSek = round((pnlUsd || 0) * fxUsdSek, 2);
+    // Avgifter: entryFee dras vid open (kan vara sparad på positionen), exitFee vid close.
+    const commissionPerSideUsd = ensureFiniteNumber(openPosition.commissionPerSideUsd)
+      ?? getCommissionPerSideUsd(closeRoot) ?? 0;
+    const entryFeeUsd = ensureFiniteNumber(openPosition.entryFeeUsd)
+      ?? calcCommissionUsd(closeRoot, openPosition.contracts, 1);
+    const exitFeeUsd = calcCommissionUsd(closeRoot, openPosition.contracts, 1);
+    const feesUsd = round(entryFeeUsd + exitFeeUsd, 2);
+    // Net PnL = gross − totala avgifter. realizedPnl = net (det som påverkar kontot).
+    const netPnlUsd = round((grossPnlUsd || 0) - feesUsd, 2);
+    const grossPnlSek = round((grossPnlUsd || 0) * fxUsdSek, 2);
+    const feesSek = round(feesUsd * fxUsdSek, 2);
+    const pnlSek = round(netPnlUsd * fxUsdSek, 2);
     const closedPosition = {
       ...openPosition,
       currentPrice: round(exitPrice, 2),
@@ -591,7 +670,16 @@ function createFuturesPaperLedgerService(options = {}) {
       exitReason,
       unrealizedPnlUsd: 0,
       unrealizedPnlSek: 0,
-      realizedPnlUsd: pnlUsd || 0,
+      commissionPerSideUsd,
+      entryFeeUsd,
+      entryFeeSek: round(entryFeeUsd * fxUsdSek, 2),
+      exitFeeUsd,
+      exitFeeSek: round(exitFeeUsd * fxUsdSek, 2),
+      feesUsd,
+      feesSek,
+      grossPnlUsd: grossPnlUsd || 0,
+      grossPnlSek,
+      realizedPnlUsd: netPnlUsd,
       realizedPnlSek: pnlSek,
       marketHoursWarning: market.warning,
     };
@@ -628,6 +716,10 @@ function createFuturesPaperLedgerService(options = {}) {
       contracts: closedPosition.contracts,
       entryPrice: closedPosition.entryPrice,
       exitPrice: round(exitPrice, 2),
+      grossPnlUsd: closedPosition.grossPnlUsd,
+      grossPnlSek: closedPosition.grossPnlSek,
+      feesUsd: closedPosition.feesUsd,
+      feesSek: closedPosition.feesSek,
       realizedPnlUsd: closedPosition.realizedPnlUsd,
       realizedPnlSek: closedPosition.realizedPnlSek,
       exitReason,
@@ -671,6 +763,15 @@ function createFuturesPaperLedgerService(options = {}) {
         const openedMs = Date.parse(row.openedAt || '') || 0;
         const closedMs = Date.parse(row.closedAt || '') || 0;
         const durationMinutes = openedMs && closedMs ? round((closedMs - openedMs) / 60000, 1) : null;
+        const closeRoot = normalizeRoot(row.root, row.symbol);
+        const commissionPerSideUsd = ensureFiniteNumber(row.commissionPerSideUsd)
+          ?? getCommissionPerSideUsd(closeRoot) ?? 0;
+        const feesUsd = ensureFiniteNumber(row.feesUsd)
+          ?? calcCommissionUsd(closeRoot, row.contracts, 2);
+        const feesSek = ensureFiniteNumber(row.feesSek) ?? 0;
+        const grossPnlUsd = ensureFiniteNumber(row.grossPnlUsd)
+          ?? round((ensureFiniteNumber(row.realizedPnlUsd) ?? 0) + feesUsd, 2);
+        const grossPnlSek = ensureFiniteNumber(row.grossPnlSek) ?? 0;
         return {
           ...normalizeStrategyControlMetadata(row),
           tradeId: row.tradeId,
@@ -683,6 +784,13 @@ function createFuturesPaperLedgerService(options = {}) {
           exitPrice: row.exitPrice,
           stopLoss: row.stopLoss,
           takeProfit: row.takeProfit,
+          commissionPerSideUsd,
+          feesUsd,
+          feesSek,
+          grossPnlUsd,
+          grossPnlSek,
+          netPnlUsd: ensureFiniteNumber(row.realizedPnlUsd) ?? round(grossPnlUsd - feesUsd, 2),
+          netPnlSek: ensureFiniteNumber(row.realizedPnlSek) ?? 0,
           realizedPnlUsd: row.realizedPnlUsd,
           realizedPnlSek: row.realizedPnlSek,
           openedAt: row.openedAt,
@@ -812,6 +920,8 @@ module.exports = {
   normalizeRoot,
   normalizeSide,
   getPointValueUsd,
+  getCommissionPerSideUsd,
+  calcCommissionUsd,
   getMarketHoursState,
   calculatePnlUsd,
   toPositionView,

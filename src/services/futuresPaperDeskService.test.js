@@ -58,11 +58,19 @@ assert.equal(runtime.broker_enabled, false);
 assert.equal(runtime.desk.focusMarkets[0], 'MNQ');
 assert.equal(runtime.desk.focusMarkets[1], 'MES');
 assert.equal(runtime.account.startingBalanceSek, 375000);
-assert.equal(runtime.account.equitySek, 375000);
+// Entry-fee (MNQ $1.22 * 10.5 = 12.81 SEK) dras vid open → equity = 375000 - 12.81.
+assert.equal(runtime.account.equitySek, 374987.19);
+assert.equal(runtime.account.totalFeesSek, 12.81);
 assert.equal(runtime.strategyPulse.length, 2);
 assert.equal(runtime.strategyPulse[0].strategyId, 'trend_continuation');
-assert.equal(runtime.instruments.length, 2);
+// Katalogen exponerar nu MNQ/MES/NQ/ES.
+assert.equal(runtime.instruments.length, 4);
 assert.equal(runtime.instruments[0].symbol, 'MNQ');
+assert.equal(runtime.instruments.map((row) => row.symbol).sort().join(','), 'ES,MES,MNQ,NQ');
+const mnqInstrument = runtime.instruments.find((row) => row.symbol === 'MNQ');
+assert.equal(mnqInstrument.pointValueUsd, 2);
+assert.equal(mnqInstrument.commissionPerSideUsd, 1.22);
+assert.equal(mnqInstrument.estRoundTripCostUsd, 2.44);
 assert.equal(runtime.market.session, 'Globex');
 assert.equal(runtime.account.fxUsdSek, 10.5);
 assert.equal(runtime.positions.totalOpen, 1);

@@ -20,9 +20,13 @@ const SAFETY = Object.freeze({
 
 const FEED_SOURCE = 'simulated_fallback';
 
+// NQ delar Nasdaq-100-index med MNQ och ES delar S&P 500-index med MES, så samma
+// prisnivå används (skillnaden ligger i point value/marginal, inte i indexnivån).
 const BASE_PRICES = Object.freeze({
   MNQ: { basePrice: 29900, tickSize: 0.25, maxDriftPct: 2.5, stepPct: 0.05 },
   MES: { basePrice: 7557, tickSize: 0.25, maxDriftPct: 2.5, stepPct: 0.04 },
+  NQ: { basePrice: 29900, tickSize: 0.25, maxDriftPct: 2.5, stepPct: 0.05 },
+  ES: { basePrice: 7557, tickSize: 0.25, maxDriftPct: 2.5, stepPct: 0.04 },
 });
 
 function nowIso(now = new Date()) {

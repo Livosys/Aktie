@@ -65,6 +65,7 @@ function buildAccountSnapshot({ config, state, updatedAt = null } = {}) {
   const usedMarginSek = clampMoney(st.usedMarginSek ?? 0) ?? 0;
   const availableMarginSek = clampMoney(st.availableMarginSek ?? Math.max(0, cashSek - usedMarginSek)) ?? Math.max(0, cashSek - usedMarginSek);
   const buyingPowerSek = clampMoney(st.buyingPowerSek ?? Math.max(availableMarginSek, cashSek)) ?? Math.max(availableMarginSek, cashSek);
+  const totalFeesSek = clampMoney(st.totalFeesSek ?? 0) ?? 0;
   const fxUsdSek = clampMoney(st.fxUsdSek ?? cfg.fxUsdSek ?? DEFAULT_CONFIG.fxUsdSek) ?? DEFAULT_CONFIG.fxUsdSek;
 
   return {
@@ -83,6 +84,7 @@ function buildAccountSnapshot({ config, state, updatedAt = null } = {}) {
     buyingPowerSek,
     usedMarginSek,
     availableMarginSek,
+    totalFeesSek,
     fxUsdSek,
     updatedAt: updatedAt || st.updatedAt || nowIso(),
   };

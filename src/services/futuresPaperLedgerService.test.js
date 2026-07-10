@@ -82,8 +82,12 @@ const closeMnq = ledgerSvc.closeFuturesPaperPosition({
 
 assert.equal(closeMnq.ok, true);
 assert.equal(closeMnq.trade.status, 'closed');
-assert.equal(closeMnq.trade.realizedPnlUsd, 4);
-assert.equal(closeMnq.trade.realizedPnlSek, 42);
+// Gross = 2 punkter * $2 = $4. Fees = $1.22 open + $1.22 close = $2.44. Net = $1.56.
+assert.equal(closeMnq.trade.grossPnlUsd, 4);
+assert.equal(closeMnq.trade.feesUsd, 2.44);
+assert.equal(closeMnq.trade.realizedPnlUsd, 1.56);
+assert.equal(closeMnq.trade.realizedPnlSek, 16.38);
+assert.equal(closeMnq.trade.netPnlUsd, 1.56);
 assert.equal(closeMnq.trade.strategyFamily, 'ema_trend_family');
 assert.equal(closeMnq.trade.familyRank, 1);
 assert.equal(closeMnq.trade.familyGateDecision, 'allowed');
@@ -99,8 +103,11 @@ const closeMes = ledgerSvc.closeFuturesPaperPosition({
 });
 
 assert.equal(closeMes.ok, true);
-assert.equal(closeMes.trade.realizedPnlUsd, 10);
-assert.equal(closeMes.trade.realizedPnlSek, 105);
+// Gross = 2 punkter * $5 = $10. Fees = $2.44. Net = $7.56.
+assert.equal(closeMes.trade.grossPnlUsd, 10);
+assert.equal(closeMes.trade.feesUsd, 2.44);
+assert.equal(closeMes.trade.realizedPnlUsd, 7.56);
+assert.equal(closeMes.trade.realizedPnlSek, 79.38);
 assert.equal(closeMes.positions.totalOpen, 0);
 assert.equal(closeMes.positions.totalClosed, 2);
 
@@ -115,13 +122,15 @@ assert.equal(ledger.closedTrades[0].familyRank, 1);
 assert.equal(ledger.closedTrades[0].familyGateDecision, 'allowed');
 assert.equal(ledger.closedTrades[0].strategyCooldownDecision, 'allowed');
 assert.equal(ledger.trades.length, 2);
-assert.equal(ledger.account.realizedPnlSek, 147);
-assert.equal(ledger.account.cashSek, 250147);
-assert.equal(ledger.account.equitySek, 250147);
-assert.equal(ledger.account.totalPnlSek, 147);
+// Netto efter avgifter: 16.38 + 79.38 = 95.76 SEK. Totala fees: 2.44*2*10.5 = 51.24 SEK.
+assert.equal(ledger.account.realizedPnlSek, 95.76);
+assert.equal(ledger.account.cashSek, 250095.76);
+assert.equal(ledger.account.equitySek, 250095.76);
+assert.equal(ledger.account.totalPnlSek, 95.76);
+assert.equal(ledger.account.totalFeesSek, 51.24);
 assert.equal(ledger.account.openExposureSek, 0);
 assert.equal(ledger.account.usedMarginSek, 0);
-assert.equal(ledger.account.availableMarginSek, 250147);
+assert.equal(ledger.account.availableMarginSek, 250095.76);
 assert.equal(ledger.mode, 'paper_only');
 
 const trades = storage.readTrades();

@@ -5,6 +5,7 @@ const strategyPerformanceReadService = require('./strategyPerformanceReadService
 const futuresPaperAccountService = require('./futuresPaperAccountService');
 const futuresPaperLedgerService = require('./futuresPaperLedgerService');
 const futuresPaperScannerService = require('./futuresPaperScannerService');
+const futuresContractCatalog = require('./futuresContractCatalogService');
 
 const SAFETY = Object.freeze({
   mode: 'paper_only',
@@ -22,32 +23,26 @@ const DEFAULT_ACCOUNT = Object.freeze({
   startingBalance: 100000,
 });
 
-const FUTURES_INSTRUMENTS = Object.freeze([
-  {
-    symbol: 'MNQ',
-    name: 'Nasdaq 100 Micro E-mini Futures',
-    exchange: 'CME',
-    root: 'MNQ',
-    underlying: 'Nasdaq 100',
-    contractSize: 2,
-    tickSize: 0.25,
-    tickValueUsd: 0.50,
+// Instrumentlistan byggs från den centrala kontraktskatalogen (MNQ/MES/NQ/ES).
+// contractSize = pointValueUsd behålls som fältnamn för bakåtkompatibilitet i UI.
+const FUTURES_INSTRUMENTS = Object.freeze(
+  futuresContractCatalog.listContracts().map((contract, index) => ({
+    symbol: contract.root,
+    name: `${contract.name} Futures`,
+    exchange: contract.exchange,
+    root: contract.root,
+    underlying: contract.underlying,
+    contractClass: contract.contractClass,
+    contractSize: contract.pointValueUsd,
+    pointValueUsd: contract.pointValueUsd,
+    tickSize: contract.tickSize,
+    tickValueUsd: contract.tickValueUsd,
+    commissionPerSideUsd: contract.defaultCommissionPerSideUsd,
+    estRoundTripCostUsd: contract.estRoundTripCostUsd,
     session: 'Globex',
-    focusRank: 1,
-  },
-  {
-    symbol: 'MES',
-    name: 'S&P 500 Micro E-mini Futures',
-    exchange: 'CME',
-    root: 'MES',
-    underlying: 'S&P 500',
-    contractSize: 5,
-    tickSize: 0.25,
-    tickValueUsd: 1.25,
-    session: 'Globex',
-    focusRank: 2,
-  },
-]);
+    focusRank: index + 1,
+  })),
+);
 
 function nowIso(now = new Date()) {
   return new Date(now).toISOString();
@@ -165,9 +160,9 @@ function normalizeMiniFutures(universe = {}) {
       universeStatus: match ? (match.enabled === false ? 'observe' : 'active') : 'planned',
       testOnly: match ? Boolean(match.test_only) : true,
       riskLevel: match?.risk_level || 'very_high',
-      description: instrument.symbol === 'MNQ'
-        ? 'Nasdaq-fokuserad kontraktsvisning för den nya paper-desken.'
-        : 'S&P 500-fokuserad kontraktsvisning för den nya paper-desken.',
+      description: String(instrument.underlying || '').includes('Nasdaq')
+        ? `${instrument.contractClass === 'micro' ? 'Micro' : 'E-mini'} Nasdaq-100-kontrakt för futures paper-desken.`
+        : `${instrument.contractClass === 'micro' ? 'Micro' : 'E-mini'} S&P 500-kontrakt för futures paper-desken.`,
     };
   });
 }
@@ -237,6 +232,7 @@ function buildFuturesPaperDeskRuntime(options = {}) {
       buyingPowerSek: account.buyingPowerSek ?? baseBalance,
       usedMarginSek: account.usedMarginSek ?? 0,
       availableMarginSek: account.availableMarginSek ?? baseBalance,
+      totalFeesSek: account.totalFeesSek ?? 0,
       fxUsdSek: account.fxUsdSek ?? futuresPaperAccountService.DEFAULT_CONFIG.fxUsdSek,
       updatedAt: account.updatedAt || nowIso(now),
     },

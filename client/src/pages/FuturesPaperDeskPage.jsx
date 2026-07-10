@@ -362,12 +362,14 @@ export default function FuturesPaperDeskPage() {
   const pnlTone = totalPnl > 0 ? 'success' : totalPnl < 0 ? 'danger' : 'neutral';
   const positionsCount = Number(positions.totalOpen || openPositions.length || 0) + Number(positions.totalClosed || closedTrades.length || 0);
   const readyText = market.isOpen ? 'Marknaden är öppen' : 'Marknaden är stängd';
-  const readinessInstruments = ['MNQ', 'MES'].map((symbol) => {
-    const row = instruments.find((item) => String(item.symbol || item.root || '').toUpperCase() === symbol) || {};
+  const readinessInstruments = (instruments.length ? instruments : []).map((row) => {
+    const symbol = String(row.symbol || row.root || '').toUpperCase();
+    const commission = row.commissionPerSideUsd ?? 0;
+    const roundTrip = row.estRoundTripCostUsd ?? commission * 2;
     return {
       key: symbol,
       label: symbol,
-      meta: `${row.name || (symbol === 'MNQ' ? 'Nasdaq 100 Micro E-mini Futures' : 'S&P 500 Micro E-mini Futures')} · tick ${row.tickSize ?? '0.25'} · ${fmtMoney(row.tickValueUsd ?? (symbol === 'MNQ' ? 0.5 : 1.25), 'USD', 2)} · planned`,
+      meta: `${row.name || symbol} · point value ${fmtMoney(row.pointValueUsd ?? row.contractSize ?? 0, 'USD', 2)} · courtage/side ${fmtMoney(commission, 'USD', 2)} · round trip ${fmtMoney(roundTrip, 'USD', 2)}`,
     };
   });
   const strategyPreviewItems = strategies.slice(0, 3).map((row) => ({
@@ -477,7 +479,7 @@ export default function FuturesPaperDeskPage() {
   return (
     <DashboardShell
       title="Futures Paper Desk"
-      subtitle="Separat paper-only desk för MNQ och MES med simulerat kapital, driven av Trading OS-signaler. Inga riktiga order, ingen broker och ingen live-execution."
+      subtitle="Separat paper-only desk för MNQ, MES, NQ och ES med simulerat kapital, driven av Trading OS-signaler. Inga riktiga order, ingen broker och ingen live-execution."
       safety={data}
       tabs={TABS}
       activeTab={activeTab}
@@ -491,6 +493,13 @@ export default function FuturesPaperDeskPage() {
         { label: 'Marknad', value: market.isOpen ? 'Öppen' : 'Stängd', tone: market.isOpen ? 'good' : 'warning' },
       ]}
     >
+      <div style={{ ...sectionStyle(), marginBottom: 14, borderColor: 'rgba(59,130,246,0.35)', background: 'rgba(59,130,246,0.08)' }}>
+        <strong style={{ color: 'var(--text)' }}>Detta är endast futures paper trading. Inga riktiga order kan läggas.</strong>
+        <div style={{ color: 'var(--muted)', marginTop: 6, fontSize: 13 }}>
+          Kontrakt MNQ/MES/NQ/ES simuleras med point value och courtage per köp/sälj. Varje open och close drar simulerad fee från paper-kontot. Net PnL = gross PnL − avgifter.
+        </div>
+      </div>
+
       {runtime.error ? (
         <div style={{ ...sectionStyle(), marginBottom: 16, borderColor: 'rgba(239,68,68,0.35)' }}>
           <strong style={{ color: 'var(--danger)' }}>Runtime kunde inte läsas</strong>
@@ -541,8 +550,11 @@ export default function FuturesPaperDeskPage() {
             </div>
           </ReadinessCard>
 
-          <ReadinessCard title="Futures-symboler" status="MNQ / MES" tone="info">
-            <MiniList items={readinessInstruments} emptyText="MNQ och MES är planerade som första futures-symboler." />
+          <ReadinessCard title="Futures-symboler" status="MNQ / MES / NQ / ES" tone="info">
+            <MiniList items={readinessInstruments} emptyText="MNQ, MES, NQ och ES är futures-symbolerna i katalogen." />
+            <div style={{ marginTop: 8, color: 'var(--muted)', fontSize: 12 }}>
+              Auto-scannern fokuserar på micros (MNQ/MES). NQ/ES finns i katalogen med point value och courtage för manuell paper-simulation.
+            </div>
           </ReadinessCard>
 
           <ReadinessCard title="Strategier" status="Kandidatkälla" tone="info">
@@ -644,9 +656,10 @@ export default function FuturesPaperDeskPage() {
           />
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 10 }}>
             <MetricCard label="Startkapital" value={fmtMoney(account.startingBalanceSek || 0, accountCurrency)} hint="Endast paper money" />
-            <MetricCard label="Equity" value={fmtMoney(account.equitySek || 0, accountCurrency)} hint="Falskt kontovärde" />
-            <MetricCard label="Cash" value={fmtMoney(account.cashSek || 0, accountCurrency)} hint="Tillgängligt saldo" />
-            <MetricCard label="Realiserad PnL" value={fmtMoney(account.realizedPnlSek || 0, accountCurrency)} hint="Stängda simuleringar" />
+            <MetricCard label="Equity" value={fmtMoney(account.equitySek || 0, accountCurrency)} hint="Kontovärde efter avgifter" />
+            <MetricCard label="Cash (efter fees)" value={fmtMoney(account.cashSek || 0, accountCurrency)} hint="Saldo efter dragna avgifter" />
+            <MetricCard label="Avgifter (fees)" value={fmtMoney(account.totalFeesSek || 0, accountCurrency)} hint="Simulerat courtage totalt" tone={(account.totalFeesSek || 0) > 0 ? 'warning' : 'neutral'} />
+            <MetricCard label="Realiserad PnL (net)" value={fmtMoney(account.realizedPnlSek || 0, accountCurrency)} hint="Stängda trades, netto efter fees" />
             <MetricCard label="Orealiserad PnL" value={fmtMoney(account.unrealizedPnlSek || 0, accountCurrency)} hint="Öppna simuleringar" />
             <MetricCard label="Total PnL" value={fmtMoney(account.totalPnlSek || 0, accountCurrency)} hint="Realiserad + orealiserad" tone={pnlTone} />
             <MetricCard label="Drawdown" value={fmtMoney(account.drawdownSek || 0, accountCurrency)} hint={fmtPct(account.drawdownPct || 0)} tone={pnlTone === 'danger' ? 'danger' : 'neutral'} />
@@ -722,9 +735,11 @@ export default function FuturesPaperDeskPage() {
                   </div>
                   <div style={{ color: 'var(--muted)', fontSize: 13, lineHeight: 1.45 }}>{instrument.name}</div>
                   <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginTop: 8 }}>
+                    <Pill tone="neutral">Point value {fmtMoney(instrument.pointValueUsd ?? instrument.contractSize, 'USD', 2)}</Pill>
                     <Pill tone="neutral">Tick {instrument.tickSize}</Pill>
                     <Pill tone="neutral">Tick värde {fmtMoney(instrument.tickValueUsd, 'USD', 2)}</Pill>
-                    <Pill tone="neutral">Kontrakt {instrument.contractSize}</Pill>
+                    <Pill tone="neutral">Courtage/side {fmtMoney(instrument.commissionPerSideUsd ?? 0, 'USD', 2)}</Pill>
+                    <Pill tone="warning">Round trip {fmtMoney(instrument.estRoundTripCostUsd ?? ((instrument.commissionPerSideUsd ?? 0) * 2), 'USD', 2)}</Pill>
                     <Pill tone="neutral">{instrument.exchange}</Pill>
                   </div>
                 </div>
@@ -801,7 +816,10 @@ export default function FuturesPaperDeskPage() {
               { key: 'currentPrice', label: 'Current', render: (row) => fmtNumber(row.currentPrice, 2) },
               { key: 'stopLoss', label: 'SL', render: (row) => row.stopLoss == null ? '–' : fmtNumber(row.stopLoss, 2) },
               { key: 'takeProfit', label: 'TP', render: (row) => row.takeProfit == null ? '–' : fmtNumber(row.takeProfit, 2) },
-              { key: 'unrealizedPnlSek', label: 'PnL', render: (row) => (
+              { key: 'entryFeeSek', label: 'Entry fee', render: (row) => (
+                <span style={{ color: 'var(--muted)' }}>{`-${fmtMoney(row.entryFeeSek || 0, accountCurrency)}`}</span>
+              ) },
+              { key: 'unrealizedPnlSek', label: 'PnL (gross)', render: (row) => (
                 <strong style={{ color: (row.unrealizedPnlSek || 0) > 0 ? 'var(--success)' : (row.unrealizedPnlSek || 0) < 0 ? 'var(--danger)' : 'var(--text)' }}>
                   {fmtMoney(row.unrealizedPnlSek || 0, accountCurrency)}
                 </strong>
@@ -841,7 +859,15 @@ export default function FuturesPaperDeskPage() {
               { key: 'excludedFromStats', label: 'Exkl.', render: (row) => yesNo(row.excludedFromStats) },
               { key: 'entryPrice', label: 'Entry', render: (row) => fmtNumber(row.entryPrice, 2) },
               { key: 'exitPrice', label: 'Exit', render: (row) => fmtNumber(row.exitPrice, 2) },
-              { key: 'realizedPnlSek', label: 'PnL', render: (row) => (
+              { key: 'grossPnlSek', label: 'Gross', render: (row) => (
+                <span style={{ color: (row.grossPnlSek || 0) > 0 ? 'var(--success)' : (row.grossPnlSek || 0) < 0 ? 'var(--danger)' : 'var(--text)' }}>
+                  {fmtMoney(row.grossPnlSek || 0, 'SEK')}
+                </span>
+              ) },
+              { key: 'feesSek', label: 'Fees', render: (row) => (
+                <span style={{ color: 'var(--muted)' }}>{`-${fmtMoney(row.feesSek || 0, 'SEK')}`}</span>
+              ) },
+              { key: 'realizedPnlSek', label: 'Net PnL', render: (row) => (
                 <strong style={{ color: (row.realizedPnlSek || 0) > 0 ? 'var(--success)' : (row.realizedPnlSek || 0) < 0 ? 'var(--danger)' : 'var(--text)' }}>
                   {fmtMoney(row.realizedPnlSek || 0, 'SEK')}
                 </strong>
