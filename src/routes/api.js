@@ -115,6 +115,7 @@ const futuresPaperAccountService = require('../services/futuresPaperAccountServi
 const futuresPaperLedgerService = require('../services/futuresPaperLedgerService');
 const futuresPaperScannerService = require('../services/futuresPaperScannerService');
 const futuresPaperPriceFeedService = require('../services/futuresPaperPriceFeedService');
+const futuresTechnicalInfoService = require('../services/futuresTechnicalInfoService');
 const paperTradingTruthService = require('../services/paperTradingTruthService');
 const strategyPipelineTruthService = require('../services/strategyPipelineTruthService');
 const shortExitTruthService = require('../services/shortExitTruthService');
@@ -3536,6 +3537,39 @@ router.get('/futures-paper/trades', (req, res) => {
     }));
   } catch (err) {
     res.status(500).json({ ok: false, error: err.message, ...futuresPaperLedgerService.SAFETY });
+  }
+});
+
+// Read-only teknisk info (steg A + B). Ingen order, ingen execution, ingen broker.
+router.get('/futures-paper/technical/strategies', (req, res) => {
+  try {
+    res.json(futuresTechnicalInfoService.getStrategiesTechnicalInfo());
+  } catch (err) {
+    res.status(500).json({ status: 'error', ok: false, error: err.message, ...futuresTechnicalInfoService.SAFETY });
+  }
+});
+
+router.get('/futures-paper/technical/strategies/:strategyId', (req, res) => {
+  try {
+    const strategy = futuresTechnicalInfoService.getStrategyTechnicalInfoById(req.params.strategyId);
+    if (!strategy) {
+      return res.status(404).json({
+        status: 'not_found',
+        ok: false,
+        error: 'strategy_not_found',
+        strategyId: req.params.strategyId || null,
+        ...futuresTechnicalInfoService.SAFETY,
+      });
+    }
+    res.json({
+      status: 'ok',
+      readOnly: true,
+      generatedAt: new Date().toISOString(),
+      strategy,
+      ...futuresTechnicalInfoService.SAFETY,
+    });
+  } catch (err) {
+    res.status(500).json({ status: 'error', ok: false, error: err.message, ...futuresTechnicalInfoService.SAFETY });
   }
 });
 

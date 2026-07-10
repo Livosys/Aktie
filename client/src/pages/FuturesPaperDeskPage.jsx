@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { DashboardShell } from '../components/dashboard/DashboardKit.jsx';
 import { Link } from 'react-router-dom';
+import FuturesTechnicalInfoPanel from '../components/futures/FuturesTechnicalInfoPanel.jsx';
 
 const REFRESH_MS = 20_000;
 const FETCH_TIMEOUT_MS = 7_000;
@@ -900,6 +901,17 @@ export default function FuturesPaperDeskPage() {
               { key: 'detail', label: 'Detalj' },
             ]}
           />
+        </section>
+        )}
+
+        {activeTab === 'teknik' && (
+        <section style={sectionStyle()}>
+          <SectionHeader
+            eyebrow="Teknisk info"
+            title="Strategikatalog och strategidetaljer (read-only)"
+            summary="Effektiva runtime-parametrar från den canonical strategikatalogen. Endast visning – ingen edit, aktivering, risk eller order."
+          />
+          <FuturesTechnicalInfoPanel />
         </section>
         )}
       </div>
