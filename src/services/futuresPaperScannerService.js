@@ -891,6 +891,8 @@ function createFuturesPaperScannerService(options = {}) {
           tradeId: position.tradeId,
           exitPrice,
           exitReason,
+          // Additivt: observerat feed-pris för MFE/MAE-extremen (ej PnL/exit).
+          markPrice: price,
         });
         if (closeResult.ok) closed.push(closeResult.trade);
       }

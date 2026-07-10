@@ -4,6 +4,7 @@ const storageService = require('./futuresPaperStorageService');
 const futuresPaperAccountService = require('./futuresPaperAccountService');
 const strategyTradeControl = require('./strategyTradeControlService');
 const futuresContractCatalog = require('./futuresContractCatalogService');
+const excursionService = require('./futuresPaperExcursionService');
 
 const SAFETY = Object.freeze({
   mode: 'paper_only',
@@ -245,6 +246,29 @@ function toPositionView(position, fxUsdSek = 0) {
     grossPnlSek,
     netPnlUsd: isClosed ? realizedPnlUsd : round(grossPnlUsd - entryFeeUsd, 2),
     netPnlSek: isClosed ? realizedPnlSek : round((grossPnlUsd - entryFeeUsd) * fxUsdSek, 2),
+
+    // Additiv MFE/MAE-instrumentering. Äldre trades saknar fälten → null /
+    // 'unknown_legacy'. hasExcursionData sant först när prisbanan mätts.
+    highestPriceWhileOpen: ensureFiniteNumber(position.highestPriceWhileOpen),
+    lowestPriceWhileOpen: ensureFiniteNumber(position.lowestPriceWhileOpen),
+    maximumFavorableExcursionPoints: ensureFiniteNumber(position.maximumFavorableExcursionPoints),
+    maximumAdverseExcursionPoints: ensureFiniteNumber(position.maximumAdverseExcursionPoints),
+    maximumFavorableExcursionSek: ensureFiniteNumber(position.maximumFavorableExcursionSek),
+    maximumAdverseExcursionSek: ensureFiniteNumber(position.maximumAdverseExcursionSek),
+    maximumFavorableExcursionR: ensureFiniteNumber(position.maximumFavorableExcursionR),
+    maximumAdverseExcursionR: ensureFiniteNumber(position.maximumAdverseExcursionR),
+    peakUnrealizedPnlSek: ensureFiniteNumber(position.peakUnrealizedPnlSek),
+    gaveBackFromPeakSek: ensureFiniteNumber(position.gaveBackFromPeakSek),
+    initialStopPrice: ensureFiniteNumber(position.initialStopPrice),
+    initialTargetPrice: ensureFiniteNumber(position.initialTargetPrice),
+    initialRiskPoints: ensureFiniteNumber(position.initialRiskPoints),
+    initialRiskSek: ensureFiniteNumber(position.initialRiskSek),
+    finalStopPrice: ensureFiniteNumber(position.finalStopPrice),
+    exitType: position.exitType || (isClosed ? 'unknown_legacy' : null),
+    mfeMaeSource: position.mfeMaeSource || null,
+    priceFeedSource: position.priceFeedSource || position.dataSource || null,
+    measurementQuality: position.measurementQuality || null,
+    hasExcursionData: position.mfeMaeSource != null,
   };
 }
 
@@ -569,6 +593,19 @@ function createFuturesPaperLedgerService(options = {}) {
       marketHoursWarning: market.warning,
     };
 
+    // Additiv MFE/MAE-init (ändrar inte entry/stop/target). Highest/lowest = entry.
+    Object.assign(position, excursionService.initExcursion({
+      entryPrice: position.entryPrice,
+      side,
+      stopLoss: position.stopLoss,
+      takeProfit: position.takeProfit,
+      pointValueUsd: getPointValueUsd(root) || 0,
+      contracts,
+      fxUsdSek,
+      dataSource,
+      usedFallbackPrice,
+    }));
+
     const nextPositionsState = {
       open: [...safeArray(positionsState.open).map((row) => ({ ...row })), position],
       closed: safeArray(positionsState.closed).map((row) => ({ ...row })),
@@ -626,6 +663,9 @@ function createFuturesPaperLedgerService(options = {}) {
     const tradeId = String(input.tradeId || '').trim();
     const exitPrice = ensureFiniteNumber(input.exitPrice);
     const exitReason = input.exitReason ? String(input.exitReason).trim() : 'manual_close';
+    // Observerat feed-pris som utlöste stängningen (kan ligga bortom stop/take).
+    // Additivt: används bara för MFE/MAE-extremen, aldrig för PnL/exit-priset.
+    const markPrice = ensureFiniteNumber(input.markPrice);
 
     if (!tradeId) return { ok: false, error: 'tradeId_is_required', ...SAFETY };
     if (!exitPrice || exitPrice <= 0) return { ok: false, error: 'exitPrice_must_be_greater_than_0', ...SAFETY };
@@ -683,6 +723,19 @@ function createFuturesPaperLedgerService(options = {}) {
       realizedPnlSek: pnlSek,
       marketHoursWarning: market.warning,
     };
+
+    // Additiv: frys MFE/MAE. Viker in det observerade markPrice (annars exit-
+    // priset) så extremen fångas, sätter exitType + gaveBackFromPeak (gross).
+    Object.assign(closedPosition, excursionService.finalizeExcursion(openPosition, {
+      exitPrice: markPrice != null ? markPrice : exitPrice,
+      exitReason,
+      grossPnlSek,
+      entryPrice: openPosition.entryPrice,
+      side: openPosition.side,
+      pointValueUsd: getPointValueUsd(closeRoot) || 0,
+      contracts: openPosition.contracts,
+      fxUsdSek,
+    }));
 
     const nextPositionsState = {
       open: safeArray(positionsState.open).filter((row) => String(row.tradeId || '') !== tradeId),
@@ -844,8 +897,18 @@ function createFuturesPaperLedgerService(options = {}) {
         contracts: position.contracts,
       }) || 0;
       updated += 1;
+      // Additiv: vik in observerat pris i MFE/MAE-banan (ingen exit-påverkan).
+      const excursion = excursionService.applyPriceObservation(position, {
+        price,
+        entryPrice: position.entryPrice,
+        side: position.side,
+        pointValueUsd: getPointValueUsd(root) || 0,
+        contracts: position.contracts,
+        fxUsdSek,
+      });
       return {
         ...position,
+        ...excursion,
         currentPrice: round(price, 2),
         unrealizedPnlUsd,
         unrealizedPnlSek: round(unrealizedPnlUsd * fxUsdSek, 2),

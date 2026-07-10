@@ -118,6 +118,7 @@ const futuresPaperPriceFeedService = require('../services/futuresPaperPriceFeedS
 const futuresTechnicalInfoService = require('../services/futuresTechnicalInfoService');
 const futuresPaperStrategyApprovalService = require('../services/futuresPaperStrategyApprovalService');
 const futuresPaperStrategyPerformanceService = require('../services/futuresPaperStrategyPerformanceService');
+const futuresPaperExitExperimentStatusService = require('../services/futuresPaperExitExperimentStatusService');
 const paperTradingTruthService = require('../services/paperTradingTruthService');
 const strategyPipelineTruthService = require('../services/strategyPipelineTruthService');
 const shortExitTruthService = require('../services/shortExitTruthService');
@@ -3620,6 +3621,16 @@ router.get('/futures-paper/strategies', (req, res) => {
     });
   } catch (err) {
     res.status(500).json({ status: 'error', ok: false, error: err.message, ...futuresPaperStrategyApprovalService.SAFETY });
+  }
+});
+
+// Read-only: MFE/MAE-datainsamlingsstatus för exit-experimentet. Aktiverar
+// ingenting — feature flag EXIT_EXPERIMENT_ENABLED default OFF.
+router.get('/futures-paper/exit-experiment/status', (req, res) => {
+  try {
+    res.json(futuresPaperExitExperimentStatusService.getStatus());
+  } catch (err) {
+    res.status(500).json({ status: 'error', ok: false, error: err.message, ...futuresPaperExitExperimentStatusService.SAFETY });
   }
 });
 
