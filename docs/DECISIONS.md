@@ -4,6 +4,11 @@ Format: datum, beslut, motiv, konsekvens. Nya beslut läggs överst. Claude ska 
 
 ---
 
+## 2026-07-10 — Futures Paper: NQ/ES-kontrakt + avgiftsmodell per köp/sälj
+- **Beslut:** Futures Paper stödjer nu fyra kontrakt (MNQ/MES/NQ/ES) via en central katalog `futuresContractCatalogService` (enda källan för `pointValueUsd`, `tickSize`, `tickValueUsd`, `defaultCommissionPerSideUsd`). Simulerad courtage dras per side: entry-fee vid open, exit-fee vid close. `netPnlUsd = grossPnlUsd − totalFees`; realized PnL = net (styr kontot); gross och fees sparas separat per trade och `totalFeesSek` på account. Commission/side: MNQ/MES $1.22, NQ/ES $2.25. **Scope-beslut (användarval):** auto-scanner + signaladapter förblir **micros-only** (`SCANNER_SYMBOLS=['MNQ','MES']`); NQ/ES är endast katalog/manuell paper-simulation/UI — den beslutade riskramen (micros only för automatiken) är orörd.
+- **Motiv:** Mer realistisk paper-PnL (courtage påverkar resultatet) och möjlighet att jämföra micro vs. e-mini-kontrakt, utan att öka auto-tradad notional.
+- **Konsekvens:** Commit `89b6f44` på `lab-batch-runnability-ui` (9 filer, endast `futuresPaper*`/katalog/UI; regular `/paper-trading` orörd). Tester: nytt `futuresPaperFees.test.js` + uppdaterade ledger/desk-tester (net-siffror). Safety-flaggor oförändrade (paper_only, alla false); inga order-/broker-/IBKR-vägar öppnade. `pm2 restart nasdaq-scanner` kört (ny kod live, NQ/ES syns i runtime); ingen `pm2 save`, ingen push.
+
 ## 2026-07-08 — Hävstångstest 10x/15x/20x i Mini Future-research
 - **Beslut:** Research ska inte bara undvika hög hävstång utan aktivt testa `leverageTestLevels = [10, 15, 20]` per strategi i paper/simulation. Riskmärkning: 10x=`high`, 15x=`very_high`, 20x=`extreme`; 20x blockeras inte i research men märks alltid. Resultat märks med `leverageLevel`/`riskLevel` (+ `knockOutDistancePct`/`spreadPct` när produktdata finns); score får hävstångsbrutna fält (winRate/pnl/maxDrawdown per nivå) samt `bestLeverageLevel` + `leverageRecommendation`. All real-money med hög hävstång kräver separat explicit human approval.
 - **Motiv:** Hitta vilka strategier som klarar att arbeta nära stop/knock-out innan Mini Future-fasen; datadriven hävstångsrekommendation i stället för generell försiktighet.
