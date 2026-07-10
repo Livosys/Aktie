@@ -23,6 +23,7 @@ const strategyPerformanceReadService = require('./strategyPerformanceReadService
 const paperAllowlistService = require('./paperAllowlistService');
 const futuresTradingOsSignalAdapterService = require('./futuresTradingOsSignalAdapterService');
 const strategyTradeControl = require('./strategyTradeControlService');
+const futuresPaperStrategyApproval = require('./futuresPaperStrategyApprovalService');
 
 const SAFETY = Object.freeze({
   mode: 'paper_only',
@@ -518,6 +519,19 @@ function createFuturesPaperScannerService(options = {}) {
       }
       if (!SCANNER_SYMBOLS.includes(symbol)) {
         skippedStrategies.push({ strategyId, signalId: candidate.signalId || null, reason: 'unsupported_futures_symbol' });
+        continue;
+      }
+      // Futures-scopat approval-lager (separat från vanlig paper). Kompatibilitets-
+      // + godkännande-grind INNAN session/risk/dedup. Skapar aldrig en trade.
+      // Fail-open vid internt fel så dagens sex aldrig blockeras av ett store-fel.
+      const approvalGate = futuresPaperStrategyApproval.evaluateFuturesApprovalGate({ strategyId });
+      if (!approvalGate.allowed) {
+        skippedStrategies.push({
+          strategyId,
+          signalId: candidate.signalId || null,
+          reason: approvalGate.blockedReason,
+          canonicalReplacementId: approvalGate.canonicalReplacementId || null,
+        });
         continue;
       }
       if (busySymbols.has(symbol)) {

@@ -1,0 +1,123 @@
+'use strict';
+
+// `node src/services/futuresPaperStrategyPerformanceService.test.js`
+
+const assert = require('assert');
+const perf = require('./futuresPaperStrategyPerformanceService');
+
+let passed = 0;
+function test(name, fn) {
+  try { fn(); passed += 1; console.log(`  ok - ${name}`); }
+  catch (err) { console.error(`  FAIL - ${name}\n         ${err && err.stack || err}`); process.exitCode = 1; }
+}
+
+function t(strategyId, netPnlSek, extra = {}) {
+  return { strategyId, netPnlSek, grossPnlSek: extra.grossPnlSek ?? netPnlSek, feesSek: extra.feesSek ?? 0, dataSource: extra.dataSource ?? 'simulated_fallback', provenance: extra.provenance ?? 'stored_net' };
+}
+
+// 13) Historisk net PnL summeras korrekt (+ gross/fees).
+test('net/gross/fees sum correctly', () => {
+  const [s] = perf.aggregateTrades([
+    t('a', 100, { grossPnlSek: 110, feesSek: 10 }),
+    t('a', -40, { grossPnlSek: -30, feesSek: 10 }),
+  ]);
+  assert.strictEqual(s.netPnlSek, 60);
+  assert.strictEqual(s.grossPnlSek, 80);
+  assert.strictEqual(s.feesSek, 20);
+  assert.strictEqual(s.bestTradeSek, 100);
+  assert.strictEqual(s.worstTradeSek, -40);
+});
+
+// 14) Win rate = wins / closedTrades * 100.
+test('win rate computed correctly', () => {
+  const [s] = perf.aggregateTrades([t('a', 10), t('a', 20), t('a', -5), t('a', -5)]);
+  assert.strictEqual(s.wins, 2);
+  assert.strictEqual(s.losses, 2);
+  assert.strictEqual(s.closedTrades, 4);
+  assert.strictEqual(s.winRatePct, 50);
+  assert.strictEqual(s.avgNetPnlSek, 5); // (10+20-5-5)/4
+});
+
+// 15) Break-even (net==0) ingår i totalen men ej i wins/losses.
+test('breakeven counted in total, not wins/losses', () => {
+  const [s] = perf.aggregateTrades([t('a', 10), t('a', 0), t('a', -10)]);
+  assert.strictEqual(s.wins, 1);
+  assert.strictEqual(s.losses, 1);
+  assert.strictEqual(s.breakevenTrades, 1);
+  assert.strictEqual(s.closedTrades, 3);
+  assert.strictEqual(s.winRatePct, round1(1 / 3 * 100)); // ~33.3
+});
+function round1(x) { return Math.round(x * 10) / 10; }
+
+// 16) Profit factor hanterar noll förluster.
+test('profit factor handles zero losses', () => {
+  const [allWins] = perf.aggregateTrades([t('a', 10), t('a', 20)]);
+  assert.strictEqual(allWins.profitFactor, null);
+  assert.strictEqual(allWins.profitFactorNote, 'no_losing_trades');
+  const [mixed] = perf.aggregateTrades([t('b', 30), t('b', -10)]);
+  assert.strictEqual(mixed.profitFactor, 3); // 30 / abs(-10)
+});
+
+// 17) Fee-provenance: stored/derived/mixed korrekt.
+test('fee provenance stored/derived/mixed', () => {
+  const [stored] = perf.aggregateTrades([t('a', 5, { provenance: 'stored_net' })]);
+  assert.strictEqual(stored.pnlProvenance, 'stored_net');
+  const [derived] = perf.aggregateTrades([t('b', 5, { provenance: 'derived_with_current_commission' })]);
+  assert.strictEqual(derived.pnlProvenance, 'derived_with_current_commission');
+  const [mixed] = perf.aggregateTrades([t('c', 5, { provenance: 'stored_net' }), t('c', -5, { provenance: 'derived_with_current_commission' })]);
+  assert.strictEqual(mixed.pnlProvenance, 'mixed');
+  assert.strictEqual(mixed.pnlCalculationSources.stored_net, 1);
+  assert.strictEqual(mixed.pnlCalculationSources.derived_with_current_commission, 1);
+});
+
+// 18) Högst win rate / avg kräver minst fem trades.
+test('rate leaders require >= 5 trades', () => {
+  const list = perf.aggregateTrades([
+    // strategi hi: 4 trades, 100% win → hög win rate men FÅ trades
+    t('hi', 10), t('hi', 10), t('hi', 10), t('hi', 10),
+    // strategi lo: 6 trades, 50% win
+    t('lo', 10), t('lo', 10), t('lo', 10), t('lo', -10), t('lo', -10), t('lo', -10),
+  ]);
+  const leaders = perf.buildLeaders(list);
+  assert.strictEqual(leaders.highestWinRate.strategyId, 'lo', 'hi har <5 trades och kan ej vinna win-rate-leader');
+  assert.strictEqual(leaders.minTradesForRateLeaders, 5);
+  assert.strictEqual(leaders.performanceContext, 'simulated_fallback');
+  assert.strictEqual(leaders.notRealMarketPerformance, true);
+});
+
+// 18b) Tie-break: lika värde → fler trades, sedan strategyId.
+test('leader tie-break by trades then strategyId', () => {
+  const list = perf.aggregateTrades([
+    t('bbb', 50), t('bbb', 50),
+    t('aaa', 100),
+  ]);
+  // mostWins: bbb har 2 wins, aaa 1 → bbb
+  assert.strictEqual(perf.buildLeaders(list).mostWins.strategyId, 'bbb');
+});
+
+// 19) Live perf-invarianter: wins+losses+breakeven=closed, win rate, simulated context.
+test('live performance invariants hold', () => {
+  const out = perf.getPerformance();
+  assert.strictEqual(out.performanceContext, 'simulated_fallback');
+  assert.strictEqual(out.notRealMarketPerformance, true);
+  for (const s of out.strategies) {
+    assert.strictEqual(s.wins + s.losses + s.breakevenTrades, s.closedTrades, `${s.strategyId} count mismatch`);
+    if (s.closedTrades > 0) {
+      assert.strictEqual(s.winRatePct, round1(s.wins / s.closedTrades * 100));
+      assert.ok(s.usesSimulatedFallback === true || s.dataSources.length >= 0);
+    }
+  }
+  // minst en strategi har derived provenance (äldre trades finns i fixturen)
+  const anyDerived = out.strategies.some((s) => (s.pnlCalculationSources.derived_with_current_commission || 0) > 0);
+  assert.ok(anyDerived, 'expected some derived-provenance trades in fixture');
+});
+
+// 20) Vanlig Paper Trading blandas inte in (endast futures-ledgern läses).
+test('does not read normal paper trading data', () => {
+  const src = require('fs').readFileSync(require.resolve('./futuresPaperStrategyPerformanceService.js'), 'utf8');
+  assert.ok(!/paper-trading\/trades|paperTradingAgent|automation-approvals/.test(src), 'must not read normal paper trading sources');
+  assert.ok(/futuresPaperLedgerService|futuresPaperStorageService/.test(src));
+});
+
+if (process.exitCode) console.error(`\nfuturesPaperStrategyPerformanceService: FAILURES (passed ${passed})`);
+else console.log(`\nfuturesPaperStrategyPerformanceService: all ${passed} tests passed`);

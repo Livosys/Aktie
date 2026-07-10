@@ -116,6 +116,8 @@ const futuresPaperLedgerService = require('../services/futuresPaperLedgerService
 const futuresPaperScannerService = require('../services/futuresPaperScannerService');
 const futuresPaperPriceFeedService = require('../services/futuresPaperPriceFeedService');
 const futuresTechnicalInfoService = require('../services/futuresTechnicalInfoService');
+const futuresPaperStrategyApprovalService = require('../services/futuresPaperStrategyApprovalService');
+const futuresPaperStrategyPerformanceService = require('../services/futuresPaperStrategyPerformanceService');
 const paperTradingTruthService = require('../services/paperTradingTruthService');
 const strategyPipelineTruthService = require('../services/strategyPipelineTruthService');
 const shortExitTruthService = require('../services/shortExitTruthService');
@@ -3572,6 +3574,95 @@ router.get('/futures-paper/technical/strategies/:strategyId', (req, res) => {
     res.status(500).json({ status: 'error', ok: false, error: err.message, ...futuresTechnicalInfoService.SAFETY });
   }
 });
+
+// ── Futures Paper Strategy Approval (separat futures-lager, paper-only) ──────
+// Read-only status + idempotenta mutationer. Skapar aldrig en trade, muterar
+// aldrig vanliga Paper Trading-allowlisten, ingen order/broker/live.
+// Aggregator: slår ihop approval-lagret (status/testomgång/kompatibilitet) med
+// performance-lagret (statistik). Approval-store lagrar ingen statistik.
+function aggregateFuturesStrategy(view, perfMap) {
+  return {
+    catalog: {
+      strategyId: view.strategyId,
+      displayName: view.displayName,
+      family: view.family,
+      direction: view.direction,
+      market: view.market,
+      catalogStatus: view.catalogStatus,
+    },
+    compatibility: view.compatibility,
+    approval: view.approval,
+    currentTest: view.currentTest,
+    historicalPerformance: perfMap.get(view.strategyId) || null,
+  };
+}
+
+router.get('/futures-paper/strategies', (req, res) => {
+  try {
+    const approvals = futuresPaperStrategyApprovalService.listStrategies();
+    const perf = futuresPaperStrategyPerformanceService.getPerformance();
+    const perfMap = new Map((perf.strategies || []).map((s) => [s.strategyId, s]));
+    const strategies = (approvals.strategies || []).map((view) => (
+      view && view.error ? view : aggregateFuturesStrategy(view, perfMap)
+    ));
+    res.json({
+      status: 'ok',
+      readOnly: true,
+      generatedAt: new Date().toISOString(),
+      schemaVersion: approvals.schemaVersion,
+      degraded: approvals.degraded === true,
+      count: strategies.length,
+      strategies,
+      leaders: perf.leaders,
+      performanceContext: 'simulated_fallback',
+      notRealMarketPerformance: true,
+      ...futuresPaperStrategyApprovalService.SAFETY,
+    });
+  } catch (err) {
+    res.status(500).json({ status: 'error', ok: false, error: err.message, ...futuresPaperStrategyApprovalService.SAFETY });
+  }
+});
+
+router.get('/futures-paper/strategies/:strategyId', (req, res) => {
+  try {
+    const view = futuresPaperStrategyApprovalService.getStrategy(req.params.strategyId);
+    if (!view) {
+      return res.status(404).json({ status: 'not_found', ok: false, error: 'strategy_not_found', strategyId: req.params.strategyId || null, ...futuresPaperStrategyApprovalService.SAFETY });
+    }
+    const perfMap = futuresPaperStrategyPerformanceService.getPerformanceMap();
+    res.json({
+      status: 'ok',
+      readOnly: true,
+      generatedAt: new Date().toISOString(),
+      strategy: aggregateFuturesStrategy(view, perfMap),
+      ...futuresPaperStrategyApprovalService.SAFETY,
+    });
+  } catch (err) {
+    res.status(500).json({ status: 'error', ok: false, error: err.message, ...futuresPaperStrategyApprovalService.SAFETY });
+  }
+});
+
+function handleFuturesStrategyMutation(action) {
+  return (req, res) => {
+    try {
+      const body = req.body && typeof req.body === 'object' ? req.body : {};
+      // paper-only-vakt: aldrig tillåt live/broker/order via denna väg.
+      if (body.live_trading_enabled === true || body.broker_enabled === true || body.can_place_orders === true || body.actions_allowed === true) {
+        return res.status(400).json({ status: 'error', ok: false, error: 'futures_strategy_approval_is_paper_only', ...futuresPaperStrategyApprovalService.SAFETY });
+      }
+      const result = futuresPaperStrategyApprovalService[action](req.params.strategyId, { source: 'api' });
+      const code = result.code || (result.ok ? 200 : 400);
+      res.status(code).json({ ...result, action });
+    } catch (err) {
+      res.status(500).json({ status: 'error', ok: false, error: err.message, ...futuresPaperStrategyApprovalService.SAFETY });
+    }
+  };
+}
+
+router.post('/futures-paper/strategies/:strategyId/approve', handleFuturesStrategyMutation('approve'));
+router.post('/futures-paper/strategies/:strategyId/pause', handleFuturesStrategyMutation('pause'));
+router.post('/futures-paper/strategies/:strategyId/resume', handleFuturesStrategyMutation('resume'));
+router.post('/futures-paper/strategies/:strategyId/remove', handleFuturesStrategyMutation('remove'));
 
 router.post('/futures-paper/manual/open', (req, res) => {
   try {
