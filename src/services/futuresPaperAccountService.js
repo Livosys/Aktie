@@ -126,6 +126,27 @@ function createAccountEvent(type, payload = {}) {
   };
 }
 
+function normalizeHistoryOptions(options = {}) {
+  const includeHistory = options.includeHistory !== false;
+  const rawLimit = options.historyLimit;
+  const parsedLimit = rawLimit === null || rawLimit === undefined || rawLimit === ''
+    ? null
+    : Number(rawLimit);
+  const historyLimit = Number.isFinite(parsedLimit) && parsedLimit >= 0
+    ? Math.floor(parsedLimit)
+    : null;
+  return {
+    includeHistory: includeHistory && historyLimit !== 0,
+    historyLimit,
+  };
+}
+
+function applyHistoryLimit(rows, limit) {
+  if (!Array.isArray(rows)) return [];
+  if (limit === null) return rows;
+  return rows.slice(-limit);
+}
+
 function createFuturesPaperAccountService(options = {}) {
   const storage = options.storageService || storageService.defaultFuturesPaperStorageService;
 
@@ -190,7 +211,17 @@ function createFuturesPaperAccountService(options = {}) {
     return storage.appendEvent(createAccountEvent(type, payload));
   }
 
-  function getFuturesPaperAccount() {
+  function readHistory(historyLimit = null) {
+    const events = storage.readJsonl ? storage.readJsonl(storage.files.events) : [];
+    const equityCurve = storage.readJsonl ? storage.readJsonl(storage.files.equityCurve) : [];
+    return {
+      events: applyHistoryLimit(events, historyLimit),
+      equityCurve: applyHistoryLimit(equityCurve, historyLimit),
+    };
+  }
+
+  function getFuturesPaperAccount(options = {}) {
+    const historyOptions = normalizeHistoryOptions(options);
     const config = readConfig();
     const state = readState();
     const snapshot = buildAccountSnapshot({ config, state, updatedAt: state?.updatedAt || config.updatedAt || null });
@@ -202,10 +233,7 @@ function createFuturesPaperAccountService(options = {}) {
       account: snapshot,
       config,
       state: snapshot,
-      history: {
-        events: storage.readJsonl ? storage.readJsonl(storage.files.events) : [],
-        equityCurve: storage.readJsonl ? storage.readJsonl(storage.files.equityCurve) : [],
-      },
+      history: historyOptions.includeHistory ? readHistory(historyOptions.historyLimit) : { events: [], equityCurve: [] },
       ...SAFETY,
     };
   }

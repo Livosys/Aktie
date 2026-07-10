@@ -3477,7 +3477,14 @@ router.get('/futures-paper/runtime', (req, res) => {
 
 router.get('/futures-paper/account', (req, res) => {
   try {
-    res.json(futuresPaperAccountService.defaultFuturesPaperAccountService.getFuturesPaperAccount());
+    const includeHistory = req.query.includeHistory == null
+      ? undefined
+      : String(req.query.includeHistory).toLowerCase() !== 'false';
+    const historyLimit = req.query.historyLimit == null ? undefined : req.query.historyLimit;
+    res.json(futuresPaperAccountService.defaultFuturesPaperAccountService.getFuturesPaperAccount({
+      includeHistory,
+      historyLimit,
+    }));
   } catch (err) {
     res.status(500).json({ ok: false, error: err.message, ...futuresPaperAccountService.SAFETY });
   }

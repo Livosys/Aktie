@@ -48,6 +48,26 @@ assert.equal(events[events.length - 1].type, 'FUTURES_ACCOUNT_RESET');
 const equityCurve = storage.readJsonl(storage.files.equityCurve);
 assert.equal(equityCurve.length >= 2, true);
 
+const fullAccount = svc.getFuturesPaperAccount();
+assert.equal(Array.isArray(fullAccount.history.events), true);
+assert.equal(Array.isArray(fullAccount.history.equityCurve), true);
+assert.equal(fullAccount.history.events.length >= 2, true);
+assert.equal(fullAccount.history.equityCurve.length >= 2, true);
+
+const lightAccount = svc.getFuturesPaperAccount({ includeHistory: false });
+assert.equal(lightAccount.ok, true);
+assert.equal(lightAccount.account.startingBalanceSek, 500000);
+assert.deepEqual(lightAccount.history, { events: [], equityCurve: [] });
+
+const zeroHistoryAccount = svc.getFuturesPaperAccount({ historyLimit: 0 });
+assert.equal(zeroHistoryAccount.ok, true);
+assert.deepEqual(zeroHistoryAccount.history, { events: [], equityCurve: [] });
+
+const limitedHistoryAccount = svc.getFuturesPaperAccount({ historyLimit: 1 });
+assert.equal(limitedHistoryAccount.ok, true);
+assert.equal(limitedHistoryAccount.history.events.length, 1);
+assert.equal(limitedHistoryAccount.history.equityCurve.length, 1);
+
 const invalid = svc.setFuturesPaperBalance({ startingBalanceSek: -1 });
 assert.equal(invalid.ok, false);
 

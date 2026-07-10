@@ -70,7 +70,7 @@ function useFuturesDeskAccount(refreshToken = 0) {
     const load = () => {
       if (activeController) activeController.abort();
       activeController = new AbortController();
-      fetchJsonWithTimeout('/api/futures-paper/account', { signal: activeController.signal })
+      fetchJsonWithTimeout('/api/futures-paper/account?includeHistory=false', { signal: activeController.signal })
         .then((data) => {
           if (!alive) return;
           setState({ loading: false, error: null, data });
