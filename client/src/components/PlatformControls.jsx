@@ -1,11 +1,58 @@
-import React from 'react';
-import { configScope, CONFIG_SCOPES, useUnifiedConfig } from '../hooks/useUnifiedConfig.js';
+import React, { useCallback, useEffect, useState } from 'react';
+import { configScope, CONFIG_SCOPES } from '../hooks/useUnifiedConfig.js';
 
 export const ADVANCED_MODE_KEY = 'platform_advanced_mode_v1';
 
+function readAdvancedMode() {
+  try {
+    if (typeof window === 'undefined') return false;
+    const raw = window.localStorage.getItem(ADVANCED_MODE_KEY);
+    return raw === null ? false : raw !== 'false';
+  } catch {
+    return false;
+  }
+}
+
+function writeAdvancedMode(enabled) {
+  try {
+    if (typeof window !== 'undefined') {
+      window.localStorage.setItem(ADVANCED_MODE_KEY, String(enabled));
+      window.dispatchEvent(new CustomEvent('advancedmodechange', { detail: enabled }));
+    }
+  } catch {}
+}
+
 export function useAdvancedMode() {
-  const unified = useUnifiedConfig('core');
-  return [unified.ui.advancedMode, unified.setAdvancedMode];
+  const [advancedMode, setAdvancedModeState] = useState(readAdvancedMode);
+
+  useEffect(() => {
+    function syncFromStorage() {
+      setAdvancedModeState(readAdvancedMode());
+    }
+    function syncFromEvent(event) {
+      if (typeof event?.detail === 'boolean') {
+        setAdvancedModeState(event.detail);
+        return;
+      }
+      syncFromStorage();
+    }
+
+    window.addEventListener('advancedmodechange', syncFromEvent);
+    window.addEventListener('storage', syncFromStorage);
+    return () => {
+      window.removeEventListener('advancedmodechange', syncFromEvent);
+      window.removeEventListener('storage', syncFromStorage);
+    };
+  }, []);
+
+  const setAdvancedMode = useCallback((next) => {
+    const current = readAdvancedMode();
+    const enabled = typeof next === 'function' ? Boolean(next(current)) : Boolean(next);
+    writeAdvancedMode(enabled);
+    setAdvancedModeState(enabled);
+  }, []);
+
+  return [advancedMode, setAdvancedMode];
 }
 
 export function useAdvancedModeListener() {
