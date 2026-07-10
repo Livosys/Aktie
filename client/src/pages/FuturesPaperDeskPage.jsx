@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useState } from 'react';
 import { DashboardShell } from '../components/dashboard/DashboardKit.jsx';
 import { Link } from 'react-router-dom';
 import FuturesTechnicalInfoPanel from '../components/futures/FuturesTechnicalInfoPanel.jsx';
+import FuturesPaperStrategyApprovalPanel from '../components/futures/FuturesPaperStrategyApprovalPanel.jsx';
 
 const REFRESH_MS = 20_000;
 const FETCH_TIMEOUT_MS = 7_000;
@@ -325,6 +326,7 @@ export default function FuturesPaperDeskPage() {
     { id: 'positioner', label: 'Positioner' },
     { id: 'trades', label: 'Trades' },
     { id: 'runtime', label: 'Runtime' },
+    { id: 'godkannande', label: 'Godkännande' },
     { id: 'teknik', label: 'Teknisk info' },
   ];
   const [activeTab, setActiveTab] = useState('oversikt');
@@ -877,6 +879,17 @@ export default function FuturesPaperDeskPage() {
               { key: 'closeReason', label: 'Orsak', render: (row) => row.closeReason || '–' },
             ]}
           />
+        </section>
+        )}
+
+        {activeTab === 'godkannande' && (
+        <section style={sectionStyle()}>
+          <SectionHeader
+            eyebrow="Godkännande"
+            title="Futures Paper — strategigodkännande (paper-only)"
+            summary="Lägg till, pausa, återuppta och ta bort strategier för Futures Paper. Ändrar endast approval-status – ingen order, ingen broker, ingen live, skapar aldrig en trade."
+          />
+          <FuturesPaperStrategyApprovalPanel />
         </section>
         )}
 
