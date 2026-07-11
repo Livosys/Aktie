@@ -126,6 +126,15 @@ const paperRiskPauseSummaryService = require('../services/paperRiskPauseSummaryS
 const paperRiskReviewService = require('../services/paperRiskReviewService');
 const tradingViewTestBlueprintService = require('../services/tradingViewTestBlueprintService');
 const strategyEvolutionService = require('../services/strategyEvolutionService');
+const pineResearchModelService = require('../services/pineResearchModelService');
+const pineResearchStoreService = require('../services/pineResearchStoreService');
+const pineScriptGeneratorService = require('../services/pineScriptGeneratorService');
+const pineScriptValidationService = require('../services/pineScriptValidationService');
+const pineResearchTestRunService = require('../services/pineResearchTestRunService');
+const pineResearchAiEvaluationService = require('../services/pineResearchAiEvaluationService');
+const pineResearchLoopService = require('../services/pineResearchLoopService');
+const tradingViewCsvImportService = require('../services/tradingViewCsvImportService');
+const pineResearchComparisonService = require('../services/pineResearchComparisonService');
 const paperTradeExplanationService = require('../services/paperTradeExplanationService');
 const lossReviewQueueService = require('../services/lossReviewQueueService');
 const tradingViewPaperReplayPreviewService = require('../services/tradingViewPaperReplayPreviewService');
@@ -3937,6 +3946,282 @@ router.get('/research/strategy-evolution', (req, res) => {
       safety: strategyEvolutionService.SAFETY,
       items: [],
     });
+  }
+});
+
+function rejectIfNotPineResearchPaperOnly(req, res) {
+  const body = req.body && typeof req.body === 'object' ? req.body : {};
+  try {
+    pineResearchModelService.assertSafeIntent(body);
+  } catch (err) {
+    res.status(400).json({ ok: false, error: err.message, safety: pineResearchModelService.SAFETY });
+    return true;
+  }
+  if (body.live_trading_enabled === true || body.can_place_orders === true || body.actions_allowed === true || body.broker_enabled === true || (body.mode && body.mode !== 'paper_only')) {
+    res.status(400).json({ ok: false, error: 'pine_research_is_paper_only', safety: pineResearchModelService.SAFETY });
+    return true;
+  }
+  return false;
+}
+
+function pineResearchError(res, err, status = 500) {
+  res.status(status).json({
+    ok: false,
+    error: err?.message || String(err),
+    safety: pineResearchModelService.SAFETY,
+  });
+}
+
+router.get('/pine-research/overview', (req, res) => {
+  try {
+    res.json(pineResearchStoreService.getOverview());
+  } catch (err) {
+    pineResearchError(res, err);
+  }
+});
+
+router.get('/pine-research/candidates', (req, res) => {
+  try {
+    res.json(pineResearchModelService.withSafety({ ok: true, candidates: pineResearchStoreService.list('candidates') }));
+  } catch (err) {
+    pineResearchError(res, err);
+  }
+});
+
+router.get('/pine-research/candidates/:candidateId', (req, res) => {
+  try {
+    const candidate = pineResearchStoreService.findById('candidates', req.params.candidateId);
+    if (!candidate) return res.status(404).json({ ok: false, error: 'candidate_not_found', safety: pineResearchModelService.SAFETY });
+    res.json(pineResearchModelService.withSafety({
+      ok: true,
+      candidate,
+      versions: pineResearchStoreService.list('versions', { candidateId: candidate.candidateId }),
+      testRuns: pineResearchStoreService.list('testRuns', { candidateId: candidate.candidateId }),
+      evaluations: pineResearchStoreService.list('evaluations', { candidateId: candidate.candidateId }),
+      validations: pineResearchStoreService.list('validations', { candidateId: candidate.candidateId }),
+    }));
+  } catch (err) {
+    pineResearchError(res, err);
+  }
+});
+
+router.get('/pine-research/versions', (req, res) => {
+  try {
+    const filter = req.query.candidateId ? { candidateId: req.query.candidateId } : {};
+    res.json(pineResearchModelService.withSafety({ ok: true, versions: pineResearchStoreService.list('versions', filter) }));
+  } catch (err) {
+    pineResearchError(res, err);
+  }
+});
+
+router.get('/pine-research/versions/:pineVersionId', (req, res) => {
+  try {
+    const version = pineResearchStoreService.findById('versions', req.params.pineVersionId);
+    if (!version) return res.status(404).json({ ok: false, error: 'pine_version_not_found', safety: pineResearchModelService.SAFETY });
+    res.json(pineResearchModelService.withSafety({ ok: true, version }));
+  } catch (err) {
+    pineResearchError(res, err);
+  }
+});
+
+router.get('/pine-research/test-runs', (req, res) => {
+  try {
+    const filter = req.query.pineVersionId ? { pineVersionId: req.query.pineVersionId } : {};
+    res.json(pineResearchModelService.withSafety({ ok: true, testRuns: pineResearchStoreService.list('testRuns', filter) }));
+  } catch (err) {
+    pineResearchError(res, err);
+  }
+});
+
+router.get('/pine-research/evaluations', (req, res) => {
+  try {
+    const filter = req.query.pineVersionId ? { pineVersionId: req.query.pineVersionId } : {};
+    res.json(pineResearchModelService.withSafety({ ok: true, evaluations: pineResearchStoreService.list('evaluations', filter) }));
+  } catch (err) {
+    pineResearchError(res, err);
+  }
+});
+
+router.get('/pine-research/validations', (req, res) => {
+  try {
+    const filter = req.query.pineVersionId ? { pineVersionId: req.query.pineVersionId } : {};
+    res.json(pineResearchModelService.withSafety({ ok: true, validations: pineResearchStoreService.list('validations', filter) }));
+  } catch (err) {
+    pineResearchError(res, err);
+  }
+});
+
+router.get('/pine-research/queue', (req, res) => {
+  try {
+    res.json(pineResearchModelService.withSafety({ ok: true, queue: pineResearchStoreService.list('queue') }));
+  } catch (err) {
+    pineResearchError(res, err);
+  }
+});
+
+router.get('/pine-research/config', (req, res) => {
+  try {
+    res.json(pineResearchModelService.withSafety({
+      ok: true,
+      budget: pineResearchLoopService.DEFAULT_BUDGET,
+      provider: {
+        provider: pineResearchAiEvaluationService.provider(),
+        model: pineResearchAiEvaluationService.modelName(),
+        configured: Boolean(process.env.AI_ANALYST_API_KEY || process.env.AI_API_KEY || process.env.OPENAI_API_KEY),
+        timeoutMs: pineResearchAiEvaluationService.timeoutMs(),
+      },
+      adapters: {
+        staticValidator: true,
+        pineGenerator: true,
+        internalBatchReplay: 'adapter_requires_certified_parity_before_running',
+        tradingViewCsvImport: true,
+      },
+      store: {
+        rootDir: pineResearchStoreService.rootDir,
+        blocks: pineResearchStoreService.blockStatus(),
+      },
+    }));
+  } catch (err) {
+    pineResearchError(res, err);
+  }
+});
+
+router.get('/pine-research/export/:pineVersionId', (req, res) => {
+  try {
+    const version = pineResearchStoreService.findById('versions', req.params.pineVersionId);
+    if (!version) return res.status(404).json({ ok: false, error: 'pine_version_not_found', safety: pineResearchModelService.SAFETY });
+    const sourceCode = version.sourceCode || pineScriptGeneratorService.generatePineVersion(version).sourceCode;
+    res.type('text/plain').send(sourceCode);
+  } catch (err) {
+    pineResearchError(res, err);
+  }
+});
+
+router.post('/pine-research/candidates', (req, res) => {
+  try {
+    if (rejectIfNotPineResearchPaperOnly(req, res)) return;
+    const body = req.body && typeof req.body === 'object' ? req.body : {};
+    if (body.pilot === true || body.baseStrategyId === 'opening_range_breakout') {
+      return res.json(pineResearchLoopService.ensureOrbPilot(pineResearchStoreService.defaultStore));
+    }
+    const candidate = pineResearchStoreService.saveCandidate(body);
+    res.json(pineResearchModelService.withSafety({ ok: true, candidate }));
+  } catch (err) {
+    pineResearchError(res, err, 400);
+  }
+});
+
+router.post('/pine-research/versions/generate', (req, res) => {
+  try {
+    if (rejectIfNotPineResearchPaperOnly(req, res)) return;
+    const body = req.body && typeof req.body === 'object' ? req.body : {};
+    const base = body.pineVersionId ? pineResearchStoreService.findById('versions', body.pineVersionId) : body;
+    if (!base) return res.status(404).json({ ok: false, error: 'pine_version_not_found', safety: pineResearchModelService.SAFETY });
+    const generated = pineScriptGeneratorService.generatePineVersion({ ...base, ...(body.versionPatch || {}) });
+    const saved = pineResearchStoreService.saveVersion(generated);
+    res.json(pineResearchModelService.withSafety({ ok: true, version: saved }));
+  } catch (err) {
+    pineResearchError(res, err, 400);
+  }
+});
+
+router.post('/pine-research/versions/:pineVersionId/validate', (req, res) => {
+  try {
+    if (rejectIfNotPineResearchPaperOnly(req, res)) return;
+    const version = pineResearchStoreService.findById('versions', req.params.pineVersionId);
+    if (!version) return res.status(404).json({ ok: false, error: 'pine_version_not_found', safety: pineResearchModelService.SAFETY });
+    const validated = pineScriptValidationService.validatePineVersion(version);
+    const saved = pineResearchStoreService.saveVersion(validated, { dedupe: false });
+    res.status(validated.compileStatus === 'static_invalid' ? 422 : 200).json(pineResearchModelService.withSafety({ ok: validated.compileStatus !== 'static_invalid', version: saved }));
+  } catch (err) {
+    pineResearchError(res, err, 400);
+  }
+});
+
+router.post('/pine-research/test-runs/preview', (req, res) => {
+  try {
+    if (rejectIfNotPineResearchPaperOnly(req, res)) return;
+    const body = req.body && typeof req.body === 'object' ? req.body : {};
+    const version = pineResearchStoreService.findById('versions', body.pineVersionId);
+    if (!version) return res.status(404).json({ ok: false, error: 'pine_version_not_found', safety: pineResearchModelService.SAFETY });
+    res.json(pineResearchTestRunService.createTestPlan(version, body));
+  } catch (err) {
+    pineResearchError(res, err, 400);
+  }
+});
+
+router.post('/pine-research/test-runs/run', (req, res) => {
+  try {
+    if (rejectIfNotPineResearchPaperOnly(req, res)) return;
+    const body = req.body && typeof req.body === 'object' ? req.body : {};
+    const version = pineResearchStoreService.findById('versions', body.pineVersionId);
+    if (!version) return res.status(404).json({ ok: false, error: 'pine_version_not_found', safety: pineResearchModelService.SAFETY });
+    res.json(pineResearchTestRunService.runTestPlan(version, { ...body, store: pineResearchStoreService.defaultStore }));
+  } catch (err) {
+    pineResearchError(res, err, 400);
+  }
+});
+
+router.post('/pine-research/evaluations/run', async (req, res) => {
+  try {
+    if (rejectIfNotPineResearchPaperOnly(req, res)) return;
+    const body = req.body && typeof req.body === 'object' ? req.body : {};
+    const result = await pineResearchAiEvaluationService.runEvaluation({
+      store: pineResearchStoreService.defaultStore,
+      pineVersionId: body.pineVersionId,
+      providerMode: body.providerMode,
+      allowDeterministicFallback: body.allowDeterministicFallback === true,
+    });
+    res.status(result.ok ? 200 : 503).json(result);
+  } catch (err) {
+    pineResearchError(res, err, 400);
+  }
+});
+
+router.post('/pine-research/loop/preview', (req, res) => {
+  try {
+    if (rejectIfNotPineResearchPaperOnly(req, res)) return;
+    res.json(pineResearchLoopService.previewLoop(pineResearchStoreService.defaultStore, req.body || {}));
+  } catch (err) {
+    pineResearchError(res, err, 400);
+  }
+});
+
+router.post('/pine-research/loop/run-round', async (req, res) => {
+  try {
+    if (rejectIfNotPineResearchPaperOnly(req, res)) return;
+    const body = req.body && typeof req.body === 'object' ? req.body : {};
+    if (body.ensurePilot === true) pineResearchLoopService.ensureOrbPilot(pineResearchStoreService.defaultStore);
+    const result = await pineResearchLoopService.runRound(pineResearchStoreService.defaultStore, body);
+    res.status(result.ok ? 200 : 400).json(result);
+  } catch (err) {
+    pineResearchError(res, err, 400);
+  }
+});
+
+router.post('/pine-research/tradingview/import', (req, res) => {
+  try {
+    if (rejectIfNotPineResearchPaperOnly(req, res)) return;
+    const result = tradingViewCsvImportService.importTradingViewCsv({
+      ...(req.body || {}),
+      store: pineResearchStoreService.defaultStore,
+    });
+    res.json(result);
+  } catch (err) {
+    pineResearchError(res, err, 400);
+  }
+});
+
+router.post('/pine-research/tradingview/compare', (req, res) => {
+  try {
+    if (rejectIfNotPineResearchPaperOnly(req, res)) return;
+    const result = pineResearchComparisonService.compareTradingViewValidation({
+      ...(req.body || {}),
+      store: pineResearchStoreService.defaultStore,
+    });
+    res.json(result);
+  } catch (err) {
+    pineResearchError(res, err, 400);
   }
 });
 

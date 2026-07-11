@@ -1,205 +1,65 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { DashboardShell } from '../components/dashboard/DashboardKit.jsx';
-import TradingViewTestBlueprintPanel from '../components/TradingViewTestBlueprintPanel.jsx';
-import TradingViewTestResultsPanel from '../components/TradingViewTestResultsPanel.jsx';
-import tradingViewTestBlueprintFallback from '../utils/tradingview-test-blueprints.json';
 
-const FETCH_TIMEOUT_MS = 6500;
-const PINE_SAFETY = Object.freeze({
-  mode: 'paper_only',
-  actions_allowed: false,
-  can_place_orders: false,
-  live_trading_enabled: false,
-  broker_enabled: false,
+const FETCH_TIMEOUT_MS = 8000;
+const TABS = [
+  ['overview', 'Översikt'],
+  ['queue', 'Forskningskö'],
+  ['strategies', 'Strategier'],
+  ['versions', 'Versioner'],
+  ['tests', 'Tester'],
+  ['ai', 'AI-utvärdering'],
+  ['tradingview', 'TradingView-validering'],
+  ['tech', 'Teknik'],
+];
+
+const EMPTY = Object.freeze({
+  overview: { summary: {}, safety: {}, dataQualityWarnings: [], parityWarnings: [] },
+  config: { budget: {}, provider: {}, adapters: {}, store: {}, safety: {} },
+  candidates: [],
+  versions: [],
+  testRuns: [],
+  evaluations: [],
+  validations: [],
+  queue: [],
 });
 
-async function fetchJsonWithTimeout(url, { timeoutMs = FETCH_TIMEOUT_MS, signal } = {}) {
+async function fetchJson(url, options = {}) {
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
-  const onAbort = () => controller.abort();
-  if (signal) signal.addEventListener('abort', onAbort, { once: true });
+  const timer = setTimeout(() => controller.abort(), options.timeoutMs || FETCH_TIMEOUT_MS);
   try {
-    const res = await fetch(url, { signal: controller.signal, credentials: 'include' });
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    return await res.json();
+    const res = await fetch(url, {
+      method: options.method || 'GET',
+      headers: options.body ? { 'content-type': 'application/json' } : undefined,
+      body: options.body ? JSON.stringify(options.body) : undefined,
+      credentials: options.method && options.method !== 'GET' ? 'same-origin' : 'omit',
+      signal: controller.signal,
+    });
+    const text = await res.text();
+    const data = text ? JSON.parse(text) : {};
+    if (!res.ok) {
+      const err = new Error(data?.error || `HTTP ${res.status}`);
+      err.status = res.status;
+      err.data = data;
+      throw err;
+    }
+    return data;
   } catch (err) {
-    if (err?.name === 'AbortError') throw new Error(`timeout_after_${timeoutMs}ms`);
+    if (err?.name === 'AbortError') throw new Error('timeout');
     throw err;
   } finally {
     clearTimeout(timer);
-    if (signal) signal.removeEventListener('abort', onAbort);
   }
 }
 
-function getThemeMode() {
-  if (typeof document === 'undefined') return 'dark';
-  return document.documentElement.dataset.theme === 'light' ? 'light' : 'dark';
-}
-
-function useThemeMode() {
-  const [theme, setTheme] = useState(getThemeMode());
-  useEffect(() => {
-    const handler = () => setTheme(getThemeMode());
-    window.addEventListener('themechange', handler);
-    return () => window.removeEventListener('themechange', handler);
-  }, []);
-  return theme;
-}
-
-function friendlyBlueprintError(err) {
-  const message = String(err?.message || '').trim();
-  if (/^HTTP 404$/i.test(message)) return 'Blueprint-data saknas ännu';
-  if (/Failed to fetch|NetworkError|Load failed/i.test(message)) return 'Blueprint-källa inte ansluten ännu';
-  if (/^timeout_after_\d+ms$/i.test(message)) return 'Blueprint-källa inte ansluten ännu (timeout)';
-  return message || 'Blueprint-källa inte ansluten ännu';
-}
-
-function friendlyStrategyEvolutionError(err) {
-  const message = String(err?.message || '').trim();
-  if (/^HTTP 404$/i.test(message)) return 'Strategy Evolution-endpoint saknas ännu';
-  if (/Failed to fetch|NetworkError|Load failed/i.test(message)) return 'Strategy Evolution-data inte ansluten ännu';
-  if (/^timeout_after_\d+ms$/i.test(message)) return 'Strategy Evolution-data inte ansluten ännu (timeout)';
-  return message || 'Strategy Evolution-data inte ansluten ännu';
-}
-
-function usePineBlueprints() {
-  const emptyPayload = useMemo(() => ({
-    ok: true,
-    status: 'empty',
-    source: 'none',
-    blueprints: [],
-    summary: {
-      strategies: 0,
-      pineScriptPossible: 0,
-      needsAttention: 0,
-      directionBoth: 0,
-    },
-  }), []);
-  const [state, setState] = useState({ loading: true, data: emptyPayload, error: null });
-
-  useEffect(() => {
-    let alive = true;
-    const controller = new AbortController();
-    setState((prev) => ({ ...prev, loading: true }));
-    fetchJsonWithTimeout('/api/paper-trading/tradingview-test-blueprints', { signal: controller.signal })
-      .catch((err) => {
-        const message = String(err?.message || '').trim();
-        if (/^HTTP 404$/i.test(message) || /Failed to fetch|NetworkError|Load failed/i.test(message)) {
-          return tradingViewTestBlueprintFallback;
-        }
-        throw err;
-      })
-      .then((data) => {
-        if (!alive) return;
-        const normalized = data && typeof data === 'object'
-          ? {
-              ...data,
-              source: data.source || (Array.isArray(data.blueprints) && data.blueprints.length ? 'api' : 'none'),
-            }
-          : emptyPayload;
-        setState({ loading: false, data: normalized, error: null });
-      })
-      .catch((err) => {
-        if (!alive) return;
-        setState({ loading: false, data: emptyPayload, error: friendlyBlueprintError(err) });
-      });
-    return () => {
-      alive = false;
-      controller.abort();
-    };
-  }, [emptyPayload]);
-
-  return state;
-}
-
-function useStrategyEvolution() {
-  const emptyPayload = useMemo(() => ({
-    ok: true,
-    status: 'empty',
-    source: 'none',
-    targetScore: {
-      min: 70,
-      ideal: 80,
-      type: 'ai_score',
-      scale: '0-100',
-    },
-    safety: {
-      mode: 'paper_only',
-      actions_allowed: false,
-      can_place_orders: false,
-      live_trading_enabled: false,
-      broker_enabled: false,
-    },
-    items: [],
-    summary: {
-      totalStrategies: 0,
-      totalVersions: 0,
-      promisingCount: 0,
-      strongCandidateCount: 0,
-      needsImprovementCount: 0,
-      waitingForTestCount: 0,
-    },
-    warnings: [],
-  }), []);
-  const [state, setState] = useState({ loading: true, data: emptyPayload, error: null });
-
-  useEffect(() => {
-    let alive = true;
-    const controller = new AbortController();
-    setState((prev) => ({ ...prev, loading: true }));
-    fetchJsonWithTimeout('/api/research/strategy-evolution', { signal: controller.signal })
-      .then((data) => {
-        if (!alive) return;
-        const normalized = data && typeof data === 'object'
-          ? {
-              ...emptyPayload,
-              ...data,
-              items: Array.isArray(data.items) ? data.items : [],
-              summary: {
-                ...emptyPayload.summary,
-                ...(data.summary && typeof data.summary === 'object' ? data.summary : {}),
-              },
-              warnings: Array.isArray(data.warnings) ? data.warnings : [],
-            }
-          : emptyPayload;
-        setState({ loading: false, data: normalized, error: null });
-      })
-      .catch((err) => {
-        if (!alive) return;
-        setState({ loading: false, data: emptyPayload, error: friendlyStrategyEvolutionError(err) });
-      });
-    return () => {
-      alive = false;
-      controller.abort();
-    };
-  }, [emptyPayload]);
-
-  return state;
-}
-
-function Badge({ children, tone = 'neutral' }) {
-  const colors = {
-    neutral: 'rgba(148,163,184,0.16)',
-    success: 'rgba(34,197,94,0.14)',
-    warning: 'rgba(245,158,11,0.14)',
-    info: 'rgba(56,189,248,0.14)',
-  };
-  return (
-    <span style={{
-      display: 'inline-flex',
-      alignItems: 'center',
-      border: '1px solid var(--border)',
-      borderRadius: 999,
-      padding: '5px 9px',
-      background: colors[tone] || colors.neutral,
-      color: 'var(--text)',
-      fontSize: 12,
-      fontWeight: 800,
-    }}
-    >
-      {children}
-    </span>
-  );
+function friendlyError(err) {
+  if (err?.status === 401) return 'Operatörsautentisering krävs för den här ändringen.';
+  if (err?.status === 403) return 'Du har inte behörighet att ändra Pine Research.';
+  if (err?.status === 422) return err?.data?.error || 'Valideringen stoppade ändringen.';
+  if (err?.status === 503) return 'AI-provider eller research-tjänst är tillfälligt otillgänglig.';
+  if (String(err?.message || '').includes('timeout')) return 'Servern svarade inte i tid.';
+  if (/Failed to fetch|NetworkError|Load failed/i.test(String(err?.message || ''))) return 'Kunde inte nå servern.';
+  return err?.message || 'Okänt fel.';
 }
 
 function formatNumber(value, fallback = '–') {
@@ -208,629 +68,627 @@ function formatNumber(value, fallback = '–') {
   return new Intl.NumberFormat('sv-SE', { maximumFractionDigits: 2 }).format(n);
 }
 
-function formatPercent(value, fallback = '–') {
+function formatPercent(value) {
   const n = Number(value);
-  if (!Number.isFinite(n)) return fallback;
-  return `${new Intl.NumberFormat('sv-SE', { maximumFractionDigits: 2 }).format(n)}%`;
+  if (!Number.isFinite(n)) return '–';
+  return `${formatNumber(n)}%`;
 }
 
-function bandLabel(band) {
-  const labels = {
-    strong_candidate: 'Stark kandidat',
-    promising: 'Lovande',
-    watchlist: 'Bevaka',
-    needs_improvement: 'Behöver förbättras',
-    weak: 'Svag',
-    unscored: 'Ej score-satt',
+function Badge({ children, tone = 'neutral' }) {
+  const styles = {
+    neutral: { background: 'rgba(148,163,184,0.14)', color: 'var(--text)' },
+    success: { background: 'rgba(34,197,94,0.16)', color: '#22c55e' },
+    warning: { background: 'rgba(245,158,11,0.16)', color: '#f59e0b' },
+    danger: { background: 'rgba(239,68,68,0.14)', color: '#ef4444' },
+    info: { background: 'rgba(56,189,248,0.14)', color: '#38bdf8' },
   };
-  return labels[band] || String(band || 'Okänd');
+  return (
+    <span style={{
+      display: 'inline-flex',
+      alignItems: 'center',
+      minHeight: 24,
+      border: '1px solid var(--border)',
+      borderRadius: 999,
+      padding: '3px 8px',
+      fontSize: 12,
+      fontWeight: 800,
+      ...styles[tone],
+    }}
+    >
+      {children}
+    </span>
+  );
 }
 
-function scoreTone(score, band) {
-  if (Number(score) >= 80 || band === 'strong_candidate') return 'success';
-  if (Number(score) >= 70 || band === 'promising') return 'info';
-  if (band === 'needs_improvement' || band === 'weak') return 'warning';
+function toneForStatus(status) {
+  if (['ready_for_test', 'static_valid', 'completed', 'matched', 'candidate'].includes(status)) return 'success';
+  if (['blocked', 'invalid', 'static_invalid', 'major_differences', 'provider_error', 'rejected'].includes(status)) return 'danger';
+  if (['draft', 'generated', 'partial', 'needs_review', 'minor_differences'].includes(status)) return 'warning';
   return 'neutral';
 }
 
-function actionLabel(action) {
-  const labels = {
-    improve: 'Förbättra',
-    retest: 'Testa igen',
-    collect_more_data: 'Samla mer data',
-    promote_candidate: 'Promota kandidat',
-    reject: 'Förkasta',
-    wait_for_test: 'Väntar test',
-  };
-  return labels[action] || String(action || 'Okänd');
-}
-
-function priorityLabel(priority) {
-  const labels = {
-    critical: 'Kritisk',
-    high: 'Hög',
-    medium: 'Medel',
-    low: 'Låg',
-  };
-  return labels[priority] || String(priority || 'Okänd');
-}
-
-function changeTypeLabel(type) {
-  const labels = {
-    trend_filter: 'trend_filter',
-    momentum_filter: 'momentum_filter',
-    volume_filter: 'volume_filter',
-    volatility_filter: 'volatility_filter',
-    session_filter: 'session_filter',
-    stop_invalidation: 'stop_invalidation',
-    exit_rule: 'exit_rule',
-    sample_expansion: 'sample_expansion',
-    data_quality_check: 'data_quality_check',
-    keep_and_validate: 'keep_and_validate',
-  };
-  return labels[type] || String(type || 'okänd');
-}
-
-function latestVersion(strategy) {
-  const versions = Array.isArray(strategy?.versions) ? strategy.versions : [];
-  if (!versions.length) return null;
-  return [...versions].sort((a, b) => Number(b?.version || 0) - Number(a?.version || 0))[0];
-}
-
-function MetricPill({ label, value }) {
-  return (
-    <div style={{
-      border: '1px solid var(--border)',
-      borderRadius: 12,
-      padding: '10px 12px',
-      background: 'color-mix(in srgb, var(--surface) 88%, transparent)',
-    }}
-    >
-      <div style={{ color: 'var(--muted)', fontSize: 11, fontWeight: 850, textTransform: 'uppercase', letterSpacing: '0.06em' }}>
-        {label}
-      </div>
-      <div style={{ marginTop: 4, fontSize: 18, fontWeight: 900 }}>{value}</div>
-    </div>
-  );
-}
-
-function ResearchCard({ title, meta, children }) {
-  return (
-    <article style={{
-      border: '1px solid var(--border)',
-      borderRadius: 14,
-      padding: 16,
-      background: 'color-mix(in srgb, var(--surface) 92%, transparent)',
-      minHeight: 132,
-    }}
-    >
-      <div style={{ color: 'var(--muted)', fontSize: 11, fontWeight: 900, textTransform: 'uppercase', letterSpacing: '0.08em' }}>
-        {meta}
-      </div>
-      <h2 style={{ margin: '6px 0 8px', fontSize: 17, letterSpacing: 0 }}>{title}</h2>
-      <p style={{ margin: 0, color: 'var(--muted)', fontSize: 13, lineHeight: 1.55 }}>
-        {children}
-      </p>
-    </article>
-  );
-}
-
-function StrategyEvolutionPanel({ state }) {
-  const data = state?.data || {};
-  const summary = data.summary || {};
-  const items = Array.isArray(data.items) ? data.items : [];
-  const target = data.targetScore || { min: 70, ideal: 80, type: 'ai_score', scale: '0-100' };
-  const recommendationSummary = summary.recommendationSummary || {};
-  const visibleItems = items.slice(0, 6);
-
+function Section({ title, actions, children }) {
   return (
     <section style={{
-      border: '1px solid var(--border)',
-      borderRadius: 18,
-      padding: 20,
-      marginBottom: 18,
-      background: 'var(--surface)',
+      borderTop: '1px solid var(--border)',
+      padding: '18px 0',
     }}
     >
-      <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap', alignItems: 'flex-start' }}>
-        <div>
-          <div style={{ color: 'var(--muted)', fontSize: 12, fontWeight: 900, textTransform: 'uppercase', letterSpacing: '0.08em' }}>
-            Strategy Evolution
-          </div>
-          <h2 style={{ margin: '6px 0 8px', fontSize: 24, letterSpacing: 0 }}>
-            Versioner, AI-score och nästa förbättring
-          </h2>
-          <p style={{ margin: 0, maxWidth: 760, color: 'var(--muted)', fontSize: 13, lineHeight: 1.6 }}>
-            Den här panelen läser bara research-data. Den startar inga tester, ändrar ingen strategi och
-            skickar inget till TradingView, broker eller orderflöde.
-          </p>
-        </div>
-        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
-          <Badge tone="info">Target {target.min}-{target.ideal}+ AI-score</Badge>
-          <Badge>{target.type || 'ai_score'} {target.scale || '0-100'}</Badge>
-          <Badge tone={data.status === 'ok' ? 'success' : data.status === 'error' ? 'warning' : 'neutral'}>
-            {state.loading ? 'Laddar' : data.status || 'empty'}
-          </Badge>
-        </div>
-      </div>
-
       <div style={{
-        display: 'grid',
-        gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))',
-        gap: 10,
-        marginTop: 16,
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'space-between',
+        gap: 12,
+        flexWrap: 'wrap',
+        marginBottom: 12,
       }}
       >
-        <MetricPill label="Strategier" value={formatNumber(summary.totalStrategies || 0)} />
-        <MetricPill label="Versioner" value={formatNumber(summary.totalVersions || 0)} />
-        <MetricPill label="Lovande >=70" value={formatNumber(summary.promisingCount || 0)} />
-        <MetricPill label="Starka >=80" value={formatNumber(summary.strongCandidateCount || 0)} />
-        <MetricPill label="Väntar test" value={formatNumber(summary.waitingForTestCount || 0)} />
+        <h2 style={{ margin: 0, fontSize: 18 }}>{title}</h2>
+        {actions}
       </div>
-
-      {summary.recommendationSummary ? (
-        <div style={{
-          marginTop: 14,
-          border: '1px solid var(--border)',
-          borderRadius: 14,
-          padding: 14,
-          background: 'color-mix(in srgb, var(--surface) 88%, transparent)',
-        }}
-        >
-          <div style={{ color: 'var(--muted)', fontSize: 11, fontWeight: 900, textTransform: 'uppercase', letterSpacing: '0.08em' }}>
-            Research Intelligence
-          </div>
-          <div style={{
-            display: 'grid',
-            gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))',
-            gap: 8,
-            marginTop: 10,
-          }}
-          >
-            <Badge tone="warning">Förbättra {formatNumber(recommendationSummary.improveCount || 0)}</Badge>
-            <Badge tone="info">Testa igen {formatNumber(recommendationSummary.retestCount || 0)}</Badge>
-            <Badge>Mer data {formatNumber(recommendationSummary.collectMoreDataCount || 0)}</Badge>
-            <Badge tone="success">Kandidater {formatNumber(recommendationSummary.promoteCandidateCount || 0)}</Badge>
-            <Badge tone="warning">Förkasta {formatNumber(recommendationSummary.rejectCount || 0)}</Badge>
-            <Badge>Väntar test {formatNumber(recommendationSummary.waitForTestCount || 0)}</Badge>
-          </div>
-        </div>
-      ) : null}
-
-      {state.error ? (
-        <div style={{
-          marginTop: 14,
-          border: '1px solid rgba(245,158,11,0.28)',
-          borderRadius: 14,
-          padding: 14,
-          color: 'var(--muted)',
-          fontSize: 13,
-          lineHeight: 1.55,
-        }}
-        >
-          <strong style={{ color: 'var(--warning)' }}>{state.error}</strong>
-          <div>Visar lugn tomstatus. Sidan fortsätter utan att krascha.</div>
-        </div>
-      ) : null}
-
-      {!state.loading && !state.error && !items.length ? (
-        <div style={{
-          marginTop: 14,
-          border: '1px dashed var(--border)',
-          borderRadius: 14,
-          padding: 16,
-          color: 'var(--muted)',
-          fontSize: 13,
-          lineHeight: 1.55,
-        }}
-        >
-          Ingen strategy evolution-data ännu. Det är väntat tills
-          <code style={{ margin: '0 4px' }}>data/research/strategy-evolution.json</code>
-          fylls av replay/batch/backtest-resultat. Systemet är fortfarande read-only här.
-        </div>
-      ) : null}
-
-      {visibleItems.length ? (
-        <div style={{ display: 'grid', gap: 12, marginTop: 16 }}>
-          {visibleItems.map((strategy) => {
-            const versions = Array.isArray(strategy?.versions) ? strategy.versions : [];
-            const latest = latestVersion(strategy);
-            return (
-              <article
-                key={strategy.strategyId || strategy.name}
-                style={{
-                  border: '1px solid var(--border)',
-                  borderRadius: 14,
-                  padding: 16,
-                  background: 'color-mix(in srgb, var(--surface) 92%, transparent)',
-                }}
-                >
-                  <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10, flexWrap: 'wrap', alignItems: 'flex-start' }}>
-                    <div>
-                      <div style={{ color: 'var(--muted)', fontSize: 11, fontWeight: 850, textTransform: 'uppercase', letterSpacing: '0.06em' }}>
-                        {strategy.strategyId || 'strategy'}
-                      </div>
-                      <h3 style={{ margin: '5px 0 6px', fontSize: 18, letterSpacing: 0 }}>{strategy.name || strategy.strategyId}</h3>
-                      <div style={{ color: 'var(--muted)', fontSize: 13 }}>
-                        Senaste version {formatNumber(latest?.version)} · {latest?.status || 'okänd status'} · beslut {latest?.decision || 'ej satt'}
-                      </div>
-                    </div>
-                    <Badge tone={scoreTone(latest?.aiScore, latest?.scoreBand)}>
-                      {latest?.aiScore === null || latest?.aiScore === undefined
-                        ? 'AI-score saknas'
-                        : `AI-score ${formatNumber(latest.aiScore)}`}
-                      {' '}
-                      · {bandLabel(latest?.scoreBand)}
-                    </Badge>
-                  </div>
-
-                  {versions.length ? (
-                    <div style={{ display: 'grid', gap: 12, marginTop: 12 }}>
-                      {versions.map((version) => {
-                        const result = version?.testResult || {};
-                        const recommendation = version?.recommendation || {};
-                        const changes = Array.isArray(recommendation.suggestedChanges) ? recommendation.suggestedChanges : [];
-                        const weaknesses = Array.isArray(recommendation.weaknesses) ? recommendation.weaknesses : [];
-                        const nextPlan = recommendation.nextTestPlan || {};
-                        return (
-                          <div
-                            key={version?.version || `${strategy.strategyId}-version`}
-                            style={{
-                              border: '1px solid var(--border)',
-                              borderRadius: 14,
-                              padding: 14,
-                              background: 'color-mix(in srgb, var(--surface) 94%, transparent)',
-                            }}
-                          >
-                            <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10, flexWrap: 'wrap', alignItems: 'flex-start' }}>
-                              <div>
-                                <div style={{ color: 'var(--muted)', fontSize: 11, fontWeight: 850, textTransform: 'uppercase', letterSpacing: '0.06em' }}>
-                                  Version {formatNumber(version?.version)}
-                                </div>
-                                <div style={{ color: 'var(--muted)', fontSize: 13, marginTop: 3 }}>
-                                  {version?.status || 'okänd status'} · beslut {version?.decision || 'ej satt'}
-                                </div>
-                              </div>
-                              <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
-                                <Badge tone={scoreTone(version?.aiScore, version?.scoreBand)}>
-                                  {version?.aiScore === null || version?.aiScore === undefined
-                                    ? 'AI-score saknas'
-                                    : `AI-score ${formatNumber(version.aiScore)}`}
-                                  {' '}
-                                  · {bandLabel(version?.scoreBand)}
-                                </Badge>
-                                <Badge tone={recommendation.recommendedAction === 'promote_candidate' ? 'success' : recommendation.recommendedAction === 'improve' || recommendation.recommendedAction === 'reject' ? 'warning' : 'info'}>
-                                  {actionLabel(recommendation.recommendedAction)}
-                                </Badge>
-                                <Badge>{priorityLabel(recommendation.priority)}</Badge>
-                                <Badge tone="info">Read-only recommendation</Badge>
-                              </div>
-                            </div>
-
-                            <div style={{
-                              display: 'grid',
-                              gridTemplateColumns: 'repeat(auto-fit, minmax(120px, 1fr))',
-                              gap: 8,
-                              marginTop: 12,
-                            }}
-                            >
-                              <MetricPill label="Winrate" value={formatPercent(result.winRate)} />
-                              <MetricPill label="Profit factor" value={formatNumber(result.profitFactor)} />
-                              <MetricPill label="Net profit" value={formatPercent(result.netProfitPct)} />
-                              <MetricPill label="Max drawdown" value={formatPercent(result.maxDrawdownPct)} />
-                              <MetricPill label="Trades" value={formatNumber(result.trades)} />
-                            </div>
-
-                            <div style={{
-                              display: 'grid',
-                              gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))',
-                              gap: 10,
-                              marginTop: 12,
-                              color: 'var(--muted)',
-                              fontSize: 13,
-                              lineHeight: 1.5,
-                            }}
-                            >
-                              <div>
-                                <strong style={{ color: 'var(--text)' }}>Reason:</strong>
-                                {' '}
-                                {recommendation.reason || 'Ingen rekommendation ännu.'}
-                              </div>
-                              <div>
-                                <strong style={{ color: 'var(--text)' }}>Next safe test:</strong>
-                                {' '}
-                                {nextPlan.type || 'replay'}
-                                {' · '}
-                                dryRun={String(nextPlan.dryRun !== false)}
-                                {' · '}
-                                execution={String(Boolean(nextPlan.execution))}
-                                {' · '}
-                                broker={String(Boolean(nextPlan.broker))}
-                                {' · '}
-                                orders={String(Boolean(nextPlan.orders))}
-                              </div>
-                            </div>
-
-                            <div style={{ display: 'grid', gap: 10, marginTop: 12 }}>
-                              <div>
-                                <div style={{ color: 'var(--text)', fontSize: 13, fontWeight: 850, marginBottom: 6 }}>
-                                  Weaknesses
-                                </div>
-                                <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
-                                  {weaknesses.length ? weaknesses.map((item) => (
-                                    <span key={`${version?.version}-${item}`} style={{
-                                      display: 'inline-flex',
-                                      alignItems: 'center',
-                                      padding: '5px 8px',
-                                      borderRadius: 999,
-                                      background: 'rgba(245,158,11,0.12)',
-                                      border: '1px solid rgba(245,158,11,0.26)',
-                                      fontSize: 12,
-                                      fontWeight: 750,
-                                    }}
-                                    >
-                                      {item}
-                                    </span>
-                                  )) : <span style={{ color: 'var(--muted)' }}>Inga tydliga svagheter ännu.</span>}
-                                </div>
-                              </div>
-
-                              <div>
-                                <div style={{ color: 'var(--text)', fontSize: 13, fontWeight: 850, marginBottom: 6 }}>
-                                  Suggested changes
-                                </div>
-                                <div style={{ display: 'grid', gap: 8 }}>
-                                  {changes.length ? changes.map((change) => (
-                                    <div key={`${version?.version}-${change.type}-${change.name}`} style={{
-                                      border: '1px solid var(--border)',
-                                      borderRadius: 12,
-                                      padding: 10,
-                                      background: 'rgba(255,255,255,0.02)',
-                                    }}
-                                    >
-                                      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
-                                        <strong style={{ color: 'var(--text)' }}>{change.name || 'Förslag'}</strong>
-                                        <Badge>{changeTypeLabel(change.type)}</Badge>
-                                      </div>
-                                      <div style={{ marginTop: 4, color: 'var(--muted)', fontSize: 13, lineHeight: 1.5 }}>
-                                        {change.why || 'Ingen förklaring sparad ännu.'}
-                                      </div>
-                                    </div>
-                                  )) : (
-                                    <div style={{ color: 'var(--muted)', fontSize: 13 }}>
-                                      Ingen rekommendation ännu.
-                                    </div>
-                                  )}
-                                </div>
-                              </div>
-
-                              <div>
-                                <div style={{ color: 'var(--text)', fontSize: 13, fontWeight: 850, marginBottom: 6 }}>
-                                  Next safe test plan
-                                </div>
-                                <div style={{
-                                  border: '1px solid var(--border)',
-                                  borderRadius: 12,
-                                  padding: 10,
-                                  background: 'rgba(34,197,94,0.06)',
-                                  color: 'var(--muted)',
-                                  fontSize: 13,
-                                  lineHeight: 1.6,
-                                }}
-                                >
-                                  <div><strong style={{ color: 'var(--text)' }}>type:</strong> {nextPlan.type || 'replay'}</div>
-                                  <div><strong style={{ color: 'var(--text)' }}>dryRun:</strong> {String(Boolean(nextPlan.dryRun))}</div>
-                                  <div><strong style={{ color: 'var(--text)' }}>execution:</strong> {String(Boolean(nextPlan.execution))}</div>
-                                  <div><strong style={{ color: 'var(--text)' }}>broker:</strong> {String(Boolean(nextPlan.broker))}</div>
-                                  <div><strong style={{ color: 'var(--text)' }}>orders:</strong> {String(Boolean(nextPlan.orders))}</div>
-                                  <div><strong style={{ color: 'var(--text)' }}>symbols:</strong> {(Array.isArray(nextPlan.symbols) && nextPlan.symbols.length ? nextPlan.symbols.join(', ') : '–')}</div>
-                                  <div><strong style={{ color: 'var(--text)' }}>timeframes:</strong> {(Array.isArray(nextPlan.timeframes) && nextPlan.timeframes.length ? nextPlan.timeframes.join(', ') : '–')}</div>
-                                  <div><strong style={{ color: 'var(--text)' }}>lookbackDays:</strong> {formatNumber(nextPlan.lookbackDays)}</div>
-                                  <div><strong style={{ color: 'var(--text)' }}>reason:</strong> {nextPlan.reason || '–'}</div>
-                                </div>
-                              </div>
-
-                              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
-                                <Badge tone="info">Read-only recommendation</Badge>
-                                <Badge>Ingen execution</Badge>
-                                <Badge>Ingen broker</Badge>
-                                <Badge>Ingen order</Badge>
-                                <Badge tone="success">Confidence {formatNumber(recommendation.confidence)}</Badge>
-                                {recommendation.blockedReason ? <Badge tone="warning">{recommendation.blockedReason}</Badge> : null}
-                              </div>
-                            </div>
-                          </div>
-                        );
-                      })}
-                    </div>
-                  ) : (
-                    <div style={{
-                      marginTop: 12,
-                      color: 'var(--muted)',
-                      fontSize: 13,
-                      lineHeight: 1.55,
-                    }}
-                    >
-                      <div><strong style={{ color: 'var(--text)' }}>Hypotes:</strong> {latest?.hypothesis || 'Ingen hypotes sparad ännu.'}</div>
-                      <div style={{ marginTop: 6 }}>
-                        <strong style={{ color: 'var(--text)' }}>Nästa förbättring:</strong>
-                        {' '}
-                        {latest?.nextImprovement || 'Väntar på mer research-data.'}
-                      </div>
-                    </div>
-                  )}
-                </article>
-              );
-          })}
-        </div>
-      ) : null}
+      {children}
     </section>
   );
 }
 
-function PipelineStep({ index, title, text }) {
+function Stat({ label, value, detail }) {
   return (
     <div style={{
-      display: 'grid',
-      gridTemplateColumns: '34px 1fr',
-      gap: 10,
-      alignItems: 'start',
-      padding: '12px 0',
-      borderTop: index === 1 ? 'none' : '1px solid var(--border)',
+      minWidth: 150,
+      flex: '1 1 150px',
+      border: '1px solid var(--border)',
+      borderRadius: 8,
+      padding: 12,
+      background: 'var(--panel)',
     }}
     >
-      <div style={{
-        width: 28,
-        height: 28,
-        borderRadius: 999,
-        display: 'grid',
-        placeItems: 'center',
-        background: 'rgba(56,189,248,0.14)',
-        border: '1px solid rgba(56,189,248,0.3)',
-        fontSize: 12,
-        fontWeight: 900,
-      }}
-      >
-        {index}
-      </div>
-      <div>
-        <div style={{ fontWeight: 850, marginBottom: 3 }}>{title}</div>
-        <div style={{ color: 'var(--muted)', fontSize: 13, lineHeight: 1.45 }}>{text}</div>
-      </div>
+      <div style={{ color: 'var(--muted)', fontSize: 12, fontWeight: 800 }}>{label}</div>
+      <div style={{ marginTop: 6, fontSize: 24, fontWeight: 900 }}>{value}</div>
+      {detail ? <div style={{ marginTop: 4, color: 'var(--muted)', fontSize: 12 }}>{detail}</div> : null}
     </div>
   );
 }
 
-export default function PinescriptPage() {
-  const theme = useThemeMode();
-  const blueprintState = usePineBlueprints();
-  const strategyEvolutionState = useStrategyEvolution();
+function EmptyState({ children }) {
+  return (
+    <div style={{
+      border: '1px dashed var(--border)',
+      borderRadius: 8,
+      padding: 16,
+      color: 'var(--muted)',
+      background: 'rgba(148,163,184,0.06)',
+    }}
+    >
+      {children}
+    </div>
+  );
+}
+
+function DataTable({ columns, rows, empty }) {
+  if (!rows?.length) return <EmptyState>{empty}</EmptyState>;
+  return (
+    <div style={{ overflowX: 'auto', border: '1px solid var(--border)', borderRadius: 8 }}>
+      <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 780 }}>
+        <thead>
+          <tr>
+            {columns.map((column) => (
+              <th key={column.key} style={{
+                textAlign: 'left',
+                padding: '10px 12px',
+                borderBottom: '1px solid var(--border)',
+                color: 'var(--muted)',
+                fontSize: 12,
+                whiteSpace: 'nowrap',
+              }}
+              >
+                {column.label}
+              </th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((row, idx) => (
+            <tr key={row.id || row.candidateId || row.pineVersionId || row.testRunId || row.evaluationId || row.validationId || idx}>
+              {columns.map((column) => (
+                <td key={column.key} style={{ padding: '10px 12px', borderBottom: '1px solid var(--border)', verticalAlign: 'top' }}>
+                  {column.render ? column.render(row) : row[column.key]}
+                </td>
+              ))}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function JsonBlock({ value }) {
+  return (
+    <pre style={{
+      margin: 0,
+      whiteSpace: 'pre-wrap',
+      wordBreak: 'break-word',
+      border: '1px solid var(--border)',
+      borderRadius: 8,
+      padding: 12,
+      maxHeight: 360,
+      overflow: 'auto',
+      background: 'rgba(2,6,23,0.24)',
+      fontSize: 12,
+    }}
+    >
+      {JSON.stringify(value || {}, null, 2)}
+    </pre>
+  );
+}
+
+function PineResearchPage() {
+  const [tab, setTab] = useState('overview');
+  const [data, setData] = useState(EMPTY);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(null);
+  const [actionStatus, setActionStatus] = useState(null);
+  const [selectedVersionId, setSelectedVersionId] = useState('');
+  const [selectedValidationId, setSelectedValidationId] = useState('');
+  const [csvForm, setCsvForm] = useState({ symbol: 'MNQ', timeframe: '5m', tradesCsv: '', performanceCsv: '' });
+
+  const load = async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      const [
+        overview,
+        config,
+        candidatesPayload,
+        versionsPayload,
+        testRunsPayload,
+        evaluationsPayload,
+        validationsPayload,
+        queuePayload,
+      ] = await Promise.all([
+        fetchJson('/api/pine-research/overview'),
+        fetchJson('/api/pine-research/config'),
+        fetchJson('/api/pine-research/candidates'),
+        fetchJson('/api/pine-research/versions'),
+        fetchJson('/api/pine-research/test-runs'),
+        fetchJson('/api/pine-research/evaluations'),
+        fetchJson('/api/pine-research/validations'),
+        fetchJson('/api/pine-research/queue'),
+      ]);
+      const next = {
+        overview,
+        config,
+        candidates: candidatesPayload.candidates || [],
+        versions: versionsPayload.versions || [],
+        testRuns: testRunsPayload.testRuns || [],
+        evaluations: evaluationsPayload.evaluations || [],
+        validations: validationsPayload.validations || [],
+        queue: queuePayload.queue || [],
+      };
+      setData(next);
+      setSelectedVersionId((current) => current || next.versions[0]?.pineVersionId || '');
+      setSelectedValidationId((current) => current || next.validations[0]?.validationId || '');
+    } catch (err) {
+      setError(friendlyError(err));
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    load();
+  }, []);
+
+  const selectedVersion = useMemo(
+    () => data.versions.find((version) => version.pineVersionId === selectedVersionId) || data.versions[0] || null,
+    [data.versions, selectedVersionId],
+  );
+  const selectedValidation = useMemo(
+    () => data.validations.find((validation) => validation.validationId === selectedValidationId) || data.validations[0] || null,
+    [data.validations, selectedValidationId],
+  );
+
+  async function mutate(label, url, body = {}) {
+    setActionStatus({ type: 'loading', message: `${label} pågår...` });
+    try {
+      const result = await fetchJson(url, { method: 'POST', body });
+      setActionStatus({ type: 'success', message: `${label} klart. Status hämtas om från backend.` });
+      await load();
+      return result;
+    } catch (err) {
+      setActionStatus({ type: 'error', message: friendlyError(err), detail: err?.data?.error || err?.message });
+      return null;
+    }
+  }
+
+  const summary = data.overview.summary || {};
+  const provider = data.config.provider || data.overview.provider || {};
+  const safety = data.config.safety || data.overview.safety || {};
 
   return (
-    <DashboardShell
-      title="PineScript"
-      subtitle="Automatisk research-loop för strategi- och Pine-versioner, replay, batch och validering. Export och visualisering – aldrig execution eller orderflöde."
-      safety={PINE_SAFETY}
-    >
-    <main className="page" style={{ width: '100%', maxWidth: 1180, margin: '0 auto', padding: '0 0 40px' }}>
-      <section style={{
-        display: 'grid',
-        gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 320px), 1fr))',
-        gap: 16,
-        marginBottom: 18,
-      }}
-      >
-        <div style={{
-          border: '1px solid var(--border)',
-          borderRadius: 18,
-          padding: 20,
-          background: 'var(--surface)',
-        }}
-        >
-          <div style={{ color: 'var(--muted)', fontSize: 12, fontWeight: 900, textTransform: 'uppercase', letterSpacing: '0.08em' }}>
-            Pipeline
+    <DashboardShell>
+      <main style={{ padding: '24px clamp(14px, 3vw, 32px)', maxWidth: 1440, margin: '0 auto' }}>
+        <header style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 16, flexWrap: 'wrap', marginBottom: 18 }}>
+          <div>
+            <h1 style={{ margin: 0, fontSize: 'clamp(26px, 3vw, 38px)' }}>PineScript Research Factory</h1>
+            <p style={{ margin: '8px 0 0', color: 'var(--muted)', maxWidth: 860 }}>
+              Trading OS skapar research-kandidater, Pine v6-versioner, isolerade testplaner, AI-utvärderingar och TradingView-valideringar. Allt här är paper/replay-only.
+            </p>
           </div>
-          <h2 style={{ margin: '6px 0 10px', fontSize: 22, letterSpacing: 0 }}>
-            AI utvecklar, Trading OS testar
-          </h2>
-          <PipelineStep
-            index={1}
-            title="AI skapar version"
-            text="Systemet tar fram strategi- och PineScript-varianter från befintliga regler, signaler och learning."
-          />
-          <PipelineStep
-            index={2}
-            title="Replay, batch och backtest körs automatiskt"
-            text="Trading OS mäter versionerna i den interna testmotorn innan något markeras som lovande."
-          />
-          <PipelineStep
-            index={3}
-            title="Resultat analyseras"
-            text="AI-score väger winrate, profit factor, net profit %, max drawdown, antal trades, stabilitet och risk/reward."
-          />
-          <PipelineStep
-            index={4}
-            title="Svaga versioner förbättras"
-            text="Om score är för lågt skapas en ny version och testloopen upprepas."
-          />
-          <PipelineStep
-            index={5}
-            title="Lovande först vid 70-80+ AI-score"
-            text="70-80+ betyder samlad AI-score av 100, inte bara winrate. Strategin ska vara robust över perioder, symboler och timeframes."
-          />
-        </div>
-
-        <div style={{
-          border: '1px solid var(--border)',
-          borderRadius: 18,
-          padding: 20,
-          background: 'var(--surface)',
-        }}
-        >
-          <div style={{ color: 'var(--muted)', fontSize: 12, fontWeight: 900, textTransform: 'uppercase', letterSpacing: '0.08em' }}>
-            Roll
+          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
+            <Badge tone="success">paper/replay-only</Badge>
+            <Badge tone={provider.configured ? 'success' : 'warning'}>{provider.provider || 'provider'} · {provider.model || 'model saknas'}</Badge>
+            <button type="button" onClick={load} style={buttonStyle()}>Hämta om</button>
           </div>
-          <h2 style={{ margin: '6px 0 10px', fontSize: 22, letterSpacing: 0 }}>
-            PineScript är inte testmotorn
-          </h2>
-          <p style={{ margin: 0, color: 'var(--muted)', fontSize: 13, lineHeight: 1.6 }}>
-            TradingView/PineScript används som export- och valideringsyta. Den automatiska
-            research-loopen körs i Trading OS, där resultat och learning kan jämföras innan
-            en version anses stark nog.
-          </p>
-          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginTop: 14 }}>
-            <Badge tone="info">Systemet testar själv</Badge>
-            <Badge>Ingen TradingView-forwarding</Badge>
-            <Badge>Ingen broker</Badge>
-            <Badge>Ingen riskändring</Badge>
+        </header>
+
+        <nav style={{ display: 'flex', gap: 8, overflowX: 'auto', paddingBottom: 12, marginBottom: 12 }}>
+          {TABS.map(([key, label]) => (
+            <button key={key} type="button" onClick={() => setTab(key)} style={tabStyle(tab === key)}>
+              {label}
+            </button>
+          ))}
+        </nav>
+
+        {loading ? <EmptyState>Laddar Pine Research Factory...</EmptyState> : null}
+        {error ? <EmptyState>{error}</EmptyState> : null}
+        {actionStatus ? (
+          <div style={{
+            border: '1px solid var(--border)',
+            borderRadius: 8,
+            padding: 12,
+            marginBottom: 14,
+            background: actionStatus.type === 'error' ? 'rgba(239,68,68,0.12)' : 'rgba(56,189,248,0.10)',
+          }}
+          >
+            <strong>{actionStatus.message}</strong>
+            {actionStatus.detail ? <div style={{ marginTop: 4, color: 'var(--muted)', fontSize: 12 }}>Teknisk detalj: {actionStatus.detail}</div> : null}
           </div>
-        </div>
-      </section>
+        ) : null}
 
-      <section style={{
-        display: 'grid',
-        gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))',
-        gap: 12,
-        marginBottom: 18,
-      }}
-      >
-        <ResearchCard title="AI skapar versioner" meta="Steg 1">
-          Nya strategi- och Pine-versioner ska genereras från befintlig strategi-logik,
-          replay-resultat och learning.
-        </ResearchCard>
-        <ResearchCard title="Systemet testar" meta="Steg 2">
-          Batch, replay och backtest ska köras av Trading OS. Användaren ska inte behöva
-          testa manuellt i TradingView.
-        </ResearchCard>
-        <ResearchCard title="AI förbättrar" meta="Steg 3">
-          Svaga versioner ska få justerade regler, filter eller risk/reward-antaganden och
-          sedan testas igen.
-        </ResearchCard>
-        <ResearchCard title="70-80+ AI-score krävs" meta="Gate">
-          En strategi blir lovande först när total score är hög nog och stabil över flera
-          marknader, timeframes och perioder.
-        </ResearchCard>
-      </section>
+        {tab === 'overview' ? (
+          <>
+            <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', marginBottom: 18 }}>
+              <Stat label="Strategier AI undersöker" value={formatNumber(summary.candidates || 0)} />
+              <Stat label="Pine-versioner" value={formatNumber(summary.versions || 0)} />
+              <Stat label="Testkörningar" value={formatNumber(summary.testRuns || 0)} detail={`${formatNumber(summary.runningTests || 0)} körs`} />
+              <Stat label="AI-utvärderingar" value={formatNumber(summary.evaluations || 0)} />
+              <Stat label="TradingView-valideringar" value={formatNumber(summary.validations || 0)} />
+            </div>
+            <Section
+              title="Researchläge"
+              actions={<button type="button" onClick={() => mutate('Skapa ORB-pilot', '/api/pine-research/candidates', { pilot: true })} style={buttonStyle('primary')}>Skapa ORB-pilot</button>}
+            >
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(260px, 1fr))', gap: 12 }}>
+                <div>
+                  <h3 style={smallHeadingStyle}>Bästa kandidat</h3>
+                  {data.overview.bestCandidate ? <JsonBlock value={data.overview.bestCandidate} /> : <EmptyState>Ingen kandidat har score-satts ännu.</EmptyState>}
+                </div>
+                <div>
+                  <h3 style={smallHeadingStyle}>Nästa rekommenderade experiment</h3>
+                  {data.overview.nextRecommendedExperiment ? <JsonBlock value={data.overview.nextRecommendedExperiment} /> : <EmptyState>Ingen AI-rekommendation finns ännu.</EmptyState>}
+                </div>
+                <div>
+                  <h3 style={smallHeadingStyle}>Varningar</h3>
+                  {(data.overview.dataQualityWarnings || []).length ? (
+                    <ul style={listStyle}>{data.overview.dataQualityWarnings.map((item) => <li key={item}>{item}</li>)}</ul>
+                  ) : <EmptyState>Inga datakvalitetsvarningar har registrerats.</EmptyState>}
+                </div>
+              </div>
+            </Section>
+            <Section title="Safety">
+              <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                <Badge tone={safety.mode === 'paper_only' ? 'success' : 'danger'}>mode={safety.mode || 'paper_only'}</Badge>
+                <Badge tone={safety.actions_allowed === false ? 'success' : 'danger'}>actions_allowed=false</Badge>
+                <Badge tone={safety.can_place_orders === false ? 'success' : 'danger'}>can_place_orders=false</Badge>
+                <Badge tone={safety.live_trading_enabled === false ? 'success' : 'danger'}>live_trading_enabled=false</Badge>
+                <Badge tone={safety.broker_enabled === false ? 'success' : 'danger'}>broker_enabled=false</Badge>
+              </div>
+            </Section>
+          </>
+        ) : null}
 
-      {blueprintState.loading && !blueprintState.data ? (
-        <section style={{ border: '1px solid var(--border)', borderRadius: 14, padding: 18, marginBottom: 18, background: 'var(--surface)' }}>
-          Hämtar PineScript-blueprints...
-        </section>
-      ) : null}
+        {tab === 'queue' ? (
+          <>
+            <Section
+              title="Forskningskö"
+              actions={(
+                <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                  <button type="button" onClick={() => mutate('Preview round', '/api/pine-research/loop/preview', { candidateId: data.candidates[0]?.candidateId })} style={buttonStyle()}>Preview</button>
+                  <button type="button" onClick={() => mutate('Begränsad round', '/api/pine-research/loop/run-round', { ensurePilot: true, runAi: false })} style={buttonStyle('primary')}>Starta begränsad round</button>
+                </div>
+              )}
+            >
+              <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1fr) minmax(260px, 420px)', gap: 12 }}>
+                <DataTable
+                  rows={data.queue}
+                  empty="Forskningskön är tom."
+                  columns={[
+                    { key: 'candidateId', label: 'Kandidat' },
+                    { key: 'status', label: 'Status', render: (row) => <Badge tone={toneForStatus(row.status)}>{row.status || 'queued'}</Badge> },
+                    { key: 'blockedReason', label: 'Blockerad av' },
+                  ]}
+                />
+                <div>
+                  <h3 style={smallHeadingStyle}>Budget</h3>
+                  <JsonBlock value={data.config.budget} />
+                </div>
+              </div>
+            </Section>
+          </>
+        ) : null}
 
-      {blueprintState.error ? (
-        <section style={{ border: '1px solid rgba(245,158,11,0.28)', borderRadius: 14, padding: 18, marginBottom: 18, background: 'var(--surface)' }}>
-          <strong style={{ color: 'var(--warning)' }}>{blueprintState.error}</strong>
-          <div style={{ marginTop: 6, color: 'var(--muted)', fontSize: 13 }}>
-            Visar fallback-data om sådan finns. Ingen backend- eller execution-väg ändras.
-          </div>
-        </section>
-      ) : null}
+        {tab === 'strategies' ? (
+          <Section title="Strategier">
+            <DataTable
+              rows={data.candidates}
+              empty="Inga research-kandidater finns ännu."
+              columns={[
+                { key: 'baseStrategyId', label: 'Originalstrategi' },
+                { key: 'strategyName', label: 'Namn' },
+                { key: 'hypothesis', label: 'Hypotes' },
+                { key: 'status', label: 'Status', render: (row) => <Badge tone={toneForStatus(row.status)}>{row.status}</Badge> },
+                { key: 'versions', label: 'Versioner', render: (row) => data.versions.filter((version) => version.candidateId === row.candidateId).length },
+                { key: 'next', label: 'Nästa steg', render: (row) => data.evaluations.find((evaluation) => evaluation.candidateId === row.candidateId)?.nextAction || 'Väntar data' },
+              ]}
+            />
+          </Section>
+        ) : null}
 
-      <StrategyEvolutionPanel state={strategyEvolutionState} />
-      <TradingViewTestBlueprintPanel data={blueprintState.data} theme={theme} />
-      <TradingViewTestResultsPanel theme={theme} />
-    </main>
+        {tab === 'versions' ? (
+          <>
+            <Section
+              title="Versioner"
+              actions={(
+                <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                  <select value={selectedVersion?.pineVersionId || ''} onChange={(event) => setSelectedVersionId(event.target.value)} style={inputStyle}>
+                    {data.versions.map((version) => <option key={version.pineVersionId} value={version.pineVersionId}>{version.pineVersionId}</option>)}
+                  </select>
+                  <button type="button" disabled={!selectedVersion} onClick={() => mutate('Generera Pine', '/api/pine-research/versions/generate', { pineVersionId: selectedVersion?.pineVersionId })} style={buttonStyle()}>Generera Pine</button>
+                  <button type="button" disabled={!selectedVersion} onClick={() => mutate('Statisk validering', `/api/pine-research/versions/${selectedVersion?.pineVersionId}/validate`, {})} style={buttonStyle()}>Validera</button>
+                  {selectedVersion ? <a href={`/api/pine-research/export/${selectedVersion.pineVersionId}`} target="_blank" rel="noreferrer" style={linkButtonStyle}>Exportera Pine</a> : null}
+                </div>
+              )}
+            >
+              {selectedVersion ? (
+                <div style={{ display: 'grid', gridTemplateColumns: 'minmax(280px, 0.9fr) minmax(320px, 1.1fr)', gap: 12 }}>
+                  <div>
+                    <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 10 }}>
+                      <Badge tone={toneForStatus(selectedVersion.status)}>{selectedVersion.status}</Badge>
+                      <Badge tone={toneForStatus(selectedVersion.compileStatus)}>{selectedVersion.compileStatus}</Badge>
+                      <Badge>{selectedVersion.direction}</Badge>
+                    </div>
+                    <JsonBlock value={{
+                      parentVersionId: selectedVersion.parentVersionId,
+                      changeSummary: selectedVersion.changeSummary,
+                      parameters: selectedVersion.parameters,
+                      sourceHash: selectedVersion.sourceHash,
+                      parameterHash: selectedVersion.parameterHash,
+                      warnings: selectedVersion.validationWarnings,
+                      compileErrors: selectedVersion.compileErrors,
+                      reviewStatus: selectedVersion.reviewStatus,
+                    }}
+                    />
+                  </div>
+                  <pre style={{
+                    margin: 0,
+                    whiteSpace: 'pre',
+                    overflow: 'auto',
+                    minHeight: 420,
+                    maxHeight: 620,
+                    border: '1px solid var(--border)',
+                    borderRadius: 8,
+                    padding: 12,
+                    background: 'rgba(2,6,23,0.28)',
+                    fontSize: 12,
+                  }}
+                  >
+                    {selectedVersion.sourceCode || 'Ingen Pine-kod har genererats för versionen ännu.'}
+                  </pre>
+                </div>
+              ) : <EmptyState>Inga Pine-versioner har skapats ännu.</EmptyState>}
+            </Section>
+          </>
+        ) : null}
+
+        {tab === 'tests' ? (
+          <Section
+            title="Tester"
+            actions={(
+              <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                <button type="button" disabled={!selectedVersion} onClick={() => mutate('Skapa testpreview', '/api/pine-research/test-runs/preview', { pineVersionId: selectedVersion?.pineVersionId })} style={buttonStyle()}>Preview testplan</button>
+                <button type="button" disabled={!selectedVersion} onClick={() => mutate('Kör isolerad testplan', '/api/pine-research/test-runs/run', { pineVersionId: selectedVersion?.pineVersionId })} style={buttonStyle('primary')}>Kör isolerat</button>
+              </div>
+            )}
+          >
+            <DataTable
+              rows={data.testRuns}
+              empty="Inga interna testkörningar finns ännu."
+              columns={[
+                { key: 'pineVersionId', label: 'Version' },
+                { key: 'engine', label: 'Motor' },
+                { key: 'symbol', label: 'Symbol' },
+                { key: 'timeframe', label: 'Timeframe' },
+                { key: 'direction', label: 'Riktning' },
+                { key: 'status', label: 'Status', render: (row) => <Badge tone={toneForStatus(row.status)}>{row.status}</Badge> },
+                { key: 'parityStatus', label: 'Paritet', render: (row) => <Badge tone={toneForStatus(row.parityStatus)}>{row.parityStatus}</Badge> },
+                { key: 'tradeCount', label: 'Trades', render: (row) => formatNumber(row.tradeCount) },
+                { key: 'winRate', label: 'Win rate', render: (row) => formatPercent(row.metrics?.winRate) },
+                { key: 'profitFactor', label: 'PF', render: (row) => formatNumber(row.metrics?.profitFactor) },
+                { key: 'drawdown', label: 'DD', render: (row) => formatNumber(row.metrics?.maxDrawdown) },
+                { key: 'blockedReason', label: 'Blockerad av' },
+              ]}
+            />
+          </Section>
+        ) : null}
+
+        {tab === 'ai' ? (
+          <Section
+            title="AI-utvärdering"
+            actions={(
+              <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                <button type="button" disabled={!selectedVersion} onClick={() => mutate('AI-utvärdering', '/api/pine-research/evaluations/run', { pineVersionId: selectedVersion?.pineVersionId })} style={buttonStyle('primary')}>Kör OpenAI-utvärdering</button>
+                <button type="button" disabled={!selectedVersion} onClick={() => mutate('Deterministisk utvärdering', '/api/pine-research/evaluations/run', { pineVersionId: selectedVersion?.pineVersionId, providerMode: 'deterministic' })} style={buttonStyle()}>Lokal fallback</button>
+              </div>
+            )}
+          >
+            <DataTable
+              rows={data.evaluations}
+              empty="OpenAI-utvärdering har ännu inte körts."
+              columns={[
+                { key: 'pineVersionId', label: 'Version' },
+                { key: 'verdict', label: 'Verdict', render: (row) => <Badge tone={toneForStatus(row.verdict)}>{row.verdict}</Badge> },
+                { key: 'score', label: 'Score', render: (row) => formatNumber(row.score) },
+                { key: 'nextAction', label: 'Nästa action', render: (row) => <Badge>{row.nextAction}</Badge> },
+                { key: 'confidence', label: 'Confidence', render: (row) => formatPercent(Number(row.confidence) * 100) },
+                { key: 'provider', label: 'Provider', render: (row) => `${row.modelProvider}/${row.modelName}` },
+                { key: 'weaknesses', label: 'Svagheter', render: (row) => (row.weaknesses || []).join(', ') || '–' },
+                { key: 'changes', label: 'Rekommenderade ändringar', render: (row) => (row.recommendedChanges || []).map((change) => `${change.field}:${change.operation}`).join(', ') || '–' },
+              ]}
+            />
+          </Section>
+        ) : null}
+
+        {tab === 'tradingview' ? (
+          <Section
+            title="TradingView-validering"
+            actions={(
+              <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                <button
+                  type="button"
+                  disabled={!selectedVersion}
+                  onClick={() => mutate('Importera TradingView CSV', '/api/pine-research/tradingview/import', {
+                    pineVersionId: selectedVersion?.pineVersionId,
+                    symbol: csvForm.symbol,
+                    timeframe: csvForm.timeframe,
+                    tradesCsv: csvForm.tradesCsv,
+                    performanceCsv: csvForm.performanceCsv,
+                  })}
+                  style={buttonStyle('primary')}
+                >
+                  Importera CSV
+                </button>
+                <button
+                  type="button"
+                  disabled={!selectedValidation}
+                  onClick={() => mutate('Jämför TradingView mot intern körning', '/api/pine-research/tradingview/compare', { validationId: selectedValidation?.validationId })}
+                  style={buttonStyle()}
+                >
+                  Jämför
+                </button>
+              </div>
+            )}
+          >
+            <div style={{ display: 'grid', gridTemplateColumns: 'minmax(280px, 420px) minmax(0, 1fr)', gap: 12 }}>
+              <div style={{ display: 'grid', gap: 8 }}>
+                <select value={selectedVersion?.pineVersionId || ''} onChange={(event) => setSelectedVersionId(event.target.value)} style={inputStyle}>
+                  {data.versions.map((version) => <option key={version.pineVersionId} value={version.pineVersionId}>{version.pineVersionId}</option>)}
+                </select>
+                <input value={csvForm.symbol} onChange={(event) => setCsvForm((prev) => ({ ...prev, symbol: event.target.value }))} placeholder="Symbol" style={inputStyle} />
+                <input value={csvForm.timeframe} onChange={(event) => setCsvForm((prev) => ({ ...prev, timeframe: event.target.value }))} placeholder="Timeframe" style={inputStyle} />
+                <textarea value={csvForm.tradesCsv} onChange={(event) => setCsvForm((prev) => ({ ...prev, tradesCsv: event.target.value }))} placeholder="TradingView trades CSV" style={textareaStyle} />
+                <textarea value={csvForm.performanceCsv} onChange={(event) => setCsvForm((prev) => ({ ...prev, performanceCsv: event.target.value }))} placeholder="TradingView performance CSV" style={textareaStyle} />
+              </div>
+              <DataTable
+                rows={data.validations}
+                empty="Ingen TradingView-validering har importerats."
+                columns={[
+                  { key: 'pineVersionId', label: 'Version' },
+                  { key: 'symbol', label: 'Symbol' },
+                  { key: 'timeframe', label: 'Timeframe' },
+                  { key: 'validationStatus', label: 'Status', render: (row) => <Badge tone={toneForStatus(row.validationStatus)}>{row.validationStatus}</Badge> },
+                  { key: 'tradeCount', label: 'TV trades', render: (row) => formatNumber(row.tradingViewMetrics?.tradeCount) },
+                  { key: 'netPnl', label: 'TV net', render: (row) => formatNumber(row.tradingViewMetrics?.netPnl) },
+                  { key: 'warnings', label: 'Varningar', render: (row) => (row.warnings || []).join(', ') || '–' },
+                ]}
+              />
+            </div>
+          </Section>
+        ) : null}
+
+        {tab === 'tech' ? (
+          <Section title="Teknik">
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(260px, 1fr))', gap: 12 }}>
+              <div>
+                <h3 style={smallHeadingStyle}>Provider</h3>
+                <JsonBlock value={provider} />
+              </div>
+              <div>
+                <h3 style={smallHeadingStyle}>Store</h3>
+                <JsonBlock value={data.config.store || data.overview.store} />
+              </div>
+              <div>
+                <h3 style={smallHeadingStyle}>Adapters</h3>
+                <JsonBlock value={data.config.adapters} />
+              </div>
+              <div>
+                <h3 style={smallHeadingStyle}>Safety flags</h3>
+                <JsonBlock value={safety} />
+              </div>
+            </div>
+          </Section>
+        ) : null}
+      </main>
     </DashboardShell>
   );
 }
+
+const smallHeadingStyle = {
+  margin: '0 0 8px',
+  fontSize: 14,
+  color: 'var(--muted)',
+  fontWeight: 900,
+};
+
+const listStyle = {
+  margin: 0,
+  paddingLeft: 18,
+  color: 'var(--text)',
+};
+
+const inputStyle = {
+  minHeight: 38,
+  border: '1px solid var(--border)',
+  borderRadius: 8,
+  background: 'var(--panel)',
+  color: 'var(--text)',
+  padding: '8px 10px',
+};
+
+const textareaStyle = {
+  ...inputStyle,
+  minHeight: 130,
+  resize: 'vertical',
+  fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace',
+  fontSize: 12,
+};
+
+function buttonStyle(tone = 'neutral') {
+  return {
+    minHeight: 38,
+    border: '1px solid var(--border)',
+    borderRadius: 8,
+    background: tone === 'primary' ? 'rgba(56,189,248,0.18)' : 'var(--panel)',
+    color: 'var(--text)',
+    padding: '8px 12px',
+    fontWeight: 800,
+    cursor: 'pointer',
+    whiteSpace: 'nowrap',
+  };
+}
+
+const linkButtonStyle = {
+  ...buttonStyle(),
+  display: 'inline-flex',
+  alignItems: 'center',
+  textDecoration: 'none',
+};
+
+function tabStyle(active) {
+  return {
+    ...buttonStyle(active ? 'primary' : 'neutral'),
+    borderColor: active ? 'rgba(56,189,248,0.6)' : 'var(--border)',
+  };
+}
+
+export default PineResearchPage;
