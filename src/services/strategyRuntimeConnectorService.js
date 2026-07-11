@@ -139,6 +139,25 @@ function isRealTradeCandidateSignal(signal = {}) {
   );
 }
 
+// FAS C mapping-fix: signaler som ALDRIG får mappas till en strategi.
+// Returnerar en stabil blocked_reason_code, eller null när signalen är
+// mappningsbar. UNKNOWN/NO_TRADE/LATE_MOVE_BLOCK är brus-/blocksignaler,
+// och crypto-VWAP saknar eget strategy contract (crypto_momentum_scalper får
+// bara matchas av sitt verifierade contract: REGULAR_PULLBACK + full context).
+function nonMappableSignalReason(signal = {}, raw = rawSignalOf(signal)) {
+  const family = upper(signal.signalFamily || '');
+  if (raw === 'NO_TRADE') return 'no_trade_signal';
+  if (raw === 'LATE_MOVE_BLOCK' || family === 'LATE_MOVE_BLOCK') return 'late_move_block';
+  if (raw === 'UNKNOWN') return 'unknown_signal_mapping';
+  const isCrypto = marketOf(signal) === 'crypto' || String(signal.symbol || '').toUpperCase().endsWith('USDT');
+  if (isCrypto && (raw === 'VWAP_RECLAIM_UP' || raw === 'VWAP_REJECTION_DOWN')) {
+    return cryptoSignalContextOf(signal)
+      ? 'unknown_signal_mapping'
+      : 'runtime_partial_missing_crypto_signal_context';
+  }
+  return null;
+}
+
 function resolveStrategyMetadata(signal = {}, options = {}) {
   const allowLegacyFallback = options.allowLegacyFallback !== false;
   const raw = rawSignalOf(signal);
@@ -191,6 +210,15 @@ function resolveStrategyMetadata(signal = {}, options = {}) {
   }
 
   if (isSystemInfoSignal(signal)) {
+    return metadata;
+  }
+
+  // FAS C: brus-/blocksignaler och contract-lösa crypto-VWAP-signaler får
+  // aldrig nå keyword-/legacy-inferensen — de förblir omappade med stabil
+  // reason så att runtime blockerar ärligt i stället för att felattribuera.
+  const nonMappableReasonCode = nonMappableSignalReason(signal, raw);
+  if (nonMappableReasonCode) {
+    metadata.nonMappableReasonCode = nonMappableReasonCode;
     return metadata;
   }
 
@@ -437,28 +465,12 @@ function getRuntimeStrategyMap() {
       market: 'stocks',
       comment_sv: 'Aktie/ETF-VWAP short är kopplad till paper-runtime.',
     }),
-    runtimeEntry({
-      raw_signal: 'VWAP_RECLAIM_UP',
-      strategy_id: 'crypto_momentum_scalper',
-      strategy_family: 'Crypto VWAP',
-      runtime_status: 'partial',
-      direction: 'UP',
-      mapping_confidence: 'medium',
-      can_create_paper_trade: 'partial',
-      market: 'crypto',
-      comment_sv: 'Krypto-VWAP sparas med rå VWAP-signal men katalogkopplas till Crypto Momentum Scalper.',
-    }),
-    runtimeEntry({
-      raw_signal: 'VWAP_REJECTION_DOWN',
-      strategy_id: 'crypto_momentum_scalper',
-      strategy_family: 'Crypto VWAP',
-      runtime_status: 'partial',
-      direction: 'DOWN',
-      mapping_confidence: 'medium',
-      can_create_paper_trade: 'partial',
-      market: 'crypto',
-      comment_sv: 'Krypto-VWAP sparas med rå VWAP-signal men katalogkopplas till Crypto Momentum Scalper.',
-    }),
+    // OBS: crypto-VWAP har medvetet INGEN map-post längre (FAS C mapping-fix).
+    // De katalogkopplades tidigare till crypto_momentum_scalper trots att
+    // scalperns verifierade signal contract är REGULAR_PULLBACK + full crypto
+    // context — det gjorde scalpern till catch-all. Crypto-VWAP utan eget
+    // strategy contract blockeras nu i resolveStrategyMetadata med stabil
+    // blocked_reason_code i stället för att felattribueras.
     runtimeEntry({
       raw_signal: 'NARROW_WAIT',
       strategy_id: 'narrow_breakout',
@@ -598,6 +610,16 @@ function inferStrategyForSignal(signal = {}) {
     const metadata = resolveStrategyMetadata(signal, { allowLegacyFallback: true });
     strategyId = metadata.resolvedStrategyId;
     if (!strategyId) {
+      // FAS C: stabil blocked_reason_code för omappade signaler så att
+      // canCreatePaperTradeForSignal och eventloggen kan blockera ärligt.
+      const unmappedReasonCode = metadata.nonMappableReasonCode || 'unknown_signal_mapping';
+      const unmappedReasonSv = unmappedReasonCode === 'no_trade_signal'
+        ? 'NO_TRADE är en brussignal och mappas aldrig till en strategi.'
+        : unmappedReasonCode === 'late_move_block'
+          ? 'LATE_MOVE_BLOCK är en blocksignal och mappas aldrig till en strategi.'
+          : unmappedReasonCode === 'runtime_partial_missing_crypto_signal_context'
+            ? 'Crypto-VWAP saknar strategy-specifikt crypto signal context — ingen fallback-mapping.'
+            : 'Ingen säker runtime-mapping finns. Strategin markeras som ej kopplad.';
       return {
         raw_strategy: raw,
         signal_subtype: raw,
@@ -618,8 +640,11 @@ function inferStrategyForSignal(signal = {}) {
         connected: false,
         entry_rule_implemented: false,
         enabled_by_user: false,
-        runtime_comment_sv: 'Ingen säker runtime-mapping finns. Strategin markeras som ej kopplad.',
-        comment_sv: 'Ingen säker runtime-mapping finns. Strategin markeras som ej kopplad.',
+        blocked_reason_code: unmappedReasonCode,
+        skip_reason_sv: unmappedReasonSv,
+        reason_sv: unmappedReasonSv,
+        runtime_comment_sv: unmappedReasonSv,
+        comment_sv: unmappedReasonSv,
         crypto_signal_context: cryptoSignalContextOf(signal),
         crypto_context: cryptoSignalContextOf(signal),
         source: 'strategy_runtime_connector_v2',
@@ -1214,7 +1239,10 @@ function strategyIdFromKeywords(signal = {}) {
 
   if (market === 'crypto' || symbol.endsWith('USDT')) {
     if (raw.includes('FAST_MOMENTUM')) return 'crypto_fast_momentum';
-    return 'crypto_momentum_scalper';
+    // FAS C: crypto_momentum_scalper endast vid uttrycklig contract-match —
+    // aldrig som generisk catch-all för omatchade crypto-signaler.
+    if (raw.includes('MOMENTUM_SCALPER') || raw.includes('CRYPTO_MOMENTUM')) return 'crypto_momentum_scalper';
+    return null;
   }
 
   if (raw.includes('VOLUME_SPIKE')) {

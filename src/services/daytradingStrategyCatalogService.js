@@ -1139,7 +1139,14 @@ function inferStrategyForSignal(signal = {}) {
   const sig = String(signal.signal || '').toUpperCase();
   const marketType = String(signal.marketType || signal.market || '').toLowerCase();
 
-  if (marketType === 'crypto' || symbol.endsWith('USDT')) return getStrategyById('crypto_momentum_scalper');
+  // FAS C: ingen generisk crypto-catch-all. crypto_momentum_scalper får bara
+  // returneras när signalen uttryckligen matchar dess eget contract — okända
+  // crypto-signaler förblir omappade (null) så runtime blockerar med reason.
+  if (marketType === 'crypto' || symbol.endsWith('USDT')) {
+    if (subtype.includes('FAST_MOMENTUM')) return getStrategyById('crypto_fast_momentum');
+    if (subtype.includes('MOMENTUM_SCALPER') || subtype.includes('CRYPTO_MOMENTUM')) return getStrategyById('crypto_momentum_scalper');
+    return null;
+  }
   if (subtype.includes('VWAP_RECLAIM') || (family.includes('VWAP') && sig.includes('LONG'))) return getStrategyById('vwap_volume_breakout_long');
   if (subtype.includes('VWAP_REJECTION') || (family.includes('VWAP') && sig.includes('SHORT'))) return getStrategyById('vwap_failed_breakout_short');
   if (subtype.includes('EMA_PULLBACK')) return getStrategyById('ema_pullback_continuation');

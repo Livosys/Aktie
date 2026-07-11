@@ -117,11 +117,16 @@ assert.ok(vwapVolLong.warnings.includes('approval_mismatch'));
 assert.ok(vwapShort.warnings.includes('paper_short_leak'));
 assert.ok(vwapShort.warnings.includes('short_only_strategy'));
 
-// 16. crypto_momentum_scalper får catch-all/missing-context.
+// 16. crypto_momentum_scalper: missing-context kvarstår men catch-all-mapping
+// är borta sedan FAS C-mappingfixen — UNKNOWN/NO_TRADE/crypto-VWAP routas inte
+// längre till scalpern, så varningen får INTE återkomma.
 const cryptoScalper = byId.get('crypto_momentum_scalper');
 assert.equal(cryptoScalper.readiness, svc.READINESS.NEEDS_RUNTIME_CONNECTOR);
-assert.ok(cryptoScalper.warnings.includes('catch_all_mapping_risk'));
+assert.ok(!cryptoScalper.warnings.includes('catch_all_mapping_risk'),
+  'catch_all_mapping_risk ska vara borta efter FAS C mapping-fixen');
 assert.ok(cryptoScalper.missingContext.includes('crypto_signal_context'));
+assert.equal(cryptoScalper.producerStatus, 'none',
+  'scalpern får inte krediteras som producent via catch-all');
 
 // 17. Dublettstrategier klassas UNSUPPORTED.
 assert.equal(byId.get('narrow_breakout_v1').readiness, svc.READINESS.UNSUPPORTED);

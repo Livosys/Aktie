@@ -100,7 +100,12 @@ resetState();
   // Kända mönster ska fortsatt mappas som förut.
   assert.equal(catalog.inferStrategyForSignal({ symbol: 'QQQ', signalSubtype: 'VWAP_RECLAIM_UP', marketType: 'stocks' })?.id, 'vwap_volume_breakout_long', 'VWAP reclaim mappas fortfarande');
   assert.equal(catalog.inferStrategyForSignal({ symbol: 'QQQ', signalFamily: 'NARROW_STATE', marketType: 'stocks' })?.id, 'narrow_breakout', 'narrow mappas fortfarande');
-  assert.equal(catalog.inferStrategyForSignal({ symbol: 'BTCUSDT', marketType: 'crypto' })?.id, 'crypto_momentum_scalper', 'crypto mappas fortfarande');
+
+  // FAS C: ingen generisk crypto-catch-all — enbart marketType=crypto/USDT
+  // utan uttrycklig contract-signal ska INTE mappas till crypto_momentum_scalper.
+  assert.equal(catalog.inferStrategyForSignal({ symbol: 'BTCUSDT', marketType: 'crypto' }), null, 'bar crypto-signal utan contract mappas inte');
+  assert.equal(catalog.inferStrategyForSignal({ symbol: 'BTCUSDT', marketType: 'crypto', signalSubtype: 'CRYPTO_MOMENTUM_SCALPER' })?.id, 'crypto_momentum_scalper', 'uttrycklig scalper-contract mappas fortfarande');
+  assert.equal(catalog.inferStrategyForSignal({ symbol: 'BTCUSDT', marketType: 'crypto', signalSubtype: 'CRYPTO_FAST_MOMENTUM' })?.id, 'crypto_fast_momentum', 'uttrycklig fast-momentum-contract mappas fortfarande');
 }
 
 console.log('Daytrading strategy catalog tests passed.');
