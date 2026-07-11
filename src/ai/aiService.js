@@ -48,8 +48,7 @@ async function askAi({ question, page, symbol, context }) {
       { role: 'system', content: SYSTEM_PROMPT },
       { role: 'user', content: buildUserPrompt({ question, page, symbol, context }) },
     ],
-    temperature: 0.2,
-    max_tokens: 700,
+    max_completion_tokens: 700,
   }, {
     timeout: timeoutMs,
     headers: {

@@ -377,8 +377,7 @@ async function callOpenAi(context) {
       { role: 'system', content: SYSTEM_PROMPT },
       { role: 'user', content: JSON.stringify(context, null, 2) },
     ],
-    temperature: 0.1,
-    max_tokens: 900,
+    max_completion_tokens: 900,
   }, {
     timeout: timeoutMs(),
     headers: {

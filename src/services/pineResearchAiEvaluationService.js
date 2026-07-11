@@ -166,8 +166,7 @@ async function callOpenAi(input, options = {}) {
   const baseUrl = process.env.AI_ANALYST_BASE_URL || process.env.AI_BASE_URL || DEFAULT_OPENAI_URL;
   const response = await axios.post(baseUrl, {
     model: modelName(),
-    temperature: 0.15,
-    max_tokens: 900,
+    max_completion_tokens: 900,
     response_format: { type: 'json_object' },
     messages: [
       { role: 'system', content: systemPrompt() },
