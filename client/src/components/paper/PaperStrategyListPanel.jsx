@@ -114,6 +114,8 @@ function rowBadges(row) {
   if (row.enabledForPaper) badges.push(['Aktiv i Paper', 'good']);
   else badges.push(['Avstängd av dig', 'neutral']);
   if (row.technicalReadiness === 'READY') badges.push(['Tekniskt körbar', 'good']);
+  if (row.entryContractReady) badges.push(['Entry contract klar', 'good']);
+  else if (row.enabledForPaper) badges.push(['Entry contract saknas', 'danger']);
   if (row.enabledForPaper && row.paperEligibility !== 'READY') badges.push(['Enabled men inte redo', 'warn']);
   if (row.replayEligibility === 'READY') badges.push(['Replay-klar', 'info']);
   if (row.producerStatus === 'none') badges.push(['Saknar producent', 'warn']);
@@ -121,8 +123,35 @@ function rowBadges(row) {
   if (String(row.technicalReadiness || '').includes('MARKET_CONTEXT')) badges.push(['Saknar marknadsdata', 'warn']);
   if (row.direction === 'short' || (row.warnings || []).includes('short_only_strategy')) badges.push(['Short-only', 'danger']);
   if (String(row.paperBlockedReason || '').startsWith('long_only')) badges.push(['Blockerad av LONG_ONLY', 'danger']);
+  const blocker = row.latestEntryContractBlock?.reasonCode || row.commonEntryContractBlocker?.reasonCode || '';
+  if (blocker === 'paper_entry_watch_only') badges.push(['Väntar på bekräftelse', 'warn']);
+  if (blocker === 'missing_required_confirmation' || blocker.includes('confirmation')) badges.push(['Confirmation saknas', 'warn']);
+  if (blocker === 'stale_strategy_signal') badges.push(['Signal för gammal', 'warn']);
+  if (blocker === 'late_extended_entry') badges.push(['Entry extended', 'warn']);
   if (row.legacyApprovalStatus) badges.push(['Legacy approval, endast historik', 'neutral']);
   return badges;
+}
+
+function reasonLabel(code) {
+  const labels = {
+    paper_entry_watch_only: 'Blockerad: signalen var endast observation',
+    paper_entry_caution_only: 'Blockerad: caution utan entry-bekräftelse',
+    paper_entry_status_not_ready: 'Blockerad: status inte entry-ready',
+    missing_required_confirmation: 'Blockerad: confirmation saknas',
+    missing_two_minute_confirmation: 'Blockerad: 2m-confirmation saknas',
+    missing_closed_candle_confirmation: 'Blockerad: candle close saknas',
+    stale_strategy_signal: 'Blockerad: signalen var för gammal',
+    late_extended_entry: 'Blockerad: entryn var redan extended',
+    missing_volume_confirmation: 'Blockerad: volymbekräftelse saknas',
+    missing_vwap_reclaim_confirmation: 'Blockerad: VWAP reclaim saknas',
+    missing_ema_pullback_confirmation: 'Blockerad: EMA reclaim saknas',
+    invalid_strategy_subtype: 'Blockerad: fel subtype',
+    invalid_strategy_direction: 'Blockerad: fel riktning',
+    missing_market_context: 'Blockerad: marknadskontext saknas',
+    invalid_session: 'Blockerad: session stängd',
+    entry_contract_missing: 'Blockerad: contract saknas',
+  };
+  return labels[code] || code || '-';
 }
 
 function paperBlockedText(row) {
@@ -139,6 +168,35 @@ function latestTradeText(row) {
   const trade = row.latestPaperTrade;
   if (!trade) return '-';
   return [trade.symbol, trade.result, fmtTime(trade.entryTime)].filter(Boolean).join(' · ');
+}
+
+function entryContractText(row) {
+  const contract = row.entryContract;
+  if (!contract) return 'Missing';
+  const maxAge = Number(contract.maxSignalAgeMs);
+  const maxAgeText = Number.isFinite(maxAge) ? `${Math.round(maxAge / 1000)}s` : '-';
+  return [
+    `Subtype: ${(contract.allowedSubtypes || []).join(', ') || '-'}`,
+    `Status: ${(contract.allowedStatuses || []).join(', ') || '-'}`,
+    `Conf: ${(contract.requiredConfirmations || []).join(', ') || '-'}`,
+    `Age: ${maxAgeText}`,
+  ].join(' | ');
+}
+
+function entryQualityText(row) {
+  const outcomes = row.outcomeCounts || {};
+  const latestBlock = row.latestEntryContractBlock?.reasonCode || row.commonEntryContractBlocker?.reasonCode || null;
+  return [
+    `C ${row.entryContractCandidateCount ?? 0}`,
+    `P ${row.entryContractPassCount ?? 0}`,
+    `B ${row.entryContractBlockCount ?? 0}`,
+    `T ${row.paperTradeCount ?? 0}`,
+    `W/L/TO ${outcomes.WIN ?? 0}/${outcomes.LOSS ?? 0}/${outcomes.TIMEOUT ?? 0}`,
+    `TO ${row.timeoutRate == null ? '-' : `${fmtNumber(row.timeoutRate, 1)}%`}`,
+    `MFE ${row.avgMfe == null ? '-' : fmtNumber(row.avgMfe, 4)}`,
+    `MAE ${row.avgMae == null ? '-' : fmtNumber(row.avgMae, 4)}`,
+    latestBlock ? reasonLabel(latestBlock) : null,
+  ].filter(Boolean).join(' | ');
 }
 
 function useManualPaperStrategies(refreshKey) {
@@ -252,6 +310,14 @@ export default function PaperStrategyListPanel({ refreshKey = 0, onRefresh }) {
           <div style={{ color: 'var(--muted)', fontSize: 11, fontWeight: 800 }}>Runtime gate</div>
           <div style={{ fontSize: 18, fontWeight: 900 }}>{data.runtimeGateMode || '-'}</div>
         </div>
+        <div style={{ border: '1px solid var(--border)', borderRadius: 8, padding: 12, background: 'var(--surface)' }}>
+          <div style={{ color: 'var(--muted)', fontSize: 11, fontWeight: 800 }}>Entry contracts</div>
+          <div style={{ fontSize: 18, fontWeight: 900 }}>{summary.entryContractsReady ?? 0}/{summary.total ?? strategies.length}</div>
+        </div>
+        <div style={{ border: '1px solid var(--border)', borderRadius: 8, padding: 12, background: 'var(--surface)' }}>
+          <div style={{ color: 'var(--muted)', fontSize: 11, fontWeight: 800 }}>Contract blocks</div>
+          <div style={{ fontSize: 18, fontWeight: 900 }}>{summary.entryContractBlock ?? 0}</div>
+        </div>
       </div>
 
       {state.error ? (
@@ -285,13 +351,14 @@ export default function PaperStrategyListPanel({ refreshKey = 0, onRefresh }) {
         </div>
 
         <div style={{ overflowX: 'auto' }}>
-          <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 1280 }}>
+          <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 1540 }}>
             <thead>
               <tr>
                 <th style={thStyle()}>Strategi</th>
                 <th style={thStyle()}>Familj</th>
                 <th style={thStyle()}>Direction</th>
                 <th style={thStyle()}>Teknisk readiness</th>
+                <th style={thStyle()}>Entry contract</th>
                 <th style={thStyle()}>Aktiv i Paper</th>
                 <th style={thStyle()}>Replay</th>
                 <th style={thStyle()}>Senaste signal</th>
@@ -300,6 +367,7 @@ export default function PaperStrategyListPanel({ refreshKey = 0, onRefresh }) {
                 <th style={thStyle()}>Win rate</th>
                 <th style={thStyle()}>Avg PnL</th>
                 <th style={thStyle()}>Blockerad anledning</th>
+                <th style={thStyle()}>Entry quality</th>
                 <th style={thStyle()}>Warnings</th>
                 <th style={{ ...thStyle(), textAlign: 'right' }}>Åtgärd</th>
               </tr>
@@ -320,6 +388,10 @@ export default function PaperStrategyListPanel({ refreshKey = 0, onRefresh }) {
                     <td style={tdStyle()}>{row.family || '-'}</td>
                     <td style={tdStyle()}><span style={badgeStyle(row.direction === 'short' ? 'danger' : row.direction === 'long' ? 'good' : 'neutral')}>{row.direction || '-'}</span></td>
                     <td style={tdStyle()}><span style={badgeStyle(toneFor(row.technicalReadiness))}>{row.technicalReadiness || '-'}</span></td>
+                    <td style={{ ...tdStyle(), minWidth: 230 }}>
+                      <div><span style={badgeStyle(row.entryContractReady ? 'good' : 'warn')}>{row.entryContractStatus || '-'}</span></div>
+                      <div style={{ color: 'var(--muted)', fontSize: 11, marginTop: 6, lineHeight: 1.45 }}>{entryContractText(row)}</div>
+                    </td>
                     <td style={tdStyle()}><span style={badgeStyle(row.enabledForPaper ? 'good' : 'neutral')}>{row.enabledForPaper ? 'Ja' : 'Nej'}</span></td>
                     <td style={tdStyle()}>{row.replayEligibility || '-'}</td>
                     <td style={tdStyle()}>{latestCandidateText(row)}</td>
@@ -328,6 +400,7 @@ export default function PaperStrategyListPanel({ refreshKey = 0, onRefresh }) {
                     <td style={tdStyle()}>{row.winRate == null ? '-' : `${fmtNumber(row.winRate, 1)}%`}</td>
                     <td style={tdStyle()}>{row.avgPnl == null ? '-' : fmtNumber(row.avgPnl, 4)}</td>
                     <td style={tdStyle()}>{paperBlockedText(row)}</td>
+                    <td style={{ ...tdStyle(), minWidth: 260 }}>{entryQualityText(row)}</td>
                     <td style={tdStyle()}>{Array.isArray(row.warnings) && row.warnings.length ? row.warnings.slice(0, 3).join(', ') : '-'}</td>
                     <td style={{ ...tdStyle(), textAlign: 'right' }}>
                       <div style={{ display: 'inline-flex', gap: 6, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
@@ -354,7 +427,7 @@ export default function PaperStrategyListPanel({ refreshKey = 0, onRefresh }) {
               })}
               {!rows.length ? (
                 <tr>
-                  <td style={tdStyle()} colSpan={14}>{state.loading ? 'Hämtar strategier...' : 'Inga strategier hittades.'}</td>
+                  <td style={tdStyle()} colSpan={16}>{state.loading ? 'Hämtar strategier...' : 'Inga strategier hittades.'}</td>
                 </tr>
               ) : null}
             </tbody>
