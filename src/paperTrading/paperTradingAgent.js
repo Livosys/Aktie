@@ -46,6 +46,8 @@ const eventLogService                           = require('../services/eventLogS
 const notificationEngineV2                      = require('../alerts/notificationEngineV2');
 const strategyRuntimeConnector                  = require('../services/strategyRuntimeConnectorService');
 const paperApprovalGate                         = require('../services/paperApprovalGateService');
+const paperEnabledStrategies                    = require('../services/paperEnabledStrategiesService');
+const daytradingStrategyCatalog                 = require('../services/daytradingStrategyCatalogService');
 const entryFilterForwardValidation              = require('../services/entryFilterForwardValidationService');
 const paperMarketConfigService                  = require('../services/paperMarketConfigService');
 const paperRiskReviewService                    = require('../services/paperRiskReviewService');
@@ -686,12 +688,12 @@ function appendEvent(input) {
 // ── Entry validation ──────────────────────────────────────────────────────────
 
 function qualifiesForEntry(c, state, opts = {}) {
-  // When the candidate's strategy is already on the approved allowlist, the
+  // When the candidate's strategy has been explicitly allowed by the active
+  // strategy gate (legacy approval or manual Paper Strategy List), the
   // strategy-IDENTITY filters below (EMA pause, allowed-family, subtype-direction)
-  // are treated as diagnostic only — the approved allowlist is the source of truth
-  // for which strategies may run. All other RISK checks (freshness, market open,
-  // volume, conflict, position limits, cooldown, dedup) still apply to everyone.
-  const isApproved = opts.isApproved === true;
+  // are diagnostic only. All other checks (freshness, market open, status,
+  // volume, conflict, position limits, cooldown, dedup) still apply.
+  const isExplicitlyEnabledStrategy = opts.isExplicitlyEnabledStrategy === true || opts.isApproved === true;
 
   // ── Market & freshness ────────────────────────────────────────────────────
   if (c.dataFreshness !== 'LIVE')                    return { ok: false, reason: `dataFreshness=${c.dataFreshness}` };
@@ -700,7 +702,7 @@ function qualifiesForEntry(c, state, opts = {}) {
   // Paper-only experiment: pause EMA entries before other entry checks so the
   // event log clearly shows the active filter. Bypassed for approved strategies
   // (e.g. ema_pullback_continuation) per the approved-allowlist-first rule.
-  if (!isApproved && !ALLOW_EMA_PAPER_TRADES && c.signalFamily === 'EMA_TREND_PULLBACK')
+  if (!isExplicitlyEnabledStrategy && !ALLOW_EMA_PAPER_TRADES && c.signalFamily === 'EMA_TREND_PULLBACK')
     return { ok: false, reason: 'EMA paused in paper test' };
 
   // ── Decision status ───────────────────────────────────────────────────────
@@ -723,9 +725,9 @@ function qualifiesForEntry(c, state, opts = {}) {
   if (!['UP', 'DOWN'].includes(c.nextMoveBias))      return { ok: false, reason: `nextMoveBias=${c.nextMoveBias}` };
 
   // ── Signal family ─────────────────────────────────────────────────────────
-  // Diagnostic-only for approved strategies (the allowlist already validated the
-  // strategy identity via the runtime-connector mapping).
-  if (!isApproved && !ALLOWED_FAMILIES.has(c.signalFamily)) return { ok: false, reason: `signalFamily=${c.signalFamily}` };
+  // Diagnostic-only for explicitly enabled strategies (the active strategy gate
+  // already validated the identity via canonical runtime mapping).
+  if (!isExplicitlyEnabledStrategy && !ALLOWED_FAMILIES.has(c.signalFamily)) return { ok: false, reason: `signalFamily=${c.signalFamily}` };
 
   // ── Subtype per direction ─────────────────────────────────────────────────
   const sub  = rawSub;
@@ -734,12 +736,12 @@ function qualifiesForEntry(c, state, opts = {}) {
     const ok = sub === 'VWAP_RECLAIM_UP' ||
                sub === 'EMA_PULLBACK_UP' ||
                (c.signalFamily === 'NARROW_COMPRESSION' && sub.toUpperCase().includes('BULL'));
-    if (!isApproved && !ok) return { ok: false, reason: `UP subtype not allowed: ${sub}` };
+    if (!isExplicitlyEnabledStrategy && !ok) return { ok: false, reason: `UP subtype not allowed: ${sub}` };
   } else {
     const ok = sub === 'VWAP_REJECTION_DOWN' ||
                sub === 'EMA_PULLBACK_DOWN' ||
                (c.signalFamily === 'NARROW_COMPRESSION' && sub.toUpperCase().includes('BEAR'));
-    if (!isApproved && !ok) return { ok: false, reason: `DOWN subtype not allowed: ${sub}` };
+    if (!isExplicitlyEnabledStrategy && !ok) return { ok: false, reason: `DOWN subtype not allowed: ${sub}` };
   }
 
   // ── Crypto safety rules (v3) ──────────────────────────────────────────────
@@ -784,6 +786,146 @@ function paperCandidateFamily(c = {}, strategyId = null) {
     strategyFamily: c.strategyFamily || null,
     signalFamily: c.signalFamily || null,
   });
+}
+
+function paperManualStrategyListEnabled() {
+  return paperEnabledStrategies.manualListControlsRuntime();
+}
+
+function canonicalStrategyForRuntimeId(strategyId) {
+  if (!strategyId) return null;
+  try {
+    return daytradingStrategyCatalog.getStrategyById(strategyId);
+  } catch (_) {
+    return null;
+  }
+}
+
+function strategyIdFromRuntimeStrategy(strategy = {}) {
+  return strategy.strategy_id
+    || strategy.strategyId
+    || strategy.resolvedStrategyId
+    || strategy.canonicalStrategyId
+    || null;
+}
+
+function manualRuntimeBlockedReason(runtimeDecision = {}) {
+  const strategy = runtimeDecision.strategy || {};
+  const code = runtimeDecision.blocked_reason_code || runtimeDecision.blockedReasonCode || strategy.blocked_reason_code || null;
+  if (code === 'setup_not_paper_entry' || code === 'narrow_wait_not_paper_entry') {
+    return 'paper_strategy_enabled_but_entry_contract_missing';
+  }
+  if (strategy.entry_rule_implemented === false || strategy.can_create_paper_trade === false) {
+    return 'paper_strategy_enabled_but_entry_contract_missing';
+  }
+  if (strategy.connected === false || strategy.runtime_status === 'not_connected') {
+    return 'paper_strategy_enabled_but_no_producer';
+  }
+  return 'paper_strategy_enabled_but_runtime_blocked';
+}
+
+function evaluateManualPaperStrategyGate(candidate = {}, options = {}) {
+  let inferred = options.inferredStrategy || null;
+  try {
+    if (!inferred) inferred = strategyRuntimeConnector.inferStrategyForSignal(candidate) || {};
+  } catch (err) {
+    return {
+      mode: 'manual',
+      allowed: false,
+      strategyId: null,
+      blockedReason: 'unknown_strategy_mapping',
+      reason: err.message || 'runtime_mapping_error',
+      inferredStrategy: null,
+      isExplicitlyEnabledStrategy: false,
+    };
+  }
+
+  const strategyId = strategyIdFromRuntimeStrategy(inferred);
+  if (!strategyId) {
+    return {
+      mode: 'manual',
+      allowed: false,
+      strategyId: null,
+      blockedReason: inferred.blocked_reason_code || 'unknown_strategy_mapping',
+      reason: inferred.reason_sv || inferred.skip_reason_sv || inferred.runtime_comment_sv || 'unknown_strategy_mapping',
+      inferredStrategy: inferred,
+      isExplicitlyEnabledStrategy: false,
+    };
+  }
+
+  const catalogStrategy = canonicalStrategyForRuntimeId(strategyId);
+  if (!catalogStrategy) {
+    return {
+      mode: 'manual',
+      allowed: false,
+      strategyId,
+      blockedReason: 'unknown_canonical_strategy',
+      reason: 'Strategy mapping resolved outside canonical catalog.',
+      inferredStrategy: inferred,
+      isExplicitlyEnabledStrategy: false,
+    };
+  }
+
+  const state = paperEnabledStrategies.getStrategyState(strategyId);
+  if (state.known !== true) {
+    return {
+      mode: 'manual',
+      allowed: false,
+      strategyId,
+      blockedReason: 'unknown_canonical_strategy',
+      reason: 'Strategy is not known by the manual Paper Strategy List.',
+      inferredStrategy: inferred,
+      catalogStrategy,
+      enabledState: state,
+      isExplicitlyEnabledStrategy: false,
+    };
+  }
+
+  if (state.enabled !== true) {
+    return {
+      mode: 'manual',
+      allowed: false,
+      strategyId,
+      blockedReason: 'paper_strategy_not_enabled',
+      reason: 'Strategy is not enabled in the manual Paper Strategy List.',
+      inferredStrategy: inferred,
+      catalogStrategy,
+      enabledState: state,
+      isExplicitlyEnabledStrategy: false,
+    };
+  }
+
+  return {
+    mode: 'manual',
+    allowed: true,
+    strategyId,
+    blockedReason: null,
+    reason: null,
+    inferredStrategy: inferred,
+    catalogStrategy,
+    enabledState: state,
+    isExplicitlyEnabledStrategy: true,
+  };
+}
+
+function evaluateLegacyPaperStrategyGate(runtimeCandidate = {}, runtimeDecision = {}, resolvedStrategyId = null) {
+  const runtimeStrategy = runtimeDecision.strategy || {};
+  const strategyId = resolvedStrategyId
+    || strategyIdFromRuntimeStrategy(runtimeStrategy)
+    || paperApprovalGate.resolveStrategyId(runtimeCandidate);
+  const approvalDecision = paperApprovalGate.evaluateCandidate({
+    ...runtimeCandidate,
+    strategyId: strategyId || runtimeCandidate.strategyId || runtimeCandidate.strategy_id || null,
+  });
+  const isExplicitlyEnabledStrategy = approvalDecision.approved === true;
+  return {
+    mode: 'legacy',
+    allowed: isExplicitlyEnabledStrategy,
+    strategyId,
+    blockedReason: isExplicitlyEnabledStrategy ? null : (approvalDecision.blockedReason || paperApprovalGate.NOT_APPROVED_REASON),
+    approvalDecision,
+    isExplicitlyEnabledStrategy,
+  };
 }
 
 function strategyControlReasonSv(control = {}) {
@@ -1359,6 +1501,27 @@ function classifySkip(c, reason) {
   }
   if (raw.includes('runtime_mapping_error')) {
     return { type: 'TRADE_SKIPPED', reasonSv: 'Skippad — runtime-mapping kunde inte läsas.' };
+  }
+  if (raw.includes('no_trade_signal')) {
+    return { type: 'TRADE_SKIPPED', reasonSv: 'Skippad — NO_TRADE är inte en entry-signal.' };
+  }
+  if (raw.includes('unknown_strategy_mapping') || raw.includes('unknown_signal_mapping')) {
+    return { type: 'TRADE_SKIPPED', reasonSv: 'Skippad — signalen saknar säker strategy-mapping.' };
+  }
+  if (raw.includes('unknown_canonical_strategy')) {
+    return { type: 'TRADE_SKIPPED', reasonSv: 'Skippad — mappad strategi saknas i canonical-katalogen.' };
+  }
+  if (raw.includes('paper_strategy_not_enabled')) {
+    return { type: 'GATE_BLOCKED', reasonSv: 'Blockerad — strategin är inte aktiv i Paper Strategy List.' };
+  }
+  if (raw.includes('paper_strategy_enabled_but_no_producer')) {
+    return { type: 'TRADE_SKIPPED', reasonSv: 'Blockerad — strategin är aktiv men saknar producent.' };
+  }
+  if (raw.includes('paper_strategy_enabled_but_entry_contract_missing')) {
+    return { type: 'TRADE_SKIPPED', reasonSv: 'Blockerad — strategin är aktiv men saknar giltigt entry-contract.' };
+  }
+  if (raw.includes('paper_strategy_enabled_but_runtime_blocked')) {
+    return { type: 'TRADE_SKIPPED', reasonSv: 'Blockerad — strategin är aktiv men runtime connector blockerar.' };
   }
   if (raw.includes('narrow_wait_not_paper_entry') || raw.includes('narrow_wait är ett vänteläge')) {
     return { type: 'TRADE_SKIPPED', reasonSv: 'Skippad — NARROW_WAIT är ett vänteläge och inte en paper-entry-setup.' };
@@ -2321,69 +2484,135 @@ async function runTick() {
           });
           continue;
         }
-        const runtimeDecision = strategyRuntimeConnector.canCreatePaperTradeForSignal(c);
-        if (!runtimeDecision.allowed) {
-          _bump('qualifiesRejected', null);
-          const runtimeStrategy = runtimeDecision.strategy || {};
-          _recentRejections = [{
-            type:          'RUNTIME_REJECTED',
-            symbol:        c.symbol,
-            marketGroup:   getMarketGroup(c.symbol) || c.marketGroup || 'UNKNOWN',
-            signalSubtype: c.signalSubtype || null,
-            strategyId:    runtimeStrategy.strategy_id || null,
-            reason:        runtimeDecision.reason || 'runtime_status=unknown',
-            timestamp:     new Date().toISOString(),
-          }, ..._recentRejections].slice(0, 100);
-          const skip = classifySkip(c, runtimeDecision.blocked_reason_code || runtimeDecision.reason);
-          appendEvent({
-            ...eventFromCandidate(skip.type, c, skip.reasonSv),
-            runtimeStatus: runtimeStrategy.runtime_status || null,
-            strategyId: runtimeStrategy.strategy_id || null,
-            strategyName: runtimeStrategy.strategy_name || null,
-            blockedReason: runtimeDecision.blocked_reason_code || null,
-            blockedReasonCode: runtimeDecision.blocked_reason_code || null,
-            runtimeReasonSv: runtimeDecision.reasonSv || runtimeDecision.reason || null,
-          });
-          continue;
-        }
+        let runtimeDecision = null;
+        let runtimeStrategyForGate = null;
+        let runtimeCandidate = null;
+        let resolvedStrategyId = null;
+        let isExplicitlyEnabledStrategy = false;
+        const manualStrategyGateMode = paperManualStrategyListEnabled();
 
-        // ── Approved-strategy allowlist gate (PRIMARY) ──────────────────────────
-        // Only strategies on the approved allowlist may open a SIMULATED paper
-        // trade. Non-approved candidates are blocked here with a stable reason and
-        // logged for visibility. This is the hard gate; the family/subtype filter
-        // in qualifiesForEntry below acts only as an additional safety filter and
-        // is bypassed for approved strategies where it would conflict (e.g. EMA
-        // pause), per the supervisor's "prefer the approved allowlist" rule.
-        const runtimeStrategyForGate = runtimeDecision.strategy || {};
-        const runtimeCandidate = normalizeCandidateStrategyMetadata(c, runtimeDecision);
-        const resolvedStrategyId = runtimeStrategyForGate.strategy_id
-          || runtimeStrategyForGate.strategyId
-          || paperApprovalGate.resolveStrategyId(runtimeCandidate);
-        const approvalDecision = paperApprovalGate.evaluateCandidate({
-          ...runtimeCandidate,
-          strategyId: resolvedStrategyId || runtimeCandidate.strategyId || runtimeCandidate.strategy_id || null,
-        });
-        const isApproved = approvalDecision.approved === true;
-        if (!isApproved) {
-          _bump('qualifiesRejected', null);
-          _recentRejections = [{
-            type:          'APPROVED_ALLOWLIST_BLOCKED',
-            symbol:        c.symbol,
-            marketGroup:   getMarketGroup(c.symbol) || c.marketGroup || 'UNKNOWN',
-            signalSubtype: c.signalSubtype || null,
-            strategyId:    resolvedStrategyId || null,
-            reason:        approvalDecision.blockedReason || paperApprovalGate.NOT_APPROVED_REASON,
-            timestamp:     new Date().toISOString(),
-          }, ..._recentRejections].slice(0, 100);
-          appendEvent({
-            ...eventFromCandidate('GATE_BLOCKED', runtimeCandidate, 'Blockerad: strategin är inte på den godkända allowlist:en (endast paper-only research-kandidater tillåts).', 'blocked'),
-            blockedReason: approvalDecision.blockedReason || paperApprovalGate.NOT_APPROVED_REASON,
-            approvalGate: approvalDecision.approvalGate || null,
-            runtimeStatus: runtimeStrategyForGate.runtime_status || null,
-            strategyId:    resolvedStrategyId || null,
-            strategyName:  runtimeStrategyForGate.strategy_name || null,
-          });
-          continue;
+        if (manualStrategyGateMode) {
+          const inferredStrategy = strategyRuntimeConnector.inferStrategyForSignal(c);
+          const manualGate = evaluateManualPaperStrategyGate(c, { inferredStrategy });
+          resolvedStrategyId = manualGate.strategyId || strategyIdFromRuntimeStrategy(inferredStrategy);
+          if (!manualGate.allowed) {
+            _bump('qualifiesRejected', null);
+            _recentRejections = [{
+              type:          'PAPER_STRATEGY_LIST_BLOCKED',
+              symbol:        c.symbol,
+              marketGroup:   getMarketGroup(c.symbol) || c.marketGroup || 'UNKNOWN',
+              signalSubtype: c.signalSubtype || null,
+              strategyId:    resolvedStrategyId || null,
+              reason:        manualGate.blockedReason,
+              timestamp:     new Date().toISOString(),
+            }, ..._recentRejections].slice(0, 100);
+            const skip = classifySkip(c, manualGate.blockedReason || manualGate.reason);
+            appendEvent({
+              ...eventFromCandidate(skip.type, normalizeCandidateStrategyMetadata(c, { strategy: inferredStrategy }), skip.reasonSv, 'blocked'),
+              blockedReason: manualGate.blockedReason,
+              blockedReasonCode: manualGate.blockedReason,
+              runtimeGateMode: 'manual',
+              manualListControlsRuntime: true,
+              runtimeStatus: inferredStrategy?.runtime_status || null,
+              strategyId: resolvedStrategyId || null,
+              strategyName: inferredStrategy?.strategy_name || null,
+            });
+            continue;
+          }
+
+          runtimeDecision = strategyRuntimeConnector.canCreatePaperTradeForSignal(c);
+          if (!runtimeDecision.allowed) {
+            _bump('qualifiesRejected', null);
+            const runtimeStrategy = runtimeDecision.strategy || {};
+            const manualBlockedReason = manualRuntimeBlockedReason(runtimeDecision);
+            _recentRejections = [{
+              type:          'RUNTIME_REJECTED',
+              symbol:        c.symbol,
+              marketGroup:   getMarketGroup(c.symbol) || c.marketGroup || 'UNKNOWN',
+              signalSubtype: c.signalSubtype || null,
+              strategyId:    resolvedStrategyId || runtimeStrategy.strategy_id || null,
+              reason:        manualBlockedReason,
+              timestamp:     new Date().toISOString(),
+            }, ..._recentRejections].slice(0, 100);
+            const skip = classifySkip(c, manualBlockedReason);
+            appendEvent({
+              ...eventFromCandidate(skip.type, normalizeCandidateStrategyMetadata(c, runtimeDecision), skip.reasonSv, 'blocked'),
+              runtimeStatus: runtimeStrategy.runtime_status || null,
+              strategyId: resolvedStrategyId || runtimeStrategy.strategy_id || null,
+              strategyName: runtimeStrategy.strategy_name || null,
+              blockedReason: manualBlockedReason,
+              blockedReasonCode: manualBlockedReason,
+              runtimeBlockedReason: runtimeDecision.blocked_reason_code || null,
+              runtimeReasonSv: runtimeDecision.reasonSv || runtimeDecision.reason || null,
+              runtimeGateMode: 'manual',
+              manualListControlsRuntime: true,
+            });
+            continue;
+          }
+
+          runtimeStrategyForGate = runtimeDecision.strategy || inferredStrategy || {};
+          runtimeCandidate = normalizeCandidateStrategyMetadata(c, runtimeDecision);
+          resolvedStrategyId = resolvedStrategyId || strategyIdFromRuntimeStrategy(runtimeStrategyForGate);
+          isExplicitlyEnabledStrategy = true;
+        } else {
+          runtimeDecision = strategyRuntimeConnector.canCreatePaperTradeForSignal(c);
+          if (!runtimeDecision.allowed) {
+            _bump('qualifiesRejected', null);
+            const runtimeStrategy = runtimeDecision.strategy || {};
+            _recentRejections = [{
+              type:          'RUNTIME_REJECTED',
+              symbol:        c.symbol,
+              marketGroup:   getMarketGroup(c.symbol) || c.marketGroup || 'UNKNOWN',
+              signalSubtype: c.signalSubtype || null,
+              strategyId:    runtimeStrategy.strategy_id || null,
+              reason:        runtimeDecision.reason || 'runtime_status=unknown',
+              timestamp:     new Date().toISOString(),
+            }, ..._recentRejections].slice(0, 100);
+            const skip = classifySkip(c, runtimeDecision.blocked_reason_code || runtimeDecision.reason);
+            appendEvent({
+              ...eventFromCandidate(skip.type, c, skip.reasonSv),
+              runtimeStatus: runtimeStrategy.runtime_status || null,
+              strategyId: runtimeStrategy.strategy_id || null,
+              strategyName: runtimeStrategy.strategy_name || null,
+              blockedReason: runtimeDecision.blocked_reason_code || null,
+              blockedReasonCode: runtimeDecision.blocked_reason_code || null,
+              runtimeReasonSv: runtimeDecision.reasonSv || runtimeDecision.reason || null,
+            });
+            continue;
+          }
+
+          // Legacy fallback: approval + selectedByFamily remain the primary
+          // runtime eligibility gate only while manual strategy list mode is off.
+          runtimeStrategyForGate = runtimeDecision.strategy || {};
+          runtimeCandidate = normalizeCandidateStrategyMetadata(c, runtimeDecision);
+          resolvedStrategyId = runtimeStrategyForGate.strategy_id
+            || runtimeStrategyForGate.strategyId
+            || paperApprovalGate.resolveStrategyId(runtimeCandidate);
+          const legacyGate = evaluateLegacyPaperStrategyGate(runtimeCandidate, runtimeDecision, resolvedStrategyId);
+          isExplicitlyEnabledStrategy = legacyGate.isExplicitlyEnabledStrategy === true;
+          if (!legacyGate.allowed) {
+            _bump('qualifiesRejected', null);
+            _recentRejections = [{
+              type:          'APPROVED_ALLOWLIST_BLOCKED',
+              symbol:        c.symbol,
+              marketGroup:   getMarketGroup(c.symbol) || c.marketGroup || 'UNKNOWN',
+              signalSubtype: c.signalSubtype || null,
+              strategyId:    resolvedStrategyId || null,
+              reason:        legacyGate.blockedReason,
+              timestamp:     new Date().toISOString(),
+            }, ..._recentRejections].slice(0, 100);
+            appendEvent({
+              ...eventFromCandidate('GATE_BLOCKED', runtimeCandidate, 'Blockerad: strategin är inte på den godkända allowlist:en (endast paper-only research-kandidater tillåts).', 'blocked'),
+              blockedReason: legacyGate.blockedReason,
+              approvalGate: legacyGate.approvalDecision?.approvalGate || null,
+              runtimeStatus: runtimeStrategyForGate.runtime_status || null,
+              strategyId:    resolvedStrategyId || null,
+              strategyName:  runtimeStrategyForGate.strategy_name || null,
+              runtimeGateMode: 'legacy',
+              manualListControlsRuntime: false,
+            });
+            continue;
+          }
         }
 
         // ── Strategy Trade Control ────────────────────────────────────────────
@@ -2444,7 +2673,7 @@ async function runTick() {
         runtimeCandidate.familyGateDecision = control.familyGateDecision;
         runtimeCandidate.strategyCooldownDecision = control.strategyCooldownDecision;
 
-        const check = qualifiesForEntry(c, state, { isApproved });
+        const check = qualifiesForEntry(c, state, { isExplicitlyEnabledStrategy });
         if (!check.ok) {
           _bump('qualifiesRejected', null);
           // Lightweight rejection entry for pipeline analysis
@@ -3540,6 +3769,11 @@ module.exports = {
   _internal: {
     paperCandidateFamily,
     strategyControlReasonSv,
+    paperManualStrategyListEnabled,
+    evaluateManualPaperStrategyGate,
+    evaluateLegacyPaperStrategyGate,
+    manualRuntimeBlockedReason,
+    qualifiesForEntry,
     ordinaryPaperRiskConfig,
     applyManualRiskReviewOverride,
     buildEffectiveRiskReviewState,

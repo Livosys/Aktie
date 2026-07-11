@@ -1,6 +1,31 @@
 'use strict';
 
 const assert = require('assert/strict');
+const fs = require('fs');
+const os = require('os');
+const path = require('path');
+
+const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'paper-agent-manual-gate-'));
+process.env.PAPER_ENABLED_STRATEGIES_FILE = path.join(tmpDir, 'enabled-strategies.json');
+process.env.PAPER_STRATEGY_APPROVALS_FILE = path.join(tmpDir, 'strategy-approvals.json');
+process.env.PAPER_MANUAL_STRATEGY_LIST_ENABLED = 'false';
+
+fs.writeFileSync(process.env.PAPER_STRATEGY_APPROVALS_FILE, JSON.stringify({
+  schemaVersion: 1,
+  strategies: {},
+  selectedByFamily: {},
+  updatedAt: '2026-07-11T00:00:00.000Z',
+}, null, 2));
+
+const paperEnabledStrategies = require('../services/paperEnabledStrategiesService');
+paperEnabledStrategies._internal.writeStoreAtomic(
+  paperEnabledStrategies.buildInitialStore({
+    now: '2026-07-11T17:00:00.000Z',
+    source: 'manual_initial_migration',
+  }),
+  new Date('2026-07-11T17:00:00.000Z'),
+);
+
 const agent = require('./paperTradingAgent');
 const strategyRuntimeConnector = require('../services/strategyRuntimeConnectorService');
 
@@ -147,6 +172,124 @@ function main() {
     ...latePullbackCandidate,
     twoMinuteConfirmed: true,
   }), false);
+
+  const manualBullCandidate = {
+    symbol: 'AAPL',
+    marketType: 'stocks',
+    status: 'watch',
+    nextMoveBias: 'UP',
+    signalFamily: 'NARROW_COMPRESSION',
+    signalSubtype: 'NARROW_BULL_ENTRY',
+    dataFreshness: 'LIVE',
+    volumeState: 'normal',
+  };
+  process.env.PAPER_MANUAL_STRATEGY_LIST_ENABLED = 'true';
+  assert.equal(agent._internal.paperManualStrategyListEnabled(), true);
+  const manualBullGate = agent._internal.evaluateManualPaperStrategyGate(manualBullCandidate);
+  assert.equal(manualBullGate.allowed, true, 'manual enabled list allows initial enabled narrow long');
+  assert.equal(manualBullGate.strategyId, 'narrow_state_expansion_long');
+  assert.equal(manualBullGate.isExplicitlyEnabledStrategy, true);
+
+  const manualDisabledGate = agent._internal.evaluateManualPaperStrategyGate({
+    ...manualBullCandidate,
+    nextMoveBias: 'DOWN',
+    signalSubtype: 'NARROW_BEAR_ENTRY',
+  });
+  assert.equal(manualDisabledGate.allowed, false, 'manual list blocks disabled mapped strategy');
+  assert.equal(manualDisabledGate.strategyId, 'narrow_breakout');
+  assert.equal(manualDisabledGate.blockedReason, 'paper_strategy_not_enabled');
+
+  const manualUnknownGate = agent._internal.evaluateManualPaperStrategyGate({
+    symbol: 'AAPL',
+    marketType: 'stocks',
+    signalFamily: 'UNKNOWN',
+    signalSubtype: 'UNKNOWN',
+  });
+  assert.equal(manualUnknownGate.allowed, false);
+  assert.equal(manualUnknownGate.blockedReason, 'unknown_signal_mapping');
+
+  const manualNoTradeGate = agent._internal.evaluateManualPaperStrategyGate({
+    symbol: 'AAPL',
+    marketType: 'stocks',
+    signalFamily: 'UNKNOWN',
+    signalSubtype: 'NO_TRADE',
+  });
+  assert.equal(manualNoTradeGate.allowed, false);
+  assert.equal(manualNoTradeGate.blockedReason, 'no_trade_signal');
+
+  paperEnabledStrategies.enableStrategy('trend_continuation', { source: 'test' });
+  const manualTrendGate = agent._internal.evaluateManualPaperStrategyGate({
+    symbol: 'AAPL',
+    marketType: 'stocks',
+    signalFamily: 'REGULAR_PULLBACK',
+    signalSubtype: 'REGULAR_PULLBACK',
+    nextMoveBias: 'UP',
+  });
+  assert.equal(manualTrendGate.allowed, true, 'manual enabled strategy can reach runtime gate');
+  const trendRuntimeDecision = strategyRuntimeConnector.canCreatePaperTradeForSignal({
+    symbol: 'AAPL',
+    marketType: 'stocks',
+    signalFamily: 'REGULAR_PULLBACK',
+    signalSubtype: 'REGULAR_PULLBACK',
+    nextMoveBias: 'UP',
+  });
+  assert.equal(trendRuntimeDecision.allowed, false, 'runtime connector still blocks setup without paper entry contract');
+  assert.equal(agent._internal.manualRuntimeBlockedReason(trendRuntimeDecision), 'paper_strategy_enabled_but_entry_contract_missing');
+  paperEnabledStrategies.disableStrategy('trend_continuation', { source: 'test' });
+
+  process.env.PAPER_MANUAL_STRATEGY_LIST_ENABLED = 'false';
+  assert.equal(agent._internal.paperManualStrategyListEnabled(), false);
+  const legacyRuntimeDecision = strategyRuntimeConnector.canCreatePaperTradeForSignal(manualBullCandidate);
+  const legacyRuntimeCandidate = agent._internal.normalizeCandidateStrategyMetadata(manualBullCandidate, legacyRuntimeDecision);
+  const legacyGate = agent._internal.evaluateLegacyPaperStrategyGate(
+    legacyRuntimeCandidate,
+    legacyRuntimeDecision,
+    'narrow_state_expansion_long',
+  );
+  assert.equal(legacyGate.allowed, false, 'flag false keeps legacy approval/family behavior');
+  assert.notEqual(legacyGate.blockedReason, 'paper_strategy_not_enabled');
+
+  const entryState = { openTrades: [], cooldowns: {}, seenSignalIds: [] };
+  const emaCandidate = {
+    symbol: 'AAPL',
+    marketType: 'stocks',
+    status: 'watch',
+    nextMoveBias: 'UP',
+    signalFamily: 'EMA_TREND_PULLBACK',
+    signalSubtype: 'EMA_PULLBACK_UP',
+    dataFreshness: 'LIVE',
+    marketClosed: false,
+    volumeState: 'normal',
+  };
+  assert.equal(
+    agent._internal.qualifiesForEntry(emaCandidate, entryState, { isExplicitlyEnabledStrategy: false }).reason,
+    'EMA paused in paper test',
+    'non-enabled strategy still hits identity filter',
+  );
+  assert.equal(
+    agent._internal.qualifiesForEntry(emaCandidate, entryState, { isExplicitlyEnabledStrategy: true }).ok,
+    true,
+    'manual enabled strategy only bypasses the same identity filter approval used to bypass',
+  );
+  assert.equal(
+    agent._internal.qualifiesForEntry({ ...emaCandidate, dataFreshness: 'STALE' }, entryState, { isExplicitlyEnabledStrategy: true }).ok,
+    false,
+    'freshness still applies to manual enabled strategies',
+  );
+  assert.equal(
+    agent._internal.qualifiesForEntry({ ...emaCandidate, marketClosed: true }, entryState, { isExplicitlyEnabledStrategy: true }).reason,
+    'market closed',
+    'market/session gate still applies to manual enabled strategies',
+  );
+  assert.match(
+    agent._internal.qualifiesForEntry(emaCandidate, {
+      ...entryState,
+      cooldowns: { AAPL: new Date().toISOString() },
+    }, { isExplicitlyEnabledStrategy: true }).reason,
+    /^cooldown/,
+    'cooldown still applies to manual enabled strategies',
+  );
+  process.env.PAPER_MANUAL_STRATEGY_LIST_ENABLED = 'false';
 
   const mixedNarrowCandidate = {
     symbol: 'NVDA',
@@ -332,4 +475,8 @@ function main() {
   console.log('# paperTradingAgent override tests passed.');
 }
 
-main();
+try {
+  main();
+} finally {
+  fs.rmSync(tmpDir, { recursive: true, force: true });
+}
