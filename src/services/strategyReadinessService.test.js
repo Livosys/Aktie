@@ -63,21 +63,28 @@ assert.equal(newsWatch.readiness, svc.READINESS.INTENTIONALLY_DISABLED);
 const cryptoFast = byId.get('crypto_fast_momentum');
 assert.equal(cryptoFast.readiness, svc.READINESS.INTENTIONALLY_DISABLED);
 // trend_continuation: producenten (REGULAR_PULLBACK) är medvetet blockad för
-// paper => intentional, och den valda strategin blockerar EMA-syskonet.
+// paper => intentional. Efter FAS D2 är den inte längre familjens valda
+// strategi (ema_pullback_continuation vald) => blockerar inte EMA-syskonet.
 const trendCont = byId.get('trend_continuation');
 assert.equal(trendCont.readiness, svc.READINESS.INTENTIONALLY_DISABLED);
 assert.ok(trendCont.warnings.includes('intentional_paper_block'));
-assert.ok(trendCont.warnings.includes('selected_strategy_blocks_family'));
+assert.ok(!trendCont.warnings.includes('selected_strategy_blocks_family'),
+  'trend_continuation blockerar inte längre familjen efter D2-alignmenten');
 
-// 9. Short-only-strategi får korrekt research/paper-skillnad.
+// 9. Short-only-strategi får korrekt research/paper-skillnad. Efter FAS D1 är
+// vwap_failed_breakout_short policy-pausad i approval-storen: paper blockerad,
+// research/replay fortsatt tillåten, klassad som medvetet avstängd.
 const vwapShort = byId.get('vwap_failed_breakout_short');
 assert.ok(vwapShort, 'vwap_failed_breakout_short finns');
 assert.equal(vwapShort.direction, 'short');
-assert.equal(vwapShort.replayEligibility, 'READY');
-assert.equal(vwapShort.paperEligibility, 'TECHNICALLY_ALLOWED_BUT_LONG_ONLY_INCOMPATIBLE');
-assert.equal(vwapShort.readiness, svc.READINESS.READY_FOR_REPLAY);
+assert.equal(vwapShort.replayEligibility, 'READY', 'research/replay fortsatt tillåten');
+assert.equal(vwapShort.paperEligibility, 'BLOCKED', 'paper blockerad efter D1-pausen');
+assert.equal(vwapShort.approvalStatus, 'paused');
+assert.equal(vwapShort.readiness, svc.READINESS.INTENTIONALLY_DISABLED);
 assert.notEqual(vwapShort.readiness, svc.READINESS.READY_FOR_PAPER,
   'short-only får inte visas som READY_FOR_PAPER under LONG_ONLY');
+assert.ok(!vwapShort.warnings.includes('approval_mismatch'),
+  'policy-paus är ett beslut, inte en approval-mismatch');
 
 // 10. UNKNOWN/NO_TRADE räknas aldrig som producerad strategi-signal.
 for (const row of rows) {
@@ -92,29 +99,36 @@ for (const row of rows) {
   assert.equal(row.batchEligibility, 'SYNTHETIC_ONLY');
 }
 
-// 12. narrow_state_expansion_long = approval/family mismatch.
+// 12. narrow_state_expansion_long: approved + family-selected efter FAS D2 —
+// den enda long-only-strategin med hela kedjan klar.
 const expansionLong = byId.get('narrow_state_expansion_long');
-assert.equal(expansionLong.readiness, svc.READINESS.NEEDS_APPROVAL_ALIGNMENT);
+assert.equal(expansionLong.readiness, svc.READINESS.READY_FOR_PAPER);
 assert.equal(expansionLong.approved, true);
-assert.equal(expansionLong.familySelectionMismatch, true);
+assert.equal(expansionLong.familySelectionMismatch, false);
 assert.equal(expansionLong.producerStatus, 'ok');
+assert.equal(expansionLong.direction, 'long');
 
-// 13. ema_pullback_continuation = approval/family mismatch.
+// 13. ema_pullback_continuation: approved + family-selected efter FAS D2.
 const emaPullback = byId.get('ema_pullback_continuation');
-assert.equal(emaPullback.readiness, svc.READINESS.NEEDS_APPROVAL_ALIGNMENT);
+assert.equal(emaPullback.readiness, svc.READINESS.READY_FOR_PAPER);
 assert.equal(emaPullback.approved, true);
-assert.equal(emaPullback.familySelectionMismatch, true);
+assert.equal(emaPullback.familySelectionMismatch, false);
 assert.equal(emaPullback.producerStatus, 'ok');
 
-// 14. vwap_volume_breakout_long = approval mismatch (producer+runtime ok, ej approved).
+// 14. vwap_volume_breakout_long: approved + family-selected efter FAS D2.
 const vwapVolLong = byId.get('vwap_volume_breakout_long');
-assert.equal(vwapVolLong.readiness, svc.READINESS.NEEDS_APPROVAL_ALIGNMENT);
-assert.equal(vwapVolLong.approved, false);
-assert.equal(vwapVolLong.approvalMismatch, true);
-assert.ok(vwapVolLong.warnings.includes('approval_mismatch'));
+assert.equal(vwapVolLong.readiness, svc.READINESS.READY_FOR_PAPER);
+assert.equal(vwapVolLong.approved, true);
+assert.equal(vwapVolLong.approvalMismatch, false);
+assert.ok(!vwapVolLong.warnings.includes('approval_mismatch'));
+assert.equal(vwapVolLong.direction, 'long');
 
-// 15. vwap_failed_breakout_short får paper_short_leak-varning.
-assert.ok(vwapShort.warnings.includes('paper_short_leak'));
+// 15. Short-läckan är stängd: paper_short_leak-varningen (short-only + approved
+// + selected + runtime allowed) får inte längre förekomma någonstans.
+for (const row of rows) {
+  assert.ok(!row.warnings.includes('paper_short_leak'),
+    `${row.strategyId}: paper_short_leak ska vara stängd efter FAS D1`);
+}
 assert.ok(vwapShort.warnings.includes('short_only_strategy'));
 
 // 16. crypto_momentum_scalper: missing-context kvarstår men catch-all-mapping
@@ -134,14 +148,38 @@ assert.ok(byId.get('narrow_breakout_v1').warnings.some((w) => w.startsWith('dupl
 assert.equal(byId.get('narrow_state_fakeout_reversal').readiness, svc.READINESS.UNSUPPORTED);
 assert.ok(byId.get('narrow_state_fakeout_reversal').warnings.some((w) => w.startsWith('duplicate_signal_contract_with_')));
 
-// Särskilda varningar från auditen.
+// Särskilda varningar från auditen. Efter FAS D2 är narrow_breakout inte
+// längre familjens valda strategi (bear-producenten står tillbaka för
+// long-only-strategin) men behåller research-vägen.
 const narrowBreakout = byId.get('narrow_breakout');
-assert.equal(narrowBreakout.readiness, svc.READINESS.READY_FOR_PAPER);
+assert.equal(narrowBreakout.readiness, svc.READINESS.NEEDS_APPROVAL_ALIGNMENT);
+assert.equal(narrowBreakout.familySelectionMismatch, true);
+assert.equal(narrowBreakout.replayEligibility, 'READY');
 assert.ok(narrowBreakout.warnings.includes('effective_direction_drift'),
   'narrow_breakout producerar i praktiken bara bear => direction drift');
 const narrowFakeout = byId.get('narrow_fakeout_reversal_v1');
 assert.equal(narrowFakeout.readiness, svc.READINESS.NEEDS_APPROVAL_ALIGNMENT);
 assert.equal(narrowFakeout.familySelectionMismatch, true);
+
+// FAS D-slutläge: exakt tre long-strategier är paper-körbara och ingen
+// short-only-strategi är READY_FOR_PAPER.
+{
+  const paperReady = rows.filter((r) => r.readiness === svc.READINESS.READY_FOR_PAPER).map((r) => r.strategyId).sort();
+  assert.deepEqual(paperReady, ['ema_pullback_continuation', 'narrow_state_expansion_long', 'vwap_volume_breakout_long']);
+  for (const row of rows) {
+    if (row.direction === 'short') {
+      assert.notEqual(row.readiness, svc.READINESS.READY_FOR_PAPER, `${row.strategyId}: short-only aldrig paper-ready`);
+    }
+  }
+  // Inga dubbla familyval: varje familj har högst en vald strategi.
+  const seen = new Map();
+  for (const row of rows) {
+    if (row.family && row.selectedInFamily === true) {
+      assert.ok(!seen.has(row.family), `dubbelt familyval i ${row.family}`);
+      seen.set(row.family, row.strategyId);
+    }
+  }
+}
 for (const id of ['high_volatility_reversal', 'support_bounce', 'resistance_rejection', 'trend_exhaustion_short', 'news_volatility_watch']) {
   assert.ok(byId.get(id).warnings.includes('missing_family'), `${id}: missing_family-varning`);
 }

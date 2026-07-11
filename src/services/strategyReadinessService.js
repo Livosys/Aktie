@@ -297,9 +297,11 @@ function classifyStrategy(strategy, sourcesData) {
   if (intentionalPaperBlock) warnings.push('intentional_paper_block');
 
   // Approval mismatch: fungerande producer + runtime men inte godkänd.
+  // Policy-pausade/borttagna strategier är ett beslut, inte en mismatch.
   const runtimeActive = runtimeConnectorStatus === 'active';
   const approvalMismatch = approvalRow
-    ? producerStatus === 'ok' && runtimeActive && !intentionalPaperBlock && approvalRow.approved !== true
+    ? producerStatus === 'ok' && runtimeActive && !intentionalPaperBlock
+      && approvalRow.approved !== true && approvalStatus === 'not_approved'
     : null;
   if (approvalMismatch) warnings.push('approval_mismatch');
 
@@ -331,6 +333,11 @@ function classifyStrategy(strategy, sourcesData) {
   } else if (catalogDisabled || userDisabled) {
     readiness = READINESS.INTENTIONALLY_DISABLED;
   } else if (intentionalPaperBlock) {
+    readiness = READINESS.INTENTIONALLY_DISABLED;
+  } else if (approvalStatus === 'paused' || approvalStatus === 'removed') {
+    // Medvetet pausad/borttagen i approval-storen (t.ex. LONG_ONLY-policy för
+    // short-only-strategier) — detta är ett beslut, inte en saknad komponent.
+    // replayEligibility förblir oberoende så research-vägen syns korrekt.
     readiness = READINESS.INTENTIONALLY_DISABLED;
   } else if (producerStatus === 'none') {
     if (missingCrypto) {
