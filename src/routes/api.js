@@ -111,6 +111,7 @@ const replayStatusService = require('../services/replayStatusService');
 const paperTradingStatusService = require('../services/paperTradingStatusService');
 const paperTradingRuntimeService = require('../services/paperTradingRuntimeService');
 const paperStrategyApprovalService = require('../services/paperStrategyApprovalService');
+const paperEnabledStrategiesService = require('../services/paperEnabledStrategiesService');
 const futuresPaperDeskService = require('../services/futuresPaperDeskService');
 const futuresPaperAccountService = require('../services/futuresPaperAccountService');
 const futuresPaperLedgerService = require('../services/futuresPaperLedgerService');
@@ -3498,6 +3499,92 @@ router.get('/paper-trading/runtime', (req, res) => {
     res.status(500).json({ ok: false, error: err.message, ...paperTradingRuntimeService.SAFETY });
   }
 });
+
+// Manual Paper Strategy List. This is the new user-controlled Paper Trading
+// participation list. It mutates only data/paper-trading/enabled-strategies.json
+// and never changes legacy approvals, family selection, risk, broker state or
+// trades. Runtime use is controlled by PAPER_MANUAL_STRATEGY_LIST_ENABLED.
+router.get('/paper-trading/enabled-strategies', (req, res) => {
+  try {
+    res.json(paperEnabledStrategiesService.buildPaperStrategyList({
+      fresh: req.query.fresh === 'true',
+    }));
+  } catch (err) {
+    res.status(500).json({ status: 'error', ok: false, error: err.message, ...paperEnabledStrategiesService.SAFETY });
+  }
+});
+
+router.get('/paper-trading/enabled-strategies/history', (req, res) => {
+  try {
+    res.json({
+      status: 'ok',
+      generatedAt: new Date().toISOString(),
+      ...paperEnabledStrategiesService.getHistory({ limit: req.query.limit || req.query.n }),
+    });
+  } catch (err) {
+    res.status(500).json({ status: 'error', ok: false, error: err.message, ...paperEnabledStrategiesService.SAFETY });
+  }
+});
+
+router.get('/paper-trading/enabled-strategies/:strategyId', (req, res) => {
+  try {
+    const list = paperEnabledStrategiesService.buildPaperStrategyList({
+      fresh: req.query.fresh === 'true',
+    });
+    const strategy = (list.strategies || []).find((row) => row.strategyId === req.params.strategyId);
+    if (!strategy) {
+      return res.status(404).json({
+        status: 'not_found',
+        ok: false,
+        error: 'unknown_canonical_strategy',
+        strategyId: req.params.strategyId || null,
+        ...paperEnabledStrategiesService.SAFETY,
+      });
+    }
+    res.json({
+      status: 'ok',
+      readOnly: true,
+      generatedAt: new Date().toISOString(),
+      runtimeGateMode: list.runtimeGateMode,
+      manualListControlsRuntime: list.manualListControlsRuntime,
+      strategy,
+      safety: paperEnabledStrategiesService.SAFETY,
+      ...paperEnabledStrategiesService.SAFETY,
+    });
+  } catch (err) {
+    res.status(500).json({ status: 'error', ok: false, error: err.message, ...paperEnabledStrategiesService.SAFETY });
+  }
+});
+
+function handlePaperEnabledStrategyMutation(action) {
+  return (req, res) => {
+    try {
+      const body = req.body && typeof req.body === 'object' ? req.body : {};
+      if (body.live_trading_enabled === true || body.broker_enabled === true || body.can_place_orders === true || body.actions_allowed === true) {
+        return res.status(400).json({ status: 'error', ok: false, error: 'paper_enabled_strategy_list_is_paper_only', ...paperEnabledStrategiesService.SAFETY });
+      }
+      const fn = action === 'enable'
+        ? paperEnabledStrategiesService.enableStrategy
+        : paperEnabledStrategiesService.disableStrategy;
+      const result = fn(req.params.strategyId, {
+        source: 'manual_api',
+        note: body.note || null,
+      });
+      const code = result.code || (result.ok ? 200 : 400);
+      res.status(code).json({
+        ...result,
+        action,
+        safety: paperEnabledStrategiesService.SAFETY,
+        ...paperEnabledStrategiesService.SAFETY,
+      });
+    } catch (err) {
+      res.status(500).json({ status: 'error', ok: false, error: err.message, ...paperEnabledStrategiesService.SAFETY });
+    }
+  };
+}
+
+router.post('/paper-trading/enabled-strategies/:strategyId/enable', handlePaperEnabledStrategyMutation('enable'));
+router.post('/paper-trading/enabled-strategies/:strategyId/disable', handlePaperEnabledStrategyMutation('disable'));
 
 // Ordinary Paper Trading Strategy Approval (separat från Futures Paper).
 // Read-only status + idempotenta mutationer. Skapar aldrig en trade, muterar
