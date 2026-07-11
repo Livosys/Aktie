@@ -1,5 +1,12 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { DashboardShell } from '../components/dashboard/DashboardKit.jsx';
+import {
+  buildBasicAuthHeader,
+  emptyOperatorCredentials,
+  passwordInputType,
+  passwordToggleLabel,
+  sanitizeCredentialText,
+} from '../lib/futuresPaperStrategyApproval.mjs';
 
 const FETCH_TIMEOUT_MS = 8000;
 const TABS = [
@@ -24,19 +31,32 @@ const EMPTY = Object.freeze({
   queue: [],
 });
 
+async function parseResponseBody(res) {
+  if (!res) return null;
+  const contentType = String(res.headers && res.headers.get ? res.headers.get('content-type') || '' : '');
+  if (contentType.includes('application/json')) {
+    return res.json().catch(() => null);
+  }
+  const text = await res.text().catch(() => '');
+  const trimmed = String(text || '').trim();
+  return trimmed ? { error: trimmed } : null;
+}
+
 async function fetchJson(url, options = {}) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), options.timeoutMs || FETCH_TIMEOUT_MS);
   try {
     const res = await fetch(url, {
       method: options.method || 'GET',
-      headers: options.body ? { 'content-type': 'application/json' } : undefined,
+      headers: {
+        ...(options.body ? { 'content-type': 'application/json' } : {}),
+        ...(options.headers || {}),
+      },
       body: options.body ? JSON.stringify(options.body) : undefined,
-      credentials: options.method && options.method !== 'GET' ? 'same-origin' : 'omit',
+      credentials: options.credentials || 'omit',
       signal: controller.signal,
     });
-    const text = await res.text();
-    const data = text ? JSON.parse(text) : {};
+    const data = await parseResponseBody(res);
     if (!res.ok) {
       const err = new Error(data?.error || `HTTP ${res.status}`);
       err.status = res.status;
@@ -164,6 +184,167 @@ function EmptyState({ children }) {
   );
 }
 
+function OperatorLoginDialog({
+  open,
+  pendingMutation,
+  loginForm,
+  setLoginForm,
+  passwordVisible,
+  onTogglePasswordVisible,
+  onSubmit,
+  onCancel,
+  busy,
+  error,
+}) {
+  if (!open) return null;
+  const title = pendingMutation ? pendingMutation.label : 'Operatörsinloggning';
+  const description = pendingMutation
+    ? `Åtgärd: ${pendingMutation.label}. Uppgifterna sparas bara i minnet och rensas efter varje försök.`
+    : 'Logga in för att kunna ändra strategier. Uppgifterna sparas bara i minnet och rensas efter varje försök.';
+  const submitDisabled = busy || !loginForm.username || !loginForm.password;
+  return (
+    <div
+      role="dialog"
+      aria-modal="true"
+      aria-label="Operatörsinloggning"
+      style={{
+        position: 'fixed',
+        inset: 0,
+        zIndex: 1000,
+        display: 'grid',
+        placeItems: 'center',
+        padding: 16,
+        background: 'rgba(15, 23, 42, 0.38)',
+      }}
+    >
+      <form
+        onSubmit={(event) => {
+          event.preventDefault();
+          if (!submitDisabled) onSubmit();
+        }}
+        style={{
+          width: 'min(480px, 100%)',
+          border: '1px solid var(--border)',
+          borderRadius: 12,
+          padding: 16,
+          background: 'var(--panel)',
+          boxShadow: '0 18px 60px rgba(15, 23, 42, 0.24)',
+        }}
+      >
+        <div style={{ fontWeight: 900, fontSize: 16, marginBottom: 6 }}>{title}</div>
+        <div style={{ color: 'var(--muted)', fontSize: 13, marginBottom: 10 }}>{description}</div>
+        {error ? (
+          <div style={{
+            border: '1px solid rgba(239,68,68,0.35)',
+            background: 'rgba(239,68,68,0.08)',
+            borderRadius: 8,
+            padding: 10,
+            marginBottom: 12,
+            color: 'var(--text)',
+            fontSize: 13,
+          }}
+          >
+            {error.message}
+            {error.detail ? <div style={{ marginTop: 4, color: 'var(--muted)', fontSize: 12 }}>Teknisk detalj: {error.detail}</div> : null}
+          </div>
+        ) : null}
+        <label style={{ display: 'grid', gap: 4, fontSize: 12, fontWeight: 800, marginBottom: 10 }}>
+          Användarnamn
+          <input
+            type="text"
+            value={loginForm.username}
+            autoComplete="username"
+            onChange={(event) => setLoginForm((current) => ({ ...current, username: event.target.value }))}
+            placeholder="Användarnamn"
+            style={{
+              minHeight: 38,
+              border: '1px solid var(--border)',
+              borderRadius: 8,
+              background: 'var(--surface, #fff)',
+              color: 'var(--text)',
+              padding: '8px 10px',
+            }}
+          />
+        </label>
+        <label style={{ display: 'grid', gap: 4, fontSize: 12, fontWeight: 800, marginBottom: 10 }}>
+          Lösenord
+          <input
+            type={passwordInputType(passwordVisible)}
+            value={loginForm.password}
+            autoComplete="current-password"
+            onChange={(event) => setLoginForm((current) => ({ ...current, password: event.target.value }))}
+            placeholder="Lösenord"
+            style={{
+              minHeight: 38,
+              border: '1px solid var(--border)',
+              borderRadius: 8,
+              background: 'var(--surface, #fff)',
+              color: 'var(--text)',
+              padding: '8px 10px',
+            }}
+          />
+        </label>
+        <div style={{ display: 'flex', gap: 8, justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap' }}>
+          <button
+            type="button"
+            onClick={onTogglePasswordVisible}
+            aria-pressed={passwordVisible}
+            style={{
+              minHeight: 36,
+              border: '1px solid var(--border)',
+              borderRadius: 8,
+              background: 'transparent',
+              color: 'var(--text)',
+              padding: '6px 10px',
+              fontWeight: 800,
+              cursor: 'pointer',
+              whiteSpace: 'nowrap',
+            }}
+          >
+            {passwordToggleLabel(passwordVisible)}
+          </button>
+          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
+            <button
+              type="button"
+              onClick={onCancel}
+              style={{
+                minHeight: 36,
+                border: '1px solid var(--border)',
+                borderRadius: 8,
+                background: 'transparent',
+                color: 'var(--text)',
+                padding: '6px 10px',
+                fontWeight: 800,
+                cursor: 'pointer',
+                whiteSpace: 'nowrap',
+              }}
+            >
+              Avbryt
+            </button>
+            <button
+              type="submit"
+              disabled={submitDisabled}
+              style={{
+                minHeight: 36,
+                border: '1px solid var(--accent, #2563eb)',
+                borderRadius: 8,
+                background: submitDisabled ? 'var(--border)' : 'var(--accent, #2563eb)',
+                color: submitDisabled ? 'var(--muted)' : '#fff',
+                padding: '6px 12px',
+                fontWeight: 900,
+                cursor: submitDisabled ? 'not-allowed' : 'pointer',
+                whiteSpace: 'nowrap',
+              }}
+            >
+              {busy ? 'Skickar…' : 'Logga in och fortsätt'}
+            </button>
+          </div>
+        </div>
+      </form>
+    </div>
+  );
+}
+
 function DataTable({ columns, rows, empty }) {
   if (!rows?.length) return <EmptyState>{empty}</EmptyState>;
   return (
@@ -263,6 +444,12 @@ function PineResearchPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [actionStatus, setActionStatus] = useState(null);
+  const [operatorDialogOpen, setOperatorDialogOpen] = useState(false);
+  const [operatorLoginForm, setOperatorLoginForm] = useState(emptyOperatorCredentials());
+  const [operatorCredentials, setOperatorCredentials] = useState(emptyOperatorCredentials());
+  const [operatorPasswordVisible, setOperatorPasswordVisible] = useState(false);
+  const [operatorDialogError, setOperatorDialogError] = useState(null);
+  const [pendingMutation, setPendingMutation] = useState(null);
   const [selectedVersionId, setSelectedVersionId] = useState('');
   const [selectedValidationId, setSelectedValidationId] = useState('');
   const [csvForm, setCsvForm] = useState({ symbol: 'MNQ', timeframe: '5m', tradesCsv: '', performanceCsv: '' });
@@ -323,17 +510,97 @@ function PineResearchPage() {
     [data.validations, selectedValidationId],
   );
 
-  async function mutate(label, url, body = {}) {
-    setActionStatus({ type: 'loading', message: `${label} pågår...` });
-    try {
-      const result = await fetchJson(url, { method: 'POST', body });
-      setActionStatus({ type: 'success', message: `${label} klart. Status hämtas om från backend.` });
-      await load();
-      return result;
-    } catch (err) {
-      setActionStatus({ type: 'error', message: friendlyError(err), detail: err?.data?.error || err?.message });
+  const hasOperatorCredentials = Boolean(operatorCredentials.username && operatorCredentials.password);
+
+  function openLoginDialog(mutation = null) {
+    setPendingMutation(mutation);
+    setOperatorDialogError(null);
+    setOperatorPasswordVisible(false);
+    setOperatorLoginForm(emptyOperatorCredentials());
+    setOperatorDialogOpen(true);
+  }
+
+  function clearOperatorState(options = {}) {
+    const keepPendingMutation = options.keepPendingMutation === true;
+    setOperatorCredentials(emptyOperatorCredentials());
+    setOperatorLoginForm(emptyOperatorCredentials());
+    setOperatorPasswordVisible(false);
+    if (!keepPendingMutation) setPendingMutation(null);
+  }
+
+  async function executeMutation({ label, url, body = {}, credentials }) {
+    const authHeader = buildBasicAuthHeader(credentials);
+    if (!authHeader) {
+      setOperatorDialogError({
+        message: 'Du måste logga in som operatör för att ändra strategier.',
+        detail: 'Ingen operatörsheader skickad. Mutation stoppad i dashboarden före POST.',
+      });
+      setOperatorDialogOpen(true);
       return null;
     }
+    let succeeded = false;
+    setActionStatus({ type: 'loading', message: `${label} pågår...` });
+    try {
+      const result = await fetchJson(url, {
+        method: 'POST',
+        body,
+        headers: { Authorization: authHeader },
+        credentials: 'omit',
+      });
+      setActionStatus({ type: 'success', message: `${label} klart. Status hämtas om från backend.` });
+      setOperatorDialogError(null);
+      await load();
+      setOperatorDialogOpen(false);
+      succeeded = true;
+      return result;
+    } catch (err) {
+      setActionStatus({
+        type: 'error',
+        message: friendlyError(err),
+        detail: sanitizeCredentialText(err?.data?.error || err?.data?.reason || err?.message || ''),
+      });
+      setOperatorDialogError({
+        message: friendlyError(err),
+        detail: sanitizeCredentialText(err?.data?.error || err?.data?.reason || err?.message || ''),
+      });
+      setOperatorDialogOpen(true);
+      return null;
+    } finally {
+      clearOperatorState({ keepPendingMutation: !succeeded });
+    }
+  }
+
+  async function mutate(label, url, body = {}) {
+    const mutation = { label, url, body };
+    if (!hasOperatorCredentials) {
+      openLoginDialog(mutation);
+      setActionStatus({
+        type: 'error',
+        message: 'Du måste logga in som operatör för att ändra strategier.',
+        detail: 'Ingen operatörsheader skickad. Mutation stoppad i dashboarden före POST.',
+      });
+      return null;
+    }
+    return executeMutation({ ...mutation, credentials: operatorCredentials });
+  }
+
+  async function submitOperatorLogin() {
+    const credentials = {
+      username: String(operatorLoginForm.username || '').trim(),
+      password: operatorLoginForm.password,
+    };
+    if (!credentials.username || !credentials.password) return null;
+    setOperatorCredentials(credentials);
+    if (pendingMutation) {
+      setOperatorDialogError(null);
+      return executeMutation({ ...pendingMutation, credentials });
+    }
+    setActionStatus({ type: 'success', message: 'Operatörsinloggning sparad i minnet. Nästa mutation kräver ingen ny inloggning förrän den är genomförd.' });
+    setOperatorDialogOpen(false);
+    setOperatorDialogError(null);
+    setOperatorLoginForm(emptyOperatorCredentials());
+    setOperatorPasswordVisible(false);
+    return credentials;
   }
 
   const summary = data.overview.summary || {};
@@ -353,6 +620,10 @@ function PineResearchPage() {
           <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
             <Badge tone="success">paper/replay-only</Badge>
             <Badge tone={provider.configured ? 'success' : 'warning'}>{provider.provider || 'provider'} · {provider.model || 'model saknas'}</Badge>
+            <Badge tone={hasOperatorCredentials ? 'success' : 'warning'}>{hasOperatorCredentials ? 'Operatör redo' : 'Operatörsinloggning krävs'}</Badge>
+            <button type="button" onClick={() => openLoginDialog(null)} style={buttonStyle()}>
+              Operatörsinloggning
+            </button>
             <button type="button" onClick={load} style={buttonStyle()}>Hämta om</button>
           </div>
         </header>
@@ -380,6 +651,24 @@ function PineResearchPage() {
             {actionStatus.detail ? <div style={{ marginTop: 4, color: 'var(--muted)', fontSize: 12 }}>Teknisk detalj: {actionStatus.detail}</div> : null}
           </div>
         ) : null}
+
+        <OperatorLoginDialog
+          open={operatorDialogOpen}
+          pendingMutation={pendingMutation}
+          loginForm={operatorLoginForm}
+          setLoginForm={setOperatorLoginForm}
+          passwordVisible={operatorPasswordVisible}
+          onTogglePasswordVisible={() => setOperatorPasswordVisible((current) => !current)}
+          onSubmit={submitOperatorLogin}
+          onCancel={() => {
+            setOperatorDialogOpen(false);
+            setOperatorDialogError(null);
+            setOperatorLoginForm(emptyOperatorCredentials());
+            clearOperatorState();
+          }}
+          busy={actionStatus?.type === 'loading'}
+          error={operatorDialogError}
+        />
 
         {tab === 'overview' ? (
           <>
