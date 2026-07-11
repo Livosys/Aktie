@@ -792,6 +792,10 @@ function paperManualStrategyListEnabled() {
   return paperEnabledStrategies.manualListControlsRuntime();
 }
 
+function paperLongOnlyEnabled() {
+  return String(process.env.PAPER_LONG_ONLY_ENABLED || 'true').toLowerCase() !== 'false';
+}
+
 function canonicalStrategyForRuntimeId(strategyId) {
   if (!strategyId) return null;
   try {
@@ -822,6 +826,95 @@ function manualRuntimeBlockedReason(runtimeDecision = {}) {
     return 'paper_strategy_enabled_but_no_producer';
   }
   return 'paper_strategy_enabled_but_runtime_blocked';
+}
+
+function upperToken(value) {
+  return String(value || '').trim().toUpperCase();
+}
+
+function candidateHasBearishEntryIntent(candidate = {}) {
+  const nextMoveBias = upperToken(candidate.nextMoveBias || candidate.next_move_bias);
+  if (nextMoveBias === 'DOWN') return true;
+
+  const direction = upperToken(candidate.direction || candidate.tradeDirection || candidate.entryDirection);
+  if (direction === 'SHORT' || direction === 'DOWN') return true;
+
+  const side = upperToken(candidate.side || candidate.orderSide || candidate.entrySide);
+  if (side === 'SELL' || side === 'SHORT') return true;
+
+  const setupFields = [
+    candidate.signalSubtype,
+    candidate.signal_subtype,
+    candidate.setup,
+    candidate.setupType,
+    candidate.eventType,
+    candidate.signal,
+    candidate.raw_strategy,
+  ];
+
+  for (const value of setupFields) {
+    const token = upperToken(value);
+    if (!token) continue;
+    if (token === 'NARROW_BEAR_ENTRY') return true;
+    if (token === 'EMA_PULLBACK_DOWN') return true;
+    if (token === 'VWAP_REJECTION_DOWN') return true;
+    if (token === 'REJECTION_DOWN') return true;
+    if (token === 'BREAKDOWN') return true;
+    if (token === 'BEAR') return true;
+    if (token === 'SHORT') return true;
+    if (token.includes('NARROW_BEAR_ENTRY')) return true;
+    if (token.includes('EMA_PULLBACK_DOWN')) return true;
+    if (token.includes('VWAP_REJECTION_DOWN')) return true;
+    if (token.includes('REJECTION_DOWN')) return true;
+    if (token.includes('BREAKDOWN')) return true;
+    if (/(^|[_\s-])BEAR($|[_\s-])/.test(token)) return true;
+    if (/(^|[_\s-])SHORT($|[_\s-])/.test(token)) return true;
+  }
+
+  return false;
+}
+
+function evaluateLongOnlyPaperGate(candidate = {}, catalogStrategy = null, options = {}) {
+  const enabled = options.enabled != null ? options.enabled === true : paperLongOnlyEnabled();
+  if (!enabled) {
+    return {
+      allowed: true,
+      enabled: false,
+      blockedReason: null,
+      reason: null,
+    };
+  }
+
+  const strategy = catalogStrategy || canonicalStrategyForRuntimeId(
+    candidate.strategyId || candidate.strategy_id || candidate.resolvedStrategyId || candidate.sourceStrategyId || null,
+  );
+  if (String(strategy?.direction || '').toLowerCase() === 'short') {
+    return {
+      allowed: false,
+      enabled: true,
+      blockedReason: 'long_only_short_strategy',
+      reason: 'LONG_ONLY blocks canonical short strategy.',
+      strategyId: strategy.id || null,
+    };
+  }
+
+  if (candidateHasBearishEntryIntent(candidate)) {
+    return {
+      allowed: false,
+      enabled: true,
+      blockedReason: 'long_only_short_entry',
+      reason: 'LONG_ONLY blocks bearish/short entry candidate.',
+      strategyId: strategy?.id || candidate.strategyId || candidate.strategy_id || null,
+    };
+  }
+
+  return {
+    allowed: true,
+    enabled: true,
+    blockedReason: null,
+    reason: null,
+    strategyId: strategy?.id || candidate.strategyId || candidate.strategy_id || null,
+  };
 }
 
 function evaluateManualPaperStrategyGate(candidate = {}, options = {}) {
@@ -1522,6 +1615,12 @@ function classifySkip(c, reason) {
   }
   if (raw.includes('paper_strategy_enabled_but_runtime_blocked')) {
     return { type: 'TRADE_SKIPPED', reasonSv: 'Blockerad — strategin är aktiv men runtime connector blockerar.' };
+  }
+  if (raw.includes('long_only_short_strategy')) {
+    return { type: 'GATE_BLOCKED', reasonSv: 'Blockerad — LONG_ONLY tillåter inte short-only-strategier i Paper Trading.' };
+  }
+  if (raw.includes('long_only_short_entry')) {
+    return { type: 'GATE_BLOCKED', reasonSv: 'Blockerad — LONG_ONLY tillåter inte bearish/short entries i Paper Trading.' };
   }
   if (raw.includes('narrow_wait_not_paper_entry') || raw.includes('narrow_wait är ett vänteläge')) {
     return { type: 'TRADE_SKIPPED', reasonSv: 'Skippad — NARROW_WAIT är ett vänteläge och inte en paper-entry-setup.' };
@@ -2613,6 +2712,38 @@ async function runTick() {
             });
             continue;
           }
+        }
+
+        // ── LONG_ONLY gate ──────────────────────────────────────────────────
+        // Final paper-only direction guard. It blocks new short/bearish Paper
+        // entries but does not affect replay, batch, learning or history.
+        const longOnlyDecision = evaluateLongOnlyPaperGate(
+          runtimeCandidate,
+          canonicalStrategyForRuntimeId(resolvedStrategyId),
+        );
+        if (!longOnlyDecision.allowed) {
+          _bump('qualifiesRejected', null);
+          _recentRejections = [{
+            type:          'LONG_ONLY_BLOCKED',
+            symbol:        c.symbol,
+            marketGroup:   getMarketGroup(c.symbol) || c.marketGroup || 'UNKNOWN',
+            signalSubtype: c.signalSubtype || null,
+            strategyId:    resolvedStrategyId || null,
+            reason:        longOnlyDecision.blockedReason,
+            timestamp:     new Date().toISOString(),
+          }, ..._recentRejections].slice(0, 100);
+          const skip = classifySkip(c, longOnlyDecision.blockedReason);
+          appendEvent({
+            ...eventFromCandidate(skip.type, runtimeCandidate, skip.reasonSv, 'blocked'),
+            blockedReason: longOnlyDecision.blockedReason,
+            blockedReasonCode: longOnlyDecision.blockedReason,
+            runtimeGateMode: manualStrategyGateMode ? 'manual' : 'legacy',
+            manualListControlsRuntime: manualStrategyGateMode,
+            longOnlyEnabled: true,
+            strategyId: resolvedStrategyId || null,
+            strategyName: runtimeStrategyForGate.strategy_name || runtimeStrategyForGate.strategyName || null,
+          });
+          continue;
         }
 
         // ── Strategy Trade Control ────────────────────────────────────────────
@@ -3770,9 +3901,12 @@ module.exports = {
     paperCandidateFamily,
     strategyControlReasonSv,
     paperManualStrategyListEnabled,
+    paperLongOnlyEnabled,
     evaluateManualPaperStrategyGate,
     evaluateLegacyPaperStrategyGate,
     manualRuntimeBlockedReason,
+    candidateHasBearishEntryIntent,
+    evaluateLongOnlyPaperGate,
     qualifiesForEntry,
     ordinaryPaperRiskConfig,
     applyManualRiskReviewOverride,

@@ -9,6 +9,7 @@ const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'paper-agent-manual-gate-')
 process.env.PAPER_ENABLED_STRATEGIES_FILE = path.join(tmpDir, 'enabled-strategies.json');
 process.env.PAPER_STRATEGY_APPROVALS_FILE = path.join(tmpDir, 'strategy-approvals.json');
 process.env.PAPER_MANUAL_STRATEGY_LIST_ENABLED = 'false';
+process.env.PAPER_LONG_ONLY_ENABLED = 'true';
 
 fs.writeFileSync(process.env.PAPER_STRATEGY_APPROVALS_FILE, JSON.stringify({
   schemaVersion: 1,
@@ -289,6 +290,66 @@ function main() {
     /^cooldown/,
     'cooldown still applies to manual enabled strategies',
   );
+
+  assert.equal(agent._internal.paperLongOnlyEnabled(), true);
+  assert.equal(
+    agent._internal.evaluateLongOnlyPaperGate({ strategyId: 'vwap_failed_breakout_short', signalSubtype: 'VWAP_REJECTION_DOWN' }).blockedReason,
+    'long_only_short_strategy',
+    'short-only VWAP strategy is blocked',
+  );
+  assert.equal(
+    agent._internal.evaluateLongOnlyPaperGate({ strategyId: 'ema_breakdown', signalSubtype: 'EMA_PULLBACK_DOWN' }).blockedReason,
+    'long_only_short_strategy',
+    'ema_breakdown short strategy is blocked',
+  );
+  assert.equal(
+    agent._internal.evaluateLongOnlyPaperGate({ strategyId: 'narrow_breakout', signalSubtype: 'NARROW_BEAR_ENTRY' }).blockedReason,
+    'long_only_short_entry',
+    'NARROW_BEAR_ENTRY is blocked',
+  );
+  assert.equal(
+    agent._internal.evaluateLongOnlyPaperGate({ strategyId: 'ema_pullback_continuation', signalSubtype: 'EMA_PULLBACK_DOWN' }).blockedReason,
+    'long_only_short_entry',
+    'EMA_PULLBACK_DOWN is blocked',
+  );
+  assert.equal(
+    agent._internal.evaluateLongOnlyPaperGate({ strategyId: 'vwap_volume_breakout_long', signalSubtype: 'VWAP_REJECTION_DOWN' }).blockedReason,
+    'long_only_short_entry',
+    'VWAP_REJECTION_DOWN is blocked',
+  );
+  assert.equal(
+    agent._internal.evaluateLongOnlyPaperGate({ strategyId: 'ema_pullback_continuation', side: 'SELL' }).blockedReason,
+    'long_only_short_entry',
+    'side=SELL is blocked',
+  );
+  assert.equal(
+    agent._internal.evaluateLongOnlyPaperGate({ strategyId: 'narrow_state_expansion_long', nextMoveBias: 'DOWN', signalSubtype: 'NARROW_BEAR_ENTRY' }).blockedReason,
+    'long_only_short_entry',
+    'nextMoveBias=DOWN on bearish setup is blocked',
+  );
+  assert.equal(
+    agent._internal.evaluateLongOnlyPaperGate({ strategyId: 'narrow_state_expansion_long', nextMoveBias: 'UP', signalSubtype: 'NARROW_BULL_ENTRY' }).allowed,
+    true,
+    'NARROW_BULL_ENTRY can pass LONG_ONLY',
+  );
+  assert.equal(
+    agent._internal.evaluateLongOnlyPaperGate({ strategyId: 'ema_pullback_continuation', nextMoveBias: 'UP', signalSubtype: 'EMA_PULLBACK_UP' }).allowed,
+    true,
+    'EMA_PULLBACK_UP can pass LONG_ONLY',
+  );
+  assert.equal(
+    agent._internal.evaluateLongOnlyPaperGate({ strategyId: 'vwap_volume_breakout_long', nextMoveBias: 'UP', signalSubtype: 'VWAP_RECLAIM_UP' }).allowed,
+    true,
+    'VWAP_RECLAIM_UP can pass LONG_ONLY',
+  );
+  process.env.PAPER_LONG_ONLY_ENABLED = 'false';
+  assert.equal(
+    agent._internal.evaluateLongOnlyPaperGate({ strategyId: 'vwap_failed_breakout_short', signalSubtype: 'VWAP_REJECTION_DOWN' }).allowed,
+    true,
+    'feature flag false disables only the LONG_ONLY gate',
+  );
+  process.env.PAPER_LONG_ONLY_ENABLED = 'true';
+
   process.env.PAPER_MANUAL_STRATEGY_LIST_ENABLED = 'false';
 
   const mixedNarrowCandidate = {
