@@ -12,9 +12,13 @@ const ROOT = path.resolve(__dirname, '../..');
 const TMP_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'paper-enabled-strategy-routes-'));
 const ENABLED_STORE = path.join(TMP_DIR, 'enabled-strategies.json');
 const APPROVAL_STORE = path.join(TMP_DIR, 'strategy-approvals.json');
+const ENTRY_EVENTS = path.join(TMP_DIR, 'events.jsonl');
+const ENTRY_TRADES = path.join(TMP_DIR, 'trades.jsonl');
 
 process.env.PAPER_ENABLED_STRATEGIES_FILE = ENABLED_STORE;
 process.env.PAPER_STRATEGY_APPROVALS_FILE = APPROVAL_STORE;
+process.env.PAPER_ENTRY_CONTRACT_EVENTS_FILE = ENTRY_EVENTS;
+process.env.PAPER_ENTRY_CONTRACT_TRADES_FILE = ENTRY_TRADES;
 
 fs.writeFileSync(APPROVAL_STORE, JSON.stringify({
   schemaVersion: 1,
@@ -22,6 +26,25 @@ fs.writeFileSync(APPROVAL_STORE, JSON.stringify({
   selectedByFamily: {},
   updatedAt: '2026-07-11T00:00:00.000Z',
 }, null, 2));
+fs.writeFileSync(ENTRY_EVENTS, `${JSON.stringify({
+  timestamp: '2026-07-11T17:59:00.000Z',
+  type: 'GATE_BLOCKED',
+  strategyId: 'narrow_state_expansion_long',
+  symbol: 'BTCUSDT',
+  signalSubtype: 'NARROW_BULL_ENTRY',
+  status: 'watch',
+  blockedReason: 'paper_entry_watch_only',
+  entryContractVersion: 'paper_entry_contract_v1',
+})}\n`);
+fs.writeFileSync(ENTRY_TRADES, `${JSON.stringify({
+  entryTime: '2026-07-11T17:58:00.000Z',
+  tradeId: 'pt_route_test',
+  strategyId: 'narrow_state_expansion_long',
+  symbol: 'BTCUSDT',
+  result: 'TIMEOUT',
+  mfePct: 0,
+  maePct: -0.1,
+})}\n`);
 
 const paperEnabledStrategiesService = require('../services/paperEnabledStrategiesService');
 paperEnabledStrategiesService._internal.writeStoreAtomic(
@@ -117,6 +140,9 @@ async function main() {
       DASHBOARD_PASSWORD: pass,
       PAPER_ENABLED_STRATEGIES_FILE: ENABLED_STORE,
       PAPER_STRATEGY_APPROVALS_FILE: APPROVAL_STORE,
+      PAPER_ENTRY_CONTRACT_EVENTS_FILE: ENTRY_EVENTS,
+      PAPER_ENTRY_CONTRACT_TRADES_FILE: ENTRY_TRADES,
+      PAPER_ENTRY_CONTRACTS_ENABLED: 'true',
       PAPER_MANUAL_STRATEGY_LIST_ENABLED: 'false',
       ENABLE_STOCK_SCANNER: 'false',
       ENABLE_CRYPTO_SCANNER: 'false',
@@ -141,13 +167,28 @@ async function main() {
     assert.equal(list.status, 200);
     assert.equal(list.body.summary.total, 33);
     assert.equal(list.body.summary.enabled, 3);
+    assert.equal(list.body.summary.entryContractsReady, 3);
     assert.equal(list.body.runtimeGateMode, 'legacy');
     assert.equal(list.body.manualListControlsRuntime, false);
+    assert.equal(list.body.entryContractsEnabled, true);
     safety(list.body);
     assert.deepEqual(
       list.body.strategies.filter((row) => row.enabledForPaper).map((row) => row.strategyId).sort(),
       ['ema_pullback_continuation', 'narrow_state_expansion_long', 'vwap_volume_breakout_long'],
     );
+    const narrowRow = list.body.strategies.find((row) => row.strategyId === 'narrow_state_expansion_long');
+    assert.equal(narrowRow.entryContractStatus, 'ready');
+    assert.deepEqual(narrowRow.entryContract.allowedSubtypes, ['NARROW_BULL_ENTRY']);
+    assert.equal(narrowRow.entryContractBlockCount, 1);
+    assert.equal(narrowRow.commonEntryContractBlocker.reasonCode, 'paper_entry_watch_only');
+
+    const contracts = await get(baseUrl, '/api/paper-trading/entry-contracts');
+    assert.equal(contracts.status, 200);
+    assert.equal(contracts.body.summary.totalStrategies, 33);
+    assert.equal(contracts.body.summary.ready, 3);
+    assert.equal(contracts.body.summary.missing, 30);
+    assert.equal(contracts.body.entryContractsEnabled, true);
+    safety(contracts.body);
 
     const detail = await get(baseUrl, '/api/paper-trading/enabled-strategies/ema_pullback_continuation');
     assert.equal(detail.status, 200);

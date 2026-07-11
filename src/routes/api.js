@@ -112,6 +112,7 @@ const paperTradingStatusService = require('../services/paperTradingStatusService
 const paperTradingRuntimeService = require('../services/paperTradingRuntimeService');
 const paperStrategyApprovalService = require('../services/paperStrategyApprovalService');
 const paperEnabledStrategiesService = require('../services/paperEnabledStrategiesService');
+const paperStrategyEntryContractService = require('../services/paperStrategyEntryContractService');
 const futuresPaperDeskService = require('../services/futuresPaperDeskService');
 const futuresPaperAccountService = require('../services/futuresPaperAccountService');
 const futuresPaperLedgerService = require('../services/futuresPaperLedgerService');
@@ -3497,6 +3498,16 @@ router.get('/paper-trading/runtime', (req, res) => {
     }));
   } catch (err) {
     res.status(500).json({ ok: false, error: err.message, ...paperTradingRuntimeService.SAFETY });
+  }
+});
+
+router.get('/paper-trading/entry-contracts', (req, res) => {
+  try {
+    res.json(paperStrategyEntryContractService.buildEntryContractsResponse({
+      windowHours: req.query.windowHours || req.query.hours || 24,
+    }));
+  } catch (err) {
+    res.status(500).json({ status: 'error', ok: false, error: err.message, ...paperStrategyEntryContractService.SAFETY });
   }
 });
 

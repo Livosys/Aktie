@@ -523,6 +523,17 @@ function buildPaperStrategyList(options = {}) {
   const raw = readStoreRaw();
   const candidates = latestCandidateByStrategyId();
   const stats = tradeStatsByStrategyId();
+  const entryContractService = lazy('./paperStrategyEntryContractService');
+  let entryContractDiagnostics = null;
+  try {
+    entryContractDiagnostics = entryContractService && entryContractService.buildEntryContractDiagnostics
+      ? entryContractService.buildEntryContractDiagnostics({
+        windowHours: options.entryContractWindowHours || 24,
+      })
+      : null;
+  } catch (_) {
+    entryContractDiagnostics = null;
+  }
   const manualMode = manualListControlsRuntime();
   const catalogRows = getCatalogStrategies();
   const catalogStatus = catalogRows.length ? 'ok' : 'empty';
@@ -537,6 +548,10 @@ function buildPaperStrategyList(options = {}) {
       ? readinessRow.technicalReadiness || (readinessRow.readiness === 'READY_FOR_PAPER' ? 'READY' : readinessRow.readiness)
       : null;
     const eligibility = paperEligibilityFor({ enabled, readinessRow, strategy });
+    const entryContract = entryContractService && entryContractService.getEntryContract
+      ? entryContractService.getEntryContract(strategy.id)
+      : null;
+    const contractDiag = entryContractDiagnostics?.byStrategyId?.[strategy.id] || null;
 
     return {
       strategyId: strategy.id,
@@ -568,17 +583,52 @@ function buildPaperStrategyList(options = {}) {
       paperTradeCount: stat ? stat.count : 0,
       winRate: decided > 0 ? Math.round((stat.wins / decided) * 1000) / 10 : null,
       avgPnl: stat && stat.pnlCount > 0 ? Math.round((stat.pnlSum / stat.pnlCount) * 10000) / 10000 : null,
+      entryContractStatus: entryContract ? 'ready' : 'missing',
+      entryContractReady: Boolean(entryContract),
+      entryContractVersion: entryContract ? entryContract.version : null,
+      entryContract: entryContract ? {
+        version: entryContract.version,
+        allowedSubtypes: arr(entryContract.allowedSubtypes),
+        allowedStatuses: arr(entryContract.allowedStatuses),
+        blockedStatuses: arr(entryContract.blockedStatuses),
+        requiredConfirmations: arr(entryContract.requiredConfirmations),
+        maxSignalAgeMs: entryContract.maxSignalAgeMs,
+        requiresClosedCandle: entryContract.requiresClosedCandle === true,
+        requiresMarketOpen: entryContract.requiresMarketOpen === true,
+        allowedSessions: arr(entryContract.allowedSessions),
+        lateEntryPolicy: entryContract.lateEntryPolicy,
+        extendedMovePolicy: entryContract.extendedMovePolicy,
+      } : null,
+      entryContractDiagnostics: contractDiag,
+      latestEntryContractBlock: contractDiag ? contractDiag.latestContractBlock : null,
+      commonEntryContractBlocker: contractDiag ? contractDiag.commonBlocker : null,
+      entryContractCandidateCount: contractDiag ? contractDiag.candidates : 0,
+      entryContractPassCount: contractDiag ? contractDiag.contractPass : 0,
+      entryContractBlockCount: contractDiag ? contractDiag.contractBlock : 0,
+      timeoutRate: contractDiag ? contractDiag.timeoutRate : null,
+      outcomeCounts: contractDiag ? {
+        WIN: contractDiag.wins || 0,
+        LOSS: contractDiag.losses || 0,
+        TIMEOUT: contractDiag.timeouts || 0,
+      } : { WIN: 0, LOSS: 0, TIMEOUT: 0 },
+      avgMfe: contractDiag ? contractDiag.avgMfe : null,
+      avgMae: contractDiag ? contractDiag.avgMae : null,
       safety: SAFETY,
       ...SAFETY,
     };
   });
 
   const enabledCount = strategies.filter((strategy) => strategy.enabledForPaper).length;
+  const entryContractsReady = strategies.filter((strategy) => strategy.entryContractReady).length;
   return {
     status: catalogStatus === 'ok' && raw.status === 'ok' ? 'ok' : 'degraded',
     generatedAt: nowIso(),
     runtimeGateMode: manualMode ? 'manual' : 'legacy',
     manualListControlsRuntime: manualMode,
+    entryContractsEnabled: entryContractService && entryContractService.entryContractsEnabled
+      ? entryContractService.entryContractsEnabled()
+      : false,
+    entryContractVersion: entryContractService ? entryContractService.PAPER_ENTRY_CONTRACT_VERSION || null : null,
     summary: {
       total: strategies.length,
       enabled: enabledCount,
@@ -586,11 +636,20 @@ function buildPaperStrategyList(options = {}) {
       ready: strategies.filter((strategy) => strategy.paperEligibility === 'READY').length,
       blocked: strategies.filter((strategy) => strategy.paperEligibility === 'BLOCKED').length,
       disabledByUser: strategies.filter((strategy) => strategy.paperEligibility === 'DISABLED_BY_USER').length,
+      entryContractsReady,
+      entryContractsMissing: strategies.length - entryContractsReady,
+      entryContractPass: strategies.reduce((sum, strategy) => sum + (strategy.entryContractPassCount || 0), 0),
+      entryContractBlock: strategies.reduce((sum, strategy) => sum + (strategy.entryContractBlockCount || 0), 0),
     },
     sources: {
       catalog: { status: catalogStatus },
       enabledStore: { status: raw.status },
       readiness: { status: readinessStatus },
+      entryContracts: {
+        status: entryContractService ? 'ok' : 'missing',
+        diagnosticsStatus: entryContractDiagnostics ? entryContractDiagnostics.status : 'unavailable',
+        since: entryContractDiagnostics ? entryContractDiagnostics.since : null,
+      },
     },
     strategies,
     note_sv: 'Du väljer manuellt vilka strategier som får delta i Paper Trading. Aktivering innebär inte att en trade automatiskt öppnas; alla data-, entry-, risk- och säkerhetskontroller gäller fortfarande.',
