@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "updatedAt": "2026-07-11T17:17:47.027Z",
+  "updatedAt": "2026-07-11T17:37:10.555Z",
   "strategies": {
     "crypto_fast_momentum": {
       "enabled": false,
@@ -124,11 +124,11 @@
     },
     "narrow_state_expansion_long": {
       "enabled": true,
-      "enabledAt": "2026-07-11T17:17:47.018Z",
-      "enabledBy": "manual_initial_migration",
+      "enabledAt": "2026-07-11T17:37:09.147Z",
+      "enabledBy": "manual_api",
       "disabledAt": null,
       "disabledBy": null,
-      "note": "manual_initial_migration"
+      "note": null
     },
     "narrow_state_fakeout_reversal": {
       "enabled": false,
@@ -236,11 +236,11 @@
     },
     "vwap_failed_breakout_short": {
       "enabled": false,
-      "enabledAt": null,
-      "enabledBy": null,
-      "disabledAt": "2026-07-11T17:17:47.018Z",
-      "disabledBy": "manual_initial_migration",
-      "note": "manual_initial_migration"
+      "enabledAt": "2026-07-11T17:37:09.307Z",
+      "enabledBy": "manual_api",
+      "disabledAt": "2026-07-11T17:37:10.555Z",
+      "disabledBy": "manual_api",
+      "note": null
     },
     "vwap_momentum_long": {
       "enabled": false,
@@ -260,11 +260,11 @@
     },
     "vwap_volume_breakout_long": {
       "enabled": true,
-      "enabledAt": "2026-07-11T17:17:47.018Z",
-      "enabledBy": "manual_initial_migration",
+      "enabledAt": "2026-07-11T17:36:18.727Z",
+      "enabledBy": "manual_api",
       "disabledAt": null,
       "disabledBy": null,
-      "note": "manual_initial_migration"
+      "note": null
     }
   },
   "history": [
@@ -498,6 +498,42 @@
       "source": "manual_initial_migration",
       "at": "2026-07-11T17:17:47.018Z",
       "note": "manual_initial_migration"
+    },
+    {
+      "strategyId": "vwap_volume_breakout_long",
+      "action": "disable",
+      "source": "manual_api",
+      "at": "2026-07-11T17:36:18.704Z"
+    },
+    {
+      "strategyId": "vwap_volume_breakout_long",
+      "action": "enable",
+      "source": "manual_api",
+      "at": "2026-07-11T17:36:18.727Z"
+    },
+    {
+      "strategyId": "narrow_state_expansion_long",
+      "action": "disable",
+      "source": "manual_api",
+      "at": "2026-07-11T17:37:08.206Z"
+    },
+    {
+      "strategyId": "narrow_state_expansion_long",
+      "action": "enable",
+      "source": "manual_api",
+      "at": "2026-07-11T17:37:09.147Z"
+    },
+    {
+      "strategyId": "vwap_failed_breakout_short",
+      "action": "enable",
+      "source": "manual_api",
+      "at": "2026-07-11T17:37:09.307Z"
+    },
+    {
+      "strategyId": "vwap_failed_breakout_short",
+      "action": "disable",
+      "source": "manual_api",
+      "at": "2026-07-11T17:37:10.555Z"
     }
   ]
 }
