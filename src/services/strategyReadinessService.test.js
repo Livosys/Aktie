@@ -6,6 +6,22 @@
 // repot. Inga trades/kandidater skapas, inga stores muteras.
 
 const assert = require('assert/strict');
+const fs = require('fs');
+const os = require('os');
+const path = require('path');
+
+const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'strategy-readiness-manual-'));
+process.env.PAPER_ENABLED_STRATEGIES_FILE = path.join(tmpDir, 'enabled-strategies.json');
+process.env.PAPER_MANUAL_STRATEGY_LIST_ENABLED = 'false';
+
+const paperEnabledStrategies = require('./paperEnabledStrategiesService');
+paperEnabledStrategies._internal.writeStoreAtomic(
+  paperEnabledStrategies.buildInitialStore({
+    now: '2026-07-11T17:00:00.000Z',
+    source: 'manual_initial_migration',
+  }),
+  new Date('2026-07-11T17:00:00.000Z'),
+);
 
 const svc = require('./strategyReadinessService');
 const catalogService = require('./daytradingStrategyCatalogService');
@@ -29,8 +45,24 @@ for (const row of rows) {
 }
 
 // Summeringen ska täcka alla rader exakt en gång.
+const readinessSummaryKeys = new Set([
+  'readyForPaper',
+  'readyForReplay',
+  'readyForBatch',
+  'needsProducer',
+  'needsMapping',
+  'needsRuntimeConnector',
+  'needsApprovalAlignment',
+  'needsMarketContext',
+  'needsEntryContract',
+  'needsCostModel',
+  'needsMoreTesting',
+  'intentionallyDisabled',
+  'unsupported',
+  'broken',
+]);
 const summarySum = Object.entries(result.summary)
-  .filter(([k]) => k !== 'total')
+  .filter(([k]) => readinessSummaryKeys.has(k))
   .reduce((acc, [, v]) => acc + v, 0);
 assert.equal(summarySum, rows.length, 'summary-kategorierna summerar till total');
 
@@ -184,6 +216,62 @@ for (const id of ['high_volatility_reversal', 'support_bounce', 'resistance_reje
   assert.ok(byId.get(id).warnings.includes('missing_family'), `${id}: missing_family-varning`);
 }
 
+// FAS 5: manual Paper Strategy List separerar teknisk readiness från
+// användarens val. Approval/family finns kvar som audit, men styr inte
+// huvudreadiness när PAPER_MANUAL_STRATEGY_LIST_ENABLED=true.
+{
+  process.env.PAPER_MANUAL_STRATEGY_LIST_ENABLED = 'true';
+  const manual = svc.getStrategyReadiness({ noCache: true });
+  const manualRows = manual.strategies;
+  const manualById = new Map(manualRows.map((r) => [r.strategyId, r]));
+  assert.equal(manual.runtimeGateMode, 'manual');
+  assert.equal(manual.manualListControlsRuntime, true);
+  assert.equal(manualRows.length, catalogCount);
+  assert.equal(manual.summary.enabledForPaper, 3);
+  assert.deepEqual(manualRows.filter((r) => r.enabledForPaper).map((r) => r.strategyId).sort(), [
+    'ema_pullback_continuation',
+    'narrow_state_expansion_long',
+    'vwap_volume_breakout_long',
+  ]);
+
+  const manualReady = manualRows.filter((r) => r.readiness === svc.READINESS.READY_FOR_PAPER).map((r) => r.strategyId).sort();
+  assert.deepEqual(manualReady, [
+    'ema_pullback_continuation',
+    'narrow_state_expansion_long',
+    'vwap_volume_breakout_long',
+  ], 'READY_FOR_PAPER kräver både enabled och teknisk readiness i manual mode');
+
+  const manualNarrowFakeout = manualById.get('narrow_fakeout_reversal_v1');
+  assert.equal(manualNarrowFakeout.enabledForPaper, false);
+  assert.equal(manualNarrowFakeout.manualSelectionStatus, 'disabled');
+  assert.equal(manualNarrowFakeout.technicalReadiness, 'READY');
+  assert.equal(manualNarrowFakeout.paperEligibility, 'DISABLED_BY_USER');
+  assert.equal(manualNarrowFakeout.paperBlockedReason, 'paper_strategy_not_enabled');
+  assert.equal(manualNarrowFakeout.legacyApprovalStatus, 'approved');
+  assert.equal(manualNarrowFakeout.legacySelectedInFamily, false);
+  assert.notEqual(manualNarrowFakeout.readiness, svc.READINESS.NEEDS_APPROVAL_ALIGNMENT,
+    'manual mode använder inte approval alignment som huvudstatus för disabled strategi');
+
+  paperEnabledStrategies.enableStrategy('crypto_momentum_scalper', { source: 'test' });
+  const enabledButBlocked = svc.getStrategyReadiness({ noCache: true });
+  const enabledCrypto = enabledButBlocked.strategies.find((r) => r.strategyId === 'crypto_momentum_scalper');
+  assert.equal(enabledCrypto.enabledForPaper, true);
+  assert.equal(enabledCrypto.manualSelectionStatus, 'enabled');
+  assert.equal(enabledCrypto.technicalReadiness, svc.READINESS.NEEDS_RUNTIME_CONNECTOR);
+  assert.equal(enabledCrypto.paperEligibility, 'BLOCKED');
+  assert.equal(enabledCrypto.paperBlockedReason, 'paper_strategy_enabled_but_runtime_blocked');
+  paperEnabledStrategies.disableStrategy('crypto_momentum_scalper', { source: 'test' });
+
+  const manualVwapShort = manualById.get('vwap_failed_breakout_short');
+  assert.equal(manualVwapShort.direction, 'short');
+  assert.equal(manualVwapShort.enabledForPaper, false);
+  assert.equal(manualVwapShort.technicalReadiness, 'READY');
+  assert.equal(manualVwapShort.paperEligibility, 'DISABLED_BY_USER');
+  assert.ok(manualVwapShort.warnings.includes('short_only_strategy'));
+
+  process.env.PAPER_MANUAL_STRATEGY_LIST_ENABLED = 'false';
+}
+
 // Safety-stämpel på svar och varje rad.
 assert.equal(result.mode, 'paper_only');
 assert.equal(result.actions_allowed, false);
@@ -246,7 +334,7 @@ assertSafetyObject(result, 'normalt svar');
 
 // Sources-blocket finns med giltiga statusvärden.
 const validSourceStatus = new Set(['ok', 'empty', 'degraded', 'error']);
-for (const key of ['catalog', 'producerRegistry', 'approvalStore', 'runtimeConnector']) {
+for (const key of ['catalog', 'producerRegistry', 'approvalStore', 'manualEnabledStore', 'runtimeConnector']) {
   assert.ok(result.sources[key], `sources.${key} finns`);
   assert.ok(validSourceStatus.has(result.sources[key].status), `sources.${key}.status giltig`);
 }
@@ -270,3 +358,4 @@ for (const key of ['catalog', 'producerRegistry', 'approvalStore', 'runtimeConne
 }
 
 console.log('strategyReadinessService.test.js passed');
+fs.rmSync(tmpDir, { recursive: true, force: true });

@@ -124,6 +124,30 @@ function loadApprovalSource(catalogStrategies) {
   }
 }
 
+function loadManualEnabledSource(catalogStrategies) {
+  try {
+    const svc = lazy('./paperEnabledStrategiesService');
+    if (!svc) return { status: 'error', manualMode: false, byId: new Map() };
+    const states = svc.getAllStrategyStates();
+    const byId = new Map();
+    for (const strategy of arr(catalogStrategies)) {
+      byId.set(strategy.id, (states.strategies || {})[strategy.id] || {
+        strategyId: strategy.id,
+        enabled: false,
+        storeStatus: states.status || 'missing',
+      });
+    }
+    return {
+      status: states.status || 'ok',
+      manualMode: svc.manualListControlsRuntime(),
+      byId,
+      summary: { total: states.total || byId.size, enabled: states.enabled || 0 },
+    };
+  } catch (err) {
+    return { status: 'error', manualMode: false, byId: new Map(), error: err.message };
+  }
+}
+
 function loadRuntimeSource() {
   try {
     const conn = lazy('./strategyRuntimeConnectorService');
@@ -210,11 +234,36 @@ function nextActionFor(readiness, missingComponents) {
   }
 }
 
+function paperBlockedReasonForTechnical(technicalReadiness, context = {}) {
+  if (technicalReadiness === 'READY') return null;
+  if (technicalReadiness === READINESS.NEEDS_PRODUCER) return 'paper_strategy_enabled_but_no_producer';
+  if (technicalReadiness === READINESS.NEEDS_MAPPING) return 'unknown_strategy_mapping';
+  if (technicalReadiness === READINESS.NEEDS_RUNTIME_CONNECTOR) return 'paper_strategy_enabled_but_runtime_blocked';
+  if (technicalReadiness === READINESS.NEEDS_MARKET_CONTEXT) return context.runtimeBlockedReason || 'missing_market_context';
+  if (technicalReadiness === READINESS.NEEDS_ENTRY_CONTRACT) return 'paper_strategy_enabled_but_entry_contract_missing';
+  if (technicalReadiness === READINESS.UNSUPPORTED) return 'unsupported_strategy';
+  if (technicalReadiness === READINESS.INTENTIONALLY_DISABLED) {
+    return context.intentionalPaperBlock
+      ? 'paper_strategy_enabled_but_entry_contract_missing'
+      : 'intentionally_disabled';
+  }
+  if (technicalReadiness === READINESS.BROKEN) return 'broken_strategy';
+  return 'paper_strategy_enabled_but_runtime_blocked';
+}
+
 function classifyStrategy(strategy, sourcesData) {
-  const { catalogIds, producerRegistry, approval, runtime, mapping } = sourcesData;
+  const {
+    catalogIds,
+    producerRegistry,
+    approval,
+    runtime,
+    mapping,
+    manual = { status: 'missing', manualMode: false, byId: new Map() },
+  } = sourcesData;
   const id = strategy.id;
   const runtimeRow = runtime.rowsById.get(id) || null;
   const approvalRow = approval.byId.get(id) || null;
+  const manualRow = manual.byId.get(id) || null;
 
   const warnings = [];
   const missingComponents = [];
@@ -324,48 +373,70 @@ function classifyStrategy(strategy, sourcesData) {
   const missingCrypto = missingContext.includes('crypto_signal_context');
   const missingMarket = missingContext.filter((m) => m !== 'crypto_signal_context');
 
-  // ── Primär readiness (första matchande regel vinner) ──────────────────────
-  let readiness;
+  // ── Technical readiness: excludes approval/family and manual selection ────
+  let technicalReadiness;
   if (!id) {
-    readiness = READINESS.BROKEN;
+    technicalReadiness = READINESS.BROKEN;
   } else if (suffixDuplicate || shadowDuplicate) {
-    readiness = READINESS.UNSUPPORTED;
+    technicalReadiness = READINESS.UNSUPPORTED;
   } else if (catalogDisabled || userDisabled) {
-    readiness = READINESS.INTENTIONALLY_DISABLED;
+    technicalReadiness = READINESS.INTENTIONALLY_DISABLED;
   } else if (intentionalPaperBlock) {
-    readiness = READINESS.INTENTIONALLY_DISABLED;
-  } else if (approvalStatus === 'paused' || approvalStatus === 'removed') {
-    // Medvetet pausad/borttagen i approval-storen (t.ex. LONG_ONLY-policy för
-    // short-only-strategier) — detta är ett beslut, inte en saknad komponent.
-    // replayEligibility förblir oberoende så research-vägen syns korrekt.
-    readiness = READINESS.INTENTIONALLY_DISABLED;
+    technicalReadiness = READINESS.INTENTIONALLY_DISABLED;
   } else if (producerStatus === 'none') {
     if (missingCrypto) {
-      readiness = READINESS.NEEDS_RUNTIME_CONNECTOR;
+      technicalReadiness = READINESS.NEEDS_RUNTIME_CONNECTOR;
       missingComponents.push('runtime_context:crypto_signal_context');
     } else if (missingMarket.length) {
-      readiness = READINESS.NEEDS_MARKET_CONTEXT;
+      technicalReadiness = READINESS.NEEDS_MARKET_CONTEXT;
       for (const m of missingMarket) missingComponents.push(`market_context:${m}`);
       missingComponents.push('producer');
     } else if (mappingStatus === 'unmapped' || mappingStatus === 'shadowed') {
-      readiness = READINESS.NEEDS_MAPPING;
+      technicalReadiness = READINESS.NEEDS_MAPPING;
       missingComponents.push('mapping');
     } else {
-      readiness = READINESS.NEEDS_PRODUCER;
+      technicalReadiness = READINESS.NEEDS_PRODUCER;
       missingComponents.push('producer');
     }
   } else if (missingCrypto) {
-    readiness = READINESS.NEEDS_RUNTIME_CONNECTOR;
+    technicalReadiness = READINESS.NEEDS_RUNTIME_CONNECTOR;
     missingComponents.push('runtime_context:crypto_signal_context');
   } else if (!runtimeActive) {
-    readiness = READINESS.NEEDS_MARKET_CONTEXT;
+    technicalReadiness = READINESS.NEEDS_MARKET_CONTEXT;
     for (const m of missingMarket) missingComponents.push(`market_context:${m}`);
+  } else {
+    technicalReadiness = 'READY';
+  }
+
+  // ── Primär readiness (mode-dependent) ─────────────────────────────────────
+  const manualMode = manual.manualMode === true;
+  const enabledForPaper = manualRow ? manualRow.enabled === true : false;
+  const manualSelectionStatus = enabledForPaper ? 'enabled' : 'disabled';
+  let readiness;
+  if (manualMode) {
+    if (technicalReadiness === 'READY') {
+      readiness = enabledForPaper && !shortOnly ? READINESS.READY_FOR_PAPER : READINESS.READY_FOR_REPLAY;
+    } else {
+      readiness = technicalReadiness;
+    }
+  } else if (technicalReadiness !== 'READY') {
+    if ((approvalStatus === 'paused' || approvalStatus === 'removed')
+        && technicalReadiness !== READINESS.UNSUPPORTED
+        && technicalReadiness !== READINESS.BROKEN) {
+      // Legacy mode still treats explicit approval-store pauses/removals as the
+      // primary paper readiness state. Manual mode reports them only as audit.
+      readiness = READINESS.INTENTIONALLY_DISABLED;
+    } else {
+      readiness = technicalReadiness;
+    }
+  } else if (approvalStatus === 'paused' || approvalStatus === 'removed') {
+    readiness = READINESS.INTENTIONALLY_DISABLED;
   } else if (approved !== true || familySelectionMismatch) {
     readiness = READINESS.NEEDS_APPROVAL_ALIGNMENT;
     if (approved !== true) missingComponents.push('approval');
     if (familySelectionMismatch) missingComponents.push('family_selection');
   } else if (shortOnly) {
-    // Full kedja men short-only: research-ready, inte LONG_ONLY-kompatibel.
+    // Full legacy chain but short-only: research-ready, not paper-ready.
     readiness = READINESS.READY_FOR_REPLAY;
     warnings.push('paper_short_leak');
   } else {
@@ -382,12 +453,34 @@ function classifyStrategy(strategy, sourcesData) {
   const replayEligibility = producerStatus === 'ok' ? 'READY' : 'NOT_READY';
   const batchEligibility = 'SYNTHETIC_ONLY'; // deterministicTestResult — ingen verklig validering
   let paperEligibility;
-  if (readiness === READINESS.READY_FOR_PAPER) {
+  let paperBlockedReason = null;
+  if (manualMode) {
+    if (!enabledForPaper) {
+      paperEligibility = 'DISABLED_BY_USER';
+      paperBlockedReason = 'paper_strategy_not_enabled';
+    } else if (technicalReadiness !== 'READY') {
+      paperEligibility = 'BLOCKED';
+      paperBlockedReason = paperBlockedReasonForTechnical(technicalReadiness, {
+        runtimeBlockedReason,
+        intentionalPaperBlock,
+      });
+    } else if (shortOnly) {
+      paperEligibility = 'BLOCKED';
+      paperBlockedReason = 'long_only_short_strategy';
+    } else {
+      paperEligibility = 'READY';
+    }
+  } else if (readiness === READINESS.READY_FOR_PAPER) {
     paperEligibility = 'READY';
   } else if (readiness === READINESS.READY_FOR_REPLAY && shortOnly) {
     paperEligibility = 'TECHNICALLY_ALLOWED_BUT_LONG_ONLY_INCOMPATIBLE';
+    paperBlockedReason = 'long_only_short_strategy';
   } else {
     paperEligibility = 'BLOCKED';
+    paperBlockedReason = paperBlockedReasonForTechnical(technicalReadiness, {
+      runtimeBlockedReason,
+      intentionalPaperBlock,
+    });
   }
 
   return {
@@ -396,6 +489,9 @@ function classifyStrategy(strategy, sourcesData) {
     family: strategy.family || null,
     direction: catalogDirection,
     catalogStatus: strategy.status || null,
+    enabledForPaper,
+    manualSelectionStatus,
+    technicalReadiness,
     producerStatus,
     producedSubtypes,
     mappingStatus,
@@ -406,15 +502,18 @@ function classifyStrategy(strategy, sourcesData) {
     requiredContext,
     missingContext,
     approvalStatus,
+    legacyApprovalStatus: approvalStatus,
     approved,
     approvalMismatch,
     selectedInFamily,
+    legacySelectedInFamily: selectedInFamily,
     selectedStrategyId,
     familySelectionMismatch,
     effectiveDirections,
     replayEligibility,
     batchEligibility,
     paperEligibility,
+    paperBlockedReason,
     readiness,
     missingComponents,
     nextAction: nextActionFor(readiness, missingComponents),
@@ -426,6 +525,8 @@ function classifyStrategy(strategy, sourcesData) {
     },
     syntheticBatch: true,
     warnings: [...new Set(warnings)],
+    runtimeGateMode: manualMode ? 'manual' : 'legacy',
+    manualListControlsRuntime: manualMode,
     ...SAFETY,
   };
 }
@@ -450,6 +551,11 @@ function buildSummary(rows) {
     intentionallyDisabled: count(READINESS.INTENTIONALLY_DISABLED),
     unsupported: count(READINESS.UNSUPPORTED),
     broken: count(READINESS.BROKEN),
+    enabledForPaper: rows.filter((r) => r.enabledForPaper === true).length,
+    technicalReady: rows.filter((r) => r.technicalReadiness === 'READY').length,
+    paperEligible: rows.filter((r) => r.paperEligibility === 'READY').length,
+    disabledByUser: rows.filter((r) => r.paperEligibility === 'DISABLED_BY_USER').length,
+    paperBlocked: rows.filter((r) => r.paperEligibility === 'BLOCKED').length,
   };
 }
 
@@ -457,11 +563,12 @@ function computeStrategyReadiness() {
   const catalog = loadCatalogSource();
   const producerRegistry = loadProducerRegistry();
   const approval = loadApprovalSource(catalog.strategies);
+  const manual = loadManualEnabledSource(catalog.strategies);
   const runtime = loadRuntimeSource();
   const mapping = probeMappings(producerRegistry, runtime);
 
   const catalogIds = new Set(catalog.strategies.map((s) => s.id));
-  const sourcesData = { catalogIds, producerRegistry, approval, runtime, mapping };
+  const sourcesData = { catalogIds, producerRegistry, approval, manual, runtime, mapping };
 
   const strategies = catalog.strategies.map((strategy) => {
     try {
@@ -483,12 +590,15 @@ function computeStrategyReadiness() {
   return {
     status: catalog.status === 'ok' ? 'ok' : 'degraded',
     generatedAt: new Date().toISOString(),
+    runtimeGateMode: manual.manualMode ? 'manual' : 'legacy',
+    manualListControlsRuntime: manual.manualMode === true,
     summary: buildSummary(strategies),
     strategies,
     sources: {
       catalog: { status: catalog.status },
       producerRegistry: { status: producerRegistry.status },
       approvalStore: { status: approval.status },
+      manualEnabledStore: { status: manual.status },
       runtimeConnector: { status: runtime.status },
       mappingProbes: { status: mapping.status },
     },
