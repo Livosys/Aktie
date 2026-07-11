@@ -7,6 +7,7 @@ const os = require('os');
 const path = require('path');
 const crypto = require('crypto');
 const { spawn } = require('child_process');
+const tradingOsAuthService = require('../services/tradingOsAuthService');
 
 const ROOT = path.resolve(__dirname, '../..');
 const TMP_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'paper-enabled-strategy-routes-'));
@@ -14,6 +15,7 @@ const ENABLED_STORE = path.join(TMP_DIR, 'enabled-strategies.json');
 const APPROVAL_STORE = path.join(TMP_DIR, 'strategy-approvals.json');
 const ENTRY_EVENTS = path.join(TMP_DIR, 'events.jsonl');
 const ENTRY_TRADES = path.join(TMP_DIR, 'trades.jsonl');
+const AUTH_AUDIT = path.join(TMP_DIR, 'auth-audit.jsonl');
 
 process.env.PAPER_ENABLED_STRATEGIES_FILE = ENABLED_STORE;
 process.env.PAPER_STRATEGY_APPROVALS_FILE = APPROVAL_STORE;
@@ -70,10 +72,6 @@ function freePort() {
   });
 }
 
-function authHeader(user, pass) {
-  return `Basic ${Buffer.from(`${user}:${pass}`).toString('base64')}`;
-}
-
 async function waitForHealth(baseUrl, child) {
   const started = Date.now();
   let lastErr = null;
@@ -115,6 +113,22 @@ async function post(baseUrl, endpoint, headers = {}) {
   return { status: res.status, body: await readJson(res), headers: res.headers };
 }
 
+async function login(baseUrl, username, password) {
+  const res = await fetch(`${baseUrl}/api/auth/login`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ username, password }),
+  });
+  const body = await readJson(res);
+  assert.equal(res.status, 200);
+  assert.equal(body.authenticated, true);
+  assert.equal(body.user.role, 'admin');
+  const cookie = res.headers.get('set-cookie');
+  assert.match(cookie, /trading_os_session=/);
+  assert.ok(body.csrfToken);
+  return { cookie, csrfToken: body.csrfToken };
+}
+
 function safety(payload) {
   assert.equal(payload.mode, 'paper_only');
   assert.equal(payload.actions_allowed, false);
@@ -130,14 +144,19 @@ async function main() {
   const baseUrl = `http://127.0.0.1:${port}`;
   const user = 'operator';
   const pass = 'secret';
+  const passHash = tradingOsAuthService.hashPassword(pass);
 
   const child = spawn(process.execPath, ['server.js'], {
     cwd: ROOT,
     env: {
       ...process.env,
       PORT: String(port),
-      DASHBOARD_USER: user,
-      DASHBOARD_PASSWORD: pass,
+      TRADING_OS_AUTH_ENABLED: 'true',
+      TRADING_OS_ADMIN_USERNAME: user,
+      TRADING_OS_ADMIN_PASSWORD_HASH: passHash,
+      TRADING_OS_SESSION_SECRET: 'route-test-session-secret-with-enough-entropy',
+      TRADING_OS_AUTH_AUDIT_FILE: AUTH_AUDIT,
+      TRADING_OS_COOKIE_SECURE: 'false',
       PAPER_ENABLED_STRATEGIES_FILE: ENABLED_STORE,
       PAPER_STRATEGY_APPROVALS_FILE: APPROVAL_STORE,
       PAPER_ENTRY_CONTRACT_EVENTS_FILE: ENTRY_EVENTS,
@@ -163,7 +182,14 @@ async function main() {
   try {
     await waitForHealth(baseUrl, child);
 
-    const list = await get(baseUrl, '/api/paper-trading/enabled-strategies');
+    const unauthList = await get(baseUrl, '/api/paper-trading/enabled-strategies');
+    assert.equal(unauthList.status, 401, 'strategy list is protected by Trading OS session auth');
+
+    const session = await login(baseUrl, user, pass);
+    const authHeaders = { cookie: session.cookie };
+    const mutationHeaders = { cookie: session.cookie, 'x-csrf-token': session.csrfToken };
+
+    const list = await get(baseUrl, '/api/paper-trading/enabled-strategies', authHeaders);
     assert.equal(list.status, 200);
     assert.equal(list.body.summary.total, 33);
     assert.equal(list.body.summary.enabled, 3);
@@ -182,7 +208,7 @@ async function main() {
     assert.equal(narrowRow.entryContractBlockCount, 1);
     assert.equal(narrowRow.commonEntryContractBlocker.reasonCode, 'paper_entry_watch_only');
 
-    const contracts = await get(baseUrl, '/api/paper-trading/entry-contracts');
+    const contracts = await get(baseUrl, '/api/paper-trading/entry-contracts', authHeaders);
     assert.equal(contracts.status, 200);
     assert.equal(contracts.body.summary.totalStrategies, 33);
     assert.equal(contracts.body.summary.ready, 3);
@@ -190,21 +216,21 @@ async function main() {
     assert.equal(contracts.body.entryContractsEnabled, true);
     safety(contracts.body);
 
-    const detail = await get(baseUrl, '/api/paper-trading/enabled-strategies/ema_pullback_continuation');
+    const detail = await get(baseUrl, '/api/paper-trading/enabled-strategies/ema_pullback_continuation', authHeaders);
     assert.equal(detail.status, 200);
     assert.equal(detail.body.status, 'ok');
     assert.equal(detail.body.strategy.strategyId, 'ema_pullback_continuation');
     assert.equal(detail.body.strategy.enabledForPaper, true);
     safety(detail.body);
 
-    const history = await get(baseUrl, '/api/paper-trading/enabled-strategies/history');
+    const history = await get(baseUrl, '/api/paper-trading/enabled-strategies/history', authHeaders);
     assert.equal(history.status, 200);
     assert.equal(history.body.status, 'ok');
     assert.equal(history.body.total, 33);
     assert.ok(Array.isArray(history.body.history), '/history route is registered before /:strategyId');
     safety(history.body);
 
-    const unknownDetail = await get(baseUrl, '/api/paper-trading/enabled-strategies/not_a_strategy');
+    const unknownDetail = await get(baseUrl, '/api/paper-trading/enabled-strategies/not_a_strategy', authHeaders);
     assert.equal(unknownDetail.status, 404);
     assert.equal(unknownDetail.body.error, 'unknown_canonical_strategy');
     safety(unknownDetail.body);
@@ -215,34 +241,43 @@ async function main() {
     ]) {
       const unauth = await post(baseUrl, endpoint);
       assert.equal(unauth.status, 401, `${endpoint} requires auth`);
-      assert.equal(unauth.headers.get('www-authenticate'), 'Basic realm="Scanner Dashboard"');
+      assert.equal(unauth.headers.get('www-authenticate'), null);
     }
 
-    const auth = { authorization: authHeader(user, pass) };
-    const unknownMutation = await post(baseUrl, '/api/paper-trading/enabled-strategies/not_a_strategy/enable', auth);
+    const noCsrf = await post(baseUrl, '/api/paper-trading/enabled-strategies/vwap_volume_breakout_long/disable', authHeaders);
+    assert.equal(noCsrf.status, 403, 'mutations require CSRF token');
+    assert.equal(noCsrf.body.error, 'csrf_token_invalid');
+
+    const unknownMutation = await post(baseUrl, '/api/paper-trading/enabled-strategies/not_a_strategy/enable', mutationHeaders);
     assert.equal(unknownMutation.status, 404);
     assert.equal(unknownMutation.body.reason, 'unknown_canonical_strategy');
     safety(unknownMutation.body);
 
-    const disable = await post(baseUrl, '/api/paper-trading/enabled-strategies/vwap_volume_breakout_long/disable', auth);
+    const disable = await post(baseUrl, '/api/paper-trading/enabled-strategies/vwap_volume_breakout_long/disable', mutationHeaders);
     assert.equal(disable.status, 200);
     assert.equal(disable.body.ok, true);
     assert.equal(disable.body.changed, true);
     assert.equal(disable.body.enabled, false);
     safety(disable.body);
 
-    const disableAgain = await post(baseUrl, '/api/paper-trading/enabled-strategies/vwap_volume_breakout_long/disable', auth);
+    const disableAgain = await post(baseUrl, '/api/paper-trading/enabled-strategies/vwap_volume_breakout_long/disable', mutationHeaders);
     assert.equal(disableAgain.status, 200);
     assert.equal(disableAgain.body.changed, false);
 
-    const enable = await post(baseUrl, '/api/paper-trading/enabled-strategies/vwap_volume_breakout_long/enable', auth);
+    const enable = await post(baseUrl, '/api/paper-trading/enabled-strategies/vwap_volume_breakout_long/enable', mutationHeaders);
     assert.equal(enable.status, 200);
     assert.equal(enable.body.ok, true);
     assert.equal(enable.body.changed, true);
     assert.equal(enable.body.enabled, true);
 
-    const afterHistory = await get(baseUrl, '/api/paper-trading/enabled-strategies/history?limit=10');
+    const afterHistory = await get(baseUrl, '/api/paper-trading/enabled-strategies/history?limit=10', authHeaders);
     assert.equal(afterHistory.body.total, 35, 'history changes only for real disable + enable');
+
+    const audit = fs.readFileSync(AUTH_AUDIT, 'utf8');
+    assert.match(audit, /login_success/);
+    assert.match(audit, /strategy_disable/);
+    assert.match(audit, /strategy_enable/);
+    assert.doesNotMatch(audit, /secret|route-test-session-secret/);
 
     assert.equal(sha256(APPROVAL_STORE), approvalBeforeHash, 'approval store hash unchanged by enabled-list mutations');
     assert.equal(fs.statSync(APPROVAL_STORE).mtimeMs, approvalBeforeMtime, 'approval store mtime unchanged by enabled-list mutations');

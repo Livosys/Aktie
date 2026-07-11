@@ -16,6 +16,7 @@ const { initOnStartup: initPaperTrading } = require('./src/paperTrading/paperTra
 const { buildProviderStatus } = require('./src/providerStatus');
 const redisService = require('./src/services/redisService');
 const dailyIntelligencePipeline = require('./src/services/dailyIntelligencePipelineService');
+const tradingOsAuthService = require('./src/services/tradingOsAuthService');
 
 const app = express();
 const PORT = process.env.PORT || 3001;
@@ -86,7 +87,7 @@ function basicAuth(req, res, next) {
   return res.status(401).send('Felaktigt användarnamn eller lösenord');
 }
 
-function requireAuthForMutations(req, res, next) {
+function legacyRequireAuthForMutations(req, res, next) {
   const path = String(req.path || '');
   if (path.startsWith('/tradingview/webhook')) {
     return next();
@@ -125,6 +126,25 @@ function requireAuthForMutations(req, res, next) {
   return basicAuth(req, res, next);
 }
 
+function isPublicApiPath(req) {
+  const pathName = String(req.path || '');
+  return pathName.startsWith('/tradingview/webhook');
+}
+
+function requireTradingOsApiAuth(req, res, next) {
+  if (!tradingOsAuthService.isAuthEnabled()) {
+    return legacyRequireAuthForMutations(req, res, next);
+  }
+  if (isPublicApiPath(req)) return next();
+  return tradingOsAuthService.requireAdminSession(req, res, next);
+}
+
+function requireTradingOsCsrf(req, res, next) {
+  if (!tradingOsAuthService.isAuthEnabled()) return next();
+  if (isPublicApiPath(req)) return next();
+  return tradingOsAuthService.requireCsrf(req, res, next);
+}
+
 // ── App setup ─────────────────────────────────────────────────────────────────
 
 // CORS — restrict to known origins; localhost variants allowed for local dev
@@ -143,6 +163,11 @@ app.use(cors({
   credentials: true,
 }));
 app.use(express.json({ limit: '1mb' }));
+app.use((req, res, next) => {
+  req.tradingOsRequestId = tradingOsAuthService.requestId(req);
+  res.set('X-Request-Id', req.tradingOsRequestId);
+  next();
+});
 
 const apiLimiter = rateLimit({
   windowMs: 60 * 1000,
@@ -171,9 +196,89 @@ app.get('/health', (req, res) => {
   });
 });
 
-// Public dashboard views and read-only GET API routes stay open.
-// Mutating API routes still require dashboard auth.
-app.use('/api', apiLimiter, requireAuthForMutations, apiRouter);
+const loginLimiter = rateLimit({
+  windowMs: 10 * 60 * 1000,
+  max: 30,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: {
+    ok: false,
+    error: 'too_many_login_attempts',
+  },
+});
+
+app.get('/api/auth/session', apiLimiter, (req, res) => {
+  if (!tradingOsAuthService.isAuthEnabled()) {
+    return res.json({
+      ok: true,
+      authEnabled: false,
+      authenticated: true,
+      user: { username: 'auth_disabled', role: 'admin' },
+      csrfToken: null,
+      expiresAt: null,
+    });
+  }
+  res.json({
+    ok: true,
+    authEnabled: true,
+    ...tradingOsAuthService.buildSessionPayload(req),
+  });
+});
+
+app.post('/api/auth/login', loginLimiter, (req, res) => {
+  if (!tradingOsAuthService.isAuthEnabled()) {
+    return res.json({
+      ok: true,
+      authEnabled: false,
+      authenticated: true,
+      user: { username: 'auth_disabled', role: 'admin' },
+      csrfToken: null,
+      expiresAt: null,
+    });
+  }
+  const body = req.body && typeof req.body === 'object' ? req.body : {};
+  const username = String(body.username || '').trim();
+  const password = String(body.password || '');
+  const result = tradingOsAuthService.verifyCredentials({ username, password, req });
+  if (!result.ok) {
+    const status = result.status || 401;
+    const error = status === 429 ? 'too_many_login_attempts' : (status === 503 ? 'auth_not_configured' : 'invalid_credentials');
+    return res.status(status).json({
+      ok: false,
+      authenticated: false,
+      error,
+      message: error === 'invalid_credentials' ? 'Felaktigt användarnamn eller lösenord.' : undefined,
+    });
+  }
+  const session = tradingOsAuthService.createSession(req, res, result.user);
+  res.json({
+    ok: true,
+    authEnabled: true,
+    authenticated: true,
+    user: session.user,
+    expiresAt: session.expiresAt,
+    csrfToken: session.csrfToken,
+  });
+});
+
+app.post('/api/auth/logout', apiLimiter, (req, res) => {
+  if (!tradingOsAuthService.isAuthEnabled()) {
+    return res.json({ ok: true, authEnabled: false, authenticated: false });
+  }
+  const session = tradingOsAuthService.getSession(req, { auditExpired: true });
+  if (session) {
+    const csrf = tradingOsAuthService.verifyCsrf(req);
+    if (!csrf.ok) {
+      return res.status(csrf.status || 403).json({ ok: false, error: csrf.error || 'csrf_token_invalid' });
+    }
+  }
+  tradingOsAuthService.destroySession(req, res);
+  res.json({ ok: true, authEnabled: true, authenticated: false });
+});
+
+// Trading OS API routes require a server-side admin session when
+// TRADING_OS_AUTH_ENABLED is active. Mutations also require CSRF.
+app.use('/api', apiLimiter, requireTradingOsApiAuth, requireTradingOsCsrf, apiRouter);
 app.use(express.static(path.join(__dirname, 'client', 'dist')));
 app.get('*', (req, res) => {
   res.sendFile(path.join(__dirname, 'client', 'dist', 'index.html'));

@@ -6,10 +6,12 @@ const net = require('net');
 const os = require('os');
 const path = require('path');
 const { spawn } = require('child_process');
+const tradingOsAuthService = require('../services/tradingOsAuthService');
 
 const ROOT = path.resolve(__dirname, '../..');
 const TMP_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'paper-strategy-auth-route-'));
 const TMP_STORE = path.join(TMP_DIR, 'strategy-approvals.json');
+const AUTH_AUDIT = path.join(TMP_DIR, 'auth-audit.jsonl');
 
 function freePort() {
   return new Promise((resolve, reject) => {
@@ -20,10 +22,6 @@ function freePort() {
       server.close(() => resolve(port));
     });
   });
-}
-
-function authHeader(user, pass) {
-  return `Basic ${Buffer.from(`${user}:${pass}`).toString('base64')}`;
 }
 
 async function waitForHealth(baseUrl, child) {
@@ -67,11 +65,27 @@ async function post(baseUrl, endpoint, headers = {}) {
   return { status: res.status, body: await readJson(res), headers: res.headers };
 }
 
+async function login(baseUrl, username, password) {
+  const res = await fetch(`${baseUrl}/api/auth/login`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ username, password }),
+  });
+  const body = await readJson(res);
+  assert.equal(res.status, 200);
+  assert.equal(body.authenticated, true);
+  const cookie = res.headers.get('set-cookie');
+  assert.match(cookie, /trading_os_session=/);
+  assert.ok(body.csrfToken);
+  return { cookie, csrfToken: body.csrfToken };
+}
+
 async function main() {
   const port = await freePort();
   const baseUrl = `http://127.0.0.1:${port}`;
   const user = 'operator';
   const pass = 'secret';
+  const passHash = tradingOsAuthService.hashPassword(pass);
   const strategyId = 'vwap_volume_breakout_long';
 
   const child = spawn(process.execPath, ['server.js'], {
@@ -79,8 +93,12 @@ async function main() {
     env: {
       ...process.env,
       PORT: String(port),
-      DASHBOARD_USER: user,
-      DASHBOARD_PASSWORD: pass,
+      TRADING_OS_AUTH_ENABLED: 'true',
+      TRADING_OS_ADMIN_USERNAME: user,
+      TRADING_OS_ADMIN_PASSWORD_HASH: passHash,
+      TRADING_OS_SESSION_SECRET: 'paper-strategy-route-session-secret',
+      TRADING_OS_AUTH_AUDIT_FILE: AUTH_AUDIT,
+      TRADING_OS_COOKIE_SECURE: 'false',
       PAPER_STRATEGY_APPROVALS_FILE: TMP_STORE,
       ENABLE_STOCK_SCANNER: 'false',
       ENABLE_CRYPTO_SCANNER: 'false',
@@ -111,25 +129,37 @@ async function main() {
     for (const endpoint of mutationEndpoints) {
       const unauth = await post(baseUrl, endpoint);
       assert.equal(unauth.status, 401, `${endpoint} must require dashboard auth`);
-      assert.equal(unauth.headers.get('www-authenticate'), 'Basic realm="Scanner Dashboard"');
+      assert.equal(unauth.headers.get('www-authenticate'), null);
     }
 
-    const wrongAuth = await post(baseUrl, mutationEndpoints[0], { authorization: authHeader(user, 'wrong-secret') });
-    assert.equal(wrongAuth.status, 401, 'wrong dashboard auth must be rejected');
-    assert.equal(wrongAuth.headers.get('www-authenticate'), 'Basic realm="Scanner Dashboard"');
+    const wrongLogin = await fetch(`${baseUrl}/api/auth/login`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ username: user, password: 'wrong-secret' }),
+    });
+    assert.equal(wrongLogin.status, 401, 'wrong dashboard auth must be rejected');
 
-    const list = await get(baseUrl, '/api/paper-trading/strategies');
-    assert.equal(list.status, 200, 'read-only strategy list remains available without auth');
+    const unauthList = await get(baseUrl, '/api/paper-trading/strategies');
+    assert.equal(unauthList.status, 401, 'read-only strategy list requires Trading OS session');
+
+    const session = await login(baseUrl, user, pass);
+    const authHeaders = { cookie: session.cookie };
+    const mutationHeaders = { cookie: session.cookie, 'x-csrf-token': session.csrfToken };
+
+    const list = await get(baseUrl, '/api/paper-trading/strategies', authHeaders);
+    assert.equal(list.status, 200, 'read-only strategy list is available with session');
     assert.equal(list.body.status, 'ok');
     assert.equal(list.body.mode, 'paper_only');
 
-    const detail = await get(baseUrl, `/api/paper-trading/strategies/${strategyId}`);
-    assert.equal(detail.status, 200, 'read-only strategy detail remains available without auth');
+    const detail = await get(baseUrl, `/api/paper-trading/strategies/${strategyId}`, authHeaders);
+    assert.equal(detail.status, 200, 'read-only strategy detail is available with session');
     assert.equal(detail.body.status, 'ok');
     assert.equal(detail.body.strategy.strategyId, strategyId);
 
-    const headers = { authorization: authHeader(user, pass) };
-    const approve = await post(baseUrl, mutationEndpoints[0], headers);
+    const missingCsrf = await post(baseUrl, mutationEndpoints[0], authHeaders);
+    assert.equal(missingCsrf.status, 403, 'mutation with session still requires CSRF');
+
+    const approve = await post(baseUrl, mutationEndpoints[0], mutationHeaders);
     assert.equal(approve.status, 200);
     assert.equal(approve.body.ok, true);
     assert.equal(approve.body.status, 'approved');
@@ -139,17 +169,17 @@ async function main() {
     assert.equal(approve.body.live_trading_enabled, false);
     assert.equal(approve.body.broker_enabled, false);
 
-    const pause = await post(baseUrl, mutationEndpoints[1], headers);
+    const pause = await post(baseUrl, mutationEndpoints[1], mutationHeaders);
     assert.equal(pause.status, 200);
     assert.equal(pause.body.ok, true);
     assert.equal(pause.body.status, 'paused');
 
-    const resume = await post(baseUrl, mutationEndpoints[2], headers);
+    const resume = await post(baseUrl, mutationEndpoints[2], mutationHeaders);
     assert.equal(resume.status, 200);
     assert.equal(resume.body.ok, true);
     assert.equal(resume.body.status, 'approved');
 
-    const remove = await post(baseUrl, mutationEndpoints[3], headers);
+    const remove = await post(baseUrl, mutationEndpoints[3], mutationHeaders);
     assert.equal(remove.status, 200);
     assert.equal(remove.body.ok, true);
     assert.equal(remove.body.status, 'removed');
@@ -157,7 +187,7 @@ async function main() {
     assert.equal(remove.body.can_place_orders, false);
 
     const serverSource = fs.readFileSync(path.join(ROOT, 'server.js'), 'utf8');
-    assert.match(serverSource, /app\.use\('\/api', apiLimiter, requireAuthForMutations, apiRouter\)/);
+    assert.match(serverSource, /app\.use\('\/api', apiLimiter, requireTradingOsApiAuth, requireTradingOsCsrf, apiRouter\)/);
     assert.doesNotMatch(serverSource, /paper-trading\/strategies[^]*return next\(\)/, 'paper strategy mutation endpoints are not made public');
     assert.doesNotMatch(serverSource, /futures-paper\/strategies[^]*return next\(\)/, 'futures strategy mutation endpoints remain behind mutation auth');
 

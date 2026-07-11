@@ -114,6 +114,7 @@ const paperEnabledStrategiesService = require('../services/paperEnabledStrategie
 const paperStrategyEntryContractService = require('../services/paperStrategyEntryContractService');
 const decisionMonitorProducerContext = require('../services/decisionMonitorProducerContextService');
 const paperContractFlowValidationService = require('../services/paperContractFlowValidationService');
+const tradingOsAuthService = require('../services/tradingOsAuthService');
 const futuresPaperDeskService = require('../services/futuresPaperDeskService');
 const futuresPaperAccountService = require('../services/futuresPaperAccountService');
 const futuresPaperLedgerService = require('../services/futuresPaperLedgerService');
@@ -3485,6 +3486,13 @@ function handlePaperEnabledStrategyMutation(action) {
       const result = fn(req.params.strategyId, {
         source: 'manual_api',
         note: body.note || null,
+      });
+      tradingOsAuthService.auditEvent(action === 'enable' ? 'strategy_enable' : 'strategy_disable', {
+        req,
+        user: req.tradingOsUser || null,
+        targetStrategyId: req.params.strategyId,
+        result: result.ok ? (result.changed ? 'changed' : 'unchanged') : 'rejected',
+        reason: result.reason || result.error || null,
       });
       const code = result.code || (result.ok ? 200 : 400);
       res.status(code).json({
