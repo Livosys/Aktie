@@ -440,31 +440,23 @@ export function buildBasicAuthHeader(credentials) {
 }
 
 export function operatorMutationPreflight(credentials) {
-  const c = credentials && typeof credentials === 'object' ? credentials : {};
-  const username = safeStr(c.username);
-  const password = c.password === null || c.password === undefined ? null : String(c.password);
-  if (username && password !== null && password !== '') {
-    return { ok: true, authRequired: false, message: null, technicalDetail: null };
-  }
   return {
-    ok: false,
-    authRequired: true,
-    message: 'Du måste logga in som operatör för att ändra strategier.',
-    technicalDetail: 'Ingen operatörsheader skickad. Mutation stoppad i dashboarden före POST.',
+    ok: true,
+    authRequired: false,
+    message: null,
+    technicalDetail: null,
   };
 }
 
 export function buildMutationRequest(id, actionId, operatorCredentials = null) {
   const url = mutationEndpoint(id, actionId);
   const headers = { 'Content-Type': 'application/json' };
-  const authHeader = buildBasicAuthHeader(operatorCredentials);
-  if (authHeader && isFuturesPaperMutationEndpoint(url)) headers.Authorization = authHeader;
   return {
     url,
     options: {
       method: 'POST',
       headers,
-      credentials: 'omit',
+      credentials: 'include',
       body: JSON.stringify({ ...SAFETY_BODY }),
     },
   };
@@ -536,7 +528,7 @@ const ERROR_MESSAGES = Object.freeze({
 export function mutationErrorMessage(body, httpStatus = null) {
   const b = body && typeof body === 'object' ? body : {};
   const reason = sanitizeCredentialText(safeStr(b.reason) || safeStr(b.error) || '');
-  if (httpStatus === 401) return 'Du måste logga in som operatör för att ändra strategier.';
+  if (httpStatus === 401) return 'Sessionen har gått ut. Logga in igen.';
   if (httpStatus === 403) return 'Du har inte behörighet att ändra strategier.';
   if (httpStatus === 503) return 'Approval-status är degraded. Ändringar är tillfälligt blockerade.';
   if ((httpStatus === 409 || httpStatus === 422) && reason) return ERROR_MESSAGES[reason] || `Backend blockerar åtgärden: ${reason}`;

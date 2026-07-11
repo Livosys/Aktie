@@ -4,6 +4,7 @@ import AppShell from './layout/AppShell.jsx';
 import MobileBottomNav from './MobileBottomNav.jsx';
 import AiCopilot from './components/AiCopilot.jsx';
 import { AlertProvider, HeroToastContainer } from './alertContext.jsx';
+import { RequireAuth } from './auth/AuthProvider.jsx';
 
 // New primary pages — lazy-loaded so each route ships as its own chunk
 // instead of one large initial bundle. Paths/redirects/logic are unchanged.
@@ -20,6 +21,7 @@ const InteractiveBrokersPage = lazy(() => import('./pages/InteractiveBrokersPage
 const AdminPage = lazy(() => import('./pages/AdminPage.jsx'));
 const PinescriptPage = lazy(() => import('./pages/PinescriptPage.jsx'));
 const AiControlRoomPage = lazy(() => import('./pages/AiControlRoomPage.jsx'));
+const LoginPage = lazy(() => import('./pages/LoginPage.jsx'));
 
 function RedirectWithSearch({ to }) {
   const { search } = useLocation();
@@ -32,12 +34,11 @@ function PageFallback() {
   return <div className="tos-loading" style={{ margin: '24px' }}>Laddar…</div>;
 }
 
-export default function App() {
+function ProtectedTradingOs() {
   return (
-    <AlertProvider>
+    <>
       <AppShell>
         <HeroToastContainer />
-        <Suspense fallback={<PageFallback />}>
         <Routes>
           {/* Trading OS v2 */}
           <Route path="/"             element={<Navigate to="/supervisor" replace />} />
@@ -111,10 +112,22 @@ export default function App() {
           <Route path="/risk"              element={<Navigate to="/system?tab=safety" replace />} />
           <Route path="/exit"              element={<Navigate to="/lab?tab=exits" replace />} />
         </Routes>
-        </Suspense>
       </AppShell>
       <MobileBottomNav />
       <AiCopilot />
+    </>
+  );
+}
+
+export default function App() {
+  return (
+    <AlertProvider>
+      <Suspense fallback={<PageFallback />}>
+        <Routes>
+          <Route path="/login" element={<LoginPage />} />
+          <Route path="/*" element={<RequireAuth><ProtectedTradingOs /></RequireAuth>} />
+        </Routes>
+      </Suspense>
     </AlertProvider>
   );
 }

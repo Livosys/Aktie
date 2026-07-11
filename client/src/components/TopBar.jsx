@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import SystemStatusStrip from './SystemStatusStrip.jsx';
 import ThemeToggle from './ThemeToggle.jsx';
 import AiSummaryBar from './AiSummaryBar.jsx';
+import { useAuth } from '../auth/AuthProvider.jsx';
 
 const SEARCH_ROUTES = [
   { key: 'supervisor', to: '/system' },
@@ -37,6 +38,7 @@ const SEARCH_ROUTES = [
 export default function TopBar({ onMenu, status }) {
   const [query, setQuery] = useState('');
   const navigate = useNavigate();
+  const auth = useAuth();
 
   function submitSearch(event) {
     event.preventDefault();
@@ -79,6 +81,14 @@ export default function TopBar({ onMenu, status }) {
         <button type="button" className="premium-help-button" onClick={openHelp}>
           Ny här?
         </button>
+        <div style={{ display: 'inline-flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+          <span style={{ color: 'var(--muted)', fontSize: 12, fontWeight: 800 }}>
+            {auth.user?.role === 'admin' ? 'Admin' : auth.user?.username || 'Trading OS'}
+          </span>
+          <button type="button" className="premium-help-button" onClick={auth.logout}>
+            Logga ut
+          </button>
+        </div>
         <ThemeToggle />
       </div>
       <AiSummaryBar />

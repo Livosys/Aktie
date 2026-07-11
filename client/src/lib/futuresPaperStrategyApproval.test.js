@@ -152,7 +152,7 @@ const path = require('path');
   const req = m.buildMutationRequest('narrow_breakout', 'add');
   assert.equal(req.url, '/api/futures-paper/strategies/narrow_breakout/approve');
   assert.equal(req.options.method, 'POST');
-  assert.equal(req.options.credentials, 'omit');
+  assert.equal(req.options.credentials, 'include');
   assert.equal(m.isFuturesPaperMutationEndpoint(req.url), true);
   assert.equal(Object.prototype.hasOwnProperty.call(req.options.headers, 'Authorization'), false);
   const sentBody = JSON.parse(req.options.body);
@@ -162,7 +162,7 @@ const path = require('path');
   assert.equal(sentBody.broker_enabled, false);
 
   const authReq = m.buildMutationRequest('narrow_breakout', 'add', testCredentials);
-  assert.ok(String(authReq.options.headers.Authorization).startsWith('Basic '));
+  assert.equal(Object.prototype.hasOwnProperty.call(authReq.options.headers, 'Authorization'), false, 'session auth never sends Basic Authorization');
   assert.equal(m.isFuturesPaperMutationEndpoint(authReq.url), true);
   const nextReqAfterSuccess = m.buildMutationRequest('narrow_breakout', 'pause', m.emptyOperatorCredentials());
   assert.equal(Object.prototype.hasOwnProperty.call(nextReqAfterSuccess.options.headers, 'Authorization'), false, 'Authorization cannot be reused after one-shot cleanup');
@@ -170,18 +170,16 @@ const path = require('path');
   const externalLookingReq = m.buildMutationRequest('https://evil.example/steal', 'add', testCredentials);
   assert.equal(/^https?:\/\//i.test(externalLookingReq.url), false, 'mutation builder never targets external origins');
   assert.equal(m.isFuturesPaperMutationEndpoint(externalLookingReq.url), true);
-  assert.ok(String(externalLookingReq.options.headers.Authorization).startsWith('Basic '), 'auth header only attaches to same-origin futures mutation endpoint');
+  assert.equal(Object.prototype.hasOwnProperty.call(externalLookingReq.options.headers, 'Authorization'), false, 'auth header is never attached');
 
   assert.equal(m.isFuturesPaperMutationEndpoint('/api/paper-trading/runtime'), false);
   assert.equal(m.isFuturesPaperMutationEndpoint('https://evil.example/api/futures-paper/strategies/x/approve'), false);
-  assert.match(componentSource, /fetch\(url, \{ signal: controller\.signal, credentials: 'omit' \}\)/, 'GET list fetch omits credentials');
+  assert.match(componentSource, /fetch\(url, \{ signal: controller\.signal, credentials: 'include' \}\)/, 'GET list fetch includes session credentials');
   assert.doesNotMatch(componentSource, /Authorization['"]?\s*:/, 'component does not hard-code Authorization on GET');
 
   const anonPreflight = m.operatorMutationPreflight(null);
-  assert.equal(anonPreflight.ok, false);
-  assert.equal(anonPreflight.authRequired, true);
-  assert.equal(anonPreflight.message, 'Du måste logga in som operatör för att ändra strategier.');
-  assert.ok(anonPreflight.technicalDetail.includes('före POST'));
+  assert.equal(anonPreflight.ok, true);
+  assert.equal(anonPreflight.authRequired, false);
 
   const authedPreflight = m.operatorMutationPreflight(testCredentials);
   assert.equal(authedPreflight.ok, true);
@@ -195,29 +193,14 @@ const path = require('path');
 
   const emptyCredentials = m.emptyOperatorCredentials();
   assert.deepEqual(emptyCredentials, { username: '', password: '' });
-  assert.equal(m.operatorMutationPreflight(emptyCredentials).ok, false, 'cancelled/empty dialog credentials do not pass preflight');
-  assert.match(componentSource, /<button[\s\S]*>\s*Operatörsinloggning\s*<\/button>/, 'approval panel exposes an explicit operator login button');
-  assert.match(componentSource, /role="dialog"[\s\S]*aria-label="Operatörsinloggning"/, 'operator login opens as a dialog');
-  assert.match(componentSource, /Logga in och fortsätt/, 'operator dialog has an explicit submit button');
-  assert.match(componentSource, /finally \{[\s\S]*clearOperatorDialog\(\)[\s\S]*setBusyId\(null\)/, 'all completed mutation attempts clear temporary auth state');
-  assert.match(componentSource, /clearOperatorDialog[\s\S]*setOperatorForm\(emptyOperatorCredentials\(\)\)[\s\S]*setOperatorPasswordVisible\(false\)[\s\S]*setPendingOperatorAction\(null\)[\s\S]*setShowOperatorLogin\(false\)/, 'dialog cleanup clears credentials, reveal state, pending action and visibility');
-  assert.match(componentSource, /setShowOperatorLogin\(false\)/, 'cancel hides operator dialog');
-  assert.match(componentSource, />\s*Avbryt\s*</, 'operator dialog has a cancel button');
-  assert.match(componentSource, /type=\{passwordInputType\(passwordVisible\)\}/, 'password input type is controlled by the reveal helper');
-  assert.match(componentSource, /autoComplete="current-password"/, 'password input keeps current-password autocomplete');
-  assert.match(componentSource, /passwordToggleLabel\(passwordVisible\)/, 'dialog uses the reveal/hide password label');
-  assert.match(componentSource, /setOperatorPasswordVisible\(\(visiblePassword\) => !visiblePassword\)/, 'show/hide password toggles state');
+  assert.equal(m.operatorMutationPreflight(emptyCredentials).ok, true, 'session auth does not require one-shot credentials');
+  assert.doesNotMatch(componentSource, /Operatörsinloggning/, 'approval panel no longer exposes Basic Auth operator login');
+  assert.doesNotMatch(componentSource, /Logga in och fortsätt/, 'operator credential dialog is removed');
+  assert.match(componentSource, /finally \{[\s\S]*setBusyId\(null\)/, 'all completed mutation attempts clear busy state');
   const refetchIndex = componentSource.indexOf('if (followUp.refetch) await load();');
-  const cleanupIndex = componentSource.indexOf('clearOperatorDialog();', refetchIndex);
-  assert.ok(refetchIndex > -1 && cleanupIndex > refetchIndex, 'success path refetches before one-shot auth cleanup');
-  assert.match(componentSource, /catch \(e\) \{[\s\S]*interpretMutationResult\(res, data, err\)[\s\S]*finally \{[\s\S]*clearOperatorDialog\(\)/, 'network/error paths also clear temporary auth state');
-  assert.match(componentSource, /onCancel=\{clearOperatorDialog\}/, 'cancel clears fields and hides dialog');
-  const clearDialogBlock = componentSource.slice(componentSource.indexOf('const clearOperatorDialog'), componentSource.indexOf('const beginOperatorLogin'));
-  assert.doesNotMatch(clearDialogBlock, /fetchMutation|fetch\(/, 'cancel does not send POST');
-  const beginLoginBlock = componentSource.slice(componentSource.indexOf('const beginOperatorLogin'), componentSource.indexOf('const submitOperatorLogin'));
-  assert.doesNotMatch(beginLoginBlock, /fetchMutation|buildMutationRequest|fetch\(/, 'clicking a row action opens the dialog but does not mutate before login');
-  assert.match(componentSource, /onClick=\{\(\) => beginOperatorLogin\(s, actionId\)\}/, 'row actions open the operator dialog');
-  assert.match(componentSource, /onSubmit=\{submitOperatorLogin\}/, 'dialog submit performs the pending one-shot mutation');
+  assert.ok(refetchIndex > -1, 'success path refetches after session mutation');
+  assert.match(componentSource, /catch \(e\) \{[\s\S]*interpretMutationResult\(res, data, err\)[\s\S]*finally \{[\s\S]*setBusyId\(null\)/, 'network/error paths clear busy state');
+  assert.match(componentSource, /onClick=\{\(\) => runSessionMutation\(s, actionId\)\}/, 'row actions mutate through the authenticated session');
 
   const originalLocalStorage = global.localStorage;
   const originalSessionStorage = global.sessionStorage;
@@ -267,31 +250,26 @@ const path = require('path');
   assert.ok(dupErr.technicalDetail.includes('canonicalReplacementId=narrow_fakeout_reversal_v1'));
 
   const authErr = m.interpretMutationResult({ ok: false, status: 401 }, { ok: false, error: 'Autentisering krävs' }, null);
-  assert.equal(authErr.message, 'Du måste logga in som operatör för att ändra strategier.');
+  assert.equal(authErr.message, 'Sessionen har gått ut. Logga in igen.');
   assert.equal(authErr.authRequired, true);
   assert.ok(authErr.technicalDetail.includes('HTTP 401'));
   assert.deepEqual(m.emptyOperatorCredentials(), { username: '', password: '' });
-  assert.ok(cleanupIndex > -1, '401 uses shared one-shot cleanup in finally');
 
   const forbiddenErr = m.interpretMutationResult({ ok: false, status: 403 }, { ok: false, reason: 'forbidden' }, null);
   assert.equal(forbiddenErr.message, 'Du har inte behörighet att ändra strategier.');
   assert.equal(forbiddenErr.forbidden, true);
-  assert.ok(cleanupIndex > -1, '403 uses shared one-shot cleanup in finally');
 
   const conflictErr = m.interpretMutationResult({ ok: false, status: 409 }, { ok: false, reason: 'cannot_pause_removed' }, null);
   assert.equal(conflictErr.message, 'Kan inte pausa en borttagen strategi.');
-  assert.ok(cleanupIndex > -1, '409 uses shared one-shot cleanup in finally');
 
   const validationErr = m.interpretMutationResult({ ok: false, status: 422 }, { ok: false, reason: 'not_approvable_needs_mapping' }, null);
   assert.equal(validationErr.message, 'Strategin behöver Futures-anpassning innan den kan läggas till.');
-  assert.ok(cleanupIndex > -1, '422 uses shared one-shot cleanup in finally');
 
   const netErr = m.interpretMutationResult(null, null, new TypeError('Failed to fetch'));
   assert.equal(netErr.ok, false);
   assert.equal(netErr.message, 'Kunde inte nå servern. Kontrollera anslutningen.');
   assert.equal(netErr.networkError, true);
   assert.equal(netErr.authRequired, false);
-  assert.ok(cleanupIndex > -1, 'network error uses shared one-shot cleanup in finally');
 
   const degraded = m.interpretMutationResult({ ok: false, status: 503 }, { ok: false, reason: 'futures_approval_state_degraded' }, null);
   assert.equal(degraded.message, 'Approval-status är degraded. Ändringar är tillfälligt blockerade.');
