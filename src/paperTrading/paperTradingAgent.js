@@ -24,8 +24,15 @@ const fs     = require('fs');
 const path   = require('path');
 const crypto = require('crypto');
 
-const { getLatestResults, getStockFeedStatus } = require('../scanner/scheduler');
-const { getCryptoResults }                      = require('../scanner/cryptoScheduler');
+const {
+  getLatestResults,
+  getStockFeedStatus,
+  getLiveCandlesDebug: getStockLiveCandlesDebug,
+} = require('../scanner/scheduler');
+const {
+  getCryptoResults,
+  getLiveCandlesDebug: getCryptoLiveCandlesDebug,
+} = require('../scanner/cryptoScheduler');
 const { buildDecisionMonitor }                  = require('../scanner/decisionMonitor');
 const { getMarketGroup, getRiskProfile, MARKET_PROFILES } = require('../markets/marketProfiles');
 const { getMarketCompass }                      = require('../markets/marketCompass');
@@ -48,6 +55,7 @@ const strategyRuntimeConnector                  = require('../services/strategyR
 const paperApprovalGate                         = require('../services/paperApprovalGateService');
 const paperEnabledStrategies                    = require('../services/paperEnabledStrategiesService');
 const paperStrategyEntryContracts               = require('../services/paperStrategyEntryContractService');
+const decisionMonitorProducerContext            = require('../services/decisionMonitorProducerContextService');
 const daytradingStrategyCatalog                 = require('../services/daytradingStrategyCatalogService');
 const entryFilterForwardValidation              = require('../services/entryFilterForwardValidationService');
 const paperMarketConfigService                  = require('../services/paperMarketConfigService');
@@ -707,7 +715,12 @@ function qualifiesForEntry(c, state, opts = {}) {
     return { ok: false, reason: 'EMA paused in paper test' };
 
   // ── Decision status ───────────────────────────────────────────────────────
-  if (!['watch', 'caution'].includes(c.status))      return { ok: false, reason: `status=${c.status}` };
+  const entryContractPassed = c.entryContractAllowed === true || opts.entryContractAllowed === true;
+  const allowedStatuses = entryContractPassed
+    ? ['active', 'confirmed', 'entry', 'entry_ready', 'ready']
+    : ['watch', 'caution'];
+  if (!allowedStatuses.includes(String(c.status || '').toLowerCase()))
+    return { ok: false, reason: `status=${c.status}` };
 
   // ── Hard blockers ─────────────────────────────────────────────────────────
   if ((c.hardBlockers || []).length > 0)             return { ok: false, reason: 'hardBlockers present' };
@@ -2592,9 +2605,19 @@ async function runTick() {
           mode: 'paper',
         });
       }
+      const stockResults = decisionMonitorProducerContext.addDaytradeSignals(getLatestResults() || []);
+      const cryptoResults = decisionMonitorProducerContext.addDaytradeSignals(getCryptoResults() || []);
+      const liveCandleDebugBySymbol = decisionMonitorProducerContext.buildLiveCandleDebugMap([
+        ...stockResults.map((row) => ({ ...row, _market: 'stock' })),
+        ...cryptoResults.map((row) => ({ ...row, _market: 'crypto' })),
+      ], {
+        stockReader: getStockLiveCandlesDebug,
+        cryptoReader: getCryptoLiveCandlesDebug,
+      });
       const dm = buildDecisionMonitor({
-        stockResults:  getLatestResults()  || [],
-        cryptoResults: getCryptoResults()  || [],
+        stockResults,
+        cryptoResults,
+        liveCandleDebugBySymbol,
         stockFeedStatus,
       });
       candidates = dm.candidates || [];

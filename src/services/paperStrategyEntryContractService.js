@@ -374,7 +374,9 @@ function hasVolumeConfirmation(candidate = {}, policy = 'normal_or_strong') {
 }
 
 function hasEmaContext(candidate = {}) {
-  if (candidate.emaContext && typeof candidate.emaContext === 'object') return true;
+  if (candidate.emaContext && typeof candidate.emaContext === 'object') {
+    return candidate.emaContext.hasContext !== false;
+  }
   return Boolean(
     candidate.emaFast != null
     || candidate.emaSlow != null
@@ -411,7 +413,9 @@ function hasEmaPullbackConfirmation(candidate = {}) {
 }
 
 function hasVwapContext(candidate = {}) {
-  if (candidate.vwapContext && typeof candidate.vwapContext === 'object') return true;
+  if (candidate.vwapContext && typeof candidate.vwapContext === 'object') {
+    return candidate.vwapContext.hasContext !== false;
+  }
   return Boolean(
     candidate.vwap != null
     || candidate.vwapDistancePct != null

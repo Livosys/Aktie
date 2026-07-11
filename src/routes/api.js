@@ -36,7 +36,6 @@ const { loadMomentumBacktest, buildMomentumBacktest }  = require('../history/mom
 const { loadMicroMoveAnalysis, buildMicroMoveAnalysis } = require('../history/microMoveAnalyzer');
 const { analyzeSignalQuality }                         = require('../history/signalQualityAnalyzer');
 const { buildSystemHealth }                            = require('../systemHealth');
-const { buildDaytradeSignal }                          = require('../scanner/daytradeSignalEngine');
 const { buildSignalDecisionSummary }                   = require('../scanner/signalDecisionSummary');
 const { buildDecisionMonitor }                         = require('../scanner/decisionMonitor');
 const { buildAiContext }                               = require('../ai/contextBuilder');
@@ -113,6 +112,8 @@ const paperTradingRuntimeService = require('../services/paperTradingRuntimeServi
 const paperStrategyApprovalService = require('../services/paperStrategyApprovalService');
 const paperEnabledStrategiesService = require('../services/paperEnabledStrategiesService');
 const paperStrategyEntryContractService = require('../services/paperStrategyEntryContractService');
+const decisionMonitorProducerContext = require('../services/decisionMonitorProducerContextService');
+const paperContractFlowValidationService = require('../services/paperContractFlowValidationService');
 const futuresPaperDeskService = require('../services/futuresPaperDeskService');
 const futuresPaperAccountService = require('../services/futuresPaperAccountService');
 const futuresPaperLedgerService = require('../services/futuresPaperLedgerService');
@@ -220,117 +221,18 @@ function buildScanResponse(results, status, group) {
 }
 
 function addDaytradeSignals(results) {
-  return (results || []).map((r) => ({
-    ...r,
-    ...buildDaytradeSignal(r),
-  })).map(addStrategyPerformanceContext);
-}
-
-function addStrategyPerformanceContext(result) {
-  try {
-    const strategy = daytradingStrategyCatalog.inferStrategyForSignal(result);
-    if (!strategy) return result;
-    const performance = strategyPerformance.getSignalPerformanceBadge(strategy.id);
-    const priorityBase = Number(result.priorityScore ?? result.tradeScore ?? result.signalScore ?? 0) || 0;
-    return {
-      ...result,
-      strategy_id: strategy.id,
-      strategy_name: strategy.name,
-      strategyLabel: strategy.name,
-      strategy_market_group: strategy.market_group,
-      strategy_performance_badge: performance.badge,
-      strategy_performance_message: performance.message,
-      strategy_priority_score: Math.max(0, Math.min(100, Math.round(priorityBase + performance.priority_adjustment))),
-      strategy_performance: {
-        win_rate: performance.win_rate,
-        trades: performance.trades,
-        score: performance.score,
-        priority_adjustment: performance.priority_adjustment,
-      },
-    };
-  } catch (_) {
-    return result;
-  }
-}
-
-function normalizeDebugCandle(c) {
-  const timestamp = c?.timestamp || c?.ts || c?.t || null;
-  return {
-    timestamp,
-    open: c?.open ?? c?.o ?? null,
-    high: c?.high ?? c?.h ?? null,
-    low: c?.low ?? c?.l ?? null,
-    close: c?.close ?? c?.c ?? null,
-    volume: c?.volume ?? c?.v ?? null,
-  };
-}
-
-function secondsSince(iso) {
-  if (!iso) return null;
-  const ms = new Date(iso).getTime();
-  if (!Number.isFinite(ms)) return null;
-  return Math.max(0, Math.round((Date.now() - ms) / 1000));
+  return decisionMonitorProducerContext.addDaytradeSignals(results);
 }
 
 function readLiveCandleDebug({ symbol, marketType, timeframe, limit }) {
-  const normalizedSymbol = String(symbol || '').trim().toUpperCase();
-  const type = String(marketType || '').toLowerCase();
-  const tf = String(timeframe || '2m').toLowerCase();
-  const checkedSources = [];
-  const notes = [];
-  const reader = type === 'crypto' ? getCryptoLiveCandlesDebug : getStockLiveCandlesDebug;
-
-  let source = reader(normalizedSymbol, tf);
-  checkedSources.push(`${type || 'stock'}:${tf}:live-cache`);
-
-  if (!source && tf === '2m') {
-    const oneMinute = reader(normalizedSymbol, '1m');
-    checkedSources.push(`${type || 'stock'}:1m:live-cache`);
-    if (oneMinute?.candles?.length) {
-      const aggregated = filterComplete(aggregate1mTo2m(oneMinute.candles)).map(normalizeDebugCandle);
-      source = {
-        symbol: normalizedSymbol,
-        marketType: oneMinute.marketType || type || 'stock',
-        timeframe: '2m',
-        sourceName: `${oneMinute.sourceName || 'live_1m'}_aggregated_to_2m`,
-        updatedAt: oneMinute.updatedAt,
-        candles: aggregated,
-      };
-      notes.push('2m candles aggregerade från 1m live bars');
-    }
-  }
-
-  if (!source?.candles?.length) {
-    return {
-      ok: false,
-      error: 'Live candles saknas för symbolen',
-      debug: { checkedSources },
-    };
-  }
-
-  const candles = source.candles
-    .map(normalizeDebugCandle)
-    .filter((c) => c.timestamp)
-    .sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime())
-    .slice(-limit);
-  const latestTimestamp = candles[candles.length - 1]?.timestamp || null;
-
-  return {
-    ok: true,
-    symbol: normalizedSymbol,
-    marketType: source.marketType || type || 'stock',
-    timeframe: source.timeframe || tf,
-    latestTimestamp,
-    dataAgeSeconds: secondsSince(latestTimestamp),
-    source: source.sourceName || 'live-cache',
-    candles,
-    debug: {
-      hasLiveCandles: candles.length > 0,
-      candleCount: candles.length,
-      sourceName: source.sourceName || 'live-cache',
-      notes,
-    },
-  };
+  return decisionMonitorProducerContext.readLiveCandleDebug({
+    symbol,
+    marketType,
+    timeframe,
+    limit,
+    stockReader: getStockLiveCandlesDebug,
+    cryptoReader: getCryptoLiveCandlesDebug,
+  });
 }
 
 function buildTfDebugForCandidate(candidate) {
@@ -363,18 +265,10 @@ function buildTfDebugForCandidate(candidate) {
 }
 
 function buildLiveCandleDebugMap(results) {
-  return (results || []).reduce((acc, item) => {
-    if (!item?.symbol) return acc;
-    const marketType = item._market || item.market || (String(item.symbol).endsWith('USDT') ? 'crypto' : 'stock');
-    const result = readLiveCandleDebug({
-      symbol: item.symbol,
-      marketType,
-      timeframe: '2m',
-      limit: 5,
-    });
-    if (result.ok) acc[item.symbol] = result;
-    return acc;
-  }, {});
+  return decisionMonitorProducerContext.buildLiveCandleDebugMap(results, {
+    stockReader: getStockLiveCandlesDebug,
+    cryptoReader: getCryptoLiveCandlesDebug,
+  });
 }
 
 function buildCurrentDecisionMonitor(options = {}) {
@@ -3508,6 +3402,17 @@ router.get('/paper-trading/entry-contracts', (req, res) => {
     }));
   } catch (err) {
     res.status(500).json({ status: 'error', ok: false, error: err.message, ...paperStrategyEntryContractService.SAFETY });
+  }
+});
+
+router.get('/paper-trading/contract-flow', (req, res) => {
+  try {
+    const { result } = buildCurrentDecisionMonitor({ familyDebug: req.query.familyDebug === '1' });
+    res.json(paperContractFlowValidationService.buildContractFlowValidation({
+      candidates: result.candidates || [],
+    }));
+  } catch (err) {
+    res.status(500).json({ status: 'error', ok: false, error: err.message, ...paperContractFlowValidationService.SAFETY });
   }
 });
 

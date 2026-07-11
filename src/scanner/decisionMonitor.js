@@ -142,6 +142,198 @@ function computeCandleScore2m(candles) {
   };
 }
 
+const PRODUCER_CONFIRMATION_VERSION = 'producer_confirmation_v1';
+const CLOSED_2M_CANDLE_MIN_AGE_MS = 115 * 1000;
+
+function num(value) {
+  const n = Number(value);
+  return Number.isFinite(n) ? n : null;
+}
+
+function lower(value) {
+  return String(value || '').trim().toLowerCase();
+}
+
+function upper(value) {
+  return String(value || '').trim().toUpperCase();
+}
+
+function latestClosedCandleMeta(liveCandleDebug, now = new Date()) {
+  const candles = Array.isArray(liveCandleDebug?.candles) ? liveCandleDebug.candles : [];
+  const latest = candles
+    .filter((c) => c && c.timestamp)
+    .sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime())
+    .slice(-1)[0] || null;
+  const latestMs = latest?.timestamp ? new Date(latest.timestamp).getTime() : NaN;
+  const nowMs = new Date(now).getTime();
+  const ageMs = Number.isFinite(latestMs) && Number.isFinite(nowMs) ? Math.max(0, nowMs - latestMs) : null;
+  const completeByAge = ageMs != null && ageMs >= CLOSED_2M_CANDLE_MIN_AGE_MS;
+  const completeByFlag = latest?.incomplete === false;
+  const incompleteByFlag = latest?.incomplete === true;
+  const closed = Boolean(latest && !incompleteByFlag && (completeByAge || completeByFlag));
+  return {
+    confirmed: closed,
+    source: latest ? (liveCandleDebug.source || liveCandleDebug.debug?.sourceName || 'live_candle_cache') : 'missing_live_candle',
+    latestTimestamp: latest?.timestamp || null,
+    ageMs,
+    close: num(latest?.close),
+    open: num(latest?.open),
+    high: num(latest?.high),
+    low: num(latest?.low),
+    volume: num(latest?.volume),
+    candleCount: candles.length,
+    incomplete: latest?.incomplete === true,
+  };
+}
+
+function volumeEvidence(result = {}) {
+  const state = lower(result.volumeState);
+  const rvol = num(result.rvol ?? result.relVol20);
+  const strong = ['strong', 'high', 'elevated'].includes(state) || (rvol != null && rvol >= 1.2);
+  const usable = strong || ['normal'].includes(state) || (rvol != null && rvol >= 1.0);
+  return {
+    state: state || 'unknown',
+    rvol,
+    strong,
+    usable,
+    source: rvol != null ? 'relative_volume' : state !== 'unknown' ? 'volume_state' : 'missing_volume_context',
+  };
+}
+
+function buildEmaContext(result = {}, signalSubtype, bias, twoMinuteConfirmed, closedCandle) {
+  const price = num(result.price);
+  const ema21 = num(result.ema21);
+  const ema50 = num(result.ema50);
+  const ema9 = num(result.ema9);
+  const latestClose = closedCandle.close;
+  const close = latestClose != null ? latestClose : price;
+  const hasContext = price != null && ema21 != null && ema50 != null;
+  const priceAboveEma21 = hasContext && close >= ema21;
+  const emaStackLong = ema21 >= ema50 || (ema9 != null && ema9 >= ema21);
+  const trendIntact = hasContext && priceAboveEma21 && emaStackLong && upper(bias) === 'UP';
+  const reclaimConfirmed = signalSubtype === 'EMA_PULLBACK_UP' &&
+    trendIntact &&
+    twoMinuteConfirmed === true &&
+    closedCandle.confirmed === true;
+  return {
+    hasContext,
+    trendIntact,
+    reclaimConfirmed,
+    trendDirection: trendIntact ? 'UP' : hasContext ? 'UNKNOWN' : null,
+    relation: priceAboveEma21 ? 'above_ema21' : hasContext ? 'below_ema21' : null,
+    price,
+    latestClose: close,
+    ema9,
+    ema21,
+    ema50,
+    source: hasContext ? 'ema_indicators_and_closed_2m_candle' : 'missing_ema_indicators',
+  };
+}
+
+function buildVwapContext(result = {}, signalSubtype, bias, twoMinuteConfirmed, closedCandle) {
+  const price = num(result.price);
+  const vwap = num(result.vwap);
+  const distancePct = num(result.vwapDistancePct);
+  const latestClose = closedCandle.close;
+  const close = latestClose != null ? latestClose : price;
+  const hasContext = vwap != null && close != null;
+  const closeAboveVwap = hasContext && close >= vwap;
+  const reclaimConfirmed = signalSubtype === 'VWAP_RECLAIM_UP' &&
+    closeAboveVwap &&
+    upper(bias) === 'UP' &&
+    twoMinuteConfirmed === true &&
+    closedCandle.confirmed === true;
+  return {
+    hasContext,
+    reclaimConfirmed,
+    closeAboveVwap,
+    priceVsVwap: closeAboveVwap ? 'above' : hasContext ? 'below' : null,
+    price,
+    latestClose: close,
+    vwap,
+    distancePct,
+    source: hasContext ? 'vwap_indicator_and_closed_2m_candle' : 'missing_vwap_indicator',
+  };
+}
+
+function buildProducerConfirmation({
+  result,
+  signalSubtype,
+  signalFamily,
+  priority,
+  bias,
+  timeframes,
+  blockersMeta,
+  extensionMeta,
+  liveCandleDebug,
+  marketType,
+  marketClosed,
+  dataFreshness,
+  timestamp,
+  candleScore2m,
+}) {
+  const twoMinuteConfirmed = blockersMeta.twoMinuteConfirmed === true;
+  const closedCandle = latestClosedCandleMeta(liveCandleDebug);
+  const volume = volumeEvidence(result);
+  const emaContext = buildEmaContext(result, signalSubtype, bias, twoMinuteConfirmed, closedCandle);
+  const vwapContext = buildVwapContext(result, signalSubtype, bias, twoMinuteConfirmed, closedCandle);
+  const observed = [];
+  const missing = [];
+  const blockers = [];
+
+  if (twoMinuteConfirmed) observed.push('two_minute_confirmation');
+  else missing.push('two_minute_confirmation');
+  if (closedCandle.confirmed) observed.push('closed_candle_confirmation');
+  else missing.push('closed_candle_confirmation');
+  if (volume.strong) observed.push('volume_confirmation');
+
+  if (signalSubtype === 'EMA_PULLBACK_UP') {
+    if (emaContext.reclaimConfirmed) observed.push('ema_pullback_reclaim');
+    else missing.push(emaContext.hasContext ? 'ema_pullback_reclaim' : 'ema_context');
+  }
+  if (signalSubtype === 'VWAP_RECLAIM_UP') {
+    if (vwapContext.reclaimConfirmed) observed.push('vwap_reclaim_confirmation');
+    else missing.push(vwapContext.hasContext ? 'vwap_reclaim_confirmation' : 'vwap_context');
+    if (!volume.strong) missing.push('volume_confirmation');
+  }
+
+  if (marketClosed) blockers.push('market_closed');
+  if (dataFreshness !== 'LIVE') blockers.push('data_not_live');
+  if (extensionMeta?.level && extensionMeta.level !== 'none') blockers.push('extended_move');
+  if (['watch', 'caution', 'wait', 'avoid'].includes(lower(priority))) blockers.push(`status_${priority}`);
+
+  const entryReady = blockers.length === 0 && missing.length === 0 && ['active', 'confirmed', 'entry', 'entry_ready', 'ready'].includes(lower(priority));
+
+  return {
+    version: PRODUCER_CONFIRMATION_VERSION,
+    strategySubtype: signalSubtype || null,
+    signalFamily: signalFamily || null,
+    status: priority || null,
+    entryReady,
+    confirmationObserved: [...new Set(observed)],
+    missingConfirmations: [...new Set(missing)],
+    blockers: [...new Set(blockers)],
+    evidence: {
+      generatedAt: new Date().toISOString(),
+      signalTimestamp: timestamp || null,
+      marketType,
+      marketClosed: marketClosed === true,
+      dataFreshness,
+      nextMoveBias: bias,
+      timeframes,
+      tf2m: timeframes?.tf2m || null,
+      twoMinuteConfirmed,
+      closedCandle,
+      volume,
+      emaContext,
+      vwapContext,
+      extensionLevel: extensionMeta?.level || null,
+      extensionReasons: extensionMeta?.reasons || [],
+      candleScore2m,
+    },
+  };
+}
+
 function computeNextMoveBias(result, dirs, context = {}) {
   const state = result.stateGraph?.currentState || 'UNKNOWN';
   const vals = Object.values(dirs);
@@ -979,6 +1171,45 @@ function buildCandidate(result, options = {}) {
     (Array.isArray(explanationSv.sees) ? explanationSv.sees[0] : explanationSv.sees) ||
     decisionTextSv ||
     'Systemet väntar på tydligare bekräftelse.';
+  const producerConfirmation = buildProducerConfirmation({
+    result,
+    signalSubtype,
+    signalFamily,
+    priority,
+    bias,
+    timeframes,
+    blockersMeta,
+    extensionMeta,
+    liveCandleDebug,
+    marketType,
+    marketClosed,
+    dataFreshness,
+    timestamp,
+    candleScore2m,
+  });
+  const producerEvidence = producerConfirmation.evidence || {};
+  const volumeContext = {
+    state: producerEvidence.volume?.state || result.volumeState || 'unknown',
+    rvol: producerEvidence.volume?.rvol ?? result.rvol ?? result.relVol20 ?? null,
+    strong: producerEvidence.volume?.strong === true,
+    usable: producerEvidence.volume?.usable === true,
+    source: producerEvidence.volume?.source || null,
+    ...(producerEvidence.volume?.strong === true ? { confirmed: true } : {}),
+  };
+  const emaContext = producerEvidence.emaContext || {};
+  const vwapContext = producerEvidence.vwapContext || {};
+  const confirmation = {
+    twoMinuteConfirmed: producerEvidence.twoMinuteConfirmed === true,
+    closedCandle: producerEvidence.closedCandle?.confirmed === true,
+    emaPullbackConfirmed: emaContext.reclaimConfirmed === true,
+    vwapReclaimConfirmed: vwapContext.reclaimConfirmed === true,
+    ...(producerEvidence.volume?.strong === true ? { volumeConfirmed: true } : {}),
+  };
+  const session = marketType === 'crypto'
+    ? 'crypto_24_7'
+    : marketClosed
+      ? 'market_closed'
+      : 'regular';
 
   return {
     symbol: result.symbol,
@@ -1009,6 +1240,8 @@ function buildCandidate(result, options = {}) {
     dataFreshness,
     dataAgeSeconds: marketClosed ? stockFeedStatus?.ageSeconds ?? result.dataAgeSeconds ?? null : result.dataAgeSeconds ?? null,
     marketClosed,
+    session,
+    marketSession: session,
     stockFeedStatus: marketClosed ? {
       status: stockFeedStatus.status,
       latestTimestamp: stockFeedStatus.latestTimestamp || stockFeedStatus.lastUpdated || null,
@@ -1071,6 +1304,41 @@ function buildCandidate(result, options = {}) {
     twoMinuteConflict: twoMinuteConflictMeta.twoMinuteConflict,
     twoMinuteConflictType: twoMinuteConflictMeta.twoMinuteConflictType,
     twoMinuteConflictSv: twoMinuteConflictMeta.twoMinuteConflictSv,
+    producerConfirmationVersion: producerConfirmation.version,
+    producerEntryReadiness: {
+      status: producerConfirmation.entryReady ? 'entry_ready' : 'not_entry_ready',
+      entryReady: producerConfirmation.entryReady === true,
+      confirmationObserved: producerConfirmation.confirmationObserved,
+      missingConfirmations: producerConfirmation.missingConfirmations,
+      blockers: producerConfirmation.blockers,
+      evidence: producerEvidence,
+    },
+    confirmation,
+    twoMinuteConfirmed: producerEvidence.twoMinuteConfirmed === true,
+    twoMinuteConfirmation: {
+      confirmed: producerEvidence.twoMinuteConfirmed === true,
+      source: 'timeframe_agreement',
+      tf2m: timeframes.tf2m,
+      nextMoveBias: bias,
+    },
+    closedCandleConfirmed: producerEvidence.closedCandle?.confirmed === true,
+    latestCandleClosed: producerEvidence.closedCandle?.confirmed === true,
+    candleConfirmation: {
+      twoMinuteConfirmed: producerEvidence.twoMinuteConfirmed === true,
+      closedCandle: producerEvidence.closedCandle?.confirmed === true,
+      source: producerEvidence.closedCandle?.source || null,
+      latestTimestamp: producerEvidence.closedCandle?.latestTimestamp || null,
+      ageMs: producerEvidence.closedCandle?.ageMs ?? null,
+    },
+    volumeContext,
+    emaContext,
+    trendIntact: emaContext.trendIntact === true,
+    emaPullbackConfirmed: emaContext.reclaimConfirmed === true,
+    emaReclaimConfirmed: emaContext.reclaimConfirmed === true,
+    pullbackReclaimConfirmed: emaContext.reclaimConfirmed === true,
+    vwapContext,
+    vwapReclaimConfirmed: vwapContext.reclaimConfirmed === true,
+    closeAboveVwap: vwapContext.closeAboveVwap === true,
     timestamp,
     signalTimestamp: timestamp,
     lastUpdate: result.lastUpdate || null,
