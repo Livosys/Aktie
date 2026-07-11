@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { DashboardShell, EmptyState } from '../components/dashboard/DashboardKit.jsx';
 import PaperCandidatePanel from '../components/PaperCandidatePanel.jsx';
+import PaperStrategyListPanel from '../components/paper/PaperStrategyListPanel.jsx';
 import TradingViewTestResultsPanel from '../components/TradingViewTestResultsPanel.jsx';
 
 const REFRESH_MS = 15_000;
@@ -10,6 +11,7 @@ const PAPER_TABS = [
   { id: 'oversikt', label: 'Översikt' },
   { id: 'positioner', label: 'Positioner' },
   { id: 'trades', label: 'Trades' },
+  { id: 'strategier', label: 'Strategier' },
   { id: 'runtime', label: 'Runtime' },
   { id: 'loss-review', label: 'Loss Review' },
   { id: 'teknik', label: 'Teknik' },
@@ -3556,6 +3558,13 @@ export default function PaperTradingPage() {
           gateStatus={gateStatusState.data}
           onRefresh={() => setRefreshKey((t) => t + 1)}
           theme={theme}
+        />
+      )}
+
+      {activeTab === 'strategier' && (
+        <PaperStrategyListPanel
+          refreshKey={refreshKey}
+          onRefresh={() => setRefreshKey((t) => t + 1)}
         />
       )}
 
