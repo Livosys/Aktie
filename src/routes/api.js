@@ -1022,15 +1022,14 @@ router.get('/strategies/readiness', (req, res) => {
     const strategyReadinessService = require('../services/strategyReadinessService');
     res.json(strategyReadinessService.getStrategyReadiness({ noCache: req.query.fresh === 'true' }));
   } catch (err) {
-    res.status(500).json({
-      status: 'error',
-      error: err.message,
+    const safety = {
       mode: 'paper_only',
       actions_allowed: false,
       can_place_orders: false,
       live_trading_enabled: false,
       broker_enabled: false,
-    });
+    };
+    res.status(500).json({ status: 'error', error: err.message, safety, ...safety });
   }
 });
 

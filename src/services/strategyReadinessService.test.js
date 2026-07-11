@@ -152,6 +152,55 @@ for (const row of rows) {
   assert.equal(row.actions_allowed, false);
 }
 
+// Regression: top-level safety är ett nästlat objekt, aldrig null, med de
+// exakta låsta värdena (schemaavvikelsen "safety": null får inte återkomma).
+function assertSafetyObject(payload, label) {
+  assert.ok(payload.safety !== null && payload.safety !== undefined, `${label}: safety får inte vara null`);
+  assert.deepEqual(payload.safety, {
+    mode: 'paper_only',
+    actions_allowed: false,
+    can_place_orders: false,
+    live_trading_enabled: false,
+    broker_enabled: false,
+  }, `${label}: safety-objektets exakta innehåll`);
+}
+assertSafetyObject(result, 'normalt svar');
+
+// Safety ska finnas även när en delkälla är degraded/error — simulera trasig
+// katalogkälla in-process (ingen disk/store rörs) och återställ i finally.
+{
+  const catSvc = require('./daytradingStrategyCatalogService');
+  const originalGetCatalog = catSvc.getCatalog;
+  try {
+    catSvc.getCatalog = () => { throw new Error('test_source_failure'); };
+    const degraded = svc.computeStrategyReadiness();
+    assert.equal(degraded.status, 'degraded', 'trasig katalog => status degraded');
+    assertSafetyObject(degraded, 'degraderat svar');
+    assert.equal(degraded.mode, 'paper_only');
+    assert.equal(degraded.actions_allowed, false);
+    assert.equal(degraded.can_place_orders, false);
+    assert.equal(degraded.live_trading_enabled, false);
+    assert.equal(degraded.broker_enabled, false);
+  } finally {
+    catSvc.getCatalog = originalGetCatalog;
+  }
+}
+
+// Efter fixen ska endpointen fortsatt returnera exakt katalogens strategier
+// (i dag 33) med den befintliga platta säkerhetsstämpeln på varje rad.
+{
+  const fresh = svc.getStrategyReadiness({ noCache: true });
+  assert.equal(fresh.strategies.length, catalogCount, 'fortsatt exakt 33 strategier');
+  assertSafetyObject(fresh, 'färskt svar');
+  for (const row of fresh.strategies) {
+    assert.equal(row.mode, 'paper_only');
+    assert.equal(row.actions_allowed, false);
+    assert.equal(row.can_place_orders, false);
+    assert.equal(row.live_trading_enabled, false);
+    assert.equal(row.broker_enabled, false);
+  }
+}
+
 // Sources-blocket finns med giltiga statusvärden.
 const validSourceStatus = new Set(['ok', 'empty', 'degraded', 'error']);
 for (const key of ['catalog', 'producerRegistry', 'approvalStore', 'runtimeConnector']) {

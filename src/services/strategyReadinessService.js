@@ -490,6 +490,9 @@ function computeStrategyReadiness() {
       replay_sv: 'Replay driver scannerns producenter — endast strategier med verklig producent+mapping kan replay-testas.',
       readOnly_sv: 'Endpointen läser bara. Inga approvals, familyval, kandidater eller trades skapas.',
     },
+    // Nästlat safety-objekt enligt endpoint-kontraktet (samma mönster som
+    // t.ex. runtime-matrix), utöver de platta flaggorna från spreaden nedan.
+    safety: SAFETY,
     ...SAFETY,
   };
 }
