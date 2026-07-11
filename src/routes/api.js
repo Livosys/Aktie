@@ -1012,6 +1012,28 @@ router.get('/strategies/runtime-matrix', (req, res) => {
   }
 });
 
+// Read-only Strategy Readiness (FAS A+B). Korsar canonical-katalogen med
+// producent-sanning, mapping, runtime-context och approval/familyval och
+// klassificerar varje strategi (READY_FOR_PAPER/NEEDS_* etc.). Skapar aldrig
+// kandidater/trades, muterar aldrig approvals eller familyval. Lazy require +
+// fault-isolerad service så en trasig delkälla inte fäller endpointen.
+router.get('/strategies/readiness', (req, res) => {
+  try {
+    const strategyReadinessService = require('../services/strategyReadinessService');
+    res.json(strategyReadinessService.getStrategyReadiness({ noCache: req.query.fresh === 'true' }));
+  } catch (err) {
+    res.status(500).json({
+      status: 'error',
+      error: err.message,
+      mode: 'paper_only',
+      actions_allowed: false,
+      can_place_orders: false,
+      live_trading_enabled: false,
+      broker_enabled: false,
+    });
+  }
+});
+
 // Read-only Automation Plan. GET only. Suggests future paper-only candidates.
 // Never starts batch/replay/paper trades, never mutates allowlist/risk/broker.
 router.get('/automation/plan', (req, res) => {
@@ -4124,6 +4146,7 @@ router.get('/pine-research/config', (req, res) => {
       adapters: {
         staticValidator: true,
         pineGenerator: true,
+        orbInternalPreview: 'generic_orb_adapter_runs_when_parity_certified_and_data_ready',
         internalBatchReplay: 'adapter_requires_certified_parity_before_running',
         tradingViewCsvImport: true,
       },
@@ -4210,6 +4233,10 @@ router.post('/pine-research/test-runs/run', (req, res) => {
     const body = req.body && typeof req.body === 'object' ? req.body : {};
     const version = pineResearchStoreService.findById('versions', body.pineVersionId);
     if (!version) return res.status(404).json({ ok: false, error: 'pine_version_not_found', safety: pineResearchModelService.SAFETY });
+    if (body.single === true) {
+      const singleResult = pineResearchTestRunService.runSingleTestRun(version, { ...body, store: pineResearchStoreService.defaultStore });
+      return res.status(singleResult.ok ? 200 : 409).json(singleResult);
+    }
     res.json(pineResearchTestRunService.runTestPlan(version, { ...body, store: pineResearchStoreService.defaultStore }));
   } catch (err) {
     pineResearchError(res, err, 400);

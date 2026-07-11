@@ -14,6 +14,53 @@ const SIGNAL_FAMILIES = new Set([
   'UNKNOWN',
 ]);
 
+// Producent-sanning: subtyper som classifySignalFamily faktiskt kan producera.
+// Listan ska hållas i synk med klassificeringsgrenarna i denna fil och är den
+// enda källan för "har strategin en verklig producent?" i readiness-lager.
+// Entry-kapabla subtyper kan bli paper-kandidater; non-entry-subtyper är
+// observations-/brussignaler och får ALDRIG räknas som strategiproducenter.
+const PRODUCIBLE_ENTRY_SUBTYPES = Object.freeze([
+  'NARROW_BULL_ENTRY',
+  'NARROW_BEAR_ENTRY',
+  'NARROW_FAKEOUT',
+  'EMA_PULLBACK_UP',
+  'EMA_PULLBACK_DOWN',
+  'VWAP_RECLAIM_UP',
+  'VWAP_REJECTION_DOWN',
+  'REGULAR_PULLBACK',
+]);
+
+const PRODUCIBLE_NON_ENTRY_SUBTYPES = Object.freeze([
+  'NARROW_WAIT',
+  'LATE_MOVE_BLOCK',
+  'NO_TRADE',
+  'UNKNOWN',
+]);
+
+// Riktnings-facit per entry-kapabel subtyp (för direction-drift-diagnostik).
+const PRODUCIBLE_SUBTYPE_DIRECTIONS = Object.freeze({
+  NARROW_BULL_ENTRY: 'long',
+  NARROW_BEAR_ENTRY: 'short',
+  NARROW_FAKEOUT: 'both',
+  EMA_PULLBACK_UP: 'long',
+  EMA_PULLBACK_DOWN: 'short',
+  VWAP_RECLAIM_UP: 'long',
+  VWAP_REJECTION_DOWN: 'short',
+  REGULAR_PULLBACK: 'both',
+});
+
+// SignalFamily per entry-kapabel subtyp (för mapping-prober).
+const PRODUCIBLE_SUBTYPE_FAMILIES = Object.freeze({
+  NARROW_BULL_ENTRY: 'NARROW_COMPRESSION',
+  NARROW_BEAR_ENTRY: 'NARROW_COMPRESSION',
+  NARROW_FAKEOUT: 'NARROW_COMPRESSION',
+  EMA_PULLBACK_UP: 'EMA_TREND_PULLBACK',
+  EMA_PULLBACK_DOWN: 'EMA_TREND_PULLBACK',
+  VWAP_RECLAIM_UP: 'VWAP_RECLAIM_REJECTION',
+  VWAP_REJECTION_DOWN: 'VWAP_RECLAIM_REJECTION',
+  REGULAR_PULLBACK: 'REGULAR_PULLBACK',
+});
+
 const EMPTY_ATTEMPT = Object.freeze({
   matched: false,
   missing: [],
@@ -418,6 +465,10 @@ function classifySignalFamily(sig = {}) {
 
 module.exports = {
   SIGNAL_FAMILIES,
+  PRODUCIBLE_ENTRY_SUBTYPES,
+  PRODUCIBLE_NON_ENTRY_SUBTYPES,
+  PRODUCIBLE_SUBTYPE_DIRECTIONS,
+  PRODUCIBLE_SUBTYPE_FAMILIES,
   buildSignalFamilyDebug,
   classifySignalFamily,
 };
