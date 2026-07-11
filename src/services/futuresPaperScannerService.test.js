@@ -5,14 +5,16 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 
+const now = '2026-07-06T11:00:00.000Z';
+const rootDir = fs.mkdtempSync(path.join(os.tmpdir(), 'futures-paper-scanner-'));
+process.env.FUTURES_PAPER_STRATEGY_APPROVALS_FILE = path.join(rootDir, 'futures-strategy-approvals.json');
+
 const { createFuturesPaperStorageService } = require('./futuresPaperStorageService');
 const { createFuturesPaperAccountService } = require('./futuresPaperAccountService');
 const { createFuturesPaperLedgerService } = require('./futuresPaperLedgerService');
 const { createFuturesPaperScannerService } = require('./futuresPaperScannerService');
 const { createFuturesTradingOsSignalAdapterService } = require('./futuresTradingOsSignalAdapterService');
 
-const now = '2026-07-06T11:00:00.000Z';
-const rootDir = fs.mkdtempSync(path.join(os.tmpdir(), 'futures-paper-scanner-'));
 const storage = createFuturesPaperStorageService({ rootDir });
 const accountSvc = createFuturesPaperAccountService({ storageService: storage });
 const ledger = createFuturesPaperLedgerService({ storageService: storage, accountService: accountSvc });
