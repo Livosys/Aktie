@@ -1,24 +1,16 @@
 import React, { useEffect, useMemo, useState } from 'react';
+import { apiFetch } from '../../lib/apiClient.js';
 
 const REFRESH_MS = 15000;
 const FETCH_TIMEOUT_MS = 6500;
 
 async function fetchJson(url, options = {}) {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), options.timeoutMs || FETCH_TIMEOUT_MS);
+  const controller = options.signal ? null : new AbortController();
+  const timer = controller ? setTimeout(() => controller.abort(), options.timeoutMs || FETCH_TIMEOUT_MS) : null;
   try {
-    const res = await fetch(url, {
-      ...options,
-      credentials: 'include',
-      signal: controller.signal,
-    });
-    const data = await res.json().catch(() => null);
-    if (!res.ok || !data) {
-      throw new Error((data && (data.error || data.reason)) || `HTTP ${res.status}`);
-    }
-    return data;
+    return await apiFetch(url, { ...options, signal: options.signal || controller.signal });
   } finally {
-    clearTimeout(timer);
+    if (timer) clearTimeout(timer);
   }
 }
 
@@ -199,6 +191,70 @@ function entryQualityText(row) {
   ].filter(Boolean).join(' | ');
 }
 
+function listText(value) {
+  if (Array.isArray(value)) return value.length ? value.join(', ') : '-';
+  if (value === null || value === undefined || value === '') return '-';
+  if (typeof value === 'object') return JSON.stringify(value);
+  return String(value);
+}
+
+function DetailItem({ label, value }) {
+  return (
+    <div style={{ minWidth: 0 }}>
+      <div style={{ color: 'var(--muted)', fontSize: 11, fontWeight: 900, textTransform: 'uppercase', letterSpacing: 0 }}>{label}</div>
+      <div style={{ color: 'var(--text)', fontSize: 12, marginTop: 3, overflowWrap: 'anywhere', lineHeight: 1.45 }}>{listText(value)}</div>
+    </div>
+  );
+}
+
+function StrategyDetails({ row }) {
+  const contract = row.entryContract || {};
+  const outcomes = row.outcomeCounts || {};
+  const latestBlock = row.latestEntryContractBlock?.reasonCode || row.commonEntryContractBlocker?.reasonCode || null;
+  return (
+    <div style={{
+      borderTop: '1px solid var(--border)',
+      padding: '12px 14px 14px',
+      display: 'grid',
+      gap: 12,
+      background: 'var(--surface-2)',
+    }}>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(170px, 1fr))', gap: 12 }}>
+        <DetailItem label="Family" value={row.family} />
+        <DetailItem label="Strategy ID" value={row.strategyId} />
+        <DetailItem label="Producer" value={row.producerStatus} />
+        <DetailItem label="Mapping" value={row.mappingStatus} />
+        <DetailItem label="Runtime connector" value={row.runtimeConnectorStatus} />
+        <DetailItem label="Senaste blocker" value={reasonLabel(latestBlock) || paperBlockedText(row)} />
+        <DetailItem label="Allowed subtypes" value={contract.allowedSubtypes} />
+        <DetailItem label="Allowed statuses" value={contract.allowedStatuses} />
+        <DetailItem label="Required confirmations" value={contract.requiredConfirmations} />
+        <DetailItem label="Max signal age" value={contract.maxSignalAgeMs ? `${Math.round(Number(contract.maxSignalAgeMs) / 1000)}s` : '-'} />
+        <DetailItem label="Senaste signal" value={latestCandidateText(row)} />
+        <DetailItem label="Senaste trade" value={latestTradeText(row)} />
+        <DetailItem label="Candidates/pass/block" value={`${row.entryContractCandidateCount ?? 0}/${row.entryContractPassCount ?? 0}/${row.entryContractBlockCount ?? 0}`} />
+        <DetailItem label="W/L/TIMEOUT" value={`${outcomes.WIN ?? 0}/${outcomes.LOSS ?? 0}/${outcomes.TIMEOUT ?? 0}`} />
+        <DetailItem label="MFE/MAE" value={`${row.avgMfe == null ? '-' : fmtNumber(row.avgMfe, 4)} / ${row.avgMae == null ? '-' : fmtNumber(row.avgMae, 4)}`} />
+        <DetailItem label="Timeout-rate" value={row.timeoutRate == null ? '-' : `${fmtNumber(row.timeoutRate, 1)}%`} />
+        <DetailItem label="Legacy approval" value={row.legacyApprovalStatus ? `${row.legacyApprovalStatus}${row.legacySelectedInFamily ? ' · selected' : ''}` : '-'} />
+        <DetailItem label="Warnings" value={row.warnings} />
+        <DetailItem label="Missing components" value={row.missingComponents} />
+        <DetailItem label="Entry quality" value={entryQualityText(row)} />
+      </div>
+    </div>
+  );
+}
+
+function rowMatchesFilter(row, filter) {
+  if (filter === 'active') return row.enabledForPaper === true;
+  if (filter === 'disabled') return row.enabledForPaper !== true;
+  if (filter === 'ready') return row.technicalReadiness === 'READY';
+  if (filter === 'producer') return row.producerStatus === 'none';
+  if (filter === 'short') return row.direction === 'short' || (row.warnings || []).includes('short_only_strategy');
+  if (filter === 'blocked') return row.paperEligibility !== 'READY' || Boolean(row.paperBlockedReason || row.runtimeBlockedReason);
+  return true;
+}
+
 function useManualPaperStrategies(refreshKey) {
   const [state, setState] = useState({ loading: true, error: null, data: null });
 
@@ -247,6 +303,9 @@ export default function PaperStrategyListPanel({ refreshKey = 0, onRefresh }) {
   const [localRefresh, setLocalRefresh] = useState(0);
   const [busyId, setBusyId] = useState('');
   const [message, setMessage] = useState(null);
+  const [expandedId, setExpandedId] = useState('');
+  const [filter, setFilter] = useState('all');
+  const [query, setQuery] = useState('');
   const state = useManualPaperStrategies(`${refreshKey}:${localRefresh}`);
   const data = state.data || {};
   const strategies = Array.isArray(data.strategies) ? data.strategies : [];
@@ -259,6 +318,17 @@ export default function PaperStrategyListPanel({ refreshKey = 0, onRefresh }) {
     if (familyDiff) return familyDiff;
     return String(a.strategyId || '').localeCompare(String(b.strategyId || ''));
   }), [strategies]);
+
+  const visibleRows = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    return rows.filter((row) => {
+      if (!rowMatchesFilter(row, filter)) return false;
+      if (!q) return true;
+      return String(row.strategyId || '').toLowerCase().includes(q)
+        || String(row.displayName || '').toLowerCase().includes(q)
+        || String(row.family || '').toLowerCase().includes(q);
+    });
+  }, [rows, filter, query]);
 
   async function run(action, row) {
     if (!row?.strategyId || busyId) return;
@@ -337,7 +407,7 @@ export default function PaperStrategyListPanel({ refreshKey = 0, onRefresh }) {
           <div>
             <div style={{ fontWeight: 900 }}>Strategier</div>
             <div style={{ color: 'var(--muted)', fontSize: 12, marginTop: 3 }}>
-              {data.manualListControlsRuntime ? 'Manual list styr runtime' : 'Manual list visas, legacy gate styr runtime tills flaggan aktiveras'}
+              {data.manualListControlsRuntime ? 'Manual list styr runtime' : 'Manual list visas, legacy gate styr runtime tills flaggan aktiveras'} · {visibleRows.length}/{rows.length}
             </div>
           </div>
           <button
@@ -350,88 +420,131 @@ export default function PaperStrategyListPanel({ refreshKey = 0, onRefresh }) {
           </button>
         </div>
 
-        <div style={{ overflowX: 'auto' }}>
-          <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 1540 }}>
-            <thead>
-              <tr>
-                <th style={thStyle()}>Strategi</th>
-                <th style={thStyle()}>Familj</th>
-                <th style={thStyle()}>Direction</th>
-                <th style={thStyle()}>Teknisk readiness</th>
-                <th style={thStyle()}>Entry contract</th>
-                <th style={thStyle()}>Aktiv i Paper</th>
-                <th style={thStyle()}>Replay</th>
-                <th style={thStyle()}>Senaste signal</th>
-                <th style={thStyle()}>Senaste trade</th>
-                <th style={thStyle()}>Trades</th>
-                <th style={thStyle()}>Win rate</th>
-                <th style={thStyle()}>Avg PnL</th>
-                <th style={thStyle()}>Blockerad anledning</th>
-                <th style={thStyle()}>Entry quality</th>
-                <th style={thStyle()}>Warnings</th>
-                <th style={{ ...thStyle(), textAlign: 'right' }}>Åtgärd</th>
-              </tr>
-            </thead>
-            <tbody>
-              {rows.map((row) => {
-                const busy = busyId === row.strategyId;
-                const badges = rowBadges(row);
-                return (
-                  <tr key={row.strategyId}>
-                    <td style={tdStyle()}>
-                      <div style={{ fontWeight: 900 }}>{row.displayName || row.strategyId}</div>
-                      <div style={{ color: 'var(--muted)', fontSize: 11, fontFamily: 'var(--mono, monospace)', marginTop: 3 }}>{row.strategyId}</div>
-                      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 5, marginTop: 8 }}>
-                        {badges.map(([label, tone]) => <span key={label} style={badgeStyle(tone)}>{label}</span>)}
-                      </div>
-                    </td>
-                    <td style={tdStyle()}>{row.family || '-'}</td>
-                    <td style={tdStyle()}><span style={badgeStyle(row.direction === 'short' ? 'danger' : row.direction === 'long' ? 'good' : 'neutral')}>{row.direction || '-'}</span></td>
-                    <td style={tdStyle()}><span style={badgeStyle(toneFor(row.technicalReadiness))}>{row.technicalReadiness || '-'}</span></td>
-                    <td style={{ ...tdStyle(), minWidth: 230 }}>
-                      <div><span style={badgeStyle(row.entryContractReady ? 'good' : 'warn')}>{row.entryContractStatus || '-'}</span></div>
-                      <div style={{ color: 'var(--muted)', fontSize: 11, marginTop: 6, lineHeight: 1.45 }}>{entryContractText(row)}</div>
-                    </td>
-                    <td style={tdStyle()}><span style={badgeStyle(row.enabledForPaper ? 'good' : 'neutral')}>{row.enabledForPaper ? 'Ja' : 'Nej'}</span></td>
-                    <td style={tdStyle()}>{row.replayEligibility || '-'}</td>
-                    <td style={tdStyle()}>{latestCandidateText(row)}</td>
-                    <td style={tdStyle()}>{latestTradeText(row)}</td>
-                    <td style={tdStyle()}>{row.paperTradeCount ?? 0}</td>
-                    <td style={tdStyle()}>{row.winRate == null ? '-' : `${fmtNumber(row.winRate, 1)}%`}</td>
-                    <td style={tdStyle()}>{row.avgPnl == null ? '-' : fmtNumber(row.avgPnl, 4)}</td>
-                    <td style={tdStyle()}>{paperBlockedText(row)}</td>
-                    <td style={{ ...tdStyle(), minWidth: 260 }}>{entryQualityText(row)}</td>
-                    <td style={tdStyle()}>{Array.isArray(row.warnings) && row.warnings.length ? row.warnings.slice(0, 3).join(', ') : '-'}</td>
-                    <td style={{ ...tdStyle(), textAlign: 'right' }}>
-                      <div style={{ display: 'inline-flex', gap: 6, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
-                        <button
-                          type="button"
-                          disabled={busy || row.enabledForPaper}
-                          onClick={() => run('enable', row)}
-                          style={buttonStyle('good', busy || row.enabledForPaper)}
-                        >
-                          Lägg till i Paper
-                        </button>
-                        <button
-                          type="button"
-                          disabled={busy || !row.enabledForPaper}
-                          onClick={() => run('disable', row)}
-                          style={buttonStyle('danger', busy || !row.enabledForPaper)}
-                        >
-                          Ta bort från Paper
-                        </button>
-                      </div>
-                    </td>
-                  </tr>
-                );
-              })}
-              {!rows.length ? (
-                <tr>
-                  <td style={tdStyle()} colSpan={16}>{state.loading ? 'Hämtar strategier...' : 'Inga strategier hittades.'}</td>
-                </tr>
-              ) : null}
-            </tbody>
-          </table>
+        <div style={{ padding: '0 14px 14px', display: 'grid', gap: 10 }}>
+          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+            {[
+              ['all', 'Alla'],
+              ['active', 'Aktiva'],
+              ['disabled', 'Avstängda'],
+              ['ready', 'Tekniskt klara'],
+              ['producer', 'Saknar producent'],
+              ['short', 'Short-only'],
+              ['blocked', 'Blockerade'],
+            ].map(([id, label]) => (
+              <button
+                key={id}
+                type="button"
+                onClick={() => setFilter(id)}
+                style={{
+                  ...buttonStyle(filter === id ? 'good' : 'neutral', false),
+                  color: filter === id ? 'var(--success)' : 'var(--muted)',
+                }}
+              >
+                {label}
+              </button>
+            ))}
+            <input
+              value={query}
+              onChange={(event) => setQuery(event.target.value)}
+              placeholder="Sök strategyId eller namn"
+              aria-label="Sök strategier"
+              style={{
+                flex: '1 1 220px',
+                minWidth: 0,
+                border: '1px solid var(--border)',
+                borderRadius: 8,
+                background: 'var(--surface-2)',
+                color: 'var(--text)',
+                padding: '8px 10px',
+                fontSize: 12,
+              }}
+            />
+          </div>
+
+          <div className="paper-strategy-main-grid paper-strategy-grid-header" style={{
+            display: 'grid',
+            gap: 10,
+            padding: '8px 10px',
+            color: 'var(--muted)',
+            fontSize: 11,
+            fontWeight: 900,
+            textTransform: 'uppercase',
+            letterSpacing: 0,
+            borderTop: '1px solid var(--border)',
+            borderBottom: '1px solid var(--border)',
+          }}>
+            <div>Strategi</div>
+            <div>Riktning</div>
+            <div>Readiness</div>
+            <div>Aktiv</div>
+            <div>Entry Contract</div>
+            <div style={{ textAlign: 'right' }}>Åtgärd</div>
+          </div>
+
+          {visibleRows.map((row) => {
+            const busy = busyId === row.strategyId;
+            const badges = rowBadges(row);
+            const expanded = expandedId === row.strategyId;
+            return (
+              <div key={row.strategyId} style={{ border: '1px solid var(--border)', borderRadius: 8, overflow: 'hidden', background: 'var(--surface)' }}>
+                <div style={{
+                  display: 'grid',
+                  gap: 10,
+                  alignItems: 'start',
+                  padding: 12,
+                }} className="paper-strategy-main-grid">
+                  <div style={{ minWidth: 0 }}>
+                    <div style={{ fontWeight: 900, overflowWrap: 'anywhere' }}>{row.displayName || row.strategyId}</div>
+                    <div style={{ color: 'var(--muted)', fontSize: 11, fontFamily: 'var(--mono, monospace)', marginTop: 3, overflowWrap: 'anywhere' }}>{row.strategyId}</div>
+                    <div style={{ display: 'flex', flexWrap: 'wrap', gap: 5, marginTop: 8 }}>
+                      {badges.slice(0, 4).map(([label, tone]) => <span key={label} style={badgeStyle(tone)}>{label}</span>)}
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => setExpandedId(expanded ? '' : row.strategyId)}
+                      style={{ ...buttonStyle('neutral', false), marginTop: 8, color: 'var(--accent)' }}
+                    >
+                      {expanded ? 'Dölj detaljer' : 'Visa detaljer'}
+                    </button>
+                  </div>
+                  <div><span style={badgeStyle(row.direction === 'short' ? 'danger' : row.direction === 'long' ? 'good' : 'neutral')}>{row.direction || '-'}</span></div>
+                  <div><span style={badgeStyle(toneFor(row.technicalReadiness))}>{row.technicalReadiness || '-'}</span></div>
+                  <div><span style={badgeStyle(row.enabledForPaper ? 'good' : 'neutral')}>{row.enabledForPaper ? 'Ja' : 'Nej'}</span></div>
+                  <div style={{ minWidth: 0 }}>
+                    <span style={badgeStyle(row.entryContractReady ? 'good' : 'warn')}>{row.entryContractStatus || '-'}</span>
+                    <div style={{ color: 'var(--muted)', fontSize: 11, marginTop: 6, lineHeight: 1.4, overflowWrap: 'anywhere' }}>
+                      {row.entryContractReady ? 'Klar' : 'Saknas'}
+                    </div>
+                  </div>
+                  <div className="paper-strategy-actions" style={{ display: 'flex', gap: 6, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
+                    <button
+                      type="button"
+                      disabled={busy || row.enabledForPaper}
+                      onClick={() => run('enable', row)}
+                      style={buttonStyle('good', busy || row.enabledForPaper)}
+                    >
+                      {busy ? 'Skickar…' : 'Lägg till i Paper'}
+                    </button>
+                    <button
+                      type="button"
+                      disabled={busy || !row.enabledForPaper}
+                      onClick={() => run('disable', row)}
+                      style={buttonStyle('danger', busy || !row.enabledForPaper)}
+                    >
+                      {busy ? 'Skickar…' : 'Ta bort från Paper'}
+                    </button>
+                  </div>
+                </div>
+                {expanded ? <StrategyDetails row={row} /> : null}
+              </div>
+            );
+          })}
+
+          {!visibleRows.length ? (
+            <div style={{ padding: 14, color: 'var(--muted)' }}>
+              {state.loading ? 'Hämtar strategier...' : 'Inga strategier matchar filtret.'}
+            </div>
+          ) : null}
         </div>
       </div>
     </section>
