@@ -47,6 +47,7 @@ const notificationEngineV2                      = require('../alerts/notificatio
 const strategyRuntimeConnector                  = require('../services/strategyRuntimeConnectorService');
 const paperApprovalGate                         = require('../services/paperApprovalGateService');
 const paperEnabledStrategies                    = require('../services/paperEnabledStrategiesService');
+const paperStrategyEntryContracts               = require('../services/paperStrategyEntryContractService');
 const daytradingStrategyCatalog                 = require('../services/daytradingStrategyCatalogService');
 const entryFilterForwardValidation              = require('../services/entryFilterForwardValidationService');
 const paperMarketConfigService                  = require('../services/paperMarketConfigService');
@@ -796,6 +797,10 @@ function paperLongOnlyEnabled() {
   return String(process.env.PAPER_LONG_ONLY_ENABLED || 'true').toLowerCase() !== 'false';
 }
 
+function paperEntryContractsEnabled() {
+  return paperStrategyEntryContracts.entryContractsEnabled();
+}
+
 function canonicalStrategyForRuntimeId(strategyId) {
   if (!strategyId) return null;
   try {
@@ -914,6 +919,37 @@ function evaluateLongOnlyPaperGate(candidate = {}, catalogStrategy = null, optio
     blockedReason: null,
     reason: null,
     strategyId: strategy?.id || candidate.strategyId || candidate.strategy_id || null,
+  };
+}
+
+function evaluatePaperEntryContractGate(candidate = {}, options = {}) {
+  const enabled = options.enabled != null ? options.enabled === true : paperEntryContractsEnabled();
+  const strategyId = options.strategyId
+    || candidate.strategyId
+    || candidate.strategy_id
+    || candidate.resolvedStrategyId
+    || candidate.sourceStrategyId
+    || null;
+  if (!enabled) {
+    return {
+      enabled: false,
+      allowed: true,
+      strategyId,
+      reason: null,
+      reasonCode: null,
+      entryContractVersion: paperStrategyEntryContracts.PAPER_ENTRY_CONTRACT_VERSION,
+      checks: {},
+      evidence: {},
+    };
+  }
+  return {
+    enabled: true,
+    ...paperStrategyEntryContracts.evaluatePaperEntryContract({
+      strategyId,
+      candidate,
+      now: options.now || new Date(),
+      marketContext: options.marketContext || {},
+    }),
   };
 }
 
@@ -1174,6 +1210,11 @@ function buildOpenTrade(c, gateDecision = null) {
     baseConfidenceScore: c.baseConfidenceScore ?? c.confidenceScore ?? null,
     entryQualityScore: c.entryQualityScore ?? null,
     entryQualityWarnings: Array.isArray(c.entryQualityWarnings) ? c.entryQualityWarnings : [],
+    entryContractVersion: c.entryContractVersion || null,
+    entryContractDecision: c.entryContractDecision || null,
+    entryContractAllowed: c.entryContractAllowed === true,
+    entryContractChecks: safeEventValue(c.entryContractChecks || null),
+    entryContractEvidence: safeEventValue(c.entryContractEvidence || null),
     aiConfidenceAdjustment: c.aiConfidenceAdjustment ?? null,
     aiRiskFlag:      c.aiRiskFlag === true,
     aiAgentAnalysis: c.aiAgentAnalysis || null,
@@ -1615,6 +1656,54 @@ function classifySkip(c, reason) {
   }
   if (raw.includes('paper_strategy_enabled_but_runtime_blocked')) {
     return { type: 'TRADE_SKIPPED', reasonSv: 'Blockerad — strategin är aktiv men runtime connector blockerar.' };
+  }
+  if (raw.includes('entry_contract_missing')) {
+    return { type: 'GATE_BLOCKED', reasonSv: 'Blockerad — strategin saknar Paper entry contract.' };
+  }
+  if (raw.includes('paper_entry_watch_only')) {
+    return { type: 'GATE_BLOCKED', reasonSv: 'Blockerad — signalen är endast observation.' };
+  }
+  if (raw.includes('paper_entry_caution_only')) {
+    return { type: 'GATE_BLOCKED', reasonSv: 'Blockerad — caution-signal kräver tydlig entry-bekräftelse.' };
+  }
+  if (raw.includes('paper_entry_status_not_ready')) {
+    return { type: 'GATE_BLOCKED', reasonSv: 'Blockerad — signalens status är inte entry-ready.' };
+  }
+  if (raw.includes('missing_two_minute_confirmation')) {
+    return { type: 'GATE_BLOCKED', reasonSv: 'Blockerad — 2m-bekräftelse saknas.' };
+  }
+  if (raw.includes('missing_closed_candle_confirmation')) {
+    return { type: 'GATE_BLOCKED', reasonSv: 'Blockerad — stängd candle-bekräftelse saknas.' };
+  }
+  if (raw.includes('missing_required_confirmation')) {
+    return { type: 'GATE_BLOCKED', reasonSv: 'Blockerad — obligatorisk entry-bekräftelse saknas.' };
+  }
+  if (raw.includes('stale_strategy_signal')) {
+    return { type: 'GATE_BLOCKED', reasonSv: 'Blockerad — strategisignalen är för gammal eller ofullständig.' };
+  }
+  if (raw.includes('invalid_strategy_subtype')) {
+    return { type: 'GATE_BLOCKED', reasonSv: 'Blockerad — signaltypen matchar inte strategins entry contract.' };
+  }
+  if (raw.includes('invalid_strategy_direction')) {
+    return { type: 'GATE_BLOCKED', reasonSv: 'Blockerad — riktningen matchar inte strategins entry contract.' };
+  }
+  if (raw.includes('late_extended_entry')) {
+    return { type: 'GATE_BLOCKED', reasonSv: 'Blockerad — entryn är sen eller redan extended.' };
+  }
+  if (raw.includes('missing_volume_confirmation')) {
+    return { type: 'GATE_BLOCKED', reasonSv: 'Blockerad — volymbekräftelse saknas.' };
+  }
+  if (raw.includes('missing_vwap_reclaim_confirmation')) {
+    return { type: 'GATE_BLOCKED', reasonSv: 'Blockerad — VWAP reclaim-bekräftelse saknas.' };
+  }
+  if (raw.includes('missing_ema_pullback_confirmation')) {
+    return { type: 'GATE_BLOCKED', reasonSv: 'Blockerad — EMA pullback/reclaim-bekräftelse saknas.' };
+  }
+  if (raw.includes('missing_market_context')) {
+    return { type: 'GATE_BLOCKED', reasonSv: 'Blockerad — marknadskontext saknas eller är fel för strategin.' };
+  }
+  if (raw.includes('invalid_session')) {
+    return { type: 'GATE_BLOCKED', reasonSv: 'Blockerad — marknadssessionen tillåter inte entry.' };
   }
   if (raw.includes('long_only_short_strategy')) {
     return { type: 'GATE_BLOCKED', reasonSv: 'Blockerad — LONG_ONLY tillåter inte short-only-strategier i Paper Trading.' };
@@ -2804,6 +2893,69 @@ async function runTick() {
         runtimeCandidate.familyGateDecision = control.familyGateDecision;
         runtimeCandidate.strategyCooldownDecision = control.strategyCooldownDecision;
 
+        // ── Paper Strategy Entry Contract ───────────────────────────────────
+        // Strategy-specific readiness gate. It cannot create trades and does
+        // not bypass qualifiesForEntry, market gate, LONG_ONLY, risk or safety.
+        const entryContractDecision = evaluatePaperEntryContractGate(runtimeCandidate, {
+          strategyId: resolvedStrategyId || null,
+          marketContext: {
+            marketType: runtimeCandidate.marketType || runtimeCandidate.market || eventMarketType(runtimeCandidate),
+            session: runtimeCandidate.session || null,
+          },
+        });
+        if (!entryContractDecision.allowed) {
+          _bump('qualifiesRejected', null);
+          _recentRejections = [{
+            type:          'ENTRY_CONTRACT_BLOCKED',
+            symbol:        c.symbol,
+            marketGroup:   getMarketGroup(c.symbol) || c.marketGroup || 'UNKNOWN',
+            signalSubtype: c.signalSubtype || null,
+            strategyId:    resolvedStrategyId || null,
+            reason:        entryContractDecision.reasonCode,
+            timestamp:     new Date().toISOString(),
+          }, ..._recentRejections].slice(0, 100);
+          const skip = classifySkip(c, entryContractDecision.reasonCode);
+          const evidence = entryContractDecision.evidence || {};
+          const requiredConfirmations = Array.isArray(evidence.requiredConfirmations)
+            ? evidence.requiredConfirmations
+            : [];
+          const confirmationObserved = Array.isArray(evidence.confirmationObserved)
+            ? evidence.confirmationObserved
+            : [];
+          appendEvent({
+            ...eventFromCandidate(skip.type, runtimeCandidate, skip.reasonSv, 'blocked'),
+            blockedReason: entryContractDecision.reasonCode,
+            blockedReasonCode: entryContractDecision.reasonCode,
+            reasonCode: entryContractDecision.reasonCode,
+            entryContractVersion: entryContractDecision.entryContractVersion,
+            entryContractDecision: 'blocked',
+            entryContractAllowed: false,
+            entryContractChecks: safeEventValue(entryContractDecision.checks || {}),
+            entryContractEvidence: safeEventValue(evidence),
+            signalAgeMs: evidence.signalAgeMs ?? null,
+            requiredConfirmation: requiredConfirmations[0] || null,
+            requiredConfirmations,
+            confirmationObserved,
+            runtimeGateMode: manualStrategyGateMode ? 'manual' : 'legacy',
+            manualListControlsRuntime: manualStrategyGateMode,
+            strategyId: resolvedStrategyId || null,
+            strategyName: runtimeStrategyForGate.strategy_name || runtimeStrategyForGate.strategyName || null,
+          });
+          continue;
+        }
+        if (entryContractDecision.enabled) {
+          runtimeCandidate.entryContractVersion = entryContractDecision.entryContractVersion;
+          runtimeCandidate.entryContractDecision = 'pass';
+          runtimeCandidate.entryContractAllowed = true;
+          runtimeCandidate.entryContractChecks = entryContractDecision.checks || {};
+          runtimeCandidate.entryContractEvidence = entryContractDecision.evidence || {};
+          c.entryContractVersion = entryContractDecision.entryContractVersion;
+          c.entryContractDecision = 'pass';
+          c.entryContractAllowed = true;
+          c.entryContractChecks = entryContractDecision.checks || {};
+          c.entryContractEvidence = entryContractDecision.evidence || {};
+        }
+
         const check = qualifiesForEntry(c, state, { isExplicitlyEnabledStrategy });
         if (!check.ok) {
           _bump('qualifiesRejected', null);
@@ -3902,6 +4054,8 @@ module.exports = {
     strategyControlReasonSv,
     paperManualStrategyListEnabled,
     paperLongOnlyEnabled,
+    paperEntryContractsEnabled,
+    evaluatePaperEntryContractGate,
     evaluateManualPaperStrategyGate,
     evaluateLegacyPaperStrategyGate,
     manualRuntimeBlockedReason,

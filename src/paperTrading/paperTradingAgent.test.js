@@ -10,6 +10,7 @@ process.env.PAPER_ENABLED_STRATEGIES_FILE = path.join(tmpDir, 'enabled-strategie
 process.env.PAPER_STRATEGY_APPROVALS_FILE = path.join(tmpDir, 'strategy-approvals.json');
 process.env.PAPER_MANUAL_STRATEGY_LIST_ENABLED = 'false';
 process.env.PAPER_LONG_ONLY_ENABLED = 'true';
+process.env.PAPER_ENTRY_CONTRACTS_ENABLED = 'false';
 
 fs.writeFileSync(process.env.PAPER_STRATEGY_APPROVALS_FILE, JSON.stringify({
   schemaVersion: 1,
@@ -350,6 +351,76 @@ function main() {
   );
   process.env.PAPER_LONG_ONLY_ENABLED = 'true';
 
+  assert.equal(agent._internal.paperEntryContractsEnabled(), false, 'entry contract rollout defaults off');
+  const contractReadyNarrow = {
+    ...manualBullCandidate,
+    status: 'active',
+    session: 'regular',
+    signalTimestamp: '2026-07-11T17:58:30.000Z',
+    twoMinuteConfirmed: true,
+    closedCandle: true,
+    volumeState: 'normal',
+  };
+  const contractDisabled = agent._internal.evaluatePaperEntryContractGate(contractReadyNarrow, {
+    strategyId: 'narrow_state_expansion_long',
+    enabled: false,
+    now: new Date('2026-07-11T18:00:00.000Z'),
+  });
+  assert.equal(contractDisabled.allowed, true, 'flag false does not enforce entry contract');
+  assert.equal(contractDisabled.enabled, false);
+
+  process.env.PAPER_ENTRY_CONTRACTS_ENABLED = 'true';
+  assert.equal(agent._internal.paperEntryContractsEnabled(), true, 'flag true enables contract gate');
+  const contractPass = agent._internal.evaluatePaperEntryContractGate(contractReadyNarrow, {
+    strategyId: 'narrow_state_expansion_long',
+    now: new Date('2026-07-11T18:00:00.000Z'),
+  });
+  assert.equal(contractPass.allowed, true, 'confirmed narrow bull can pass entry contract');
+  assert.equal(contractPass.entryContractVersion, 'paper_entry_contract_v1');
+
+  const watchBlock = agent._internal.evaluatePaperEntryContractGate({
+    ...contractReadyNarrow,
+    status: 'watch',
+  }, {
+    strategyId: 'narrow_state_expansion_long',
+    now: new Date('2026-07-11T18:00:00.000Z'),
+  });
+  assert.equal(watchBlock.allowed, false, 'watch signals cannot open entries');
+  assert.equal(watchBlock.reasonCode, 'paper_entry_watch_only');
+
+  const missingConfirmation = agent._internal.evaluatePaperEntryContractGate({
+    ...contractReadyNarrow,
+    twoMinuteConfirmed: false,
+  }, {
+    strategyId: 'narrow_state_expansion_long',
+    now: new Date('2026-07-11T18:00:00.000Z'),
+  });
+  assert.equal(missingConfirmation.allowed, false, 'missing confirmation blocks entries');
+  assert.equal(missingConfirmation.reasonCode, 'missing_two_minute_confirmation');
+
+  const missingContract = agent._internal.evaluatePaperEntryContractGate({
+    ...contractReadyNarrow,
+    signalSubtype: 'REGULAR_PULLBACK',
+  }, {
+    strategyId: 'trend_continuation',
+    now: new Date('2026-07-11T18:00:00.000Z'),
+  });
+  assert.equal(missingContract.allowed, false, 'manually enabled strategy without contract fails closed');
+  assert.equal(missingContract.reasonCode, 'entry_contract_missing');
+
+  const bearishField = agent._internal.evaluatePaperEntryContractGate({
+    ...contractReadyNarrow,
+    side: 'SELL',
+  }, {
+    strategyId: 'narrow_state_expansion_long',
+    now: new Date('2026-07-11T18:00:00.000Z'),
+  });
+  assert.equal(bearishField.allowed, false, 'contract does not bypass bearish/short field checks');
+  assert.equal(bearishField.reasonCode, 'invalid_strategy_direction');
+
+  assert.equal(agent._internal.classifySkip(contractReadyNarrow, 'paper_entry_watch_only').type, 'GATE_BLOCKED');
+  process.env.PAPER_ENTRY_CONTRACTS_ENABLED = 'false';
+
   process.env.PAPER_MANUAL_STRATEGY_LIST_ENABLED = 'false';
 
   const mixedNarrowCandidate = {
@@ -415,6 +486,27 @@ function main() {
   assert.equal(normalizedTrade.strategyName, 'Narrow Breakout');
   assert.equal(normalizedTrade.mappingSource, 'runtime_map');
   assert.equal(normalizedTrade.originalStrategyMetadata.strategyId, 'resistance_rejection');
+
+  const contractTrade = agent._internal.buildOpenTrade({
+    ...contractReadyNarrow,
+    price: 100,
+    strategyId: 'narrow_state_expansion_long',
+    strategyName: 'Narrow State Expansion Long',
+    entryContractVersion: contractPass.entryContractVersion,
+    entryContractDecision: 'pass',
+    entryContractAllowed: true,
+    entryContractChecks: contractPass.checks,
+    entryContractEvidence: contractPass.evidence,
+  }, {
+    allowed: true,
+    mode: 'allow',
+    gateScore: 75,
+    threshold: 70,
+  });
+  assert.equal(contractTrade.entryContractVersion, 'paper_entry_contract_v1');
+  assert.equal(contractTrade.entryContractDecision, 'pass');
+  assert.equal(contractTrade.entryContractAllowed, true);
+  assert.equal(contractTrade.entryContractEvidence.signalAgeMs, 90000);
 
   const narrowWait = strategyRuntimeConnector.canCreatePaperTradeForSignal({
     symbol: 'NVDA',
