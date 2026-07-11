@@ -1,6 +1,9 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { Suspense, lazy, useEffect, useMemo, useState } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { useAuth } from '../auth/AuthProvider.jsx';
+
+// 3D-bakgrunden laddas som egen chunk så inloggningen aldrig väntar på three.js
+const LoginBackground3D = lazy(() => import('../components/LoginBackground3D.jsx'));
 
 const fieldStyle = {
   width: '100%',
@@ -57,7 +60,11 @@ export default function LoginPage() {
       padding: 20,
       background: 'var(--bg)',
       color: 'var(--text)',
+      position: 'relative',
     }}>
+      <Suspense fallback={null}>
+        <LoginBackground3D />
+      </Suspense>
       <form
         onSubmit={submit}
         style={{
@@ -66,9 +73,13 @@ export default function LoginPage() {
           gap: 16,
           border: '1px solid var(--border)',
           borderRadius: 8,
-          background: 'var(--surface)',
+          background: 'color-mix(in srgb, var(--surface) 86%, transparent)',
+          backdropFilter: 'blur(14px)',
+          WebkitBackdropFilter: 'blur(14px)',
           padding: 24,
           boxShadow: '0 20px 70px rgba(15,23,42,0.22)',
+          position: 'relative',
+          zIndex: 1,
         }}
       >
         <div>
