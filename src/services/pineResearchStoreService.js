@@ -271,7 +271,7 @@ function createPineResearchStore(options = {}) {
       },
       provider: {
         provider: process.env.AI_ANALYST_PROVIDER || process.env.AI_PROVIDER || 'disabled',
-        model: process.env.AI_ANALYST_MODEL || process.env.AI_MODEL || 'gpt-4o-mini',
+        model: process.env.AI_ANALYST_MODEL || process.env.AI_MODEL || 'gpt-5.5',
         configured: Boolean(process.env.AI_API_KEY || process.env.OPENAI_API_KEY),
       },
     });

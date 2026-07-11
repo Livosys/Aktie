@@ -21,6 +21,18 @@ const NEXT_ACTIONS = Object.freeze([
   'hold_for_review',
   'request_human_review',
 ]);
+const EVALUATION_VERDICTS = Object.freeze([
+  'strong_candidate',
+  'promising',
+  'needs_improvement',
+  'insufficient_data',
+  'hold_for_review',
+  'reject_version',
+  'ready_for_human_review',
+  'provider_error',
+  'provider_response_invalid',
+  'provider_or_test_data_unavailable',
+]);
 const VALIDATION_STATUSES = Object.freeze(['imported', 'matched', 'minor_differences', 'major_differences', 'invalid', 'needs_review']);
 const COMPILE_STATUSES = Object.freeze(['not_checked', 'static_valid', 'static_invalid', 'external_validation_required']);
 const DIRECTIONS = Object.freeze(['both', 'long_only', 'short_only']);
@@ -282,6 +294,10 @@ function normalizeTestRun(input = {}) {
     status: assertAllowed(stringValue(input.status, 'planned'), TEST_RUN_STATUSES, 'test_run_status'),
     parityStatus: stringValue(input.parityStatus, 'not_checked'),
     blockedReason: input.blockedReason ? stringValue(input.blockedReason) : null,
+    supportedRules: stringArray(input.supportedRules),
+    unsupportedRules: stringArray(input.unsupportedRules),
+    parityMatrix: Array.isArray(input.parityMatrix) ? input.parityMatrix.slice(0, 50) : [],
+    wouldRun: input.wouldRun === true,
     metrics: compactObject(clone(input.metrics) || {}),
     tradeCount: numberValue(input.tradeCount, 0),
     resultArtifact: input.resultArtifact ? stringValue(input.resultArtifact) : null,
@@ -319,7 +335,7 @@ function normalizeEvaluation(input = {}) {
     candidateId: stringValue(input.candidateId),
     pineVersionId: stringValue(input.pineVersionId),
     testRunIds: stringArray(input.testRunIds),
-    verdict: stringValue(input.verdict, 'hold_for_review'),
+    verdict: assertAllowed(stringValue(input.verdict, 'hold_for_review'), EVALUATION_VERDICTS, 'evaluation_verdict'),
     score: Math.max(0, Math.min(100, numberValue(input.score, 0))),
     strengths: stringArray(input.strengths).slice(0, 12),
     weaknesses: stringArray(input.weaknesses).slice(0, 12),
@@ -378,6 +394,7 @@ module.exports = {
   TEST_RUN_ENGINES,
   TEST_RUN_STATUSES,
   NEXT_ACTIONS,
+  EVALUATION_VERDICTS,
   VALIDATION_STATUSES,
   COMPILE_STATUSES,
   DIRECTIONS,

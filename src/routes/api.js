@@ -4144,6 +4144,9 @@ router.post('/pine-research/test-runs/preview', (req, res) => {
     const body = req.body && typeof req.body === 'object' ? req.body : {};
     const version = pineResearchStoreService.findById('versions', body.pineVersionId);
     if (!version) return res.status(404).json({ ok: false, error: 'pine_version_not_found', safety: pineResearchModelService.SAFETY });
+    if (body.singlePreview === true || body.symbol || body.timeframe || body.engine) {
+      return res.json(pineResearchTestRunService.previewSingleTestRun(version, body));
+    }
     res.json(pineResearchTestRunService.createTestPlan(version, body));
   } catch (err) {
     pineResearchError(res, err, 400);

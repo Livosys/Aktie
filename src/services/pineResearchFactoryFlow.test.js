@@ -27,11 +27,22 @@ async function main() {
     assert.equal(plan.safety.actions_allowed, false);
     assert.ok(plan.plans.length > 0);
     assert.ok(plan.plans.every((run) => ['blocked', 'planned'].includes(run.status)));
+    assert.ok(plan.plans.every((run) => run.parityStatus !== 'certified'));
+    assert.ok(plan.plans.every((run) => Array.isArray(run.parityMatrix)));
 
     const runResult = testRunService.runTestPlan(version, { store, maxTests: 2 });
     assert.equal(runResult.status, 'blocked');
     assert.ok(runResult.testRuns.every((run) => run.tradeCount === 0));
     assert.ok(runResult.testRuns.every((run) => !run.resultArtifact));
+
+    const preview = testRunService.previewSingleTestRun(version, { engine: 'batch', symbol: 'MNQ', timeframe: '5m' });
+    assert.equal(preview.candidateId, version.candidateId);
+    assert.equal(preview.pineVersionId, version.pineVersionId);
+    assert.equal(preview.symbol, 'MNQ');
+    assert.equal(preview.timeframe, '5m');
+    assert.equal(preview.parityStatus, 'blocked');
+    assert.equal(preview.wouldRun, false);
+    assert.ok(preview.unsupportedRules.includes('opening range start'));
 
     const validJson = JSON.stringify({
       verdict: 'needs_improvement',
@@ -65,8 +76,9 @@ async function main() {
       providerCall: async () => 'not-json',
     });
     assert.equal(malformed.ok, false);
-    assert.equal(malformed.status, 'provider_error');
-    assert.equal(malformed.evaluation.nextAction, 'hold_for_review');
+    assert.equal(malformed.status, 'provider_response_invalid');
+    assert.equal(malformed.schemaValid, false);
+    assert.equal(malformed.providerResultValid, false);
 
     const failed = await aiEvaluation.runEvaluation({
       store,

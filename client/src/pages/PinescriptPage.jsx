@@ -222,6 +222,41 @@ function JsonBlock({ value }) {
   );
 }
 
+function InlineList({ items, empty }) {
+  const list = Array.isArray(items) ? items.filter(Boolean) : [];
+  if (!list.length) return <span style={{ color: 'var(--muted)' }}>{empty}</span>;
+  return (
+    <ul style={{ margin: 0, paddingLeft: 18 }}>
+      {list.map((item, idx) => <li key={`${item}-${idx}`}>{item}</li>)}
+    </ul>
+  );
+}
+
+function recommendedChangesLabel(changes) {
+  const list = Array.isArray(changes) ? changes.filter(Boolean) : [];
+  if (!list.length) return <span style={{ color: 'var(--muted)' }}>Inga rekommenderade ändringar.</span>;
+  return (
+    <ul style={{ margin: 0, paddingLeft: 18 }}>
+      {list.map((change, idx) => (
+        <li key={`${change.field}-${idx}`}>
+          {change.field}:{change.operation}
+          {change.reason ? ` - ${change.reason}` : ''}
+        </li>
+      ))}
+    </ul>
+  );
+}
+
+function evaluationBasis(row) {
+  if (row?.providerResultValid === false || row?.schemaValid === false) {
+    return 'Providersvaret kunde inte valideras mot AIEvaluation-kontraktet.';
+  }
+  if (!Array.isArray(row?.testRunIds) || row.testRunIds.length === 0) {
+    return 'Denna AI-utvärdering bygger endast på strategi-, parameter- och kodstruktur. Ingen intern prestandakörning finns ännu.';
+  }
+  return `${row.testRunIds.length} interna testkörningar ingår i underlaget.`;
+}
+
 function PineResearchPage() {
   const [tab, setTab] = useState('overview');
   const [data, setData] = useState(EMPTY);
@@ -542,8 +577,12 @@ function PineResearchPage() {
                 { key: 'nextAction', label: 'Nästa action', render: (row) => <Badge>{row.nextAction}</Badge> },
                 { key: 'confidence', label: 'Confidence', render: (row) => formatPercent(Number(row.confidence) * 100) },
                 { key: 'provider', label: 'Provider', render: (row) => `${row.modelProvider}/${row.modelName}` },
-                { key: 'weaknesses', label: 'Svagheter', render: (row) => (row.weaknesses || []).join(', ') || '–' },
-                { key: 'changes', label: 'Rekommenderade ändringar', render: (row) => (row.recommendedChanges || []).map((change) => `${change.field}:${change.operation}`).join(', ') || '–' },
+                { key: 'basis', label: 'Underlag', render: (row) => evaluationBasis(row) },
+                { key: 'strengths', label: 'Styrkor', render: (row) => <InlineList items={row.strengths} empty="Inga dokumenterade styrkor." /> },
+                { key: 'weaknesses', label: 'Svagheter', render: (row) => <InlineList items={row.weaknesses} empty="Inga dokumenterade svagheter." /> },
+                { key: 'dataQualityWarnings', label: 'Datakvalitet', render: (row) => <InlineList items={row.dataQualityWarnings} empty="Inga datakvalitetsvarningar." /> },
+                { key: 'overfitWarnings', label: 'Överanpassning', render: (row) => <InlineList items={row.overfitWarnings} empty="Inga överanpassningsvarningar." /> },
+                { key: 'changes', label: 'Rekommenderade ändringar', render: (row) => recommendedChangesLabel(row.recommendedChanges) },
               ]}
             />
           </Section>

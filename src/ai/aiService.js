@@ -4,7 +4,7 @@ const axios = require('axios');
 const { SYSTEM_PROMPT } = require('./systemPrompt');
 
 const RISK_NOTE = 'Detta är inte finansiell rådgivning.';
-const DEFAULT_MODEL = 'gpt-4o-mini';
+const DEFAULT_MODEL = 'gpt-5.5';
 const DEFAULT_BASE_URL = 'https://api.openai.com/v1/chat/completions';
 
 function isConfigured() {

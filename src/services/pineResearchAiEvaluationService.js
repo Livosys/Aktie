@@ -6,13 +6,46 @@ const model = require('./pineResearchModelService');
 
 const DEFAULT_OPENAI_URL = 'https://api.openai.com/v1/chat/completions';
 const PROMPT_VERSION = 'pine_research_eval_v1';
+const REQUIRED_AI_RESPONSE_KEYS = Object.freeze([
+  'verdict',
+  'score',
+  'strengths',
+  'weaknesses',
+  'dataQualityWarnings',
+  'overfitWarnings',
+  'recommendedChanges',
+  'nextAction',
+  'confidence',
+]);
+const AI_RESPONSE_VERDICTS = Object.freeze([
+  'strong_candidate',
+  'promising',
+  'needs_improvement',
+  'insufficient_data',
+  'hold_for_review',
+  'reject_version',
+  'ready_for_human_review',
+]);
+const PERFORMANCE_METRIC_KEYS = Object.freeze([
+  'metrics',
+  'tradeCount',
+  'winRate',
+  'profitFactor',
+  'drawdown',
+  'maxDrawdown',
+  'pnl',
+  'netPnl',
+  'netProfit',
+  'mfe',
+  'mae',
+]);
 
 function provider() {
   return String(process.env.AI_ANALYST_PROVIDER || process.env.AI_PROVIDER || 'openai').trim().toLowerCase();
 }
 
 function modelName() {
-  return process.env.AI_ANALYST_MODEL || process.env.AI_MODEL || 'gpt-4o-mini';
+  return process.env.AI_ANALYST_MODEL || process.env.AI_MODEL || 'gpt-5.5';
 }
 
 function timeoutMs() {
@@ -83,13 +116,15 @@ function systemPrompt() {
   return `
 You are Trading OS Pine Research evaluator.
 You only evaluate isolated paper/replay research results and Pine version metadata.
-Return strict JSON only. Do not recommend live trading, broker use, order routing,
-approval, READY status, Paper activation, Futures Paper activation, runtime risk
-changes, filesystem paths, shell commands, credentials, or secrets.
+Return only one JSON object. Do not wrap the response in Markdown. Do not add
+explanatory text. Use exactly the required keys and do not omit empty arrays.
+Do not recommend live trading, broker use, order routing, approval, READY
+status, Paper activation, Futures Paper activation, runtime risk changes,
+filesystem paths, shell commands, credentials, or secrets.
 
 Required JSON shape:
 {
-  "verdict": "needs_improvement",
+  "verdict": "insufficient_data",
   "score": 0,
   "strengths": [],
   "weaknesses": [],
@@ -101,20 +136,26 @@ Required JSON shape:
   "nextAction": "hold_for_review",
   "confidence": 0.0
 }
+Allowed verdict values: ${AI_RESPONSE_VERDICTS.join(', ')}.
 Allowed nextAction values: ${model.NEXT_ACTIONS.join(', ')}.
 Allowed change fields: ${model.CHANGE_FIELD_WHITELIST.join(', ')}.
+If testRunIds is an empty array, no internal performance test exists. Do not
+invent trades, win rate, profit factor, drawdown, PnL, MFE or MAE. Evaluate only
+structure, risk rules, session rules and recommended next tests.
 `.trim();
 }
 
 function extractJson(content) {
   if (!content) throw new Error('ai_response_empty');
-  const text = String(content).trim().replace(/^```json\s*/i, '').replace(/```$/i, '').trim();
+  const raw = String(content).trim();
+  const fenced = raw.match(/^```(?:json)?\s*([\s\S]*?)\s*```$/i);
+  const text = (fenced ? fenced[1] : raw).trim();
+  if (!text.startsWith('{') || !text.endsWith('}')) {
+    throw new Error('ai_response_malformed_json');
+  }
   try {
     return JSON.parse(text);
-  } catch (_) {
-    const first = text.indexOf('{');
-    const last = text.lastIndexOf('}');
-    if (first >= 0 && last > first) return JSON.parse(text.slice(first, last + 1));
+  } catch (err) {
     throw new Error('ai_response_malformed_json');
   }
 }
@@ -191,10 +232,116 @@ function providerErrorEvaluation({ candidate, version, testRuns, inputHash }, er
   });
 }
 
+function invalidResponseError(message) {
+  const err = new Error(message);
+  err.code = 'provider_response_invalid';
+  return err;
+}
+
+function assertExactKeys(value, allowedKeys, context) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw invalidResponseError(`${context}_must_be_object`);
+  }
+  const keys = Object.keys(value).sort();
+  const expected = [...allowedKeys].sort();
+  const missing = expected.filter((key) => !keys.includes(key));
+  const unknown = keys.filter((key) => !expected.includes(key));
+  if (missing.length) throw invalidResponseError(`${context}_missing_required_fields:${missing.join(',')}`);
+  if (unknown.length) throw invalidResponseError(`${context}_unknown_fields:${unknown.join(',')}`);
+}
+
+function unwrapAiResponse(parsed) {
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    throw invalidResponseError('ai_response_must_be_object');
+  }
+  const topKeys = Object.keys(parsed);
+  const direct = REQUIRED_AI_RESPONSE_KEYS.every((key) => Object.prototype.hasOwnProperty.call(parsed, key));
+  if (direct) {
+    assertExactKeys(parsed, REQUIRED_AI_RESPONSE_KEYS, 'ai_response');
+    return parsed;
+  }
+  if (topKeys.length === 1 && topKeys[0] === 'AIEvaluation') {
+    assertExactKeys(parsed.AIEvaluation, REQUIRED_AI_RESPONSE_KEYS, 'ai_response.AIEvaluation');
+    return parsed.AIEvaluation;
+  }
+  if (topKeys.length === 1) {
+    throw invalidResponseError(`ai_response_unknown_wrapper:${topKeys[0]}`);
+  }
+  throw invalidResponseError(`ai_response_unknown_fields:${topKeys.join(',')}`);
+}
+
+function assertStringArray(value, field) {
+  if (!Array.isArray(value)) throw invalidResponseError(`${field}_must_be_array`);
+  for (const item of value) {
+    if (typeof item !== 'string') throw invalidResponseError(`${field}_must_contain_strings`);
+  }
+}
+
+function assertRecommendedChanges(value) {
+  if (!Array.isArray(value)) throw invalidResponseError('recommendedChanges_must_be_array');
+  for (const change of value) {
+    if (!change || typeof change !== 'object' || Array.isArray(change)) {
+      throw invalidResponseError('recommendedChanges_items_must_be_objects');
+    }
+    const keys = Object.keys(change);
+    const allowed = ['field', 'operation', 'value', 'reason'];
+    const unknown = keys.filter((key) => !allowed.includes(key));
+    if (unknown.length) throw invalidResponseError(`recommendedChanges_unknown_fields:${unknown.join(',')}`);
+    model.normalizeEvaluation({
+      verdict: 'hold_for_review',
+      score: 0,
+      strengths: [],
+      weaknesses: [],
+      dataQualityWarnings: [],
+      overfitWarnings: [],
+      recommendedChanges: [change],
+      nextAction: 'hold_for_review',
+      confidence: 0,
+    });
+  }
+}
+
+function assertNoStructuredPerformanceClaims(value) {
+  for (const key of Object.keys(value || {})) {
+    if (PERFORMANCE_METRIC_KEYS.includes(key)) {
+      throw invalidResponseError(`performance_metric_field_not_allowed_without_test_runs:${key}`);
+    }
+  }
+}
+
+function validateAiResponsePayload(payload) {
+  assertNoStructuredPerformanceClaims(payload);
+  if (!AI_RESPONSE_VERDICTS.includes(payload.verdict)) throw invalidResponseError('verdict_is_invalid');
+  if (!Number.isFinite(Number(payload.score)) || Number(payload.score) < 0 || Number(payload.score) > 100) {
+    throw invalidResponseError('score_must_be_number_0_100');
+  }
+  assertStringArray(payload.strengths, 'strengths');
+  assertStringArray(payload.weaknesses, 'weaknesses');
+  assertStringArray(payload.dataQualityWarnings, 'dataQualityWarnings');
+  assertStringArray(payload.overfitWarnings, 'overfitWarnings');
+  assertRecommendedChanges(payload.recommendedChanges);
+  if (!model.NEXT_ACTIONS.includes(payload.nextAction)) throw invalidResponseError('nextAction_is_invalid');
+  if (!Number.isFinite(Number(payload.confidence)) || Number(payload.confidence) < 0 || Number(payload.confidence) > 1) {
+    throw invalidResponseError('confidence_must_be_number_0_1');
+  }
+  return {
+    verdict: payload.verdict,
+    score: Number(payload.score),
+    strengths: payload.strengths,
+    weaknesses: payload.weaknesses,
+    dataQualityWarnings: payload.dataQualityWarnings,
+    overfitWarnings: payload.overfitWarnings,
+    recommendedChanges: payload.recommendedChanges,
+    nextAction: payload.nextAction,
+    confidence: Number(payload.confidence),
+  };
+}
+
 function normalizeAiOutput(parsed, meta) {
+  const payload = validateAiResponsePayload(unwrapAiResponse(parsed));
   const outputHash = model.hashValue(parsed);
   return model.normalizeEvaluation({
-    ...parsed,
+    ...payload,
     candidateId: meta.candidateId,
     pineVersionId: meta.pineVersionId,
     testRunIds: meta.testRunIds,
@@ -205,6 +352,27 @@ function normalizeAiOutput(parsed, meta) {
     outputHash,
     rawResponseArtifact: meta.rawResponseArtifact || null,
   });
+}
+
+function sanitizeDiagnosticSample(value) {
+  return String(value || '')
+    .replace(/Bearer\s+[A-Za-z0-9._-]+/g, 'Bearer [redacted]')
+    .replace(/sk-[A-Za-z0-9_-]+/g, '[redacted-openai-key]')
+    .slice(0, 800);
+}
+
+function saveInvalidResponseArtifact(store, version, err, raw) {
+  if (!store || typeof store.writeArtifact !== 'function') return null;
+  try {
+    return store.writeArtifact('artifacts', `ai-invalid-response-${version.pineVersionId}-${Date.now()}`, JSON.stringify({
+      status: 'provider_response_invalid',
+      schemaValid: false,
+      error: err?.message || String(err),
+      sample: sanitizeDiagnosticSample(typeof raw === 'string' ? raw : JSON.stringify(raw)),
+    }, null, 2), 'json').artifact;
+  } catch (_) {
+    return null;
+  }
 }
 
 async function runEvaluation(options = {}) {
@@ -230,20 +398,45 @@ async function runEvaluation(options = {}) {
   try {
     const providerCall = options.providerCall || callOpenAi;
     const raw = await providerCall(input, options);
-    const parsed = typeof raw === 'string' ? extractJson(raw) : raw;
-    const artifact = store.writeArtifact('artifacts', `ai-response-${version.pineVersionId}-${Date.now()}`, JSON.stringify(parsed, null, 2), 'json');
-    const evaluation = normalizeAiOutput(parsed, {
-      candidateId: version.candidateId,
-      pineVersionId: version.pineVersionId,
-      testRunIds: testRuns.map((run) => run.testRunId),
-      provider: provider(),
-      modelName: modelName(),
-      inputHash,
-      rawResponseArtifact: artifact.artifact,
-    });
+    let parsed;
+    try {
+      parsed = typeof raw === 'string' ? extractJson(raw) : raw;
+    } catch (err) {
+      err.code = 'provider_response_invalid';
+      err.diagnosticArtifact = saveInvalidResponseArtifact(store, version, err, raw);
+      throw err;
+    }
+    let evaluation;
+    let artifact = null;
+    try {
+      artifact = store.writeArtifact('artifacts', `ai-response-${version.pineVersionId}-${Date.now()}`, JSON.stringify(parsed, null, 2), 'json');
+      evaluation = normalizeAiOutput(parsed, {
+        candidateId: version.candidateId,
+        pineVersionId: version.pineVersionId,
+        testRunIds: testRuns.map((run) => run.testRunId),
+        provider: provider(),
+        modelName: modelName(),
+        inputHash,
+        rawResponseArtifact: artifact.artifact,
+      });
+    } catch (err) {
+      if (err.code !== 'provider_response_invalid') err.code = 'provider_response_invalid';
+      err.diagnosticArtifact = artifact?.artifact || saveInvalidResponseArtifact(store, version, err, parsed);
+      throw err;
+    }
     store.saveEvaluation(evaluation);
     return model.withSafety({ ok: true, status: 'ok', evaluation });
   } catch (err) {
+    if (err?.code === 'provider_response_invalid') {
+      return model.withSafety({
+        ok: false,
+        status: 'provider_response_invalid',
+        schemaValid: false,
+        providerResultValid: false,
+        diagnosticArtifact: err.diagnosticArtifact || null,
+        error: err?.message || String(err),
+      });
+    }
     if (options.allowDeterministicFallback === true) {
       const fallback = model.normalizeEvaluation({
         ...deterministicEvaluation({ candidate, version, testRuns }, `provider_error:${err?.message || String(err)}`),
@@ -268,6 +461,10 @@ module.exports = {
   extractJson,
   callOpenAi,
   normalizeAiOutput,
+  unwrapAiResponse,
+  validateAiResponsePayload,
   deterministicEvaluation,
   runEvaluation,
+  REQUIRED_AI_RESPONSE_KEYS,
+  AI_RESPONSE_VERDICTS,
 };

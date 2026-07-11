@@ -62,7 +62,7 @@ function provider() { return String(process.env.AI_ANALYST_PROVIDER || 'disabled
 function modelForProvider(p = provider()) {
   if (process.env.AI_ANALYST_MODEL) return process.env.AI_ANALYST_MODEL;
   if (p === 'anthropic') return 'claude-3-5-haiku-latest';
-  return 'gpt-4o-mini';
+  return 'gpt-5.5';
 }
 function timeoutMs() {
   const n = Number(process.env.AI_ANALYST_TIMEOUT_MS || 15000);
