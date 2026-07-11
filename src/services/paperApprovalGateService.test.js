@@ -1,6 +1,27 @@
 'use strict';
 
 const assert = require('assert');
+const fs = require('fs');
+const os = require('os');
+const path = require('path');
+
+const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'paper-approval-gate-'));
+process.env.PAPER_STRATEGY_APPROVALS_FILE = path.join(tmpDir, 'strategy-approvals.json');
+fs.writeFileSync(process.env.PAPER_STRATEGY_APPROVALS_FILE, JSON.stringify({
+  schemaVersion: 1,
+  strategies: {
+    vwap_failed_breakout_short: { status: 'approved', source: 'test', approvedAt: '2026-07-11T00:00:00.000Z', updatedAt: '2026-07-11T00:00:00.000Z', history: [] },
+    narrow_state_expansion_long: { status: 'approved', source: 'test', approvedAt: '2026-07-11T00:00:00.000Z', updatedAt: '2026-07-11T00:00:00.000Z', history: [] },
+    ema_pullback_continuation: { status: 'approved', source: 'test', approvedAt: '2026-07-11T00:00:00.000Z', updatedAt: '2026-07-11T00:00:00.000Z', history: [] },
+  },
+  selectedByFamily: {
+    vwap_family: 'vwap_failed_breakout_short',
+    narrow_state: 'narrow_state_expansion_long',
+    ema_trend_family: 'ema_pullback_continuation',
+  },
+  updatedAt: '2026-07-11T00:00:00.000Z',
+}, null, 2));
+
 const gate = require('./paperApprovalGateService');
 
 function run() {
@@ -27,7 +48,7 @@ function run() {
   const d2 = gate.evaluateCandidate(vwapLong, { approvedSet });
   assert.equal(d2.approved, false, 'non-approved strategy blocked');
   assert.equal(d2.decision, 'block');
-  assert.equal(d2.blockedReason, gate.NOT_APPROVED_REASON, 'stable blocked reason');
+  assert.equal(d2.blockedReason, 'paper_strategy_not_approved', 'specific store blocked reason');
 
   const d3 = gate.evaluateCandidate(emaUp, { approvedSet });
   assert.equal(d3.approved, true, 'approved EMA accepted regardless of agent EMA pause');

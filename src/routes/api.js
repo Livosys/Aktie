@@ -110,6 +110,7 @@ const replayAutopilotService = require('../services/replayAutopilotService');
 const replayStatusService = require('../services/replayStatusService');
 const paperTradingStatusService = require('../services/paperTradingStatusService');
 const paperTradingRuntimeService = require('../services/paperTradingRuntimeService');
+const paperStrategyApprovalService = require('../services/paperStrategyApprovalService');
 const futuresPaperDeskService = require('../services/futuresPaperDeskService');
 const futuresPaperAccountService = require('../services/futuresPaperAccountService');
 const futuresPaperLedgerService = require('../services/futuresPaperLedgerService');
@@ -3476,6 +3477,56 @@ router.get('/paper-trading/runtime', (req, res) => {
     res.status(500).json({ ok: false, error: err.message, ...paperTradingRuntimeService.SAFETY });
   }
 });
+
+// Ordinary Paper Trading Strategy Approval (separat från Futures Paper).
+// Read-only status + idempotenta mutationer. Skapar aldrig en trade, muterar
+// aldrig Futures Paper, ingen order/broker/live.
+router.get('/paper-trading/strategies', (req, res) => {
+  try {
+    res.json(paperStrategyApprovalService.listStrategies());
+  } catch (err) {
+    res.status(500).json({ status: 'error', ok: false, error: err.message, ...paperStrategyApprovalService.SAFETY });
+  }
+});
+
+router.get('/paper-trading/strategies/:strategyId', (req, res) => {
+  try {
+    const view = paperStrategyApprovalService.getStrategy(req.params.strategyId);
+    if (!view) {
+      return res.status(404).json({ status: 'not_found', ok: false, error: 'strategy_not_found', strategyId: req.params.strategyId || null, ...paperStrategyApprovalService.SAFETY });
+    }
+    res.json({
+      status: 'ok',
+      readOnly: true,
+      generatedAt: new Date().toISOString(),
+      strategy: view,
+      ...paperStrategyApprovalService.SAFETY,
+    });
+  } catch (err) {
+    res.status(500).json({ status: 'error', ok: false, error: err.message, ...paperStrategyApprovalService.SAFETY });
+  }
+});
+
+function handlePaperStrategyMutation(action) {
+  return (req, res) => {
+    try {
+      const body = req.body && typeof req.body === 'object' ? req.body : {};
+      if (body.live_trading_enabled === true || body.broker_enabled === true || body.can_place_orders === true || body.actions_allowed === true) {
+        return res.status(400).json({ status: 'error', ok: false, error: 'paper_strategy_approval_is_paper_only', ...paperStrategyApprovalService.SAFETY });
+      }
+      const result = paperStrategyApprovalService[action](req.params.strategyId, { source: 'api' });
+      const code = result.code || (result.ok ? 200 : 400);
+      res.status(code).json({ ...result, action });
+    } catch (err) {
+      res.status(500).json({ status: 'error', ok: false, error: err.message, ...paperStrategyApprovalService.SAFETY });
+    }
+  };
+}
+
+router.post('/paper-trading/strategies/:strategyId/approve', handlePaperStrategyMutation('approve'));
+router.post('/paper-trading/strategies/:strategyId/pause', handlePaperStrategyMutation('pause'));
+router.post('/paper-trading/strategies/:strategyId/resume', handlePaperStrategyMutation('resume'));
+router.post('/paper-trading/strategies/:strategyId/remove', handlePaperStrategyMutation('remove'));
 
 router.get('/futures-paper/runtime', (req, res) => {
   try {

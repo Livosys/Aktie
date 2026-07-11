@@ -38,7 +38,7 @@ async function main() {
     now,
   });
 
-  assert.equal(currentSummary.summary.pause_trading, true);
+  assert.equal(currentSummary.summary.pause_trading, false);
   assert.equal(currentSummary.summary.risk_review.active, false);
 
   const service = reviewService.createPaperRiskReviewService({
@@ -57,30 +57,17 @@ async function main() {
     now,
   });
 
-  assert.equal(result.ok, true);
+  assert.equal(result.ok, false);
+  assert.equal(result.error, 'risk_pause_not_active');
   assert.equal(result.mode, 'paper_only');
   assert.equal(result.actions_allowed, false);
   assert.equal(result.can_place_orders, false);
   assert.equal(result.summary.summary.pause_trading, false);
   assert.equal(result.summary.summary.effective_pause_trading, false);
-  assert.equal(result.summary.summary.risk_review.active, true);
-  assert.equal(result.summary.summary.risk_review.reason, 'Manual risk review accepted. Resume paper testing.');
-  assert.equal(result.summary.summary.risk_review.previousConsecutiveLosses, 4);
-
-  const savedState = JSON.parse(fs.readFileSync(stateFile, 'utf8'));
-  assert.equal(savedState.paperOnly, true);
-  assert.equal(savedState.resumedBy, 'manual');
-  assert.equal(savedState.latestAuditEvent.type, 'PAPER_RISK_REVIEW_RESUMED');
-
-  const eventLines = fs.readFileSync(eventsFile, 'utf8').trim().split('\n').map((line) => JSON.parse(line));
-  const resumeEvent = eventLines.find((row) => row.type === 'PAPER_RISK_REVIEW_RESUMED');
-  assert.ok(resumeEvent);
-  assert.equal(resumeEvent.paperOnly, true);
-  assert.equal(resumeEvent.review.previousConsecutiveLosses, 4);
 
   const state = service.getPaperRiskReviewState({ now });
-  assert.equal(state.active, true);
-  assert.equal(service.isPaperReviewActive({ now }), true);
+  assert.equal(state.active, false);
+  assert.equal(service.isPaperReviewActive({ now }), false);
 
   const rejected = await service.resumePaperTesting({
     confirmPaperOnly: true,

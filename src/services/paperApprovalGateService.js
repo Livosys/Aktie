@@ -5,8 +5,9 @@
  *
  * The paper agent historically gated entries on signal family/subtype only. This
  * service adds the PRIMARY gate the supervisor actually wants: a scanner candidate
- * may only become a SIMULATED paper trade when its canonical strategyId is on the
- * approved allowlist (data/automation-approvals.json via automationApprovalService).
+ * may only become a SIMULATED paper trade when its canonical strategyId is
+ * approved, selected for its family and READY in the ordinary Paper Trading
+ * strategy-approval store.
  *
  * Resolution of candidate → strategyId is delegated to strategyRuntimeConnectorService
  * (the single source of truth for that mapping), so this service never invents a
@@ -33,16 +34,30 @@ function lazy(modPath) {
   try { return require(modPath); } catch (_) { return null; }
 }
 
-// Read the approved strategy ids from the manual-approval store. Read-only; an
-// error or missing file degrades to an empty list (fail-closed → nothing approved).
+// Read tradable strategy ids from the ordinary Paper Trading approval store.
+// Tradable means approved + selected for its family + READY runtime. Read-only;
+// an error or missing file degrades to an empty list (fail-closed).
 function getApprovedStrategyIds() {
-  const svc = lazy('./automationApprovalService');
+  const svc = lazy('./paperStrategyApprovalService');
   try {
-    const a = svc && typeof svc.getAutomationApprovals === 'function' ? svc.getAutomationApprovals() : null;
-    return Array.isArray(a && a.approvedStrategyIds) ? a.approvedStrategyIds.filter(Boolean) : [];
+    if (svc && typeof svc.getTradableStrategyIds === 'function') {
+      return svc.getTradableStrategyIds().filter(Boolean);
+    }
+    const status = svc && typeof svc.getAllowlistStatus === 'function' ? svc.getAllowlistStatus() : null;
+    return Array.isArray(status && status.tradableStrategyIds) ? status.tradableStrategyIds.filter(Boolean) : [];
   } catch (_) {
     return [];
   }
+}
+
+function evaluateApprovalStore(strategyId) {
+  const svc = lazy('./paperStrategyApprovalService');
+  try {
+    if (svc && typeof svc.evaluatePaperApprovalGate === 'function') {
+      return svc.evaluatePaperApprovalGate({ strategyId });
+    }
+  } catch (_) { /* fail closed below */ }
+  return null;
 }
 
 // Resolve a scanner candidate to its canonical strategyId using the runtime
@@ -73,7 +88,8 @@ function isApprovedStrategyId(strategyId, approvedSet) {
 function evaluateCandidate(candidate = {}, opts = {}) {
   const approvedSet = opts.approvedSet instanceof Set ? opts.approvedSet : new Set(getApprovedStrategyIds());
   const strategyId = resolveStrategyId(candidate);
-  const approved = isApprovedStrategyId(strategyId, approvedSet);
+  const approvalGate = strategyId ? evaluateApprovalStore(strategyId) : null;
+  const approved = approvalGate ? approvalGate.allowed === true : isApprovedStrategyId(strategyId, approvedSet);
   return {
     symbol: candidate.symbol || null,
     timeframe: candidate.timeframe || '2m',
@@ -83,7 +99,8 @@ function evaluateCandidate(candidate = {}, opts = {}) {
     approved,
     decision: approved ? 'accept' : 'block',
     // Only set when blocked, so callers can log a precise, stable reason.
-    blockedReason: approved ? null : NOT_APPROVED_REASON,
+    blockedReason: approved ? null : (approvalGate && approvalGate.blockedReason) || NOT_APPROVED_REASON,
+    approvalGate,
     ...SAFETY,
   };
 }

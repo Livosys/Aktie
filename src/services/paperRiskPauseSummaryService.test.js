@@ -56,12 +56,13 @@ async function main() {
   assert.equal(result.actions_allowed, false);
   assert.equal(result.can_place_orders, false);
 
-  assert.equal(result.summary.active, true);
-  assert.equal(result.summary.pause_trading, true);
-  assert.equal(result.summary.pause_reason, 'consecutive_losses_limit');
+  assert.equal(result.summary.active, false);
+  assert.equal(result.summary.pause_trading, false);
+  assert.equal(result.summary.pause_reason, null);
   assert.equal(result.summary.consecutive_losses, 4);
   assert.equal(result.summary.max_consecutive_losses, 4);
-  assert.equal(result.summary.pause_after_consecutive_losses, true);
+  assert.equal(result.summary.pause_after_consecutive_losses, false);
+  assert.equal(result.summary.consecutive_loss_pause_removed_for_ordinary_paper, true);
   assert.equal(result.summary.latest_risk_pause_event.symbol, 'AAPL');
   assert.equal(result.summary.latest_risk_pause_event.strategy_id, 'trend_continuation');
   assert.equal(result.summary.latest_risk_pause_event.type, 'RISK_PAUSE_TRIGGERED');

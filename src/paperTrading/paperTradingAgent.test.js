@@ -13,6 +13,16 @@ function main() {
     warnings: ['near_consecutive_losses_limit'],
   };
 
+  const paperRiskConfig = agent._internal.ordinaryPaperRiskConfig({
+    pause_after_consecutive_losses: true,
+    pause_after_daily_loss: true,
+    max_consecutive_losses: 4,
+    max_daily_loss_pct: 2,
+  });
+  assert.equal(paperRiskConfig.pause_after_consecutive_losses, false);
+  assert.equal(paperRiskConfig.pause_after_daily_loss, true);
+  assert.equal(paperRiskConfig.max_consecutive_losses, 4);
+
   const unchanged = agent._internal.applyManualRiskReviewOverride(baseRisk, false);
   assert.equal(unchanged.overrideActive, false);
   assert.deepEqual(unchanged.riskEvaluation, baseRisk);

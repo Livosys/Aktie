@@ -472,14 +472,14 @@ async function evaluateTradeRisk(signalContext = {}, accountState = {}, options 
   if (signal.volatility_score != null && signal.volatility_score > riskConfig.max_volatility_score) blockReasons.push('volatility_too_high');
   if (account.daily_pnl_pct <= -riskConfig.max_daily_loss_pct) blockReasons.push('daily_loss_limit');
   if (account.daily_trades >= riskConfig.max_trades_per_day) blockReasons.push('max_daily_trades');
-  if (account.consecutive_losses >= riskConfig.max_consecutive_losses) blockReasons.push('consecutive_losses_limit');
+  if (riskConfig.pause_after_consecutive_losses && account.consecutive_losses >= riskConfig.max_consecutive_losses) blockReasons.push('consecutive_losses_limit');
   if (cooldownActive(account.last_loss_at, riskConfig.cooldown_after_loss_minutes)) blockReasons.push('loss_cooldown_active');
   if (riskConfig.allow_agent_block && agentWantsBlock(signal.agent)) blockReasons.push('agent_block');
   if (riskConfig.allow_memory_block && memoryBadSetup(signal.memory)) blockReasons.push('memory_block');
 
   if (account.daily_pnl_pct <= -(riskConfig.max_daily_loss_pct * 0.75)) warnings.push('near_daily_loss_limit');
   if (account.daily_trades >= Math.floor(riskConfig.max_trades_per_day * 0.8)) warnings.push('near_max_daily_trades');
-  if (account.consecutive_losses >= Math.max(1, riskConfig.max_consecutive_losses - 1)) warnings.push('near_consecutive_losses_limit');
+  if (riskConfig.pause_after_consecutive_losses && account.consecutive_losses >= Math.max(1, riskConfig.max_consecutive_losses - 1)) warnings.push('near_consecutive_losses_limit');
 
   const sizing = calculatePositionSize(signalContext, account, riskConfig);
   if (sizing.position_clamped) warnings.push('position_size_clamped');

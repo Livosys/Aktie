@@ -811,7 +811,7 @@ function buildDailySelectionPreview(options = {}) {
 
   const pool = [];
   const candidateStrategyIds = new Set([
-    ...allowRows.filter((row) => row && row.approvedForPaperTesting === true).map((row) => row.id).filter(Boolean),
+    ...allowRows.filter((row) => row && row.approvedForPaperTesting === true && row.tradable === true).map((row) => row.id).filter(Boolean),
     ...planRows.map((row) => row?.id).filter(Boolean),
   ]);
 
@@ -820,7 +820,7 @@ function buildDailySelectionPreview(options = {}) {
     const allowRow = allowById.get(strategyId);
     const matrixRow = matrixById.get(strategyId);
     const plannedRow = planById.get(strategyId) || null;
-    if (!allowRow || allowRow.approvedForPaperTesting !== true) continue;
+    if (!allowRow || allowRow.approvedForPaperTesting !== true || allowRow.tradable !== true) continue;
     if (!matrixRow || matrixRow.paperRuntimeStatus !== 'active' || (Array.isArray(matrixRow.blockers) && matrixRow.blockers.length > 0)) continue;
 
     let activity = findLatestEligibleActivity(strategyId, sources, cooldowns, nowMs);

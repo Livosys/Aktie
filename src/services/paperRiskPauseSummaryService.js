@@ -188,9 +188,7 @@ async function buildPaperRiskPauseSummary(options = {}) {
   const closedTrades = trades.filter((row) => normalizeResult(row) !== 'OPEN');
   const riskState = buildConsecutiveLossState(closedTrades, riskConfig);
   const pauseReasons = [];
-  if (riskConfig.pause_after_consecutive_losses && riskState.consecutive_losses >= riskConfig.max_consecutive_losses) {
-    pauseReasons.push('consecutive_losses_limit');
-  }
+  const consecutiveLossPauseEnabled = false;
   const pauseTrading = pauseReasons.length > 0;
   const latestRiskPauseEvent = buildLatestRiskPauseEvent(events);
   const riskReview = loadRiskReviewState(files, options.now || new Date());
@@ -206,7 +204,8 @@ async function buildPaperRiskPauseSummary(options = {}) {
       effective_pause_trading: effectivePauseTrading,
       pause_reasons: pauseReasons,
       pause_reason: pauseReasons[0] || null,
-      pause_after_consecutive_losses: riskConfig.pause_after_consecutive_losses === true,
+      pause_after_consecutive_losses: consecutiveLossPauseEnabled,
+      consecutive_loss_pause_removed_for_ordinary_paper: true,
       consecutive_losses: riskState.consecutive_losses,
       max_consecutive_losses: Number(riskConfig.max_consecutive_losses) || 4,
       last_loss_at: riskState.last_loss_at,

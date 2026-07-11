@@ -8,7 +8,6 @@ const REFRESH_MS = 15_000;
 const FETCH_TIMEOUT_MS = 6_500;
 const PAPER_TABS = [
   { id: 'oversikt', label: 'Översikt' },
-  { id: 'konto', label: 'Konto' },
   { id: 'positioner', label: 'Positioner' },
   { id: 'trades', label: 'Trades' },
   { id: 'runtime', label: 'Runtime' },
@@ -529,6 +528,26 @@ function usePaperAllowlist(refreshKey = 0) {
           loading: false,
           data: null,
           error: friendlyAllowlistError(err, 'Kunde inte läsa paper allowlist-status.'),
+        });
+      });
+    return () => { alive = false; };
+  }, [refreshKey]);
+  return state;
+}
+
+function usePaperStrategies(refreshKey = 0) {
+  const [state, setState] = useState({ loading: true, data: null, error: null });
+  useEffect(() => {
+    let alive = true;
+    setState((prev) => ({ ...prev, loading: true }));
+    fetchJsonWithTimeout('/api/paper-trading/strategies')
+      .then((data) => { if (alive) setState({ loading: false, data, error: null }); })
+      .catch((err) => {
+        if (!alive) return;
+        setState({
+          loading: false,
+          data: null,
+          error: friendlyAllowlistError(err, 'Kunde inte läsa Paper Trading-strategier.'),
         });
       });
     return () => { alive = false; };
@@ -1557,7 +1576,8 @@ function RiskPauseSummaryPanel({ riskPauseSummary, gateStatus, runtime, onRefres
   const last60m = gatePipeline?.last60m || {};
   const latestEvent = summary.latest_risk_pause_event || runtime?.recentEvents?.find?.((row) => String(row?.type || '').toUpperCase() === 'RISK_PAUSE_TRIGGERED') || null;
   const active = summary.pause_trading === true || summary.active === true;
-  const reviewActive = riskReview.active === true;
+  const consecutiveLossPauseRemoved = summary.consecutive_loss_pause_removed_for_ordinary_paper === true;
+  const reviewActive = !consecutiveLossPauseRemoved && riskReview.active === true;
   const canResume = active && !reviewActive;
   const reasonText = summary.pause_reason || (Array.isArray(summary.pause_reasons) ? summary.pause_reasons.join(', ') : null) || '–';
   const latestEventText = latestEvent?.timestamp
@@ -1602,6 +1622,12 @@ function RiskPauseSummaryPanel({ riskPauseSummary, gateStatus, runtime, onRefres
         </span>
       </div>
 
+      {consecutiveLossPauseRemoved ? (
+        <div style={{ marginTop: 12, padding: 14, borderRadius: 14, border: '1px solid rgba(34,197,94,0.24)', background: 'rgba(34,197,94,0.08)', color: 'var(--text)', fontSize: 13, lineHeight: 1.55 }}>
+          Fyrförlustpausen är borttagen för vanlig Paper Trading. Förlustsviten räknas fortfarande för diagnos, men den stoppar inte nya paper entries.
+        </div>
+      ) : null}
+
       {active && !reviewActive ? (
         <div style={{ marginTop: 12, padding: 16, borderRadius: 16, border: '1px solid rgba(239,68,68,0.25)', background: 'rgba(239,68,68,0.08)', color: 'var(--text)', lineHeight: 1.6 }}>
           <div style={{ fontSize: 18, fontWeight: 900, marginBottom: 4 }}>Paper trading är pausad</div>
@@ -1640,7 +1666,7 @@ function RiskPauseSummaryPanel({ riskPauseSummary, gateStatus, runtime, onRefres
           label="Consecutive losses"
           value={consecutiveText}
           tone={active ? 'warn' : 'neutral'}
-          note={`pause_after_consecutive_losses=${String(summary.pause_after_consecutive_losses !== false)}`}
+          note={`pause_after_consecutive_losses=${String(summary.pause_after_consecutive_losses === true)}`}
         />
         <MetricCard
           label="Pause reason"
@@ -1679,7 +1705,9 @@ function RiskPauseSummaryPanel({ riskPauseSummary, gateStatus, runtime, onRefres
       </div>
 
       <div style={{ marginTop: 12, fontSize: 13, lineHeight: 1.6, color: 'var(--text)' }}>
-        <strong>Förklaring:</strong> Scanner och market gate hittar kandidater, men risk-pausen stoppar nya paper entries tills förlustsviten bryts eller risk review görs.
+        <strong>Förklaring:</strong> {consecutiveLossPauseRemoved
+          ? 'Scanner, market gate och övriga safety-regler gäller fortfarande, men fyra raka förluster skapar inte längre en vanlig Paper-paus.'
+          : 'Scanner och market gate hittar kandidater, men risk-pausen stoppar nya paper entries tills förlustsviten bryts eller risk review görs.'}
       </div>
 
       <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginTop: 12 }}>
@@ -1847,6 +1875,7 @@ function PaperControlRoomPanel({ runtime, safetyStatus, gateStatus, approvalPrev
     : Array.isArray(approvalPreview?.approvedStrategyIds)
       ? approvalPreview.approvedStrategyIds
       : [];
+  const tradableStrategyIds = Array.isArray(allowlist?.tradableStrategyIds) ? allowlist.tradableStrategyIds : [];
   const previewCandidates = Array.isArray(dailySelectionPreview?.candidates) ? dailySelectionPreview.candidates : [];
   const gatePipeline = gateStatus?.pipeline || {};
   const nearMissLearning = gateStatus?.nearMissLearning || {};
@@ -1972,13 +2001,13 @@ function PaperControlRoomPanel({ runtime, safetyStatus, gateStatus, approvalPrev
           </div>
         </div>
         <div style={{ border: '1px solid var(--border)', borderRadius: 14, padding: 14, background: 'var(--surface)' }}>
-          <div style={{ ...mutedTextStyle(theme), fontSize: 11, textTransform: 'uppercase', letterSpacing: '0.08em' }}>Approved strategies</div>
-          <div style={{ marginTop: 8, fontWeight: 900, color: 'var(--text)' }}>{approvedStrategyIds.length} godkända</div>
+          <div style={{ ...mutedTextStyle(theme), fontSize: 11, textTransform: 'uppercase', letterSpacing: '0.08em' }}>Approved / tradable</div>
+          <div style={{ marginTop: 8, fontWeight: 900, color: 'var(--text)' }}>{approvedStrategyIds.length} approved · {tradableStrategyIds.length} tradable</div>
           <div style={{ marginTop: 6, fontSize: 12, lineHeight: 1.5, color: 'var(--text)' }}>
             preview accepted={approvalPreview?.accepted ?? '–'} · blocked={approvalPreview?.blocked ?? '–'}
           </div>
           <div style={{ marginTop: 10, display: 'flex', flexWrap: 'wrap', gap: 6 }}>
-            {approvedStrategyIds.slice(0, 8).map((id) => (
+            {(tradableStrategyIds.length ? tradableStrategyIds : approvedStrategyIds).slice(0, 8).map((id) => (
               <span key={id} style={statusPillStyle('info', theme, true)}>{id}</span>
             ))}
           </div>
@@ -2096,6 +2125,244 @@ async function postPaperMarketConfig(patch) {
   } catch (err) {
     throw new Error(friendlyAllowlistError(err, 'Kunde inte spara paper market-config.'));
   }
+}
+
+async function postPaperStrategyAction(action, strategyId) {
+  try {
+    const res = await fetch(`/api/paper-trading/strategies/${encodeURIComponent(strategyId)}/${action}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      credentials: 'include',
+      body: JSON.stringify({
+        reason: 'manual_paper_trading_strategy_admin',
+        mode: 'paper_only',
+        actions_allowed: false,
+        can_place_orders: false,
+        live_trading_enabled: false,
+        broker_enabled: false,
+      }),
+    });
+    const data = await res.json().catch(() => null);
+    if (!res.ok || !data || data.ok === false) {
+      throw new Error((data && (data.error || data.reason || data.blockingReasons?.join?.(', '))) || `HTTP ${res.status}`);
+    }
+    return data;
+  } catch (err) {
+    throw new Error(friendlyAllowlistError(err, 'Kunde inte uppdatera Paper Trading-strategin.'));
+  }
+}
+
+function paperStrategyStatusTone(status) {
+  if (status === 'approved') return 'success';
+  if (status === 'removed') return 'danger';
+  if (status === 'paused') return 'warning';
+  return 'neutral';
+}
+
+function paperCompatibilityTone(value) {
+  if (value === 'READY') return 'success';
+  if (value === 'BLOCKED' || value === 'UNSUPPORTED') return 'danger';
+  if (value === 'NEEDS_MAPPING') return 'warning';
+  return 'neutral';
+}
+
+function PaperStrategyAdminPanel({ refreshKey, onRefresh }) {
+  const theme = useThemeMode();
+  const state = usePaperStrategies(refreshKey);
+  const [busyId, setBusyId] = useState('');
+  const [message, setMessage] = useState(null);
+  const [confirm, setConfirm] = useState(null);
+  const data = state.data || {};
+  const summary = data.summary || {};
+  const strategies = Array.isArray(data.strategies) ? data.strategies : [];
+  const families = Array.isArray(data.familySelections) ? data.familySelections : [];
+
+  const rows = strategies
+    .slice()
+    .sort((a, b) => {
+      const familyDiff = String(a.family || '').localeCompare(String(b.family || ''));
+      if (familyDiff !== 0) return familyDiff;
+      const aTradable = a.familySelection?.tradable === true ? 0 : 1;
+      const bTradable = b.familySelection?.tradable === true ? 0 : 1;
+      if (aTradable !== bTradable) return aTradable - bTradable;
+      return String(a.strategyId || '').localeCompare(String(b.strategyId || ''));
+    });
+
+  function ask(action, strategy) {
+    setMessage(null);
+    setConfirm({ action, strategy });
+  }
+
+  async function runAction() {
+    if (!confirm?.strategy?.strategyId || busyId) return;
+    const id = confirm.strategy.strategyId;
+    setBusyId(id);
+    setConfirm(null);
+    setMessage(null);
+    try {
+      const result = await postPaperStrategyAction(confirm.action, id);
+      setMessage({
+        type: 'ok',
+        text: confirm.action === 'approve'
+          ? `${id} är godkänd och vald för sin strategifamilj. Endast paper-only runtime påverkas.`
+          : `${id} är markerad som removed i vanlig Paper Trading. Historik sparas och inga riktiga order påverkas.`,
+      });
+      onRefresh?.();
+      return result;
+    } catch (err) {
+      setMessage({ type: 'error', text: err?.message || 'Åtgärden misslyckades.' });
+      return null;
+    } finally {
+      setBusyId('');
+    }
+  }
+
+  const buttonStyle = (tone, disabled) => ({
+    appearance: 'none',
+    cursor: disabled ? 'not-allowed' : 'pointer',
+    opacity: disabled ? 0.62 : 1,
+    border: '1px solid var(--border)',
+    borderRadius: 8,
+    background: 'var(--surface-2)',
+    color: tone === 'danger' ? 'var(--danger)' : tone === 'success' ? 'var(--success)' : 'var(--text)',
+    padding: '6px 10px',
+    fontSize: 12,
+    fontWeight: 800,
+    whiteSpace: 'nowrap',
+  });
+
+  return (
+    <div style={sectionStyle()}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap', alignItems: 'flex-start' }}>
+        <div>
+          <h2 style={{ margin: 0, fontSize: 18 }}>Paper Strategy Administration</h2>
+          <div style={{ marginTop: 4, ...mutedTextStyle(theme), fontSize: 13, lineHeight: 1.5 }}>
+            Gäller bara vanlig Paper Trading för aktier, ETF:er och crypto. Futures Paper har separat state och separata mutationer.
+          </div>
+        </div>
+        <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+          <span style={statusPillStyle('success', theme, true)}>paper_only</span>
+          <span style={statusPillStyle('neutral', theme, true)}>broker=false</span>
+          <span style={statusPillStyle('neutral', theme, true)}>live=false</span>
+        </div>
+      </div>
+
+      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10, marginTop: 12 }}>
+        <MetricCard label="Approved" value={summary.approved ?? 0} tone="good" />
+        <MetricCard label="Tradable" value={summary.tradable ?? 0} tone={(summary.tradable ?? 0) > 0 ? 'good' : 'warn'} note="approved + selected + READY" />
+        <MetricCard label="Removed" value={summary.removed ?? 0} tone={(summary.removed ?? 0) > 0 ? 'warn' : 'neutral'} />
+        <MetricCard label="READY" value={summary.ready ?? 0} tone="neutral" />
+        <MetricCard label="Families" value={summary.families ?? 0} tone="neutral" note="max en tradable per familj" />
+      </div>
+
+      {state.error ? (
+        <div style={{ marginTop: 12, border: '1px solid rgba(239,68,68,0.24)', borderRadius: 12, padding: 12, background: 'var(--surface-2)', color: 'var(--danger)', fontSize: 13 }}>
+          {state.error}
+        </div>
+      ) : null}
+
+      {message ? (
+        <div style={{ marginTop: 12, border: '1px solid var(--border)', borderRadius: 12, padding: 12, background: 'var(--surface-2)', color: message.type === 'ok' ? 'var(--success)' : 'var(--danger)', fontSize: 13 }}>
+          {message.text}
+        </div>
+      ) : null}
+
+      {confirm ? (
+        <div style={{ marginTop: 12, border: '1px solid rgba(56,189,248,0.24)', borderRadius: 12, padding: 12, background: 'var(--surface-2)', color: 'var(--text)', fontSize: 13, lineHeight: 1.5 }}>
+          {confirm.action === 'approve'
+            ? `Godkänn och välj ${confirm.strategy.displayName || confirm.strategy.strategyId} för familjen ${confirm.strategy.family || 'okänd'}? Andra godkända strategier i samma familj blir kvar som approved men inte tradable.`
+            : `Markera ${confirm.strategy.displayName || confirm.strategy.strategyId} som removed i vanlig Paper Trading? Historik sparas.`}
+          <div style={{ display: 'flex', gap: 8, marginTop: 10 }}>
+            <button type="button" style={buttonStyle(confirm.action === 'remove' ? 'danger' : 'success', false)} onClick={runAction}>Bekräfta</button>
+            <button type="button" style={buttonStyle('neutral', false)} onClick={() => setConfirm(null)}>Avbryt</button>
+          </div>
+        </div>
+      ) : null}
+
+      <DataTable
+        title="Vald strategi per familj"
+        subtitle="Endast vald strategi i en familj kan vara tradable. Removed rader ligger kvar som status, inte som runtime-state."
+        rows={families}
+        emptyText={state.loading ? 'Hämtar familjer...' : 'Inga strategifamiljer hittades.'}
+        rowKey={(row) => row.familyKey}
+        columns={[
+          { key: 'family', label: 'Familj', render: (row) => row.family || row.familyKey },
+          { key: 'selectedStrategyId', label: 'Vald strategi', render: (row) => row.selectedStrategyId || '–' },
+          { key: 'tradableStrategyId', label: 'Tradable', render: (row) => row.tradableStrategyId || '–' },
+          { key: 'approvedStrategyIds', label: 'Approved', render: (row) => Array.isArray(row.approvedStrategyIds) && row.approvedStrategyIds.length ? row.approvedStrategyIds.join(', ') : '–' },
+          { key: 'removedStrategyIds', label: 'Removed', render: (row) => Array.isArray(row.removedStrategyIds) && row.removedStrategyIds.length ? row.removedStrategyIds.join(', ') : '–' },
+        ]}
+      />
+
+      <DataTable
+        title="Strategier"
+        subtitle="Approval-status, selected-status, runtime-kompatibilitet och blockerorsak för vanlig Paper Trading."
+        rows={rows}
+        emptyText={state.loading ? 'Hämtar strategier...' : 'Inga strategier hittades.'}
+        rowKey={(row) => row.strategyId}
+        columns={[
+          { key: 'strategyId', label: 'Strategy id', render: (row) => <span style={{ fontWeight: 800 }}>{row.strategyId}</span> },
+          { key: 'displayName', label: 'Namn' },
+          { key: 'family', label: 'Familj', render: (row) => row.family || '–' },
+          {
+            key: 'approval',
+            label: 'Approval',
+            render: (row) => <span style={statusPillStyle(paperStrategyStatusTone(row.approval?.status), theme, true)}>{row.approval?.status || 'not_approved'}</span>,
+          },
+          {
+            key: 'selected',
+            label: 'Vald',
+            render: (row) => row.familySelection?.selected ? 'Ja' : 'Nej',
+          },
+          {
+            key: 'tradable',
+            label: 'Tradable',
+            render: (row) => <span style={statusPillStyle(row.familySelection?.tradable ? 'success' : 'neutral', theme, true)}>{row.familySelection?.tradable ? 'Ja' : 'Nej'}</span>,
+          },
+          {
+            key: 'compatibility',
+            label: 'Kompatibilitet',
+            render: (row) => <span style={statusPillStyle(paperCompatibilityTone(row.compatibility?.compatibility), theme, true)}>{row.compatibility?.compatibility || 'UNKNOWN'}</span>,
+          },
+          { key: 'runtimeStatus', label: 'Runtime', render: (row) => row.compatibility?.runtimeStatus || '–' },
+          {
+            key: 'blocker',
+            label: 'Blockerorsak',
+            render: (row) => row.familySelection?.blocker || (Array.isArray(row.compatibility?.blockingReasons) && row.compatibility.blockingReasons[0]) || '–',
+          },
+          {
+            key: 'actions',
+            label: '',
+            render: (row) => {
+              const status = row.approval?.status || null;
+              const ready = row.compatibility?.compatibility === 'READY';
+              const approveLabel = status === 'approved' && !row.familySelection?.selected ? 'Välj familj' : status === 'removed' ? 'Godkänn igen' : 'Godkänn';
+              return (
+                <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                  <button
+                    type="button"
+                    disabled={busyId === row.strategyId || !ready || (status === 'approved' && row.familySelection?.selected)}
+                    style={buttonStyle('success', busyId === row.strategyId || !ready || (status === 'approved' && row.familySelection?.selected))}
+                    onClick={() => ask('approve', row)}
+                  >
+                    {approveLabel}
+                  </button>
+                  <button
+                    type="button"
+                    disabled={busyId === row.strategyId || status === 'removed' || !status}
+                    style={buttonStyle('danger', busyId === row.strategyId || status === 'removed' || !status)}
+                    onClick={() => ask('remove', row)}
+                  >
+                    Ta bort
+                  </button>
+                </div>
+              );
+            },
+          },
+        ]}
+      />
+    </div>
+  );
 }
 
 function PaperMarketsPanel({ refreshKey, onRefresh }) {
@@ -3144,8 +3411,6 @@ export default function PaperTradingPage() {
   const runtime = runtimeState.data;
   const summary = runtime?.summary || {};
   const performanceSummary = runtime?.strategyPerformance?.summary || {};
-  const paperAccount = runtime?.account || null;
-  const accountValue = paperAccount?.equity ?? paperAccount?.balance ?? paperAccount?.cash ?? null;
   const dashboardSafety = runtime?.safety || safetyState.data?.status || safetyState.data || runtime || {};
   const paperPnl = Number(performanceSummary.netPnlPct);
   const paperStatus = runtimeState.loading && !runtime
@@ -3159,12 +3424,6 @@ export default function PaperTradingPage() {
       value: paperStatus,
       hint: 'Read-only paper runtime',
       tone: runtimeState.error ? 'warning' : runtime?.status === 'ok' ? 'good' : 'neutral',
-    },
-    {
-      label: 'Equity / balans',
-      value: accountValue == null ? '–' : String(accountValue),
-      hint: accountValue == null ? 'Ingen kontodata i runtime' : 'Paper-konto',
-      tone: 'blue',
     },
     {
       label: 'Paper PnL',
@@ -3245,6 +3504,10 @@ export default function PaperTradingPage() {
             allowlist={allowlistState.data}
           />
           <SafetyBanner safety={dashboardSafety} />
+          <PaperStrategyAdminPanel
+            refreshKey={refreshKey}
+            onRefresh={() => setRefreshKey((t) => t + 1)}
+          />
           <TopStrategySelectorPanel preview={dailySelectionPreview} />
           <DailySelectionPreviewPanel preview={dailySelectionPreview} />
           <WhyNoTradesPanel
@@ -3255,26 +3518,6 @@ export default function PaperTradingPage() {
             onRefresh={() => setRefreshKey((t) => t + 1)}
           />
         </>
-      )}
-
-      {activeTab === 'konto' && (
-        <div style={sectionStyle()}>
-          {paperAccount ? (
-            <DataTable
-              title="Paper-konto"
-              subtitle="Kontodata från befintlig paper runtime."
-              rows={Object.entries(paperAccount).map(([key, value]) => ({ key, value }))}
-              emptyText="Ingen kontodata i paper runtime."
-              rowKey={(row) => row.key}
-              columns={[
-                { key: 'key', label: 'Fält' },
-                { key: 'value', label: 'Värde', render: (row) => String(row.value ?? '–') },
-              ]}
-            />
-          ) : (
-            <EmptyState text="Paper runtime innehåller ingen separat konto- eller equity-datakälla ännu." />
-          )}
-        </div>
       )}
 
       {activeTab === 'positioner' && (
@@ -3327,7 +3570,10 @@ export default function PaperTradingPage() {
       {activeTab === 'teknik' && (
         <>
           <PaperMarketsPanel refreshKey={marketRefreshKey} onRefresh={() => setMarketRefreshKey((t) => t + 1)} />
-          <PaperAllowlistManager runtime={runtime} allowlist={allowlistState.data} refreshKey={refreshKey} onRefresh={() => setRefreshKey((t) => t + 1)} />
+          <PaperStrategyAdminPanel
+            refreshKey={refreshKey}
+            onRefresh={() => setRefreshKey((t) => t + 1)}
+          />
           <TradingViewTestResultsPanel theme={theme} />
           <PaperCandidatePanel mode="paper" />
         </>

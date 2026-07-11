@@ -5,8 +5,6 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 
-const svc = require('./paperTradingRuntimeService');
-
 function writeJson(file, value) {
   fs.mkdirSync(path.dirname(file), { recursive: true });
   fs.writeFileSync(file, JSON.stringify(value, null, 2), 'utf8');
@@ -27,6 +25,24 @@ const files = {
   optimizationCandidates: path.join(tmp, 'optimization/paper-candidates.jsonl'),
   optimizationLatest: path.join(tmp, 'optimization/latest.json'),
 };
+process.env.PAPER_STRATEGY_APPROVALS_FILE = path.join(tmp, 'paper-trading/strategy-approvals.json');
+writeJson(process.env.PAPER_STRATEGY_APPROVALS_FILE, {
+  schemaVersion: 1,
+  strategies: {
+    vwap_failed_breakout_short: { status: 'approved', source: 'test', approvedAt: '2026-06-16T00:00:00.000Z', updatedAt: '2026-06-16T00:00:00.000Z', history: [] },
+    narrow_breakout: { status: 'approved', source: 'test', approvedAt: '2026-06-16T00:00:00.000Z', updatedAt: '2026-06-16T00:00:00.000Z', history: [] },
+    narrow_fakeout_reversal_v1: { status: 'approved', source: 'test', approvedAt: '2026-06-16T00:00:00.000Z', updatedAt: '2026-06-16T00:00:00.000Z', history: [] },
+    trend_continuation: { status: 'approved', source: 'test', approvedAt: '2026-06-16T00:00:00.000Z', updatedAt: '2026-06-16T00:00:00.000Z', history: [] },
+  },
+  selectedByFamily: {
+    vwap_family: 'vwap_failed_breakout_short',
+    narrow_state: 'narrow_fakeout_reversal_v1',
+    ema_trend_family: 'trend_continuation',
+  },
+  updatedAt: '2026-06-16T00:00:00.000Z',
+});
+
+const svc = require('./paperTradingRuntimeService');
 
 writeJson(files.state, {
   enabled: false,
@@ -202,13 +218,12 @@ assert.equal(summary.live_trading_enabled, false);
 
 const previewA = svc._internal.buildDailySelectionPreview({ files, now: '2026-06-16T14:30:00.000Z', selectionCount: 3 });
 const previewB = svc._internal.buildDailySelectionPreview({ files, now: '2026-06-16T14:30:00.000Z', selectionCount: 3 });
-const previewNextDay = svc._internal.buildDailySelectionPreview({ files, now: '2026-06-17T14:30:00.000Z', selectionCount: 3 });
 
 assert.equal(previewA.mode, 'preview_only');
 assert.equal(previewA.selectionCount, 3);
 assert.ok(previewA.candidates.length <= 3, 'daily preview caps at 3 candidates');
 assert.deepEqual(previewA.candidates.map((row) => row.canonicalStrategyId), previewB.candidates.map((row) => row.canonicalStrategyId), 'same day selection is stable');
-assert.notDeepEqual(previewA.candidates.map((row) => row.canonicalStrategyId), previewNextDay.candidates.map((row) => row.canonicalStrategyId), 'different day can change selection');
+assert.ok(!previewA.allCandidates.some((row) => row.canonicalStrategyId === 'narrow_breakout'), 'approved but not selected family member is excluded');
 assert.ok(previewA.candidates.every((row) => row.previewOnly === true && row.wouldCreateTrade === false && row.blockedExecution === true), 'preview rows are read-only');
 
 const cooldownSources = {

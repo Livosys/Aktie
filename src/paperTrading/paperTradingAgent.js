@@ -1990,6 +1990,15 @@ function buildRiskSignalContext(c, gateDecision, agentAnalysis, riskProfile) {
   };
 }
 
+function ordinaryPaperRiskConfig(riskConfig = {}) {
+  return {
+    ...riskConfig,
+    // Ordinary Paper Trading no longer pauses or blocks after four consecutive
+    // losses. Other risk gates in riskEngineService still use the same config.
+    pause_after_consecutive_losses: false,
+  };
+}
+
 function applyManualRiskReviewOverride(riskEvaluation, canOverrideRiskPause) {
   if (!riskEvaluation || !canOverrideRiskPause) return { riskEvaluation, overrideActive: false };
   const filteredBlockReasons = Array.isArray(riskEvaluation.block_reasons)
@@ -2350,7 +2359,11 @@ async function runTick() {
         const resolvedStrategyId = runtimeStrategyForGate.strategy_id
           || runtimeStrategyForGate.strategyId
           || paperApprovalGate.resolveStrategyId(runtimeCandidate);
-        const isApproved = paperApprovalGate.isApprovedStrategyId(resolvedStrategyId);
+        const approvalDecision = paperApprovalGate.evaluateCandidate({
+          ...runtimeCandidate,
+          strategyId: resolvedStrategyId || runtimeCandidate.strategyId || runtimeCandidate.strategy_id || null,
+        });
+        const isApproved = approvalDecision.approved === true;
         if (!isApproved) {
           _bump('qualifiesRejected', null);
           _recentRejections = [{
@@ -2359,12 +2372,13 @@ async function runTick() {
             marketGroup:   getMarketGroup(c.symbol) || c.marketGroup || 'UNKNOWN',
             signalSubtype: c.signalSubtype || null,
             strategyId:    resolvedStrategyId || null,
-            reason:        paperApprovalGate.NOT_APPROVED_REASON,
+            reason:        approvalDecision.blockedReason || paperApprovalGate.NOT_APPROVED_REASON,
             timestamp:     new Date().toISOString(),
           }, ..._recentRejections].slice(0, 100);
           appendEvent({
             ...eventFromCandidate('GATE_BLOCKED', runtimeCandidate, 'Blockerad: strategin är inte på den godkända allowlist:en (endast paper-only research-kandidater tillåts).', 'blocked'),
-            blockedReason: paperApprovalGate.NOT_APPROVED_REASON,
+            blockedReason: approvalDecision.blockedReason || paperApprovalGate.NOT_APPROVED_REASON,
+            approvalGate: approvalDecision.approvalGate || null,
             runtimeStatus: runtimeStrategyForGate.runtime_status || null,
             strategyId:    resolvedStrategyId || null,
             strategyName:  runtimeStrategyForGate.strategy_name || null,
@@ -2616,7 +2630,7 @@ async function runTick() {
         candidateWithAgent.gateDecision = effectiveGateDecision;
 
         const riskProfile = getPaperRiskProfile(candidateWithAgent);
-        const riskConfig = await riskEngineService.getRiskConfig();
+        const riskConfig = ordinaryPaperRiskConfig(await riskEngineService.getRiskConfig());
         const riskAccountState = {
           ...buildRiskAccountState(state, riskConfig),
           balance: riskConfig.account_balance,
@@ -3526,6 +3540,7 @@ module.exports = {
   _internal: {
     paperCandidateFamily,
     strategyControlReasonSv,
+    ordinaryPaperRiskConfig,
     applyManualRiskReviewOverride,
     buildEffectiveRiskReviewState,
     buildNearMissLearningGateDecision,
