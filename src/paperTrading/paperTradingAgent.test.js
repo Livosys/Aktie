@@ -29,6 +29,7 @@ paperEnabledStrategies._internal.writeStoreAtomic(
 );
 
 const agent = require('./paperTradingAgent');
+const strategyTradeControl = require('../services/strategyTradeControlService');
 const strategyRuntimeConnector = require('../services/strategyRuntimeConnectorService');
 
 function main() {
@@ -419,6 +420,124 @@ function main() {
   assert.equal(bearishField.reasonCode, 'invalid_strategy_direction');
 
   assert.equal(agent._internal.classifySkip(contractReadyNarrow, 'paper_entry_watch_only').type, 'GATE_BLOCKED');
+
+  process.env.PAPER_MANUAL_STRATEGY_LIST_ENABLED = 'true';
+  const rankReady = agent._internal.evaluateFamilyRankEntryEligibility(contractReadyNarrow, {
+    manualStrategyGateMode: true,
+    now: new Date('2026-07-11T18:00:00.000Z'),
+  });
+  assert.equal(rankReady.eligible, true, 'entry-ready narrow bull can participate in family rank');
+  assert.equal(rankReady.strategyId, 'narrow_state_expansion_long');
+
+  const rankWatch = agent._internal.evaluateFamilyRankEntryEligibility({
+    ...contractReadyNarrow,
+    status: 'watch',
+  }, {
+    manualStrategyGateMode: true,
+    now: new Date('2026-07-11T18:00:00.000Z'),
+  });
+  assert.equal(rankWatch.eligible, false, 'watch signals cannot win family rank');
+  assert.equal(rankWatch.reason, 'paper_entry_watch_only');
+
+  const rankStale = agent._internal.evaluateFamilyRankEntryEligibility({
+    ...contractReadyNarrow,
+    dataFreshness: 'STALE',
+  }, {
+    manualStrategyGateMode: true,
+    now: new Date('2026-07-11T18:00:00.000Z'),
+  });
+  assert.equal(rankStale.eligible, false, 'stale signals cannot win family rank');
+  assert.equal(rankStale.reason, 'stale_strategy_signal');
+
+  const rankShort = agent._internal.evaluateFamilyRankEntryEligibility({
+    ...contractReadyNarrow,
+    side: 'SELL',
+  }, {
+    manualStrategyGateMode: true,
+    now: new Date('2026-07-11T18:00:00.000Z'),
+  });
+  assert.equal(rankShort.eligible, false, 'short fields cannot win family rank in LONG_ONLY mode');
+  assert.equal(rankShort.reason, 'long_only_short_entry');
+
+  const malformedRank = agent._internal.evaluateFamilyRankEntryEligibility({ symbol: 'AAPL' }, null);
+  assert.equal(malformedRank.eligible, false, 'malformed rank precheck input fails closed');
+
+  const higherConfidenceWatch = {
+    ...contractReadyNarrow,
+    symbol: 'MSFT',
+    status: 'watch',
+    confidenceScore: 99,
+  };
+  const lowerConfidenceReady = {
+    ...contractReadyNarrow,
+    symbol: 'AAPL',
+    status: 'active',
+    confidenceScore: 65,
+  };
+  const entryEligibleRanks = agent._internal.rankEntryEligibleFamilyCandidates(
+    [higherConfidenceWatch, lowerConfidenceReady],
+    {
+      manualStrategyGateMode: true,
+      now: new Date('2026-07-11T18:00:00.000Z'),
+    },
+  );
+  assert.equal(entryEligibleRanks.has(higherConfidenceWatch), false, 'higher-confidence watch candidate is excluded from family rank');
+  assert.equal(entryEligibleRanks.get(lowerConfidenceReady).familyRank, 1, 'entry-ready candidate wins eligible-only family rank');
+  assert.equal(entryEligibleRanks.get(lowerConfidenceReady).isBestInFamily, true);
+  assert.equal(lowerConfidenceReady.familyRank, undefined, 'rank precheck does not mutate candidates');
+  assert.equal(lowerConfidenceReady.entryContractAllowed, undefined, 'rank precheck does not mark candidates as trade-ready');
+  assert.equal(lowerConfidenceReady.tradeId, undefined, 'rank precheck does not create trades');
+
+  const higherConfidenceExtended = {
+    ...contractReadyNarrow,
+    symbol: 'TSLA',
+    extensionLevel: 'mild',
+    confidenceScore: 100,
+  };
+  const extendedRanks = agent._internal.rankEntryEligibleFamilyCandidates(
+    [higherConfidenceExtended, lowerConfidenceReady],
+    {
+      manualStrategyGateMode: true,
+      now: new Date('2026-07-11T18:00:00.000Z'),
+    },
+  );
+  assert.equal(extendedRanks.has(higherConfidenceExtended), false, 'extended candidate is excluded from family rank');
+  assert.equal(extendedRanks.get(lowerConfidenceReady).familyRank, 1, 'lower-confidence ready candidate still wins over extended candidate');
+
+  const allIneligibleWatch = {
+    ...contractReadyNarrow,
+    symbol: 'QQQ',
+    status: 'watch',
+    confidenceScore: 99,
+  };
+  const allIneligibleCaution = {
+    ...contractReadyNarrow,
+    symbol: 'SPY',
+    status: 'caution',
+    confidenceScore: 98,
+  };
+  const emptyEligibleRanks = agent._internal.rankEntryEligibleFamilyCandidates(
+    [allIneligibleWatch, allIneligibleCaution],
+    {
+      manualStrategyGateMode: true,
+      now: new Date('2026-07-11T18:00:00.000Z'),
+    },
+  );
+  assert.equal(emptyEligibleRanks.size, 0, 'all-ineligible family produces no synthetic rank winner');
+  const noRankControl = strategyTradeControl.evaluateStrategyTradeControl({
+    strategyId: 'narrow_state_expansion_long',
+    strategyFamily: agent._internal.paperCandidateFamily(allIneligibleWatch),
+    familyRank: emptyEligibleRanks.get(allIneligibleWatch)?.familyRank ?? null,
+    familyHasOpenPosition: false,
+    familyLastTradeAt: null,
+    config: {
+      cooldownMinutes: 30,
+      familyCooldownMinutes: 30,
+      familyExclusiveEnabled: true,
+    },
+  });
+  assert.notEqual(noRankControl.blockReason, 'strategy_family_not_best_candidate');
+
   process.env.PAPER_ENTRY_CONTRACTS_ENABLED = 'false';
 
   process.env.PAPER_MANUAL_STRATEGY_LIST_ENABLED = 'false';

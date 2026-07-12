@@ -966,6 +966,105 @@ function evaluatePaperEntryContractGate(candidate = {}, options = {}) {
   };
 }
 
+function evaluateFamilyRankEntryEligibility(candidate = {}, options = {}) {
+  const opts = options && typeof options === 'object' ? options : {};
+  const manualStrategyGateMode = opts.manualStrategyGateMode != null
+    ? opts.manualStrategyGateMode === true
+    : paperManualStrategyListEnabled();
+
+  try {
+    const inferredStrategy = strategyRuntimeConnector.inferStrategyForSignal(candidate);
+    let resolvedStrategyId = strategyIdFromRuntimeStrategy(inferredStrategy);
+
+    if (manualStrategyGateMode) {
+      const manualGate = evaluateManualPaperStrategyGate(candidate, { inferredStrategy });
+      if (!manualGate.allowed) {
+        return {
+          eligible: false,
+          reason: manualGate.blockedReason || manualGate.reason || 'manual_strategy_gate_blocked',
+          strategyId: manualGate.strategyId || resolvedStrategyId || null,
+        };
+      }
+      resolvedStrategyId = manualGate.strategyId || resolvedStrategyId;
+    }
+
+    const runtimeDecision = strategyRuntimeConnector.canCreatePaperTradeForSignal(candidate);
+    if (!runtimeDecision.allowed) {
+      return {
+        eligible: false,
+        reason: manualRuntimeBlockedReason(runtimeDecision),
+        strategyId: resolvedStrategyId || strategyIdFromRuntimeStrategy(runtimeDecision.strategy || {}) || null,
+      };
+    }
+
+    const runtimeStrategy = runtimeDecision.strategy || inferredStrategy || {};
+    const runtimeCandidate = normalizeCandidateStrategyMetadata(candidate, runtimeDecision);
+    resolvedStrategyId = resolvedStrategyId || strategyIdFromRuntimeStrategy(runtimeStrategy);
+
+    const longOnlyDecision = evaluateLongOnlyPaperGate(
+      runtimeCandidate,
+      canonicalStrategyForRuntimeId(resolvedStrategyId),
+    );
+    if (!longOnlyDecision.allowed) {
+      return {
+        eligible: false,
+        reason: longOnlyDecision.blockedReason || 'long_only_blocked',
+        strategyId: resolvedStrategyId || null,
+      };
+    }
+
+    const entryContractDecision = evaluatePaperEntryContractGate(runtimeCandidate, {
+      strategyId: resolvedStrategyId || null,
+      now: opts.now,
+      marketContext: {
+        marketType: runtimeCandidate.marketType || runtimeCandidate.market || eventMarketType(runtimeCandidate),
+        session: runtimeCandidate.session || null,
+      },
+    });
+    if (!entryContractDecision.allowed) {
+      return {
+        eligible: false,
+        reason: entryContractDecision.reasonCode || entryContractDecision.reason || 'entry_contract_blocked',
+        strategyId: resolvedStrategyId || null,
+      };
+    }
+
+    return {
+      eligible: true,
+      reason: null,
+      strategyId: resolvedStrategyId || null,
+    };
+  } catch (err) {
+    return {
+      eligible: false,
+      reason: err?.message || 'family_rank_entry_precheck_error',
+      strategyId: null,
+    };
+  }
+}
+
+function rankEntryEligibleFamilyCandidates(candidates = [], options = {}) {
+  const opts = options && typeof options === 'object' ? options : {};
+  const rows = Array.isArray(candidates) ? candidates : [];
+  const manualStrategyGateMode = opts.manualStrategyGateMode != null
+    ? opts.manualStrategyGateMode === true
+    : paperManualStrategyListEnabled();
+  const familyRankCandidates = rows.filter((row) => (
+    evaluateFamilyRankEntryEligibility(row, {
+      manualStrategyGateMode,
+      now: opts.now,
+    }).eligible === true
+  ));
+
+  return strategyTradeControl.rankFamilyCandidates(familyRankCandidates, {
+    familyOf: (row) => paperCandidateFamily(row),
+    scoreOf: (row) => {
+      const n = Number(row?.confidenceScore ?? row?.confidence ?? row?.score);
+      return Number.isFinite(n) ? n : 0;
+    },
+  });
+}
+
 function evaluateManualPaperStrategyGate(candidate = {}, options = {}) {
   let inferred = options.inferredStrategy || null;
   try {
@@ -2637,16 +2736,10 @@ async function runTick() {
     // Count all scanner candidates before loop filters
     for (const c of candidates) _bump('scannerCandidates', 'candidates');
 
-    // Strategy family-exklusivitet: rangordna tickens kandidater inom sina
-    // familjer (högst confidence = rank 1). Endast bästa kandidaten i en familj
-    // får öppna trade vid samma tillfälle.
-    const familyRanks = strategyTradeControl.rankFamilyCandidates(candidates, {
-      familyOf: (row) => paperCandidateFamily(row),
-      scoreOf: (row) => {
-        const n = Number(row?.confidenceScore ?? row?.confidence ?? row?.score);
-        return Number.isFinite(n) ? n : 0;
-      },
-    });
+    // Strategy family-exklusivitet: ranka endast kandidater som redan är
+    // entry-eligible. Annars kan en watch/caution/stale/short kandidat vinna
+    // familjen, blockas senare, och samtidigt ha tagit bort övriga kandidater.
+    const familyRanks = rankEntryEligibleFamilyCandidates(candidates);
 
     for (const c of candidates) {
       if (state.openTrades.length >= MAX_OPEN_TRADES) {
@@ -4079,6 +4172,8 @@ module.exports = {
     paperLongOnlyEnabled,
     paperEntryContractsEnabled,
     evaluatePaperEntryContractGate,
+    evaluateFamilyRankEntryEligibility,
+    rankEntryEligibleFamilyCandidates,
     evaluateManualPaperStrategyGate,
     evaluateLegacyPaperStrategyGate,
     manualRuntimeBlockedReason,
