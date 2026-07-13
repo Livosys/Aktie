@@ -152,6 +152,25 @@ function main() {
   safety(projection);
   for (const row of projection.strategies) safety(row);
 
+  process.env.PAPER_ENTRY_CONTRACTS_ENABLED = 'true';
+  svc.enableStrategy('narrow_fakeout_reversal_v1', {
+    source: 'test',
+    now: '2026-07-11T17:30:00.000Z',
+  });
+  const contractGatedProjection = svc.buildPaperStrategyList({ fresh: true });
+  const narrowFakeoutRow = contractGatedProjection.strategies.find((row) => row.strategyId === 'narrow_fakeout_reversal_v1');
+  assert.equal(contractGatedProjection.entryContractsEnabled, true);
+  assert.equal(contractGatedProjection.summary.enabled, 4);
+  assert.equal(contractGatedProjection.summary.ready, 3, 'missing-contract strategy får inte öka paper-ready count');
+  assert.equal(narrowFakeoutRow.entryContractReady, false);
+  assert.equal(narrowFakeoutRow.paperEligibility, 'BLOCKED');
+  assert.equal(narrowFakeoutRow.paperBlockedReason, 'paper_strategy_enabled_but_entry_contract_missing');
+  svc.disableStrategy('narrow_fakeout_reversal_v1', {
+    source: 'test',
+    now: '2026-07-11T17:31:00.000Z',
+  });
+  process.env.PAPER_ENTRY_CONTRACTS_ENABLED = 'false';
+
   assert.equal(sha256(tmpApprovalStore), approvalBeforeHash, 'legacy approval store hash unchanged');
   assert.equal(fs.statSync(tmpApprovalStore).mtimeMs, approvalBeforeMtime, 'legacy approval store mtime unchanged');
 

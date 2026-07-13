@@ -122,9 +122,9 @@ function buildContractFlowValidation(options = {}) {
   const now = options.now || new Date();
   const candidates = arr(options.candidates);
   const state = options.state || readState(options.stateFile);
-  const familyRanks = strategyTradeControl.rankFamilyCandidates(candidates, {
-    familyOf: (row) => familyOf(row),
-    scoreOf,
+  const familyRanks = paperAgent._internal.rankEntryEligibleFamilyCandidates(candidates, {
+    manualStrategyGateMode: paperEnabledStrategies.manualListControlsRuntime(),
+    now,
   });
 
   const rows = candidates.map((candidate) => {

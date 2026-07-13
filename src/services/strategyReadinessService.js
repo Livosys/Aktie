@@ -148,6 +148,22 @@ function loadManualEnabledSource(catalogStrategies) {
   }
 }
 
+function loadEntryContractSource() {
+  try {
+    const svc = lazy('./paperStrategyEntryContractService');
+    if (!svc) return { status: 'error', enabled: false, ids: new Set() };
+    const contracts = typeof svc.listEntryContracts === 'function' ? svc.listEntryContracts() : [];
+    return {
+      status: 'ok',
+      enabled: typeof svc.entryContractsEnabled === 'function' ? svc.entryContractsEnabled() : false,
+      ids: new Set(arr(contracts).map((contract) => contract.strategyId).filter(Boolean)),
+      version: svc.PAPER_ENTRY_CONTRACT_VERSION || null,
+    };
+  } catch (err) {
+    return { status: 'error', enabled: false, ids: new Set(), error: err.message };
+  }
+}
+
 function loadRuntimeSource() {
   try {
     const conn = lazy('./strategyRuntimeConnectorService');
@@ -227,6 +243,7 @@ function nextActionFor(readiness, missingComponents) {
     case READINESS.NEEDS_RUNTIME_CONNECTOR: return 'Komplettera runtime-context i connectorn (FAS E).';
     case READINESS.NEEDS_APPROVAL_ALIGNMENT: return 'Kräver approval-/familyval-beslut av användaren (FAS F).';
     case READINESS.NEEDS_MARKET_CONTEXT: return 'Producera saknad marknadsdata/context innan test (FAS E).';
+    case READINESS.NEEDS_ENTRY_CONTRACT: return 'Lägg till Paper entry contract innan runtime kan öppna trades.';
     case READINESS.INTENTIONALLY_DISABLED: return 'Medvetet avstängd — ingen åtgärd utan nytt beslut.';
     case READINESS.UNSUPPORTED: return 'Dublett/legacy — kandidat för arkivering, ingen testväg.';
     case READINESS.BROKEN: return 'Katalogposten är trasig — undersök manuellt.';
@@ -258,6 +275,7 @@ function classifyStrategy(strategy, sourcesData) {
     approval,
     runtime,
     mapping,
+    entryContracts = { status: 'missing', enabled: false, ids: new Set() },
     manual = { status: 'missing', manualMode: false, byId: new Map() },
   } = sourcesData;
   const id = strategy.id;
@@ -408,6 +426,13 @@ function classifyStrategy(strategy, sourcesData) {
     technicalReadiness = 'READY';
   }
 
+  const entryContractsEnabled = entryContracts.enabled === true;
+  const entryContractReady = entryContracts.ids?.has(id) === true;
+  if (technicalReadiness === 'READY' && entryContractsEnabled && !entryContractReady) {
+    technicalReadiness = READINESS.NEEDS_ENTRY_CONTRACT;
+    missingComponents.push('entry_contract');
+  }
+
   // ── Primär readiness (mode-dependent) ─────────────────────────────────────
   const manualMode = manual.manualMode === true;
   const enabledForPaper = manualRow ? manualRow.enabled === true : false;
@@ -492,6 +517,9 @@ function classifyStrategy(strategy, sourcesData) {
     enabledForPaper,
     manualSelectionStatus,
     technicalReadiness,
+    entryContractsEnabled,
+    entryContractReady,
+    entryContractStatus: entryContractReady ? 'ready' : 'missing',
     producerStatus,
     producedSubtypes,
     mappingStatus,
@@ -564,11 +592,12 @@ function computeStrategyReadiness() {
   const producerRegistry = loadProducerRegistry();
   const approval = loadApprovalSource(catalog.strategies);
   const manual = loadManualEnabledSource(catalog.strategies);
+  const entryContracts = loadEntryContractSource();
   const runtime = loadRuntimeSource();
   const mapping = probeMappings(producerRegistry, runtime);
 
   const catalogIds = new Set(catalog.strategies.map((s) => s.id));
-  const sourcesData = { catalogIds, producerRegistry, approval, manual, runtime, mapping };
+  const sourcesData = { catalogIds, producerRegistry, approval, manual, runtime, mapping, entryContracts };
 
   const strategies = catalog.strategies.map((strategy) => {
     try {
@@ -599,6 +628,12 @@ function computeStrategyReadiness() {
       producerRegistry: { status: producerRegistry.status },
       approvalStore: { status: approval.status },
       manualEnabledStore: { status: manual.status },
+      entryContracts: {
+        status: entryContracts.status,
+        enabled: entryContracts.enabled === true,
+        ready: entryContracts.ids ? entryContracts.ids.size : 0,
+        version: entryContracts.version || null,
+      },
       runtimeConnector: { status: runtime.status },
       mappingProbes: { status: mapping.status },
     },

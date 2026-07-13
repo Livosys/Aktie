@@ -118,6 +118,38 @@ function main() {
   assert.equal(result.summary.byStop.manual, 1);
   assert.equal(result.summary.byStop.producerSubtype, 1);
 
+  const rankRegression = svc.buildContractFlowValidation({
+    now: new Date('2026-07-11T18:00:00.000Z'),
+    state,
+    candidates: [
+      readyNarrow({
+        symbol: 'BTCUSDT',
+        status: 'watch',
+        confidenceScore: 99,
+        producerEntryReadiness: {
+          entryReady: false,
+          status: 'not_entry_ready',
+          confirmationObserved: ['two_minute_confirmation', 'closed_candle_confirmation'],
+          missingConfirmations: [],
+          blockers: ['status_watch'],
+        },
+      }),
+      readyNarrow({
+        symbol: 'ETHUSDT',
+        confidenceScore: 80,
+      }),
+    ],
+  });
+  const watchWinnerCandidate = rankRegression.candidates.find((row) => row.symbol === 'BTCUSDT');
+  const eligibleCandidate = rankRegression.candidates.find((row) => row.symbol === 'ETHUSDT');
+  assert.equal(watchWinnerCandidate.gates.strategyControl.status, 'pass');
+  assert.equal(watchWinnerCandidate.gates.strategyControl.familyRank, null);
+  assert.equal(watchWinnerCandidate.gates.entryContract.status, 'block');
+  assert.notEqual(watchWinnerCandidate.stopAt, 'strategyControl', 'watch candidate får inte blocka family-rank');
+  assert.equal(eligibleCandidate.gates.strategyControl.status, 'pass');
+  assert.equal(eligibleCandidate.gates.strategyControl.familyRank, 1, 'entry-ready kandidat blir familjevinnare');
+  assert.equal(eligibleCandidate.gates.entryContract.status, 'pass');
+
   console.log('paperContractFlowValidationService.test.js passed');
 }
 

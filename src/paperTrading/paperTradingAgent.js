@@ -600,6 +600,20 @@ function appendEvent(input) {
     safetyBlockReasons: input.executionSafety?.paper_block_reasons || input.executionSafety?.block_reasons || input.safetyBlockReasons || [],
     safetyWarnings: input.executionSafety?.warnings || input.safetyWarnings || [],
     blockedReason:  input.blockedReason   || null,
+    blockedReasonCode: input.blockedReasonCode || null,
+    reasonCode: input.reasonCode || null,
+    entryContractVersion: input.entryContractVersion || null,
+    entryContractDecision: input.entryContractDecision || null,
+    entryContractAllowed: input.entryContractAllowed === true,
+    entryContractChecks: safeEventValue(input.entryContractChecks || null),
+    entryContractEvidence: safeEventValue(input.entryContractEvidence || null),
+    signalAgeMs: input.signalAgeMs ?? null,
+    requiredConfirmation: input.requiredConfirmation || null,
+    requiredConfirmations: input.requiredConfirmations || [],
+    confirmationObserved: input.confirmationObserved || [],
+    runtimeGateMode: input.runtimeGateMode || null,
+    manualListControlsRuntime: input.manualListControlsRuntime === true,
+    longOnlyEnabled: input.longOnlyEnabled === true,
     ...lateRegularPullbackMeta,
     exitReasonCode: input.exitReasonCode || null,
     exitSource: input.exitSource || null,
@@ -1049,15 +1063,18 @@ function rankEntryEligibleFamilyCandidates(candidates = [], options = {}) {
   const manualStrategyGateMode = opts.manualStrategyGateMode != null
     ? opts.manualStrategyGateMode === true
     : paperManualStrategyListEnabled();
-  const familyRankCandidates = rows.filter((row) => (
-    evaluateFamilyRankEntryEligibility(row, {
+  const eligibilityByCandidate = new Map();
+  const familyRankCandidates = rows.filter((row) => {
+    const eligibility = evaluateFamilyRankEntryEligibility(row, {
       manualStrategyGateMode,
       now: opts.now,
-    }).eligible === true
-  ));
+    });
+    eligibilityByCandidate.set(row, eligibility);
+    return eligibility.eligible === true;
+  });
 
   return strategyTradeControl.rankFamilyCandidates(familyRankCandidates, {
-    familyOf: (row) => paperCandidateFamily(row),
+    familyOf: (row) => paperCandidateFamily(row, eligibilityByCandidate.get(row)?.strategyId || null),
     scoreOf: (row) => {
       const n = Number(row?.confidenceScore ?? row?.confidence ?? row?.score);
       return Number.isFinite(n) ? n : 0;

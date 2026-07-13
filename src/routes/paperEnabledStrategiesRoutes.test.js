@@ -29,7 +29,7 @@ fs.writeFileSync(APPROVAL_STORE, JSON.stringify({
   updatedAt: '2026-07-11T00:00:00.000Z',
 }, null, 2));
 fs.writeFileSync(ENTRY_EVENTS, `${JSON.stringify({
-  timestamp: '2026-07-11T17:59:00.000Z',
+  timestamp: '2026-07-13T07:00:00.000Z',
   type: 'GATE_BLOCKED',
   strategyId: 'narrow_state_expansion_long',
   symbol: 'BTCUSDT',
@@ -39,7 +39,7 @@ fs.writeFileSync(ENTRY_EVENTS, `${JSON.stringify({
   entryContractVersion: 'paper_entry_contract_v1',
 })}\n`);
 fs.writeFileSync(ENTRY_TRADES, `${JSON.stringify({
-  entryTime: '2026-07-11T17:58:00.000Z',
+  entryTime: '2026-07-13T06:58:00.000Z',
   tradeId: 'pt_route_test',
   strategyId: 'narrow_state_expansion_long',
   symbol: 'BTCUSDT',

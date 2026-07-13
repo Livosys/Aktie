@@ -163,6 +163,32 @@ for (const row of rows) {
 }
 assert.ok(vwapShort.warnings.includes('short_only_strategy'));
 
+// Entry contracts är runtime-sanning när flaggan är aktiv: strategier som i
+// övrigt har producent/mapping/connector får inte räknas som paper-ready utan
+// contract.
+{
+  process.env.PAPER_ENTRY_CONTRACTS_ENABLED = 'true';
+  process.env.PAPER_MANUAL_STRATEGY_LIST_ENABLED = 'true';
+  const contractGated = svc.getStrategyReadiness({ noCache: true });
+  const contractRows = contractGated.strategies;
+  const contractById = new Map(contractRows.map((r) => [r.strategyId, r]));
+  assert.equal(contractGated.sources.entryContracts.enabled, true);
+  assert.equal(contractGated.sources.entryContracts.ready, 3);
+  assert.deepEqual(
+    contractRows.filter((r) => r.readiness === svc.READINESS.READY_FOR_PAPER).map((r) => r.strategyId).sort(),
+    ['ema_pullback_continuation', 'narrow_state_expansion_long', 'vwap_volume_breakout_long'],
+  );
+  for (const id of ['narrow_breakout', 'narrow_fakeout_reversal_v1', 'vwap_failed_breakout_short']) {
+    const row = contractById.get(id);
+    assert.equal(row.entryContractReady, false, `${id}: saknar entry contract`);
+    assert.equal(row.technicalReadiness, svc.READINESS.NEEDS_ENTRY_CONTRACT, `${id}: blockas av contract-krav`);
+    assert.ok(row.missingComponents.includes('entry_contract'), `${id}: entry_contract finns i missingComponents`);
+    assert.notEqual(row.readiness, svc.READINESS.READY_FOR_PAPER, `${id}: får inte vara READY_FOR_PAPER`);
+  }
+  process.env.PAPER_MANUAL_STRATEGY_LIST_ENABLED = 'false';
+  process.env.PAPER_ENTRY_CONTRACTS_ENABLED = 'false';
+}
+
 // 16. crypto_momentum_scalper: missing-context kvarstår men catch-all-mapping
 // är borta sedan FAS C-mappingfixen — UNKNOWN/NO_TRADE/crypto-VWAP routas inte
 // längre till scalpern, så varningen får INTE återkomma.

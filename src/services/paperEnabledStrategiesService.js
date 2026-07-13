@@ -482,7 +482,13 @@ function lazy(modPath) {
   try { return require(modPath); } catch (_) { return null; }
 }
 
-function paperEligibilityFor({ enabled, readinessRow, strategy }) {
+function paperEligibilityFor({
+  enabled,
+  readinessRow,
+  strategy,
+  entryContractsEnabled = false,
+  entryContractReady = false,
+}) {
   if (!enabled) {
     return { paperEligibility: 'DISABLED_BY_USER', paperBlockedReason: 'paper_strategy_not_enabled' };
   }
@@ -502,6 +508,12 @@ function paperEligibilityFor({ enabled, readinessRow, strategy }) {
         paperBlockedReason: readinessRow.paperBlockedReason || 'paper_strategy_enabled_but_runtime_blocked',
       };
     }
+  }
+  if (entryContractsEnabled && !entryContractReady) {
+    return {
+      paperEligibility: 'BLOCKED',
+      paperBlockedReason: 'paper_strategy_enabled_but_entry_contract_missing',
+    };
   }
   return { paperEligibility: 'READY', paperBlockedReason: null };
 }
@@ -524,6 +536,9 @@ function buildPaperStrategyList(options = {}) {
   const candidates = latestCandidateByStrategyId();
   const stats = tradeStatsByStrategyId();
   const entryContractService = lazy('./paperStrategyEntryContractService');
+  const entryContractsEnabled = entryContractService && entryContractService.entryContractsEnabled
+    ? entryContractService.entryContractsEnabled()
+    : false;
   let entryContractDiagnostics = null;
   try {
     entryContractDiagnostics = entryContractService && entryContractService.buildEntryContractDiagnostics
@@ -547,10 +562,16 @@ function buildPaperStrategyList(options = {}) {
     const technicalReadiness = readinessRow
       ? readinessRow.technicalReadiness || (readinessRow.readiness === 'READY_FOR_PAPER' ? 'READY' : readinessRow.readiness)
       : null;
-    const eligibility = paperEligibilityFor({ enabled, readinessRow, strategy });
     const entryContract = entryContractService && entryContractService.getEntryContract
       ? entryContractService.getEntryContract(strategy.id)
       : null;
+    const eligibility = paperEligibilityFor({
+      enabled,
+      readinessRow,
+      strategy,
+      entryContractsEnabled,
+      entryContractReady: Boolean(entryContract),
+    });
     const contractDiag = entryContractDiagnostics?.byStrategyId?.[strategy.id] || null;
 
     return {
@@ -625,9 +646,7 @@ function buildPaperStrategyList(options = {}) {
     generatedAt: nowIso(),
     runtimeGateMode: manualMode ? 'manual' : 'legacy',
     manualListControlsRuntime: manualMode,
-    entryContractsEnabled: entryContractService && entryContractService.entryContractsEnabled
-      ? entryContractService.entryContractsEnabled()
-      : false,
+    entryContractsEnabled,
     entryContractVersion: entryContractService ? entryContractService.PAPER_ENTRY_CONTRACT_VERSION || null : null,
     summary: {
       total: strategies.length,
