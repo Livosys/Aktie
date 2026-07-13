@@ -166,6 +166,15 @@ function main() {
     assert.equal(candidate.producerConfirmationVersion, 'producer_confirmation_v1');
     assert.equal(candidate.twoMinuteConfirmed, true);
     assert.equal(candidate.closedCandleConfirmed, true);
+    assert.ok(candidate.candleTimestamp, 'confirmed candidate keeps closed 2m candle timestamp');
+    assert.equal(candidate.candleClosedAt, candidate.signalTimestamp);
+    assert.equal(
+      Date.parse(candidate.signalTimestamp),
+      Date.parse(candidate.candleTimestamp) + 120000,
+      'entry freshness is anchored to the closed 2m candle close time',
+    );
+    assert.equal(candidate.producerEntryReadiness.evidence.signalTimestamp, candidate.signalTimestamp);
+    assert.equal(candidate.producerEntryReadiness.evidence.closedCandle.closedAt, candidate.signalTimestamp);
     assert.equal(candidate.producerEntryReadiness.status, 'entry_ready');
     assert.equal(candidate.status, 'active');
     assert.equal(candidate.dataFreshness, 'LIVE');
@@ -175,19 +184,25 @@ function main() {
   }
 
   assert.equal(narrow.confirmation.twoMinuteConfirmed, true);
-  assertContractPass('narrow_state_expansion_long', narrow);
+  const narrowContract = assertContractPass('narrow_state_expansion_long', narrow);
+  assert.equal(narrowContract.evidence.signalAgeSource, 'field');
+  assert.ok(narrowContract.evidence.signalAgeMs < 5000, 'narrow freshness uses closed candle close time');
 
   assert.equal(ema.emaContext.hasContext, true);
   assert.equal(ema.emaContext.trendIntact, true);
   assert.equal(ema.emaPullbackConfirmed, true);
-  assertContractPass('ema_pullback_continuation', ema);
+  const emaContract = assertContractPass('ema_pullback_continuation', ema);
+  assert.equal(emaContract.evidence.signalAgeSource, 'field');
+  assert.ok(emaContract.evidence.signalAgeMs < 5000, 'ema freshness uses closed candle close time');
 
   assert.equal(vwap.marketType, 'stocks');
   assert.equal(vwap.vwapContext.hasContext, true);
   assert.equal(vwap.vwapContext.closeAboveVwap, true);
   assert.equal(vwap.vwapReclaimConfirmed, true);
   assert.ok(vwap.producerEntryReadiness.confirmationObserved.includes('volume_confirmation'));
-  assertContractPass('vwap_volume_breakout_long', vwap);
+  const vwapContract = assertContractPass('vwap_volume_breakout_long', vwap);
+  assert.equal(vwapContract.evidence.signalAgeSource, 'field');
+  assert.ok(vwapContract.evidence.signalAgeMs < 5000, 'vwap freshness uses closed candle close time');
 
   const canonicalTf = {
     tf2m: 'bullish',
@@ -323,6 +338,8 @@ function main() {
   const openCandleDm = buildDecisionMonitor({
     cryptoResults: [baseResult('SOLUSDT', {
       market: 'crypto',
+      latest2mTimestamp: iso(now - 30000),
+      lastUpdate: iso(now - 30000),
       state: 'HIGH_QUALITY_NARROW',
       narrowType: 'coil_flat',
       price: 100.45,

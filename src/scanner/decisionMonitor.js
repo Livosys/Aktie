@@ -162,6 +162,7 @@ function computeCandleScore2m(candles) {
 
 const PRODUCER_CONFIRMATION_VERSION = 'producer_confirmation_v1';
 const CLOSED_2M_CANDLE_MIN_AGE_MS = 115 * 1000;
+const TWO_MINUTE_CANDLE_MS = 2 * 60 * 1000;
 
 function num(value) {
   const n = Number(value);
@@ -176,23 +177,38 @@ function upper(value) {
   return String(value || '').trim().toUpperCase();
 }
 
-function latestClosedCandleMeta(liveCandleDebug, now = new Date()) {
+function latestClosedCandleMeta(liveCandleDebug, now = new Date(), options = {}) {
   const candles = Array.isArray(liveCandleDebug?.candles) ? liveCandleDebug.candles : [];
-  const latest = candles
+  const sorted = candles
     .filter((c) => c && c.timestamp)
-    .sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime())
-    .slice(-1)[0] || null;
-  const latestMs = latest?.timestamp ? new Date(latest.timestamp).getTime() : NaN;
+    .sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime());
   const nowMs = new Date(now).getTime();
+  const signalMs = options.signalTimestamp ? new Date(options.signalTimestamp).getTime() : NaN;
+  let selected = null;
+
+  for (let i = sorted.length - 1; i >= 0; i -= 1) {
+    const candle = sorted[i];
+    const startMs = candle?.timestamp ? new Date(candle.timestamp).getTime() : NaN;
+    if (!Number.isFinite(startMs) || !Number.isFinite(nowMs)) continue;
+    if (Number.isFinite(signalMs) && startMs + 1000 < signalMs) continue;
+    const explicitOpen = candle.incomplete === true || candle.closed === false;
+    const explicitClosed = candle.incomplete === false || candle.closed === true || candle.complete === true;
+    const closedByAge = nowMs - startMs >= CLOSED_2M_CANDLE_MIN_AGE_MS;
+    if (!explicitOpen && (explicitClosed || closedByAge)) {
+      selected = { candle, startMs };
+      break;
+    }
+  }
+
+  const latest = selected?.candle || sorted[sorted.length - 1] || null;
+  const latestMs = latest?.timestamp ? new Date(latest.timestamp).getTime() : NaN;
   const ageMs = Number.isFinite(latestMs) && Number.isFinite(nowMs) ? Math.max(0, nowMs - latestMs) : null;
-  const completeByAge = ageMs != null && ageMs >= CLOSED_2M_CANDLE_MIN_AGE_MS;
-  const completeByFlag = latest?.incomplete === false;
-  const incompleteByFlag = latest?.incomplete === true;
-  const closed = Boolean(latest && !incompleteByFlag && (completeByAge || completeByFlag));
+  const closed = Boolean(selected);
   return {
     confirmed: closed,
     source: latest ? (liveCandleDebug.source || liveCandleDebug.debug?.sourceName || 'live_candle_cache') : 'missing_live_candle',
     latestTimestamp: latest?.timestamp || null,
+    closedAt: selected ? new Date(selected.startMs + TWO_MINUTE_CANDLE_MS).toISOString() : null,
     ageMs,
     close: num(latest?.close),
     open: num(latest?.open),
@@ -291,7 +307,8 @@ function buildProducerConfirmation({
   candleScore2m,
 }) {
   const twoMinuteConfirmed = blockersMeta.twoMinuteConfirmed === true;
-  const closedCandle = latestClosedCandleMeta(liveCandleDebug);
+  const closedCandle = latestClosedCandleMeta(liveCandleDebug, new Date(), { signalTimestamp: timestamp });
+  const signalTimestamp = closedCandle.confirmed && closedCandle.closedAt ? closedCandle.closedAt : timestamp;
   const volume = volumeEvidence(result);
   const emaContext = buildEmaContext(result, signalSubtype, bias, twoMinuteConfirmed, closedCandle);
   const vwapContext = buildVwapContext(result, signalSubtype, bias, twoMinuteConfirmed, closedCandle);
@@ -333,7 +350,7 @@ function buildProducerConfirmation({
     blockers: [...new Set(blockers)],
     evidence: {
       generatedAt: new Date().toISOString(),
-      signalTimestamp: timestamp || null,
+      signalTimestamp: signalTimestamp || null,
       marketType,
       marketClosed: marketClosed === true,
       dataFreshness,
@@ -637,7 +654,7 @@ function makeSignalId(symbol, timestamp) {
 }
 
 function latestTimestamp(result) {
-  return result.timestamp || result.candleTs || result.latest2mTimestamp || result.lastUpdate || null;
+  return result.candleTs || result.latest2mTimestamp || result.timestamp || result.lastUpdate || null;
 }
 
 function blockerLabel(raw) {
@@ -1308,6 +1325,9 @@ function buildCandidate(result, options = {}) {
     : marketClosed
       ? 'market_closed'
       : 'regular';
+  const effectiveSignalTimestamp = producerEvidence.closedCandle?.confirmed === true && producerEvidence.closedCandle?.closedAt
+    ? producerEvidence.closedCandle.closedAt
+    : timestamp;
 
   return {
     symbol: result.symbol,
@@ -1438,7 +1458,9 @@ function buildCandidate(result, options = {}) {
     vwapReclaimConfirmed: vwapContext.reclaimConfirmed === true,
     closeAboveVwap: vwapContext.closeAboveVwap === true,
     timestamp,
-    signalTimestamp: timestamp,
+    candleTimestamp: producerEvidence.closedCandle?.latestTimestamp || timestamp,
+    candleClosedAt: producerEvidence.closedCandle?.closedAt || null,
+    signalTimestamp: effectiveSignalTimestamp,
     lastUpdate: result.lastUpdate || null,
     timeframe: '2m',
     marketType,

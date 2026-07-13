@@ -87,6 +87,23 @@ function filterComplete(candles) {
   return candles.filter((c) => !c.incomplete);
 }
 
+function filterClosedBars(bars, options = {}) {
+  const nowMs = new Date(options.now || Date.now()).getTime();
+  const timeframeMs = Number.isFinite(Number(options.timeframeMs))
+    ? Number(options.timeframeMs)
+    : 60 * 1000;
+  const graceMs = Number.isFinite(Number(options.graceMs))
+    ? Number(options.graceMs)
+    : 0;
+  if (!Number.isFinite(nowMs)) return bars || [];
+  return (bars || []).filter((bar) => {
+    const ts = bar?.ts || bar?.t || bar?.timestamp;
+    const startMs = ts ? new Date(ts).getTime() : NaN;
+    if (!Number.isFinite(startMs)) return false;
+    return startMs + timeframeMs + graceMs <= nowMs;
+  });
+}
+
 /**
  * Convert already-stored 2m candles (any field format) to the short-name
  * format expected by indicators.js and narrowState.js.
@@ -154,4 +171,12 @@ function aggregateBars(bars1m, periodMinutes) {
 function aggregate1mTo5m(bars1m)  { return aggregateBars(bars1m,  5).filter((c) => !c.incomplete); }
 function aggregate1mTo15m(bars1m) { return aggregateBars(bars1m, 15).filter((c) => !c.incomplete); }
 
-module.exports = { aggregate1mTo2m, filterComplete, toScannerFormat, aggregateBars, aggregate1mTo5m, aggregate1mTo15m };
+module.exports = {
+  aggregate1mTo2m,
+  filterComplete,
+  filterClosedBars,
+  toScannerFormat,
+  aggregateBars,
+  aggregate1mTo5m,
+  aggregate1mTo15m,
+};

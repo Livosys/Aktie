@@ -1,6 +1,12 @@
 'use strict';
-const { fetch1mBars, fetchLatestTrade, aggregate1mTo2m } = require('./alpacaClient');
-const { aggregate1mTo5m, aggregate1mTo15m }              = require('../data/candleAggregator');
+const { fetch1mBars, fetchLatestTrade } = require('./alpacaClient');
+const {
+  aggregate1mTo2m,
+  aggregate1mTo5m,
+  aggregate1mTo15m,
+  filterClosedBars,
+  filterComplete,
+} = require('../data/candleAggregator');
 const { calcIndicators } = require('./indicators');
 const { classifyNarrowState } = require('./narrowState');
 const { applyEngineV3 }                          = require('./engineV3');
@@ -105,10 +111,11 @@ async function scanSymbol(symbol) {
       };
     }
 
-    const candles2m  = aggregate1mTo2m(bars1m);
-    const candles5m  = aggregate1mTo5m(bars1m);
-    const candles15m = aggregate1mTo15m(bars1m);
-    updateLiveCandleCache(symbol, '1m', bars1m, 'alpaca_live_1m');
+    const closedBars1m = filterClosedBars(bars1m, { now });
+    const candles2m  = filterComplete(aggregate1mTo2m(closedBars1m));
+    const candles5m  = aggregate1mTo5m(closedBars1m);
+    const candles15m = aggregate1mTo15m(closedBars1m);
+    updateLiveCandleCache(symbol, '1m', closedBars1m, 'alpaca_live_1m_closed');
     updateLiveCandleCache(symbol, '2m', candles2m, 'alpaca_live_2m');
     const indicators = calcIndicators(candles2m);
 
