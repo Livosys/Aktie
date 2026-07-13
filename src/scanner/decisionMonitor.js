@@ -8,31 +8,49 @@ const {
   signalSubtypeLabel,
 } = require('./signalFamilyLabels');
 
+function timeframeValue(result, key, directionKey, mtfKey = null) {
+  const values = [
+    result[directionKey],
+    result[key],
+    result.timeframeAgreement?.[key],
+    result.timeframes?.[key],
+    mtfKey ? result[mtfKey]?.direction : null,
+  ];
+  for (const value of values) {
+    const text = lower(value);
+    if (text && text !== 'unknown') return text;
+  }
+  return 'neutral';
+}
+
 function deriveTimeframes(result) {
-  const tf2m = result.tf2mDirection || 'neutral';
-  const tf5m = result.tf5mDirection || result.mtf5m?.direction || 'neutral';
-  const tf15m = result.tf15mDirection || result.mtf15m?.direction || 'neutral';
+  const tf2m = timeframeValue(result, 'tf2m', 'tf2mDirection');
+  const tf5m = timeframeValue(result, 'tf5m', 'tf5mDirection', 'mtf5m');
+  const tf15m = timeframeValue(result, 'tf15m', 'tf15mDirection', 'mtf15m');
 
   // tf10m: blend of 5m + 15m — only directional if they agree
-  const tf10m = (tf5m === tf15m && tf5m !== 'neutral') ? tf5m : 'neutral';
+  const tf10mValue = timeframeValue(result, 'tf10m', 'tf10mDirection');
+  const tf10m = tf10mValue !== 'neutral'
+    ? tf10mValue
+    : ((tf5m === tf15m && tf5m !== 'neutral') ? tf5m : 'neutral');
 
   // tf30m: derive from slope20Atr (medium-term momentum) + price vs sma20
-  let tf30m = 'neutral';
+  let tf30m = timeframeValue(result, 'tf30m', 'tf30mDirection');
   if (result.slope20Atr != null) {
     if (result.slope20Atr > 0.3) tf30m = 'bullish';
     else if (result.slope20Atr < -0.3) tf30m = 'bearish';
-  } else if (result.price && result.sma20) {
+  } else if (tf30m === 'neutral' && result.price && result.sma20) {
     tf30m = result.price > result.sma20 ? 'bullish' : 'bearish';
   }
 
   // tf1h: derive from sma20 vs sma200 relationship (long-term context)
-  let tf1h = 'neutral';
+  let tf1h = timeframeValue(result, 'tf1h', 'tf1hDirection');
   const regime = result.marketRegimeV2 || '';
   if (regime.includes('BULL') || regime.includes('TREND_DAY_UP')) {
     tf1h = 'bullish';
   } else if (regime.includes('BEAR') || regime.includes('TREND_DAY_DOWN')) {
     tf1h = 'bearish';
-  } else if (result.sma20 != null && result.sma200 != null) {
+  } else if (tf1h === 'neutral' && result.sma20 != null && result.sma200 != null) {
     tf1h = result.sma20 > result.sma200 ? 'bullish' : 'bearish';
   }
 
@@ -332,6 +350,51 @@ function buildProducerConfirmation({
       candleScore2m,
     },
   };
+}
+
+function confirmedEntryPromotion({
+  signalSubtype,
+  priority,
+  marketType,
+  dataFreshness,
+  marketClosed,
+  bias,
+  hardBlockers,
+  extensionMeta,
+  twoMinuteConflict,
+  producerEvidence,
+}) {
+  if (!['watch', 'caution', 'wait'].includes(lower(priority))) return null;
+  if (marketClosed === true || dataFreshness !== 'LIVE') return null;
+  if (upper(bias) !== 'UP') return null;
+  if ((hardBlockers || []).length > 0) return null;
+  if (extensionMeta?.level && extensionMeta.level !== 'none') return null;
+  if (twoMinuteConflict === true) return null;
+  if (producerEvidence?.twoMinuteConfirmed !== true) return null;
+  if (producerEvidence?.closedCandle?.confirmed !== true) return null;
+
+  const volume = producerEvidence.volume || {};
+  if (signalSubtype === 'NARROW_BULL_ENTRY') {
+    if (volume.usable !== true) return null;
+    return 'Entry bekräftad: 2m och stängd candle bekräftar utbrottet.';
+  }
+
+  if (signalSubtype === 'EMA_PULLBACK_UP') {
+    const emaContext = producerEvidence.emaContext || {};
+    if (emaContext.trendIntact !== true || emaContext.reclaimConfirmed !== true) return null;
+    if (volume.usable !== true) return null;
+    return 'Entry bekräftad: priset har reclaimat EMA med stängd 2m-candle.';
+  }
+
+  if (signalSubtype === 'VWAP_RECLAIM_UP') {
+    if (!isStockMarket(marketType)) return null;
+    const vwapContext = producerEvidence.vwapContext || {};
+    if (vwapContext.reclaimConfirmed !== true || vwapContext.closeAboveVwap !== true) return null;
+    if (volume.strong !== true) return null;
+    return 'Entry bekräftad: priset har reclaimat VWAP med stark volym och stängd 2m-candle.';
+  }
+
+  return null;
 }
 
 function computeNextMoveBias(result, dirs, context = {}) {
@@ -1164,14 +1227,14 @@ function buildCandidate(result, options = {}) {
     ].slice(0, 3);
     updateExplanationConclusion(explanationSv, priority);
   }
-  const primaryReason =
+  let primaryReason =
     marketClosed ? decisionTextSv :
     cleanHardBlockers[0] ||
     cleanSoftBlockers[0] ||
     (Array.isArray(explanationSv.sees) ? explanationSv.sees[0] : explanationSv.sees) ||
     decisionTextSv ||
     'Systemet väntar på tydligare bekräftelse.';
-  const producerConfirmation = buildProducerConfirmation({
+  let producerConfirmation = buildProducerConfirmation({
     result,
     signalSubtype,
     signalFamily,
@@ -1187,7 +1250,42 @@ function buildCandidate(result, options = {}) {
     timestamp,
     candleScore2m,
   });
-  const producerEvidence = producerConfirmation.evidence || {};
+  let producerEvidence = producerConfirmation.evidence || {};
+  const promotionText = confirmedEntryPromotion({
+    signalSubtype,
+    priority,
+    marketType,
+    dataFreshness,
+    marketClosed,
+    bias,
+    hardBlockers: cleanHardBlockers,
+    extensionMeta,
+    twoMinuteConflict: twoMinuteConflictMeta.twoMinuteConflict,
+    producerEvidence,
+  });
+  if (promotionText) {
+    priority = 'active';
+    decisionTextSv = promotionText;
+    primaryReason = promotionText;
+    updateExplanationConclusion(explanationSv, priority);
+    producerConfirmation = buildProducerConfirmation({
+      result,
+      signalSubtype,
+      signalFamily,
+      priority,
+      bias,
+      timeframes,
+      blockersMeta,
+      extensionMeta,
+      liveCandleDebug,
+      marketType,
+      marketClosed,
+      dataFreshness,
+      timestamp,
+      candleScore2m,
+    });
+    producerEvidence = producerConfirmation.evidence || {};
+  }
   const volumeContext = {
     state: producerEvidence.volume?.state || result.volumeState || 'unknown',
     rvol: producerEvidence.volume?.rvol ?? result.rvol ?? result.relVol20 ?? null,

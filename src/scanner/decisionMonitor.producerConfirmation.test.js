@@ -189,6 +189,137 @@ function main() {
   assert.ok(vwap.producerEntryReadiness.confirmationObserved.includes('volume_confirmation'));
   assertContractPass('vwap_volume_breakout_long', vwap);
 
+  const canonicalTf = {
+    tf2m: 'bullish',
+    tf5m: 'bullish',
+    tf10m: 'bullish',
+    tf15m: 'bullish',
+    tf30m: 'bullish',
+    tf1h: 'bullish',
+  };
+  const canonicalOnly = (overrides = {}) => {
+    const row = baseResult('CANON', {
+      ...canonicalTf,
+      timeframeAgreement: canonicalTf,
+      mtf5m: null,
+      mtf15m: null,
+      ...overrides,
+    });
+    delete row.tf2mDirection;
+    delete row.tf5mDirection;
+    delete row.tf15mDirection;
+    return row;
+  };
+  const canonicalDm = buildDecisionMonitor({
+    cryptoResults: [
+      canonicalOnly({
+        symbol: 'BTCUSDT',
+        market: 'crypto',
+        state: 'HIGH_QUALITY_NARROW',
+        narrowType: 'coil_flat',
+        price: 100.45,
+        vwap: null,
+        ema21: 100.1,
+        ema50: 99.7,
+      }),
+      canonicalOnly({
+        symbol: 'ETHUSDT',
+        market: 'crypto',
+        state: 'TREND',
+        price: 100.35,
+        ema9: 100.3,
+        ema21: 100.05,
+        ema50: 99.5,
+        vwap: null,
+      }),
+    ],
+    stockResults: [
+      canonicalOnly({
+        symbol: 'AAPL',
+        market: 'stocks',
+        state: 'TREND',
+        price: 100.42,
+        vwap: 100,
+        vwapDistancePct: 0.42,
+        ema21: null,
+        ema50: null,
+      }),
+    ],
+    liveCandleDebugBySymbol: {
+      BTCUSDT: liveDebug('BTCUSDT', 'crypto', bullishCandles),
+      ETHUSDT: liveDebug('ETHUSDT', 'crypto', bullishCandles),
+      AAPL: liveDebug('AAPL', 'stocks', stockCandles),
+    },
+    stockFeedStatus: { status: 'OPEN' },
+  });
+  const canonicalBySubtype = Object.fromEntries(canonicalDm.candidates.map((candidate) => [candidate.signalSubtype, candidate]));
+  assert.equal(canonicalBySubtype.NARROW_BULL_ENTRY.status, 'active');
+  assert.equal(canonicalBySubtype.EMA_PULLBACK_UP.status, 'active');
+  assert.equal(canonicalBySubtype.VWAP_RECLAIM_UP.status, 'active');
+  assertContractPass('narrow_state_expansion_long', canonicalBySubtype.NARROW_BULL_ENTRY);
+  assertContractPass('ema_pullback_continuation', canonicalBySubtype.EMA_PULLBACK_UP);
+  assertContractPass('vwap_volume_breakout_long', canonicalBySubtype.VWAP_RECLAIM_UP);
+
+  const confirmedNonTriggerDm = buildDecisionMonitor({
+    cryptoResults: [
+      canonicalOnly({
+        symbol: 'BTCUSDT',
+        market: 'crypto',
+        signal: 'LONG_WATCH',
+        state: 'HIGH_QUALITY_NARROW',
+        narrowType: 'coil_flat',
+        price: 100.45,
+        vwap: null,
+        ema21: 100.1,
+        ema50: 99.7,
+      }),
+      canonicalOnly({
+        symbol: 'ETHUSDT',
+        market: 'crypto',
+        signal: 'WAIT',
+        signalSubtype: 'EMA_PULLBACK_UP',
+        eventType: 'EMA_PULLBACK_UP',
+        state: 'TREND',
+        price: 100.35,
+        ema9: 100.3,
+        ema21: 100.05,
+        ema50: 99.5,
+        vwap: null,
+      }),
+    ],
+    stockResults: [
+      canonicalOnly({
+        symbol: 'AAPL',
+        market: 'stocks',
+        signal: 'WAIT',
+        signalSubtype: 'VWAP_RECLAIM_UP',
+        eventType: 'VWAP_RECLAIM_UP',
+        state: 'TREND',
+        price: 100.42,
+        vwap: 100,
+        vwapDistancePct: 0.42,
+        ema21: null,
+        ema50: null,
+      }),
+    ],
+    liveCandleDebugBySymbol: {
+      BTCUSDT: liveDebug('BTCUSDT', 'crypto', bullishCandles),
+      ETHUSDT: liveDebug('ETHUSDT', 'crypto', bullishCandles),
+      AAPL: liveDebug('AAPL', 'stocks', stockCandles),
+    },
+    stockFeedStatus: { status: 'OPEN' },
+  });
+  const confirmedNonTrigger = Object.fromEntries(confirmedNonTriggerDm.candidates.map((candidate) => [candidate.signalSubtype, candidate]));
+  assert.equal(confirmedNonTrigger.NARROW_BULL_ENTRY.status, 'active');
+  assert.equal(confirmedNonTrigger.EMA_PULLBACK_UP.status, 'active');
+  assert.equal(confirmedNonTrigger.VWAP_RECLAIM_UP.status, 'active');
+  assert.equal(confirmedNonTrigger.NARROW_BULL_ENTRY.producerEntryReadiness.entryReady, true);
+  assert.equal(confirmedNonTrigger.EMA_PULLBACK_UP.producerEntryReadiness.entryReady, true);
+  assert.equal(confirmedNonTrigger.VWAP_RECLAIM_UP.producerEntryReadiness.entryReady, true);
+  assertContractPass('narrow_state_expansion_long', confirmedNonTrigger.NARROW_BULL_ENTRY);
+  assertContractPass('ema_pullback_continuation', confirmedNonTrigger.EMA_PULLBACK_UP);
+  assertContractPass('vwap_volume_breakout_long', confirmedNonTrigger.VWAP_RECLAIM_UP);
+
   const openCandleDm = buildDecisionMonitor({
     cryptoResults: [baseResult('SOLUSDT', {
       market: 'crypto',
