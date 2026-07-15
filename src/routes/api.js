@@ -4044,10 +4044,43 @@ router.post('/futures-paper/ibkr-paper-execution/shadow', async (req, res) => {
         ...ibPaperExecutionOrchestratorService.SAFETY,
       });
 	    }
-	    if (body.candidate != null || body.approval != null || body.entryContract != null || body.orderPlan != null || body.contract != null || body.accountId != null || body.executionTarget != null) {
-	      return res.status(400).json({
-	        ok: false,
-	        error: 'client_supplied_broker_candidate_not_allowed',
+		    const forbiddenShadowFields = [
+		      'candidate',
+		      'approval',
+		      'approvalEvidence',
+		      'entryContract',
+		      'entryContractEvidence',
+		      'risk',
+		      'brokerRisk',
+		      'orderPlan',
+		      'contract',
+		      'accountId',
+		      'executionTarget',
+		      'root',
+		      'symbol',
+		      'conId',
+		      'localSymbol',
+		      'expiry',
+		      'lastTradeDateOrContractMonth',
+		      'quantity',
+		      'side',
+		      'direction',
+		      'orderType',
+		      'price',
+		      'limitPrice',
+		      'stopLoss',
+		      'stopLossPrice',
+		      'takeProfit',
+		      'takeProfitPrice',
+		      'tif',
+		      'timeInForce',
+		      'outsideRth',
+		      'now',
+		    ];
+		    if (forbiddenShadowFields.some((field) => body[field] != null)) {
+		      return res.status(400).json({
+		        ok: false,
+		        error: 'client_supplied_broker_candidate_not_allowed',
 	        wouldSubmit: false,
 	        actualSubmit: false,
 	        diagnosticPreview: false,

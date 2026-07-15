@@ -83,6 +83,31 @@ async function main() {
       await assertRetired(baseUrl, endpoint, {});
       await assertRetired(baseUrl, endpoint, { live_trading_enabled: true });
     }
+
+    const injectedQuantity = await postJson(baseUrl, '/api/futures-paper/ibkr-paper-execution/shadow', {
+      candidateId: 'candidate-server-known',
+      quantity: 99,
+    });
+    assert.equal(injectedQuantity.status, 400);
+    assert.equal(injectedQuantity.body.ok, false);
+    assert.equal(injectedQuantity.body.error, 'client_supplied_broker_candidate_not_allowed');
+    assert.equal(injectedQuantity.body.actualSubmit, false);
+
+    const injectedNow = await postJson(baseUrl, '/api/futures-paper/ibkr-paper-execution/shadow', {
+      candidateId: 'candidate-server-known',
+      now: '1970-01-01T00:00:00.000Z',
+    });
+    assert.equal(injectedNow.status, 400);
+    assert.equal(injectedNow.body.error, 'client_supplied_broker_candidate_not_allowed');
+
+    const actualSubmit = await postJson(baseUrl, '/api/futures-paper/ibkr-paper-execution/shadow', {
+      candidateId: 'candidate-server-known',
+      actualSubmit: true,
+    });
+    assert.equal(actualSubmit.status, 403);
+    assert.equal(actualSubmit.body.ok, false);
+    assert.equal(actualSubmit.body.error, 'first_paper_order_requires_explicit_user_approval_not_in_shadow_route');
+    assert.equal(actualSubmit.body.actualSubmit, false);
   });
 }
 

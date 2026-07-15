@@ -45,7 +45,7 @@ const selectedGooGlBlueprint = {
   blueprintReady: true,
   manualApprovalReady: true,
   executionReady: false,
-  expiresAt: '2026-06-25T23:10:00.000Z',
+  expiresAt: '2026-07-16T23:10:00.000Z',
 };
 
 const originalBuildPaperTradingTruth = paperTradingTruthService.buildPaperTradingTruth.bind(paperTradingTruthService);
@@ -589,12 +589,12 @@ async function main() {
     });
     assert.equal(helperResult.helperReady, true);
     assert.equal(helperResult.mockPlaceOrderCalls.length, 3);
-    assert.deepEqual(helperResult.mockPlaceOrderCalls.map((row) => row.role), ['entry', 'stop_loss', 'take_profit']);
+    assert.deepEqual(helperResult.mockPlaceOrderCalls.map((row) => row.role), ['entry', 'take_profit', 'stop_loss']);
     assert.deepEqual(helperResult.mockPlaceOrderCalls.map((row) => row.transmit), [false, false, true]);
     assert.deepEqual(helperResult.mockPlaceOrderCalls.map((row) => row.parentId), [null, 101, 101]);
     assert.deepEqual(helperResult.mockPlaceOrderCalls.map((row) => row.action), ['SELL', 'BUY', 'BUY']);
-    assert.equal(routeHelperCalls.length, 3);
-    assert.deepEqual(routeHelperCalls.map((row) => row.orderId), [101, 102, 103]);
+    assert.equal(routeHelperCalls.length, 0);
+    assert.deepEqual(helperResult.mockPlaceOrderCalls.map((row) => row.orderId), [101, 102, 103]);
 
     const wrongCommandRes = await fetch(`${baseUrl}/api/interactive-brokers/paper-execute`, {
       method: 'POST',

@@ -8,41 +8,57 @@ const path = require('path');
 process.env.IBKR_PAPER_EXECUTION_ENABLED = 'true';
 process.env.IBKR_PAPER_EXECUTION_SHADOW_MODE = 'true';
 process.env.IBKR_PAPER_ORDER_SUBMISSION_ENABLED = 'false';
-process.env.IBKR_PAPER_MAX_ORDER_EXPOSURE_USD = '100000';
 process.env.IB_GATEWAY_PORT = '4002';
 
 const orchestratorModule = require('./ibPaperExecutionOrchestratorService');
 const intentModule = require('./ibPaperExecutionIntentService');
+const reservationModule = require('./futuresPaperExecutionTargetReservationService');
 
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'ib-paper-orchestrator-test-'));
-const intentService = intentModule.createIbPaperExecutionIntentService({ dir: tmp });
+const intentService = intentModule.createIbPaperExecutionIntentService({ dir: path.join(tmp, 'intents') });
+const reservationService = reservationModule.createFuturesPaperExecutionTargetReservationService({ dir: path.join(tmp, 'reservations') });
 let submitCalls = 0;
 
 const fakeAdapter = {
-  connectPaperExecutionClient: async () => ({ ok: true, nextOrderId: 101 }),
+  connectPaperExecutionClient: async () => ({ ok: true }),
   getStatus: () => ({
     connected: true,
     host: '127.0.0.1',
     port: 4002,
     clientId: 956,
     nextValidIdReady: true,
-    nextOrderId: 101,
     managedAccounts: [{ accountIdMasked: 'DU***596', classification: 'paper' }],
     noLiveOrderCapability: 'paper-only',
   }),
   verifyPaperAccount: () => ({ ok: true, accountIdMasked: 'DU***596', classification: 'paper', live_account_detected: false }),
   buildOrderRef: (executionId, leg) => `TOS-PAPER-${executionId}-${leg}`,
-  buildOrderPlan: ({ executionId, contract, side, quantity, entryType, stopLossPrice, takeProfitPrice }) => {
+  createExecutionEvidence: ({ orderPlan }) => ({
+    source: 'ib_paper_execution_orchestrator',
+    evidenceVersion: 1,
+    generatedAt: '2026-07-15T22:30:00.000Z',
+    expiresAt: '2026-07-15T22:32:00.000Z',
+    fingerprint: `fp-${orderPlan.entry.totalQuantity}-${orderPlan.contract.conId}`,
+    signature: 'test-signature',
+  }),
+  buildOrderPlan: ({ executionId, contract, side, quantity, entryType, stopLossPrice, takeProfitPrice, tif, outsideRth }) => {
     const action = side === 'short' ? 'SELL' : 'BUY';
     const exit = action === 'BUY' ? 'SELL' : 'BUY';
     return {
       environment: 'paper',
-      contract: { conId: contract.conId, localSymbol: contract.localSymbol, secType: 'FUT', exchange: 'CME', currency: 'USD', symbol: contract.root },
-      entry: { action, totalQuantity: quantity, orderType: entryType, tif: 'GTC', outsideRth: true, transmit: false, orderRef: `TOS-PAPER-${executionId}-entry` },
-      stopLoss: { action: exit, totalQuantity: quantity, orderType: 'STP', auxPrice: stopLossPrice, tif: 'GTC', outsideRth: true, transmit: false, orderRef: `TOS-PAPER-${executionId}-stopLoss` },
-      takeProfit: { action: exit, totalQuantity: quantity, orderType: 'LMT', lmtPrice: takeProfitPrice, tif: 'GTC', outsideRth: true, transmit: true, orderRef: `TOS-PAPER-${executionId}-takeProfit` },
+      contract: {
+        conId: contract.conId,
+        localSymbol: contract.localSymbol,
+        secType: 'FUT',
+        exchange: 'CME',
+        currency: 'USD',
+        symbol: contract.root,
+        expiry: contract.expiry,
+      },
+      entry: { action, totalQuantity: quantity, orderType: entryType, tif, outsideRth, transmit: false, orderRef: `TOS-PAPER-${executionId}-entry` },
+      takeProfit: { action: exit, totalQuantity: quantity, orderType: 'LMT', lmtPrice: takeProfitPrice, tif: 'GTC', outsideRth, transmit: false, orderRef: `TOS-PAPER-${executionId}-takeProfit` },
+      stopLoss: { action: exit, totalQuantity: quantity, orderType: 'STP', auxPrice: stopLossPrice, tif: 'GTC', outsideRth, transmit: true, orderRef: `TOS-PAPER-${executionId}-stopLoss` },
       ocaGroup: `TOSP-${executionId}`,
-      transmitSequence: ['entry:false', 'stopLoss:false', 'takeProfit:true'],
+      transmitSequence: ['entry:false', 'takeProfit:false', 'stopLoss:true'],
       protectiveModel: 'one_stop',
     };
   },
@@ -57,6 +73,7 @@ const fakeReconciliation = {
     ok: true,
     status: 'ok',
     degraded: false,
+    newEntriesAllowed: true,
     counts: { openOrders: 0, executions: 0, positions: 0 },
     discrepancies: [],
     openOrders: [],
@@ -66,6 +83,7 @@ const fakeReconciliation = {
     ok: true,
     status: 'ok',
     degraded: false,
+    newEntriesAllowed: true,
     counts: { openOrders: 0, executions: 0, positions: 0 },
     discrepancies: [],
     openOrders: [],
@@ -73,10 +91,32 @@ const fakeReconciliation = {
   }),
 };
 
+const serverCandidate = {
+  candidateId: 'cand-1',
+  strategyId: 'ema_pullback_continuation',
+  root: 'MNQ',
+  symbol: 'MNQ',
+  direction: 'long',
+  signalTimestamp: '2026-07-15T22:29:30.000Z',
+  quantity: 99,
+  orderType: 'MKT',
+  stopLossPrice: 22980,
+  takeProfitPrice: 23040,
+  approval: { allowed: false },
+  entryContract: { allowed: false },
+};
+
 const service = orchestratorModule.createIbPaperExecutionOrchestratorService({
   adapter: fakeAdapter,
   intentService,
   reconciliationService: fakeReconciliation,
+  executionTargetReservationService: reservationService,
+  strategyApprovalService: {
+    evaluateFuturesApprovalGate: ({ strategyId }) => ({ allowed: strategyId === 'ema_pullback_continuation', strategyId, source: 'server_test_approval' }),
+  },
+  entryContractService: {
+    evaluatePaperEntryContract: ({ strategyId }) => ({ allowed: strategyId === 'ema_pullback_continuation', entryContractVersion: 'server_test_contract' }),
+  },
   marketDataService: {
     isEnabled: () => true,
     adapter: {
@@ -100,6 +140,7 @@ const service = orchestratorModule.createIbPaperExecutionOrchestratorService({
       source: 'ibkr_realtime',
       simulated: false,
       delayed: false,
+      stale: false,
       updatedAt: '2026-07-15T22:29:55.000Z',
       last: 23000,
       bid: 22999.75,
@@ -113,10 +154,11 @@ const service = orchestratorModule.createIbPaperExecutionOrchestratorService({
       currency: 'USD',
     }),
   },
-  scannerService: { getCandidates: () => ({ candidates: [] }) },
+  scannerService: { getCandidates: () => ({ candidates: [serverCandidate] }) },
   accountSummaryService: {
     getSummary: async () => ({
       ok: true,
+      generatedAt: '2026-07-15T22:30:00.000Z',
       account: {
         accountIdMasked: 'DU***596',
         classification: 'paper',
@@ -130,29 +172,39 @@ const service = orchestratorModule.createIbPaperExecutionOrchestratorService({
   },
 });
 
-const candidate = {
-  candidateId: 'cand-1',
-  strategyId: 'ema_pullback_continuation',
-  root: 'MNQ',
-  symbol: 'MNQ',
-  direction: 'long',
-  signalTimestamp: '2026-07-15T22:29:30.000Z',
-  quantity: 1,
-  orderType: 'MKT',
-  stopLossPrice: 22980,
-  takeProfitPrice: 23040,
-  approval: { allowed: true },
-  entryContract: { allowed: true },
-};
-
 (async () => {
+  const ignoredClientCandidate = await service.buildShadowExecution({
+    candidate: {
+      candidateId: 'client-fake',
+      strategyId: 'ema_pullback_continuation',
+      root: 'MNQ',
+      approval: { allowed: true },
+      entryContract: { allowed: true },
+      quantity: 1,
+      conId: 793356225,
+    },
+    now: new Date('2026-07-15T22:30:00.000Z'),
+  });
+  assert.equal(ignoredClientCandidate.normalizedOrder.candidateId, 'cand-1');
+  assert.equal(ignoredClientCandidate.normalizedOrder.quantity, 1);
+  assert.equal(ignoredClientCandidate.candidate.quantity, 1);
+  assert.equal(ignoredClientCandidate.approval.source, 'server_test_approval');
+  assert.equal(ignoredClientCandidate.entryContract.entryContractVersion, 'server_test_contract');
+
+  const unknown = await service.buildShadowExecution({
+    candidateId: 'does-not-exist',
+    now: new Date('2026-07-15T22:30:00.000Z'),
+  });
+  assert.equal(unknown.status, 'READY_WAITING_FOR_SIGNAL');
+  assert.equal(unknown.actualSubmit, false);
+
   const first = await service.buildShadowExecution({
-    candidate,
+    candidateId: 'cand-1',
     now: new Date('2026-07-15T22:30:00.000Z'),
   });
   assert.equal(first.ok, true);
-  assert.equal(first.status, 'shadow_ready');
-  assert.equal(first.wouldSubmit, true);
+  assert.equal(first.status, 'blocked');
+  assert(first.blockers.includes('duplicate_intent'));
   assert.equal(first.actualSubmit, false);
   assert.equal(submitCalls, 0);
   assert.equal(first.normalizedOrder.root, 'MNQ');
@@ -160,15 +212,85 @@ const candidate = {
   assert.equal(first.normalizedOrder.accountMasked, 'DU***596');
   assert.equal(first.normalizedOrder.executionTarget, 'ibkr_paper');
 
-  const second = await service.buildShadowExecution({
-    candidate,
-    now: new Date('2026-07-15T22:30:10.000Z'),
-  });
-  assert.equal(second.status, 'blocked');
-  assert(second.blockers.includes('duplicate_intent'));
-  assert.equal(submitCalls, 0);
+  const reservation = reservationService.getReservation('cand-1');
+  assert.equal(reservation.executionTarget, 'ibkr_paper');
 
-  const noCandidate = await service.buildShadowExecution({ now: new Date('2026-07-15T22:30:00.000Z') });
+  const raceCandidate = { ...serverCandidate, candidateId: 'cand-race', signalTimestamp: '2026-07-15T22:29:40.000Z' };
+  const raceService = orchestratorModule.createIbPaperExecutionOrchestratorService({
+    adapter: fakeAdapter,
+    intentService: {
+      buildIdempotencyKey: intentModule.buildIdempotencyKey,
+      getIntent: () => null,
+      createIntent: () => ({ created: false, duplicate: true, existing: { idempotencyKey: 'race-existing' } }),
+      updateStatus: () => { throw new Error('updateStatus must not run after duplicate createIntent'); },
+    },
+    reconciliationService: fakeReconciliation,
+    executionTargetReservationService: reservationModule.createFuturesPaperExecutionTargetReservationService({ dir: path.join(tmp, 'race-reservations') }),
+    strategyApprovalService: {
+      evaluateFuturesApprovalGate: ({ strategyId }) => ({ allowed: strategyId === 'ema_pullback_continuation', strategyId, source: 'server_test_approval' }),
+    },
+    entryContractService: {
+      evaluatePaperEntryContract: ({ strategyId }) => ({ allowed: strategyId === 'ema_pullback_continuation', entryContractVersion: 'server_test_contract' }),
+    },
+    marketDataService: {
+      isEnabled: () => true,
+      adapter: {
+        resolveContract: async () => ({
+          ok: true,
+          contract: {
+            root: 'MNQ',
+            conId: 793356225,
+            localSymbol: 'MNQU6',
+            expiry: '20260918',
+            exchange: 'CME',
+            currency: 'USD',
+            secType: 'FUT',
+          },
+        }),
+      },
+    },
+    quoteSourceService: {
+      getQuote: () => ({
+        root: 'MNQ',
+        source: 'ibkr_realtime',
+        simulated: false,
+        delayed: false,
+        stale: false,
+        updatedAt: '2026-07-15T22:29:55.000Z',
+        last: 23000,
+        bid: 22999.75,
+        ask: 23000,
+        spread: 0.25,
+        tickSize: 0.25,
+      }),
+    },
+    scannerService: { getCandidates: () => ({ candidates: [raceCandidate] }) },
+    accountSummaryService: {
+      getSummary: async () => ({
+        ok: true,
+        generatedAt: '2026-07-15T22:30:00.000Z',
+        account: { accountIdMasked: 'DU***596', classification: 'paper', realizedPnl: 0, unrealizedPnl: 0 },
+        cacheAgeMs: 1000,
+      }),
+    },
+  });
+  const race = await raceService.buildShadowExecution({
+    candidateId: 'cand-race',
+    now: new Date('2026-07-15T22:30:00.000Z'),
+  });
+  assert.equal(race.status, 'blocked');
+  assert.equal(race.wouldSubmit, false);
+  assert.equal(race.blockedReason, 'duplicate_intent');
+  assert.equal(race.executionEvidence, null);
+
+  const noCandidateService = orchestratorModule.createIbPaperExecutionOrchestratorService({
+    adapter: fakeAdapter,
+    intentService: intentModule.createIbPaperExecutionIntentService({ dir: path.join(tmp, 'empty-intents') }),
+    reconciliationService: fakeReconciliation,
+    executionTargetReservationService: reservationModule.createFuturesPaperExecutionTargetReservationService({ dir: path.join(tmp, 'empty-reservations') }),
+    scannerService: { getCandidates: () => ({ candidates: [] }) },
+  });
+  const noCandidate = await noCandidateService.buildShadowExecution({ now: new Date('2026-07-15T22:30:00.000Z') });
   assert.equal(noCandidate.status, 'READY_WAITING_FOR_SIGNAL');
   assert.equal(noCandidate.actualSubmit, false);
 

@@ -1722,7 +1722,7 @@ export default function InteractiveBrokersPage() {
               <Badge ok={futuresExecutionStatusView?.executionClient?.connected === true} labelTrue="true" labelFalse="false" />
             </Row>
             <Row label="nextValidId">
-              <code>{futuresExecutionStatusView?.executionClient?.nextValidIdReady ? (futuresExecutionStatusView?.executionClient?.nextOrderId || 'ready') : 'missing'}</code>
+              <code>{futuresExecutionStatusView?.executionClient?.nextValidIdReady ? 'ready' : 'missing'}</code>
             </Row>
             <Row label="Open orders">
               <code>{futuresExecutionStatusView?.reconciliation?.counts?.openOrders ?? 0}</code>

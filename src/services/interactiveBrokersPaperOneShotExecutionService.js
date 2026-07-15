@@ -36,6 +36,8 @@ const SAFETY = Object.freeze({
 });
 
 const FEATURE_FLAG = 'IB_PAPER_ONE_SHOT_ENABLED';
+const LEGACY_SUBMIT_FLAG = 'IB_PAPER_LEGACY_SUBMIT_ENABLED';
+const LEGACY_SUBMIT_DISABLED = 'legacy_ibkr_submit_disabled';
 const REQUIRED_EXECUTION_COMMANDS = [
   'FAS 4E EXECUTE FIRST IB PAPER ORDER',
   'KÖR FÖRSTA IB PAPER BRACKET ORDER NU',
@@ -117,6 +119,11 @@ function stableHash(input) {
 
 function readFeatureFlag() {
   const raw = safeLower(process.env[FEATURE_FLAG]);
+  return ['true', '1', 'yes', 'on'].includes(raw);
+}
+
+function readLegacySubmitFlag() {
+  const raw = safeLower(process.env[LEGACY_SUBMIT_FLAG]);
   return ['true', '1', 'yes', 'on'].includes(raw);
 }
 
@@ -760,9 +767,32 @@ async function submitOneShotOrder(selectedBlueprint, options = {}) {
       selectedBlueprintId: options.selectedBlueprintId || null,
       protectivePlan: options.protectivePlan || options.protectivePreflight || null,
       nextValidId: options.nextValidId,
-    });
+  });
   const submissionPlan = bracketSubmissionPlan?.submissionPlan || bracketSubmissionPlan;
   const executionAttemptId = safeString(options.executionAttemptId || `ibbsg_${stableHash(`${submissionPlan?.groupId || 'missing'}:${options.idempotencyKey || 'missing'}:${nowIso(options.now || new Date())}`).slice(0, 16)}`);
+  if (allowRealSubmit && readLegacySubmitFlag() !== true) {
+    return {
+      ok: false,
+      accepted: false,
+      submitted: false,
+      executed: false,
+      orderSent: false,
+      wouldSendOrder: false,
+      realSubmitEnabled: false,
+      bracketSubmissionRealSubmitEnabled: false,
+      realSubmitAttempted: false,
+      allowRealSubmit: false,
+      mockOnly,
+      dryRun,
+      blockedReason: LEGACY_SUBMIT_DISABLED,
+      blocker: LEGACY_SUBMIT_DISABLED,
+      requiredFeatureFlag: LEGACY_SUBMIT_FLAG,
+      executionAttemptId,
+      idempotencyKey: safeString(options.idempotencyKey || options.body?.idempotencyKey || ''),
+      submissionPlan,
+      safety: { ...SAFETY },
+    };
+  }
   return await interactiveBrokersPaperBracketSubmissionService.submitBracketOrderGroup({
     ...options,
     selectedBlueprint,

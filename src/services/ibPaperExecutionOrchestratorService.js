@@ -391,8 +391,8 @@ function createIbPaperExecutionOrchestratorService(options = {}) {
 	        { code: 'execution_target_reserved', ok: false, blocker: reservation.blocker || 'execution_target_reservation_failed' },
 	      ],
 	    };
-	    const intentCreate = effectiveGuard.allowed && idempotencyKey
-	      ? intentService.createIntent({
+		    const intentCreate = effectiveGuard.allowed && idempotencyKey
+		      ? intentService.createIntent({
 	        idempotencyKey,
 	        executionId,
 	        intent: {
@@ -404,12 +404,24 @@ function createIbPaperExecutionOrchestratorService(options = {}) {
 	          quantity: candidate.quantity,
 	          executionTarget: 'ibkr_paper',
 	        },
-	      })
-	      : { created: false, skipped: true };
-	    const executionEvidence = effectiveGuard.allowed && intentCreate.record
-	      ? adapter.createExecutionEvidence({
-	        guardDecision: effectiveGuard,
-	        intentRecord: intentCreate.record,
+		      })
+		      : { created: false, skipped: true };
+		    const finalGuard = effectiveGuard.allowed && idempotencyKey && intentCreate.created !== true
+		      ? {
+		        ...effectiveGuard,
+		        allowed: false,
+		        blockedReason: intentCreate.duplicate ? 'duplicate_intent' : (intentCreate.error || 'intent_create_failed'),
+		        blockers: [intentCreate.duplicate ? 'duplicate_intent' : (intentCreate.error || 'intent_create_failed'), ...(effectiveGuard.blockers || [])],
+		        checks: [
+		          ...(effectiveGuard.checks || []),
+		          { code: 'intent_created_atomically', ok: false, blocker: intentCreate.duplicate ? 'duplicate_intent' : (intentCreate.error || 'intent_create_failed') },
+		        ],
+		      }
+		      : effectiveGuard;
+		    const executionEvidence = finalGuard.allowed && intentCreate.record
+		      ? adapter.createExecutionEvidence({
+		        guardDecision: finalGuard,
+		        intentRecord: intentCreate.record,
 	        orderPlan,
 	        brokerRisk,
 	        approval,
@@ -446,9 +458,9 @@ function createIbPaperExecutionOrchestratorService(options = {}) {
       source: selected.source,
       paperOnly: true,
       orderRef: adapter.buildOrderRef(executionId, 'entry'),
-      executionTarget: 'ibkr_paper',
-	      wouldSubmit: effectiveGuard.allowed === true,
-	      actualSubmit: false,
+	      executionTarget: 'ibkr_paper',
+		      wouldSubmit: finalGuard.allowed === true,
+		      actualSubmit: false,
 	    };
 
 	    if (intentCreate.created) {
@@ -459,9 +471,9 @@ function createIbPaperExecutionOrchestratorService(options = {}) {
 	    }
 
     let submitResult = null;
-    if (actualSubmit === true) {
-      submitResult = await adapter.submitPaperOrder({
-	        guardDecision: effectiveGuard,
+	    if (actualSubmit === true) {
+	      submitResult = await adapter.submitPaperOrder({
+		        guardDecision: finalGuard,
 	        intentRecord: intentCreate.record,
 	        orderPlan,
 	        verifiedAccount: adapterVerification,
@@ -482,13 +494,13 @@ function createIbPaperExecutionOrchestratorService(options = {}) {
       }
     }
 
-    return {
-      ok: true,
-	      status: effectiveGuard.allowed ? 'shadow_ready' : 'blocked',
-	      wouldSubmit: effectiveGuard.allowed === true,
-	      actualSubmit: submitResult?.submitted === true,
-	      blockedReason: effectiveGuard.blockedReason || null,
-	      blockers: effectiveGuard.blockers,
+	    return {
+	      ok: true,
+		      status: finalGuard.allowed ? 'shadow_ready' : 'blocked',
+		      wouldSubmit: finalGuard.allowed === true,
+		      actualSubmit: submitResult?.submitted === true,
+		      blockedReason: finalGuard.blockedReason || null,
+		      blockers: finalGuard.blockers,
       candidate,
       contract,
       quote,
@@ -496,7 +508,7 @@ function createIbPaperExecutionOrchestratorService(options = {}) {
       approval,
       entryContract,
       brokerRisk,
-	      guard: effectiveGuard,
+		      guard: finalGuard,
 	      executionTargetReservation: reservation,
       intent: intentCreate.record || intent,
 	      intentCreate,

@@ -5,7 +5,8 @@ const risk = require('./ibPaperBrokerRiskService');
 
 process.env.IBKR_PAPER_PILOT_SYMBOLS = 'MNQ,MES';
 process.env.IBKR_PAPER_PILOT_MAX_QUANTITY = '1';
-process.env.IBKR_PAPER_MAX_ORDER_EXPOSURE_USD = '100000';
+process.env.IBKR_PAPER_MAX_STOP_RISK_USD = '1000';
+process.env.IBKR_PAPER_MAX_CONTRACT_NOTIONAL_USD = '100000';
 
 const quote = {
   root: 'MNQ',
@@ -21,7 +22,7 @@ const quote = {
 };
 
 {
-  const result = risk.evaluateBrokerRisk({
+	  const result = risk.evaluateBrokerRisk({
     root: 'MNQ',
     quantity: 1,
     orderType: 'MKT',
@@ -29,12 +30,13 @@ const quote = {
     quote,
     openOrders: [],
     positions: [],
-    accountSummary: { account: { realizedPnl: 0 }, cacheAgeMs: 1000 },
+	    accountSummary: { ok: true, generatedAt: '2026-07-15T22:30:00.000Z', account: { accountIdMasked: 'DU***596', classification: 'paper', realizedPnl: 0 }, cacheAgeMs: 1000 },
     reconciliation: { degraded: false },
     now: new Date('2026-07-15T22:30:00.000Z'),
   });
-  assert.equal(result.allowed, true);
-}
+	  assert.equal(result.allowed, true);
+	  assert(result.stopRiskUsd > 0);
+	}
 
 {
   const result = risk.evaluateBrokerRisk({
@@ -43,7 +45,8 @@ const quote = {
     orderType: 'MKT',
     stopLossPrice: 22980,
     quote: { ...quote, root: 'NQ' },
-    positions: [],
+	    positions: [],
+	    accountSummary: { ok: true, generatedAt: '2026-07-15T22:30:00.000Z', account: { accountIdMasked: 'DU***596', classification: 'paper', realizedPnl: 0 }, cacheAgeMs: 1000 },
     reconciliation: { degraded: false },
     now: new Date('2026-07-15T22:30:00.000Z'),
   });
@@ -63,9 +66,71 @@ const quote = {
     now: new Date('2026-07-15T22:30:00.000Z'),
   });
   assert.equal(result.allowed, false);
-  assert(result.blockers.includes('quantity_exceeds_pilot_limit'));
-  assert(result.blockers.includes('max_open_broker_positions'));
-  assert(result.blockers.includes('reconciliation_degraded'));
+	  assert(result.blockers.includes('quantity_must_be_exactly_one'));
+	  assert(result.blockers.includes('max_open_broker_positions'));
+	  assert(result.blockers.includes('reconciliation_degraded'));
+	}
+
+{
+  const result = risk.evaluateBrokerRisk({
+    root: 'MNQ',
+    quantity: 0.1,
+    orderType: 'MKT',
+    stopLossPrice: 22980,
+    quote,
+    accountSummary: { ok: true, generatedAt: '2026-07-15T22:30:00.000Z', account: { accountIdMasked: 'DU***596', classification: 'paper', realizedPnl: 0 }, cacheAgeMs: 1000 },
+    reconciliation: { degraded: false },
+    now: new Date('2026-07-15T22:30:00.000Z'),
+  });
+  assert.equal(result.allowed, false);
+  assert(result.blockers.includes('quantity_must_be_exactly_one'));
+}
+
+{
+  const result = risk.evaluateBrokerRisk({
+    root: 'MNQ',
+    quantity: '1',
+    orderType: 'MKT',
+    stopLossPrice: 22980,
+    quote,
+    accountSummary: { ok: true, generatedAt: '2026-07-15T22:30:00.000Z', account: { accountIdMasked: 'DU***596', classification: 'paper', realizedPnl: 0 }, cacheAgeMs: 1000 },
+    reconciliation: { degraded: false },
+    now: new Date('2026-07-15T22:30:00.000Z'),
+  });
+  assert.equal(result.allowed, false);
+  assert(result.blockers.includes('quantity_must_be_exactly_one'));
+}
+
+{
+  const result = risk.evaluateBrokerRisk({
+    root: 'MNQ',
+    quantity: 1,
+    orderType: 'MKT',
+    stopLossPrice: 22980,
+    quote: { ...quote, bid: undefined, ask: undefined, spread: undefined },
+    accountSummary: { ok: true, generatedAt: '2026-07-15T22:30:00.000Z', account: { accountIdMasked: 'DU***596', classification: 'paper', realizedPnl: 0 }, cacheAgeMs: 1000 },
+    reconciliation: { degraded: false },
+    now: new Date('2026-07-15T22:30:00.000Z'),
+  });
+  assert.equal(result.allowed, false);
+  assert(result.blockers.includes('quote_bid_missing'));
+  assert(result.blockers.includes('quote_ask_missing'));
+  assert(result.blockers.includes('spread_unknown'));
+}
+
+{
+  const result = risk.evaluateBrokerRisk({
+    root: 'MNQ',
+    quantity: 1,
+    orderType: 'MKT',
+    stopLossPrice: 22980,
+    quote,
+    accountSummary: { ok: true, generatedAt: '2026-07-15T22:30:00.000Z', account: { accountIdMasked: 'DU***596', classification: 'paper', realizedPnl: 0 } },
+    reconciliation: { degraded: false },
+    now: new Date('2026-07-15T22:30:00.000Z'),
+  });
+  assert.equal(result.allowed, false);
+  assert(result.blockers.includes('account_summary_stale'));
 }
 
 {
@@ -74,8 +139,9 @@ const quote = {
     quantity: 1,
     orderType: 'MKT',
     stopLossPrice: null,
-    quote: { ...quote, delayed: true, source: 'ibkr_delayed' },
-    positions: [],
+	    quote: { ...quote, delayed: true, source: 'ibkr_delayed' },
+	    positions: [],
+	    accountSummary: { ok: true, generatedAt: '2026-07-15T22:30:00.000Z', account: { accountIdMasked: 'DU***596', classification: 'paper', realizedPnl: 0 }, cacheAgeMs: 1000 },
     reconciliation: { degraded: false },
     now: new Date('2026-07-15T22:30:00.000Z'),
   });

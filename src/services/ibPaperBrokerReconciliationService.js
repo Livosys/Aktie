@@ -53,14 +53,16 @@ function compareSnapshots({ intents = [], openOrders = [], executions = [], posi
     }
   }
 
-  for (const intent of intents) {
-    if (!['submitted', 'acknowledged', 'partially_filled'].includes(intent.status)) continue;
-    const hasBrokerRef = (intent.orderRef && brokerRefs.has(intent.orderRef))
-      || [...brokerRefs].some((ref) => executionIdFromOrderRef(ref) === intent.executionId);
-    if (!hasBrokerRef) {
-      discrepancies.push({ type: 'internal_order_missing_at_ib', executionId: intent.executionId, status: intent.status });
-    }
-  }
+	  for (const intent of intents) {
+	    if (!['submit_started', 'submitted', 'acknowledged', 'partially_filled', 'reconciliation_required', 'unknown'].includes(intent.status)) continue;
+	    const hasBrokerRef = (intent.orderRef && brokerRefs.has(intent.orderRef))
+	      || [...brokerRefs].some((ref) => executionIdFromOrderRef(ref) === intent.executionId);
+	    if (!hasBrokerRef && intent.status === 'submit_started') {
+	      discrepancies.push({ type: 'unknown_submit_state', executionId: intent.executionId, status: intent.status });
+	    } else if (!hasBrokerRef) {
+	      discrepancies.push({ type: 'internal_order_missing_at_ib', executionId: intent.executionId, status: intent.status });
+	    }
+	  }
 
   const nonFlatPositions = positions.filter((row) => Number(row.position || 0) !== 0);
   const activeStops = openOrders.filter((row) => {
@@ -108,18 +110,22 @@ function createIbPaperBrokerReconciliationService(options = {}) {
     const flags = configService.getFlags();
     const adapterStatus = adapter?.getStatus ? adapter.getStatus() : null;
     const intents = intentService.listIntents({ limit: 250 });
-    if (!adapter || adapterStatus?.connected !== true) {
-      const snapshot = {
-        ok: false,
-        status: flags.executionEnabled ? 'degraded' : 'disabled',
-        degraded: flags.executionEnabled === true,
-        blockedReason: flags.executionEnabled ? 'execution_client_not_connected' : 'ibkr_paper_execution_disabled',
-        generatedAt: nowIso(),
+	    if (!adapter || adapterStatus?.connected !== true || adapterStatus?.nextValidIdReady !== true) {
+	      const reason = adapterStatus?.connected === true && adapterStatus?.nextValidIdReady !== true
+	        ? 'next_valid_id_not_ready'
+	        : 'execution_client_not_connected';
+	      const snapshot = {
+	        ok: false,
+	        status: flags.executionEnabled ? 'degraded' : 'disabled',
+	        degraded: flags.executionEnabled === true,
+	        newEntriesAllowed: false,
+	        blockedReason: flags.executionEnabled ? reason : 'ibkr_paper_execution_disabled',
+	        generatedAt: nowIso(),
         intents,
         openOrders: [],
         executions: [],
         positions: [],
-        discrepancies: flags.executionEnabled ? [{ type: 'stale_reconciliation', reason: 'execution_client_not_connected' }] : [],
+	        discrepancies: flags.executionEnabled ? [{ type: 'stale_reconciliation', reason }] : [],
         counts: { intents: intents.length, openOrders: 0, executions: 0, positions: 0, orderStatuses: 0, activeStops: 0 },
         force,
         ...SAFETY,
@@ -133,27 +139,30 @@ function createIbPaperBrokerReconciliationService(options = {}) {
       adapter.getPaperExecutions(),
       adapter.getPaperPositions(),
     ]);
-    const openOrders = openOrdersResult.orders || [];
-    const executions = executionsResult.executions || [];
-    const positions = positionsResult.positions || [];
-    const orderStatuses = adapter.getOrderStatuses ? adapter.getOrderStatuses() : [];
-    const compared = compareSnapshots({ intents, openOrders, executions, positions, orderStatuses });
-    const degraded = compared.discrepancies.length > 0
-      || openOrdersResult.ok !== true
-      || executionsResult.ok !== true
-      || positionsResult.ok !== true;
-    const snapshot = {
-      ok: true,
-      status: degraded ? 'degraded' : 'ok',
-      degraded,
-      blockedReason: degraded ? (compared.discrepancies[0]?.type || 'broker_reconciliation_degraded') : null,
+	    const openOrders = openOrdersResult.orders || [];
+	    const executions = executionsResult.executions || [];
+	    const positions = positionsResult.positions || [];
+	    const orderStatuses = adapter.getOrderStatuses ? adapter.getOrderStatuses() : [];
+	    const compared = compareSnapshots({ intents, openOrders, executions, positions, orderStatuses });
+	    const requestDiscrepancies = [];
+	    if (openOrdersResult.ok !== true || openOrdersResult.timedOut === true) requestDiscrepancies.push({ type: 'reconciliation_open_orders_timeout', blocker: openOrdersResult.blocker || openOrdersResult.error || 'reconciliation_open_orders_timeout' });
+	    if (executionsResult.ok !== true || executionsResult.timedOut === true) requestDiscrepancies.push({ type: 'reconciliation_executions_timeout', blocker: executionsResult.blocker || executionsResult.error || 'reconciliation_executions_timeout' });
+	    if (positionsResult.ok !== true || positionsResult.timedOut === true) requestDiscrepancies.push({ type: 'reconciliation_positions_timeout', blocker: positionsResult.blocker || positionsResult.error || 'reconciliation_positions_timeout' });
+	    const allDiscrepancies = [...requestDiscrepancies, ...compared.discrepancies];
+	    const degraded = allDiscrepancies.length > 0;
+	    const snapshot = {
+	      ok: degraded !== true,
+	      status: degraded ? 'degraded' : 'ok',
+	      degraded,
+	      newEntriesAllowed: degraded !== true,
+	      blockedReason: degraded ? (allDiscrepancies[0]?.type || allDiscrepancies[0]?.blocker || 'broker_reconciliation_degraded') : null,
       generatedAt: nowIso(),
       intents,
       openOrders,
       executions,
       positions,
       orderStatuses,
-      discrepancies: compared.discrepancies,
+	      discrepancies: allDiscrepancies,
       counts: compared.counts,
       requestStatus: {
         openOrders: { ok: openOrdersResult.ok === true, timedOut: openOrdersResult.timedOut === true },
@@ -169,11 +178,12 @@ function createIbPaperBrokerReconciliationService(options = {}) {
 
   function getCachedReconciliation() {
     if (lastSnapshot) return lastSnapshot;
-    return {
-      ok: false,
-      status: 'unknown',
-      degraded: true,
-      blockedReason: 'reconciliation_not_run',
+	    return {
+	      ok: false,
+	      status: 'unknown',
+	      degraded: true,
+	      newEntriesAllowed: false,
+	      blockedReason: 'reconciliation_not_run',
       generatedAt: nowIso(),
       discrepancies: [{ type: 'stale_reconciliation', reason: 'reconciliation_not_run' }],
       counts: { intents: 0, openOrders: 0, executions: 0, positions: 0, orderStatuses: 0, activeStops: 0 },

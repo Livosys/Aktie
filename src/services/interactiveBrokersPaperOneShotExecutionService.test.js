@@ -794,6 +794,40 @@ async function main() {
   assert.equal(positionBlocked.executed, false);
   assert.equal(positionBlocked.blockedReason, 'duplicate_blueprint_execution');
 
+  delete process.env.IB_PAPER_LEGACY_SUBMIT_ENABLED;
+  const legacyBlockedPlan = bracketSvc.buildBracketSubmissionPlan({
+    now,
+    truth: readyTruth,
+    executionStatus: readyTruth.ibPaper.executionStatus,
+    tradeBlueprint: readyTruth.ibPaper.tradeBlueprint,
+    readiness: readinessState,
+    selectedBlueprint: readyBlueprintState,
+    protectivePlan: { ...readyProtectivePlan, protectiveExecutionReady: true, blockedReason: null },
+    nextValidId: 101,
+  });
+  let oneShotLegacyPlaceOrderCalls = 0;
+  const legacyOneShotBlocked = await svc._internal.submitOneShotOrder(readyBlueprintState, {
+    now,
+    truth: readyTruth,
+    executionStatus: readyTruth.ibPaper.executionStatus,
+    tradeBlueprint: readyTruth.ibPaper.tradeBlueprint,
+    readiness: readinessState,
+    selectedBlueprint: readyBlueprintState,
+    bracketSubmissionPlan: legacyBlockedPlan?.submissionPlan || legacyBlockedPlan,
+    idempotencyKey: 'legacy-one-shot-blocked',
+    allowRealSubmit: true,
+    mockOnly: false,
+    dryRun: false,
+    ibClient: {
+      placeOrder() { oneShotLegacyPlaceOrderCalls += 1; },
+    },
+  });
+  assert.equal(legacyOneShotBlocked.submitted, false);
+  assert.equal(legacyOneShotBlocked.executed, false);
+  assert.equal(legacyOneShotBlocked.orderSent, false);
+  assert.equal(legacyOneShotBlocked.blockedReason, 'legacy_ibkr_submit_disabled');
+  assert.equal(oneShotLegacyPlaceOrderCalls, 0, 'one-shot legacy placeOrder is not reached');
+
   console.log('interactiveBrokersPaperOneShotExecutionService.test.js: OK');
 }
 

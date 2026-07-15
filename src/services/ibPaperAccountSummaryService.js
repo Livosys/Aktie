@@ -159,12 +159,12 @@ function createIbPaperAccountSummaryService(options = {}) {
     if (cache && age != null && age <= maxAgeMs) {
       return { ...cache.summary, cached: true, cacheAgeMs: age };
     }
-    if (!inflight) {
-      inflight = fetchSummary()
-        .then((summary) => {
-          if (summary.ok) cache = { summary, fetchedAtMs: Date.now() };
-          return summary;
-        })
+	    if (!inflight) {
+	      inflight = fetchSummary()
+	        .then((summary) => {
+	          if (summary.ok) cache = { summary, fetchedAtMs: Date.now() };
+	          return summary.ok ? { ...summary, cached: false, cacheAgeMs: 0 } : summary;
+	        })
         .finally(() => { inflight = null; });
     }
     try {

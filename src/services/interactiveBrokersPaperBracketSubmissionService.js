@@ -58,6 +58,7 @@ const DEFAULT_TIMEOUT_MS = 8000;
 const DEFAULT_TIF = 'DAY';
 const REAL_SUBMIT_BLOCKER = 'real_submit_not_enabled_for_this_attempt';
 const REAL_SUBMIT_AUDIT_ONLY_BLOCKER = 'real_submit_audit_only';
+const LEGACY_SUBMIT_FLAG = 'IB_PAPER_LEGACY_SUBMIT_ENABLED';
 const NEXT_VALID_ID_UNAVAILABLE = 'ib_next_valid_id_unavailable';
 const ENTRY_ONLY_FORBIDDEN = 'entry_only_forbidden';
 
@@ -70,6 +71,10 @@ function buildCheck(code, ok, severity, messageSv, source = null, blocker = null
     source,
     blocker: ok === true ? null : blocker || code,
   };
+}
+
+function legacySubmitEnabled() {
+  return ['true', '1', 'yes', 'on'].includes(safeLower(process.env[LEGACY_SUBMIT_FLAG]));
 }
 
 function resolveBlueprint(tradeBlueprint, selectedBlueprintId = null) {
@@ -230,9 +235,9 @@ function buildLegPlan({
     orderRef: buildOrderRef(orderSeed, 'entry'),
     contract: buildOrderContract(symbol, selectedBlueprint),
   };
-  const stopLossOrder = {
-    role: 'stop_loss',
-    orderId: entryOrderId + 1,
+	  const stopLossOrder = {
+	    role: 'stop_loss',
+	    orderId: entryOrderId + 2,
     parentId: entryOrderId,
     action: exitSide,
     orderType: 'STP',
@@ -240,14 +245,14 @@ function buildLegPlan({
     lmtPrice: null,
     auxPrice: stopLoss,
     tif: timeInForce,
-    transmit: false,
+	    transmit: true,
     outsideRth: false,
     orderRef: buildOrderRef(orderSeed, 'stopLoss'),
     contract: buildOrderContract(symbol, selectedBlueprint),
   };
-  const takeProfitOrder = {
-    role: 'take_profit',
-    orderId: entryOrderId + 2,
+	  const takeProfitOrder = {
+	    role: 'take_profit',
+	    orderId: entryOrderId + 1,
     parentId: entryOrderId,
     action: exitSide,
     orderType: 'LMT',
@@ -255,7 +260,7 @@ function buildLegPlan({
     lmtPrice: takeProfit,
     auxPrice: null,
     tif: timeInForce,
-    transmit: true,
+	    transmit: false,
     outsideRth: false,
     orderRef: buildOrderRef(orderSeed, 'takeProfit'),
     contract: buildOrderContract(symbol, selectedBlueprint),
@@ -266,10 +271,10 @@ function buildLegPlan({
     entry: entryOrder,
     stopLoss: stopLossOrder,
     takeProfit: takeProfitOrder,
-    orderIds: [entryOrder.orderId, stopLossOrder.orderId, takeProfitOrder.orderId],
+	    orderIds: [entryOrder.orderId, takeProfitOrder.orderId, stopLossOrder.orderId],
     orderCount: 3,
     parentChildPlanExists: true,
-    transmitSequence: ['entry:false', 'stopLoss:false', 'takeProfit:true'],
+	    transmitSequence: ['entry:false', 'takeProfit:false', 'stopLoss:true'],
     entryOnlyBlocked: true,
     mockOnly: true,
     dryRun: true,
@@ -333,8 +338,8 @@ function buildChecks({
     buildCheck('take_profit_action_matches_exit', Boolean(submissionPlan?.takeProfit) && submissionPlan.takeProfit.action === exitSide, 'hard', submissionPlan?.takeProfit ? 'Take profit action matchar.' : 'Take profit saknas.', 'submissionPlan.takeProfit', Boolean(submissionPlan?.takeProfit) && submissionPlan.takeProfit.action === exitSide ? null : 'entry_only_forbidden'),
     buildCheck('order_count_three', orderCount === MAX_ORDER_COUNT, 'hard', orderCount === MAX_ORDER_COUNT ? 'Tre orderlegs finns.' : `Order count är ${orderCount}.`, 'submissionPlan.orderCount', orderCount === MAX_ORDER_COUNT ? null : 'entry_only_forbidden'),
     buildCheck('entry_transmit_false', submissionPlan?.entry?.transmit === false, 'hard', submissionPlan?.entry?.transmit === false ? 'Entry transmit=false.' : 'Entry transmit måste vara false.', 'submissionPlan.entry.transmit', submissionPlan?.entry?.transmit === false ? null : 'entry_only_forbidden'),
-    buildCheck('stop_loss_transmit_false', submissionPlan?.stopLoss?.transmit === false, 'hard', submissionPlan?.stopLoss?.transmit === false ? 'Stop loss transmit=false.' : 'Stop loss transmit måste vara false.', 'submissionPlan.stopLoss.transmit', submissionPlan?.stopLoss?.transmit === false ? null : 'entry_only_forbidden'),
-    buildCheck('take_profit_transmit_true', submissionPlan?.takeProfit?.transmit === true, 'hard', submissionPlan?.takeProfit?.transmit === true ? 'Take profit transmit=true.' : 'Take profit transmit måste vara true.', 'submissionPlan.takeProfit.transmit', submissionPlan?.takeProfit?.transmit === true ? null : 'entry_only_forbidden'),
+	    buildCheck('take_profit_transmit_false', submissionPlan?.takeProfit?.transmit === false, 'hard', submissionPlan?.takeProfit?.transmit === false ? 'Take profit transmit=false.' : 'Take profit transmit måste vara false.', 'submissionPlan.takeProfit.transmit', submissionPlan?.takeProfit?.transmit === false ? null : 'entry_only_forbidden'),
+	    buildCheck('stop_loss_transmit_true', submissionPlan?.stopLoss?.transmit === true, 'hard', submissionPlan?.stopLoss?.transmit === true ? 'Stop loss transmit=true.' : 'Stop loss transmit måste vara true.', 'submissionPlan.stopLoss.transmit', submissionPlan?.stopLoss?.transmit === true ? null : 'entry_only_forbidden'),
     buildCheck('stop_parent_matches_entry', submissionPlan?.stopLoss?.parentId === parentId && parentId != null, 'hard', submissionPlan?.stopLoss ? 'Stop loss parentId matchar.' : 'Stop loss parentId saknas.', 'submissionPlan.stopLoss.parentId', submissionPlan?.stopLoss?.parentId === parentId && parentId != null ? null : 'entry_only_forbidden'),
     buildCheck('take_profit_parent_matches_entry', submissionPlan?.takeProfit?.parentId === parentId && parentId != null, 'hard', submissionPlan?.takeProfit ? 'Take profit parentId matchar.' : 'Take profit parentId saknas.', 'submissionPlan.takeProfit.parentId', submissionPlan?.takeProfit?.parentId === parentId && parentId != null ? null : 'entry_only_forbidden'),
     buildCheck('quantities_match', quantitiesMatch, 'hard', quantitiesMatch ? 'Quantities matchar alla legs.' : 'Quantities matchar inte alla legs.', 'submissionPlan.quantity', quantitiesMatch ? null : 'quantity_mismatch'),
@@ -679,11 +684,11 @@ function validateBracketSubmissionPlan(submissionPlan, options = {}) {
     && stopLoss?.role === 'stop_loss'
     && takeProfit?.role === 'take_profit',
   );
-  const transmitSequenceValid = Boolean(
-    entry?.transmit === false
-    && stopLoss?.transmit === false
-    && takeProfit?.transmit === true,
-  );
+	  const transmitSequenceValid = Boolean(
+	    entry?.transmit === false
+	    && takeProfit?.transmit === false
+	    && stopLoss?.transmit === true,
+	  );
   const parentLinkValid = Boolean(
     stopLoss?.parentId === entry?.orderId
     && takeProfit?.parentId === entry?.orderId
@@ -721,8 +726,8 @@ function validateBracketSubmissionPlan(submissionPlan, options = {}) {
     buildCheck('idempotency_key_present', idempotencyKeyValid, 'hard', idempotencyKeyValid ? 'idempotencyKey finns.' : 'idempotencyKey saknas.', 'submissionAttempt.idempotencyKey', idempotencyKeyValid ? null : 'idempotency_key_required'),
     buildCheck('roles_valid', rolesValid, 'hard', rolesValid ? 'Orderrollerna stämmer.' : 'Orderrollerna stämmer inte.', 'submissionPlan.roles', rolesValid ? null : 'entry_only_forbidden'),
     buildCheck('entry_transmit_false', entry?.transmit === false, 'hard', entry?.transmit === false ? 'Entry transmit=false.' : 'Entry transmit måste vara false.', 'submissionPlan.entry.transmit', entry?.transmit === false ? null : 'invalid_transmit_sequence'),
-    buildCheck('stop_loss_transmit_false', stopLoss?.transmit === false, 'hard', stopLoss?.transmit === false ? 'Stop loss transmit=false.' : 'Stop loss transmit måste vara false.', 'submissionPlan.stopLoss.transmit', stopLoss?.transmit === false ? null : 'invalid_transmit_sequence'),
-    buildCheck('take_profit_transmit_true', takeProfit?.transmit === true, 'hard', takeProfit?.transmit === true ? 'Take profit transmit=true.' : 'Take profit transmit måste vara true.', 'submissionPlan.takeProfit.transmit', takeProfit?.transmit === true ? null : 'invalid_transmit_sequence'),
+	    buildCheck('take_profit_transmit_false', takeProfit?.transmit === false, 'hard', takeProfit?.transmit === false ? 'Take profit transmit=false.' : 'Take profit transmit måste vara false.', 'submissionPlan.takeProfit.transmit', takeProfit?.transmit === false ? null : 'invalid_transmit_sequence'),
+	    buildCheck('stop_loss_transmit_true', stopLoss?.transmit === true, 'hard', stopLoss?.transmit === true ? 'Stop loss transmit=true.' : 'Stop loss transmit måste vara true.', 'submissionPlan.stopLoss.transmit', stopLoss?.transmit === true ? null : 'invalid_transmit_sequence'),
     buildCheck('stop_parent_matches_entry', parentLinkValid, 'hard', parentLinkValid ? 'ParentId-länkarna stämmer.' : 'ParentId-länkarna stämmer inte.', 'submissionPlan.parentId', parentLinkValid ? null : 'invalid_parent_link'),
     buildCheck('quantities_match', quantitiesMatch, 'hard', quantitiesMatch ? 'Quantities matchar.' : 'Quantities matchar inte.', 'submissionPlan.quantity', quantitiesMatch ? null : 'quantity_mismatch'),
     buildCheck('actions_match_side', actionSideValid, 'hard', actionSideValid ? 'Actions matchar side.' : 'Actions matchar inte side.', 'submissionPlan.action', actionSideValid ? null : 'entry_only_forbidden'),
@@ -859,8 +864,8 @@ async function submitBracketOrderGroup(options = {}) {
     dryRun,
     orderCount: orderCount || Number(submissionPlan?.orderCount || 0),
     entryOnlyBlocked: true,
-    blockedReason: helperReady === true ? uiStatus.blockedReason : blockedReason,
-    blockers: helperReady === true ? [uiStatus.blockedReason] : blockers,
+	    blockedReason: blockedReason === 'legacy_ibkr_submit_disabled' ? blockedReason : (helperReady === true ? uiStatus.blockedReason : blockedReason),
+	    blockers: blockedReason === 'legacy_ibkr_submit_disabled' ? ['legacy_ibkr_submit_disabled'] : (helperReady === true ? [uiStatus.blockedReason] : blockers),
     checks: validation.checks || [],
     submissionPlan,
     orderSent: false,
@@ -899,14 +904,27 @@ async function submitBracketOrderGroup(options = {}) {
     });
   }
 
-  if (realSubmitRequested === true) {
-    const config = options.config || readConfig();
+	  if (allowRealSubmit === true && legacySubmitEnabled() !== true) {
+		      return buildBlockedResponse({
+		        ok: false,
+		        blockedReason: 'legacy_ibkr_submit_disabled',
+	        blockers: ['legacy_ibkr_submit_disabled'],
+	        helperReady: true,
+	        mockPlaceOrderCalls: [],
+	        incident: null,
+	        mockProtectiveOrdersSubmitted: false,
+		        realSubmitEnabled: false,
+		      });
+	  }
+
+	  if (realSubmitRequested === true) {
+	    const config = options.config || readConfig();
     const client = options.ibClient || createIbClient(config);
-    const sequence = [
-      submissionPlan.entry,
-      submissionPlan.stopLoss,
-      submissionPlan.takeProfit,
-    ];
+	        const sequence = [
+	          submissionPlan.entry,
+	          submissionPlan.takeProfit,
+	          submissionPlan.stopLoss,
+	        ];
     const actualPlaceOrderCalls = [];
 
     try {
@@ -1073,55 +1091,22 @@ async function submitBracketOrderGroup(options = {}) {
     }
   }
 
-  const mockPlaceOrderCalls = [];
-  const orderClient = options.ibClient || null;
-  const placeOrder = typeof orderClient?.placeOrder === 'function' ? orderClient.placeOrder.bind(orderClient) : null;
-  if (simulateMockCalls === true) {
-    if (!placeOrder) {
-    return buildBlockedResponse({
-      ok: false,
-      blockedReason: 'ib_client_place_order_unavailable',
-        blockers: ['ib_client_place_order_unavailable'],
-        helperReady: true,
-          mockPlaceOrderCalls: [],
-        incident: {
-          stage: 'placeOrder_setup',
-          message: 'ibClient.placeOrder saknas i mock-testet',
-        },
-        mockProtectiveOrdersSubmitted: false,
-      });
-    }
-    const sequence = [
-      submissionPlan.entry,
-      submissionPlan.stopLoss,
-      submissionPlan.takeProfit,
-    ];
-    for (const [index, order] of sequence.entries()) {
-      const callInfo = createMockPlaceOrderResult({
-        submissionPlan,
-        executedOrder: order,
-        index: index + 1,
-        simulatedCall: true,
-      });
-      mockPlaceOrderCalls.push(callInfo);
-      try {
-        placeOrder(Number(order.orderId), contract, order);
-      } catch (err) {
-        return buildBlockedResponse({
-          ok: false,
-          blockedReason: `mock_placeorder_call_${index + 1}_failed`,
-          blockers: [`mock_placeorder_call_${index + 1}_failed`],
-          helperReady: true,
-          mockPlaceOrderCalls,
-          incident: {
-            stage: `placeOrder_${index + 1}`,
-            message: err?.message || 'placeOrder failed during mock submission',
-          },
-          mockProtectiveOrdersSubmitted: false,
-          mockOrderSent: false,
-        });
-      }
-    }
+	  const mockPlaceOrderCalls = [];
+	  if (simulateMockCalls === true) {
+	    const sequence = [
+	      submissionPlan.entry,
+	      submissionPlan.takeProfit,
+	      submissionPlan.stopLoss,
+	    ];
+	    for (const [index, order] of sequence.entries()) {
+	      const callInfo = createMockPlaceOrderResult({
+	        submissionPlan,
+	        executedOrder: order,
+	        index: index + 1,
+	        simulatedCall: true,
+	      });
+	      mockPlaceOrderCalls.push(callInfo);
+	    }
     return buildBlockedResponse({
       blockedReason: blockedReasonWhenReady,
       blockers: blockedReasonWhenReady ? [blockedReasonWhenReady] : [],
@@ -1146,9 +1131,10 @@ async function submitBracketOrderGroup(options = {}) {
 module.exports = {
   SAFETY,
   MAX_ORDER_COUNT,
-  REAL_SUBMIT_BLOCKER,
-  REAL_SUBMIT_AUDIT_ONLY_BLOCKER,
-  NEXT_VALID_ID_UNAVAILABLE,
+	  REAL_SUBMIT_BLOCKER,
+	  REAL_SUBMIT_AUDIT_ONLY_BLOCKER,
+	  LEGACY_SUBMIT_FLAG,
+	  NEXT_VALID_ID_UNAVAILABLE,
   ENTRY_ONLY_FORBIDDEN,
   normalizeBracketSubmissionPresentationStatus,
   buildBracketSubmissionPlan,

@@ -149,12 +149,12 @@ function evaluatePaperExecutionGuard({
   const contractValidation = validateContract(contract, root, now);
   checks.push(...contractValidation.checks);
 
-  addCheck(checks, 'strategy_approval_passed', strategyApproved(approval || candidate), approval?.blockedReason || 'strategy_not_approved', { strategyId: intent.strategyId || candidate.strategyId || null });
-  addCheck(checks, 'entry_contract_passed', entryContractApproved(entryContract || candidate), entryContract?.reasonCode || entryContract?.blockedReason || 'entry_contract_not_approved');
+	  addCheck(checks, 'strategy_approval_passed', strategyApproved(approval), approval?.blockedReason || 'strategy_not_approved', { strategyId: intent.strategyId || candidate.strategyId || null });
+	  addCheck(checks, 'entry_contract_passed', entryContractApproved(entryContract), entryContract?.reasonCode || entryContract?.blockedReason || 'entry_contract_not_approved');
   addCheck(checks, 'risk_approval_passed', brokerRisk?.allowed === true, brokerRisk?.blockedReason || 'broker_risk_blocked', { riskBlockers: brokerRisk?.blockers || [] });
   addCheck(checks, 'idempotency_key_present', Boolean(intent.idempotencyKey), 'idempotency_key_missing');
   addCheck(checks, 'idempotency_unused', idempotency?.duplicate !== true, 'duplicate_intent', { existingIntent: idempotency?.existing || null });
-  addCheck(checks, 'candidate_fresh', intent.ageMs == null || intent.maxSubmitAgeMs == null || intent.ageMs <= intent.maxSubmitAgeMs, 'stale_signal', { ageMs: intent.ageMs ?? null, maxSubmitAgeMs: intent.maxSubmitAgeMs ?? null });
+	  addCheck(checks, 'candidate_fresh', Number.isFinite(Number(intent.ageMs)) && Number.isFinite(Number(intent.maxSubmitAgeMs)) && intent.ageMs <= intent.maxSubmitAgeMs, 'stale_signal', { ageMs: intent.ageMs ?? null, maxSubmitAgeMs: intent.maxSubmitAgeMs ?? null });
   addCheck(checks, 'system_not_paused', killSwitch.pauseNewEntries !== true, 'pause_new_entries_active', { pauseReason: killSwitch.reason || null });
   addCheck(checks, 'session_allows_order', session?.isMarketOpen === true && session?.closedReason == null, session?.closedReason || 'session_blocked', { sessionId: session?.sessionId || null });
   addCheck(checks, 'reconciliation_not_degraded', reconciliation?.degraded !== true, reconciliation?.blockedReason || 'reconciliation_degraded', { reconciliationStatus: reconciliation?.status || null });

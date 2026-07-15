@@ -142,8 +142,23 @@ async function main() {
   assert.equal(allowedSubmit.submitted, false, 'skipBroker does not submit');
   assert.equal(allowedSubmit.blockedReason, null, 'verified readiness should not block the dry-run');
   assert.equal(allowedSubmit.safety.live_trading_enabled, false, 'live trading safety stays false');
-  assert.equal(allowedSubmit.safety.actions_allowed, false, 'actions safety stays false');
-  assert.equal(allowedSubmit.safety.can_place_orders, false, 'order safety stays false');
+	  assert.equal(allowedSubmit.safety.actions_allowed, false, 'actions safety stays false');
+	  assert.equal(allowedSubmit.safety.can_place_orders, false, 'order safety stays false');
+
+	  let legacyPlaceOrderCalls = 0;
+	  const legacyBlocked = await svc.submitPaperOrder(candidate(), {
+	    readiness: verifiedReadiness,
+	    orderPreview: baseOrderPreview,
+	    readTrades: () => [],
+	    loadState: () => state(),
+	    client: {
+	      placeOrder() { legacyPlaceOrderCalls += 1; },
+	      disconnect() {},
+	    },
+	  });
+	  assert.equal(legacyBlocked.submitted, false, 'legacy submit remains blocked');
+	  assert.equal(legacyBlocked.blockedReason, 'legacy_ibkr_submit_disabled');
+	  assert.equal(legacyPlaceOrderCalls, 0, 'legacy placeOrder is not reached');
 
   const cryptoBlocked = await svc.submitPaperOrder(candidate({
     symbol: 'BTCUSDT',
@@ -239,9 +254,9 @@ async function main() {
     orderPreview: allowedOrderPreview([{ symbol: 'MSFT', strategyId: 'ema_pullback_continuation' }]),
     skipBroker: true,
     readTrades: () => [
-      trade({ tradeId: 't1', symbol: 'AAPL', strategyId: 's1', openedAt: '2026-06-21T09:00:00.000Z', result: 'CLOSED', closedAt: '2026-06-21T10:00:00.000Z' }),
-      trade({ tradeId: 't2', symbol: 'MSFT', strategyId: 's2', openedAt: '2026-06-21T09:30:00.000Z', result: 'CLOSED', closedAt: '2026-06-21T10:30:00.000Z' }),
-      trade({ tradeId: 't3', symbol: 'NVDA', strategyId: 's3', openedAt: '2026-06-21T11:00:00.000Z', result: 'CLOSED', closedAt: '2026-06-21T12:00:00.000Z' }),
+	      trade({ tradeId: 't1', symbol: 'AAPL', strategyId: 's1', openedAt: '2026-07-15T09:00:00.000Z', result: 'CLOSED', closedAt: '2026-07-15T10:00:00.000Z' }),
+	      trade({ tradeId: 't2', symbol: 'MSFT', strategyId: 's2', openedAt: '2026-07-15T09:30:00.000Z', result: 'CLOSED', closedAt: '2026-07-15T10:30:00.000Z' }),
+	      trade({ tradeId: 't3', symbol: 'NVDA', strategyId: 's3', openedAt: '2026-07-15T11:00:00.000Z', result: 'CLOSED', closedAt: '2026-07-15T12:00:00.000Z' }),
     ],
     loadState: () => state(),
   });
@@ -329,9 +344,9 @@ async function main() {
   assert.notEqual(bracket.parentOrder.orderType, 'MKT', 'no market order without stop');
 
   const serverSource = fs.readFileSync(path.join('/var/www/nasdaq-scanner-prod', 'server.js'), 'utf8');
-  assert.match(serverSource, /app\.use\('\/api', apiLimiter, requireAuthForMutations, apiRouter\)/, 'API mutations stay behind existing auth middleware');
+	  assert.match(serverSource, /app\.use\('\/api', apiLimiter, requireTradingOsApiAuth, requireTradingOsCsrf, apiRouter\)/, 'API mutations stay behind existing auth and CSRF middleware');
   const routeSource = fs.readFileSync(path.join('/var/www/nasdaq-scanner-prod', 'src/routes/api.js'), 'utf8');
-  assert.match(routeSource, /router\.post\('\/interactive-brokers\/paper-execute'/, 'paper execute endpoint exists');
+	  assert.match(routeSource, /router\.post\('\/interactive-brokers\/paper-execute\/preflight'/, 'only paper execute preflight endpoint is production-mounted');
 
   console.log('interactiveBrokersPaperExecutionService.test.js: OK');
 }

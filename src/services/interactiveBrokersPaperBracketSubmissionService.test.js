@@ -289,7 +289,7 @@ async function main() {
   assert.equal(shortBracket.submissionPlan.entry.orderId, 101);
   assert.equal(shortBracket.submissionPlan.stopLoss.parentId, 101);
   assert.equal(shortBracket.submissionPlan.takeProfit.parentId, 101);
-  assert.deepEqual(shortBracket.submissionPlan.transmitSequence, ['entry:false', 'stopLoss:false', 'takeProfit:true']);
+  assert.deepEqual(shortBracket.submissionPlan.transmitSequence, ['entry:false', 'takeProfit:false', 'stopLoss:true']);
   assert.equal(shortBracket.submissionPlan.entry.action, 'SELL');
   assert.equal(shortBracket.submissionPlan.stopLoss.action, 'BUY');
   assert.equal(shortBracket.submissionPlan.takeProfit.action, 'BUY');
@@ -334,14 +334,32 @@ async function main() {
   assert.equal(shortMock.mockOrderSent, true);
   assert.equal(shortMock.realSubmitEnabled, false);
   assert.equal(shortMock.contract.symbol, 'GOOGL');
-  assert.equal(shortMockCalls.length, 3);
-  assert.deepEqual(shortMockCalls.map((row) => row.orderId), [101, 102, 103]);
-  assert.deepEqual(shortMockCalls.map((row) => row.order.transmit), [false, false, true]);
-  assert.equal(shortMockCalls[1].order.parentId, 101);
-  assert.equal(shortMockCalls[2].order.parentId, 101);
-  assert.equal(shortMockCalls[0].order.action, 'SELL');
-  assert.equal(shortMockCalls[1].order.action, 'BUY');
-  assert.equal(shortMockCalls[2].order.action, 'BUY');
+  assert.equal(shortMockCalls.length, 0);
+  assert.deepEqual(shortMock.mockPlaceOrderCalls.map((row) => row.orderId), [101, 102, 103]);
+	  assert.deepEqual(shortMock.mockPlaceOrderCalls.map((row) => row.transmit), [false, false, true]);
+
+	  let blockedLegacyPlaceOrderCalls = 0;
+	  const legacyRealBlocked = await bracketSvc.submitBracketOrderGroup({
+	    selectedBlueprint: shortBlueprint,
+	    submissionPlan: shortBracket.submissionPlan,
+	    ibClient: {
+	      placeOrder() { blockedLegacyPlaceOrderCalls += 1; },
+	      on() {},
+	      once() {},
+	      connect() {},
+	      disconnect() {},
+	    },
+	    simulateMockCalls: false,
+	    mockOnly: false,
+	    dryRun: false,
+	    allowRealSubmit: true,
+	    executionAttemptId: 'legacy_real_blocked',
+	    idempotencyKey: 'legacy_real_blocked',
+	    accountMode: 'ib_paper',
+	  });
+	  assert.equal(legacyRealBlocked.submitted, false);
+	  assert.equal(legacyRealBlocked.blockedReason, 'legacy_ibkr_submit_disabled');
+	  assert.equal(blockedLegacyPlaceOrderCalls, 0);
 
   const helperMissing = await bracketSvc.submitBracketOrderGroup({
     now: new Date('2026-06-21T10:05:30.000Z'),
@@ -403,7 +421,7 @@ async function main() {
   assert.equal(longBracket.submissionPlan.entry.action, 'BUY');
   assert.equal(longBracket.submissionPlan.stopLoss.action, 'SELL');
   assert.equal(longBracket.submissionPlan.takeProfit.action, 'SELL');
-  assert.deepEqual(longBracket.submissionPlan.transmitSequence, ['entry:false', 'stopLoss:false', 'takeProfit:true']);
+  assert.deepEqual(longBracket.submissionPlan.transmitSequence, ['entry:false', 'takeProfit:false', 'stopLoss:true']);
 
   const longMockCalls = [];
   const longMock = await bracketSvc.submitBracketOrderGroup({
@@ -426,14 +444,11 @@ async function main() {
   assert.equal(longMock.mockPlaceOrderCalls.length, 3);
   assert.equal(longMock.mockProtectiveOrdersSubmitted, true);
   assert.equal(longMock.mockOrderSent, true);
-  assert.equal(longMockCalls.length, 3);
-  assert.deepEqual(longMockCalls.map((row) => row.orderId), [201, 202, 203]);
-  assert.deepEqual(longMockCalls.map((row) => row.order.transmit), [false, false, true]);
-  assert.equal(longMockCalls[1].order.parentId, 201);
-  assert.equal(longMockCalls[2].order.parentId, 201);
-  assert.equal(longMockCalls[0].order.action, 'BUY');
-  assert.equal(longMockCalls[1].order.action, 'SELL');
-  assert.equal(longMockCalls[2].order.action, 'SELL');
+  assert.equal(longMockCalls.length, 0);
+  assert.deepEqual(longMock.mockPlaceOrderCalls.map((row) => row.orderId), [201, 202, 203]);
+  assert.deepEqual(longMock.mockPlaceOrderCalls.map((row) => row.transmit), [false, false, true]);
+  assert.deepEqual(longMock.mockPlaceOrderCalls.map((row) => row.parentId), [null, 201, 201]);
+  assert.deepEqual(longMock.mockPlaceOrderCalls.map((row) => row.action), ['BUY', 'SELL', 'SELL']);
 
   const missingStop = bracketSvc.buildBracketSubmissionPlan({
     now: new Date('2026-06-21T10:05:00.000Z'),
@@ -579,13 +594,13 @@ async function main() {
   assert.equal(missingIdempotency.blockedReason, 'protective_bracket_submission_required');
   assert.equal(missingIdempotencyCalls.length, 0);
 
-  const wrongTransmitPlan = {
-    ...shortBracket.submissionPlan,
-    takeProfit: {
-      ...shortBracket.submissionPlan.takeProfit,
-      transmit: false,
-    },
-  };
+	  const wrongTransmitPlan = {
+	    ...shortBracket.submissionPlan,
+	    stopLoss: {
+	      ...shortBracket.submissionPlan.stopLoss,
+	      transmit: false,
+	    },
+	  };
   const wrongTransmitHelper = await bracketSvc.submitBracketOrderGroup({
     selectedBlueprint: shortBlueprint,
     submissionPlan: wrongTransmitPlan,
@@ -656,9 +671,10 @@ async function main() {
   });
   assert.equal(failCall2.ok, false);
   assert.equal(failCall2.orderSent, false);
-  assert.equal(failCall2.executed, false);
-  assert.equal(failCall2.blockedReason, 'real_submit_audit_only');
-  assert.equal(failCall2.mockPlaceOrderCalls.length, 2);
+	  assert.equal(failCall2.executed, false);
+	  assert.equal(failCall2.blockedReason, 'real_submit_audit_only');
+	  assert.equal(failCall2.mockPlaceOrderCalls.length, 3);
+	  assert.equal(failCall2Count, 0);
 
   let failCall3Count = 0;
   const failCall3 = await bracketSvc.submitBracketOrderGroup({
@@ -681,9 +697,10 @@ async function main() {
   });
   assert.equal(failCall3.ok, false);
   assert.equal(failCall3.orderSent, false);
-  assert.equal(failCall3.executed, false);
-  assert.equal(failCall3.blockedReason, 'real_submit_audit_only');
-  assert.equal(failCall3.mockPlaceOrderCalls.length, 3);
+	  assert.equal(failCall3.executed, false);
+	  assert.equal(failCall3.blockedReason, 'real_submit_audit_only');
+	  assert.equal(failCall3.mockPlaceOrderCalls.length, 3);
+	  assert.equal(failCall3Count, 0);
 
   const protectiveMissing = await oneShotSvc.buildPaperOneShotExecution({
     now: new Date('2026-06-21T10:05:00.000Z'),

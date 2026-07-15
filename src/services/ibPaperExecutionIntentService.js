@@ -96,7 +96,15 @@ function createIbPaperExecutionIntentService(options = {}) {
 
   function saveIndex() {
     ensureDir();
-    fs.writeFileSync(indexFile, JSON.stringify(index, null, 2), 'utf8');
+    const tmp = path.join(dir, `.intent-index.${process.pid}.${crypto.randomBytes(4).toString('hex')}.tmp`);
+    const fd = fs.openSync(tmp, 'w');
+    try {
+      fs.writeSync(fd, `${JSON.stringify(index, null, 2)}\n`);
+      fs.fsyncSync(fd);
+    } finally {
+      fs.closeSync(fd);
+    }
+    fs.renameSync(tmp, indexFile);
   }
 
   function appendEvent(row) {
@@ -116,7 +124,7 @@ function createIbPaperExecutionIntentService(options = {}) {
 
   // Skapa intent idempotent. Returnerar {created:false, existing} om nyckeln
   // redan finns — anroparen får ALDRIG skapa en ny order då.
-  function createIntent({ idempotencyKey, executionId, intent }) {
+	  function createIntent({ idempotencyKey, executionId, intent }) {
     if (!idempotencyKey) {
       return { created: false, error: 'idempotency_key_missing' };
     }
@@ -124,7 +132,7 @@ function createIbPaperExecutionIntentService(options = {}) {
     if (idx[idempotencyKey]) {
       return { created: false, duplicate: true, existing: idx[idempotencyKey] };
     }
-    const record = {
+	    const record = {
       executionId: executionId || `exec_${Date.now()}_${crypto.randomBytes(4).toString('hex')}`,
       idempotencyKey,
       status: 'intent_created',
@@ -135,8 +143,14 @@ function createIbPaperExecutionIntentService(options = {}) {
       root: intent?.root || null,
       conId: intent?.conId || null,
       direction: intent?.direction || null,
-      executionTarget: intent?.executionTarget || 'shadow',
-    };
+	      executionTarget: intent?.executionTarget || 'shadow',
+	      signalTimestamp: intent?.signalTimestamp || null,
+	      orderType: intent?.orderType || null,
+	      quantity: intent?.quantity ?? null,
+	      paperAccountIdMasked: intent?.paperAccountIdMasked || null,
+	      localSymbol: intent?.localSymbol || null,
+	      contractFingerprint: intent?.contractFingerprint || null,
+	    };
     idx[idempotencyKey] = record;
     // Index skrivs FÖRE eventloggen så att en krasch aldrig kan lämna en
     // "osynlig" intent som senare dubbleras.
@@ -146,7 +160,7 @@ function createIbPaperExecutionIntentService(options = {}) {
     return { created: true, record };
   }
 
-  function updateStatus(idempotencyKey, status, extra = {}) {
+	  function updateStatus(idempotencyKey, status, extra = {}) {
     if (!INTENT_STATUSES.includes(status)) {
       return { ok: false, error: `unknown_status_${status}` };
     }
@@ -155,10 +169,26 @@ function createIbPaperExecutionIntentService(options = {}) {
     if (!record) return { ok: false, error: 'intent_not_found' };
     record.status = status;
     record.updatedAt = nowIso();
-    if (extra.ibOrderId != null) record.ibOrderId = extra.ibOrderId;
-    if (extra.permId != null) record.permId = extra.permId;
-    if (extra.orderRef) record.orderRef = extra.orderRef;
-    index = idx;
+	    if (extra.ibOrderId != null) record.ibOrderId = extra.ibOrderId;
+	    if (extra.permId != null) record.permId = extra.permId;
+	    if (extra.orderRef) record.orderRef = extra.orderRef;
+	    for (const key of [
+	      'submitStartedAt',
+	      'expectedAccountMasked',
+	      'expectedOrderIds',
+	      'expectedBracketLegs',
+	      'contractFingerprint',
+	      'evidenceFingerprint',
+	      'side',
+	      'quantity',
+	      'parentOrderId',
+	      'orderRefs',
+	      'reconciliationRequired',
+	      'blocker',
+	    ]) {
+	      if (Object.prototype.hasOwnProperty.call(extra, key)) record[key] = extra[key];
+	    }
+	    index = idx;
     saveIndex();
     appendEvent({ type: 'status_change', idempotencyKey, executionId: record.executionId, status, ...extra, at: nowIso(), ...EXECUTION_SAFETY });
     return { ok: true, record };

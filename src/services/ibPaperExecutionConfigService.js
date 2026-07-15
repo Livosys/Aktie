@@ -77,7 +77,13 @@ function getPilotLimits() {
     maxQuoteAgeMs: envInt('IBKR_PAPER_PILOT_MAX_QUOTE_AGE_MS', 30000),
     maxIntentAgeMs: envInt('IBKR_PAPER_PILOT_MAX_INTENT_AGE_MS', 120000),
     maxAccountSummaryAgeMs: envInt('IBKR_PAPER_ACCOUNT_SUMMARY_MAX_AGE_MS', 5 * 60 * 1000),
-    maxOrderExposureUsd: envInt('IBKR_PAPER_MAX_ORDER_EXPOSURE_USD', 25000),
+	    // Futures pilot risk model:
+	    // - maxStopRiskUsd är den primära risken: |entry/last - stop| * pointValue * qty.
+	    // - maxContractNotionalUsd är en separat sanity-limit, inte ett aktielikt
+	    //   position-sizingmått. Defaulten tillåter exakt 1 MNQ eller 1 MES vid
+	    //   normala nivåer men blockerar mini-kontrakt och felaktig quantity.
+	    maxStopRiskUsd: envInt('IBKR_PAPER_MAX_STOP_RISK_USD', 1000),
+	    maxContractNotionalUsd: envInt('IBKR_PAPER_MAX_CONTRACT_NOTIONAL_USD', 100000),
     requireStopLoss: true,
     allowedOrderTypes: Object.freeze(['MKT', 'LMT']),
     requiredExchange: 'CME',

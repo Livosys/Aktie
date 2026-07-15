@@ -30,6 +30,7 @@ const SAFETY = Object.freeze({
 });
 
 const FEATURE_FLAG = 'IB_PAPER_EXECUTION_ENABLED';
+const LEGACY_SUBMIT_FLAG = 'IB_PAPER_LEGACY_SUBMIT_ENABLED';
 const DEFAULT_CLIENT_ID = 1;
 const DEFAULT_TIMEOUT_MS = 8000;
 const MAX_DAILY_TRADES = 3;
@@ -113,6 +114,11 @@ function todayKey(now = new Date()) {
 
 function readFeatureFlag() {
   const raw = safeLower(process.env[FEATURE_FLAG]);
+  return ['true', '1', 'yes', 'on'].includes(raw);
+}
+
+function legacySubmitEnabled() {
+  const raw = safeLower(process.env[LEGACY_SUBMIT_FLAG]);
   return ['true', '1', 'yes', 'on'].includes(raw);
 }
 
@@ -622,8 +628,30 @@ async function submitPaperOrder(candidate, options = {}) {
     };
   }
 
-  if (!options.skipBroker) {
-    const client = options.client || createIbClient(config);
+	  if (!options.skipBroker) {
+	    if (legacySubmitEnabled() !== true) {
+	      return {
+	        ok: false,
+	        dryRun: false,
+	        mode: 'paper_execution',
+	        executionEnabled: config.enabled === true,
+	        orderSendingBlocked: true,
+	        liveTradingEnabled: false,
+	        can_place_orders: false,
+	        actions_allowed: false,
+	        broker_enabled: false,
+	        safety: { ...SAFETY },
+	        blockedReason: 'legacy_ibkr_submit_disabled',
+	        blockers: ['legacy_ibkr_submit_disabled'],
+	        gateDecision,
+	        submitted: false,
+	        legacySubmitEnabled: false,
+	        orderType: 'LMT',
+	        bracketSupported: true,
+	        note: `${LEGACY_SUBMIT_FLAG}=true is required for this deprecated stock/ETF submit path; futures pilot must use ibPaperExecutionAdapterService only.`,
+	      };
+	    }
+	    const client = options.client || createIbClient(config);
     const parentOrderId = await connectAndGetNextOrderId(config, { client, timeoutMs: config.timeoutMs });
     const { parentOrder, takeProfitOrder, stopLossOrder } = buildBracketOrders(validation, parentOrderId);
     const contract = buildContract(validation.symbol);
@@ -812,13 +840,14 @@ async function getExecutionStatus(options = {}) {
 }
 
 module.exports = {
-  SAFETY,
-  FEATURE_FLAG,
+	  SAFETY,
+	  FEATURE_FLAG,
+	  LEGACY_SUBMIT_FLAG,
   MAX_DAILY_TRADES,
   MAX_OPEN_TRADES,
   MIN_STOP_LOSS_PCT,
   KILL_SWITCH_LOSS_STREAK,
-  readExecutionConfig,
+	  readExecutionConfig,
   getExecutionStatus,
   submitPaperOrder,
   buildCandidatePayload,
