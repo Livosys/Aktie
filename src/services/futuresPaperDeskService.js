@@ -9,6 +9,9 @@ const paperEnabledStrategiesService = require('./paperEnabledStrategiesService')
 const daytradingStrategyCatalogService = require('./daytradingStrategyCatalogService');
 const futuresContractCatalog = require('./futuresContractCatalogService');
 const futuresMarketHoursService = require('./futuresMarketHoursService');
+const futuresMarketDataService = require('./futuresMarketDataService');
+const ibPaperAccountSummaryService = require('./ibPaperAccountSummaryService');
+const futuresDataPipelineStatusService = require('./futuresDataPipelineStatusService');
 
 const SAFETY = Object.freeze({
   mode: 'paper_only',
@@ -474,9 +477,27 @@ function buildFuturesPaperDeskRuntime(options = {}) {
       scannerStrategies: strategyStatus?.strategies || [],
     });
 
+  // Lätta, cache-baserade IB-summeringar (aldrig tunga IB-anrop härifrån).
+  let ibDataLayer = { enabled: false, started: false, connected: false, source: 'disabled' };
+  let ibAccount = null;
+  let dataPipeline = null;
+  try { ibDataLayer = futuresMarketDataService.defaultFuturesMarketDataService.getStatusSummary(now); } catch (_) { /* degraded */ }
+  try { ibAccount = ibPaperAccountSummaryService.defaultIbPaperAccountSummaryService.getCachedSummary(); } catch (_) { /* degraded */ }
+  try {
+    const pipeline = futuresDataPipelineStatusService.getStatus({ now });
+    dataPipeline = { replay: pipeline.replay, batch: pipeline.batch };
+  } catch (_) { /* degraded */ }
+  const nextTransition = (() => {
+    try { return futuresMarketHoursService.getNextSessionTransition(now); } catch (_) { return null; }
+  })();
+
   return {
     ok: true,
     generatedAt: nowIso(now),
+    ibDataLayer,
+    ibAccount,
+    dataPipeline,
+    nextSessionTransition: nextTransition,
     desk: {
       id: 'futures-paper',
       route: '/futures-paper',

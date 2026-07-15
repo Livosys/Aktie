@@ -168,6 +168,53 @@ function getCmeEquityIndexFuturesSessionState(now = new Date()) {
   };
 }
 
+// Ren klassning av (veckodag, minuter) i Chicago-tid — samma regler som
+// getCmeEquityIndexFuturesSessionState men utan Date/Intl, för framåtsökning.
+function classifyDayMinutes(day, minutes) {
+  if (day === 6) return SESSION_IDS.MARKET_CLOSED;
+  if (day === 0) {
+    if (minutes < SUNDAY_OPEN_MINUTES) return SESSION_IDS.MARKET_CLOSED;
+    return classifyOpenSession(minutes).sessionId;
+  }
+  if (day === 5) {
+    if (minutes >= FRIDAY_CLOSE_MINUTES) return SESSION_IDS.MARKET_CLOSED;
+    return classifyOpenSession(minutes).sessionId;
+  }
+  if (minutes >= DAILY_MAINTENANCE_START_MINUTES && minutes < DAILY_MAINTENANCE_END_MINUTES) {
+    return SESSION_IDS.MAINTENANCE_BREAK;
+  }
+  return classifyOpenSession(minutes).sessionId;
+}
+
+// Nästa sessionsbyte från "nu". Söker minut för minut framåt i exchange-tid
+// (max 8 dagar). nextChangeAt är en UTC-approximation: exakt utom när ett
+// DST-skifte inträffar mellan nu och bytet (±1h, endast visningsvärde).
+function getNextSessionTransition(now = new Date()) {
+  const local = chicagoParts(now);
+  const currentSessionId = classifyDayMinutes(local.day, local.minutes);
+  let day = local.day;
+  let minutes = local.minutes;
+  for (let step = 1; step <= 8 * 24 * 60; step += 1) {
+    minutes += 1;
+    if (minutes >= 24 * 60) {
+      minutes = 0;
+      day = (day + 1) % 7;
+    }
+    const sessionId = classifyDayMinutes(day, minutes);
+    if (sessionId !== currentSessionId) {
+      return {
+        currentSessionId,
+        nextSessionId: sessionId,
+        nextSessionLabel: SESSION_LABELS[sessionId] || sessionId,
+        minutesUntil: step,
+        nextChangeAt: new Date(new Date(now).getTime() + step * 60 * 1000).toISOString(),
+        nextChangeAtNote: 'UTC-approximation; exakt utom över DST-skiften (visningsvärde).',
+      };
+    }
+  }
+  return null;
+}
+
 function buildFuturesSessionMetadata(timestamp) {
   if (timestamp == null || timestamp === '') return null;
   const parsed = timestamp instanceof Date ? timestamp : new Date(timestamp);
@@ -196,8 +243,10 @@ module.exports = {
   OPEN_SESSION_WINDOWS,
   getCmeEquityIndexFuturesSessionState,
   buildFuturesSessionMetadata,
+  getNextSessionTransition,
   _internal: {
     chicagoParts,
     classifyOpenSession,
+    classifyDayMinutes,
   },
 };

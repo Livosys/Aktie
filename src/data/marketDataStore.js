@@ -4,6 +4,8 @@ const path = require('path');
 
 const ALPACA_ROOT    = path.resolve(__dirname, '../../data/market-data/alpaca');
 const BINANCE_ROOT   = path.resolve(__dirname, '../../data/market-data/binance');
+// IB futures raw 1m bars (MNQ/MES) — same layout as alpaca/binance raw
+const IB_ROOT        = path.resolve(__dirname, '../../data/market-data/ib');
 // Shared 2m candle store (used by both Alpaca and Binance going forward)
 const CANDLES_2M_ROOT = path.resolve(__dirname, '../../data/market-data/candles-2m');
 
@@ -13,7 +15,7 @@ const DATA_ROOT = ALPACA_ROOT;
 // ── Path helpers ──────────────────────────────────────────────────────────────
 
 function rawDir(symbol, source = 'alpaca') {
-  const root = source === 'binance' ? BINANCE_ROOT : ALPACA_ROOT;
+  const root = source === 'binance' ? BINANCE_ROOT : (source === 'ib' ? IB_ROOT : ALPACA_ROOT);
   return path.join(root, 'raw', symbol);
 }
 function candles2mDir(symbol) { return path.join(CANDLES_2M_ROOT, symbol); }
@@ -232,6 +234,7 @@ function listSymbols() {
     path.join(ALPACA_ROOT,  'candles-2m'),
     path.join(ALPACA_ROOT,  'raw'),
     path.join(BINANCE_ROOT, 'raw'),
+    path.join(IB_ROOT,      'raw'),
   ];
   for (const dir of dirs) {
     if (fs.existsSync(dir)) {
@@ -270,6 +273,37 @@ function getDatesInRange(start, end) {
   return dates;
 }
 
+// IB import-manifest per symbol: kontrakt, expiry, datum och importtid så att
+// candles från olika kontrakt aldrig blandas utan metadata.
+function ibManifestPath(symbol) {
+  return path.join(IB_ROOT, 'manifest', `${symbol}.json`);
+}
+
+function saveIbImportManifest(symbol, manifest = {}) {
+  try {
+    const fp = ibManifestPath(symbol);
+    ensureDir(path.dirname(fp));
+    const existing = loadIbImportManifest(symbol) || {};
+    const mergedDates = [...new Set([...(existing.dates || []), ...(manifest.dates || [])])].sort();
+    const next = { ...existing, ...manifest, dates: mergedDates };
+    fs.writeFileSync(fp, JSON.stringify(next, null, 2), 'utf8');
+    return true;
+  } catch (err) {
+    console.warn(`[MarketDataStore] saveIbImportManifest(${symbol}):`, err.message);
+    return false;
+  }
+}
+
+function loadIbImportManifest(symbol) {
+  try {
+    const fp = ibManifestPath(symbol);
+    if (!fs.existsSync(fp)) return null;
+    return JSON.parse(fs.readFileSync(fp, 'utf8'));
+  } catch {
+    return null;
+  }
+}
+
 module.exports = {
   saveRawBars,
   saveCandles2m,
@@ -280,6 +314,8 @@ module.exports = {
   listSymbols,
   countCandles,
   getDatesInRange,
+  saveIbImportManifest,
+  loadIbImportManifest,
   _internal: {
     normalizeTimestamp,
     dedupeByTimestamp,

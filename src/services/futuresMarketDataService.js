@@ -1,0 +1,548 @@
+'use strict';
+
+// Gemensam Futures Market Data Service (FAS 2 av FUTURES_DATA_LAYER.md).
+//
+// ENDA normala datakällan för futures-quotes/candles i Trading OS:
+//   IB Gateway → ibFuturesDataAdapterService → denna service →
+//   Futures Paper / 33 strategier / Replay / Batch / Pine.
+//
+// Read-only mot IB. Importerar ALDRIG order-, ledger-, approval- eller
+// riskkod. Flagga: IB_FUTURES_DATA_ENABLED (default false = helt inert,
+// ingen anslutning vid require).
+
+const adapterModule = require('./ibFuturesDataAdapterService');
+const candleAggregator = require('../data/candleAggregator');
+const marketDataStore = require('../data/marketDataStore');
+const futuresContractCatalog = require('./futuresContractCatalogService');
+
+const SAFETY = Object.freeze({
+  mode: 'paper_only',
+  actions_allowed: false,
+  can_place_orders: false,
+  live_trading_enabled: false,
+  broker_enabled: false,
+  paper_only: true,
+  live_enabled: false,
+  readOnly: true,
+  source: 'futures_market_data_service',
+});
+
+// Candle-universum = det vi paper-handlar (micro-kontrakten).
+// NQ/ES hålls som quote-/index-context utan candle-pipeline.
+const CANDLE_ROOTS = Object.freeze(['MNQ', 'MES']);
+const QUOTE_ROOTS = Object.freeze(['MNQ', 'MES', 'NQ', 'ES']);
+const SUPPORTED_TIMEFRAMES = Object.freeze(['1m', '2m', '5m']);
+const QUOTE_FRESH_MS = 120 * 1000;
+const MAX_BARS_1M = 4000;
+
+function envBool(name, fallback = false) {
+  const raw = process.env[name];
+  if (raw == null || raw === '') return fallback;
+  return ['1', 'true', 'yes', 'on'].includes(String(raw).toLowerCase());
+}
+
+function envInt(name, fallback) {
+  const raw = Number(process.env[name]);
+  return Number.isFinite(raw) ? raw : fallback;
+}
+
+function nowIso(now = new Date()) {
+  return new Date(now).toISOString();
+}
+
+function timeframeMinutes(timeframe) {
+  if (timeframe === '1m') return 1;
+  if (timeframe === '2m') return 2;
+  if (timeframe === '5m') return 5;
+  return null;
+}
+
+function createFuturesMarketDataService(options = {}) {
+  const adapter = options.adapter || adapterModule.defaultIbFuturesDataAdapterService;
+  const store = options.marketDataStore || marketDataStore;
+  const refreshIntervalMs = Number(options.refreshIntervalMs || envInt('IB_FUTURES_REFRESH_SECONDS', 60) * 1000);
+  const backfillDays = Number(options.backfillDays || envInt('IB_FUTURES_BACKFILL_DAYS', 2));
+  const persistEnabled = options.persistEnabled != null
+    ? options.persistEnabled !== false
+    : envBool('IB_FUTURES_PERSIST_ENABLED', true);
+
+  let started = false;
+  let refreshTimer = null;
+  let startedAt = null;
+
+  // root -> { bars1m: [{epoch,timestamp,open,high,low,close,volume,tradeCount}],
+  //           lastRefreshAt, lastRefreshOk, lastError, backfillDone, persistedDates:Set }
+  const candleState = new Map();
+
+  function isEnabled() {
+    return envBool('IB_FUTURES_DATA_ENABLED', false) || options.forceEnabled === true;
+  }
+
+  function getCandleState(root) {
+    const key = String(root || '').trim().toUpperCase();
+    if (!candleState.has(key)) {
+      candleState.set(key, {
+        root: key,
+        bars1m: [],
+        lastRefreshAt: null,
+        lastRefreshOk: null,
+        lastError: null,
+        backfillDone: false,
+        lastPersistAt: null,
+      });
+    }
+    return candleState.get(key);
+  }
+
+  function mergeBars(state, incoming = []) {
+    if (!incoming.length) return 0;
+    const byEpoch = new Map(state.bars1m.map((b) => [b.epoch, b]));
+    let added = 0;
+    for (const bar of incoming) {
+      if (!Number.isFinite(bar.epoch)) continue;
+      if (!byEpoch.has(bar.epoch)) added += 1;
+      byEpoch.set(bar.epoch, bar);
+    }
+    state.bars1m = [...byEpoch.values()].sort((a, b) => a.epoch - b.epoch);
+    if (state.bars1m.length > MAX_BARS_1M) {
+      state.bars1m = state.bars1m.slice(state.bars1m.length - MAX_BARS_1M);
+    }
+    return added;
+  }
+
+  // Persistens till Trading OS databuss (marketDataStore, source 'ib') så att
+  // Replay/Batch/Pine läser SAMMA candles som live-desken.
+  function persistBars(root, contract) {
+    if (!persistEnabled) return;
+    const state = getCandleState(root);
+    const byDate = new Map();
+    for (const bar of state.bars1m) {
+      const date = String(bar.timestamp).slice(0, 10);
+      if (!byDate.has(date)) byDate.set(date, []);
+      byDate.get(date).push({
+        ts: bar.timestamp,
+        t: bar.timestamp,
+        open: bar.open,
+        high: bar.high,
+        low: bar.low,
+        close: bar.close,
+        volume: bar.volume ?? 0,
+        tradeCount: bar.tradeCount ?? null,
+        source: 'ib',
+        conId: contract?.conId || null,
+        localSymbol: contract?.localSymbol || null,
+        expiry: contract?.expiry || null,
+      });
+    }
+    for (const [date, bars] of byDate.entries()) {
+      try {
+        store.saveRawBars(root, date, bars, 'ib');
+        const closed1m = candleAggregator.filterClosedBars(bars, { timeframeMs: 60 * 1000 });
+        const agg2m = candleAggregator.aggregate1mTo2m(closed1m).filter((c) => !c.incomplete);
+        if (agg2m.length) store.saveCandles2m(root, date, agg2m);
+      } catch (err) {
+        state.lastError = `persist_failed: ${err.message}`;
+      }
+    }
+    state.lastPersistAt = nowIso();
+    try {
+      if (typeof store.saveIbImportManifest === 'function') {
+        store.saveIbImportManifest(root, {
+          root,
+          contract: contract || null,
+          dates: [...byDate.keys()].sort(),
+          barCount1m: state.bars1m.length,
+          importedAt: nowIso(),
+          provider: 'ibkr',
+        });
+      }
+    } catch (_) { /* manifest är best effort */ }
+  }
+
+  async function refreshRoot(root, { duration = '1800 S' } = {}) {
+    const state = getCandleState(root);
+    try {
+      const result = await adapter.fetchHistoricalBars({ root, barSize: '1 min', duration });
+      state.lastRefreshAt = nowIso();
+      if (!result.ok) {
+        state.lastRefreshOk = false;
+        state.lastError = result.error || 'historical_failed';
+        return { ok: false, error: state.lastError };
+      }
+      mergeBars(state, result.bars);
+      state.lastRefreshOk = true;
+      state.lastError = null;
+      persistBars(root, result.contract);
+      return { ok: true, bars: result.bars.length };
+    } catch (err) {
+      state.lastRefreshAt = nowIso();
+      state.lastRefreshOk = false;
+      state.lastError = err.message;
+      return { ok: false, error: err.message };
+    }
+  }
+
+  async function backfillRoot(root) {
+    const state = getCandleState(root);
+    const result = await refreshRoot(root, { duration: `${Math.max(1, backfillDays)} D` });
+    if (result.ok) state.backfillDone = true;
+    return result;
+  }
+
+  async function refreshAllOnce() {
+    const results = {};
+    for (const root of CANDLE_ROOTS) {
+      const state = getCandleState(root);
+      results[root] = state.backfillDone
+        ? await refreshRoot(root)
+        : await backfillRoot(root);
+    }
+    return results;
+  }
+
+  async function start() {
+    if (!isEnabled()) return { ok: false, error: 'ib_futures_data_disabled' };
+    if (started) return { ok: true, alreadyStarted: true };
+    started = true;
+    startedAt = nowIso();
+    await adapter.start();
+    // Initial backfill + löpande refresh. Fel isoleras per instrument.
+    refreshAllOnce().catch(() => {});
+    refreshTimer = setInterval(() => {
+      refreshAllOnce().catch(() => {});
+    }, refreshIntervalMs);
+    if (refreshTimer.unref) refreshTimer.unref();
+    return { ok: true };
+  }
+
+  function stop() {
+    started = false;
+    if (refreshTimer) { clearInterval(refreshTimer); refreshTimer = null; }
+  }
+
+  function buildSourceMeta(quoteOrBar, mode) {
+    const delayed = quoteOrBar?.delayed === true;
+    return {
+      provider: 'ibkr',
+      mode: delayed && mode === 'realtime' ? 'delayed' : mode,
+      realTime: mode === 'realtime' && !delayed,
+      delayed,
+      historical: mode === 'historical',
+      simulated: false,
+      fixture: false,
+      replay: false,
+    };
+  }
+
+  function buildQuality({ staleAgeMs, timestampValid, contractValid, closedCandleValid = true, volumeValid = true, reasons = [] }) {
+    const status = reasons.length ? 'degraded' : 'ok';
+    return { status, reasons, staleAgeMs: staleAgeMs ?? null, timestampValid, contractValid, closedCandleValid, volumeValid };
+  }
+
+  const DATA_SAFETY = Object.freeze({
+    readOnly: true,
+    wouldCreateCandidate: false,
+    wouldOpenPosition: false,
+    entryEligible: false,
+    executionEnabled: false,
+    actions_allowed: false,
+    can_place_orders: false,
+    live_trading_enabled: false,
+    broker_enabled: false,
+  });
+
+  function getQuote(root, now = new Date()) {
+    if (!isEnabled()) return null;
+    const raw = adapter.getQuote(root);
+    if (!raw) return null;
+    const catalogMeta = futuresContractCatalog.getContract(root) || {};
+    const reasons = [];
+    if (raw.staleAgeMs == null || raw.staleAgeMs > QUOTE_FRESH_MS) reasons.push('stale_quote');
+    if (!raw.conId) reasons.push('contract_unresolved');
+    if (raw.last == null && raw.bid == null && raw.close == null) reasons.push('no_price');
+    if (!raw.connected) reasons.push('ib_disconnected');
+    return {
+      instrument: raw.root,
+      root: raw.root,
+      symbol: raw.root,
+      localSymbol: raw.localSymbol,
+      conId: raw.conId,
+      expiry: raw.expiry,
+      exchange: raw.exchange,
+      currency: raw.currency,
+      last: raw.last,
+      bid: raw.bid,
+      ask: raw.ask,
+      close: raw.close,
+      spread: raw.spread,
+      volume: raw.volume,
+      tickSize: catalogMeta.tickSize ?? 0.25,
+      marketDataType: raw.marketDataType,
+      marketDataTypeLabel: raw.marketDataTypeLabel,
+      updatedAt: raw.updatedAt,
+      staleAgeMs: raw.staleAgeMs,
+      generatedAt: nowIso(now),
+      source: buildSourceMeta(raw, 'realtime'),
+      quality: buildQuality({
+        staleAgeMs: raw.staleAgeMs,
+        timestampValid: raw.updatedAt != null,
+        contractValid: Boolean(raw.conId),
+        volumeValid: raw.volume != null,
+        reasons,
+      }),
+      safety: DATA_SAFETY,
+    };
+  }
+
+  function isQuoteFresh(root, now = new Date()) {
+    const raw = adapter.getQuote(root);
+    if (!raw || !raw.updatedAt) return false;
+    const age = new Date(now).getTime() - new Date(raw.updatedAt).getTime();
+    return age >= 0 ? age <= QUOTE_FRESH_MS : false;
+  }
+
+  function normalizeBar(root, bar, { timeframe, isClosed, contract }) {
+    return {
+      instrument: root,
+      localSymbol: contract?.localSymbol || null,
+      conId: contract?.conId || null,
+      expiry: contract?.expiry || null,
+      exchange: contract?.exchange || 'CME',
+      currency: contract?.currency || 'USD',
+      timeframe,
+      timestamp: bar.ts || bar.t || bar.timestamp,
+      ts: bar.ts || bar.t || bar.timestamp,
+      t: bar.ts || bar.t || bar.timestamp,
+      open: bar.open ?? bar.o,
+      high: bar.high ?? bar.h,
+      low: bar.low ?? bar.l,
+      close: bar.close ?? bar.c,
+      volume: bar.volume ?? bar.v ?? null,
+      tradeCount: bar.tradeCount ?? null,
+      isClosed,
+      dataSource: 'ib',
+      source: buildSourceMeta({ delayed: false }, 'historical'),
+      quality: buildQuality({
+        staleAgeMs: null,
+        timestampValid: Boolean(bar.ts || bar.t || bar.timestamp),
+        contractValid: Boolean(contract?.conId),
+        closedCandleValid: isClosed,
+        volumeValid: (bar.volume ?? bar.v) != null,
+        reasons: [],
+      }),
+      safety: DATA_SAFETY,
+    };
+  }
+
+  // Closed candles + max ETT tydligt öppet candle per timeframe.
+  function getCandles(root, { timeframe = '1m', limit = 500, now = new Date() } = {}) {
+    const key = String(root || '').trim().toUpperCase();
+    const minutes = timeframeMinutes(timeframe);
+    if (!minutes) return { ok: false, error: `unsupported_timeframe_${timeframe}`, candles: [], openCandle: null };
+    if (!isEnabled()) return { ok: false, error: 'ib_futures_data_disabled', candles: [], openCandle: null };
+    if (!CANDLE_ROOTS.includes(key)) {
+      return { ok: false, error: 'candles_not_tracked_for_root', root: key, candles: [], openCandle: null };
+    }
+    const state = getCandleState(key);
+    const contractInfo = adapter.getQuote(key) || {};
+    const contract = {
+      conId: contractInfo.conId || null,
+      localSymbol: contractInfo.localSymbol || null,
+      expiry: contractInfo.expiry || null,
+      exchange: contractInfo.exchange || 'CME',
+      currency: contractInfo.currency || 'USD',
+    };
+    const nowMs = new Date(now).getTime();
+    const bars1m = state.bars1m.map((b) => ({
+      ts: b.timestamp, t: b.timestamp,
+      open: b.open, high: b.high, low: b.low, close: b.close,
+      volume: b.volume, tradeCount: b.tradeCount,
+    }));
+
+    let aggregated;
+    if (minutes === 1) aggregated = bars1m.map((b) => ({ ...b, incomplete: false }));
+    else aggregated = candleAggregator.aggregateBars(bars1m, minutes);
+
+    const tfMs = minutes * 60 * 1000;
+    const rows = aggregated.map((bar) => {
+      const startMs = new Date(bar.ts || bar.t).getTime();
+      // Ett candle är stängt först när hela perioden har passerat.
+      const isClosed = Number.isFinite(startMs) && (startMs + tfMs) <= nowMs && bar.incomplete !== true;
+      return normalizeBar(key, bar, { timeframe, isClosed, contract });
+    });
+    const closed = rows.filter((r) => r.isClosed);
+    const openCandles = rows.filter((r) => !r.isClosed);
+    const openCandle = openCandles.length ? openCandles[openCandles.length - 1] : null;
+    const limited = closed.slice(Math.max(0, closed.length - Math.max(1, limit)));
+    const latest = limited[limited.length - 1] || null;
+    return {
+      ok: true,
+      root: key,
+      timeframe,
+      candles: limited,
+      openCandle,
+      count: limited.length,
+      firstTimestamp: limited[0]?.timestamp || null,
+      latestClosedTimestamp: latest?.timestamp || null,
+      staleAgeMs: latest ? nowMs - new Date(latest.timestamp).getTime() - tfMs : null,
+      dataQuality: limited.length ? 'ib_historical' : 'missing',
+      source: buildSourceMeta({ delayed: false }, 'historical'),
+      lastRefreshAt: state.lastRefreshAt,
+      lastError: state.lastError,
+      safety: DATA_SAFETY,
+    };
+  }
+
+  // Jämför lokal 1m→Nm-aggregering mot IB:s direkta bars (verifiering/tester).
+  async function verifyAggregationAgainstIb(root, { barSize = '2 mins', timeframe = '2m', sample = 20 } = {}) {
+    const local = getCandles(root, { timeframe, limit: sample + 5 });
+    const ib = await adapter.fetchHistoricalBars({ root, barSize, duration: '3600 S' });
+    if (!local.ok || !ib.ok) {
+      return { ok: false, error: local.ok ? ib.error : local.error };
+    }
+    const ibByTs = new Map(ib.bars.map((b) => [b.timestamp, b]));
+    let compared = 0;
+    let mismatches = 0;
+    const diffs = [];
+    for (const candle of local.candles.slice(-sample)) {
+      const ibBar = ibByTs.get(candle.timestamp);
+      if (!ibBar) continue;
+      compared += 1;
+      const closeDiff = Math.abs(Number(candle.close) - Number(ibBar.close));
+      const highDiff = Math.abs(Number(candle.high) - Number(ibBar.high));
+      const lowDiff = Math.abs(Number(candle.low) - Number(ibBar.low));
+      if (closeDiff > 0.0001 || highDiff > 0.0001 || lowDiff > 0.0001) {
+        mismatches += 1;
+        diffs.push({ timestamp: candle.timestamp, closeDiff, highDiff, lowDiff });
+      }
+    }
+    return { ok: true, root, timeframe, compared, mismatches, matchRate: compared ? (compared - mismatches) / compared : null, diffs: diffs.slice(0, 5) };
+  }
+
+  function getStatus(now = new Date()) {
+    const adapterStatus = adapter.getStatus();
+    const quotes = {};
+    for (const root of QUOTE_ROOTS) {
+      const q = getQuote(root, now);
+      quotes[root] = q ? {
+        localSymbol: q.localSymbol,
+        conId: q.conId,
+        expiry: q.expiry,
+        last: q.last,
+        bid: q.bid,
+        ask: q.ask,
+        spread: q.spread,
+        volume: q.volume,
+        marketDataTypeLabel: q.marketDataTypeLabel,
+        updatedAt: q.updatedAt,
+        staleAgeMs: q.staleAgeMs,
+        quality: q.quality,
+      } : null;
+    }
+    const candles = {};
+    for (const root of CANDLE_ROOTS) {
+      const state = getCandleState(root);
+      const summary = {};
+      for (const timeframe of SUPPORTED_TIMEFRAMES) {
+        const c = getCandles(root, { timeframe, limit: 10, now });
+        summary[timeframe] = {
+          ok: c.ok,
+          closedCount: c.ok ? c.count : 0,
+          latestClosedTimestamp: c.ok ? c.latestClosedTimestamp : null,
+          hasOpenCandle: c.ok ? Boolean(c.openCandle) : false,
+        };
+      }
+      candles[root] = {
+        bars1mInMemory: state.bars1m.length,
+        firstBarTimestamp: state.bars1m[0]?.timestamp || null,
+        latestBarTimestamp: state.bars1m[state.bars1m.length - 1]?.timestamp || null,
+        backfillDone: state.backfillDone,
+        lastRefreshAt: state.lastRefreshAt,
+        lastRefreshOk: state.lastRefreshOk,
+        lastError: state.lastError,
+        lastPersistAt: state.lastPersistAt,
+        timeframes: summary,
+      };
+    }
+    return {
+      ok: true,
+      enabled: isEnabled(),
+      started,
+      startedAt,
+      generatedAt: nowIso(now),
+      refreshIntervalMs,
+      backfillDays,
+      persistEnabled,
+      adapter: {
+        connected: adapterStatus.connected,
+        host: adapterStatus.host,
+        port: adapterStatus.port,
+        clientId: adapterStatus.clientId,
+        serverVersion: adapterStatus.serverVersion,
+        connectedAt: adapterStatus.connectedAt,
+        reconnectCount: adapterStatus.reconnectCount,
+        marketDataTypeLabel: adapterStatus.marketDataTypeLabel,
+        managedAccounts: adapterStatus.managedAccounts,
+        contracts: adapterStatus.contracts,
+        lastErrors: adapterStatus.lastErrors,
+        pacing: adapterStatus.pacing,
+      },
+      quotes,
+      candles,
+      ...SAFETY,
+    };
+  }
+
+  // Kompakt status för desk-runtime (får aldrig bli tung).
+  function getStatusSummary(now = new Date()) {
+    if (!isEnabled()) {
+      return { enabled: false, started: false, connected: false, source: 'disabled' };
+    }
+    const adapterStatus = adapter.getStatus();
+    const mnq = getQuote('MNQ', now);
+    const mes = getQuote('MES', now);
+    return {
+      enabled: true,
+      started,
+      connected: adapterStatus.connected,
+      marketDataTypeLabel: adapterStatus.marketDataTypeLabel,
+      reconnectCount: adapterStatus.reconnectCount,
+      mnqStaleAgeMs: mnq?.staleAgeMs ?? null,
+      mesStaleAgeMs: mes?.staleAgeMs ?? null,
+      mnqLocalSymbol: mnq?.localSymbol ?? null,
+      mesLocalSymbol: mes?.localSymbol ?? null,
+      source: adapterStatus.connected ? 'ibkr' : 'ibkr_disconnected',
+    };
+  }
+
+  return {
+    SAFETY,
+    CANDLE_ROOTS,
+    QUOTE_ROOTS,
+    SUPPORTED_TIMEFRAMES,
+    QUOTE_FRESH_MS,
+    isEnabled,
+    start,
+    stop,
+    isStarted: () => started,
+    refreshAllOnce,
+    getQuote,
+    isQuoteFresh,
+    getCandles,
+    getStatus,
+    getStatusSummary,
+    verifyAggregationAgainstIb,
+    adapter,
+  };
+}
+
+const defaultFuturesMarketDataService = createFuturesMarketDataService();
+
+module.exports = {
+  SAFETY,
+  CANDLE_ROOTS,
+  QUOTE_ROOTS,
+  SUPPORTED_TIMEFRAMES,
+  createFuturesMarketDataService,
+  defaultFuturesMarketDataService,
+};

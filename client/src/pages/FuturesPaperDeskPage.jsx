@@ -99,6 +99,52 @@ function useFuturesDeskAccount(refreshToken = 0) {
   return state;
 }
 
+function useFuturesMarketDataStatus(refreshToken = 0) {
+  const [state, setState] = useState({ loading: true, error: null, data: null });
+
+  useEffect(() => {
+    let alive = true;
+    let activeController = null;
+
+    const load = () => {
+      if (activeController) activeController.abort();
+      activeController = new AbortController();
+      fetchJsonWithTimeout('/api/futures-paper/market-data/status', { signal: activeController.signal })
+        .then((data) => {
+          if (!alive) return;
+          setState({ loading: false, error: null, data });
+        })
+        .catch((err) => {
+          if (!alive) return;
+          setState((prev) => ({
+            loading: false,
+            error: err?.message || 'futures_market_data_unavailable',
+            data: prev.data || null,
+          }));
+        });
+    };
+
+    load();
+    const timer = setInterval(load, REFRESH_MS);
+    return () => {
+      alive = false;
+      clearInterval(timer);
+      if (activeController) activeController.abort();
+    };
+  }, [refreshToken]);
+
+  return state;
+}
+
+function fmtAge(ms) {
+  const num = Number(ms);
+  if (!Number.isFinite(num) || num < 0) return '–';
+  if (num < 1000) return '<1 s';
+  if (num < 60_000) return `${Math.round(num / 1000)} s`;
+  if (num < 60 * 60_000) return `${Math.round(num / 60_000)} min`;
+  return `${Math.round(num / (60 * 60_000))} h`;
+}
+
 function fmtNumber(value, digits = 0) {
   const num = Number(value);
   if (!Number.isFinite(num)) return '–';
@@ -367,7 +413,17 @@ export default function FuturesPaperDeskPage() {
   const [activeTab, setActiveTab] = useState('oversikt');
   const runtime = useFuturesDeskRuntime(refreshToken);
   const accountState = useFuturesDeskAccount(refreshToken);
+  const marketDataState = useFuturesMarketDataStatus(refreshToken);
   const data = runtime.data;
+  const ibDataLayer = data?.ibDataLayer || { enabled: false, connected: false };
+  const ibAccountPayload = data?.ibAccount || null;
+  const ibAccount = ibAccountPayload?.ok === true ? ibAccountPayload.account : null;
+  const ibAccountCurrency = ibAccount?.currency || 'SEK';
+  const dataPipeline = data?.dataPipeline || null;
+  const nextTransition = data?.nextSessionTransition || null;
+  const mdStatus = marketDataState.data || null;
+  const mdQuotes = mdStatus?.quotes || {};
+  const mdCandles = mdStatus?.candles || {};
   const account = accountState.data?.account || data?.account || {};
   const accountConfig = accountState.data?.config || data?.accountConfig || {};
   const instruments = Array.isArray(data?.instruments) ? data.instruments : [];
@@ -524,10 +580,12 @@ export default function FuturesPaperDeskPage() {
       onTab={setActiveTab}
       kpis={[
         { label: 'Läge', value: 'paper_only', tone: 'good' },
-        { label: 'Saldo', value: fmtMoney(balance, accountCurrency), tone: 'blue' },
-        { label: 'PnL', value: fmtMoney(totalPnl, accountCurrency), tone: pnlTone },
+        ibAccount
+          ? { label: 'IB Paper-saldo', value: fmtMoney(ibAccount.netLiquidation, ibAccountCurrency), tone: 'blue' }
+          : { label: 'IB Paper-saldo', value: ibDataLayer.enabled ? 'Väntar…' : 'Ej inkopplat', tone: 'warning' },
+        { label: 'Sim-equity', value: fmtMoney(balance, accountCurrency), tone: 'blue' },
+        { label: 'Sim-PnL', value: fmtMoney(totalPnl, accountCurrency), tone: pnlTone },
         { label: 'Öppna', value: fmtNumber(positions.totalOpen || 0), tone: 'blue' },
-        { label: 'Stängda', value: fmtNumber(positions.totalClosed || 0) },
         { label: 'Marknad', value: market.isOpen ? 'Öppen' : 'Stängd', tone: market.isOpen ? 'good' : 'warning' },
       ]}
     >
@@ -545,11 +603,32 @@ export default function FuturesPaperDeskPage() {
         </div>
       ) : null}
 
-      {dataFeed.source === 'simulated_fallback' || dataFeed.fallback === true ? (
+      <div style={{ ...sectionStyle(), marginTop: 14, display: 'flex', flexWrap: 'wrap', gap: 8, alignItems: 'center' }}>
+        <Pill tone={ibDataLayer.connected ? 'success' : (ibDataLayer.enabled ? 'danger' : 'warning')}>
+          IB Gateway: {ibDataLayer.connected ? 'Ansluten' : (ibDataLayer.enabled ? 'Frånkopplad' : 'Ej aktiverad')}
+        </Pill>
+        <Pill tone={ibDataLayer.marketDataTypeLabel === 'realtime' ? 'success' : 'warning'}>
+          CME: {ibDataLayer.marketDataTypeLabel || 'okänd'}
+        </Pill>
+        {ibDataLayer.mnqLocalSymbol ? <Pill tone="info">MNQ: {ibDataLayer.mnqLocalSymbol}</Pill> : null}
+        {ibDataLayer.mesLocalSymbol ? <Pill tone="info">MES: {ibDataLayer.mesLocalSymbol}</Pill> : null}
+        {ibDataLayer.mnqStaleAgeMs != null ? <Pill tone={ibDataLayer.mnqStaleAgeMs < 120000 ? 'success' : 'warning'}>Dataålder: {fmtAge(ibDataLayer.mnqStaleAgeMs)}</Pill> : null}
+        <Pill tone="neutral">Session: {market.sessionLabel || market.session || '–'}</Pill>
+        {nextTransition ? (
+          <Pill tone="neutral">Nästa: {nextTransition.nextSessionLabel} om {fmtAge(nextTransition.minutesUntil * 60000)}</Pill>
+        ) : null}
+        <Pill tone="info">Feed: {dataFeed.source || '–'}</Pill>
+      </div>
+
+      {dataFeed.simulated === true || dataFeed.fallback === true || dataFeed.source === 'simulated_fallback' ? (
         <div style={{ ...sectionStyle(), marginTop: 14, borderColor: 'rgba(245,158,11,0.35)', background: 'rgba(245,158,11,0.08)' }}>
-          <strong style={{ color: 'var(--warning)' }}>Simulated fallback data används.</strong>
+          <strong style={{ color: 'var(--warning)' }}>
+            {dataFeed.simulated === true
+              ? 'Simulated fallback data används.'
+              : 'Blandad feed: minst en symbol använder simulerad fallback-data.'}
+          </strong>
           <div style={{ color: 'var(--muted)', marginTop: 6, fontSize: 13 }}>
-            Resultaten visar motortest och ska inte tolkas som riktig strategi-performance.
+            {dataFeed.description || 'Resultaten visar motortest och ska inte tolkas som riktig strategi-performance.'}
           </div>
         </div>
       ) : null}
@@ -682,13 +761,119 @@ export default function FuturesPaperDeskPage() {
       </div>
       )}
 
+      {activeTab === 'oversikt' && (
+      <section style={{ ...sectionStyle(), marginTop: 14 }}>
+        <SectionHeader
+          eyebrow="Marknadsdata"
+          title="IBKR futures-data (read-only)"
+          summary="Riktiga CME-quotes och candles via IB Gateway. Källa och dataålder visas per kontrakt — simulerad fallback märks alltid tydligt."
+          action={<Pill tone={mdStatus?.enabled ? (mdStatus?.adapter?.connected ? 'success' : 'danger') : 'warning'}>
+            {mdStatus?.enabled ? (mdStatus?.adapter?.connected ? 'IB ansluten' : 'IB frånkopplad') : 'IB-datalager av'}
+          </Pill>}
+        />
+        {marketDataState.error && !mdStatus ? (
+          <div style={{ color: 'var(--muted)', fontSize: 13 }}>Marknadsdatastatus kunde inte läsas: {marketDataState.error}</div>
+        ) : null}
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', gap: 12 }}>
+          {['MNQ', 'MES', 'NQ', 'ES'].map((root) => {
+            const q = mdQuotes[root] || null;
+            const candles = mdCandles[root] || null;
+            return (
+              <ReadinessCard
+                key={root}
+                title={`${root}${q?.localSymbol ? ` · ${q.localSymbol}` : ''}`}
+                status={q ? (q.marketDataTypeLabel || 'okänd') : 'ingen data'}
+                tone={q?.marketDataTypeLabel === 'realtime' ? 'success' : (q ? 'warning' : 'neutral')}
+              >
+                <ReadinessRow label="Last" value={q?.last != null ? fmtNumber(q.last, 2) : '–'} />
+                <ReadinessRow label="Bid / Ask" value={q ? `${q.bid != null ? fmtNumber(q.bid, 2) : '–'} / ${q.ask != null ? fmtNumber(q.ask, 2) : '–'}` : '–'} />
+                <ReadinessRow label="Spread" value={q?.spread != null ? fmtNumber(q.spread, 2) : '–'} />
+                <ReadinessRow label="Volym (dag)" value={q?.volume != null ? fmtNumber(q.volume) : '–'} />
+                <ReadinessRow label="Expiry" value={q?.expiry || '–'} />
+                <ReadinessRow label="Quote-ålder" value={q?.staleAgeMs != null ? fmtAge(q.staleAgeMs) : '–'} />
+                {candles ? (
+                  <>
+                    <ReadinessRow label="1m / 2m / 5m" value={['1m', '2m', '5m'].map((tf) => (candles.timeframes?.[tf]?.ok ? `${candles.timeframes[tf].closedCount}✓` : '–')).join(' / ')} />
+                    <ReadinessRow label="Senaste closed" value={candles.timeframes?.['1m']?.latestClosedTimestamp ? new Date(candles.timeframes['1m'].latestClosedTimestamp).toLocaleTimeString('sv-SE') : '–'} />
+                  </>
+                ) : (
+                  <ReadinessRow label="Candles" value="quote-context (inga candles)" />
+                )}
+              </ReadinessCard>
+            );
+          })}
+        </div>
+      </section>
+      )}
+
+      {activeTab === 'oversikt' && dataPipeline ? (
+      <section style={{ ...sectionStyle(), marginTop: 14 }}>
+        <SectionHeader
+          eyebrow="Replay & Batch"
+          title="Historikstatus för Replay och Batch"
+          summary="Replay och Batch läser samma IB-candles ur den gemensamma datastoren som live-desken. Blockers visas tills historiken är på plats."
+        />
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+          <Pill tone={dataPipeline.replay?.ready ? 'success' : 'warning'}>
+            Replay: {dataPipeline.replay?.ready ? 'Redo' : (dataPipeline.replay?.blocker || 'blockerad')}
+          </Pill>
+          <Pill tone={dataPipeline.batch?.ready ? 'success' : 'warning'}>
+            Batch: {dataPipeline.batch?.ready ? 'Redo (data)' : (dataPipeline.batch?.blocker || 'blockerad')}
+          </Pill>
+        </div>
+        <div style={{ marginTop: 8, color: 'var(--muted)', fontSize: 12 }}>
+          {dataPipeline.batch?.note || ''}
+        </div>
+      </section>
+      ) : null}
+
       {activeTab === 'konto' && (
       <div style={{ display: 'grid', gridTemplateColumns: '1fr', gap: 14, marginTop: 14 }}>
         <section style={sectionStyle()}>
           <SectionHeader
+            eyebrow="IBKR Paper-konto"
+            title="IB Paper-kontosaldo (read-only)"
+            summary="Läses direkt från ditt IBKR paper-konto via read-only API. Detta är brokerns siffror — de påverkas aldrig av interna paper-simuleringar och inga order kan skickas."
+            action={<Pill tone="info">READ-ONLY</Pill>}
+          />
+          {ibAccount ? (
+            <>
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 10 }}>
+                <MetricCard label="Net Liquidation" value={fmtMoney(ibAccount.netLiquidation, ibAccountCurrency)} hint="Huvudsaldo från IB paper-kontot" tone="info" />
+                <MetricCard label="Total Cash" value={fmtMoney(ibAccount.totalCashValue, ibAccountCurrency)} hint="TotalCashValue" />
+                <MetricCard label="Available Funds" value={fmtMoney(ibAccount.availableFunds, ibAccountCurrency)} hint="Tillgängliga medel" />
+                <MetricCard label="Buying Power" value={fmtMoney(ibAccount.buyingPower, ibAccountCurrency)} hint="Köpkraft hos IB" />
+                <MetricCard label="Unrealized PnL" value={ibAccount.unrealizedPnl == null ? '–' : fmtMoney(ibAccount.unrealizedPnl, ibAccountCurrency)} hint="IB-kontots orealiserade PnL" />
+                <MetricCard label="Realized PnL" value={ibAccount.realizedPnl == null ? '–' : fmtMoney(ibAccount.realizedPnl, ibAccountCurrency)} hint="IB-kontots realiserade PnL" />
+              </div>
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginTop: 12 }}>
+                <Pill tone="success">Konto: {ibAccount.accountIdMasked}</Pill>
+                <Pill tone="success">Typ: paper/demo</Pill>
+                <Pill tone="neutral">Valuta: {ibAccountCurrency}</Pill>
+                <Pill tone={ibAccountPayload?.stale ? 'warning' : 'success'}>
+                  Synk: {ibAccountPayload?.cacheAgeMs != null ? `${fmtAge(ibAccountPayload.cacheAgeMs)} sedan` : 'nu'}{ibAccountPayload?.stale ? ' (stale)' : ''}
+                </Pill>
+                <Pill tone={ibAccountPayload?.connected === false ? 'danger' : 'success'}>
+                  {ibAccountPayload?.connected === false ? 'IB frånkopplad' : 'IB ansluten'}
+                </Pill>
+              </div>
+            </>
+          ) : (
+            <div style={{ color: 'var(--muted)', fontSize: 13 }}>
+              {ibAccountPayload?.blocker
+                ? `IB-kontot kan inte läsas just nu: ${ibAccountPayload.blocker}`
+                : (ibDataLayer.enabled ? 'Väntar på första kontosynken från IB Gateway…' : 'IB-datalagret är inte aktiverat.')}
+            </div>
+          )}
+          <div style={{ marginTop: 12, color: 'var(--muted)', fontSize: 12 }}>
+            IB Net Liquidation och intern simulerad PnL hålls helt åtskilda: det interna kontot nedan är en fristående simulering och dubbelräknas aldrig mot IB-kontot.
+          </div>
+        </section>
+        <section style={sectionStyle()}>
+          <SectionHeader
             eyebrow="Konto"
-            title="Simulerat kapital"
-            summary="Ett separat futures-konto som senare kan växlas mellan olika startnivåer."
+            title="Internt simulerat kapital"
+            summary="Fristående intern paper-simulering (startkapital + simulerade trades − simulerade avgifter). Detta är INTE IB-kontot."
           />
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 10 }}>
             <MetricCard label="Startkapital" value={fmtMoney(account.startingBalanceSek || 0, accountCurrency)} hint="Endast paper money" />
@@ -985,7 +1170,9 @@ export default function FuturesPaperDeskPage() {
               { key: 'Universe', value: 'marketUniverseService', detail: data?.technical?.universeSource || '–' },
               { key: 'Strategier', value: 'Trading OS signal adapter', detail: data?.technical?.strategySource || '–' },
               { key: 'Datafeed', value: dataFeed.source || '–', detail: data?.technical?.priceFeedSource || '–' },
+              { key: 'IB-datalager', value: ibDataLayer.enabled ? (ibDataLayer.connected ? 'anslutet' : 'frånkopplat') : 'av', detail: `källa: ${ibDataLayer.source || '–'} · CME: ${ibDataLayer.marketDataTypeLabel || '–'} · reconnects: ${ibDataLayer.reconnectCount ?? '–'}` },
               { key: 'Session', value: formatSessionName(market), detail: market.description || '–' },
+              { key: 'Nästa sessionsbyte', value: nextTransition ? nextTransition.nextSessionLabel : '–', detail: nextTransition ? `om ${fmtAge(nextTransition.minutesUntil * 60000)} (${new Date(nextTransition.nextChangeAt).toLocaleString('sv-SE')})` : '–' },
             ]}
             columns={[
               { key: 'key', label: 'Källa' },

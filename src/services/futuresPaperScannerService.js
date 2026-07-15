@@ -19,6 +19,7 @@ const path = require('path');
 const storageService = require('./futuresPaperStorageService');
 const futuresPaperLedgerService = require('./futuresPaperLedgerService');
 const futuresPaperPriceFeedService = require('./futuresPaperPriceFeedService');
+const futuresPaperQuoteSourceService = require('./futuresPaperQuoteSourceService');
 const strategyPerformanceReadService = require('./strategyPerformanceReadService');
 const paperAllowlistService = require('./paperAllowlistService');
 const futuresTradingOsSignalAdapterService = require('./futuresTradingOsSignalAdapterService');
@@ -89,7 +90,11 @@ function assertPaperOnly(input = {}) {
 function createFuturesPaperScannerService(options = {}) {
   const storage = options.storageService || storageService.defaultFuturesPaperStorageService;
   const ledger = options.ledgerService || futuresPaperLedgerService.defaultFuturesPaperLedgerService;
-  const priceFeed = options.priceFeedService || futuresPaperPriceFeedService.defaultFuturesPaperPriceFeedService;
+  // Composite quote-källa: riktiga IB-quotes när IB_FUTURES_DATA_ENABLED är på
+  // och quoten är färsk, annars den simulerade fallback-feeden — alltid med
+  // ärlig source-märkning per quote. Interfacet är identiskt med den gamla
+  // feeden, så all scanner-logik är oförändrad.
+  const priceFeed = options.priceFeedService || futuresPaperQuoteSourceService.defaultFuturesPaperQuoteSourceService;
   const performanceService = options.performanceService || strategyPerformanceReadService;
   const allowlistService = options.allowlistService || paperAllowlistService;
   const signalAdapter = options.signalAdapterService || futuresTradingOsSignalAdapterService.defaultFuturesTradingOsSignalAdapterService;

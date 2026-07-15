@@ -124,6 +124,11 @@ const futuresTechnicalInfoService = require('../services/futuresTechnicalInfoSer
 const futuresPaperStrategyApprovalService = require('../services/futuresPaperStrategyApprovalService');
 const futuresPaperStrategyPerformanceService = require('../services/futuresPaperStrategyPerformanceService');
 const futuresPaperExitExperimentStatusService = require('../services/futuresPaperExitExperimentStatusService');
+const futuresPaperQuoteSourceService = require('../services/futuresPaperQuoteSourceService');
+const futuresMarketDataService = require('../services/futuresMarketDataService');
+const ibPaperAccountSummaryService = require('../services/ibPaperAccountSummaryService');
+const futuresDataPipelineStatusService = require('../services/futuresDataPipelineStatusService');
+const futuresMarketHoursService = require('../services/futuresMarketHoursService');
 const paperTradingTruthService = require('../services/paperTradingTruthService');
 const strategyPipelineTruthService = require('../services/strategyPipelineTruthService');
 const shortExitTruthService = require('../services/shortExitTruthService');
@@ -3560,14 +3565,56 @@ router.post('/paper-trading/strategies/:strategyId/pause', handlePaperStrategyMu
 router.post('/paper-trading/strategies/:strategyId/resume', handlePaperStrategyMutation('resume'));
 router.post('/paper-trading/strategies/:strategyId/remove', handlePaperStrategyMutation('remove'));
 
+// Desk-runtimen är dyr att bygga (~8s tunga synkrona fil-läsningar över
+// ledger/scanner/strategilistor). Utan cache timeoutar UI:t (7s). Fix:
+// TTL-cache med stale-while-revalidate — svara direkt med senaste snapshot
+// (märkt cached/stale) och bygg om högst en gång per TTL.
+const FUTURES_RUNTIME_CACHE_TTL_MS = 60 * 1000;
+let futuresRuntimeCache = { payload: null, atMs: 0 };
+let futuresRuntimeRebuilding = false;
+
+function buildFuturesRuntimeCached() {
+  const payload = futuresPaperDeskService.buildFuturesPaperDeskRuntime({});
+  futuresRuntimeCache = { payload, atMs: Date.now() };
+  return payload;
+}
+
+// Värm cachen strax efter serverstart så första UI-anropet aldrig träffar
+// en kall ~8s-byggnad. unref så timern inte håller processen vid liv.
+const futuresRuntimeWarmupTimer = setTimeout(() => {
+  try { buildFuturesRuntimeCached(); } catch (_) { /* warmup är best effort */ }
+}, 5000);
+if (futuresRuntimeWarmupTimer.unref) futuresRuntimeWarmupTimer.unref();
+
 router.get('/futures-paper/runtime', (req, res) => {
   try {
-    res.json(futuresPaperDeskService.buildFuturesPaperDeskRuntime({
-      startingBalance: req.query.startingBalance,
-      now: req.query.now || undefined,
-    }));
+    // Specialparametrar (test/probe) går förbi cachen med oförändrad semantik.
+    if (req.query.startingBalance != null || req.query.now != null) {
+      return res.json(futuresPaperDeskService.buildFuturesPaperDeskRuntime({
+        startingBalance: req.query.startingBalance,
+        now: req.query.now || undefined,
+      }));
+    }
+    const age = Date.now() - futuresRuntimeCache.atMs;
+    if (futuresRuntimeCache.payload && age < FUTURES_RUNTIME_CACHE_TTL_MS) {
+      return res.json({ ...futuresRuntimeCache.payload, cached: true, cacheAgeMs: age });
+    }
+    if (futuresRuntimeCache.payload) {
+      // Svara direkt med senaste snapshot och bygg om i bakgrunden
+      // (setImmediate så svaret hinner ut innan den tunga bygget börjar).
+      res.json({ ...futuresRuntimeCache.payload, cached: true, stale: true, cacheAgeMs: age });
+      if (!futuresRuntimeRebuilding) {
+        futuresRuntimeRebuilding = true;
+        setImmediate(() => {
+          try { buildFuturesRuntimeCached(); } catch (_) { /* behåll gamla snapshotten */ }
+          futuresRuntimeRebuilding = false;
+        });
+      }
+      return undefined;
+    }
+    return res.json(buildFuturesRuntimeCached());
   } catch (err) {
-    res.status(500).json({ ok: false, error: err.message, ...futuresPaperDeskService.SAFETY });
+    return res.status(500).json({ ok: false, error: err.message, ...futuresPaperDeskService.SAFETY });
   }
 });
 
@@ -3725,6 +3772,29 @@ router.get('/futures-paper/exit-experiment/status', (req, res) => {
     res.json(futuresPaperExitExperimentStatusService.getStatus());
   } catch (err) {
     res.status(500).json({ status: 'error', ok: false, error: err.message, ...futuresPaperExitExperimentStatusService.SAFETY });
+  }
+});
+
+// Lätt canonical 33-strategiöversikt utan hela desk-runtimen (timeout-fixen:
+// UI:t kan läsa denna snabba variant i stället för tunga /runtime).
+// OBS: måste registreras FÖRE '/futures-paper/strategies/:strategyId'.
+router.get('/futures-paper/strategies/overview', (req, res) => {
+  try {
+    const now = req.query.now ? new Date(req.query.now) : new Date();
+    const session = futuresPaperDeskService.getFuturesSessionState(now);
+    const paperStrategies = require('../services/paperEnabledStrategiesService').buildPaperStrategyList({});
+    const ledger = futuresPaperLedgerService.defaultFuturesPaperLedgerService.getFuturesPaperPositions();
+    const strategyStatus = futuresPaperScannerService.defaultFuturesPaperScannerService.getStrategyStatus({ now });
+    const overview = futuresPaperDeskService.buildCanonicalStrategyOverview({
+      now,
+      session,
+      paperStrategies,
+      openPositions: ledger?.positions?.open || [],
+      scannerStrategies: strategyStatus?.strategies || [],
+    });
+    res.json({ ok: true, readOnly: true, ...overview, ...futuresPaperDeskService.SAFETY });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message, ...futuresPaperDeskService.SAFETY });
   }
 });
 
@@ -3901,9 +3971,87 @@ router.post('/futures-paper/auto-simulation', (req, res) => {
 
 router.get('/futures-paper/price-feed', (req, res) => {
   try {
-    res.json(futuresPaperPriceFeedService.defaultFuturesPaperPriceFeedService.getQuotes());
+    // Composite-källa: IB-quotes när datalagret är på, annars simulerad
+    // fallback — alltid ärligt märkt per quote.
+    res.json(futuresPaperQuoteSourceService.defaultFuturesPaperQuoteSourceService.getQuotes());
   } catch (err) {
-    res.status(500).json({ ok: false, error: err.message, ...futuresPaperPriceFeedService.SAFETY });
+    res.status(500).json({ ok: false, error: err.message, ...futuresPaperQuoteSourceService.SAFETY });
+  }
+});
+
+// ── Gemensam IB futures-datalager (read-only, FAS 3-11 masteruppdraget) ──────
+// Alla svar kommer ur cache/in-memory-state — inga tunga IB-anrop per
+// browser-request. Inga mutation-endpoints existerar för detta lager.
+
+router.get('/futures-paper/market-data/status', (req, res) => {
+  try {
+    res.json(futuresMarketDataService.defaultFuturesMarketDataService.getStatus());
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message, ...futuresMarketDataService.SAFETY });
+  }
+});
+
+router.get('/futures-paper/market-data/:root', (req, res) => {
+  try {
+    const root = String(req.params.root || '').trim().toUpperCase();
+    if (!futuresMarketDataService.QUOTE_ROOTS.includes(root)) {
+      return res.status(404).json({ ok: false, error: 'unknown_root', root, ...futuresMarketDataService.SAFETY });
+    }
+    const service = futuresMarketDataService.defaultFuturesMarketDataService;
+    const timeframe = ['1m', '2m', '5m'].includes(req.query.timeframe) ? req.query.timeframe : '2m';
+    const limit = Math.min(Number(req.query.limit) || 50, 500);
+    const quote = service.getQuote(root);
+    const candles = futuresMarketDataService.CANDLE_ROOTS.includes(root)
+      ? service.getCandles(root, { timeframe, limit })
+      : { ok: false, error: 'candles_not_tracked_for_root', candles: [], openCandle: null };
+    res.json({
+      ok: true,
+      generatedAt: new Date().toISOString(),
+      root,
+      enabled: service.isEnabled(),
+      quote,
+      candles,
+      ...futuresMarketDataService.SAFETY,
+    });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message, ...futuresMarketDataService.SAFETY });
+  }
+});
+
+// Read-only IB PAPER-kontosummary (NetLiquidation m.fl.). Cache-first med
+// service-level timeout så att UI:t aldrig hänger på ett långsamt IB-anrop.
+router.get('/futures-paper/ib-account', async (req, res) => {
+  try {
+    const service = ibPaperAccountSummaryService.defaultIbPaperAccountSummaryService;
+    const summary = await Promise.race([
+      service.getSummary(),
+      new Promise((resolve) => setTimeout(() => resolve(null), 8000)),
+    ]);
+    if (summary) return res.json(summary);
+    // Timeout → senast kända snapshot, tydligt märkt degraded.
+    const cached = service.getCachedSummary();
+    return res.status(200).json({ ...cached, degraded: true, degradedReason: 'live_fetch_timeout_returning_cache' });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message, ...ibPaperAccountSummaryService.SAFETY });
+  }
+});
+
+router.get('/futures-paper/session', (req, res) => {
+  try {
+    const now = req.query.now ? new Date(req.query.now) : new Date();
+    const state = futuresMarketHoursService.getCmeEquityIndexFuturesSessionState(now);
+    const nextTransition = futuresMarketHoursService.getNextSessionTransition(now);
+    res.json({ ok: true, readOnly: true, session: state, nextTransition, ...futuresPaperDeskService.SAFETY });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message, ...futuresPaperDeskService.SAFETY });
+  }
+});
+
+router.get('/futures-paper/data-pipeline/status', (req, res) => {
+  try {
+    res.json(futuresDataPipelineStatusService.getStatus());
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message, ...futuresDataPipelineStatusService.SAFETY });
   }
 });
 
@@ -5174,6 +5322,27 @@ const interactiveBrokersPreviewService = require('../services/interactiveBrokers
 router.get('/interactive-brokers/status', (req, res) => {
   try { res.json(interactiveBrokersPreviewService.getIbPaperStatus()); }
   catch (err) { res.status(500).json({ ok: false, error: err.message, safety: interactiveBrokersPreviewService.SAFETY }); }
+});
+
+// Tekniskt kontrollrum för det read-only IB futures-datalagret: adapter,
+// kontrakt, quote-latens, historikstatus och paper-konto — inga secrets,
+// inga order-fält, ingen mutation.
+router.get('/interactive-brokers/futures/status', (req, res) => {
+  try {
+    const marketData = futuresMarketDataService.defaultFuturesMarketDataService.getStatus();
+    const account = ibPaperAccountSummaryService.defaultIbPaperAccountSummaryService.getCachedSummary();
+    res.json({
+      ok: true,
+      generatedAt: new Date().toISOString(),
+      readOnly: true,
+      dataLayer: marketData,
+      paperAccount: account,
+      noOrderCapability: 'IBKR används här för read-only marknadsdata och paper-kontoinformation. Inga riktiga order kan skickas från denna integration.',
+      ...futuresMarketDataService.SAFETY,
+    });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message, ...futuresMarketDataService.SAFETY });
+  }
 });
 router.get('/interactive-brokers/truth', async (req, res) => {
   try {

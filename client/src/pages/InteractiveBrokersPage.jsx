@@ -376,6 +376,93 @@ const SAFE_FALLBACK_TRADE_BLUEPRINT = Object.freeze({
   note: 'Trade Blueprint is not available right now. No order is created or sent.',
 });
 
+// Read-only futures-datalager (marknadsdata + paper-konto) — tekniskt
+// kontrollrum för IB-dataadaptern. Ingen orderkapabilitet.
+function IbFuturesDataStatusCard({ hidden }) {
+  const [state, setState] = useState({ loading: true, error: null, data: null });
+
+  useEffect(() => {
+    let alive = true;
+    let controller = null;
+    const load = () => {
+      if (controller) controller.abort();
+      controller = new AbortController();
+      fetchJsonWithTimeout('/api/interactive-brokers/futures/status', { signal: controller.signal })
+        .then((data) => { if (alive) setState({ loading: false, error: null, data }); })
+        .catch((err) => {
+          if (alive) setState((prev) => ({ loading: false, error: err?.message || 'futures_status_unavailable', data: prev.data || null }));
+        });
+    };
+    load();
+    const timer = setInterval(load, 20000);
+    return () => { alive = false; clearInterval(timer); if (controller) controller.abort(); };
+  }, []);
+
+  const layer = state.data?.dataLayer || null;
+  const adapter = layer?.adapter || null;
+  const account = state.data?.paperAccount || null;
+  const quotes = layer?.quotes || {};
+  const candles = layer?.candles || {};
+  const contracts = adapter?.contracts || [];
+  const lastError = (adapter?.lastErrors || [])[adapter?.lastErrors?.length - 1] || null;
+
+  return (
+    <div hidden={hidden} style={{ ...CARD_STYLE, borderColor: 'rgba(59,130,246,0.35)' }}>
+      <h2 style={{ marginTop: 0 }}>Futures-data (read-only datalager)</h2>
+      <p style={{ color: 'var(--muted)', marginTop: 0, lineHeight: 1.6 }}>
+        IBKR används här för read-only marknadsdata och paper-kontoinformation.
+        Inga riktiga order kan skickas från denna integration.
+      </p>
+      {state.error && !layer ? (
+        <div style={{ color: 'var(--warning)' }}>Status kunde inte läsas: {state.error}</div>
+      ) : null}
+      {layer ? (
+        <>
+          <Row label="Datalager aktiverat"><Badge ok={layer.enabled === true} labelTrue="Ja" labelFalse="Nej (IB_FUTURES_DATA_ENABLED=false)" /></Row>
+          <Row label="API-anslutning"><Badge ok={adapter?.connected === true} labelTrue="Ansluten" labelFalse="Frånkopplad" /></Row>
+          <Row label="Host/Port"><code>{adapter ? `${adapter.host}:${adapter.port}` : '–'}</code></Row>
+          <Row label="Read-only clientId"><code>{adapter?.clientId ?? '–'}</code></Row>
+          <Row label="Server version"><code>{adapter?.serverVersion ?? '–'}</code></Row>
+          <Row label="CME market data"><Badge ok={adapter?.marketDataTypeLabel === 'realtime'} labelTrue="realtime" labelFalse={adapter?.marketDataTypeLabel || 'okänd'} /></Row>
+          <Row label="Reconnects"><code>{adapter?.reconnectCount ?? 0}</code></Row>
+          <Row label="Senaste fel"><code>{lastError ? `${lastError.code || ''} ${lastError.message}`.trim() : 'none'}</code></Row>
+          <Row label="Kontrakt (front month)">
+            <code>
+              {contracts.length
+                ? contracts.map((c) => `${c.root}=${c.localSymbol} (conId ${c.conId}, exp ${c.expiry})`).join(' · ')
+                : 'inga upplösta ännu'}
+            </code>
+          </Row>
+          {['MNQ', 'MES', 'NQ', 'ES'].map((root) => {
+            const q = quotes[root];
+            const c = candles[root];
+            return (
+              <Row key={root} label={`${root} quote/candles`}>
+                <code>
+                  {q ? `last=${q.last ?? '–'} bid=${q.bid ?? '–'} ask=${q.ask ?? '–'} ålder=${q.staleAgeMs != null ? `${Math.round(q.staleAgeMs / 1000)}s` : '–'}` : 'ingen quote'}
+                  {c ? ` · 1m-bars=${c.bars1mInMemory} refresh=${c.lastRefreshOk === true ? 'ok' : (c.lastError || 'väntar')}` : ''}
+                </code>
+              </Row>
+            );
+          })}
+          <Row label="Paper-konto (read-only)">
+            {account?.ok === true ? (
+              <code>
+                {account.account.accountIdMasked} · {account.account.currency} · NetLiq {Number(account.account.netLiquidation).toLocaleString('sv-SE')}
+              </code>
+            ) : (
+              <code>{account?.blocker || 'ej läst ännu'}</code>
+            )}
+          </Row>
+          <Row label="Orderkapabilitet"><Badge ok labelTrue="Saknas (endast data)" labelFalse="-" /></Row>
+        </>
+      ) : (
+        <div style={{ color: 'var(--muted)' }}>Läser futures-datastatus…</div>
+      )}
+    </div>
+  );
+}
+
 function Badge({ ok, labelTrue, labelFalse }) {
   const good = ok === true;
   return (
@@ -1658,6 +1745,8 @@ export default function InteractiveBrokersPage() {
               <code>{executionPreviewView.readOnlyApiRisk?.likelyBlocksRealOrder === true ? 'kan blockera verklig paper-order' : 'okänd'}</code>
             </Row>
           </div>
+
+          <IbFuturesDataStatusCard hidden={activeTab !== 'status'} />
 
           <div hidden={activeTab !== 'gateway'} style={CARD_STYLE}>
             <h2 style={{ marginTop: 0 }}>Anslutnings-readiness (IB Gateway/TWS)</h2>

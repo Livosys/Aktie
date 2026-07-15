@@ -313,6 +313,18 @@ app.listen(PORT, '127.0.0.1', () => {
   else console.log('[Server] Daily intelligence scheduler disabled via ENABLE_DAILY_INTELLIGENCE_SCHEDULER=false');
   if (ENABLE_PAPER_TRADING_INIT) initPaperTrading();
   else console.log('[Server] Paper trading init disabled via ENABLE_PAPER_TRADING_INIT=false');
+  // Read-only IB futures-datalager (FUTURES_DATA_LAYER.md). Master-flagga
+  // IB_FUTURES_DATA_ENABLED=false → helt inert (ingen IB-anslutning skapas).
+  {
+    const futuresMarketDataService = require('./src/services/futuresMarketDataService');
+    if (futuresMarketDataService.defaultFuturesMarketDataService.isEnabled()) {
+      futuresMarketDataService.defaultFuturesMarketDataService.start()
+        .then((result) => console.log(`[IBFuturesData] start: ${result.ok ? 'ok' : result.error}`))
+        .catch((err) => console.warn('[IBFuturesData] start failed:', err.message));
+    } else {
+      console.log('[Server] IB futures data layer disabled via IB_FUTURES_DATA_ENABLED=false');
+    }
+  }
   redisService.connect().then((connected) => {
     console.log(`[Redis] ${connected ? 'connected' : 'fallback mode'} (${redisService.status().clientStatus})`);
   }).catch((err) => {
