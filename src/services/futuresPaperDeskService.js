@@ -5,7 +5,10 @@ const strategyPerformanceReadService = require('./strategyPerformanceReadService
 const futuresPaperAccountService = require('./futuresPaperAccountService');
 const futuresPaperLedgerService = require('./futuresPaperLedgerService');
 const futuresPaperScannerService = require('./futuresPaperScannerService');
+const paperEnabledStrategiesService = require('./paperEnabledStrategiesService');
+const daytradingStrategyCatalogService = require('./daytradingStrategyCatalogService');
 const futuresContractCatalog = require('./futuresContractCatalogService');
+const futuresMarketHoursService = require('./futuresMarketHoursService');
 
 const SAFETY = Object.freeze({
   mode: 'paper_only',
@@ -59,32 +62,295 @@ function safeArray(value) {
   return Array.isArray(value) ? value.filter(Boolean) : [];
 }
 
-function getFuturesSessionState(now = new Date()) {
-  const current = new Date(now);
-  const day = current.getUTCDay();
-  const minutes = current.getUTCHours() * 60 + current.getUTCMinutes();
+function safeString(value) {
+  if (value === null || value === undefined) return null;
+  const text = String(value).trim();
+  return text.length ? text : null;
+}
 
-  // Approximation for a read-only desk shell:
-  // - Sunday opens at 23:00 UTC
-  // - Friday closes at 22:00 UTC
-  // - Saturday is closed
-  // - Mon-Thu are open except the daily maintenance window around 22:00-23:00 UTC
-  const maintenanceStart = 22 * 60;
-  const maintenanceEnd = 23 * 60;
-  let isOpen = false;
-  if (day >= 1 && day <= 4) isOpen = !(minutes >= maintenanceStart && minutes < maintenanceEnd);
-  else if (day === 5) isOpen = minutes < maintenanceStart;
-  else if (day === 0) isOpen = minutes >= maintenanceEnd;
-  else isOpen = false;
+function toMap(rows = [], keyOf) {
+  const map = new Map();
+  for (const row of safeArray(rows)) {
+    const key = keyOf(row);
+    if (key) map.set(key, row);
+  }
+  return map;
+}
+
+// Fokusinstrument för desken härleds från kontraktskatalogen (micro-klassen),
+// aldrig från hårdkodade symboler i overview-raderna.
+const DESK_FOCUS_INSTRUMENTS = Object.freeze(
+  FUTURES_INSTRUMENTS.filter((row) => row.contractClass === 'micro').map((row) => row.root),
+);
+
+// Entry contracts använder aktie-vokabulär för sessioner; futures-sessionens id
+// (futuresMarketHoursService) måste översättas innan jämförelse.
+const CONTRACT_SESSIONS_ALWAYS_OPEN = Object.freeze(['24_7', 'crypto_24_7']);
+const CONTRACT_SESSIONS_US_RTH = Object.freeze(['regular', 'rth', 'nyse', 'nasdaq', 'us_stocks']);
+
+const PAPER_STATUSES = Object.freeze([
+  'ACTIVE_PAPER',
+  'READY_WAITING_FOR_SIGNAL',
+  'SESSION_CLOSED',
+  'DATA_BLOCKED',
+  'PRODUCER_NOT_IMPLEMENTED',
+  'APPROVAL_BLOCKED',
+  'ENTRY_CONTRACT_BLOCKED',
+  'RISK_BLOCKED',
+  'TRADE_CAP_BLOCKED',
+  'DIAGNOSTIC_ONLY',
+  'NOT_APPLICABLE',
+]);
+
+function inferOverviewInstruments(strategy = {}) {
+  const market = String(strategy.market || strategy.market_group || '').toLowerCase();
+  if (market === 'crypto') return [];
+  return DESK_FOCUS_INSTRUMENTS.slice();
+}
+
+function sessionAllowedForStrategy(sessionId, entryContract) {
+  if (!entryContract) return true;
+  const allowed = safeArray(entryContract.allowedSessions).map((value) => String(value).toLowerCase());
+  // Speglar paperStrategyEntryContractService: sessionslistan upprätthålls bara
+  // när kontraktet kräver öppen marknad.
+  if (entryContract.requiresMarketOpen !== true) return true;
+  if (!allowed.length) return true;
+  const id = String(sessionId || '').toLowerCase();
+  if (allowed.includes(id)) return true;
+  if (CONTRACT_SESSIONS_ALWAYS_OPEN.some((value) => allowed.includes(value))) return true;
+  if (id === 'us_rth' && CONTRACT_SESSIONS_US_RTH.some((value) => allowed.includes(value))) return true;
+  return false;
+}
+
+function isRiskBlockReason(reason) {
+  return /risk|drawdown|halt|loss_limit/i.test(String(reason || ''));
+}
+
+function isTradeCapBlockReason(reason) {
+  return /cooldown|family|max_trades|trade_cap|daily_cap/i.test(String(reason || ''));
+}
+
+// Fallback-reason per status så att blockerade rader alltid har en explicit blockerare.
+const STATUS_FALLBACK_BLOCKER = Object.freeze({
+  PRODUCER_NOT_IMPLEMENTED: 'producer_not_implemented',
+  DATA_BLOCKED: 'runtime_connector_inactive',
+  ENTRY_CONTRACT_BLOCKED: 'entry_contract_missing',
+  APPROVAL_BLOCKED: 'not_approved_or_enabled_for_paper',
+  RISK_BLOCKED: 'risk_blocked',
+  TRADE_CAP_BLOCKED: 'trade_cap_blocked',
+  DIAGNOSTIC_ONLY: 'diagnostic_only',
+  NOT_APPLICABLE: 'unsupported_futures_mapping',
+  SESSION_CLOSED: 'session_closed',
+  READY_WAITING_FOR_SIGNAL: 'waiting_for_signal',
+});
+
+function normalizePaperExecutionStatus(row = {}, {
+  sessionOpen = false,
+  sessionAllowed = true,
+  hasOpenPosition = false,
+  applicable = true,
+  scannerRow = null,
+} = {}) {
+  // Prioritet: faktiskt tillstånd > permanenta strukturella blockerare >
+  // session > operativa blockerare > redo.
+  if (hasOpenPosition) return 'ACTIVE_PAPER';
+  if (!applicable) return 'NOT_APPLICABLE';
+  if (row.producerStatus == null || row.producerStatus === 'none' || (row.producerStatus && row.producerStatus !== 'ok')) {
+    return 'PRODUCER_NOT_IMPLEMENTED';
+  }
+  if (row.readiness === 'READY_FOR_REPLAY' || row.paperEligibility === 'TECHNICALLY_ALLOWED_BUT_LONG_ONLY_INCOMPATIBLE') {
+    return 'DIAGNOSTIC_ONLY';
+  }
+  if (row.runtimeConnectorStatus && row.runtimeConnectorStatus !== 'active') return 'DATA_BLOCKED';
+  if (row.entryContractStatus === 'missing') return 'ENTRY_CONTRACT_BLOCKED';
+  // DISABLED_BY_USER = ej godkänd/aktiverad för paper — approval-spärr, inte "ej tillämplig".
+  if (row.paperEligibility === 'DISABLED_BY_USER'
+    || row.approved !== true
+    || ['paused', 'removed', 'not_approved'].includes(String(row.approvalStatus || '').toLowerCase())) {
+    return 'APPROVAL_BLOCKED';
+  }
+  if (!sessionOpen || !sessionAllowed) return 'SESSION_CLOSED';
+  const operativeReason = row.paperBlockedReason || scannerRow?.blockReason || null;
+  if (isRiskBlockReason(operativeReason)) return 'RISK_BLOCKED';
+  if (scannerRow?.cooldownActive === true
+    || scannerRow?.familyGateDecision === 'blocked'
+    || isTradeCapBlockReason(operativeReason)) {
+    return 'TRADE_CAP_BLOCKED';
+  }
+  return 'READY_WAITING_FOR_SIGNAL';
+}
+
+function summarizeStrategySignal(row = {}) {
+  const rawSignals = safeArray(row.evidence?.rawSignals);
+  if (rawSignals.length) return rawSignals[0];
+  if (row.latestCandidate?.signalSubtype) return row.latestCandidate.signalSubtype;
+  if (row.latestCandidate?.decision) return row.latestCandidate.decision;
+  return null;
+}
+
+function summarizeDiagnosticResult(row = {}) {
+  const diag = row.entryContractDiagnostics || null;
+  const blocker = row.latestEntryContractBlock || row.commonEntryContractBlocker || null;
+  if (blocker && blocker.reasonCode) return blocker.reasonCode;
+  if (diag && diag.status) return diag.status;
+  if (row.runtimeBlockedReason) return row.runtimeBlockedReason;
+  if (row.paperBlockedReason) return row.paperBlockedReason;
+  return row.readiness || row.technicalReadiness || null;
+}
+
+function buildCanonicalStrategyOverview({
+  now,
+  session,
+  paperStrategies,
+  openPositions,
+  scannerStrategies,
+} = {}) {
+  const catalogRows = safeArray(daytradingStrategyCatalogService.getCatalog().strategies);
+  const paperRows = safeArray(paperStrategies?.strategies);
+  const paperById = toMap(paperRows, (row) => safeString(row.strategyId));
+  const scannerById = toMap(safeArray(scannerStrategies), (row) => safeString(row.strategyId));
+  const openPositionsByStrategy = toMap(safeArray(openPositions), (row) => safeString(row.strategyId));
+  const sessionLabel = session?.sessionLabel || session?.session || 'Globex';
+  const sessionId = session?.sessionId || null;
+  const sessionOpen = session?.isMarketOpen === true;
+
+  const rows = catalogRows.map((strategy) => {
+    const paperRow = paperById.get(strategy.id) || {};
+    const scannerRow = scannerById.get(strategy.id) || null;
+    const openPosition = openPositionsByStrategy.get(strategy.id) || null;
+    const allowedSessions = safeArray(paperRow.entryContract?.allowedSessions);
+    const instruments = inferOverviewInstruments(strategy);
+    const applicable = instruments.length > 0;
+    const sessionAllowed = sessionAllowedForStrategy(sessionId, paperRow.entryContract || null);
+    const marketOpenForStrategy = sessionOpen && sessionAllowed;
+    const paperStatus = normalizePaperExecutionStatus(paperRow, {
+      sessionOpen,
+      sessionAllowed,
+      hasOpenPosition: Boolean(openPosition),
+      applicable,
+      scannerRow,
+    });
+    const canTradeNow = marketOpenForStrategy
+      && paperStatus === 'READY_WAITING_FOR_SIGNAL'
+      && paperRow.paperEligibility === 'READY'
+      && paperRow.readiness === 'READY_FOR_PAPER'
+      && (scannerRow ? scannerRow.canTradeNow !== false : true);
+    const mainBlocker = !applicable
+      ? 'unsupported_futures_mapping'
+      : (!sessionOpen
+        ? (session?.closedReason || 'session_closed')
+        : (!sessionAllowed
+          ? 'session_not_allowed_for_strategy'
+          : (paperRow.paperBlockedReason
+            || scannerRow?.blockReason
+            || paperRow.runtimeBlockedReason
+            || paperRow.commonEntryContractBlocker?.reasonCode
+            || STATUS_FALLBACK_BLOCKER[paperStatus]
+            || null)));
+
+    return {
+      strategyId: strategy.id,
+      displayName: paperRow.displayName || strategy.name || strategy.id,
+      family: paperRow.family || strategy.family || null,
+      strategyFamily: paperRow.family || strategy.family || null,
+      market: paperRow.market || strategy.market_group || strategy.market || null,
+      instruments,
+      instrument: instruments.length ? instruments.join(' / ') : null,
+      compatibilityStatus: paperRow.technicalReadiness || paperRow.readiness || null,
+      producerStatus: paperRow.producerStatus || null,
+      dataStatus: paperRow.runtimeConnectorStatus || paperRow.paperEligibility || null,
+      currentSession: sessionLabel,
+      currentSessionId: sessionId,
+      allowedSessions,
+      sessionAllowed,
+      marketOpen: marketOpenForStrategy,
+      latestDiagnosticResult: summarizeDiagnosticResult(paperRow),
+      latestSignal: summarizeStrategySignal(paperRow),
+      latestCandidate: paperRow.latestCandidate || null,
+      latestPaperTrade: paperRow.latestPaperTrade || null,
+      openPaperPosition: openPosition ? {
+        id: openPosition.id || openPosition.positionId || null,
+        symbol: openPosition.symbol || openPosition.root || null,
+        direction: openPosition.direction || null,
+        openedAt: openPosition.openedAt || openPosition.entryTime || null,
+      } : null,
+      mainBlocker: canTradeNow || paperStatus === 'ACTIVE_PAPER' ? null : mainBlocker,
+      readinessStatus: paperRow.readiness || paperRow.technicalReadiness || null,
+      paperExecutionStatus: paperStatus,
+      paperStatus,
+      canTradeNow,
+      paperBlockedReason: paperRow.paperBlockedReason || null,
+      approvalStatus: paperRow.approvalStatus || null,
+      approved: paperRow.approved === true,
+      selectedInFamily: paperRow.selectedInFamily === true,
+      entryContractStatus: paperRow.entryContractStatus || null,
+      entryContractReady: paperRow.entryContractReady === true,
+      entryContractVersion: paperRow.entryContractVersion || null,
+      requiredContext: paperRow.requiredContext || [],
+      missingComponents: paperRow.missingComponents || [],
+      warnings: paperRow.warnings || [],
+      syntheticBatch: paperRow.syntheticBatch === true,
+      manualSelectionStatus: paperRow.manualSelectionStatus || null,
+      evidence: paperRow.evidence || null,
+      entryContract: paperRow.entryContract || null,
+      entryContractDiagnostics: paperRow.entryContractDiagnostics || null,
+      latestEntryContractBlock: paperRow.latestEntryContractBlock || null,
+      commonEntryContractBlocker: paperRow.commonEntryContractBlocker || null,
+      entryContractCandidateCount: paperRow.entryContractCandidateCount || 0,
+      entryContractPassCount: paperRow.entryContractPassCount || 0,
+      entryContractBlockCount: paperRow.entryContractBlockCount || 0,
+      timeoutRate: paperRow.timeoutRate ?? null,
+      outcomeCounts: paperRow.outcomeCounts || null,
+      avgMfe: paperRow.avgMfe ?? null,
+      avgMae: paperRow.avgMae ?? null,
+      now: nowIso(now),
+    };
+  });
+
+  const counts = rows.reduce((acc, row) => {
+    acc.total += 1;
+    if (row.canTradeNow) acc.canTradeNow += 1;
+    if (row.paperStatus === 'ACTIVE_PAPER') acc.active += 1;
+    if (row.paperStatus === 'SESSION_CLOSED') acc.sessionClosed += 1;
+    if (row.paperStatus === 'DATA_BLOCKED') acc.dataBlocked += 1;
+    if (row.paperStatus === 'PRODUCER_NOT_IMPLEMENTED') acc.producerNotImplemented += 1;
+    if (row.paperStatus === 'APPROVAL_BLOCKED') acc.approvalBlocked += 1;
+    if (row.paperStatus === 'ENTRY_CONTRACT_BLOCKED') acc.entryContractBlocked += 1;
+    if (row.paperStatus === 'RISK_BLOCKED') acc.riskBlocked += 1;
+    if (row.paperStatus === 'TRADE_CAP_BLOCKED') acc.tradeCapBlocked += 1;
+    if (row.paperStatus === 'READY_WAITING_FOR_SIGNAL') acc.readyWaitingForSignal += 1;
+    if (row.paperStatus === 'DIAGNOSTIC_ONLY') acc.diagnosticOnly += 1;
+    if (row.paperStatus === 'NOT_APPLICABLE') acc.notApplicable += 1;
+    return acc;
+  }, {
+    total: 0,
+    canTradeNow: 0,
+    active: 0,
+    readyWaitingForSignal: 0,
+    sessionClosed: 0,
+    dataBlocked: 0,
+    producerNotImplemented: 0,
+    approvalBlocked: 0,
+    entryContractBlocked: 0,
+    riskBlocked: 0,
+    tradeCapBlocked: 0,
+    diagnosticOnly: 0,
+    notApplicable: 0,
+  });
 
   return {
-    isOpen,
-    session: 'Globex',
-    timezone: 'UTC',
-    description: isOpen ? 'Futures-sessionen är öppen.' : 'Futures-sessionen är stängd eller i underhållsfönster.',
-    maintenanceWindow: '22:00-23:00 UTC',
-    nextChangeHint: isOpen ? 'Följ sessionen och kontrollerade pauser.' : 'Vänta på nästa Globex-fönster.',
+    generatedAt: nowIso(now),
+    currentSession: sessionLabel,
+    currentSessionId: sessionId,
+    marketOpen: sessionOpen,
+    totalStrategies: rows.length,
+    counts,
+    strategies: rows,
   };
+}
+
+function getFuturesSessionState(now = new Date()) {
+  return futuresMarketHoursService.getCmeEquityIndexFuturesSessionState(now);
 }
 
 function calcFuturesPnl({
@@ -179,6 +445,8 @@ function buildFuturesPaperDeskRuntime(options = {}) {
   const instruments = normalizeMiniFutures(universe);
   const session = getFuturesSessionState(now);
   const strategyPulse = normalizePerformance(performance);
+  const paperStrategies = options.paperStrategies
+    || paperEnabledStrategiesService.buildPaperStrategyList({ fresh: options.fresh === true });
   const baseBalance = Number(account.startingBalanceSek ?? options.startingBalance ?? DEFAULT_ACCOUNT.startingBalance) || DEFAULT_ACCOUNT.startingBalance;
   const positions = ledgerResult?.positions || {
     open: [],
@@ -196,6 +464,14 @@ function buildFuturesPaperDeskRuntime(options = {}) {
   const recentClosedTrades = options.recentClosedTrades
     || futuresPaperLedgerService.defaultFuturesPaperLedgerService.getRecentClosedTrades({
       limit: scannerRuntime?.engineConfig?.closedTradesLimit || 100,
+    });
+  const strategyOverview = options.strategyOverview
+    || buildCanonicalStrategyOverview({
+      now,
+      session,
+      paperStrategies,
+      openPositions,
+      scannerStrategies: strategyStatus?.strategies || [],
     });
 
   return {
@@ -263,6 +539,14 @@ function buildFuturesPaperDeskRuntime(options = {}) {
       tradableNow: strategyStatus.tradableNow,
       config: strategyStatus.config,
     } : null,
+    strategyOverview: strategyOverview.strategies,
+    strategyOverviewMeta: {
+      totalStrategies: strategyOverview.totalStrategies,
+      currentSession: strategyOverview.currentSession,
+      currentSessionId: strategyOverview.currentSessionId,
+      marketOpen: strategyOverview.marketOpen,
+      counts: strategyOverview.counts,
+    },
     recentClosedTrades: recentClosedTrades?.trades || [],
     dataFeed: scannerRuntime?.dataFeed || { source: 'none', simulated: false, fallback: false },
     quotes: scannerRuntime?.quotes || [],
@@ -293,8 +577,13 @@ function buildFuturesPaperDeskRuntime(options = {}) {
 module.exports = {
   SAFETY,
   FUTURES_INSTRUMENTS,
+  DESK_FOCUS_INSTRUMENTS,
   DEFAULT_ACCOUNT,
+  PAPER_STATUSES,
   getFuturesSessionState,
   calcFuturesPnl,
+  sessionAllowedForStrategy,
+  normalizePaperExecutionStatus,
+  buildCanonicalStrategyOverview,
   buildFuturesPaperDeskRuntime,
 };

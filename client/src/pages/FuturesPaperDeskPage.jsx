@@ -119,6 +119,11 @@ function fmtMoney(value, currency = 'SEK', digits = 0) {
   }).format(num);
 }
 
+function formatSessionName(market = {}) {
+  const base = market.session || 'Globex';
+  return market.sessionLabel ? `${base} · ${market.sessionLabel}` : base;
+}
+
 function fmtPct(value, digits = 1) {
   const num = Number(value);
   if (!Number.isFinite(num)) return '–';
@@ -141,6 +146,36 @@ function tradeTypeTone(type, excludedFromStats) {
   if (type === 'manual_simulation') return 'info';
   if (type === 'cleanup' || type === 'curl_test') return 'warning';
   return 'warning';
+}
+
+function canonicalStrategyStatusTone(status) {
+  const value = String(status || '').toUpperCase();
+  if (value === 'ACTIVE_PAPER' || value === 'READY_WAITING_FOR_SIGNAL' || value === 'READY_FOR_PAPER' || value === 'READY') return 'success';
+  if (value === 'READY_FOR_REPLAY' || value === 'DIAGNOSTIC_ONLY') return 'info';
+  if (value === 'SESSION_CLOSED' || value === 'APPROVAL_BLOCKED' || value === 'ENTRY_CONTRACT_BLOCKED' || value === 'DATA_BLOCKED' || value === 'PRODUCER_NOT_IMPLEMENTED') return 'warning';
+  if (value === 'RISK_BLOCKED' || value === 'TRADE_CAP_BLOCKED') return 'danger';
+  if (value === 'NOT_APPLICABLE') return 'neutral';
+  return 'neutral';
+}
+
+function compactJson(value, fallback = '–') {
+  if (value === null || value === undefined) return fallback;
+  if (Array.isArray(value)) {
+    if (!value.length) return fallback;
+    return value.map((item) => String(item)).join(', ');
+  }
+  if (typeof value === 'object') {
+    const keys = ['strategyId', 'displayName', 'decision', 'result', 'signalSubtype', 'reason', 'reasonCode', 'pnlPct', 'closedAt', 'entryTime', 'timestamp'];
+    const parts = [];
+    for (const key of keys) {
+      if (value[key] !== undefined && value[key] !== null && value[key] !== '') {
+        parts.push(`${key}:${String(value[key])}`);
+      }
+    }
+    return parts.length ? parts.join(' · ') : JSON.stringify(value);
+  }
+  const text = String(value).trim();
+  return text.length ? text : fallback;
 }
 
 function yesNo(value) {
@@ -351,11 +386,11 @@ export default function FuturesPaperDeskPage() {
   const autoSimOn = autoSimulation.enabled === true;
   const scanHistory = Array.isArray(data?.scanHistory) ? data.scanHistory : [];
   const strategyStatus = Array.isArray(data?.strategyStatus) ? data.strategyStatus : [];
+  const strategyOverview = Array.isArray(data?.strategyOverview) ? data.strategyOverview : [];
   const recentClosedTrades = Array.isArray(data?.recentClosedTrades) ? data.recentClosedTrades : [];
   const lastScan = scanner.lastScanSummary || null;
   const lastScanBlocked = [
     ...(lastScan?.blockedByCooldown || []).map((row) => ({ ...row, label: 'cooldown' })),
-    ...(lastScan?.blockedByMaxTrades || []).map((row) => ({ ...row, label: 'max trades' })),
     ...(lastScan?.blockedByFamilyGate || []).map((row) => ({ ...row, label: `family gate (${row.strategyFamily || 'okänd familj'})` })),
   ];
   const accountCurrency = account.currency || account.baseCurrency || 'SEK';
@@ -582,7 +617,6 @@ export default function FuturesPaperDeskPage() {
 
           <ReadinessCard title="Senaste blockerade signaler" status={lastScanBlocked.length > 0 ? `${lastScanBlocked.length} blockerade` : 'Info'} tone={lastScanBlocked.length > 0 ? 'warning' : 'neutral'}>
             <ReadinessRow label="Cooldown-blockerade" value={String(lastScan?.blockedByCooldown?.length ?? 0)} />
-            <ReadinessRow label="Max-limit-blockerade" value={String(lastScan?.blockedByMaxTrades?.length ?? 0)} />
             <ReadinessRow label="Skippade strategier" value={String(lastScan?.skippedStrategies?.length ?? 0)} />
             <MiniList
               items={[
@@ -617,7 +651,7 @@ export default function FuturesPaperDeskPage() {
         <SectionHeader
           eyebrow="Scan history"
           title="Senaste 10 scans"
-          summary="Varje scan kontrollerar alla godkända strategier mot MNQ/MES med max trades-, 30 min cooldown- och family gate-regler. Endast intern paper-simulation."
+          summary="Varje scan kontrollerar alla godkända strategier mot MNQ/MES med 30 min cooldown- och family gate-regler. Endast intern paper-simulation."
         />
         <CompactTable
           rows={scanHistory.map((row) => ({ ...row, id: row.scanId }))}
@@ -630,7 +664,6 @@ export default function FuturesPaperDeskPage() {
             { key: 'tradesOpenedFromRealSignals', label: 'Real opened', render: (row) => fmtNumber(row.tradesOpenedFromRealSignals || 0) },
             { key: 'tradesOpenedFromTests', label: 'Test opened', render: (row) => fmtNumber(row.tradesOpenedFromTests || 0) },
             { key: 'blockedByCooldown', label: 'Cooldown-block', render: (row) => fmtNumber(row.blockedByCooldown?.length || 0) },
-            { key: 'blockedByMaxTrades', label: 'Max-block', render: (row) => fmtNumber(row.blockedByMaxTrades?.length || 0) },
             { key: 'signalsSkippedNoMapping', label: 'No mapping', render: (row) => fmtNumber(row.signalsSkippedNoMapping || 0) },
             { key: 'signalsSkippedNoRisk', label: 'No risk', render: (row) => fmtNumber(row.signalsSkippedNoRisk || 0) },
             { key: 'status', label: 'Status', render: (row) => <Pill tone={row.status === 'completed' ? 'success' : 'warning'}>{row.status || '–'}</Pill> },
@@ -723,8 +756,8 @@ export default function FuturesPaperDeskPage() {
             summary="Ett enkelt läs-läge för futures-sessionen och fokusinstrumenten."
           />
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: 10 }}>
-            <MetricCard label="Session" value={market.session || 'Globex'} hint={market.timezone || 'UTC'} />
-            <MetricCard label="Öppet" value={market.isOpen ? 'Ja' : 'Nej'} hint={market.maintenanceWindow || '22:00-23:00 UTC'} tone={market.isOpen ? 'success' : 'warning'} />
+            <MetricCard label="Session" value={formatSessionName(market)} hint={market.timezone || 'UTC'} />
+            <MetricCard label="Öppet" value={market.isOpen ? 'Ja' : 'Nej'} hint={market.maintenanceWindow || '16:00-17:00 CT'} tone={market.isOpen ? 'success' : 'warning'} />
             <MetricCard label="Nästa steg" value={market.isOpen ? 'Aktiv' : 'Vänta'} hint={market.nextChangeHint || '–'} tone={market.isOpen ? 'success' : 'neutral'} />
           </div>
           <div style={{ marginTop: 14 }}>
@@ -758,8 +791,54 @@ export default function FuturesPaperDeskPage() {
         <section style={sectionStyle()}>
           <SectionHeader
             eyebrow="Strategier"
+            title="Canonical strategy overview"
+            summary="Alla 33 canonical strategier visas här med read-only readiness, futures-session och senast kända kandidat/trade. Scannerns godkända subset visas separat längre ned."
+          />
+          <CompactTable
+            rows={strategyOverview.map((row) => ({ ...row, id: row.strategyId }))}
+            emptyText="Inga canonical strategier hittades i overview-lagret."
+            columns={[
+              { key: 'strategyName', label: 'Strategi', render: (row) => (
+                <div>
+                  <div style={{ fontWeight: 700 }}>{row.displayName || row.strategyName || row.strategyId}</div>
+                  <div style={{ color: 'var(--muted)', fontSize: 11 }}>{row.strategyId}{row.approved ? '' : ' · ej godkänd'}</div>
+                </div>
+              ) },
+              { key: 'paperStatus', label: 'Status', render: (row) => (
+                <Pill tone={canonicalStrategyStatusTone(row.paperStatus)}>{row.paperStatus || '–'}</Pill>
+              ) },
+              { key: 'strategyFamily', label: 'Familj', render: (row) => row.strategyFamily || '–' },
+              { key: 'instrument', label: 'Instrument', render: (row) => row.instrument || '–' },
+              { key: 'market', label: 'Marknad', render: (row) => row.market || '–' },
+              { key: 'compatibilityStatus', label: 'Kompatibilitet', render: (row) => <Pill tone={canonicalStrategyStatusTone(row.compatibilityStatus)}>{row.compatibilityStatus || '–'}</Pill> },
+              { key: 'producerStatus', label: 'Producer', render: (row) => <Pill tone={canonicalStrategyStatusTone(row.producerStatus === 'ok' ? 'ACTIVE_PAPER' : 'PRODUCER_NOT_IMPLEMENTED')}>{row.producerStatus || '–'}</Pill> },
+              { key: 'dataStatus', label: 'Data', render: (row) => <Pill tone={canonicalStrategyStatusTone(row.dataStatus === 'active' ? 'ACTIVE_PAPER' : row.dataStatus)}>{row.dataStatus || '–'}</Pill> },
+              { key: 'currentSession', label: 'Session', render: (row) => `${row.currentSession || '–'}${row.currentSessionId ? ` · ${row.currentSessionId}` : ''}` },
+              { key: 'allowedSessions', label: 'Gäller för', render: (row) => compactJson(row.allowedSessions) },
+              { key: 'marketOpen', label: 'Marknad öppen', render: (row) => (
+                <Pill tone={row.marketOpen ? 'success' : 'warning'}>{row.marketOpen ? 'Ja' : 'Nej'}</Pill>
+              ) },
+              { key: 'latestDiagnosticResult', label: 'Senaste diagnostic', render: (row) => compactJson(row.latestDiagnosticResult) },
+              { key: 'latestSignal', label: 'Senaste signal', render: (row) => compactJson(row.latestSignal) },
+              { key: 'latestCandidate', label: 'Senaste candidate', render: (row) => compactJson(row.latestCandidate) },
+              { key: 'latestPaperTrade', label: 'Senaste paper trade', render: (row) => compactJson(row.latestPaperTrade) },
+              { key: 'mainBlocker', label: 'Huvudblockerare', render: (row) => compactJson(row.mainBlocker) },
+              { key: 'readinessStatus', label: 'Readiness', render: (row) => <Pill tone={canonicalStrategyStatusTone(row.readinessStatus)}>{row.readinessStatus || '–'}</Pill> },
+              { key: 'paperExecutionStatus', label: 'Paper execution', render: (row) => <Pill tone={canonicalStrategyStatusTone(row.paperStatus)}>{row.paperExecutionStatus || row.paperStatus || '–'}</Pill> },
+              { key: 'canTradeNow', label: 'Kan trada', render: (row) => (
+                <Pill tone={row.canTradeNow ? 'success' : 'warning'}>{row.canTradeNow ? 'Ja' : (row.paperBlockedReason || 'Nej')}</Pill>
+              ) },
+            ]}
+          />
+        </section>
+        )}
+
+        {activeTab === 'runtime' && (
+        <section style={sectionStyle()}>
+          <SectionHeader
+            eyebrow="Scanner"
             title="Strategy status (godkända för paper-test)"
-            summary="Alla godkända strategier från paper-allowlisten med max trades-, 30 min cooldown- och family gate-status. Endast intern paper-simulation, ingen broker."
+            summary="Scannerns godkända subset med trade-count, real signals, cooldown och PnL/WR-stämplar. Endast intern paper-simulation, ingen broker."
           />
           <CompactTable
             rows={strategyStatus.map((row) => ({ ...row, id: row.strategyId }))}
@@ -771,7 +850,7 @@ export default function FuturesPaperDeskPage() {
                   <div style={{ color: 'var(--muted)', fontSize: 11 }}>{row.strategyId}{row.approved ? '' : ' · ej godkänd'}</div>
                 </div>
               ) },
-              { key: 'tradesUsed', label: 'Trades all', render: (row) => `${fmtNumber(row.totalTradesAll ?? row.tradesUsed ?? 0)} / ${fmtNumber(row.maxTrades || 10)}` },
+              { key: 'tradesUsed', label: 'Trades all', render: (row) => fmtNumber(row.totalTradesAll ?? row.tradesUsed ?? 0) },
               { key: 'totalTradesRealSignals', label: 'Real signals', render: (row) => fmtNumber(row.totalTradesRealSignals || 0) },
               { key: 'testTrades', label: 'Test/exkl.', render: (row) => `${fmtNumber(row.testTrades || 0)} / ${fmtNumber(row.excludedTrades || 0)}` },
               { key: 'strategyFamily', label: 'Familj', render: (row) => row.strategyFamily || '–' },
@@ -906,7 +985,7 @@ export default function FuturesPaperDeskPage() {
               { key: 'Universe', value: 'marketUniverseService', detail: data?.technical?.universeSource || '–' },
               { key: 'Strategier', value: 'Trading OS signal adapter', detail: data?.technical?.strategySource || '–' },
               { key: 'Datafeed', value: dataFeed.source || '–', detail: data?.technical?.priceFeedSource || '–' },
-              { key: 'Session', value: market.session || 'Globex', detail: market.description || '–' },
+              { key: 'Session', value: formatSessionName(market), detail: market.description || '–' },
             ]}
             columns={[
               { key: 'key', label: 'Källa' },
