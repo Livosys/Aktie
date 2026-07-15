@@ -10,12 +10,34 @@ const { createFuturesPaperAccountService } = require('./futuresPaperAccountServi
 
 const rootDir = fs.mkdtempSync(path.join(os.tmpdir(), 'futures-paper-account-'));
 const storage = createFuturesPaperStorageService({ rootDir });
-const svc = createFuturesPaperAccountService({ storageService: storage });
+const retiredSvc = createFuturesPaperAccountService({ storageService: storage });
+
+const blockedSet = retiredSvc.setFuturesPaperBalance({ startingBalanceSek: 500000 });
+assert.equal(blockedSet.ok, false);
+assert.equal(blockedSet.error, 'internal_futures_simulation_disabled');
+assert.equal(blockedSet.code, 'internal_futures_simulation_retired');
+
+const blockedReset = retiredSvc.resetFuturesPaperAccount({ reason: 'test_reset' });
+assert.equal(blockedReset.ok, false);
+assert.equal(blockedReset.error, 'internal_futures_simulation_disabled');
+assert.equal(fs.existsSync(storage.files.accountState), false);
+assert.equal(fs.existsSync(storage.files.equityCurve), false);
+
+const retiredReadOnly = retiredSvc.getFuturesPaperAccount();
+assert.equal(retiredReadOnly.ok, true);
+assert.equal(retiredReadOnly.readOnly, true);
+assert.equal(retiredReadOnly.legacySource, 'internal_legacy_simulation');
+assert.equal(fs.existsSync(storage.files.accountState), false);
+assert.equal(fs.existsSync(storage.files.equityCurve), false);
+
+const svc = createFuturesPaperAccountService({ storageService: storage, allowInternalSimulationForTests: true });
 
 const initial = svc.getFuturesPaperAccount();
 
 assert.equal(initial.ok, true);
 assert.equal(initial.mode, 'paper_only');
+assert.equal(initial.readOnly, true);
+assert.equal(initial.legacySource, 'internal_legacy_simulation');
 assert.equal(initial.actions_allowed, false);
 assert.equal(initial.can_place_orders, false);
 assert.equal(initial.live_trading_enabled, false);

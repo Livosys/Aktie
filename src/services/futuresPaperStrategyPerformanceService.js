@@ -1,8 +1,9 @@
 'use strict';
 
 // Futures Paper Strategy Performance — READ-ONLY statistik per canonical
-// strategyId. Läser ENDAST Futures Paper ledger/storage. Ingen approval-status,
-// inget test-run, ingen mutation. Vanlig Paper Trading blandas aldrig in.
+// strategyId. Default-källan är IBKR Paper fills. Den gamla interna
+// futures-ledgern finns endast som separat legacy-archive och blandas aldrig
+// med IBKR Paper-performance.
 //
 // Canonical numeriska värden (net/gross/fees) tas från ledgerns läsmodell
 // (getFuturesPaperPositions → closedPositions), som normaliserar äldre trades.
@@ -11,6 +12,8 @@
 
 const futuresPaperLedgerService = require('./futuresPaperLedgerService');
 const futuresPaperStorageService = require('./futuresPaperStorageService');
+const ibPaperExecutionOrchestratorService = require('./ibPaperExecutionOrchestratorService');
+const internalSimulationRetirement = require('./futuresInternalSimulationRetirementService');
 const strategyIdNormalizer = require('./strategyIdNormalizerService');
 const catalogService = require('./daytradingStrategyCatalogService');
 
@@ -94,8 +97,9 @@ function emptyStats(id) {
     profitFactorNote: null,
     totalHistoricalClosedTrades: 0,
     dataSources: [],
+    executionSources: [],
     usesSimulatedFallback: false,
-    pnlCalculationSources: { stored_net: 0, derived_with_current_commission: 0 },
+    pnlCalculationSources: { broker_fill: 0, stored_net: 0, derived_with_current_commission: 0 },
     pnlProvenance: 'none',
   };
 }
@@ -131,6 +135,8 @@ function aggregateTrades(trades = []) {
     const ds = t.dataSource || 'unknown';
     if (!s.dataSources.includes(ds)) s.dataSources.push(ds);
     if (ds === 'simulated_fallback') s.usesSimulatedFallback = true;
+    const executionSource = t.executionSource || t.source || 'ibkr_paper';
+    if (!s.executionSources.includes(executionSource)) s.executionSources.push(executionSource);
 
     const prov = t.provenance || 'derived_with_current_commission';
     s.pnlCalculationSources[prov] = (s.pnlCalculationSources[prov] || 0) + 1;
@@ -155,9 +161,11 @@ function aggregateTrades(trades = []) {
     }
 
     // provenance-sammanfattning
+    const bf = s.pnlCalculationSources.broker_fill || 0;
     const st = s.pnlCalculationSources.stored_net || 0;
     const dv = s.pnlCalculationSources.derived_with_current_commission || 0;
-    s.pnlProvenance = st > 0 && dv > 0 ? 'mixed' : (st > 0 ? 'stored_net' : (dv > 0 ? 'derived_with_current_commission' : 'none'));
+    const provenanceTypes = [bf > 0 ? 'broker_fill' : null, st > 0 ? 'stored_net' : null, dv > 0 ? 'derived_with_current_commission' : null].filter(Boolean);
+    s.pnlProvenance = provenanceTypes.length > 1 ? 'mixed' : (provenanceTypes[0] || 'none');
 
     delete s.__winSum;
     delete s.__lossSum;
@@ -169,7 +177,7 @@ function aggregateTrades(trades = []) {
 
 // Läser stängda futures-positioner ur ledgern, kopplar provenance ur trades.jsonl
 // och aggregerar. Canonical numeriska värden kommer från ledgerns läsmodell.
-function buildStrategyStats() {
+function buildLegacyStrategyStats() {
   const provenance = provenanceByTradeId();
   let closed = [];
   try {
@@ -185,9 +193,39 @@ function buildStrategyStats() {
       grossPnlSek: row.grossPnlSek,
       feesSek: row.feesSek,
       dataSource: row.dataSource || 'unknown',
+      executionSource: internalSimulationRetirement.LEGACY_SOURCE,
       provenance: provenance.get(row.tradeId) || 'derived_with_current_commission',
     }));
   return aggregateTrades(normalized);
+}
+
+function buildStrategyStats({ executions = [] } = {}) {
+  const normalized = (Array.isArray(executions) ? executions : [])
+    .filter((row) => row && (row.strategyId || row.orderRef))
+    .map((row) => ({
+      strategyId: row.strategyId || row.orderRef,
+      netPnlSek: row.realizedResult ?? row.realizedPnlSek ?? 0,
+      grossPnlSek: row.realizedResult ?? row.realizedPnlSek ?? 0,
+      feesSek: row.commission ?? 0,
+      dataSource: 'ibkr_paper',
+      executionSource: 'ibkr_paper',
+      provenance: 'broker_fill',
+    }));
+  return aggregateTrades(normalized);
+}
+
+function readBrokerExecutions(options = {}) {
+  if (Array.isArray(options.executions)) return options.executions;
+  if (options.reconciliation && Array.isArray(options.reconciliation.executions)) {
+    return options.reconciliation.executions;
+  }
+  try {
+    const cached = ibPaperExecutionOrchestratorService.defaultIbPaperExecutionOrchestratorService
+      .reconciliation.getCachedReconciliation();
+    return Array.isArray(cached?.executions) ? cached.executions : [];
+  } catch (_) {
+    return [];
+  }
 }
 
 // Deterministisk topplistval: primärt värde, sedan fler trades, sedan strategyId.
@@ -211,21 +249,24 @@ function buildLeaders(list) {
     highestWinRate: pickLeader(list, (s) => s.winRatePct, { minTrades: MIN_TRADES_FOR_RATE_LEADERS }),
     mostWins: pickLeader(list, (s) => s.wins),
     highestAverageNetPnl: pickLeader(list, (s) => s.avgNetPnlSek, { minTrades: MIN_TRADES_FOR_RATE_LEADERS }),
-    performanceContext: 'simulated_fallback',
-    notRealMarketPerformance: true,
+    performanceContext: 'ibkr_paper',
+    notRealMarketPerformance: false,
     minTradesForRateLeaders: MIN_TRADES_FOR_RATE_LEADERS,
   };
 }
 
 // Publikt: karta strategyId → stats (för aggregatorn) + lista + topplistor.
-function getPerformance() {
-  const strategies = buildStrategyStats();
+function getPerformance(options = {}) {
+  const executions = readBrokerExecutions(options);
+  const strategies = buildStrategyStats({ executions });
   return {
     status: 'ok',
     readOnly: true,
     generatedAt: nowIso(),
-    performanceContext: 'simulated_fallback',
-    notRealMarketPerformance: true,
+    performanceContext: 'ibkr_paper',
+    executionSource: 'ibkr_paper',
+    notRealMarketPerformance: false,
+    legacySimulationExcluded: true,
     count: strategies.length,
     strategies,
     leaders: buildLeaders(strategies),
@@ -235,7 +276,7 @@ function getPerformance() {
 
 function getPerformanceMap() {
   const map = new Map();
-  for (const s of buildStrategyStats()) map.set(s.strategyId, s);
+  for (const s of buildStrategyStats({ executions: readBrokerExecutions() })) map.set(s.strategyId, s);
   return map;
 }
 
@@ -244,6 +285,8 @@ module.exports = {
   MIN_TRADES_FOR_RATE_LEADERS,
   aggregateTrades,
   buildStrategyStats,
+  buildLegacyStrategyStats,
+  readBrokerExecutions,
   buildLeaders,
   pickLeader,
   provenanceByTradeId,

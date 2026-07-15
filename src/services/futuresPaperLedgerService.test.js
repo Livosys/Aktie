@@ -11,8 +11,48 @@ const { createFuturesPaperLedgerService } = require('./futuresPaperLedgerService
 
 const rootDir = fs.mkdtempSync(path.join(os.tmpdir(), 'futures-paper-ledger-'));
 const storage = createFuturesPaperStorageService({ rootDir });
-const accountSvc = createFuturesPaperAccountService({ storageService: storage });
-const ledgerSvc = createFuturesPaperLedgerService({ storageService: storage, accountService: accountSvc });
+const accountSvc = createFuturesPaperAccountService({ storageService: storage, allowInternalSimulationForTests: true });
+const ledgerSvc = createFuturesPaperLedgerService({ storageService: storage, accountService: accountSvc, allowInternalSimulationForTests: true });
+
+const retiredRootDir = fs.mkdtempSync(path.join(os.tmpdir(), 'futures-paper-ledger-retired-'));
+const retiredStorage = createFuturesPaperStorageService({ rootDir: retiredRootDir });
+const retiredAccountSvc = createFuturesPaperAccountService({ storageService: retiredStorage });
+const retiredLedgerSvc = createFuturesPaperLedgerService({ storageService: retiredStorage, accountService: retiredAccountSvc });
+
+const retiredOpen = retiredLedgerSvc.openFuturesPaperPosition({
+  root: 'MNQ',
+  side: 'long',
+  contracts: 1,
+  entryPrice: 20000,
+});
+assert.equal(retiredOpen.ok, false);
+assert.equal(retiredOpen.error, 'internal_futures_simulation_disabled');
+assert.equal(retiredOpen.code, 'internal_futures_simulation_retired');
+assert.equal(retiredOpen.executionTarget, 'ibkr_paper');
+
+const retiredClose = retiredLedgerSvc.closeFuturesPaperPosition({ tradeId: 'legacy-open', exitPrice: 20001 });
+assert.equal(retiredClose.ok, false);
+assert.equal(retiredClose.error, 'internal_futures_simulation_disabled');
+
+const retiredMark = retiredLedgerSvc.markOpenPositionsToMarket({ prices: { 'legacy-open': 20001 } });
+assert.equal(retiredMark.ok, false);
+assert.equal(retiredMark.error, 'internal_futures_simulation_disabled');
+
+const retiredReset = retiredLedgerSvc.resetState();
+assert.equal(retiredReset.ok, false);
+assert.equal(retiredReset.error, 'internal_futures_simulation_disabled');
+assert.equal(fs.existsSync(retiredStorage.files.positions), false);
+assert.equal(fs.existsSync(retiredStorage.files.trades), false);
+assert.equal(fs.existsSync(retiredStorage.files.accountState), false);
+
+const retiredRead = retiredLedgerSvc.getFuturesPaperLedger({ limit: 10 });
+assert.equal(retiredRead.ok, true);
+assert.equal(retiredRead.readOnly, true);
+assert.equal(retiredRead.legacySource, 'internal_legacy_simulation');
+assert.equal(retiredRead.internalSimulationRetired, true);
+assert.equal(fs.existsSync(retiredStorage.files.positions), false);
+assert.equal(fs.existsSync(retiredStorage.files.trades), false);
+assert.equal(fs.existsSync(retiredStorage.files.accountState), false);
 
 const openMnq = ledgerSvc.openFuturesPaperPosition({
   now: '2026-07-06T11:00:00.000Z',
@@ -49,6 +89,12 @@ assert.equal(openMnq.position.nextAllowedAt, null);
 assert.equal(openMnq.positions.totalOpen, 1);
 assert.equal(openMnq.mode, 'paper_only');
 assert.equal(openMnq.actions_allowed, false);
+assert.equal(openMnq.market.session, 'Globex');
+assert.equal(openMnq.market.sessionId, 'europe');
+assert.equal(openMnq.market.isRth, false);
+assert.equal(openMnq.market.isGlobex, true);
+assert.equal(openMnq.position.entrySession.sessionId, 'europe');
+assert.equal(openMnq.position.sessionId, 'europe');
 
 const openMes = ledgerSvc.openFuturesPaperPosition({
   now: '2026-07-06T11:02:00.000Z',
@@ -92,6 +138,8 @@ assert.equal(closeMnq.trade.strategyFamily, 'ema_trend_family');
 assert.equal(closeMnq.trade.familyRank, 1);
 assert.equal(closeMnq.trade.familyGateDecision, 'allowed');
 assert.equal(closeMnq.trade.strategyCooldownDecision, 'allowed');
+assert.equal(closeMnq.trade.entrySession.sessionId, 'europe');
+assert.equal(closeMnq.trade.exitSession.sessionId, 'europe');
 assert.equal(closeMnq.positions.totalOpen, 1);
 assert.equal(closeMnq.positions.totalClosed, 1);
 
@@ -158,5 +206,65 @@ const invalidClose = ledgerSvc.closeFuturesPaperPosition({
   exitPrice: 1,
 });
 assert.equal(invalidClose.ok, false);
+
+const premarketOpen = ledgerSvc.openFuturesPaperPosition({
+  now: '2026-07-06T12:45:00.000Z',
+  root: 'MNQ',
+  symbol: 'MNQU26',
+  side: 'long',
+  contracts: 1,
+  entryPrice: 20000,
+  stopLoss: 19990,
+  takeProfit: 20020,
+  strategyId: 'session_metadata_test',
+  strategyName: 'Session Metadata Test',
+  entryReason: 'Premarket entry metadata test',
+});
+assert.equal(premarketOpen.ok, true);
+assert.equal(premarketOpen.position.entrySession.sessionId, 'us_premarket');
+assert.equal(premarketOpen.position.entrySession.exchangeLocalTime, '07:45');
+
+const rthClose = ledgerSvc.closeFuturesPaperPosition({
+  now: '2026-07-06T13:45:00.000Z',
+  tradeId: premarketOpen.position.tradeId,
+  exitPrice: 20010,
+  exitReason: 'rth_exit_metadata_test',
+});
+assert.equal(rthClose.ok, true);
+assert.equal(rthClose.trade.entrySession.sessionId, 'us_premarket');
+assert.equal(rthClose.trade.exitSession.sessionId, 'us_rth');
+assert.equal(rthClose.trade.exitSession.exchangeLocalTime, '08:45');
+
+const stateWithLegacyTrade = storage.readPositions();
+storage.writePositions({
+  ...stateWithLegacyTrade,
+  closed: [
+    ...stateWithLegacyTrade.closed,
+    {
+      tradeId: 'legacy_no_session_metadata',
+      root: 'MES',
+      symbol: 'MES',
+      side: 'short',
+      contracts: 1,
+      entryPrice: 5000,
+      exitPrice: 4999,
+      openedAt: '2026-07-01T12:00:00.000Z',
+      closedAt: '2026-07-01T13:00:00.000Z',
+      status: 'closed',
+      realizedPnlUsd: 5,
+      realizedPnlSek: 52.5,
+      grossPnlUsd: 7.44,
+      grossPnlSek: 78.12,
+      feesUsd: 2.44,
+      feesSek: 25.62,
+    },
+  ],
+});
+
+const legacyRead = ledgerSvc.getRecentClosedTrades({ limit: 10 }).trades
+  .find((row) => row.tradeId === 'legacy_no_session_metadata');
+assert.equal(legacyRead.entrySession, null);
+assert.equal(legacyRead.exitSession, null);
+assert.equal(legacyRead.sessionId, null);
 
 console.log('futuresPaperLedgerService.test.js passed');

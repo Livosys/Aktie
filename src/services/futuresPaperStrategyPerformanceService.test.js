@@ -81,8 +81,8 @@ test('rate leaders require >= 5 trades', () => {
   const leaders = perf.buildLeaders(list);
   assert.strictEqual(leaders.highestWinRate.strategyId, 'lo', 'hi har <5 trades och kan ej vinna win-rate-leader');
   assert.strictEqual(leaders.minTradesForRateLeaders, 5);
-  assert.strictEqual(leaders.performanceContext, 'simulated_fallback');
-  assert.strictEqual(leaders.notRealMarketPerformance, true);
+  assert.strictEqual(leaders.performanceContext, 'ibkr_paper');
+  assert.strictEqual(leaders.notRealMarketPerformance, false);
 });
 
 // 18b) Tie-break: lika värde → fler trades, sedan strategyId.
@@ -96,27 +96,33 @@ test('leader tie-break by trades then strategyId', () => {
 });
 
 // 19) Live perf-invarianter: wins+losses+breakeven=closed, win rate, simulated context.
-test('live performance invariants hold', () => {
-  const out = perf.getPerformance();
-  assert.strictEqual(out.performanceContext, 'simulated_fallback');
-  assert.strictEqual(out.notRealMarketPerformance, true);
+test('IBKR paper performance invariants hold', () => {
+  const out = perf.getPerformance({
+    executions: [
+      { strategyId: 'trend_continuation', realizedResult: 125, commission: 2.5, execId: 'exec-1' },
+      { strategyId: 'trend_continuation', realizedResult: -25, commission: 2.5, execId: 'exec-2' },
+    ],
+  });
+  assert.strictEqual(out.performanceContext, 'ibkr_paper');
+  assert.strictEqual(out.executionSource, 'ibkr_paper');
+  assert.strictEqual(out.notRealMarketPerformance, false);
+  assert.strictEqual(out.legacySimulationExcluded, true);
   for (const s of out.strategies) {
     assert.strictEqual(s.wins + s.losses + s.breakevenTrades, s.closedTrades, `${s.strategyId} count mismatch`);
     if (s.closedTrades > 0) {
       assert.strictEqual(s.winRatePct, round1(s.wins / s.closedTrades * 100));
-      assert.ok(s.usesSimulatedFallback === true || s.dataSources.length >= 0);
+      assert.deepStrictEqual(s.executionSources, ['ibkr_paper']);
+      assert.strictEqual(s.pnlProvenance, 'broker_fill');
     }
   }
-  // minst en strategi har derived provenance (äldre trades finns i fixturen)
-  const anyDerived = out.strategies.some((s) => (s.pnlCalculationSources.derived_with_current_commission || 0) > 0);
-  assert.ok(anyDerived, 'expected some derived-provenance trades in fixture');
 });
 
-// 20) Vanlig Paper Trading blandas inte in (endast futures-ledgern läses).
-test('does not read normal paper trading data', () => {
+// 20) Vanlig Paper Trading blandas inte in och legacy-ledgern är separat.
+test('does not read normal paper trading data as active source', () => {
   const src = require('fs').readFileSync(require.resolve('./futuresPaperStrategyPerformanceService.js'), 'utf8');
   assert.ok(!/paper-trading\/trades|paperTradingAgent|automation-approvals/.test(src), 'must not read normal paper trading sources');
-  assert.ok(/futuresPaperLedgerService|futuresPaperStorageService/.test(src));
+  assert.ok(/buildLegacyStrategyStats/.test(src), 'legacy simulation remains a separate archive reader');
+  assert.ok(/ibPaperExecutionOrchestratorService/.test(src), 'active performance reads cached IBKR paper executions');
 });
 
 if (process.exitCode) console.error(`\nfuturesPaperStrategyPerformanceService: FAILURES (passed ${passed})`);

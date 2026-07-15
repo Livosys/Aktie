@@ -14,8 +14,8 @@ const { createFuturesPaperLedgerService, toPositionView } = require('./futuresPa
 
 const rootDir = fs.mkdtempSync(path.join(os.tmpdir(), 'futures-paper-excursion-'));
 const storage = createFuturesPaperStorageService({ rootDir });
-const accountSvc = createFuturesPaperAccountService({ storageService: storage });
-const ledger = createFuturesPaperLedgerService({ storageService: storage, accountService: accountSvc });
+const accountSvc = createFuturesPaperAccountService({ storageService: storage, allowInternalSimulationForTests: true });
+const ledger = createFuturesPaperLedgerService({ storageService: storage, accountService: accountSvc, allowInternalSimulationForTests: true });
 
 // --- Open long MNQ ---
 const open = ledger.openFuturesPaperPosition({

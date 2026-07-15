@@ -155,6 +155,7 @@ const interactiveBrokersPaperExecutionPreviewService = require('../services/inte
 const interactiveBrokersGatewayHealthService = require('../services/interactiveBrokersGatewayHealthService');
 const ibPaperExecutionConfigService = require('../services/ibPaperExecutionConfigService');
 const ibPaperExecutionOrchestratorService = require('../services/ibPaperExecutionOrchestratorService');
+const futuresInternalSimulationRetirementService = require('../services/futuresInternalSimulationRetirementService');
 const tradingViewPreviewLogService = require('../services/tradingViewPreviewLogService');
 const TEST_LIVE_SEND_COOLDOWN_MS = 5 * 60 * 1000;
 let testLiveSendLastAt = 0;
@@ -3620,65 +3621,133 @@ router.get('/futures-paper/runtime', (req, res) => {
   }
 });
 
-router.get('/futures-paper/account', (req, res) => {
+function retiredInternalSimulationPayload(action) {
+  return {
+    ...futuresInternalSimulationRetirementService.buildRetiredMutationResponse({ action }),
+    error: futuresInternalSimulationRetirementService.RETIRED_ERROR,
+  };
+}
+
+function sendRetiredInternalSimulation(res, action) {
+  return res.status(410).json(retiredInternalSimulationPayload(action));
+}
+
+router.get('/futures-paper/account', async (req, res) => {
+  try {
+    const summary = await ibPaperAccountSummaryService.defaultIbPaperAccountSummaryService.getSummary();
+    res.json({
+      ok: summary.ok === true,
+      status: summary.status || (summary.ok ? 'ok' : 'blocked'),
+      account: summary.account || null,
+      ibAccount: summary.account || null,
+      unavailableReason: summary.ok === true ? null : (summary.blocker || summary.error || 'ibkr_paper_account_unavailable'),
+      source: 'ibkr_paper',
+      executionTarget: 'ibkr_paper',
+      noInternalSimulationFallback: true,
+      ...ibPaperAccountSummaryService.SAFETY,
+    });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message, source: 'ibkr_paper', ...ibPaperAccountSummaryService.SAFETY });
+  }
+});
+
+router.post('/futures-paper/account/reset', (req, res) => {
+  return sendRetiredInternalSimulation(res, 'reset_internal_futures_account_route');
+});
+
+router.post('/futures-paper/account/set-balance', (req, res) => {
+  return sendRetiredInternalSimulation(res, 'set_internal_futures_fake_capital_route');
+});
+
+router.get('/futures-paper/legacy-simulation/account', (req, res) => {
   try {
     const includeHistory = req.query.includeHistory == null
       ? undefined
       : String(req.query.includeHistory).toLowerCase() !== 'false';
     const historyLimit = req.query.historyLimit == null ? undefined : req.query.historyLimit;
-    res.json(futuresPaperAccountService.defaultFuturesPaperAccountService.getFuturesPaperAccount({
-      includeHistory,
-      historyLimit,
-    }));
-  } catch (err) {
-    res.status(500).json({ ok: false, error: err.message, ...futuresPaperAccountService.SAFETY });
-  }
-});
-
-router.post('/futures-paper/account/reset', (req, res) => {
-  try {
-    const body = req.body && typeof req.body === 'object' ? req.body : {};
-    if (body.live_trading_enabled === true || body.can_place_orders === true || body.actions_allowed === true || body.broker_enabled === true) {
-      return res.status(400).json({ ok: false, error: 'futures_paper_account_is_paper_only', ...futuresPaperAccountService.SAFETY });
-    }
-    const result = futuresPaperAccountService.defaultFuturesPaperAccountService.resetFuturesPaperAccount({
-      reason: body.reason || 'manual_reset',
+    res.json({
+      ...futuresPaperAccountService.defaultFuturesPaperAccountService.getFuturesPaperAccount({
+        includeHistory,
+        historyLimit,
+      }),
+      archive: true,
+      label: 'Äldre interna simuleringar — används inte för nya trades',
     });
-    res.status(result.ok ? 200 : 400).json(result);
   } catch (err) {
     res.status(500).json({ ok: false, error: err.message, ...futuresPaperAccountService.SAFETY });
   }
 });
 
-router.post('/futures-paper/account/set-balance', (req, res) => {
+router.get('/futures-paper/positions', async (req, res) => {
   try {
-    const body = req.body && typeof req.body === 'object' ? req.body : {};
-    if (body.live_trading_enabled === true || body.can_place_orders === true || body.actions_allowed === true || body.broker_enabled === true) {
-      return res.status(400).json({ ok: false, error: 'futures_paper_account_is_paper_only', ...futuresPaperAccountService.SAFETY });
-    }
-    const result = futuresPaperAccountService.defaultFuturesPaperAccountService.setFuturesPaperBalance({
-      startingBalanceSek: body.startingBalanceSek ?? body.balanceSek ?? body.value,
-      reason: body.reason || 'manual_set_balance',
+    const status = await ibPaperExecutionOrchestratorService.defaultIbPaperExecutionOrchestratorService.buildExecutionStatus({ connect: false });
+    const positions = Array.isArray(status.brokerPositions) ? status.brokerPositions : [];
+    res.json({
+      ok: true,
+      generatedAt: status.generatedAt,
+      source: 'ibkr_paper',
+      executionTarget: 'ibkr_paper',
+      noInternalSimulationFallback: true,
+      positions: {
+        open: positions,
+        closed: [],
+        totalOpen: positions.length,
+        totalClosed: 0,
+        updatedAt: status.reconciliation?.generatedAt || status.generatedAt,
+      },
+      openPositions: positions,
+      closedPositions: [],
+      reconciliation: status.reconciliation || null,
+      ...ibPaperExecutionOrchestratorService.SAFETY,
     });
-    res.status(result.ok ? 200 : 400).json(result);
   } catch (err) {
-    res.status(500).json({ ok: false, error: err.message, ...futuresPaperAccountService.SAFETY });
+    res.status(500).json({ ok: false, error: err.message, source: 'ibkr_paper', ...ibPaperExecutionOrchestratorService.SAFETY });
   }
 });
 
-router.get('/futures-paper/positions', (req, res) => {
+router.get('/futures-paper/legacy-simulation/positions', (req, res) => {
   try {
-    res.json(futuresPaperLedgerService.defaultFuturesPaperLedgerService.getFuturesPaperPositions());
+    res.json({
+      ...futuresPaperLedgerService.defaultFuturesPaperLedgerService.getFuturesPaperPositions(),
+      archive: true,
+      label: 'Äldre interna simuleringar — används inte för nya trades',
+    });
   } catch (err) {
     res.status(500).json({ ok: false, error: err.message, ...futuresPaperLedgerService.SAFETY });
   }
 });
 
-router.get('/futures-paper/trades', (req, res) => {
+router.get('/futures-paper/trades', async (req, res) => {
   try {
-    res.json(futuresPaperLedgerService.defaultFuturesPaperLedgerService.getFuturesPaperTrades({
-      limit: req.query.limit || req.query.n,
-    }));
+    const status = await ibPaperExecutionOrchestratorService.defaultIbPaperExecutionOrchestratorService.buildExecutionStatus({ connect: false });
+    const executions = Array.isArray(status.brokerExecutions) ? status.brokerExecutions : [];
+    res.json({
+      ok: true,
+      generatedAt: status.generatedAt,
+      source: 'ibkr_paper',
+      executionTarget: 'ibkr_paper',
+      noInternalSimulationFallback: true,
+      trades: executions,
+      fills: executions,
+      totalTrades: executions.length,
+      commissions: status.brokerCommissions || [],
+      reconciliation: status.reconciliation || null,
+      ...ibPaperExecutionOrchestratorService.SAFETY,
+    });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message, source: 'ibkr_paper', ...ibPaperExecutionOrchestratorService.SAFETY });
+  }
+});
+
+router.get('/futures-paper/legacy-simulation/trades', (req, res) => {
+  try {
+    res.json({
+      ...futuresPaperLedgerService.defaultFuturesPaperLedgerService.getFuturesPaperTrades({
+        limit: req.query.limit || req.query.n,
+      }),
+      archive: true,
+      label: 'Äldre interna simuleringar — används inte för nya trades',
+    });
   } catch (err) {
     res.status(500).json({ ok: false, error: err.message, ...futuresPaperLedgerService.SAFETY });
   }
@@ -3758,8 +3827,10 @@ router.get('/futures-paper/strategies', (req, res) => {
       count: strategies.length,
       strategies,
       leaders: perf.leaders,
-      performanceContext: 'simulated_fallback',
-      notRealMarketPerformance: true,
+      performanceContext: 'ibkr_paper',
+      executionSource: 'ibkr_paper',
+      legacySimulationExcluded: true,
+      notRealMarketPerformance: false,
       ...futuresPaperStrategyApprovalService.SAFETY,
     });
   } catch (err) {
@@ -3785,13 +3856,12 @@ router.get('/futures-paper/strategies/overview', (req, res) => {
     const now = req.query.now ? new Date(req.query.now) : new Date();
     const session = futuresPaperDeskService.getFuturesSessionState(now);
     const paperStrategies = require('../services/paperEnabledStrategiesService').buildPaperStrategyList({});
-    const ledger = futuresPaperLedgerService.defaultFuturesPaperLedgerService.getFuturesPaperPositions();
     const strategyStatus = futuresPaperScannerService.defaultFuturesPaperScannerService.getStrategyStatus({ now });
     const overview = futuresPaperDeskService.buildCanonicalStrategyOverview({
       now,
       session,
       paperStrategies,
-      openPositions: ledger?.positions?.open || [],
+      openPositions: [],
       scannerStrategies: strategyStatus?.strategies || [],
     });
     res.json({ ok: true, readOnly: true, ...overview, ...futuresPaperDeskService.SAFETY });
@@ -3842,52 +3912,11 @@ router.post('/futures-paper/strategies/:strategyId/resume', handleFuturesStrateg
 router.post('/futures-paper/strategies/:strategyId/remove', handleFuturesStrategyMutation('remove'));
 
 router.post('/futures-paper/manual/open', (req, res) => {
-  try {
-    const body = req.body && typeof req.body === 'object' ? req.body : {};
-    if (body.live_trading_enabled === true || body.can_place_orders === true || body.actions_allowed === true || body.broker_enabled === true) {
-      return res.status(400).json({ ok: false, error: 'futures_paper_manual_open_is_paper_only', ...futuresPaperLedgerService.SAFETY });
-    }
-    const result = futuresPaperLedgerService.defaultFuturesPaperLedgerService.openFuturesPaperPosition({
-      now: body.now || undefined,
-      root: body.root,
-      symbol: body.symbol,
-      side: body.side,
-      contracts: body.contracts,
-      entryPrice: body.entryPrice,
-      stopLoss: body.stopLoss,
-      takeProfit: body.takeProfit,
-      strategyId: body.strategyId,
-      strategyName: body.strategyName,
-      entryReason: body.entryReason,
-      tradeType: 'manual_simulation',
-      signalSource: 'manual',
-      dataSource: body.dataSource || 'simulated_fallback',
-      usedRealStrategyLogic: false,
-      usedFallbackPrice: body.usedFallbackPrice !== false,
-      excludedFromStats: true,
-    });
-    res.status(result.ok ? 200 : 400).json(result);
-  } catch (err) {
-    res.status(500).json({ ok: false, error: err.message, ...futuresPaperLedgerService.SAFETY });
-  }
+  return sendRetiredInternalSimulation(res, 'manual_open_internal_futures_position_route');
 });
 
 router.post('/futures-paper/manual/close', (req, res) => {
-  try {
-    const body = req.body && typeof req.body === 'object' ? req.body : {};
-    if (body.live_trading_enabled === true || body.can_place_orders === true || body.actions_allowed === true || body.broker_enabled === true) {
-      return res.status(400).json({ ok: false, error: 'futures_paper_manual_close_is_paper_only', ...futuresPaperLedgerService.SAFETY });
-    }
-    const result = futuresPaperLedgerService.defaultFuturesPaperLedgerService.closeFuturesPaperPosition({
-      now: body.now || undefined,
-      tradeId: body.tradeId,
-      exitPrice: body.exitPrice,
-      exitReason: body.exitReason,
-    });
-    res.status(result.ok ? 200 : 400).json(result);
-  } catch (err) {
-    res.status(500).json({ ok: false, error: err.message, ...futuresPaperLedgerService.SAFETY });
-  }
+  return sendRetiredInternalSimulation(res, 'manual_close_internal_futures_position_route');
 });
 
 // Paper-only guard för futures-scannerns POST-endpoints: blockerar varje
@@ -3933,42 +3962,15 @@ router.get('/futures-paper/candidates', (req, res) => {
 });
 
 router.post('/futures-paper/candidates/simulate', (req, res) => {
-  try {
-    if (rejectIfNotFuturesPaperOnly(req, res)) return;
-    const result = futuresPaperScannerService.defaultFuturesPaperScannerService.simulateCandidate({
-      candidateId: req.body?.candidateId || null,
-      now: req.body?.now || undefined,
-    });
-    res.status(result.ok ? 200 : 400).json(result);
-  } catch (err) {
-    res.status(500).json({ ok: false, error: err.message, ...futuresPaperScannerService.SAFETY });
-  }
+  return sendRetiredInternalSimulation(res, 'simulate_futures_candidate_route');
 });
 
 router.post('/futures-paper/simulation/tick', (req, res) => {
-  try {
-    if (rejectIfNotFuturesPaperOnly(req, res)) return;
-    const result = futuresPaperScannerService.defaultFuturesPaperScannerService.runSimulationTick({
-      now: req.body?.now || undefined,
-      source: 'manual_api',
-    });
-    res.status(result.ok ? 200 : 400).json(result);
-  } catch (err) {
-    res.status(500).json({ ok: false, error: err.message, ...futuresPaperScannerService.SAFETY });
-  }
+  return sendRetiredInternalSimulation(res, 'run_internal_futures_simulation_tick_route');
 });
 
 router.post('/futures-paper/auto-simulation', (req, res) => {
-  try {
-    if (rejectIfNotFuturesPaperOnly(req, res)) return;
-    const result = futuresPaperScannerService.defaultFuturesPaperScannerService.setAutoSimulation({
-      enabled: req.body?.enabled === true,
-      intervalMs: req.body?.intervalMs || null,
-    });
-    res.status(result.ok ? 200 : 400).json(result);
-  } catch (err) {
-    res.status(500).json({ ok: false, error: err.message, ...futuresPaperScannerService.SAFETY });
-  }
+  return sendRetiredInternalSimulation(res, 'set_internal_futures_auto_simulation_route');
 });
 
 router.get('/futures-paper/price-feed', (req, res) => {
@@ -4022,7 +4024,7 @@ router.get('/futures-paper/market-data/:root', (req, res) => {
 
 router.get('/futures-paper/ibkr-paper-execution/status', async (req, res) => {
   try {
-    const connect = req.query.connect !== 'false';
+    const connect = req.query.connect === 'true';
     res.json(await ibPaperExecutionOrchestratorService.defaultIbPaperExecutionOrchestratorService.buildExecutionStatus({ connect }));
   } catch (err) {
     res.status(500).json({ ok: false, error: err.message, ...ibPaperExecutionOrchestratorService.SAFETY });
@@ -4033,7 +4035,7 @@ router.post('/futures-paper/ibkr-paper-execution/shadow', async (req, res) => {
   try {
     const body = req.body && typeof req.body === 'object' ? req.body : {};
     const requestedBrokerSubmit = body.actualSubmit === true || body.submit === true || body['place' + 'Order'] === true;
-    if (requestedBrokerSubmit) {
+	    if (requestedBrokerSubmit) {
       return res.status(403).json({
         ok: false,
         error: 'first_paper_order_requires_explicit_user_approval_not_in_shadow_route',
@@ -4041,12 +4043,21 @@ router.post('/futures-paper/ibkr-paper-execution/shadow', async (req, res) => {
         actualSubmit: false,
         ...ibPaperExecutionOrchestratorService.SAFETY,
       });
-    }
-    const result = await ibPaperExecutionOrchestratorService.defaultIbPaperExecutionOrchestratorService.buildShadowExecution({
-      candidate: body.candidate || null,
-      now: body.now || undefined,
-      actualSubmit: false,
-    });
+	    }
+	    if (body.candidate != null || body.approval != null || body.entryContract != null || body.orderPlan != null || body.contract != null || body.accountId != null || body.executionTarget != null) {
+	      return res.status(400).json({
+	        ok: false,
+	        error: 'client_supplied_broker_candidate_not_allowed',
+	        wouldSubmit: false,
+	        actualSubmit: false,
+	        diagnosticPreview: false,
+	        ...ibPaperExecutionOrchestratorService.SAFETY,
+	      });
+	    }
+		    const result = await ibPaperExecutionOrchestratorService.defaultIbPaperExecutionOrchestratorService.buildShadowExecution({
+		      candidateId: body.candidateId || null,
+		      actualSubmit: false,
+	    });
     return res.json(result);
   } catch (err) {
     return res.status(500).json({ ok: false, error: err.message, ...ibPaperExecutionOrchestratorService.SAFETY });
@@ -4134,11 +4145,37 @@ router.get('/futures-paper/scan-history', (req, res) => {
   }
 });
 
-router.get('/futures-paper/closed-trades', (req, res) => {
+router.get('/futures-paper/closed-trades', async (req, res) => {
   try {
-    res.json(futuresPaperLedgerService.defaultFuturesPaperLedgerService.getRecentClosedTrades({
-      limit: req.query.limit || req.query.n || undefined,
-    }));
+    const status = await ibPaperExecutionOrchestratorService.defaultIbPaperExecutionOrchestratorService.buildExecutionStatus({ connect: false });
+    const executions = Array.isArray(status.brokerExecutions) ? status.brokerExecutions : [];
+    res.json({
+      ok: true,
+      generatedAt: status.generatedAt,
+      source: 'ibkr_paper',
+      executionTarget: 'ibkr_paper',
+      noInternalSimulationFallback: true,
+      totalClosedTrades: executions.length,
+      trades: executions,
+      fills: executions,
+      commissions: status.brokerCommissions || [],
+      reconciliation: status.reconciliation || null,
+      ...ibPaperExecutionOrchestratorService.SAFETY,
+    });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message, source: 'ibkr_paper', ...ibPaperExecutionOrchestratorService.SAFETY });
+  }
+});
+
+router.get('/futures-paper/legacy-simulation/closed-trades', (req, res) => {
+  try {
+    res.json({
+      ...futuresPaperLedgerService.defaultFuturesPaperLedgerService.getRecentClosedTrades({
+        limit: req.query.limit || req.query.n || undefined,
+      }),
+      archive: true,
+      label: 'Äldre interna simuleringar — används inte för nya trades',
+    });
   } catch (err) {
     res.status(500).json({ ok: false, error: err.message, ...futuresPaperLedgerService.SAFETY });
   }
@@ -5471,7 +5508,7 @@ router.get('/interactive-brokers/paper-execution/status', async (req, res) => {
 });
 router.get('/interactive-brokers/paper-execution/futures-status', async (req, res) => {
   try {
-    const connect = req.query.connect !== 'false';
+    const connect = req.query.connect === 'true';
     res.json(await ibPaperExecutionOrchestratorService.defaultIbPaperExecutionOrchestratorService.buildExecutionStatus({ connect }));
   } catch (err) {
     res.status(500).json({ ok: false, error: err.message, ...ibPaperExecutionOrchestratorService.SAFETY });

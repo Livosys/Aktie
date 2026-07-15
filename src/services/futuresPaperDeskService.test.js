@@ -11,11 +11,12 @@ const svc = require('./futuresPaperDeskService');
 
 const rootDir = fs.mkdtempSync(path.join(os.tmpdir(), 'futures-paper-desk-'));
 const storage = createFuturesPaperStorageService({ rootDir });
-const accountSvc = createFuturesPaperAccountService({ storageService: storage });
+const accountSvc = createFuturesPaperAccountService({ storageService: storage, allowInternalSimulationForTests: true });
 accountSvc.setFuturesPaperBalance({ startingBalanceSek: 375000 });
 const ledgerSvc = require('./futuresPaperLedgerService').createFuturesPaperLedgerService({
   storageService: storage,
   accountService: accountSvc,
+  allowInternalSimulationForTests: true,
 });
 
 ledgerSvc.openFuturesPaperPosition({
@@ -32,7 +33,61 @@ ledgerSvc.openFuturesPaperPosition({
 
 const runtime = svc.buildFuturesPaperDeskRuntime({
   now: '2026-07-06T10:00:00.000Z',
-  ledger: ledgerSvc.getFuturesPaperLedger({ limit: 20 }),
+  legacyLedger: ledgerSvc.getFuturesPaperLedger({ limit: 20 }),
+  ibAccount: {
+    ok: true,
+    generatedAt: '2026-07-06T10:00:00.000Z',
+    account: {
+      accountIdMasked: 'DU***596',
+      currency: 'USD',
+      netLiquidation: 123456.78,
+      totalCashValue: 120000,
+      availableFunds: 99000,
+      buyingPower: 396000,
+      unrealizedPnl: 12.5,
+      realizedPnl: 7.25,
+      dailyPnl: 19.75,
+    },
+  },
+  brokerReconciliation: {
+    ok: true,
+    status: 'ok',
+    degraded: false,
+    generatedAt: '2026-07-06T10:00:00.000Z',
+    counts: { positions: 1, openOrders: 1, executions: 1 },
+    positions: [{
+      accountMasked: 'DU***596',
+      symbol: 'MNQ',
+      localSymbol: 'MNQU6',
+      conId: 793356225,
+      expiry: '20260918',
+      position: 1,
+      avgCost: 20000,
+      unrealizedPnl: 12.5,
+      realizedPnl: 7.25,
+    }],
+    openOrders: [{
+      orderId: 1001,
+      order: { permId: 2001, orderRef: 'TOS-PAPER-fxp-test-entry', action: 'BUY', totalQuantity: 1, orderType: 'MKT' },
+      contract: { symbol: 'MNQ', localSymbol: 'MNQU6', conId: 793356225 },
+      state: 'Submitted',
+    }],
+    executions: [{
+      orderId: 1001,
+      permId: 2001,
+      execId: 'exec-1',
+      orderRef: 'TOS-PAPER-fxp-test-entry',
+      strategyId: 'trend_continuation',
+      candidateId: 'cand-1',
+      conId: 793356225,
+      localSymbol: 'MNQU6',
+      side: 'BOT',
+      shares: 1,
+      price: 20000,
+      receivedAt: '2026-07-06T10:00:00.000Z',
+    }],
+    commissions: [{ execId: 'exec-1', commission: 1.22, currency: 'USD', realizedPNL: 7.25 }],
+  },
   universe: {
     groups: { mini_futures: { label_sv: 'Mini futures', enabled: true } },
     symbols: [
@@ -57,10 +112,15 @@ assert.equal(runtime.live_trading_enabled, false);
 assert.equal(runtime.broker_enabled, false);
 assert.equal(runtime.desk.focusMarkets[0], 'MNQ');
 assert.equal(runtime.desk.focusMarkets[1], 'MES');
-assert.equal(runtime.account.startingBalanceSek, 375000);
-// Entry-fee (MNQ $1.22 * 10.5 = 12.81 SEK) dras vid open → equity = 375000 - 12.81.
-assert.equal(runtime.account.equitySek, 374987.19);
-assert.equal(runtime.account.totalFeesSek, 12.81);
+assert.equal(runtime.account.source, 'ibkr_paper');
+assert.equal(runtime.account.netLiquidation, 123456.78);
+assert.equal(runtime.account.availableFunds, 99000);
+assert.equal(runtime.account.buyingPower, 396000);
+assert.equal(runtime.account.unrealizedPnl, 12.5);
+assert.equal(runtime.account.realizedPnl, 7.25);
+assert.equal(runtime.legacyInternalSimulation.readOnly, true);
+assert.equal(runtime.legacyInternalSimulation.legacySource, 'internal_legacy_simulation');
+assert.equal(runtime.legacyInternalSimulation.positions.totalOpen, 1);
 assert.equal(runtime.strategyPulse.length, 2);
 assert.equal(runtime.strategyPulse[0].strategyId, 'trend_continuation');
 // Katalogen exponerar nu MNQ/MES/NQ/ES.
@@ -91,10 +151,8 @@ const trendOverview = runtime.strategyOverview.find((row) => row.strategyId === 
 assert.ok(trendOverview, 'trend_continuation overview exists');
 assert.equal(trendOverview.instrument, 'MNQ / MES');
 assert.equal(trendOverview.currentSession, 'Europe');
-// Öppen paper-position i ledgern → ACTIVE_PAPER, oavsett readiness-läge.
-assert.equal(trendOverview.paperStatus, 'ACTIVE_PAPER');
-assert.ok(trendOverview.openPaperPosition, 'open paper position exposed');
-assert.equal(trendOverview.openPaperPosition.symbol, 'MNQH26');
+// Ledgerns legacy-position ska inte göra aktiv runtime till ACTIVE_PAPER.
+assert.notEqual(trendOverview.openPaperPosition?.symbol, 'MNQH26');
 // Crypto-strategier saknar futures-mappning → synliga men NOT_APPLICABLE.
 const cryptoOverview = runtime.strategyOverview.find((row) => row.strategyId === 'crypto_fast_momentum');
 assert.ok(cryptoOverview, 'crypto strategy still visible');
@@ -102,11 +160,15 @@ assert.equal(cryptoOverview.paperStatus, 'NOT_APPLICABLE');
 assert.equal(cryptoOverview.instrument, null);
 assert.equal(cryptoOverview.canTradeNow, false);
 assert.equal(cryptoOverview.mainBlocker, 'unsupported_futures_mapping');
-assert.equal(runtime.account.fxUsdSek, 10.5);
+assert.equal(runtime.account.currency, 'USD');
 assert.equal(runtime.positions.totalOpen, 1);
 assert.equal(runtime.openPositions.length, 1);
-assert.equal(runtime.closedTrades.length, 0);
-assert.equal(runtime.latestEvents.length >= 1, true);
+assert.equal(runtime.openPositions[0].source, 'ibkr_paper');
+assert.equal(runtime.openPositions[0].localSymbol, 'MNQU6');
+assert.equal(runtime.closedTrades.length, 1);
+assert.equal(runtime.closedTrades[0].source, 'ibkr_paper');
+assert.equal(runtime.brokerOrders.length, 1);
+assert.equal(runtime.latestEvents.length, 0);
 
 const pnlLong = svc.calcFuturesPnl({
   entryPrice: 20000,

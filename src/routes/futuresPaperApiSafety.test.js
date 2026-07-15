@@ -34,21 +34,35 @@ async function postJson(baseUrl, path, body) {
   };
 }
 
-async function assertBlocked(baseUrl, path, payload, expectedError) {
+async function assertBlocked(baseUrl, path, payload, expectedError, expectedMode = 'ibkr_paper') {
   const result = await postJson(baseUrl, path, payload);
   assert.equal(result.status, 400, `${path} should reject ${JSON.stringify(payload)}`);
   assert.equal(result.body.ok, false);
   assert.equal(result.body.error, expectedError);
-  assert.equal(result.body.mode, 'paper_only');
+  assert.equal(result.body.mode, expectedMode);
   assert.equal(result.body.live_trading_enabled, false);
   assert.equal(result.body.broker_enabled, false);
   assert.equal(result.body.actions_allowed, false);
   assert.equal(result.body.can_place_orders, false);
 }
 
+async function assertRetired(baseUrl, path, payload = {}) {
+  const result = await postJson(baseUrl, path, payload);
+  assert.equal(result.status, 410, `${path} should be retired`);
+  assert.equal(result.body.ok, false);
+  assert.equal(result.body.error, 'internal_futures_simulation_retired');
+  assert.equal(result.body.code, 'internal_futures_simulation_retired');
+  assert.equal(result.body.blocker, 'internal_futures_simulation_disabled');
+  assert.equal(result.body.executionTarget, 'ibkr_paper');
+  assert.equal(result.body.internalSimulationRetired, true);
+}
+
 async function main() {
-  const guardedEndpoints = [
-    '/api/futures-paper/scanner/run-once',
+  const retiredEndpoints = [
+    '/api/futures-paper/account/reset',
+    '/api/futures-paper/account/set-balance',
+    '/api/futures-paper/manual/open',
+    '/api/futures-paper/manual/close',
     '/api/futures-paper/candidates/simulate',
     '/api/futures-paper/simulation/tick',
     '/api/futures-paper/auto-simulation',
@@ -62,10 +76,12 @@ async function main() {
   ];
 
   await withTestServer(async (baseUrl) => {
-    for (const endpoint of guardedEndpoints) {
-      for (const [payload, expectedError] of cases) {
-        await assertBlocked(baseUrl, endpoint, payload, expectedError);
-      }
+    for (const [payload, expectedError] of cases) {
+      await assertBlocked(baseUrl, '/api/futures-paper/scanner/run-once', payload, expectedError);
+    }
+    for (const endpoint of retiredEndpoints) {
+      await assertRetired(baseUrl, endpoint, {});
+      await assertRetired(baseUrl, endpoint, { live_trading_enabled: true });
     }
   });
 }

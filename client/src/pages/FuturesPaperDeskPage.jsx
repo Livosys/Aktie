@@ -1,11 +1,25 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { DashboardShell } from '../components/dashboard/DashboardKit.jsx';
-import { Link } from 'react-router-dom';
 import FuturesTechnicalInfoPanel from '../components/futures/FuturesTechnicalInfoPanel.jsx';
 import FuturesPaperStrategyApprovalPanel from '../components/futures/FuturesPaperStrategyApprovalPanel.jsx';
 
 const REFRESH_MS = 20_000;
 const FETCH_TIMEOUT_MS = 7_000;
+
+const STATUS_COPY = 'Futures Paper använder IBKR Paper Trading som enda execution-miljö. Systemet är nu i shadow mode: strategier och orderplaner valideras, men faktisk ordersändning är avstängd tills säkerhetsgranskningen och första pilotordern har godkänts. Livekonton och riktiga pengar är blockerade.';
+
+const TABS = [
+  { id: 'oversikt', label: 'Översikt' },
+  { id: 'konto', label: 'IBKR Paper-konto' },
+  { id: 'positioner', label: 'Brokerpositioner' },
+  { id: 'ordrar', label: 'Ordrar' },
+  { id: 'fills', label: 'Fills & trades' },
+  { id: 'runtime', label: 'Runtime' },
+  { id: 'ibkr', label: 'IBKR Paper Execution' },
+  { id: 'godkannande', label: 'Godkännande' },
+  { id: 'teknik', label: 'Teknisk info' },
+  { id: 'arkiv', label: 'Historiskt sim-arkiv' },
+];
 
 async function fetchJsonWithTimeout(url, { timeoutMs = FETCH_TIMEOUT_MS, signal } = {}) {
   const controller = new AbortController();
@@ -25,31 +39,24 @@ async function fetchJsonWithTimeout(url, { timeoutMs = FETCH_TIMEOUT_MS, signal 
   }
 }
 
-function useFuturesDeskRuntime(refreshToken = 0) {
+function useJson(url, refreshToken = 0) {
   const [state, setState] = useState({ loading: true, error: null, data: null });
 
   useEffect(() => {
     let alive = true;
     let activeController = null;
-
     const load = () => {
       if (activeController) activeController.abort();
       activeController = new AbortController();
-      fetchJsonWithTimeout('/api/futures-paper/runtime', { signal: activeController.signal })
+      fetchJsonWithTimeout(url, { signal: activeController.signal })
         .then((data) => {
-          if (!alive) return;
-          setState({ loading: false, error: null, data });
+          if (alive) setState({ loading: false, error: null, data });
         })
         .catch((err) => {
           if (!alive) return;
-          setState((prev) => ({
-            loading: false,
-            error: err?.message || 'futures_paper_runtime_unavailable',
-            data: prev.data || null,
-          }));
+          setState((prev) => ({ loading: false, error: err?.message || 'request_failed', data: prev.data }));
         });
     };
-
     load();
     const timer = setInterval(load, REFRESH_MS);
     return () => {
@@ -57,233 +64,63 @@ function useFuturesDeskRuntime(refreshToken = 0) {
       clearInterval(timer);
       if (activeController) activeController.abort();
     };
-  }, [refreshToken]);
+  }, [url, refreshToken]);
 
   return state;
 }
 
-function useFuturesDeskAccount(refreshToken = 0) {
-  const [state, setState] = useState({ loading: true, error: null, data: null });
-
-  useEffect(() => {
-    let alive = true;
-    let activeController = null;
-
-    const load = () => {
-      if (activeController) activeController.abort();
-      activeController = new AbortController();
-      fetchJsonWithTimeout('/api/futures-paper/account?includeHistory=false', { signal: activeController.signal })
-        .then((data) => {
-          if (!alive) return;
-          setState({ loading: false, error: null, data });
-        })
-        .catch((err) => {
-          if (!alive) return;
-          setState((prev) => ({
-            loading: false,
-            error: err?.message || 'futures_paper_account_unavailable',
-            data: prev.data || null,
-          }));
-        });
-    };
-
-    load();
-    const timer = setInterval(load, REFRESH_MS);
-    return () => {
-      alive = false;
-      clearInterval(timer);
-      if (activeController) activeController.abort();
-    };
-  }, [refreshToken]);
-
-  return state;
-}
-
-function useFuturesMarketDataStatus(refreshToken = 0) {
-  const [state, setState] = useState({ loading: true, error: null, data: null });
-
-  useEffect(() => {
-    let alive = true;
-    let activeController = null;
-
-    const load = () => {
-      if (activeController) activeController.abort();
-      activeController = new AbortController();
-      fetchJsonWithTimeout('/api/futures-paper/market-data/status', { signal: activeController.signal })
-        .then((data) => {
-          if (!alive) return;
-          setState({ loading: false, error: null, data });
-        })
-        .catch((err) => {
-          if (!alive) return;
-          setState((prev) => ({
-            loading: false,
-            error: err?.message || 'futures_market_data_unavailable',
-            data: prev.data || null,
-          }));
-        });
-    };
-
-    load();
-    const timer = setInterval(load, REFRESH_MS);
-    return () => {
-      alive = false;
-      clearInterval(timer);
-      if (activeController) activeController.abort();
-    };
-  }, [refreshToken]);
-
-  return state;
-}
-
-function useIbPaperExecutionStatus(refreshToken = 0) {
-  const [state, setState] = useState({ loading: true, error: null, data: null });
-
-  useEffect(() => {
-    let alive = true;
-    let activeController = null;
-
-    const load = () => {
-      if (activeController) activeController.abort();
-      activeController = new AbortController();
-      fetchJsonWithTimeout('/api/futures-paper/ibkr-paper-execution/status', { signal: activeController.signal })
-        .then((data) => {
-          if (!alive) return;
-          setState({ loading: false, error: null, data });
-        })
-        .catch((err) => {
-          if (!alive) return;
-          setState((prev) => ({
-            loading: false,
-            error: err?.message || 'ibkr_paper_execution_unavailable',
-            data: prev.data || null,
-          }));
-        });
-    };
-
-    load();
-    const timer = setInterval(load, REFRESH_MS);
-    return () => {
-      alive = false;
-      clearInterval(timer);
-      if (activeController) activeController.abort();
-    };
-  }, [refreshToken]);
-
-  return state;
-}
-
-function fmtAge(ms) {
-  const num = Number(ms);
-  if (!Number.isFinite(num) || num < 0) return '–';
-  if (num < 1000) return '<1 s';
-  if (num < 60_000) return `${Math.round(num / 1000)} s`;
-  if (num < 60 * 60_000) return `${Math.round(num / 60_000)} min`;
-  return `${Math.round(num / (60 * 60_000))} h`;
+function numberOrNull(value) {
+  const n = Number(value);
+  return Number.isFinite(n) ? n : null;
 }
 
 function fmtNumber(value, digits = 0) {
-  const num = Number(value);
-  if (!Number.isFinite(num)) return '–';
+  const n = numberOrNull(value);
+  if (n == null) return 'Ej tillgängligt';
   return new Intl.NumberFormat('sv-SE', {
     minimumFractionDigits: digits,
     maximumFractionDigits: digits,
-  }).format(num);
+  }).format(n);
 }
 
-function fmtMoney(value, currency = 'SEK', digits = 0) {
-  const num = Number(value);
-  if (!Number.isFinite(num)) return '–';
+function fmtMoney(value, currency = 'USD', digits = 0) {
+  const n = numberOrNull(value);
+  if (n == null) return 'Ej tillgängligt';
   return new Intl.NumberFormat('sv-SE', {
     style: 'currency',
     currency,
     minimumFractionDigits: digits,
     maximumFractionDigits: digits,
-  }).format(num);
+  }).format(n);
 }
 
-function formatSessionName(market = {}) {
-  const base = market.session || 'Globex';
-  return market.sessionLabel ? `${base} · ${market.sessionLabel}` : base;
+function fmtTime(value) {
+  const ms = Date.parse(value || '');
+  if (!Number.isFinite(ms)) return 'Ej tillgängligt';
+  return new Date(ms).toLocaleString('sv-SE');
 }
 
-function fmtPct(value, digits = 1) {
-  const num = Number(value);
-  if (!Number.isFinite(num)) return '–';
-  const sign = num > 0 ? '+' : '';
-  return `${sign}${num.toFixed(digits)}%`;
+function fmtAge(ms) {
+  const n = numberOrNull(ms);
+  if (n == null || n < 0) return 'Ej tillgängligt';
+  if (n < 1000) return '<1 s';
+  if (n < 60_000) return `${Math.round(n / 1000)} s`;
+  if (n < 3_600_000) return `${Math.round(n / 60_000)} min`;
+  return `${Math.round(n / 3_600_000)} h`;
 }
 
-function tradeTypeLabel(type) {
-  const value = String(type || '').trim();
-  if (value === 'trading_os_signal') return 'Riktig Trading OS-signal';
-  if (value === 'manual_simulation') return 'Manuell simulation';
-  if (value === 'engine_test') return 'Testtrade';
-  if (value === 'curl_test') return 'Curl-test';
-  if (value === 'cleanup') return 'Cleanup';
-  return value || 'Testtrade';
-}
-
-function tradeTypeTone(type, excludedFromStats) {
-  if (type === 'trading_os_signal' && excludedFromStats !== true) return 'success';
-  if (type === 'manual_simulation') return 'info';
-  if (type === 'cleanup' || type === 'curl_test') return 'warning';
-  return 'warning';
-}
-
-function canonicalStrategyStatusTone(status) {
-  const value = String(status || '').toUpperCase();
-  if (value === 'ACTIVE_PAPER' || value === 'READY_WAITING_FOR_SIGNAL' || value === 'READY_FOR_PAPER' || value === 'READY') return 'success';
-  if (value === 'READY_FOR_REPLAY' || value === 'DIAGNOSTIC_ONLY') return 'info';
-  if (value === 'SESSION_CLOSED' || value === 'APPROVAL_BLOCKED' || value === 'ENTRY_CONTRACT_BLOCKED' || value === 'DATA_BLOCKED' || value === 'PRODUCER_NOT_IMPLEMENTED') return 'warning';
-  if (value === 'RISK_BLOCKED' || value === 'TRADE_CAP_BLOCKED') return 'danger';
-  if (value === 'NOT_APPLICABLE') return 'neutral';
-  return 'neutral';
-}
-
-function compactJson(value, fallback = '–') {
-  if (value === null || value === undefined) return fallback;
-  if (Array.isArray(value)) {
-    if (!value.length) return fallback;
-    return value.map((item) => String(item)).join(', ');
-  }
-  if (typeof value === 'object') {
-    const keys = ['strategyId', 'displayName', 'decision', 'result', 'signalSubtype', 'reason', 'reasonCode', 'pnlPct', 'closedAt', 'entryTime', 'timestamp'];
-    const parts = [];
-    for (const key of keys) {
-      if (value[key] !== undefined && value[key] !== null && value[key] !== '') {
-        parts.push(`${key}:${String(value[key])}`);
-      }
-    }
-    return parts.length ? parts.join(' · ') : JSON.stringify(value);
-  }
-  const text = String(value).trim();
-  return text.length ? text : fallback;
-}
-
-function yesNo(value) {
-  return value === true ? 'Ja' : 'Nej';
-}
-
-function brokerStatusTone(status) {
-  const value = String(status || '').toLowerCase();
-  if (value === 'shadow' || value === 'pilot' || value === 'active') return 'success';
-  if (value === 'paused' || value === 'degraded') return 'warning';
-  if (value === 'disabled') return 'neutral';
-  return 'warning';
-}
-
-function sectionStyle() {
+function sectionStyle(extra = {}) {
   return {
     background: 'var(--surface)',
     border: '1px solid var(--border)',
-    borderRadius: 16,
+    borderRadius: 8,
     padding: 16,
     boxShadow: 'var(--shadow-1, none)',
+    ...extra,
   };
 }
 
-function pillStyle(tone = 'neutral') {
+function pillTone(tone) {
   const tones = {
     neutral: { bg: 'var(--surface-2)', fg: 'var(--text)', border: 'var(--border)' },
     success: { bg: 'rgba(34,197,94,0.12)', fg: 'var(--success)', border: 'rgba(34,197,94,0.30)' },
@@ -295,13 +132,12 @@ function pillStyle(tone = 'neutral') {
 }
 
 function Pill({ tone = 'neutral', children }) {
-  const style = pillStyle(tone);
+  const style = pillTone(tone);
   return (
     <span style={{
       display: 'inline-flex',
       alignItems: 'center',
-      gap: 6,
-      padding: '4px 10px',
+      padding: '4px 9px',
       borderRadius: 999,
       border: `1px solid ${style.border}`,
       background: style.bg,
@@ -317,21 +153,20 @@ function Pill({ tone = 'neutral', children }) {
 }
 
 function MetricCard({ label, value, hint, tone = 'neutral' }) {
-  const style = pillStyle(tone);
+  const style = pillTone(tone);
   return (
     <div style={{
       border: `1px solid ${style.border}`,
       background: style.bg,
-      borderRadius: 14,
+      borderRadius: 8,
       padding: '12px 14px',
-      minHeight: 84,
-      display: 'flex',
-      flexDirection: 'column',
-      justifyContent: 'space-between',
+      minHeight: 82,
+      display: 'grid',
       gap: 8,
+      alignContent: 'space-between',
     }}>
       <div style={{ color: 'var(--muted)', fontSize: 11, textTransform: 'uppercase', letterSpacing: '0.08em', fontWeight: 800 }}>{label}</div>
-      <div style={{ color: style.fg, fontSize: 24, fontWeight: 900, lineHeight: 1 }}>{value}</div>
+      <div style={{ color: style.fg, fontSize: 22, fontWeight: 900, lineHeight: 1.05 }}>{value}</div>
       {hint ? <div style={{ color: 'var(--muted)', fontSize: 12, lineHeight: 1.35 }}>{hint}</div> : null}
     </div>
   );
@@ -350,10 +185,8 @@ function SectionHeader({ eyebrow, title, summary, action }) {
   );
 }
 
-function CompactTable({ rows, columns, emptyText = 'Inga data ännu.' }) {
-  if (!rows.length) {
-    return <div style={{ color: 'var(--muted)', fontSize: 13 }}>{emptyText}</div>;
-  }
+function CompactTable({ rows, columns, emptyText = 'Inga data.' }) {
+  if (!rows.length) return <div style={{ color: 'var(--muted)', fontSize: 13 }}>{emptyText}</div>;
   return (
     <div style={{ overflowX: 'auto' }}>
       <table style={{ width: '100%', borderCollapse: 'collapse' }}>
@@ -368,10 +201,10 @@ function CompactTable({ rows, columns, emptyText = 'Inga data ännu.' }) {
         </thead>
         <tbody>
           {rows.map((row, rowIndex) => (
-            <tr key={row.id || rowIndex}>
+            <tr key={row.id || row.execId || row.orderId || row.tradeId || rowIndex}>
               {columns.map((col) => (
                 <td key={col.key} style={{ padding: '10px 12px', borderBottom: '1px solid var(--border)', fontSize: 13, verticalAlign: 'top' }}>
-                  {typeof col.render === 'function' ? col.render(row) : row[col.key] ?? '–'}
+                  {typeof col.render === 'function' ? col.render(row) : row[col.key] ?? 'Ej tillgängligt'}
                 </td>
               ))}
             </tr>
@@ -382,935 +215,341 @@ function CompactTable({ rows, columns, emptyText = 'Inga data ännu.' }) {
   );
 }
 
-function SafetyStrip({ safety }) {
-  return (
-    <div style={{ ...sectionStyle(), display: 'flex', flexWrap: 'wrap', gap: 8, alignItems: 'center' }}>
-      <Pill tone="success">Bara paper</Pill>
-      <Pill tone="neutral">live off</Pill>
-      <Pill tone="neutral">broker off</Pill>
-      <Pill tone="warning">real orders blocked</Pill>
-      <Pill tone="info">mode={String(safety?.mode || 'paper_only')}</Pill>
-      <Pill tone="info">actions_allowed={String(safety?.actions_allowed === true)}</Pill>
-      <Pill tone="info">can_place_orders={String(safety?.can_place_orders === true)}</Pill>
-      <Pill tone="info">live_trading_enabled={String(safety?.live_trading_enabled === true)}</Pill>
-      <Pill tone="info">broker_enabled={String(safety?.broker_enabled === true)}</Pill>
-    </div>
-  );
+function statusTone(value) {
+  const text = String(value || '').toLowerCase();
+  if (['ok', 'shadow', 'shadow_ready', 'ready_waiting_for_signal', 'connected'].includes(text)) return 'success';
+  if (['degraded', 'blocked', 'paused', 'pending'].includes(text)) return 'warning';
+  if (['disabled', 'unknown'].includes(text)) return 'neutral';
+  return 'info';
 }
 
-function ReadinessCard({ title, status, tone = 'neutral', children }) {
-  return (
-    <div style={{
-      border: '1px solid var(--border)',
-      background: 'var(--surface-2)',
-      borderRadius: 14,
-      padding: 14,
-      display: 'grid',
-      gap: 10,
-      alignContent: 'start',
-      minHeight: 160,
-    }}>
-      <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10, alignItems: 'flex-start', flexWrap: 'wrap' }}>
-        <strong style={{ fontSize: 14 }}>{title}</strong>
-        {status ? <Pill tone={tone}>{status}</Pill> : null}
-      </div>
-      <div style={{ display: 'grid', gap: 8, color: 'var(--muted)', fontSize: 13, lineHeight: 1.45 }}>
-        {children}
-      </div>
-    </div>
-  );
-}
-
-function ReadinessRow({ label, value }) {
-  return (
-    <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10, alignItems: 'baseline' }}>
-      <span>{label}</span>
-      <strong style={{ color: 'var(--text)', textAlign: 'right', fontSize: 12 }}>{value}</strong>
-    </div>
-  );
-}
-
-function MiniList({ items, emptyText }) {
-  if (!items.length) return <div>{emptyText}</div>;
-  return (
-    <div style={{ display: 'grid', gap: 6 }}>
-      {items.map((item, index) => (
-        <div key={item.key || index} style={{ display: 'flex', justifyContent: 'space-between', gap: 10, alignItems: 'center' }}>
-          <span style={{ color: 'var(--text)', fontWeight: 700 }}>{item.label}</span>
-          <span style={{ fontSize: 12 }}>{item.meta}</span>
-        </div>
-      ))}
-    </div>
-  );
+function yesNo(value) {
+  return value === true ? 'Ja' : 'Nej';
 }
 
 export default function FuturesPaperDeskPage() {
-  const [refreshToken, setRefreshToken] = useState(0);
-  const TABS = [
-    { id: 'oversikt', label: 'Översikt' },
-    { id: 'konto', label: 'Konto' },
-    { id: 'positioner', label: 'Positioner' },
-    { id: 'trades', label: 'Trades' },
-    { id: 'runtime', label: 'Runtime' },
-    { id: 'ibkr', label: 'IBKR Paper Execution' },
-    { id: 'godkannande', label: 'Godkännande' },
-    { id: 'teknik', label: 'Teknisk info' },
-  ];
   const [activeTab, setActiveTab] = useState('oversikt');
-  const runtime = useFuturesDeskRuntime(refreshToken);
-  const accountState = useFuturesDeskAccount(refreshToken);
-  const marketDataState = useFuturesMarketDataStatus(refreshToken);
-  const ibPaperExecutionState = useIbPaperExecutionStatus(refreshToken);
-  const data = runtime.data;
-  const ibPaperExecution = ibPaperExecutionState.data || null;
-  const ibDataLayer = data?.ibDataLayer || { enabled: false, connected: false };
-  const ibAccountPayload = data?.ibAccount || null;
-  const ibAccount = ibAccountPayload?.ok === true ? ibAccountPayload.account : null;
-  const ibAccountCurrency = ibAccount?.currency || 'SEK';
-  const dataPipeline = data?.dataPipeline || null;
-  const nextTransition = data?.nextSessionTransition || null;
-  const mdStatus = marketDataState.data || null;
-  const mdQuotes = mdStatus?.quotes || {};
-  const mdCandles = mdStatus?.candles || {};
-  const account = accountState.data?.account || data?.account || {};
-  const accountConfig = accountState.data?.config || data?.accountConfig || {};
-  const instruments = Array.isArray(data?.instruments) ? data.instruments : [];
-  const strategies = Array.isArray(data?.strategyPulse) ? data.strategyPulse : [];
-  const positions = data?.positions || { open: [], closed: [] };
-  const openPositions = Array.isArray(data?.openPositions) ? data.openPositions : Array.isArray(positions.open) ? positions.open : [];
-  const closedTrades = Array.isArray(data?.closedTrades) ? data.closedTrades : Array.isArray(positions.closed) ? positions.closed : [];
-  const latestEvents = Array.isArray(data?.latestEvents) ? data.latestEvents : [];
-  const market = data?.market || {};
-  const scanner = data?.scanner || {};
-  const autoSimulation = data?.autoSimulation || {};
-  const candidateQueue = data?.candidateQueue || {};
-  const dataFeed = data?.dataFeed || {};
-  const ibkrExecutionStatus = ibPaperExecution?.status || 'disabled';
-  const ibkrExecutionSafety = ibPaperExecution?.safety || {};
-  const ibkrExecutionClient = ibPaperExecution?.executionClient || {};
-  const ibkrReconciliation = ibPaperExecution?.reconciliation || {};
-  const ibkrKillSwitch = ibPaperExecution?.killSwitch || {};
-  const ibkrAccount = ibPaperExecution?.account || {};
-  const ibkrFlags = ibPaperExecution?.flags || {};
-  const statusReasons = Array.isArray(data?.statusReasons) ? data.statusReasons : [];
+  const [refreshToken, setRefreshToken] = useState(0);
+  const runtime = useJson('/api/futures-paper/runtime', refreshToken);
+  const execution = useJson('/api/futures-paper/ibkr-paper-execution/status?connect=false', refreshToken);
+
+  const data = runtime.data || {};
+  const executionData = execution.data || {};
+  const account = data.account || {};
+  const currency = account.currency || executionData.account?.currency || 'USD';
+  const brokerPositions = Array.isArray(data.brokerPositions) ? data.brokerPositions : [];
+  const brokerOrders = Array.isArray(data.brokerOrders) ? data.brokerOrders : [];
+  const brokerFills = Array.isArray(data.brokerFills || data.brokerExecutions) ? (data.brokerFills || data.brokerExecutions) : [];
+  const brokerCommissions = Array.isArray(data.brokerCommissions) ? data.brokerCommissions : [];
+  const reconciliation = data.brokerReconciliation || executionData.reconciliation || {};
+  const legacy = data.legacyInternalSimulation || {};
+  const scanner = data.scanner || {};
+  const candidateQueue = data.candidateQueue || {};
   const queueCandidates = Array.isArray(candidateQueue.candidates) ? candidateQueue.candidates : [];
-  const autoSimOn = autoSimulation.enabled === true;
-  const scanHistory = Array.isArray(data?.scanHistory) ? data.scanHistory : [];
-  const strategyStatus = Array.isArray(data?.strategyStatus) ? data.strategyStatus : [];
-  const strategyOverview = Array.isArray(data?.strategyOverview) ? data.strategyOverview : [];
-  const recentClosedTrades = Array.isArray(data?.recentClosedTrades) ? data.recentClosedTrades : [];
-  const lastScan = scanner.lastScanSummary || null;
-  const lastScanBlocked = [
-    ...(lastScan?.blockedByCooldown || []).map((row) => ({ ...row, label: 'cooldown' })),
-    ...(lastScan?.blockedByFamilyGate || []).map((row) => ({ ...row, label: `family gate (${row.strategyFamily || 'okänd familj'})` })),
-  ];
-  const accountCurrency = account.currency || account.baseCurrency || 'SEK';
-  const totalPnl = Number(account.totalPnlSek || 0);
-  const balance = Number(account.equitySek || account.cashSek || 0);
-  const base = Number(account.startingBalanceSek || 0);
-  const pnlTone = totalPnl > 0 ? 'success' : totalPnl < 0 ? 'danger' : 'neutral';
-  const positionsCount = Number(positions.totalOpen || openPositions.length || 0) + Number(positions.totalClosed || closedTrades.length || 0);
-  const readyText = market.isOpen ? 'Marknaden är öppen' : 'Marknaden är stängd';
-  const readinessInstruments = (instruments.length ? instruments : []).map((row) => {
-    const symbol = String(row.symbol || row.root || '').toUpperCase();
-    const commission = row.commissionPerSideUsd ?? 0;
-    const roundTrip = row.estRoundTripCostUsd ?? commission * 2;
-    return {
-      key: symbol,
-      label: symbol,
-      meta: `${row.name || symbol} · point value ${fmtMoney(row.pointValueUsd ?? row.contractSize ?? 0, 'USD', 2)} · courtage/side ${fmtMoney(commission, 'USD', 2)} · round trip ${fmtMoney(roundTrip, 'USD', 2)}`,
-    };
-  });
-  const strategyPreviewItems = strategies.slice(0, 3).map((row) => ({
-    key: row.strategyId || row.strategyName,
-    label: row.strategyName || row.strategyId || 'Okänd strategi',
-    meta: `${row.strategyId || 'strategy'} · kandidatkälla`,
-  }));
-  const [balanceDraft, setBalanceDraft] = useState(String(account.startingBalanceSek ?? accountConfig.startingBalanceSek ?? 250000));
-  const [accountActionError, setAccountActionError] = useState('');
-  const [accountActionMessage, setAccountActionMessage] = useState('');
-  useEffect(() => {
-    const next = account.startingBalanceSek ?? accountConfig.startingBalanceSek ?? 250000;
-    setBalanceDraft(String(next));
-  }, [account.startingBalanceSek, accountConfig.startingBalanceSek]);
+  const scanHistory = Array.isArray(data.scanHistory) ? data.scanHistory : [];
+  const strategyOverview = Array.isArray(data.strategyOverview) ? data.strategyOverview : [];
+  const statusReasons = Array.isArray(data.statusReasons) ? data.statusReasons : [];
+  const flags = executionData.flags || {};
+  const safety = executionData.safety || {};
+  const executionClient = executionData.executionClient || {};
+  const market = data.market || {};
 
-  async function mutateAccount(endpoint, body) {
-    setAccountActionError('');
-    setAccountActionMessage('');
-    const res = await fetch(endpoint, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      credentials: 'include',
-      body: JSON.stringify(body),
-    });
-    const json = await res.json().catch(() => null);
-    if (!res.ok || !json?.ok) {
-      throw new Error(json?.error || `HTTP ${res.status}`);
-    }
-    setRefreshToken((value) => value + 1);
-    return json;
-  }
+  const dailyBrokerPnl = account.dailyPnl ?? account.realizedPnl ?? null;
+  const degraded = account.degraded === true || reconciliation.degraded === true;
 
-  async function mutateLedger(endpoint, body) {
-    setAccountActionError('');
-    setAccountActionMessage('');
-    const res = await fetch(endpoint, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      credentials: 'include',
-      body: JSON.stringify(body),
-    });
-    const json = await res.json().catch(() => null);
-    if (!res.ok || !json?.ok) {
-      throw new Error(json?.error || `HTTP ${res.status}`);
-    }
-    setRefreshToken((value) => value + 1);
-    return json;
-  }
+  const kpis = useMemo(() => [
+    { label: 'Execution target', value: 'ibkr_paper', tone: 'good' },
+    { label: 'Net Liquidation', value: fmtMoney(account.netLiquidation, currency), tone: account.netLiquidation == null ? 'warning' : 'blue' },
+    { label: 'Available Funds', value: fmtMoney(account.availableFunds, currency), tone: account.availableFunds == null ? 'warning' : 'blue' },
+    { label: 'Buying Power', value: fmtMoney(account.buyingPower, currency), tone: account.buyingPower == null ? 'warning' : 'blue' },
+    { label: 'Open broker positions', value: fmtNumber(brokerPositions.length), tone: brokerPositions.length ? 'blue' : 'good' },
+    { label: 'Reconciliation', value: reconciliation.status || 'unknown', tone: degraded ? 'warning' : 'good' },
+  ], [account, brokerPositions.length, currency, degraded, reconciliation.status]);
 
-  async function handleResetAccount() {
-    try {
-      await mutateAccount('/api/futures-paper/account/reset', { reason: 'manual_reset_from_ui' });
-      setAccountActionMessage('Simulerat konto återställt.');
-    } catch (err) {
-      setAccountActionError(err?.message || 'Kunde inte återställa simulerat konto.');
-    }
-  }
-
-  async function handleSetBalance() {
-    try {
-      await mutateAccount('/api/futures-paper/account/set-balance', {
-        startingBalanceSek: Number(balanceDraft),
-        reason: 'manual_set_balance_from_ui',
-      });
-      setAccountActionMessage('Falskt kapital uppdaterat.');
-    } catch (err) {
-      setAccountActionError(err?.message || 'Kunde inte sätta falskt kapital.');
-    }
-  }
-
-  async function handleRunScannerOnce() {
-    try {
-      const result = await mutateLedger('/api/futures-paper/scanner/run-once', {});
-      setAccountActionMessage(`Scanner körd: ${result.scan?.candidatesAdded ?? 0} nya kandidater (simulerad fallback-data).`);
-    } catch (err) {
-      setAccountActionError(err?.message || 'Kunde inte köra futures-scannern.');
-    }
-  }
-
-  async function handleSimulateCandidate() {
-    try {
-      const result = await mutateLedger('/api/futures-paper/candidates/simulate', {});
-      setAccountActionMessage(`Simulerad position öppnad från kandidat: ${result.position?.symbol} ${result.position?.side}.`);
-    } catch (err) {
-      setAccountActionError(err?.message || 'Kunde inte simulera kandidat.');
-    }
-  }
-
-  async function handleToggleAutoSimulation() {
-    try {
-      const result = await mutateLedger('/api/futures-paper/auto-simulation', { enabled: !autoSimOn });
-      setAccountActionMessage(result.autoSimulation?.enabled
-        ? 'Auto simulation PÅ (endast intern paper-simulation).'
-        : 'Auto simulation AV.');
-    } catch (err) {
-      setAccountActionError(err?.message || 'Kunde inte ändra auto simulation.');
-    }
-  }
-
-  const nextStep = useMemo(() => {
-    if (!data) return 'Läser runtime...';
-    if (openPositions.length > 0) return 'Följ öppna positioner i tabellen nedan.';
-    if (market.isOpen) return 'Nästa steg är att koppla in simulatorn för MNQ/MES.';
-    return 'Nästa öppning följer Globex-sessionen.';
-  }, [data, market.isOpen, openPositions.length]);
+  const refreshButton = (
+    <button type="button" className="btn" onClick={() => setRefreshToken((value) => value + 1)}>Uppdatera</button>
+  );
 
   return (
     <DashboardShell
       title="Futures Paper Desk"
-      subtitle="Separat paper-only desk för MNQ, MES, NQ och ES med simulerat kapital, driven av Trading OS-signaler. Inga riktiga order, ingen broker och ingen live-execution."
+      subtitle="IBKR Paper Trading är enda aktiva execution-miljö för Futures Paper. Intern futures-simulering är avvecklad."
       safety={data}
       tabs={TABS}
       activeTab={activeTab}
       onTab={setActiveTab}
-      kpis={[
-        { label: 'Läge', value: 'paper_only', tone: 'good' },
-        ibAccount
-          ? { label: 'IB Paper-saldo', value: fmtMoney(ibAccount.netLiquidation, ibAccountCurrency), tone: 'blue' }
-          : { label: 'IB Paper-saldo', value: ibDataLayer.enabled ? 'Väntar…' : 'Ej inkopplat', tone: 'warning' },
-        { label: 'Sim-equity', value: fmtMoney(balance, accountCurrency), tone: 'blue' },
-        { label: 'Sim-PnL', value: fmtMoney(totalPnl, accountCurrency), tone: pnlTone },
-        { label: 'Öppna', value: fmtNumber(positions.totalOpen || 0), tone: 'blue' },
-        { label: 'Marknad', value: market.isOpen ? 'Öppen' : 'Stängd', tone: market.isOpen ? 'good' : 'warning' },
-      ]}
+      kpis={kpis}
     >
-      <div style={{ ...sectionStyle(), marginBottom: 14, borderColor: 'rgba(59,130,246,0.35)', background: 'rgba(59,130,246,0.08)' }}>
-        <strong style={{ color: 'var(--text)' }}>Detta är endast futures paper trading. Inga riktiga order kan läggas.</strong>
-        <div style={{ color: 'var(--muted)', marginTop: 6, fontSize: 13 }}>
-          Kontrakt MNQ/MES/NQ/ES simuleras med point value och courtage per köp/sälj. Varje open och close drar simulerad fee från paper-kontot. Net PnL = gross PnL − avgifter.
-        </div>
-      </div>
+      <section style={{ ...sectionStyle({ marginBottom: 14, borderColor: 'rgba(59,130,246,0.35)', background: 'rgba(59,130,246,0.08)' }) }}>
+        <strong>{STATUS_COPY}</strong>
+      </section>
 
       {runtime.error ? (
-        <div style={{ ...sectionStyle(), marginBottom: 16, borderColor: 'rgba(239,68,68,0.35)' }}>
+        <section style={{ ...sectionStyle({ marginBottom: 14, borderColor: 'rgba(239,68,68,0.35)' }) }}>
           <strong style={{ color: 'var(--danger)' }}>Runtime kunde inte läsas</strong>
           <div style={{ color: 'var(--muted)', marginTop: 6, fontSize: 13 }}>{runtime.error}</div>
-        </div>
+        </section>
       ) : null}
 
-      {activeTab === 'ibkr' && (
-      <section style={{ ...sectionStyle(), marginTop: 14, borderColor: 'rgba(59,130,246,0.35)' }}>
-        <SectionHeader
-          eyebrow="IBKR Paper Execution"
-          title="Brokerflöde"
-          summary="Order skickas endast till IBKR Paper Trading. Riktiga order och livekonton är blockerade."
-          action={<Pill tone={brokerStatusTone(ibkrExecutionStatus)}>{ibkrExecutionStatus}</Pill>}
-        />
-        {ibPaperExecutionState.error ? (
-          <div style={{ color: 'var(--warning)', marginBottom: 12 }}>{ibPaperExecutionState.error}</div>
-        ) : null}
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(260px, 1fr))', gap: 12 }}>
-          <ReadinessCard title="Säkerhetsmodell" status={ibkrExecutionSafety.orderSubmissionMode || 'disabled'} tone={brokerStatusTone(ibkrExecutionStatus)}>
-            <ReadinessRow label="Paper broker" value={yesNo(ibkrExecutionSafety.paperBrokerExecutionEnabled === true)} />
-            <ReadinessRow label="Paper submit" value={yesNo(ibkrExecutionSafety.paper_order_submission_enabled === true)} />
-            <ReadinessRow label="Live broker" value={yesNo(ibkrExecutionSafety.liveBrokerExecutionEnabled === true)} />
-            <ReadinessRow label="Live submit" value={yesNo(ibkrExecutionSafety.live_order_submission_enabled === true)} />
-            <ReadinessRow label="Live account blocked" value={yesNo(ibPaperExecution?.liveAccountBlocked !== false)} />
-            <ReadinessRow label="Mode" value={ibkrExecutionSafety.mode || 'ibkr_paper'} />
-          </ReadinessCard>
-
-          <ReadinessCard title="Paperkonto" status={ibPaperExecution?.paperAccountVerified ? 'Verifierat' : 'Blockerat'} tone={ibPaperExecution?.paperAccountVerified ? 'success' : 'warning'}>
-            <ReadinessRow label="Konto" value={ibkrAccount.accountIdMasked || 'Saknas'} />
-            <ReadinessRow label="Klassning" value={ibkrAccount.classification || 'unknown'} />
-            <ReadinessRow label="Valuta" value={ibkrAccount.currency || '–'} />
-            <ReadinessRow label="NetLiquidation" value={ibkrAccount.netLiquidation != null ? fmtMoney(ibkrAccount.netLiquidation, ibkrAccount.currency || 'SEK') : '–'} />
-            <ReadinessRow label="Blocker" value={ibkrAccount.blocker || 'none'} />
-          </ReadinessCard>
-
-          <ReadinessCard title="Execution client" status={ibkrExecutionClient.connected ? 'Ansluten' : 'Ej ansluten'} tone={ibkrExecutionClient.connected ? 'success' : 'warning'}>
-            <ReadinessRow label="Host/port" value={`${ibkrExecutionClient.host || '127.0.0.1'}:${ibkrExecutionClient.port || 4002}`} />
-            <ReadinessRow label="ClientId" value={String(ibkrExecutionClient.clientId ?? '–')} />
-            <ReadinessRow label="nextValidId" value={ibkrExecutionClient.nextValidIdReady ? String(ibkrExecutionClient.nextOrderId || 'ready') : 'saknas'} />
-            <ReadinessRow label="Reconnects" value={String(ibkrExecutionClient.reconnectCount ?? 0)} />
-            <ReadinessRow label="No-live capability" value={ibkrExecutionClient.noLiveOrderCapability ? 'paper-only' : '–'} />
-          </ReadinessCard>
-
-          <ReadinessCard title="Reconciliation" status={ibkrReconciliation.status || 'unknown'} tone={ibkrReconciliation.degraded ? 'warning' : 'success'}>
-            <ReadinessRow label="Degraded" value={yesNo(ibkrReconciliation.degraded === true)} />
-            <ReadinessRow label="Open orders" value={String(ibkrReconciliation.counts?.openOrders ?? 0)} />
-            <ReadinessRow label="Executions" value={String(ibkrReconciliation.counts?.executions ?? 0)} />
-            <ReadinessRow label="Positions" value={String(ibkrReconciliation.counts?.positions ?? 0)} />
-            <ReadinessRow label="Blocker" value={ibkrReconciliation.blockedReason || 'none'} />
-          </ReadinessCard>
-
-          <ReadinessCard title="Kill switch" status={ibkrKillSwitch.pauseNewEntries ? 'Pause new entries' : 'Öppen för shadow'} tone={ibkrKillSwitch.pauseNewEntries ? 'warning' : 'success'}>
-            <ReadinessRow label="Pause new entries" value={yesNo(ibkrKillSwitch.pauseNewEntries === true)} />
-            <ReadinessRow label="Reason" value={ibkrKillSwitch.reason || 'none'} />
-            <ReadinessRow label="Updated" value={ibkrKillSwitch.updatedAt ? new Date(ibkrKillSwitch.updatedAt).toLocaleString('sv-SE') : '–'} />
-            <ReadinessRow label="Emergency flatten" value="shadow-disabled" />
-          </ReadinessCard>
-
-          <ReadinessCard title="Feature flags" status={ibkrFlags.orderSubmissionMode || 'disabled'} tone={brokerStatusTone(ibkrExecutionStatus)}>
-            <ReadinessRow label="IBKR_PAPER_EXECUTION_ENABLED" value={yesNo(ibkrFlags.executionEnabled === true)} />
-            <ReadinessRow label="IBKR_PAPER_EXECUTION_SHADOW_MODE" value={yesNo(ibkrFlags.shadowMode === true)} />
-            <ReadinessRow label="IBKR_PAPER_ORDER_SUBMISSION_ENABLED" value={yesNo(ibkrFlags.submissionEnabled === true)} />
-            <ReadinessRow label="Live execution" value="false" />
-          </ReadinessCard>
-        </div>
-      </section>
-      )}
-
-      <div style={{ ...sectionStyle(), marginTop: 14, display: 'flex', flexWrap: 'wrap', gap: 8, alignItems: 'center' }}>
-        <Pill tone={ibDataLayer.connected ? 'success' : (ibDataLayer.enabled ? 'danger' : 'warning')}>
-          IB Gateway: {ibDataLayer.connected ? 'Ansluten' : (ibDataLayer.enabled ? 'Frånkopplad' : 'Ej aktiverad')}
-        </Pill>
-        <Pill tone={ibDataLayer.marketDataTypeLabel === 'realtime' ? 'success' : 'warning'}>
-          CME: {ibDataLayer.marketDataTypeLabel || 'okänd'}
-        </Pill>
-        {ibDataLayer.mnqLocalSymbol ? <Pill tone="info">MNQ: {ibDataLayer.mnqLocalSymbol}</Pill> : null}
-        {ibDataLayer.mesLocalSymbol ? <Pill tone="info">MES: {ibDataLayer.mesLocalSymbol}</Pill> : null}
-        {ibDataLayer.mnqStaleAgeMs != null ? <Pill tone={ibDataLayer.mnqStaleAgeMs < 120000 ? 'success' : 'warning'}>Dataålder: {fmtAge(ibDataLayer.mnqStaleAgeMs)}</Pill> : null}
-        <Pill tone="neutral">Session: {market.sessionLabel || market.session || '–'}</Pill>
-        {nextTransition ? (
-          <Pill tone="neutral">Nästa: {nextTransition.nextSessionLabel} om {fmtAge(nextTransition.minutesUntil * 60000)}</Pill>
-        ) : null}
-        <Pill tone="info">Feed: {dataFeed.source || '–'}</Pill>
-      </div>
-
-      {dataFeed.simulated === true || dataFeed.fallback === true || dataFeed.source === 'simulated_fallback' ? (
-        <div style={{ ...sectionStyle(), marginTop: 14, borderColor: 'rgba(245,158,11,0.35)', background: 'rgba(245,158,11,0.08)' }}>
-          <strong style={{ color: 'var(--warning)' }}>
-            {dataFeed.simulated === true
-              ? 'Simulated fallback data används.'
-              : 'Blandad feed: minst en symbol använder simulerad fallback-data.'}
-          </strong>
-          <div style={{ color: 'var(--muted)', marginTop: 6, fontSize: 13 }}>
-            {dataFeed.description || 'Resultaten visar motortest och ska inte tolkas som riktig strategi-performance.'}
+      {activeTab === 'oversikt' && (
+        <>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(190px, 1fr))', gap: 10, marginTop: 14 }}>
+            <MetricCard label="Net Liquidation" value={fmtMoney(account.netLiquidation, currency)} hint={account.accountIdMasked || account.unavailableReason || 'IBKR Paper'} tone={account.netLiquidation == null ? 'warning' : 'info'} />
+            <MetricCard label="Available Funds" value={fmtMoney(account.availableFunds, currency)} hint="IBKR Paper" tone={account.availableFunds == null ? 'warning' : 'neutral'} />
+            <MetricCard label="Buying Power" value={fmtMoney(account.buyingPower, currency)} hint="IBKR Paper" tone={account.buyingPower == null ? 'warning' : 'neutral'} />
+            <MetricCard label="Unrealized PnL" value={fmtMoney(account.unrealizedPnl, currency)} hint="IBKR Paper" />
+            <MetricCard label="Realized PnL" value={fmtMoney(account.realizedPnl, currency)} hint="IBKR Paper" />
+            <MetricCard label="Daily broker PnL" value={fmtMoney(dailyBrokerPnl, currency)} hint="Från brokerdata när tillgängligt" />
+            <MetricCard label="Open broker positions" value={fmtNumber(brokerPositions.length)} hint="source=ibkr_paper" />
+            <MetricCard label="Open broker orders" value={fmtNumber(brokerOrders.length)} hint="source=ibkr_paper" />
+            <MetricCard label="Reconciliation status" value={reconciliation.status || 'unknown'} hint={reconciliation.blockedReason || 'Broker mirror'} tone={degraded ? 'warning' : 'success'} />
           </div>
-        </div>
-      ) : null}
 
-      {activeTab === 'runtime' && (
-      <section style={{ ...sectionStyle(), marginTop: 14 }}>
-        <SectionHeader
-          eyebrow="Read-only"
-          title="Scanner och strategi-kontroll"
-          summary="Statuspanelen visar vad futures-desken kan göra just nu. Den aktiverar ingen automation, broker eller riktig orderväg."
-          action={<Pill tone={autoSimOn ? 'success' : 'warning'}>{autoSimOn ? 'Auto simulation PÅ' : 'Auto simulation är avstängd'}</Pill>}
-        />
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(260px, 1fr))', gap: 12 }}>
-          <ReadinessCard title="Scannerstatus" status={scanner.connected ? 'Inkopplad' : 'Futures scanner saknas'} tone={scanner.connected ? 'success' : 'warning'}>
-            <ReadinessRow label="Futures scanner" value={scanner.connected ? 'Paper-only scanner aktiv' : 'Futures scanner saknas'} />
-            <ReadinessRow label="Senaste scan" value={scanner.lastScanAt ? new Date(scanner.lastScanAt).toLocaleString('sv-SE') : 'Ingen futures-scan ännu'} />
-            <ReadinessRow label="Datakälla" value={dataFeed.simulated ? 'Simulated data (fallback)' : dataFeed.source || 'Ingen separat MNQ/MES-feed ännu'} />
-            <div>Paper-only scanner för MNQ/MES. Riktiga trades kräver Trading OS-signal med riktning och risk; fallback-data markeras som test/exkluderad.</div>
-            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-              <button type="button" className="btn" onClick={handleRunScannerOnce}>Kör scanner en gång</button>
-            </div>
-          </ReadinessCard>
-
-          <ReadinessCard title="Auto paper-simulation" status={autoSimOn ? 'PÅ' : 'AV'} tone={autoSimOn ? 'success' : 'warning'}>
-            <ReadinessRow label="Mode" value="paper_only" />
-            <ReadinessRow label="Broker" value="off" />
-            <ReadinessRow label="Real orders" value="blocked" />
-            <ReadinessRow label="Intervall" value={autoSimulation.intervalMs ? `${Math.round(autoSimulation.intervalMs / 1000)} s` : '–'} />
-            <div>{autoSimOn
-              ? 'Auto simulation kör Trading OS-signal → futures adapter → paper simulation internt. Inga riktiga order kan skickas.'
-              : 'Auto simulation är avstängd. Slå på för intern paper-simulation, eller kör scannern manuellt.'}</div>
-            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-              <button type="button" className="btn" onClick={handleToggleAutoSimulation}>
-                {autoSimOn ? 'Stäng av auto simulation' : 'Slå på auto simulation (paper)'}
-              </button>
-            </div>
-          </ReadinessCard>
-
-          <ReadinessCard title="Futures-symboler" status="MNQ / MES / NQ / ES" tone="info">
-            <MiniList items={readinessInstruments} emptyText="MNQ, MES, NQ och ES är futures-symbolerna i katalogen." />
-            <div style={{ marginTop: 8, color: 'var(--muted)', fontSize: 12 }}>
-              Auto-scannern fokuserar på micros (MNQ/MES). NQ/ES finns i katalogen med point value och courtage för manuell paper-simulation.
-            </div>
-          </ReadinessCard>
-
-          <ReadinessCard title="Strategier" status="Kandidatkälla" tone="info">
-            <MiniList items={strategyPreviewItems} emptyText="Strategier visas när historisk strategy performance finns i runtime." />
-            <div>StrategyId och strategyName är metadata. Futures-desken får inte skapa riktning utan Trading OS-signal.</div>
-          </ReadinessCard>
-
-          <ReadinessCard title="Senaste kandidater/signaler" status={candidateQueue.connected ? `${queueCandidates.length} i kö` : 'Candidate queue saknas'} tone={queueCandidates.length > 0 ? 'info' : 'neutral'}>
-            <ReadinessRow label="Kö" value={candidateQueue.connected ? 'Inkopplad (paper-only)' : 'Candidate queue saknas'} />
-            <MiniList
-              items={queueCandidates.slice(0, 3).map((row) => ({
-                key: row.candidateId,
-                label: `${row.symbol} ${row.direction}`,
-                meta: `${row.strategyName || row.strategyId} · ${tradeTypeLabel(row.tradeType)} · ${row.dataSource || 'okänd data'}`,
-              }))}
-              emptyText="Inga futures-kandidater i kön. Kör scannern för att skapa nya."
+          <section style={{ ...sectionStyle({ marginTop: 14 }) }}>
+            <SectionHeader
+              eyebrow="Execution"
+              title="IBKR Paper shadow"
+              summary="Nya kandidater reserveras för IBKR Paper. Submission är avstängd tills hardening-review, shadow-verifiering och första pilotorder är godkända."
+              action={refreshButton}
             />
-            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-              <button type="button" className="btn" onClick={handleSimulateCandidate} disabled={queueCandidates.length === 0}>Simulera nästa kandidat</button>
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+              <Pill tone={flags.executionEnabled ? 'success' : 'warning'}>IBKR_PAPER_EXECUTION_ENABLED={String(flags.executionEnabled === true)}</Pill>
+              <Pill tone={flags.shadowMode ? 'success' : 'warning'}>IBKR_PAPER_EXECUTION_SHADOW_MODE={String(flags.shadowMode === true)}</Pill>
+              <Pill tone={flags.submissionEnabled ? 'danger' : 'success'}>IBKR_PAPER_ORDER_SUBMISSION_ENABLED={String(flags.submissionEnabled === true)}</Pill>
+              <Pill tone="success">IBKR_LIVE_EXECUTION_ENABLED=false</Pill>
+              <Pill tone="success">internal_futures_simulation_enabled=false</Pill>
             </div>
-          </ReadinessCard>
-
-          <ReadinessCard title="Senaste blockerade signaler" status={lastScanBlocked.length > 0 ? `${lastScanBlocked.length} blockerade` : 'Info'} tone={lastScanBlocked.length > 0 ? 'warning' : 'neutral'}>
-            <ReadinessRow label="Cooldown-blockerade" value={String(lastScan?.blockedByCooldown?.length ?? 0)} />
-            <ReadinessRow label="Skippade strategier" value={String(lastScan?.skippedStrategies?.length ?? 0)} />
-            <MiniList
-              items={[
-                ...lastScanBlocked.slice(0, 3).map((row, index) => ({
-                  key: `blocked_${row.strategyId}_${index}`,
-                  label: row.strategyId,
-                  meta: row.reason,
-                })),
-                ...(lastScan?.skippedStrategies || []).slice(0, 2).map((row, index) => ({
-                  key: `skipped_${row.strategyId}_${index}`,
-                  label: row.strategyId,
-                  meta: row.reason,
-                })),
-              ]}
-              emptyText="Inga blockerade eller skippade strategier i senaste scan."
-            />
-          </ReadinessCard>
-
-          <ReadinessCard title="Varför ingen trade togs" status="Förklaring" tone={statusReasons.length > 1 ? 'warning' : 'success'}>
-            {statusReasons.length > 0
-              ? statusReasons.map((reason) => <div key={reason.code}>{reason.message}</div>)
-              : <div>Inga blockerande orsaker just nu.</div>}
-            <div>Broker/order är alltid blockerade i den här desken.</div>
-          </ReadinessCard>
-
-        </div>
-      </section>
+          </section>
+        </>
       )}
-
-      {activeTab === 'runtime' && (
-      <section style={{ ...sectionStyle(), marginTop: 14 }}>
-        <SectionHeader
-          eyebrow="Scan history"
-          title="Senaste 10 scans"
-          summary="Varje scan kontrollerar alla godkända strategier mot MNQ/MES med 30 min cooldown- och family gate-regler. Endast intern paper-simulation."
-        />
-        <CompactTable
-          rows={scanHistory.map((row) => ({ ...row, id: row.scanId }))}
-          emptyText="Inga scans ännu. Kör scannern eller slå på auto simulation."
-          columns={[
-            { key: 'startedAt', label: 'Tidpunkt', render: (row) => row.startedAt ? new Date(row.startedAt).toLocaleString('sv-SE') : '–' },
-            { key: 'tradingOsSignalsRead', label: 'OS-signaler', render: (row) => fmtNumber(row.tradingOsSignalsRead ?? row.strategiesChecked ?? 0) },
-            { key: 'signalsMappedToFutures', label: 'Mappade', render: (row) => fmtNumber(row.signalsMappedToFutures || 0) },
-            { key: 'candidatesCreated', label: 'Kandidater', render: (row) => fmtNumber(row.candidatesCreated || 0) },
-            { key: 'tradesOpenedFromRealSignals', label: 'Real opened', render: (row) => fmtNumber(row.tradesOpenedFromRealSignals || 0) },
-            { key: 'tradesOpenedFromTests', label: 'Test opened', render: (row) => fmtNumber(row.tradesOpenedFromTests || 0) },
-            { key: 'blockedByCooldown', label: 'Cooldown-block', render: (row) => fmtNumber(row.blockedByCooldown?.length || 0) },
-            { key: 'signalsSkippedNoMapping', label: 'No mapping', render: (row) => fmtNumber(row.signalsSkippedNoMapping || 0) },
-            { key: 'signalsSkippedNoRisk', label: 'No risk', render: (row) => fmtNumber(row.signalsSkippedNoRisk || 0) },
-            { key: 'status', label: 'Status', render: (row) => <Pill tone={row.status === 'completed' ? 'success' : 'warning'}>{row.status || '–'}</Pill> },
-          ]}
-        />
-      </section>
-      )}
-
-      {activeTab === 'oversikt' && (
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(190px, 1fr))', gap: 10, marginTop: 14 }}>
-        <MetricCard label="Saldo" value={fmtMoney(balance, accountCurrency)} hint={`Startkapital ${fmtMoney(base, accountCurrency)}`} tone={pnlTone} />
-        <MetricCard label="PnL" value={fmtMoney(totalPnl, accountCurrency)} hint={`Dagens saldo just nu`} tone={pnlTone} />
-        <MetricCard label="Öppna" value={fmtNumber(positions.totalOpen || 0)} hint="Simulerade öppna positioner" />
-        <MetricCard label="Stängda" value={fmtNumber(positions.totalClosed || 0)} hint="Simulerade stängda positioner" />
-        <MetricCard label="Fokus" value="MNQ / MES" hint={readyText} tone={market.isOpen ? 'success' : 'warning'} />
-      </div>
-      )}
-
-      {activeTab === 'oversikt' && (
-      <section style={{ ...sectionStyle(), marginTop: 14 }}>
-        <SectionHeader
-          eyebrow="Marknadsdata"
-          title="IBKR futures-data (read-only)"
-          summary="Riktiga CME-quotes och candles via IB Gateway. Källa och dataålder visas per kontrakt — simulerad fallback märks alltid tydligt."
-          action={<Pill tone={mdStatus?.enabled ? (mdStatus?.adapter?.connected ? 'success' : 'danger') : 'warning'}>
-            {mdStatus?.enabled ? (mdStatus?.adapter?.connected ? 'IB ansluten' : 'IB frånkopplad') : 'IB-datalager av'}
-          </Pill>}
-        />
-        {marketDataState.error && !mdStatus ? (
-          <div style={{ color: 'var(--muted)', fontSize: 13 }}>Marknadsdatastatus kunde inte läsas: {marketDataState.error}</div>
-        ) : null}
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', gap: 12 }}>
-          {['MNQ', 'MES', 'NQ', 'ES'].map((root) => {
-            const q = mdQuotes[root] || null;
-            const candles = mdCandles[root] || null;
-            return (
-              <ReadinessCard
-                key={root}
-                title={`${root}${q?.localSymbol ? ` · ${q.localSymbol}` : ''}`}
-                status={q ? (q.marketDataTypeLabel || 'okänd') : 'ingen data'}
-                tone={q?.marketDataTypeLabel === 'realtime' ? 'success' : (q ? 'warning' : 'neutral')}
-              >
-                <ReadinessRow label="Last" value={q?.last != null ? fmtNumber(q.last, 2) : '–'} />
-                <ReadinessRow label="Bid / Ask" value={q ? `${q.bid != null ? fmtNumber(q.bid, 2) : '–'} / ${q.ask != null ? fmtNumber(q.ask, 2) : '–'}` : '–'} />
-                <ReadinessRow label="Spread" value={q?.spread != null ? fmtNumber(q.spread, 2) : '–'} />
-                <ReadinessRow label="Volym (dag)" value={q?.volume != null ? fmtNumber(q.volume) : '–'} />
-                <ReadinessRow label="Expiry" value={q?.expiry || '–'} />
-                <ReadinessRow label="Quote-ålder" value={q?.staleAgeMs != null ? fmtAge(q.staleAgeMs) : '–'} />
-                {candles ? (
-                  <>
-                    <ReadinessRow label="1m / 2m / 5m" value={['1m', '2m', '5m'].map((tf) => (candles.timeframes?.[tf]?.ok ? `${candles.timeframes[tf].closedCount}✓` : '–')).join(' / ')} />
-                    <ReadinessRow label="Senaste closed" value={candles.timeframes?.['1m']?.latestClosedTimestamp ? new Date(candles.timeframes['1m'].latestClosedTimestamp).toLocaleTimeString('sv-SE') : '–'} />
-                  </>
-                ) : (
-                  <ReadinessRow label="Candles" value="quote-context (inga candles)" />
-                )}
-              </ReadinessCard>
-            );
-          })}
-        </div>
-      </section>
-      )}
-
-      {activeTab === 'oversikt' && dataPipeline ? (
-      <section style={{ ...sectionStyle(), marginTop: 14 }}>
-        <SectionHeader
-          eyebrow="Replay & Batch"
-          title="Historikstatus för Replay och Batch"
-          summary="Replay och Batch läser samma IB-candles ur den gemensamma datastoren som live-desken. Blockers visas tills historiken är på plats."
-        />
-        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
-          <Pill tone={dataPipeline.replay?.ready ? 'success' : 'warning'}>
-            Replay: {dataPipeline.replay?.ready ? 'Redo' : (dataPipeline.replay?.blocker || 'blockerad')}
-          </Pill>
-          <Pill tone={dataPipeline.batch?.ready ? 'success' : 'warning'}>
-            Batch: {dataPipeline.batch?.ready ? 'Redo (data)' : (dataPipeline.batch?.blocker || 'blockerad')}
-          </Pill>
-        </div>
-        <div style={{ marginTop: 8, color: 'var(--muted)', fontSize: 12 }}>
-          {dataPipeline.batch?.note || ''}
-        </div>
-      </section>
-      ) : null}
 
       {activeTab === 'konto' && (
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr', gap: 14, marginTop: 14 }}>
-        <section style={sectionStyle()}>
-          <SectionHeader
-            eyebrow="IBKR Paper-konto"
-            title="IB Paper-kontosaldo (read-only)"
-            summary="Läses direkt från ditt IBKR paper-konto via read-only API. Detta är brokerns siffror — de påverkas aldrig av interna paper-simuleringar och inga order kan skickas."
-            action={<Pill tone="info">READ-ONLY</Pill>}
-          />
-          {ibAccount ? (
-            <>
-              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 10 }}>
-                <MetricCard label="Net Liquidation" value={fmtMoney(ibAccount.netLiquidation, ibAccountCurrency)} hint="Huvudsaldo från IB paper-kontot" tone="info" />
-                <MetricCard label="Total Cash" value={fmtMoney(ibAccount.totalCashValue, ibAccountCurrency)} hint="TotalCashValue" />
-                <MetricCard label="Available Funds" value={fmtMoney(ibAccount.availableFunds, ibAccountCurrency)} hint="Tillgängliga medel" />
-                <MetricCard label="Buying Power" value={fmtMoney(ibAccount.buyingPower, ibAccountCurrency)} hint="Köpkraft hos IB" />
-                <MetricCard label="Unrealized PnL" value={ibAccount.unrealizedPnl == null ? '–' : fmtMoney(ibAccount.unrealizedPnl, ibAccountCurrency)} hint="IB-kontots orealiserade PnL" />
-                <MetricCard label="Realized PnL" value={ibAccount.realizedPnl == null ? '–' : fmtMoney(ibAccount.realizedPnl, ibAccountCurrency)} hint="IB-kontots realiserade PnL" />
-              </div>
-              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginTop: 12 }}>
-                <Pill tone="success">Konto: {ibAccount.accountIdMasked}</Pill>
-                <Pill tone="success">Typ: paper/demo</Pill>
-                <Pill tone="neutral">Valuta: {ibAccountCurrency}</Pill>
-                <Pill tone={ibAccountPayload?.stale ? 'warning' : 'success'}>
-                  Synk: {ibAccountPayload?.cacheAgeMs != null ? `${fmtAge(ibAccountPayload.cacheAgeMs)} sedan` : 'nu'}{ibAccountPayload?.stale ? ' (stale)' : ''}
-                </Pill>
-                <Pill tone={ibAccountPayload?.connected === false ? 'danger' : 'success'}>
-                  {ibAccountPayload?.connected === false ? 'IB frånkopplad' : 'IB ansluten'}
-                </Pill>
-              </div>
-            </>
-          ) : (
-            <div style={{ color: 'var(--muted)', fontSize: 13 }}>
-              {ibAccountPayload?.blocker
-                ? `IB-kontot kan inte läsas just nu: ${ibAccountPayload.blocker}`
-                : (ibDataLayer.enabled ? 'Väntar på första kontosynken från IB Gateway…' : 'IB-datalagret är inte aktiverat.')}
-            </div>
-          )}
-          <div style={{ marginTop: 12, color: 'var(--muted)', fontSize: 12 }}>
-            IB Net Liquidation och intern simulerad PnL hålls helt åtskilda: det interna kontot nedan är en fristående simulering och dubbelräknas aldrig mot IB-kontot.
+        <section style={{ ...sectionStyle({ marginTop: 14 }) }}>
+          <SectionHeader eyebrow="IBKR Paper-konto" title="Brokerkonto" summary="Alla aktiva konto-KPI:er kommer från IBKR Paper. Saknade värden visas som Ej tillgängligt." action={refreshButton} />
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(190px, 1fr))', gap: 10 }}>
+            <MetricCard label="Account" value={account.accountIdMasked || 'Ej tillgängligt'} hint="Maskerat paper-konto" tone={account.accountIdMasked ? 'success' : 'warning'} />
+            <MetricCard label="Net Liquidation" value={fmtMoney(account.netLiquidation, currency)} />
+            <MetricCard label="Total Cash" value={fmtMoney(account.totalCashValue, currency)} />
+            <MetricCard label="Available Funds" value={fmtMoney(account.availableFunds, currency)} />
+            <MetricCard label="Buying Power" value={fmtMoney(account.buyingPower, currency)} />
+            <MetricCard label="Unrealized PnL" value={fmtMoney(account.unrealizedPnl, currency)} />
+            <MetricCard label="Realized PnL" value={fmtMoney(account.realizedPnl, currency)} />
+            <MetricCard label="Snapshot" value={account.stale ? 'Stale' : (account.degraded ? 'Degraded' : 'OK')} hint={account.unavailableReason || fmtTime(account.updatedAt)} tone={account.degraded ? 'warning' : 'success'} />
           </div>
         </section>
-        <section style={sectionStyle()}>
-          <SectionHeader
-            eyebrow="Konto"
-            title="Internt simulerat kapital"
-            summary="Fristående intern paper-simulering (startkapital + simulerade trades − simulerade avgifter). Detta är INTE IB-kontot."
-          />
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 10 }}>
-            <MetricCard label="Startkapital" value={fmtMoney(account.startingBalanceSek || 0, accountCurrency)} hint="Endast paper money" />
-            <MetricCard label="Equity" value={fmtMoney(account.equitySek || 0, accountCurrency)} hint="Kontovärde efter avgifter" />
-            <MetricCard label="Cash (efter fees)" value={fmtMoney(account.cashSek || 0, accountCurrency)} hint="Saldo efter dragna avgifter" />
-            <MetricCard label="Avgifter (fees)" value={fmtMoney(account.totalFeesSek || 0, accountCurrency)} hint="Simulerat courtage totalt" tone={(account.totalFeesSek || 0) > 0 ? 'warning' : 'neutral'} />
-            <MetricCard label="Realiserad PnL (net)" value={fmtMoney(account.realizedPnlSek || 0, accountCurrency)} hint="Stängda trades, netto efter fees" />
-            <MetricCard label="Orealiserad PnL" value={fmtMoney(account.unrealizedPnlSek || 0, accountCurrency)} hint="Öppna simuleringar" />
-            <MetricCard label="Total PnL" value={fmtMoney(account.totalPnlSek || 0, accountCurrency)} hint="Realiserad + orealiserad" tone={pnlTone} />
-            <MetricCard label="Drawdown" value={fmtMoney(account.drawdownSek || 0, accountCurrency)} hint={fmtPct(account.drawdownPct || 0)} tone={pnlTone === 'danger' ? 'danger' : 'neutral'} />
-            <MetricCard label="Buying Power" value={fmtMoney(account.buyingPowerSek || 0, accountCurrency)} hint="Simulerad köpkraft" />
-            <MetricCard label="Used Margin" value={fmtMoney(account.usedMarginSek || 0, accountCurrency)} hint="Använd marginal" />
-            <MetricCard label="Available Margin" value={fmtMoney(account.availableMarginSek || 0, accountCurrency)} hint="Kvar i simuleringen" />
-            <MetricCard label="FX USD/SEK" value={fmtNumber(account.fxUsdSek || 0, 2)} hint={`Uppdaterad ${account.updatedAt ? 'nu' : '–'}`} />
-          </div>
-          <div style={{ marginTop: 14, padding: 14, border: '1px solid var(--border)', borderRadius: 14, background: 'var(--surface-2)' }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap', marginBottom: 8 }}>
-              <strong>Kontostatus</strong>
-              <span style={{ color: 'var(--muted)', fontSize: 12 }}>{nextStep}</span>
-            </div>
-            <div style={{ height: 10, borderRadius: 999, background: 'rgba(148,163,184,0.18)', overflow: 'hidden' }}>
-              <div style={{ width: '100%', height: '100%', background: 'linear-gradient(90deg, rgba(59,130,246,0.70), rgba(34,197,94,0.65))' }} />
-            </div>
-            <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap', marginTop: 8, color: 'var(--muted)', fontSize: 12 }}>
-              <span>Paper only · inga riktiga pengar</span>
-              <span>{market.description || 'Globex-session används som ram.'}</span>
-            </div>
-          </div>
-          <div style={{ marginTop: 14, padding: 14, border: '1px solid var(--border)', borderRadius: 14, background: 'var(--surface-2)' }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap', marginBottom: 10 }}>
-              <strong>Kontoåtgärder</strong>
-              <span style={{ color: 'var(--muted)', fontSize: 12 }}>Endast simulerat konto</span>
-            </div>
-            <div style={{ display: 'grid', gridTemplateColumns: 'minmax(220px, 1fr) auto auto', gap: 10, alignItems: 'end' }}>
-              <label style={{ display: 'grid', gap: 6 }}>
-                <span style={{ color: 'var(--muted)', fontSize: 12 }}>Falskt kapital (SEK)</span>
-                <input
-                  type="number"
-                  min="0"
-                  step="1000"
-                  value={balanceDraft}
-                  onChange={(event) => setBalanceDraft(event.target.value)}
-                  style={{ border: '1px solid var(--border)', borderRadius: 10, padding: '10px 12px', background: 'var(--surface)', color: 'var(--text)' }}
-                />
-              </label>
-              <button type="button" className="btn" onClick={handleResetAccount}>Återställ simulerat konto</button>
-              <button type="button" className="btn" onClick={handleSetBalance}>Sätt falskt kapital</button>
-            </div>
-            {(accountActionMessage || accountActionError) && (
-              <div style={{ marginTop: 10, color: accountActionError ? 'var(--danger)' : 'var(--success)', fontSize: 13 }}>
-                {accountActionError || accountActionMessage}
-              </div>
-            )}
-          </div>
-        </section>
-      </div>
       )}
 
-      {activeTab === 'oversikt' && (
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr', gap: 14, marginTop: 14 }}>
-        <section style={sectionStyle()}>
-          <SectionHeader
-            eyebrow="Session"
-            title="Marknadsläge"
-            summary="Ett enkelt läs-läge för futures-sessionen och fokusinstrumenten."
+      {activeTab === 'positioner' && (
+        <section style={{ ...sectionStyle({ marginTop: 14 }) }}>
+          <SectionHeader eyebrow="source=ibkr_paper" title="Brokerpositioner" summary="Aktiva positioner kommer från IBKR Paper positions API eller reconciliation mirror. Ingen intern fallback används." />
+          <CompactTable
+            rows={brokerPositions}
+            emptyText={degraded ? `Brokerpositioner är osäkra: ${reconciliation.blockedReason || 'reconciliation_degraded'}` : 'Inga öppna brokerpositioner.'}
+            columns={[
+              { key: 'accountMasked', label: 'Account', render: (row) => row.accountMasked || 'Ej tillgängligt' },
+              { key: 'root', label: 'Root', render: (row) => row.root || row.symbol || 'Ej tillgängligt' },
+              { key: 'localSymbol', label: 'LocalSymbol' },
+              { key: 'conId', label: 'conId' },
+              { key: 'expiry', label: 'Expiry' },
+              { key: 'side', label: 'Side' },
+              { key: 'quantity', label: 'Qty', render: (row) => fmtNumber(row.quantity) },
+              { key: 'averageCost', label: 'Avg cost', render: (row) => fmtNumber(row.averageCost ?? row.avgCost, 2) },
+              { key: 'marketPrice', label: 'Market price', render: (row) => fmtNumber(row.marketPrice, 2) },
+              { key: 'unrealizedPnl', label: 'Unrealized PnL', render: (row) => fmtMoney(row.unrealizedPnl, currency) },
+              { key: 'realizedPnl', label: 'Realized PnL', render: (row) => fmtMoney(row.realizedPnl, currency) },
+              { key: 'source', label: 'Source', render: () => <Pill tone="success">ibkr_paper</Pill> },
+              { key: 'reconciliationTimestamp', label: 'Reconciled', render: (row) => fmtTime(row.reconciliationTimestamp) },
+              { key: 'protectiveOrderStatus', label: 'Protection', render: (row) => row.protectiveOrderStatus || 'unknown' },
+            ]}
           />
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: 10 }}>
-            <MetricCard label="Session" value={formatSessionName(market)} hint={market.timezone || 'UTC'} />
-            <MetricCard label="Öppet" value={market.isOpen ? 'Ja' : 'Nej'} hint={market.maintenanceWindow || '16:00-17:00 CT'} tone={market.isOpen ? 'success' : 'warning'} />
-            <MetricCard label="Nästa steg" value={market.isOpen ? 'Aktiv' : 'Vänta'} hint={market.nextChangeHint || '–'} tone={market.isOpen ? 'success' : 'neutral'} />
+        </section>
+      )}
+
+      {activeTab === 'ordrar' && (
+        <section style={{ ...sectionStyle({ marginTop: 14 }) }}>
+          <SectionHeader eyebrow="source=ibkr_paper" title="Open broker orders" summary="Orderstatus kommer från IBKR Paper order lifecycle och reconciliation mirror." />
+          <CompactTable
+            rows={brokerOrders}
+            emptyText="Inga öppna brokerorders."
+            columns={[
+              { key: 'orderId', label: 'OrderId' },
+              { key: 'permId', label: 'PermId' },
+              { key: 'orderRef', label: 'OrderRef' },
+              { key: 'accountMasked', label: 'Account' },
+              { key: 'localSymbol', label: 'LocalSymbol' },
+              { key: 'conId', label: 'conId' },
+              { key: 'action', label: 'Action' },
+              { key: 'quantity', label: 'Qty', render: (row) => fmtNumber(row.quantity) },
+              { key: 'orderType', label: 'Type' },
+              { key: 'limitPrice', label: 'Limit', render: (row) => fmtNumber(row.limitPrice, 2) },
+              { key: 'stopPrice', label: 'Stop', render: (row) => fmtNumber(row.stopPrice, 2) },
+              { key: 'status', label: 'Status', render: (row) => <Pill tone={statusTone(row.status)}>{row.status || 'unknown'}</Pill> },
+              { key: 'updatedAt', label: 'Updated', render: (row) => fmtTime(row.updatedAt) },
+            ]}
+          />
+        </section>
+      )}
+
+      {activeTab === 'fills' && (
+        <section style={{ ...sectionStyle({ marginTop: 14 }) }}>
+          <SectionHeader eyebrow="source=ibkr_paper" title="Fills & trades" summary="Nya trades skapas från execDetails, commissionReport och broker reconciliation. Legacy-resultat ingår inte i totalsiffror." />
+          <CompactTable
+            rows={brokerFills}
+            emptyText="Inga brokerfills i reconciliation-mirrorn."
+            columns={[
+              { key: 'ibOrderId', label: 'IB orderId' },
+              { key: 'permId', label: 'permId' },
+              { key: 'execId', label: 'execId' },
+              { key: 'orderRef', label: 'orderRef' },
+              { key: 'strategyId', label: 'strategyId' },
+              { key: 'candidateId', label: 'candidateId' },
+              { key: 'conId', label: 'conId' },
+              { key: 'localSymbol', label: 'localSymbol' },
+              { key: 'side', label: 'side' },
+              { key: 'quantity', label: 'qty', render: (row) => fmtNumber(row.quantity) },
+              { key: 'fillPrice', label: 'fill price', render: (row) => fmtNumber(row.fillPrice, 2) },
+              { key: 'commission', label: 'commission', render: (row) => row.commission == null ? 'Ej tillgängligt' : `${fmtNumber(row.commission, 2)} ${row.commissionCurrency || ''}` },
+              { key: 'realizedResult', label: 'realized result', render: (row) => fmtMoney(row.realizedResult, currency) },
+              { key: 'source', label: 'source', render: () => <Pill tone="success">ibkr_paper</Pill> },
+            ]}
+          />
+          {brokerCommissions.length ? (
+            <div style={{ marginTop: 10, color: 'var(--muted)', fontSize: 12 }}>Commission reports: {fmtNumber(brokerCommissions.length)}</div>
+          ) : null}
+        </section>
+      )}
+
+      {activeTab === 'runtime' && (
+        <section style={{ ...sectionStyle({ marginTop: 14 }) }}>
+          <SectionHeader eyebrow="Runtime" title="Scanner och kandidater" summary="Scannern skapar server-side kandidater för IBKR Paper shadow. Intern execution är blockerad." />
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginBottom: 12 }}>
+            <Pill tone="success">onlyActiveExecutionTarget=ibkr_paper</Pill>
+            <Pill tone="success">candidate queue={fmtNumber(queueCandidates.length)}</Pill>
+            <Pill tone={market.isMarketOpen || market.isOpen ? 'success' : 'warning'}>session={market.sessionLabel || market.session || 'unknown'}</Pill>
+            <Pill tone={degraded ? 'warning' : 'success'}>reconciliation={reconciliation.status || 'unknown'}</Pill>
+          </div>
+          <CompactTable
+            rows={queueCandidates}
+            emptyText="Inga kandidater väntar på IBKR Paper shadow."
+            columns={[
+              { key: 'candidateId', label: 'Candidate' },
+              { key: 'strategyId', label: 'Strategy' },
+              { key: 'symbol', label: 'Root' },
+              { key: 'direction', label: 'Side' },
+              { key: 'executionTarget', label: 'Target', render: (row) => <Pill tone="success">{row.executionTarget || 'ibkr_paper'}</Pill> },
+              { key: 'status', label: 'Status', render: (row) => <Pill tone={statusTone(row.status)}>{row.status || 'READY_WAITING_FOR_SIGNAL'}</Pill> },
+              { key: 'timestamp', label: 'Signal time', render: (row) => fmtTime(row.signalTimestamp || row.timestamp || row.createdAt) },
+            ]}
+          />
+          <div style={{ marginTop: 14 }}>
+            <SectionHeader eyebrow="Blockers" title="Status reasons" />
+            <div style={{ display: 'grid', gap: 6 }}>
+              {statusReasons.length ? statusReasons.map((row) => (
+                <div key={row.code} style={{ color: 'var(--muted)', fontSize: 13 }}>{row.code}: {row.message}</div>
+              )) : <div style={{ color: 'var(--muted)', fontSize: 13 }}>Inga runtime-reasons.</div>}
+            </div>
           </div>
           <div style={{ marginTop: 14 }}>
-            <div style={{ color: 'var(--muted)', fontSize: 11, textTransform: 'uppercase', letterSpacing: '0.08em', fontWeight: 800, marginBottom: 10 }}>Fokusinstrument</div>
-            <div style={{ display: 'grid', gap: 8 }}>
-              {instruments.map((instrument) => (
-                <div key={instrument.symbol} style={{ border: '1px solid var(--border)', borderRadius: 12, padding: 12, background: 'var(--surface-2)' }}>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10, flexWrap: 'wrap', marginBottom: 6 }}>
-                    <strong>{instrument.symbol}</strong>
-                    <Pill tone={instrument.universeStatus === 'active' ? 'success' : 'warning'}>{instrument.universeStatus}</Pill>
-                  </div>
-                  <div style={{ color: 'var(--muted)', fontSize: 13, lineHeight: 1.45 }}>{instrument.name}</div>
-                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginTop: 8 }}>
-                    <Pill tone="neutral">Point value {fmtMoney(instrument.pointValueUsd ?? instrument.contractSize, 'USD', 2)}</Pill>
-                    <Pill tone="neutral">Tick {instrument.tickSize}</Pill>
-                    <Pill tone="neutral">Tick värde {fmtMoney(instrument.tickValueUsd, 'USD', 2)}</Pill>
-                    <Pill tone="neutral">Courtage/side {fmtMoney(instrument.commissionPerSideUsd ?? 0, 'USD', 2)}</Pill>
-                    <Pill tone="warning">Round trip {fmtMoney(instrument.estRoundTripCostUsd ?? ((instrument.commissionPerSideUsd ?? 0) * 2), 'USD', 2)}</Pill>
-                    <Pill tone="neutral">{instrument.exchange}</Pill>
-                  </div>
-                </div>
-              ))}
-            </div>
+            <SectionHeader eyebrow="Scan history" title="Senaste scans" />
+            <CompactTable
+              rows={scanHistory.map((row) => ({ ...row, id: row.scanId }))}
+              emptyText="Inga scans ännu."
+              columns={[
+                { key: 'startedAt', label: 'Tidpunkt', render: (row) => fmtTime(row.startedAt) },
+                { key: 'tradingOsSignalsRead', label: 'OS-signaler', render: (row) => fmtNumber(row.tradingOsSignalsRead ?? 0) },
+                { key: 'candidatesCreated', label: 'Kandidater', render: (row) => fmtNumber(row.candidatesCreated ?? 0) },
+                { key: 'executionTarget', label: 'Target', render: (row) => row.executionTarget || 'ibkr_paper' },
+                { key: 'blockedByExecutionTarget', label: 'Target block', render: (row) => fmtNumber(row.blockedByExecutionTarget?.length ?? 0) },
+                { key: 'status', label: 'Status', render: (row) => <Pill tone={statusTone(row.status)}>{row.status || 'unknown'}</Pill> },
+              ]}
+            />
           </div>
         </section>
-      </div>
       )}
 
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr', gap: 14, marginTop: 14 }}>
-        {activeTab === 'runtime' && (
-        <section style={sectionStyle()}>
-          <SectionHeader
-            eyebrow="Strategier"
-            title="Canonical strategy overview"
-            summary="Alla 33 canonical strategier visas här med read-only readiness, futures-session och senast kända kandidat/trade. Scannerns godkända subset visas separat längre ned."
-          />
-          <CompactTable
-            rows={strategyOverview.map((row) => ({ ...row, id: row.strategyId }))}
-            emptyText="Inga canonical strategier hittades i overview-lagret."
-            columns={[
-              { key: 'strategyName', label: 'Strategi', render: (row) => (
-                <div>
-                  <div style={{ fontWeight: 700 }}>{row.displayName || row.strategyName || row.strategyId}</div>
-                  <div style={{ color: 'var(--muted)', fontSize: 11 }}>{row.strategyId}{row.approved ? '' : ' · ej godkänd'}</div>
-                </div>
-              ) },
-              { key: 'paperStatus', label: 'Status', render: (row) => (
-                <Pill tone={canonicalStrategyStatusTone(row.paperStatus)}>{row.paperStatus || '–'}</Pill>
-              ) },
-              { key: 'strategyFamily', label: 'Familj', render: (row) => row.strategyFamily || '–' },
-              { key: 'instrument', label: 'Instrument', render: (row) => row.instrument || '–' },
-              { key: 'market', label: 'Marknad', render: (row) => row.market || '–' },
-              { key: 'compatibilityStatus', label: 'Kompatibilitet', render: (row) => <Pill tone={canonicalStrategyStatusTone(row.compatibilityStatus)}>{row.compatibilityStatus || '–'}</Pill> },
-              { key: 'producerStatus', label: 'Producer', render: (row) => <Pill tone={canonicalStrategyStatusTone(row.producerStatus === 'ok' ? 'ACTIVE_PAPER' : 'PRODUCER_NOT_IMPLEMENTED')}>{row.producerStatus || '–'}</Pill> },
-              { key: 'dataStatus', label: 'Data', render: (row) => <Pill tone={canonicalStrategyStatusTone(row.dataStatus === 'active' ? 'ACTIVE_PAPER' : row.dataStatus)}>{row.dataStatus || '–'}</Pill> },
-              { key: 'currentSession', label: 'Session', render: (row) => `${row.currentSession || '–'}${row.currentSessionId ? ` · ${row.currentSessionId}` : ''}` },
-              { key: 'allowedSessions', label: 'Gäller för', render: (row) => compactJson(row.allowedSessions) },
-              { key: 'marketOpen', label: 'Marknad öppen', render: (row) => (
-                <Pill tone={row.marketOpen ? 'success' : 'warning'}>{row.marketOpen ? 'Ja' : 'Nej'}</Pill>
-              ) },
-              { key: 'latestDiagnosticResult', label: 'Senaste diagnostic', render: (row) => compactJson(row.latestDiagnosticResult) },
-              { key: 'latestSignal', label: 'Senaste signal', render: (row) => compactJson(row.latestSignal) },
-              { key: 'latestCandidate', label: 'Senaste candidate', render: (row) => compactJson(row.latestCandidate) },
-              { key: 'latestPaperTrade', label: 'Senaste paper trade', render: (row) => compactJson(row.latestPaperTrade) },
-              { key: 'mainBlocker', label: 'Huvudblockerare', render: (row) => compactJson(row.mainBlocker) },
-              { key: 'readinessStatus', label: 'Readiness', render: (row) => <Pill tone={canonicalStrategyStatusTone(row.readinessStatus)}>{row.readinessStatus || '–'}</Pill> },
-              { key: 'paperExecutionStatus', label: 'Paper execution', render: (row) => <Pill tone={canonicalStrategyStatusTone(row.paperStatus)}>{row.paperExecutionStatus || row.paperStatus || '–'}</Pill> },
-              { key: 'canTradeNow', label: 'Kan trada', render: (row) => (
-                <Pill tone={row.canTradeNow ? 'success' : 'warning'}>{row.canTradeNow ? 'Ja' : (row.paperBlockedReason || 'Nej')}</Pill>
-              ) },
-            ]}
-          />
+      {activeTab === 'ibkr' && (
+        <section style={{ ...sectionStyle({ marginTop: 14 }) }}>
+          <SectionHeader eyebrow="IBKR Paper Execution" title="Execution status" summary="Shadow mode är på, actual submit är av. Livekonto och riktiga pengar är blockerade." action={refreshButton} />
+          {execution.error ? <div style={{ color: 'var(--warning)', marginBottom: 10 }}>{execution.error}</div> : null}
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))', gap: 10 }}>
+            <MetricCard label="Status" value={executionData.status || 'unknown'} hint={executionData.orderSubmissionMode || safety.orderSubmissionMode || 'unknown'} tone={statusTone(executionData.status)} />
+            <MetricCard label="Execution client" value={executionClient.connected ? 'Ansluten' : 'Ej ansluten'} hint={`${executionClient.host || '127.0.0.1'}:${executionClient.port || 4002}`} tone={executionClient.connected ? 'success' : 'warning'} />
+            <MetricCard label="Paper account" value={executionData.paperAccountVerified ? 'Verifierat' : 'Blockerat'} hint={executionData.account?.accountIdMasked || executionData.account?.blocker || 'Ej tillgängligt'} tone={executionData.paperAccountVerified ? 'success' : 'warning'} />
+            <MetricCard label="Reconciliation" value={reconciliation.status || 'unknown'} hint={reconciliation.blockedReason || 'no blocker'} tone={degraded ? 'warning' : 'success'} />
+            <MetricCard label="Open orders" value={fmtNumber(reconciliation.counts?.openOrders ?? brokerOrders.length)} hint="IBKR Paper" />
+            <MetricCard label="Executions" value={fmtNumber(reconciliation.counts?.executions ?? brokerFills.length)} hint="IBKR Paper" />
+          </div>
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginTop: 12 }}>
+            <Pill tone={flags.executionEnabled ? 'success' : 'warning'}>executionEnabled={String(flags.executionEnabled === true)}</Pill>
+            <Pill tone={flags.shadowMode ? 'success' : 'warning'}>shadowMode={String(flags.shadowMode === true)}</Pill>
+            <Pill tone={flags.submissionEnabled ? 'danger' : 'success'}>submissionEnabled={String(flags.submissionEnabled === true)}</Pill>
+            <Pill tone={safety.liveAccountBlocked !== false ? 'success' : 'danger'}>liveAccountBlocked={String(safety.liveAccountBlocked !== false)}</Pill>
+            <Pill tone="success">paperOnly={String(executionData.paperOnly !== false)}</Pill>
+          </div>
         </section>
-        )}
+      )}
 
-        {activeTab === 'runtime' && (
-        <section style={sectionStyle()}>
-          <SectionHeader
-            eyebrow="Scanner"
-            title="Strategy status (godkända för paper-test)"
-            summary="Scannerns godkända subset med trade-count, real signals, cooldown och PnL/WR-stämplar. Endast intern paper-simulation, ingen broker."
-          />
-          <CompactTable
-            rows={strategyStatus.map((row) => ({ ...row, id: row.strategyId }))}
-            emptyText="Inga godkända strategier hittades i paper-allowlisten."
-            columns={[
-              { key: 'strategyName', label: 'Strategi', render: (row) => (
-                <div>
-                  <div style={{ fontWeight: 700 }}>{row.strategyName}</div>
-                  <div style={{ color: 'var(--muted)', fontSize: 11 }}>{row.strategyId}{row.approved ? '' : ' · ej godkänd'}</div>
-                </div>
-              ) },
-              { key: 'tradesUsed', label: 'Trades all', render: (row) => fmtNumber(row.totalTradesAll ?? row.tradesUsed ?? 0) },
-              { key: 'totalTradesRealSignals', label: 'Real signals', render: (row) => fmtNumber(row.totalTradesRealSignals || 0) },
-              { key: 'testTrades', label: 'Test/exkl.', render: (row) => `${fmtNumber(row.testTrades || 0)} / ${fmtNumber(row.excludedTrades || 0)}` },
-              { key: 'strategyFamily', label: 'Familj', render: (row) => row.strategyFamily || '–' },
-              { key: 'cooldown', label: 'Cooldown', render: (row) => row.cooldownActive ? `${fmtNumber(row.cooldownMinutesRemaining || 0)} min kvar` : '–' },
-              { key: 'lastTradeAt', label: 'Senaste trade', render: (row) => row.lastTradeAt ? new Date(row.lastTradeAt).toLocaleString('sv-SE') : '–' },
-              { key: 'nextAllowedAt', label: 'Nästa tillåten', render: (row) => row.canTradeNow ? 'Nu' : (row.nextAllowedAt ? new Date(row.nextAllowedAt).toLocaleString('sv-SE') : '–') },
-              { key: 'canTradeNow', label: 'Kan trada', render: (row) => (
-                <Pill tone={row.canTradeNow ? 'success' : 'warning'}>{row.canTradeNow ? 'Ja' : (row.blockReason || 'Nej')}</Pill>
-              ) },
-              { key: 'pnlAll', label: 'PnL all', render: (row) => fmtMoney(row.pnlAll ?? row.totalPnlSek ?? 0, 'SEK') },
-              { key: 'pnlRealSignals', label: 'PnL real', render: (row) => fmtMoney(row.pnlRealSignals || 0, 'SEK') },
-              { key: 'winRateAll', label: 'WR all', render: (row) => row.winRateAll == null && row.winRate == null ? '–' : fmtPct(row.winRateAll ?? row.winRate) },
-              { key: 'winRateRealSignals', label: 'WR real', render: (row) => row.winRateRealSignals == null ? '–' : fmtPct(row.winRateRealSignals) },
-            ]}
-          />
-        </section>
-        )}
-
-        {activeTab === 'teknik' && (
-        <section style={sectionStyle()}>
-          <SectionHeader
-            eyebrow="UI-läge"
-            title="Chart och manuell simulation är avstängda"
-            summary="Futures Paper Desk visar nu bara strategi-, scanner-, konto- och tradehistorik. Manuell trade-entry och stökig chart-preview är borttagen för att hålla sidan ren."
-          />
-        </section>
-        )}
-
-        {activeTab === 'positioner' && (
-        <section style={sectionStyle()}>
-          <SectionHeader
-            eyebrow="Positioner"
-            title="Öppna positioner"
-            summary="Simulerade öppna futures paper-positioner. Stängs automatiskt av stop loss/take profit i simuleringen. Endast paper money."
-          />
-          <CompactTable
-            rows={openPositions.map((row) => ({ ...row, id: row.tradeId }))}
-            emptyText="Inga öppna simulerade positioner just nu."
-            columns={[
-              { key: 'openedAt', label: 'Öppnad', render: (row) => row.openedAt ? new Date(row.openedAt).toLocaleString('sv-SE') : '–' },
-              { key: 'symbol', label: 'Symbol', render: (row) => row.symbol || row.root || '–' },
-              { key: 'side', label: 'Riktning', render: (row) => row.side || '–' },
-              { key: 'contracts', label: 'Kontrakt', render: (row) => fmtNumber(row.contracts || 0) },
-              { key: 'entryPrice', label: 'Entry', render: (row) => fmtNumber(row.entryPrice, 2) },
-              { key: 'currentPrice', label: 'Current', render: (row) => fmtNumber(row.currentPrice, 2) },
-              { key: 'stopLoss', label: 'SL', render: (row) => row.stopLoss == null ? '–' : fmtNumber(row.stopLoss, 2) },
-              { key: 'takeProfit', label: 'TP', render: (row) => row.takeProfit == null ? '–' : fmtNumber(row.takeProfit, 2) },
-              { key: 'entryFeeSek', label: 'Entry fee', render: (row) => (
-                <span style={{ color: 'var(--muted)' }}>{`-${fmtMoney(row.entryFeeSek || 0, accountCurrency)}`}</span>
-              ) },
-              { key: 'unrealizedPnlSek', label: 'PnL (gross)', render: (row) => (
-                <strong style={{ color: (row.unrealizedPnlSek || 0) > 0 ? 'var(--success)' : (row.unrealizedPnlSek || 0) < 0 ? 'var(--danger)' : 'var(--text)' }}>
-                  {fmtMoney(row.unrealizedPnlSek || 0, accountCurrency)}
-                </strong>
-              ) },
-              { key: 'strategyName', label: 'Strategi', render: (row) => row.strategyName || row.strategyId || '–' },
-              { key: 'tradeType', label: 'Typ', render: (row) => (
-                <Pill tone={tradeTypeTone(row.tradeType, row.excludedFromStats)}>{tradeTypeLabel(row.tradeType)}</Pill>
-              ) },
-            ]}
-          />
-        </section>
-        )}
-
-        {activeTab === 'trades' && (
-        <section style={sectionStyle()}>
-          <SectionHeader
-            eyebrow="Trades"
-            title="Senaste 100 closed trades"
-            summary="Stängda simulerade futures paper trades, nyast först. Endast paper money."
-          />
-          <CompactTable
-            rows={recentClosedTrades.map((row) => ({ ...row, id: row.tradeId }))}
-            emptyText="Inga stängda simulerade trades ännu."
-            columns={[
-              { key: 'closedAt', label: 'Stängd', render: (row) => row.closedAt ? new Date(row.closedAt).toLocaleString('sv-SE') : '–' },
-              { key: 'symbol', label: 'Symbol' },
-              { key: 'direction', label: 'Riktning' },
-              { key: 'strategyName', label: 'Strategi', render: (row) => row.strategyName || row.strategyId || '–' },
-              { key: 'tradeType', label: 'Typ', render: (row) => (
-                <Pill tone={tradeTypeTone(row.tradeType, row.excludedFromStats)}>{tradeTypeLabel(row.tradeType)}</Pill>
-              ) },
-              { key: 'signalSource', label: 'Signal source', render: (row) => row.signalSource || '–' },
-              { key: 'dataSource', label: 'Data', render: (row) => (
-                <Pill tone={row.dataSource === 'simulated_fallback' ? 'warning' : 'success'}>{row.dataSource || '–'}</Pill>
-              ) },
-              { key: 'usedRealStrategyLogic', label: 'Real logic', render: (row) => yesNo(row.usedRealStrategyLogic) },
-              { key: 'excludedFromStats', label: 'Exkl.', render: (row) => yesNo(row.excludedFromStats) },
-              { key: 'entryPrice', label: 'Entry', render: (row) => fmtNumber(row.entryPrice, 2) },
-              { key: 'exitPrice', label: 'Exit', render: (row) => fmtNumber(row.exitPrice, 2) },
-              { key: 'grossPnlSek', label: 'Gross', render: (row) => (
-                <span style={{ color: (row.grossPnlSek || 0) > 0 ? 'var(--success)' : (row.grossPnlSek || 0) < 0 ? 'var(--danger)' : 'var(--text)' }}>
-                  {fmtMoney(row.grossPnlSek || 0, 'SEK')}
-                </span>
-              ) },
-              { key: 'feesSek', label: 'Fees', render: (row) => (
-                <span style={{ color: 'var(--muted)' }}>{`-${fmtMoney(row.feesSek || 0, 'SEK')}`}</span>
-              ) },
-              { key: 'realizedPnlSek', label: 'Net PnL', render: (row) => (
-                <strong style={{ color: (row.realizedPnlSek || 0) > 0 ? 'var(--success)' : (row.realizedPnlSek || 0) < 0 ? 'var(--danger)' : 'var(--text)' }}>
-                  {fmtMoney(row.realizedPnlSek || 0, 'SEK')}
-                </strong>
-              ) },
-              { key: 'durationMinutes', label: 'Duration', render: (row) => row.durationMinutes == null ? '–' : `${fmtNumber(row.durationMinutes, 1)} min` },
-              { key: 'closeReason', label: 'Orsak', render: (row) => row.closeReason || '–' },
-            ]}
-          />
-        </section>
-        )}
-
-        {activeTab === 'godkannande' && (
-        <section style={sectionStyle()}>
-          <SectionHeader
-            eyebrow="Godkännande"
-            title="Futures Paper — strategigodkännande (paper-only)"
-            summary="Lägg till, pausa, återuppta och ta bort strategier för Futures Paper. Ändrar endast approval-status – ingen order, ingen broker, ingen live, skapar aldrig en trade."
-          />
+      {activeTab === 'godkannande' && (
+        <section style={{ ...sectionStyle({ marginTop: 14 }) }}>
+          <SectionHeader eyebrow="Godkännande" title="Strategigodkännande" summary="Approval, entry contracts, session eligibility och riskregler styr om en candidate får nå IBKR Paper shadow execution." />
           <FuturesPaperStrategyApprovalPanel />
         </section>
-        )}
+      )}
 
-        {activeTab === 'teknik' && (
-        <section style={sectionStyle()}>
-          <SectionHeader
-            eyebrow="Tekniskt"
-            title="Runtime och dataflöde"
-            summary="En tunn, läsbar startyta för den nya futures-desken."
-          />
+      {activeTab === 'teknik' && (
+        <>
+          <section style={{ ...sectionStyle({ marginTop: 14 }) }}>
+            <SectionHeader eyebrow="Tekniskt" title="Aktiva källor" summary="Aktiv konto-, positions- och fill-state kommer från IBKR Paper. Replay och Batch är separata forskningsmotorer." />
+            <CompactTable
+              rows={[
+                { key: 'Execution target', value: 'ibkr_paper', detail: 'Enda aktiva target' },
+                { key: 'Account source', value: data.technical?.accountSource || 'ibPaperAccountSummaryService', detail: 'NetLiquidation, AvailableFunds, BuyingPower' },
+                { key: 'Position source', value: data.technical?.activePositionSource || 'ibPaperBrokerReconciliationService', detail: 'IBKR Paper positions API / mirror' },
+                { key: 'Trade source', value: data.technical?.activeTradeSource || 'ibPaperBrokerReconciliationService', detail: 'execDetails + commissionReport' },
+                { key: 'Replay', value: data.dataPipeline?.replay?.ready ? 'Redo' : (data.dataPipeline?.replay?.blocker || 'Ej tillgängligt'), detail: 'Offline research, skriver inte broker mirror' },
+                { key: 'Batch', value: data.dataPipeline?.batch?.ready ? 'Redo' : (data.dataPipeline?.batch?.blocker || 'Ej tillgängligt'), detail: 'Offline research, skriver inte broker mirror' },
+              ]}
+              columns={[
+                { key: 'key', label: 'Del' },
+                { key: 'value', label: 'Värde' },
+                { key: 'detail', label: 'Detalj' },
+              ]}
+            />
+          </section>
+          <section style={{ ...sectionStyle({ marginTop: 14 }) }}>
+            <SectionHeader eyebrow="Teknisk info" title="Strategikatalog och strategidetaljer" summary="Read-only strategiinfo." />
+            <FuturesTechnicalInfoPanel />
+          </section>
+        </>
+      )}
+
+      {activeTab === 'arkiv' && (
+        <section style={{ ...sectionStyle({ marginTop: 14 }) }}>
+          <SectionHeader eyebrow="Read-only archive" title="Äldre interna simuleringar" summary="Äldre interna simuleringar - används inte för nya trades och påverkar inte aktuella KPI:er." />
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginBottom: 12 }}>
+            <Pill tone="warning">source=internal_legacy_simulation</Pill>
+            <Pill tone="success">readOnly=true</Pill>
+            <Pill tone="success">activeRuntime=false</Pill>
+          </div>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 10, marginBottom: 14 }}>
+            <MetricCard label="Legacy open" value={fmtNumber(legacy.positions?.totalOpen ?? legacy.openPositions?.length ?? 0)} hint="Ej aktiv positionskälla" tone="warning" />
+            <MetricCard label="Legacy closed" value={fmtNumber(legacy.positions?.totalClosed ?? legacy.closedTrades?.length ?? 0)} hint="Ej aktiv tradekälla" tone="warning" />
+            <MetricCard label="Legacy account" value={legacy.account ? 'Arkiverat' : 'Ej tillgängligt'} hint="Ej aktivt saldo" tone="warning" />
+          </div>
           <CompactTable
-            rows={[
-              { key: 'Runtime', value: 'futuresPaperDeskService', detail: data?.technical?.runtimeSource || '–' },
-              { key: 'Universe', value: 'marketUniverseService', detail: data?.technical?.universeSource || '–' },
-              { key: 'Strategier', value: 'Trading OS signal adapter', detail: data?.technical?.strategySource || '–' },
-              { key: 'Datafeed', value: dataFeed.source || '–', detail: data?.technical?.priceFeedSource || '–' },
-              { key: 'IB-datalager', value: ibDataLayer.enabled ? (ibDataLayer.connected ? 'anslutet' : 'frånkopplat') : 'av', detail: `källa: ${ibDataLayer.source || '–'} · CME: ${ibDataLayer.marketDataTypeLabel || '–'} · reconnects: ${ibDataLayer.reconnectCount ?? '–'}` },
-              { key: 'Session', value: formatSessionName(market), detail: market.description || '–' },
-              { key: 'Nästa sessionsbyte', value: nextTransition ? nextTransition.nextSessionLabel : '–', detail: nextTransition ? `om ${fmtAge(nextTransition.minutesUntil * 60000)} (${new Date(nextTransition.nextChangeAt).toLocaleString('sv-SE')})` : '–' },
-            ]}
+            rows={Array.isArray(legacy.recentClosedTrades) ? legacy.recentClosedTrades : []}
+            emptyText="Inga legacy-trades i arkivvyn."
             columns={[
-              { key: 'key', label: 'Källa' },
-              { key: 'value', label: 'Värde' },
-              { key: 'detail', label: 'Detalj' },
+              { key: 'closedAt', label: 'Stängd', render: (row) => fmtTime(row.closedAt) },
+              { key: 'symbol', label: 'Symbol', render: (row) => row.symbol || row.root || 'Ej tillgängligt' },
+              { key: 'strategyId', label: 'Strategi' },
+              { key: 'tradeType', label: 'Legacy typ' },
+              { key: 'source', label: 'Source', render: () => <Pill tone="warning">internal_legacy_simulation</Pill> },
+              { key: 'realizedPnlSek', label: 'Legacy result', render: (row) => fmtMoney(row.realizedPnlSek, 'SEK') },
             ]}
           />
         </section>
-        )}
-
-        {activeTab === 'teknik' && (
-        <section style={sectionStyle()}>
-          <SectionHeader
-            eyebrow="Teknisk info"
-            title="Strategikatalog och strategidetaljer (read-only)"
-            summary="Effektiva runtime-parametrar från den canonical strategikatalogen. Endast visning – ingen edit, aktivering, risk eller order."
-          />
-          <FuturesTechnicalInfoPanel />
-        </section>
-        )}
-      </div>
+      )}
     </DashboardShell>
   );
 }

@@ -12,8 +12,10 @@ const futuresMarketDataService = require('./futuresMarketDataService');
 const futuresPaperQuoteSourceService = require('./futuresPaperQuoteSourceService');
 const futuresPaperScannerService = require('./futuresPaperScannerService');
 const futuresPaperStrategyApprovalService = require('./futuresPaperStrategyApprovalService');
+const paperStrategyEntryContractService = require('./paperStrategyEntryContractService');
 const ibPaperAccountSummaryService = require('./ibPaperAccountSummaryService');
 const futuresMarketHoursService = require('./futuresMarketHoursService');
+const executionTargetReservationModule = require('./futuresPaperExecutionTargetReservationService');
 
 const SAFETY = Object.freeze({
   mode: 'ibkr_paper',
@@ -76,15 +78,26 @@ function normalizeCandidate(input = {}) {
   const strategyId = safeString(candidate.strategyId || candidate.strategy_id || candidate.canonicalStrategyId);
   const direction = sideFromCandidate(candidate);
   const signalTimestamp = candidateTimestamp(candidate);
-  const quantity = Math.max(1, Number(candidate.quantity || candidate.contracts || 1) || 1);
   return {
-    ...candidate,
+    candidateId: safeString(candidate.candidateId || candidate.id || candidate.eventId),
+    originalSignalId: safeString(candidate.originalSignalId || candidate.signalId),
+    status: candidate.status || candidate.priority || null,
+    subtype: candidate.subtype || candidate.signalSubtype || candidate.entrySubtype || candidate.patternSubtype || null,
+    dataFreshness: candidate.dataFreshness || null,
+    sessionId: candidate.sessionId || candidate.sessionMetadata?.sessionId || null,
+    sessionMetadata: candidate.sessionMetadata || null,
+    closedCandleConfirmed: candidate.closedCandleConfirmed === true || candidate.hasClosedCandle === true,
+    twoMinuteConfirmation: candidate.twoMinuteConfirmation === true,
+    emaPullbackConfirmation: candidate.emaPullbackConfirmation === true,
+    vwapReclaimConfirmation: candidate.vwapReclaimConfirmation === true,
+    volumeConfirmation: candidate.volumeConfirmation === true,
+    confidence: candidate.confidence ?? null,
     root,
     symbol: root,
     strategyId,
     direction,
     signalTimestamp,
-    quantity,
+    quantity: 1,
     orderType: safeUpper(candidate.orderType || candidate.entryOrderType || 'MKT'),
     limitPrice: safeNumber(candidate.limitPrice ?? candidate.entryLimitPrice),
     stopLossPrice: safeNumber(candidate.stopLossPrice ?? candidate.stopLoss ?? candidate.stop),
@@ -113,21 +126,26 @@ function createIbPaperExecutionOrchestratorService(options = {}) {
   const intentService = options.intentService || intentServiceModule.defaultIbPaperExecutionIntentService;
   const marketData = options.marketDataService || futuresMarketDataService.defaultFuturesMarketDataService;
   const quoteSource = options.quoteSourceService || futuresPaperQuoteSourceService.defaultFuturesPaperQuoteSourceService;
-  const scanner = options.scannerService || futuresPaperScannerService.defaultFuturesPaperScannerService;
-  const accountSummaryService = options.accountSummaryService || ibPaperAccountSummaryService.defaultIbPaperAccountSummaryService;
+	  const scanner = options.scannerService || futuresPaperScannerService.defaultFuturesPaperScannerService;
+	  const accountSummaryService = options.accountSummaryService || ibPaperAccountSummaryService.defaultIbPaperAccountSummaryService;
+	  const strategyApprovalService = options.strategyApprovalService || futuresPaperStrategyApprovalService;
+	  const entryContractService = options.entryContractService || paperStrategyEntryContractService;
+	  const executionTargetReservations = options.executionTargetReservationService
+	    || executionTargetReservationModule.defaultFuturesPaperExecutionTargetReservationService;
   const reconciliation = options.reconciliationService
     || reconciliationModule.createIbPaperBrokerReconciliationService({ adapter, intentService });
 
-  function selectCandidate(candidateInput = null) {
-    if (candidateInput && typeof candidateInput === 'object') {
-      return { candidate: normalizeCandidate(candidateInput), source: 'request_candidate' };
-    }
-    const queue = scanner.getCandidates();
-    const candidate = Array.isArray(queue.candidates) ? queue.candidates[0] : null;
-    return candidate
-      ? { candidate: normalizeCandidate(candidate), source: 'futures_candidate_queue' }
-      : { candidate: null, source: 'none' };
-  }
+	  function selectCandidate(candidateId = null) {
+	    const queue = scanner.getCandidates();
+	    const rows = Array.isArray(queue.candidates) ? queue.candidates : [];
+	    const requestedId = safeString(candidateId);
+	    const candidate = requestedId
+	      ? rows.find((row) => safeString(row.candidateId || row.id || row.eventId) === requestedId)
+	      : rows[0];
+	    return candidate
+	      ? { candidate: normalizeCandidate(candidate), source: 'futures_candidate_queue' }
+	      : { candidate: null, source: requestedId ? 'candidate_id_not_found' : 'none' };
+	  }
 
   async function resolveContract(root) {
     if (!root) return { ok: false, error: 'root_missing' };
@@ -146,6 +164,11 @@ function createIbPaperExecutionOrchestratorService(options = {}) {
     const verification = adapter.verifyPaperAccount(accountSummary?.account?.accountIdMasked || null);
     const rec = adapterStatus.connected ? await reconciliation.reconcilePaperBroker({ force: false }) : reconciliation.getCachedReconciliation();
     const safety = configService.buildSafetyView();
+    const brokerOpenOrders = Array.isArray(rec.openOrders) ? rec.openOrders : [];
+    const brokerExecutions = Array.isArray(rec.executions) ? rec.executions : [];
+    const brokerPositions = Array.isArray(rec.positions) ? rec.positions : [];
+    const brokerOrderStatuses = Array.isArray(rec.orderStatuses) ? rec.orderStatuses : [];
+    const brokerCommissions = typeof adapter.getCommissions === 'function' ? adapter.getCommissions() : [];
     return {
       ok: true,
       generatedAt: nowIso(),
@@ -165,10 +188,14 @@ function createIbPaperExecutionOrchestratorService(options = {}) {
         classification: accountSummary?.account?.classification || verification.classification || null,
         currency: accountSummary?.account?.currency || null,
         netLiquidation: accountSummary?.account?.netLiquidation ?? null,
+        totalCashValue: accountSummary?.account?.totalCashValue ?? null,
+        availableFunds: accountSummary?.account?.availableFunds ?? null,
+        buyingPower: accountSummary?.account?.buyingPower ?? null,
         realizedPnl: accountSummary?.account?.realizedPnl ?? null,
         unrealizedPnl: accountSummary?.account?.unrealizedPnl ?? null,
         cacheAgeMs: accountSummary?.cacheAgeMs ?? null,
-      },
+	        generatedAt: accountSummary?.generatedAt || null,
+	      },
       paperAccountVerified: verification.ok === true && accountSummary?.ok === true,
       verifiedPaperAccount: verification.ok === true && accountSummary?.ok === true,
       liveAccountBlocked: verification.live_account_detected !== true,
@@ -179,19 +206,33 @@ function createIbPaperExecutionOrchestratorService(options = {}) {
       reconciliation: {
         status: rec.status,
         degraded: rec.degraded === true,
+        newEntriesAllowed: rec.newEntriesAllowed === true,
         blockedReason: rec.blockedReason || null,
         counts: rec.counts || {},
         discrepancies: rec.discrepancies || [],
+        generatedAt: rec.generatedAt || null,
+        openOrders: brokerOpenOrders,
+        executions: brokerExecutions,
+        positions: brokerPositions,
+        orderStatuses: brokerOrderStatuses,
+        commissions: brokerCommissions,
       },
+      brokerOpenOrders,
+      brokerOrders: brokerOpenOrders,
+      brokerExecutions,
+      brokerFills: brokerExecutions,
+      brokerPositions,
+      brokerOrderStatuses,
+      brokerCommissions,
       killSwitch: configService.readKillSwitch(),
       connectionAttempt,
       ...SAFETY,
     };
   }
 
-  async function buildShadowExecution({ candidate: candidateInput = null, now = new Date(), actualSubmit = false } = {}) {
-    const flags = configService.getFlags();
-    const selected = selectCandidate(candidateInput);
+	  async function buildShadowExecution({ candidateId = null, now = new Date(), actualSubmit = false } = {}) {
+	    const flags = configService.getFlags();
+	    const selected = selectCandidate(candidateId);
     if (!selected.candidate) {
       return {
         ok: true,
@@ -207,8 +248,8 @@ function createIbPaperExecutionOrchestratorService(options = {}) {
 
     const candidate = selected.candidate;
     const limits = configService.getPilotLimits();
-    const signalTimestamp = candidate.signalTimestamp || nowIso(now);
-    const ageMs = ageMsFromTimestamp(signalTimestamp, now);
+	    const signalTimestamp = candidate.signalTimestamp || null;
+	    const ageMs = ageMsFromTimestamp(signalTimestamp, now);
     const status = await buildExecutionStatus({ connect: flags.executionEnabled });
     const contractResult = await resolveContract(candidate.root);
     const quote = quoteSource.getQuote(candidate.root, now);
@@ -235,11 +276,22 @@ function createIbPaperExecutionOrchestratorService(options = {}) {
     });
     const executionId = buildExecutionId(idempotencyKey || `${candidate.strategyId}:${candidate.candidateId}:${signalTimestamp}`);
     const duplicate = idempotencyKey ? intentService.getIntent(idempotencyKey) : null;
-    const approval = candidate.approval || candidate.approvalEvidence || futuresPaperStrategyApprovalService.evaluateFuturesApprovalGate({ strategyId: candidate.strategyId });
-    const entryContract = candidate.entryContract || candidate.paperEntryContract || candidate.approvalEvidence || null;
-    const rec = status.reconciliation?.degraded === true
-      ? status.reconciliation
-      : reconciliation.getCachedReconciliation();
+	    const approval = strategyApprovalService.evaluateFuturesApprovalGate({ strategyId: candidate.strategyId });
+	    const session = futuresMarketHoursService.getCmeEquityIndexFuturesSessionState(now);
+	    const entryContract = entryContractService.evaluatePaperEntryContract({
+	      strategyId: candidate.strategyId,
+	      candidate,
+	      now,
+	      marketContext: {
+	        marketType: 'futures',
+	        session: session.sessionId || null,
+	        sessionId: session.sessionId || null,
+	        isMarketOpen: session.isMarketOpen === true,
+	      },
+	    });
+	    const rec = status.reconciliation?.degraded === true
+	      ? status.reconciliation
+	      : reconciliation.getCachedReconciliation();
     const brokerRisk = brokerRiskService.evaluateBrokerRisk({
       root: candidate.root,
       quantity: candidate.quantity,
@@ -248,7 +300,17 @@ function createIbPaperExecutionOrchestratorService(options = {}) {
       quote,
       openOrders: rec.openOrders || [],
       positions: rec.positions || [],
-      accountSummary: status.account,
+	      accountSummary: {
+	        ok: status.account.ok === true,
+	        generatedAt: status.account.generatedAt || null,
+	        cacheAgeMs: status.account.cacheAgeMs,
+	        account: {
+	          accountIdMasked: status.account.accountIdMasked || null,
+	          classification: status.account.classification || null,
+	          realizedPnl: status.account.realizedPnl ?? null,
+	          unrealizedPnl: status.account.unrealizedPnl ?? null,
+	        },
+	      },
       reconciliation: rec,
       now,
     });
@@ -269,7 +331,7 @@ function createIbPaperExecutionOrchestratorService(options = {}) {
       paperAccountIdMasked: accountMasked,
       source: selected.source,
     };
-    const guard = guardService.evaluatePaperExecutionGuard({
+	    const guard = guardService.evaluatePaperExecutionGuard({
       intent,
       candidate,
       contract,
@@ -288,33 +350,75 @@ function createIbPaperExecutionOrchestratorService(options = {}) {
       approval,
       entryContract,
       idempotency: { duplicate: Boolean(duplicate), existing: duplicate },
-      session: futuresMarketHoursService.getCmeEquityIndexFuturesSessionState(now),
-      now,
-    });
-
-    const intentCreate = guard.allowed && idempotencyKey
-      ? intentService.createIntent({
-        idempotencyKey,
-        executionId,
-        intent: {
-          ...intent,
-          conId: contract.conId,
-          executionTarget: 'ibkr_paper',
-        },
-      })
-      : { created: false, skipped: true };
-    const orderPlan = adapter.buildOrderPlan({
+	      session,
+	      now,
+	    });
+	    const orderPlan = adapter.buildOrderPlan({
       executionId,
       contract,
       side: candidate.direction,
-      quantity: candidate.quantity,
-      entryType: candidate.orderType,
-      limitPrice: candidate.limitPrice,
-      stopLossPrice: candidate.stopLossPrice,
-      takeProfitPrice: candidate.takeProfitPrice,
-      tif: candidate.tif || 'GTC',
-      outsideRth: candidate.outsideRth !== false,
-    });
+	      quantity: candidate.quantity,
+	      entryType: candidate.orderType,
+	      limitPrice: candidate.limitPrice,
+	      stopLossPrice: candidate.stopLossPrice,
+	      takeProfitPrice: candidate.takeProfitPrice,
+	      tif: 'GTC',
+	      outsideRth: true,
+	    });
+	    const reservation = guard.allowed && idempotencyKey
+	      ? executionTargetReservations.reserveExecutionTarget({
+	        candidateId: candidate.candidateId,
+	        executionTarget: 'ibkr_paper',
+	        strategyId: candidate.strategyId,
+	        signalTimestamp,
+	        status: 'ibkr_paper_reserved',
+	        now,
+	        metadata: {
+	          executionId,
+	          idempotencyKey,
+	          root: candidate.root,
+	          conId: contract.conId || null,
+	        },
+	      })
+	      : { ok: false, skipped: true };
+	    const effectiveGuard = reservation.ok || !guard.allowed ? guard : {
+	      ...guard,
+	      allowed: false,
+	      blockedReason: reservation.blocker || 'execution_target_reservation_failed',
+	      blockers: [reservation.blocker || 'execution_target_reservation_failed', ...(guard.blockers || [])],
+	      checks: [
+	        ...(guard.checks || []),
+	        { code: 'execution_target_reserved', ok: false, blocker: reservation.blocker || 'execution_target_reservation_failed' },
+	      ],
+	    };
+	    const intentCreate = effectiveGuard.allowed && idempotencyKey
+	      ? intentService.createIntent({
+	        idempotencyKey,
+	        executionId,
+	        intent: {
+	          ...intent,
+	          conId: contract.conId,
+	          localSymbol: contract.localSymbol || null,
+	          signalTimestamp,
+	          orderType: candidate.orderType,
+	          quantity: candidate.quantity,
+	          executionTarget: 'ibkr_paper',
+	        },
+	      })
+	      : { created: false, skipped: true };
+	    const executionEvidence = effectiveGuard.allowed && intentCreate.record
+	      ? adapter.createExecutionEvidence({
+	        guardDecision: effectiveGuard,
+	        intentRecord: intentCreate.record,
+	        orderPlan,
+	        brokerRisk,
+	        approval,
+	        entryContract,
+	        reconciliation: rec,
+	        verifiedAccount: adapterVerification,
+	        now,
+	      })
+	      : null;
     const normalizedOrder = {
       internalExecutionId: executionId,
       idempotencyKey,
@@ -343,24 +447,31 @@ function createIbPaperExecutionOrchestratorService(options = {}) {
       paperOnly: true,
       orderRef: adapter.buildOrderRef(executionId, 'entry'),
       executionTarget: 'ibkr_paper',
-      wouldSubmit: guard.allowed === true,
-      actualSubmit: false,
-    };
+	      wouldSubmit: effectiveGuard.allowed === true,
+	      actualSubmit: false,
+	    };
 
-    if (intentCreate.created) {
-      intentService.updateStatus(idempotencyKey, flags.shadowMode || !actualSubmit ? 'shadow_logged' : 'guard_passed', {
-        orderRef: normalizedOrder.orderRef,
-      });
-    }
+	    if (intentCreate.created) {
+	      intentService.updateStatus(idempotencyKey, flags.shadowMode || !actualSubmit ? 'shadow_logged' : 'guard_passed', {
+	        orderRef: normalizedOrder.orderRef,
+	        evidenceFingerprint: executionEvidence?.fingerprint || null,
+	      });
+	    }
 
     let submitResult = null;
     if (actualSubmit === true) {
       submitResult = await adapter.submitPaperOrder({
-        guardDecision: guard,
-        intentRecord: intentCreate.record,
-        orderPlan,
-        verifiedAccount: adapterVerification,
-      });
+	        guardDecision: effectiveGuard,
+	        intentRecord: intentCreate.record,
+	        orderPlan,
+	        verifiedAccount: adapterVerification,
+	        executionEvidence,
+	        brokerRisk,
+	        approval,
+	        entryContract,
+	        reconciliation: rec,
+	        now,
+	      });
       if (submitResult?.submitted && idempotencyKey) {
         intentService.updateStatus(idempotencyKey, 'submitted', {
           ibOrderId: submitResult.parentOrderId,
@@ -373,11 +484,11 @@ function createIbPaperExecutionOrchestratorService(options = {}) {
 
     return {
       ok: true,
-      status: guard.allowed ? 'shadow_ready' : 'blocked',
-      wouldSubmit: guard.allowed === true,
-      actualSubmit: submitResult?.submitted === true,
-      blockedReason: guard.blockedReason || null,
-      blockers: guard.blockers,
+	      status: effectiveGuard.allowed ? 'shadow_ready' : 'blocked',
+	      wouldSubmit: effectiveGuard.allowed === true,
+	      actualSubmit: submitResult?.submitted === true,
+	      blockedReason: effectiveGuard.blockedReason || null,
+	      blockers: effectiveGuard.blockers,
       candidate,
       contract,
       quote,
@@ -385,9 +496,17 @@ function createIbPaperExecutionOrchestratorService(options = {}) {
       approval,
       entryContract,
       brokerRisk,
-      guard,
+	      guard: effectiveGuard,
+	      executionTargetReservation: reservation,
       intent: intentCreate.record || intent,
-      intentCreate,
+	      intentCreate,
+	      executionEvidence: executionEvidence ? {
+	        source: executionEvidence.source,
+	        evidenceVersion: executionEvidence.evidenceVersion,
+	        generatedAt: executionEvidence.generatedAt,
+	        expiresAt: executionEvidence.expiresAt,
+	        fingerprint: executionEvidence.fingerprint,
+	      } : null,
       normalizedOrder,
       orderPlan: sanitizeOrderPlan(orderPlan, accountMasked),
       submitResult,

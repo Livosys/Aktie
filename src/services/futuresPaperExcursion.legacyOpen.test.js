@@ -16,8 +16,8 @@ const status = require('./futuresPaperExitExperimentStatusService');
 
 const rootDir = fs.mkdtempSync(path.join(os.tmpdir(), 'futures-paper-legacy-'));
 const storage = createFuturesPaperStorageService({ rootDir });
-const accountSvc = createFuturesPaperAccountService({ storageService: storage });
-const ledger = createFuturesPaperLedgerService({ storageService: storage, accountService: accountSvc });
+const accountSvc = createFuturesPaperAccountService({ storageService: storage, allowInternalSimulationForTests: true });
+const ledger = createFuturesPaperLedgerService({ storageService: storage, accountService: accountSvc, allowInternalSimulationForTests: true });
 
 storage.ensureDefaults(
   { currency: 'SEK', startingBalanceSek: 250000, fxUsdSek: 10.5 },

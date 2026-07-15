@@ -6,7 +6,7 @@
 //  - öppen position i familjen blockerar nya kandidater
 //  - family cooldown efter stängd trade
 //  - annan familj påverkas inte
-//  - allt förblir paper_only
+//  - allt förblir ibkr_paper shadow utan intern position
 // Alla trades sker i tmp-katalog via injicerade services — inget rör prod-data.
 
 const assert = require('assert/strict');
@@ -24,8 +24,8 @@ const { createFuturesPaperScannerService } = require('./futuresPaperScannerServi
 const { createFuturesTradingOsSignalAdapterService } = require('./futuresTradingOsSignalAdapterService');
 
 const storage = createFuturesPaperStorageService({ rootDir });
-const accountSvc = createFuturesPaperAccountService({ storageService: storage });
-const ledger = createFuturesPaperLedgerService({ storageService: storage, accountService: accountSvc });
+const accountSvc = createFuturesPaperAccountService({ storageService: storage, allowInternalSimulationForTests: true });
+const ledger = createFuturesPaperLedgerService({ storageService: storage, accountService: accountSvc, allowInternalSimulationForTests: true });
 let signals = [];
 
 function quotesAt(now) {
@@ -62,6 +62,7 @@ const signalAdapter = createFuturesTradingOsSignalAdapterService({
 const scanner = createFuturesPaperScannerService({
   storageService: storage,
   ledgerService: ledger,
+  allowInternalSimulationForTests: true,
   priceFeedService: priceFeed,
   signalAdapterService: signalAdapter,
   allowlistService: {
@@ -76,7 +77,6 @@ const scanner = createFuturesPaperScannerService({
   performanceService: { getTopStrategies: () => ({ strategies: [] }) },
   // OBS: ingen cooldownMinutes-override — defaulten (30 min) ska testas.
   config: {
-    maxTradesPerStrategy: 10,
     scanHistoryLimit: 10,
     closedTradesLimit: 100,
     autoIntervalSeconds: 60,
@@ -132,23 +132,56 @@ assert.equal(scan.scan.blockedByFamilyGate[0].strategyId, 'vwap_failed_breakout_
 assert.equal(scan.scan.blockedByFamilyGate[0].reason, 'strategy_family_not_best_candidate');
 assert.equal(scan.scan.config.cooldownMinutes, 30);
 assert.equal(scan.scan.config.familyExclusiveEnabled, true);
-assert.equal(scan.scan.mode, 'paper_only');
+assert.equal(scan.scan.mode, 'ibkr_paper');
 assert.equal(scan.scan.live_trading_enabled, false);
 assert.equal(scan.scan.broker_enabled, false);
+assert.equal(scan.candidates[0].executionTarget, 'ibkr_paper');
+assert.equal(scan.candidates[0].internalSimulationRetired, true);
 
-// ── Simulera bästa kandidaten → öppen position bär family-metadata ──────────
+// ── Intern candidate-simulering är pensionerad; family-fixture seedas offline.
 const simulated = scanner.simulateCandidate({ now: t0 });
-assert.equal(simulated.ok, true);
-assert.equal(simulated.position.strategyId, 'vwap_volume_breakout_long');
-assert.equal(simulated.position.strategyFamily, 'vwap_family');
-assert.equal(simulated.position.familyRank, 1);
-assert.equal(simulated.position.familyGateDecision, 'allowed');
-assert.equal(simulated.position.familyBlockReason, null);
-assert.equal(simulated.position.strategyCooldownDecision, 'allowed');
-assert.equal(simulated.position.strategyCooldownBlockReason, null);
-assert.equal(simulated.position.nextAllowedAt, null);
+assert.equal(simulated.ok, false);
+assert.equal(simulated.error, 'internal_futures_simulation_disabled');
+assert.equal(simulated.code, 'internal_futures_simulation_retired');
 assert.equal(simulated.can_place_orders, false);
 assert.equal(simulated.live_trading_enabled, false);
+scanner.resetScanner();
+
+const seededOpen = ledger.openFuturesPaperPosition({
+  now: t0,
+  root: 'MNQ',
+  symbol: 'MNQ',
+  side: 'long',
+  contracts: 1,
+  entryPrice: 20000,
+  stopLoss: 19900,
+  takeProfit: 20200,
+  strategyId: 'vwap_volume_breakout_long',
+  strategyName: 'VWAP Volume Breakout Long',
+  strategyFamily: 'vwap_family',
+  familyRank: 1,
+  familyGateDecision: 'allowed',
+  familyBlockReason: null,
+  strategyCooldownDecision: 'allowed',
+  strategyCooldownBlockReason: null,
+  nextAllowedAt: null,
+  entryReason: 'offline family-gate fixture',
+  tradeType: 'offline_unit_test_fixture',
+  signalSource: 'unit_test',
+  dataSource: 'real_market_data',
+  usedRealStrategyLogic: true,
+  usedFallbackPrice: false,
+  excludedFromStats: false,
+});
+assert.equal(seededOpen.ok, true);
+assert.equal(seededOpen.position.strategyId, 'vwap_volume_breakout_long');
+assert.equal(seededOpen.position.strategyFamily, 'vwap_family');
+assert.equal(seededOpen.position.familyRank, 1);
+assert.equal(seededOpen.position.familyGateDecision, 'allowed');
+assert.equal(seededOpen.position.familyBlockReason, null);
+assert.equal(seededOpen.position.strategyCooldownDecision, 'allowed');
+assert.equal(seededOpen.position.strategyCooldownBlockReason, null);
+assert.equal(seededOpen.position.nextAllowedAt, null);
 
 // ── Scan 2 (11:05): öppen vwap-position blockerar familjen, ema släpps ───────
 const t1 = '2026-07-08T11:05:00.000Z';
@@ -170,7 +203,7 @@ assert.equal(scan.candidates[0].strategyFamily, 'ema_trend_family');
 // ── Stäng vwap-positionen (11:06) ────────────────────────────────────────────
 const closed = ledger.closeFuturesPaperPosition({
   now: '2026-07-08T11:06:00.000Z',
-  tradeId: simulated.position.tradeId,
+  tradeId: seededOpen.position.tradeId,
   exitPrice: 20100,
   exitReason: 'take_profit_hit',
 });
@@ -184,7 +217,7 @@ assert.equal(closed.trade.strategyCooldownBlockReason, null);
 assert.equal(closed.trade.nextAllowedAt, null);
 
 const recentClosed = ledger.getRecentClosedTrades({ limit: 10 });
-const closedView = recentClosed.trades.find((row) => row.tradeId === simulated.position.tradeId);
+const closedView = recentClosed.trades.find((row) => row.tradeId === seededOpen.position.tradeId);
 assert.ok(closedView, 'stängd trade ska finnas i recent closed output');
 assert.equal(closedView.strategyFamily, 'vwap_family');
 assert.equal(closedView.familyRank, 1);
@@ -236,7 +269,7 @@ const momentumRow = status.strategies.find((row) => row.strategyId === 'vwap_vol
 assert.equal(momentumRow.strategyFamily, 'vwap_family');
 assert.ok(['allowed', 'blocked', 'not_applicable'].includes(momentumRow.familyGateDecision));
 assert.equal(status.config.cooldownMinutes, 30);
-assert.equal(status.mode, 'paper_only');
+assert.equal(status.mode, 'ibkr_paper');
 assert.equal(status.live_trading_enabled, false);
 assert.equal(status.broker_enabled, false);
 assert.equal(status.actions_allowed, false);

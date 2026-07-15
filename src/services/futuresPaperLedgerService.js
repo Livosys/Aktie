@@ -5,6 +5,8 @@ const futuresPaperAccountService = require('./futuresPaperAccountService');
 const strategyTradeControl = require('./strategyTradeControlService');
 const futuresContractCatalog = require('./futuresContractCatalogService');
 const excursionService = require('./futuresPaperExcursionService');
+const futuresMarketHoursService = require('./futuresMarketHoursService');
+const internalSimulationRetirement = require('./futuresInternalSimulationRetirementService');
 
 const SAFETY = Object.freeze({
   mode: 'paper_only',
@@ -119,23 +121,10 @@ function calcCommissionUsd(root, contracts, sides = 1) {
 }
 
 function getMarketHoursState(now = new Date()) {
-  const current = new Date(now);
-  const day = current.getUTCDay();
-  const minutes = current.getUTCHours() * 60 + current.getUTCMinutes();
-  const maintenanceStart = 22 * 60;
-  const maintenanceEnd = 23 * 60;
-
-  let isOpen = false;
-  if (day >= 1 && day <= 4) isOpen = !(minutes >= maintenanceStart && minutes < maintenanceEnd);
-  else if (day === 5) isOpen = minutes < maintenanceStart;
-  else if (day === 0) isOpen = minutes >= maintenanceEnd;
-
+  const session = futuresMarketHoursService.getCmeEquityIndexFuturesSessionState(now);
   return {
-    isOpen,
-    session: 'Globex',
-    timezone: 'UTC',
-    maintenanceWindow: '22:00-23:00 UTC',
-    warning: isOpen ? null : 'Globex-sessionen är stängd eller i underhållsfönster. Positionen hanteras ändå som intern simulation.',
+    ...session,
+    warning: session.isOpen ? null : 'Globex-sessionen är stängd eller i underhållsfönster. Legacy-positionen visas bara i read-only-arkivet.',
   };
 }
 
@@ -216,6 +205,21 @@ function toPositionView(position, fxUsdSek = 0) {
     usedFallbackPrice: position.usedFallbackPrice !== false,
     excludedFromStats: position.excludedFromStats !== false,
     strategyLogicVersion: position.strategyLogicVersion || null,
+    signalTimestamp: position.signalTimestamp || null,
+    signalSessionMetadata: position.signalSessionMetadata || null,
+    candidateTimestamp: position.candidateTimestamp || null,
+    candidateSessionMetadata: position.candidateSessionMetadata || null,
+    sessionMetadata: position.sessionMetadata || position.entrySession || null,
+    entrySession: position.entrySession || position.sessionMetadata || null,
+    exitSession: position.exitSession || null,
+    session: position.session || position.entrySession?.session || position.sessionMetadata?.session || null,
+    sessionId: position.sessionId || position.entrySession?.sessionId || position.sessionMetadata?.sessionId || null,
+    sessionLabel: position.sessionLabel || position.entrySession?.sessionLabel || position.sessionMetadata?.sessionLabel || null,
+    exchangeTimezone: position.exchangeTimezone || position.entrySession?.exchangeTimezone || position.sessionMetadata?.exchangeTimezone || null,
+    exchangeLocalDate: position.exchangeLocalDate || position.entrySession?.exchangeLocalDate || position.sessionMetadata?.exchangeLocalDate || null,
+    exchangeLocalTime: position.exchangeLocalTime || position.entrySession?.exchangeLocalTime || position.sessionMetadata?.exchangeLocalTime || null,
+    isRth: position.isRth ?? position.entrySession?.isRth ?? position.sessionMetadata?.isRth ?? null,
+    isMarketOpen: position.isMarketOpen ?? position.entrySession?.isMarketOpen ?? position.sessionMetadata?.isMarketOpen ?? null,
     originalSignalId: position.originalSignalId || position.signalId || null,
     signalId: position.signalId || position.originalSignalId || null,
     candidateId: position.candidateId || null,
@@ -360,17 +364,32 @@ function buildAccountState({ config, positionsState, now = new Date() }) {
 function createFuturesPaperLedgerService(options = {}) {
   const storage = options.storageService || storageService.defaultFuturesPaperStorageService;
   const accountSvc = options.accountService || futuresPaperAccountService.defaultFuturesPaperAccountService;
+  const internalSimulationEnabled = internalSimulationRetirement.isInternalFuturesSimulationEnabled(options);
+
+  function legacyMetadata() {
+    return internalSimulationRetirement.buildReadOnlyLegacyMetadata();
+  }
+
+  function retiredMutation(action) {
+    return internalSimulationRetirement.buildRetiredMutationResponse({ action });
+  }
+
+  function blockIfRetired(action) {
+    return internalSimulationEnabled ? null : retiredMutation(action);
+  }
 
   function ensureFiles() {
+    if (!internalSimulationEnabled) return false;
     storage.ensureDefaults(
       futuresPaperAccountService.DEFAULT_CONFIG,
       futuresPaperAccountService.createDefaultState(futuresPaperAccountService.DEFAULT_CONFIG),
       createDefaultPositionsState(),
     );
+    return true;
   }
 
   function readPositionsState() {
-    ensureFiles();
+    if (internalSimulationEnabled) ensureFiles();
     const raw = storage.readPositions(createDefaultPositionsState());
     const open = safeArray(raw?.open).map((position) => toPositionView(position, Number(accountSvc.getFuturesPaperAccount().account?.fxUsdSek || futuresPaperAccountService.DEFAULT_CONFIG.fxUsdSek)));
     const closed = safeArray(raw?.closed).map((position) => toPositionView(position, Number(accountSvc.getFuturesPaperAccount().account?.fxUsdSek || futuresPaperAccountService.DEFAULT_CONFIG.fxUsdSek)));
@@ -382,6 +401,8 @@ function createFuturesPaperLedgerService(options = {}) {
   }
 
   function writePositionsState(state) {
+    const blocked = blockIfRetired('write_internal_futures_positions');
+    if (blocked) return blocked;
     const nextState = {
       open: safeArray(state?.open).map((position) => ({ ...position })),
       closed: safeArray(state?.closed).map((position) => ({ ...position })),
@@ -392,17 +413,20 @@ function createFuturesPaperLedgerService(options = {}) {
   }
 
   function readTrades(limit = null) {
-    ensureFiles();
+    if (internalSimulationEnabled) ensureFiles();
     const rows = storage.readTrades();
     const slice = Number.isFinite(Number(limit)) && Number(limit) > 0 ? rows.slice(-Math.max(1, Math.min(1000, Number(limit)))) : rows;
     return slice;
   }
 
   function persistEvent(type, payload = {}, now = new Date()) {
+    const timestamp = nowIso(now);
+    const sessionMetadata = futuresMarketHoursService.buildFuturesSessionMetadata(timestamp);
     return storage.appendEvent({
       eventId: `futures_ledger_${now.getTime()}_${Math.random().toString(16).slice(2, 8)}`,
       type,
-      timestamp: nowIso(now),
+      timestamp,
+      sessionMetadata,
       ...payload,
       ...SAFETY,
     });
@@ -478,6 +502,7 @@ function createFuturesPaperLedgerService(options = {}) {
       latestEvents,
       market,
       ...SAFETY,
+      ...legacyMetadata(),
     };
   }
 
@@ -491,6 +516,7 @@ function createFuturesPaperLedgerService(options = {}) {
       closedPositions: bundle.closedTrades,
       market: bundle.market,
       ...SAFETY,
+      ...legacyMetadata(),
     };
   }
 
@@ -502,10 +528,13 @@ function createFuturesPaperLedgerService(options = {}) {
       trades: bundle.trades,
       totalTrades: bundle.trades.length,
       ...SAFETY,
+      ...legacyMetadata(),
     };
   }
 
   function openFuturesPaperPosition(input = {}) {
+    const blocked = blockIfRetired('open_internal_futures_position');
+    if (blocked) return blocked;
     ensureFiles();
     const now = input.now ? new Date(input.now) : new Date();
     const root = normalizeRoot(input.root, input.symbol);
@@ -553,6 +582,8 @@ function createFuturesPaperLedgerService(options = {}) {
     const commissionPerSideUsd = getCommissionPerSideUsd(root) ?? 0;
     const entryFeeUsd = calcCommissionUsd(root, contracts, 1);
     const entryFeeSek = round(entryFeeUsd * fxUsdSek, 2);
+    const openedAt = nowIso(now);
+    const entrySession = futuresMarketHoursService.buildFuturesSessionMetadata(openedAt);
     const position = {
       tradeId: createTradeId(now),
       root,
@@ -563,7 +594,7 @@ function createFuturesPaperLedgerService(options = {}) {
       currentPrice: round(entryPrice, 2),
       stopLoss: stopLoss === null ? null : round(stopLoss, 2),
       takeProfit: takeProfit === null ? null : round(takeProfit, 2),
-      openedAt: nowIso(now),
+      openedAt,
       closedAt: null,
       status: 'open',
       strategyId,
@@ -578,6 +609,21 @@ function createFuturesPaperLedgerService(options = {}) {
       usedFallbackPrice,
       excludedFromStats,
       strategyLogicVersion: input.strategyLogicVersion || null,
+      signalTimestamp: input.signalTimestamp || null,
+      signalSessionMetadata: input.signalSessionMetadata || null,
+      candidateTimestamp: input.candidateTimestamp || null,
+      candidateSessionMetadata: input.candidateSessionMetadata || null,
+      sessionMetadata: entrySession,
+      entrySession,
+      exitSession: null,
+      session: entrySession?.session || null,
+      sessionId: entrySession?.sessionId || null,
+      sessionLabel: entrySession?.sessionLabel || null,
+      exchangeTimezone: entrySession?.exchangeTimezone || null,
+      exchangeLocalDate: entrySession?.exchangeLocalDate || null,
+      exchangeLocalTime: entrySession?.exchangeLocalTime || null,
+      isRth: entrySession?.isRth ?? null,
+      isMarketOpen: entrySession?.isMarketOpen ?? null,
       originalSignalId: input.originalSignalId || input.signalId || null,
       signalId: input.signalId || input.originalSignalId || null,
       candidateId: input.candidateId || null,
@@ -651,6 +697,15 @@ function createFuturesPaperLedgerService(options = {}) {
       usedRealStrategyLogic,
       usedFallbackPrice,
       excludedFromStats,
+      signalTimestamp: position.signalTimestamp,
+      signalSessionMetadata: position.signalSessionMetadata,
+      candidateTimestamp: position.candidateTimestamp,
+      candidateSessionMetadata: position.candidateSessionMetadata,
+      sessionMetadata: position.sessionMetadata,
+      entrySession: position.entrySession,
+      session: position.session,
+      sessionId: position.sessionId,
+      sessionLabel: position.sessionLabel,
       originalSignalId: position.originalSignalId,
       originalSymbol: position.originalSymbol,
       mappedFuturesSymbol: position.mappedFuturesSymbol,
@@ -672,6 +727,8 @@ function createFuturesPaperLedgerService(options = {}) {
   }
 
   function closeFuturesPaperPosition(input = {}) {
+    const blocked = blockIfRetired('close_internal_futures_position');
+    if (blocked) return blocked;
     ensureFiles();
     const now = input.now ? new Date(input.now) : new Date();
     const tradeId = String(input.tradeId || '').trim();
@@ -715,13 +772,29 @@ function createFuturesPaperLedgerService(options = {}) {
     const grossPnlSek = round((grossPnlUsd || 0) * fxUsdSek, 2);
     const feesSek = round(feesUsd * fxUsdSek, 2);
     const pnlSek = round(netPnlUsd * fxUsdSek, 2);
+    const closedAt = nowIso(now);
+    const entrySession = openPosition.entrySession
+      || openPosition.sessionMetadata
+      || futuresMarketHoursService.buildFuturesSessionMetadata(openPosition.openedAt);
+    const exitSession = futuresMarketHoursService.buildFuturesSessionMetadata(closedAt);
     const closedPosition = {
       ...openPosition,
       currentPrice: round(exitPrice, 2),
       exitPrice: round(exitPrice, 2),
-      closedAt: nowIso(now),
+      closedAt,
       status: 'closed',
       exitReason,
+      sessionMetadata: entrySession,
+      entrySession,
+      exitSession,
+      session: entrySession?.session || openPosition.session || null,
+      sessionId: entrySession?.sessionId || openPosition.sessionId || null,
+      sessionLabel: entrySession?.sessionLabel || openPosition.sessionLabel || null,
+      exchangeTimezone: entrySession?.exchangeTimezone || openPosition.exchangeTimezone || null,
+      exchangeLocalDate: entrySession?.exchangeLocalDate || openPosition.exchangeLocalDate || null,
+      exchangeLocalTime: entrySession?.exchangeLocalTime || openPosition.exchangeLocalTime || null,
+      isRth: entrySession?.isRth ?? openPosition.isRth ?? null,
+      isMarketOpen: entrySession?.isMarketOpen ?? openPosition.isMarketOpen ?? null,
       unrealizedPnlUsd: 0,
       unrealizedPnlSek: 0,
       commissionPerSideUsd,
@@ -797,6 +870,16 @@ function createFuturesPaperLedgerService(options = {}) {
       usedRealStrategyLogic: closedPosition.usedRealStrategyLogic === true,
       usedFallbackPrice: closedPosition.usedFallbackPrice !== false,
       excludedFromStats: closedPosition.excludedFromStats !== false,
+      signalTimestamp: closedPosition.signalTimestamp || null,
+      signalSessionMetadata: closedPosition.signalSessionMetadata || null,
+      candidateTimestamp: closedPosition.candidateTimestamp || null,
+      candidateSessionMetadata: closedPosition.candidateSessionMetadata || null,
+      sessionMetadata: closedPosition.sessionMetadata || null,
+      entrySession: closedPosition.entrySession || null,
+      exitSession: closedPosition.exitSession || null,
+      session: closedPosition.session || null,
+      sessionId: closedPosition.sessionId || null,
+      sessionLabel: closedPosition.sessionLabel || null,
       originalSignalId: closedPosition.originalSignalId || closedPosition.signalId || null,
       originalSymbol: closedPosition.originalSymbol || null,
       mappedFuturesSymbol: closedPosition.mappedFuturesSymbol || closedPosition.symbol || closedPosition.root,
@@ -871,6 +954,21 @@ function createFuturesPaperLedgerService(options = {}) {
           usedFallbackPrice: row.usedFallbackPrice !== false,
           excludedFromStats: row.excludedFromStats !== false,
           strategyLogicVersion: row.strategyLogicVersion || null,
+          signalTimestamp: row.signalTimestamp || null,
+          signalSessionMetadata: row.signalSessionMetadata || null,
+          candidateTimestamp: row.candidateTimestamp || null,
+          candidateSessionMetadata: row.candidateSessionMetadata || null,
+          sessionMetadata: row.sessionMetadata || row.entrySession || null,
+          entrySession: row.entrySession || row.sessionMetadata || null,
+          exitSession: row.exitSession || null,
+          session: row.session || row.entrySession?.session || row.sessionMetadata?.session || null,
+          sessionId: row.sessionId || row.entrySession?.sessionId || row.sessionMetadata?.sessionId || null,
+          sessionLabel: row.sessionLabel || row.entrySession?.sessionLabel || row.sessionMetadata?.sessionLabel || null,
+          exchangeTimezone: row.exchangeTimezone || row.entrySession?.exchangeTimezone || row.sessionMetadata?.exchangeTimezone || null,
+          exchangeLocalDate: row.exchangeLocalDate || row.entrySession?.exchangeLocalDate || row.sessionMetadata?.exchangeLocalDate || null,
+          exchangeLocalTime: row.exchangeLocalTime || row.entrySession?.exchangeLocalTime || row.sessionMetadata?.exchangeLocalTime || null,
+          isRth: row.isRth ?? row.entrySession?.isRth ?? row.sessionMetadata?.isRth ?? null,
+          isMarketOpen: row.isMarketOpen ?? row.entrySession?.isMarketOpen ?? row.sessionMetadata?.isMarketOpen ?? null,
           originalSignalId: row.originalSignalId || row.signalId || null,
           originalSymbol: row.originalSymbol || null,
           mappedFuturesSymbol: row.mappedFuturesSymbol || row.symbol || row.root,
@@ -887,12 +985,15 @@ function createFuturesPaperLedgerService(options = {}) {
       limit: capped,
       trades,
       ...SAFETY,
+      ...legacyMetadata(),
     };
   }
 
-  // Paper-only mark-to-market: uppdaterar currentPrice + orealiserad PnL på
-  // öppna positioner utifrån simulerade priser och sparar nytt kontosnapshot.
+  // Legacy/test-only mark-to-market: blockeras i produktion när intern
+  // futures-simulation är pensionerad.
   function markOpenPositionsToMarket({ prices = {}, now = new Date() } = {}) {
+    const blocked = blockIfRetired('mark_internal_futures_positions_to_market');
+    if (blocked) return blocked;
     ensureFiles();
     const positionsState = readPositionsState();
     const account = getCurrentAccount();
@@ -956,6 +1057,8 @@ function createFuturesPaperLedgerService(options = {}) {
   }
 
   function resetState() {
+    const blocked = blockIfRetired('reset_internal_futures_positions');
+    if (blocked) return blocked;
     ensureFiles();
     const defaultPositions = createDefaultPositionsState();
     writePositionsState(defaultPositions);
@@ -964,6 +1067,7 @@ function createFuturesPaperLedgerService(options = {}) {
 
   return {
     SAFETY,
+    internalSimulationEnabled,
     createDefaultPositionsState,
     calculatePnlUsd,
     getMarketHoursState,

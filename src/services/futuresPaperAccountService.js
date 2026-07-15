@@ -1,6 +1,7 @@
 'use strict';
 
 const storageService = require('./futuresPaperStorageService');
+const internalSimulationRetirement = require('./futuresInternalSimulationRetirementService');
 
 const SAFETY = Object.freeze({
   mode: 'paper_only',
@@ -151,13 +152,28 @@ function applyHistoryLimit(rows, limit) {
 
 function createFuturesPaperAccountService(options = {}) {
   const storage = options.storageService || storageService.defaultFuturesPaperStorageService;
+  const internalSimulationEnabled = internalSimulationRetirement.isInternalFuturesSimulationEnabled(options);
+
+  function legacyMetadata() {
+    return internalSimulationRetirement.buildReadOnlyLegacyMetadata();
+  }
+
+  function retiredMutation(action) {
+    return internalSimulationRetirement.buildRetiredMutationResponse({ action });
+  }
+
+  function blockIfRetired(action) {
+    return internalSimulationEnabled ? null : retiredMutation(action);
+  }
 
   function ensureFiles() {
+    if (!internalSimulationEnabled) return false;
     storage.ensureDefaults(DEFAULT_CONFIG, createDefaultState(DEFAULT_CONFIG));
+    return true;
   }
 
   function readConfig() {
-    ensureFiles();
+    if (internalSimulationEnabled) ensureFiles();
     const raw = storage.readAccountConfig(DEFAULT_CONFIG) || DEFAULT_CONFIG;
     return {
       currency: raw.currency || DEFAULT_CONFIG.currency,
@@ -179,7 +195,7 @@ function createFuturesPaperAccountService(options = {}) {
   }
 
   function readState() {
-    ensureFiles();
+    if (internalSimulationEnabled) ensureFiles();
     return storage.readAccountState(null);
   }
 
@@ -227,7 +243,7 @@ function createFuturesPaperAccountService(options = {}) {
     const config = readConfig();
     const state = readState();
     const snapshot = buildAccountSnapshot({ config, state, updatedAt: state?.updatedAt || config.updatedAt || null });
-    if (!state) {
+    if (!state && internalSimulationEnabled) {
       writeState(snapshot);
     }
     return {
@@ -237,10 +253,13 @@ function createFuturesPaperAccountService(options = {}) {
       state: snapshot,
       history: historyOptions.includeHistory ? readHistory(historyOptions.historyLimit) : { events: [], equityCurve: [] },
       ...SAFETY,
+      ...legacyMetadata(),
     };
   }
 
   function resetFuturesPaperAccount({ reason = 'manual_reset' } = {}) {
+    const blocked = blockIfRetired('reset_internal_futures_account');
+    if (blocked) return blocked;
     const config = readConfig();
     const snapshot = createDefaultState(config);
     storage.writeAccountState(snapshot);
@@ -260,6 +279,8 @@ function createFuturesPaperAccountService(options = {}) {
   }
 
   function setFuturesPaperBalance({ startingBalanceSek, fxUsdSek, reason = 'manual_set_balance' } = {}) {
+    const blocked = blockIfRetired('set_internal_futures_fake_capital');
+    if (blocked) return blocked;
     const nextStartingBalanceSek = clampMoney(startingBalanceSek);
     if (nextStartingBalanceSek === null) {
       return { ok: false, error: 'startingBalanceSek_must_be_a_non_negative_number', ...SAFETY };
@@ -307,11 +328,12 @@ function createFuturesPaperAccountService(options = {}) {
     };
   }
 
-  ensureFiles();
+  if (internalSimulationEnabled) ensureFiles();
 
   return {
     SAFETY,
     DEFAULT_CONFIG,
+    internalSimulationEnabled,
     storage,
     ensureFiles,
     readConfig,

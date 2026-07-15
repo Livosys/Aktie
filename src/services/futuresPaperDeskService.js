@@ -12,6 +12,8 @@ const futuresMarketHoursService = require('./futuresMarketHoursService');
 const futuresMarketDataService = require('./futuresMarketDataService');
 const ibPaperAccountSummaryService = require('./ibPaperAccountSummaryService');
 const futuresDataPipelineStatusService = require('./futuresDataPipelineStatusService');
+const ibPaperExecutionOrchestratorService = require('./ibPaperExecutionOrchestratorService');
+const internalSimulationRetirement = require('./futuresInternalSimulationRetirementService');
 
 const SAFETY = Object.freeze({
   mode: 'paper_only',
@@ -436,53 +438,156 @@ function normalizeMiniFutures(universe = {}) {
   });
 }
 
+function normalizeBrokerPosition(row = {}, { reconciliationTimestamp = null, quote = null } = {}) {
+  const qty = Number(row.position ?? row.quantity ?? row.size ?? 0);
+  const root = safeString(row.symbol || row.root || row.contract?.symbol);
+  return {
+    id: row.conId ? `ibkr_paper_position_${row.conId}` : `ibkr_paper_position_${root || 'unknown'}`,
+    accountMasked: row.accountMasked || row.accountIdMasked || null,
+    account: row.accountMasked || row.accountIdMasked || null,
+    root,
+    symbol: root,
+    localSymbol: row.localSymbol || row.contract?.localSymbol || null,
+    conId: row.conId ?? row.contract?.conId ?? null,
+    expiry: row.expiry || row.contract?.lastTradeDateOrContractMonth || null,
+    side: qty > 0 ? 'long' : (qty < 0 ? 'short' : null),
+    quantity: Number.isFinite(qty) ? Math.abs(qty) : null,
+    signedQuantity: Number.isFinite(qty) ? qty : null,
+    averageCost: row.avgCost ?? row.averageCost ?? null,
+    avgCost: row.avgCost ?? row.averageCost ?? null,
+    marketPrice: quote?.last ?? quote?.price ?? null,
+    unrealizedPnl: row.unrealizedPnl ?? null,
+    realizedPnl: row.realizedPnl ?? null,
+    source: 'ibkr_paper',
+    executionSource: 'ibkr_paper',
+    reconciliationTimestamp,
+    protectiveOrderStatus: row.protectiveOrderStatus || 'unknown',
+    uncertain: false,
+  };
+}
+
+function normalizeBrokerExecution(row = {}, commissionsByExecId = new Map()) {
+  const commission = commissionsByExecId.get(row.execId) || null;
+  return {
+    id: row.execId || `${row.orderId || 'order'}_${row.receivedAt || row.time || ''}`,
+    ibOrderId: row.orderId ?? null,
+    orderId: row.orderId ?? null,
+    permId: row.permId ?? null,
+    execId: row.execId ?? null,
+    orderRef: row.orderRef || null,
+    strategyId: row.strategyId || null,
+    candidateId: row.candidateId || null,
+    conId: row.conId ?? null,
+    localSymbol: row.localSymbol || null,
+    side: row.side || null,
+    quantity: row.shares ?? row.quantity ?? null,
+    fillPrice: row.price ?? row.fillPrice ?? null,
+    commission: commission?.commission ?? row.commission ?? null,
+    commissionCurrency: commission?.currency ?? row.commissionCurrency ?? null,
+    realizedResult: commission?.realizedPNL ?? row.realizedPnl ?? null,
+    accountMasked: row.accountMasked || null,
+    time: row.time || row.receivedAt || null,
+    receivedAt: row.receivedAt || null,
+    source: 'ibkr_paper',
+    executionSource: 'ibkr_paper',
+  };
+}
+
+function normalizeBrokerOrder(row = {}) {
+  return {
+    id: row.orderId ?? row.order?.orderId ?? row.order?.permId ?? null,
+    orderId: row.orderId ?? null,
+    permId: row.order?.permId ?? row.permId ?? null,
+    orderRef: row.order?.orderRef || row.orderRef || null,
+    accountMasked: row.order?.accountMasked || row.accountMasked || null,
+    conId: row.contract?.conId ?? null,
+    localSymbol: row.contract?.localSymbol || null,
+    symbol: row.contract?.symbol || null,
+    action: row.order?.action || row.action || null,
+    quantity: row.order?.totalQuantity ?? row.totalQuantity ?? null,
+    orderType: row.order?.orderType || row.orderType || null,
+    limitPrice: row.order?.lmtPrice ?? row.lmtPrice ?? null,
+    stopPrice: row.order?.auxPrice ?? row.auxPrice ?? null,
+    parentId: row.order?.parentId ?? row.parentId ?? null,
+    ocaGroup: row.order?.ocaGroup || null,
+    transmit: row.order?.transmit === true,
+    status: row.state || row.status || null,
+    updatedAt: row.updatedAt || null,
+    source: 'ibkr_paper',
+    executionSource: 'ibkr_paper',
+  };
+}
+
 function buildFuturesPaperDeskRuntime(options = {}) {
   const now = options.now ? new Date(options.now) : new Date();
   const universe = options.universe || marketUniverseService.getUniverse();
   const performance = options.performance || strategyPerformanceReadService.getTopStrategies(5);
-  const ledgerResult = options.ledger || futuresPaperLedgerService.defaultFuturesPaperLedgerService.getFuturesPaperLedger({
+  const legacyLedgerResult = options.legacyLedger || futuresPaperLedgerService.defaultFuturesPaperLedgerService.getFuturesPaperLedger({
     limit: options.limit || 50,
   });
-  const accountResult = options.account || ledgerResult;
-  const account = accountResult?.account || futuresPaperAccountService.createDefaultState(futuresPaperAccountService.DEFAULT_CONFIG);
   const instruments = normalizeMiniFutures(universe);
   const session = getFuturesSessionState(now);
   const strategyPulse = normalizePerformance(performance);
   const paperStrategies = options.paperStrategies
     || paperEnabledStrategiesService.buildPaperStrategyList({ fresh: options.fresh === true });
-  const baseBalance = Number(account.startingBalanceSek ?? options.startingBalance ?? DEFAULT_ACCOUNT.startingBalance) || DEFAULT_ACCOUNT.startingBalance;
-  const positions = ledgerResult?.positions || {
-    open: [],
-    closed: [],
-    totalOpen: 0,
-    totalClosed: 0,
-  };
-  const openPositions = ledgerResult?.openPositions || positions.open || [];
-  const closedTrades = ledgerResult?.closedTrades || positions.closed || [];
-  const latestEvents = ledgerResult?.latestEvents || [];
   const scannerRuntime = options.scannerRuntime
     || futuresPaperScannerService.defaultFuturesPaperScannerService.getScannerRuntime({ now });
   const strategyStatus = options.strategyStatus
     || futuresPaperScannerService.defaultFuturesPaperScannerService.getStrategyStatus({ now });
-  const recentClosedTrades = options.recentClosedTrades
-    || futuresPaperLedgerService.defaultFuturesPaperLedgerService.getRecentClosedTrades({
-      limit: scannerRuntime?.engineConfig?.closedTradesLimit || 100,
-    });
+
+  const brokerReconciliation = options.brokerReconciliation
+    || ibPaperExecutionOrchestratorService.defaultIbPaperExecutionOrchestratorService.reconciliation.getCachedReconciliation();
+  const brokerCommissionsRaw = safeArray(
+    options.brokerCommissions
+    || brokerReconciliation.commissions
+    || [],
+  );
+  const commissionsByExecId = new Map(brokerCommissionsRaw.filter((row) => row?.execId).map((row) => [row.execId, row]));
+  const quoteByRoot = new Map();
+  try {
+    const quoteMap = futuresMarketDataService.defaultFuturesMarketDataService.getStatus(now)?.quotes || {};
+    for (const [root, row] of Object.entries(quoteMap)) {
+      if (row?.root) quoteByRoot.set(String(row.root).toUpperCase(), row);
+      else if (row) quoteByRoot.set(String(root).toUpperCase(), row);
+    }
+  } catch (_) { /* degraded */ }
+  const brokerPositions = safeArray(options.brokerPositions || brokerReconciliation.positions)
+    .map((row) => normalizeBrokerPosition(row, {
+      reconciliationTimestamp: brokerReconciliation.generatedAt || null,
+      quote: quoteByRoot.get(String(row.symbol || row.root || '').toUpperCase()) || null,
+    }));
+  const brokerOrders = safeArray(options.brokerOrders || brokerReconciliation.openOrders).map(normalizeBrokerOrder);
+  const brokerExecutions = safeArray(options.brokerExecutions || brokerReconciliation.executions)
+    .map((row) => normalizeBrokerExecution(row, commissionsByExecId));
+  const positions = {
+    open: brokerPositions,
+    closed: [],
+    totalOpen: brokerPositions.length,
+    totalClosed: 0,
+    updatedAt: brokerReconciliation.generatedAt || null,
+    source: 'ibkr_paper',
+  };
+  const openPositions = brokerPositions;
+  const closedTrades = brokerExecutions;
+  const recentClosedTrades = { ok: true, trades: brokerExecutions, source: 'ibkr_paper' };
+  const latestEvents = [];
   const strategyOverview = options.strategyOverview
     || buildCanonicalStrategyOverview({
       now,
       session,
       paperStrategies,
-      openPositions,
+      openPositions: [],
       scannerStrategies: strategyStatus?.strategies || [],
     });
 
   // Lätta, cache-baserade IB-summeringar (aldrig tunga IB-anrop härifrån).
   let ibDataLayer = { enabled: false, started: false, connected: false, source: 'disabled' };
-  let ibAccount = null;
+  let ibAccount = options.ibAccount || null;
   let dataPipeline = null;
   try { ibDataLayer = futuresMarketDataService.defaultFuturesMarketDataService.getStatusSummary(now); } catch (_) { /* degraded */ }
-  try { ibAccount = ibPaperAccountSummaryService.defaultIbPaperAccountSummaryService.getCachedSummary(); } catch (_) { /* degraded */ }
+  try {
+    if (!ibAccount) ibAccount = ibPaperAccountSummaryService.defaultIbPaperAccountSummaryService.getCachedSummary();
+  } catch (_) { /* degraded */ }
   try {
     const pipeline = futuresDataPipelineStatusService.getStatus({ now });
     dataPipeline = { replay: pipeline.replay, batch: pipeline.batch };
@@ -490,6 +595,37 @@ function buildFuturesPaperDeskRuntime(options = {}) {
   const nextTransition = (() => {
     try { return futuresMarketHoursService.getNextSessionTransition(now); } catch (_) { return null; }
   })();
+  const ibAccountView = ibAccount?.ok === true ? ibAccount.account : null;
+  const activeAccount = {
+    source: 'ibkr_paper',
+    accountIdMasked: ibAccountView?.accountIdMasked || null,
+    currency: ibAccountView?.currency || null,
+    netLiquidation: ibAccountView?.netLiquidation ?? null,
+    totalCashValue: ibAccountView?.totalCashValue ?? null,
+    availableFunds: ibAccountView?.availableFunds ?? null,
+    buyingPower: ibAccountView?.buyingPower ?? null,
+    unrealizedPnl: ibAccountView?.unrealizedPnl ?? null,
+    realizedPnl: ibAccountView?.realizedPnl ?? null,
+    dailyPnl: ibAccountView?.dailyPnl ?? null,
+    updatedAt: ibAccount?.generatedAt || null,
+    stale: ibAccount?.stale === true,
+    degraded: ibAccount?.ok !== true,
+    unavailableReason: ibAccount?.ok === true ? null : (ibAccount?.blocker || ibAccount?.error || 'ibkr_paper_account_unavailable'),
+  };
+  const legacyClosedTrades = futuresPaperLedgerService.defaultFuturesPaperLedgerService.getRecentClosedTrades({
+    limit: scannerRuntime?.engineConfig?.closedTradesLimit || 100,
+  });
+  const legacyInternalSimulation = {
+    ...internalSimulationRetirement.buildReadOnlyLegacyMetadata(),
+    archive: true,
+    label: 'Äldre interna simuleringar — används inte för nya trades',
+    account: legacyLedgerResult?.account || null,
+    positions: legacyLedgerResult?.positions || { open: [], closed: [], totalOpen: 0, totalClosed: 0 },
+    openPositions: legacyLedgerResult?.openPositions || [],
+    closedTrades: legacyLedgerResult?.closedTrades || [],
+    recentClosedTrades: legacyClosedTrades?.trades || [],
+    latestEvents: legacyLedgerResult?.latestEvents || [],
+  };
 
   return {
     ok: true,
@@ -508,34 +644,23 @@ function buildFuturesPaperDeskRuntime(options = {}) {
       manualControlsEnabled: false,
       unlimitedTradeLimit: true,
       notes: [
-        'Separat futures-desk för MNQ och MES.',
-        'Inga riktiga order, ingen broker, ingen live-execution.',
+        'Futures Paper använder IBKR Paper Trading som enda execution-miljö.',
+        'Shadow mode validerar strategier och orderplaner; faktisk ordersändning är avstängd.',
+        'Livekonton och riktiga pengar är blockerade.',
       ],
     },
     market: session,
-    account: {
-      baseCurrency: account.currency || DEFAULT_ACCOUNT.baseCurrency,
-      startingBalanceSek: account.startingBalanceSek ?? baseBalance,
-      cashSek: account.cashSek ?? baseBalance,
-      equitySek: account.equitySek ?? baseBalance,
-      realizedPnlSek: account.realizedPnlSek ?? 0,
-      unrealizedPnlSek: account.unrealizedPnlSek ?? 0,
-      totalPnlSek: account.totalPnlSek ?? 0,
-      dailyPnlSek: account.dailyPnlSek ?? 0,
-      peakEquitySek: account.peakEquitySek ?? baseBalance,
-      drawdownSek: account.drawdownSek ?? 0,
-      drawdownPct: account.drawdownPct ?? 0,
-      openExposureSek: account.openExposureSek ?? 0,
-      buyingPowerSek: account.buyingPowerSek ?? baseBalance,
-      usedMarginSek: account.usedMarginSek ?? 0,
-      availableMarginSek: account.availableMarginSek ?? baseBalance,
-      totalFeesSek: account.totalFeesSek ?? 0,
-      fxUsdSek: account.fxUsdSek ?? futuresPaperAccountService.DEFAULT_CONFIG.fxUsdSek,
-      updatedAt: account.updatedAt || nowIso(now),
-    },
+    account: activeAccount,
+    accountConfig: null,
     positions,
     openPositions,
     closedTrades,
+    brokerPositions,
+    brokerOrders,
+    brokerExecutions,
+    brokerFills: brokerExecutions,
+    brokerCommissions: brokerCommissionsRaw,
+    brokerReconciliation,
     latestEvents,
     instruments,
     strategyPulse,
@@ -550,7 +675,7 @@ function buildFuturesPaperDeskRuntime(options = {}) {
       lastScanSummary: scannerRuntime?.scanner?.lastScanSummary || null,
       lastTickAt: scannerRuntime?.scanner?.lastTickAt || null,
     },
-    autoSimulation: scannerRuntime?.autoSimulation || { enabled: false, intervalMs: null, timerActive: false },
+    autoSimulation: scannerRuntime?.autoSimulation || { enabled: false, intervalMs: null, timerActive: false, retired: true },
     candidateQueue: scannerRuntime?.candidateQueue || { connected: false, length: 0, candidates: [] },
     scanHistory: scannerRuntime?.scanHistory || [],
     strategyStatus: strategyStatus?.strategies || [],
@@ -569,27 +694,31 @@ function buildFuturesPaperDeskRuntime(options = {}) {
       counts: strategyOverview.counts,
     },
     recentClosedTrades: recentClosedTrades?.trades || [],
+    legacyInternalSimulation,
     dataFeed: scannerRuntime?.dataFeed || { source: 'none', simulated: false, fallback: false },
     quotes: scannerRuntime?.quotes || [],
     statusReasons: scannerRuntime?.statusReasons || [],
     chart: {
       activeSymbol: 'MNQ',
       markerPlan: ['entry', 'exit', 'stop_loss', 'take_profit'],
-      description: 'Chart-markers byggs från simulerade trades (entry, exit, stop loss, take profit).',
+      description: 'Chart-markers för aktiv Futures Paper byggs bara från IBKR Paper fills när de finns.',
     },
     controls: {
-      manualTradingEnabled: true,
-      manualTradingNote: 'Manuell simulerad handel och paper-scanner är aktiva. Endast intern simulation.',
+      manualTradingEnabled: false,
+      manualTradingNote: 'Intern simulation är avvecklad. Kandidater kan bara nå IBKR Paper shadow execution.',
       maxTradesPerDay: null,
-      maxOpenTrades: scannerRuntime?.scanner?.maxOpenPositions ?? null,
+      maxOpenTrades: brokerReconciliation?.counts?.positions ?? null,
     },
     technical: {
       runtimeSource: 'futuresPaperDeskService',
       universeSource: 'marketUniverseService',
       strategySource: 'futuresTradingOsSignalAdapterService',
-      accountSource: 'futuresPaperAccountService',
+      accountSource: 'ibPaperAccountSummaryService',
       scannerSource: 'futuresPaperScannerService',
       priceFeedSource: scannerRuntime?.dataFeed?.source || 'futuresPaperPriceFeedService',
+      activePositionSource: 'ibPaperBrokerReconciliationService',
+      activeTradeSource: 'ibPaperBrokerReconciliationService',
+      legacyArchiveSource: 'futuresPaperLedgerService',
     },
     ...SAFETY,
   };

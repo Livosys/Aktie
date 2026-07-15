@@ -18,8 +18,8 @@ const catalog = require('./futuresContractCatalogService');
 function freshLedger() {
   const rootDir = fs.mkdtempSync(path.join(os.tmpdir(), 'futures-fees-'));
   const storage = createFuturesPaperStorageService({ rootDir });
-  const accountSvc = createFuturesPaperAccountService({ storageService: storage });
-  const ledgerSvc = createFuturesPaperLedgerService({ storageService: storage, accountService: accountSvc });
+  const accountSvc = createFuturesPaperAccountService({ storageService: storage, allowInternalSimulationForTests: true });
+  const ledgerSvc = createFuturesPaperLedgerService({ storageService: storage, accountService: accountSvc, allowInternalSimulationForTests: true });
   return { ledgerSvc };
 }
 
