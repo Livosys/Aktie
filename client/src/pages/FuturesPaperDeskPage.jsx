@@ -136,6 +136,43 @@ function useFuturesMarketDataStatus(refreshToken = 0) {
   return state;
 }
 
+function useIbPaperExecutionStatus(refreshToken = 0) {
+  const [state, setState] = useState({ loading: true, error: null, data: null });
+
+  useEffect(() => {
+    let alive = true;
+    let activeController = null;
+
+    const load = () => {
+      if (activeController) activeController.abort();
+      activeController = new AbortController();
+      fetchJsonWithTimeout('/api/futures-paper/ibkr-paper-execution/status', { signal: activeController.signal })
+        .then((data) => {
+          if (!alive) return;
+          setState({ loading: false, error: null, data });
+        })
+        .catch((err) => {
+          if (!alive) return;
+          setState((prev) => ({
+            loading: false,
+            error: err?.message || 'ibkr_paper_execution_unavailable',
+            data: prev.data || null,
+          }));
+        });
+    };
+
+    load();
+    const timer = setInterval(load, REFRESH_MS);
+    return () => {
+      alive = false;
+      clearInterval(timer);
+      if (activeController) activeController.abort();
+    };
+  }, [refreshToken]);
+
+  return state;
+}
+
 function fmtAge(ms) {
   const num = Number(ms);
   if (!Number.isFinite(num) || num < 0) return '–';
@@ -226,6 +263,14 @@ function compactJson(value, fallback = '–') {
 
 function yesNo(value) {
   return value === true ? 'Ja' : 'Nej';
+}
+
+function brokerStatusTone(status) {
+  const value = String(status || '').toLowerCase();
+  if (value === 'shadow' || value === 'pilot' || value === 'active') return 'success';
+  if (value === 'paused' || value === 'degraded') return 'warning';
+  if (value === 'disabled') return 'neutral';
+  return 'warning';
 }
 
 function sectionStyle() {
@@ -407,6 +452,7 @@ export default function FuturesPaperDeskPage() {
     { id: 'positioner', label: 'Positioner' },
     { id: 'trades', label: 'Trades' },
     { id: 'runtime', label: 'Runtime' },
+    { id: 'ibkr', label: 'IBKR Paper Execution' },
     { id: 'godkannande', label: 'Godkännande' },
     { id: 'teknik', label: 'Teknisk info' },
   ];
@@ -414,7 +460,9 @@ export default function FuturesPaperDeskPage() {
   const runtime = useFuturesDeskRuntime(refreshToken);
   const accountState = useFuturesDeskAccount(refreshToken);
   const marketDataState = useFuturesMarketDataStatus(refreshToken);
+  const ibPaperExecutionState = useIbPaperExecutionStatus(refreshToken);
   const data = runtime.data;
+  const ibPaperExecution = ibPaperExecutionState.data || null;
   const ibDataLayer = data?.ibDataLayer || { enabled: false, connected: false };
   const ibAccountPayload = data?.ibAccount || null;
   const ibAccount = ibAccountPayload?.ok === true ? ibAccountPayload.account : null;
@@ -437,6 +485,13 @@ export default function FuturesPaperDeskPage() {
   const autoSimulation = data?.autoSimulation || {};
   const candidateQueue = data?.candidateQueue || {};
   const dataFeed = data?.dataFeed || {};
+  const ibkrExecutionStatus = ibPaperExecution?.status || 'disabled';
+  const ibkrExecutionSafety = ibPaperExecution?.safety || {};
+  const ibkrExecutionClient = ibPaperExecution?.executionClient || {};
+  const ibkrReconciliation = ibPaperExecution?.reconciliation || {};
+  const ibkrKillSwitch = ibPaperExecution?.killSwitch || {};
+  const ibkrAccount = ibPaperExecution?.account || {};
+  const ibkrFlags = ibPaperExecution?.flags || {};
   const statusReasons = Array.isArray(data?.statusReasons) ? data.statusReasons : [];
   const queueCandidates = Array.isArray(candidateQueue.candidates) ? candidateQueue.candidates : [];
   const autoSimOn = autoSimulation.enabled === true;
@@ -602,6 +657,68 @@ export default function FuturesPaperDeskPage() {
           <div style={{ color: 'var(--muted)', marginTop: 6, fontSize: 13 }}>{runtime.error}</div>
         </div>
       ) : null}
+
+      {activeTab === 'ibkr' && (
+      <section style={{ ...sectionStyle(), marginTop: 14, borderColor: 'rgba(59,130,246,0.35)' }}>
+        <SectionHeader
+          eyebrow="IBKR Paper Execution"
+          title="Brokerflöde"
+          summary="Order skickas endast till IBKR Paper Trading. Riktiga order och livekonton är blockerade."
+          action={<Pill tone={brokerStatusTone(ibkrExecutionStatus)}>{ibkrExecutionStatus}</Pill>}
+        />
+        {ibPaperExecutionState.error ? (
+          <div style={{ color: 'var(--warning)', marginBottom: 12 }}>{ibPaperExecutionState.error}</div>
+        ) : null}
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(260px, 1fr))', gap: 12 }}>
+          <ReadinessCard title="Säkerhetsmodell" status={ibkrExecutionSafety.orderSubmissionMode || 'disabled'} tone={brokerStatusTone(ibkrExecutionStatus)}>
+            <ReadinessRow label="Paper broker" value={yesNo(ibkrExecutionSafety.paperBrokerExecutionEnabled === true)} />
+            <ReadinessRow label="Paper submit" value={yesNo(ibkrExecutionSafety.paper_order_submission_enabled === true)} />
+            <ReadinessRow label="Live broker" value={yesNo(ibkrExecutionSafety.liveBrokerExecutionEnabled === true)} />
+            <ReadinessRow label="Live submit" value={yesNo(ibkrExecutionSafety.live_order_submission_enabled === true)} />
+            <ReadinessRow label="Live account blocked" value={yesNo(ibPaperExecution?.liveAccountBlocked !== false)} />
+            <ReadinessRow label="Mode" value={ibkrExecutionSafety.mode || 'ibkr_paper'} />
+          </ReadinessCard>
+
+          <ReadinessCard title="Paperkonto" status={ibPaperExecution?.paperAccountVerified ? 'Verifierat' : 'Blockerat'} tone={ibPaperExecution?.paperAccountVerified ? 'success' : 'warning'}>
+            <ReadinessRow label="Konto" value={ibkrAccount.accountIdMasked || 'Saknas'} />
+            <ReadinessRow label="Klassning" value={ibkrAccount.classification || 'unknown'} />
+            <ReadinessRow label="Valuta" value={ibkrAccount.currency || '–'} />
+            <ReadinessRow label="NetLiquidation" value={ibkrAccount.netLiquidation != null ? fmtMoney(ibkrAccount.netLiquidation, ibkrAccount.currency || 'SEK') : '–'} />
+            <ReadinessRow label="Blocker" value={ibkrAccount.blocker || 'none'} />
+          </ReadinessCard>
+
+          <ReadinessCard title="Execution client" status={ibkrExecutionClient.connected ? 'Ansluten' : 'Ej ansluten'} tone={ibkrExecutionClient.connected ? 'success' : 'warning'}>
+            <ReadinessRow label="Host/port" value={`${ibkrExecutionClient.host || '127.0.0.1'}:${ibkrExecutionClient.port || 4002}`} />
+            <ReadinessRow label="ClientId" value={String(ibkrExecutionClient.clientId ?? '–')} />
+            <ReadinessRow label="nextValidId" value={ibkrExecutionClient.nextValidIdReady ? String(ibkrExecutionClient.nextOrderId || 'ready') : 'saknas'} />
+            <ReadinessRow label="Reconnects" value={String(ibkrExecutionClient.reconnectCount ?? 0)} />
+            <ReadinessRow label="No-live capability" value={ibkrExecutionClient.noLiveOrderCapability ? 'paper-only' : '–'} />
+          </ReadinessCard>
+
+          <ReadinessCard title="Reconciliation" status={ibkrReconciliation.status || 'unknown'} tone={ibkrReconciliation.degraded ? 'warning' : 'success'}>
+            <ReadinessRow label="Degraded" value={yesNo(ibkrReconciliation.degraded === true)} />
+            <ReadinessRow label="Open orders" value={String(ibkrReconciliation.counts?.openOrders ?? 0)} />
+            <ReadinessRow label="Executions" value={String(ibkrReconciliation.counts?.executions ?? 0)} />
+            <ReadinessRow label="Positions" value={String(ibkrReconciliation.counts?.positions ?? 0)} />
+            <ReadinessRow label="Blocker" value={ibkrReconciliation.blockedReason || 'none'} />
+          </ReadinessCard>
+
+          <ReadinessCard title="Kill switch" status={ibkrKillSwitch.pauseNewEntries ? 'Pause new entries' : 'Öppen för shadow'} tone={ibkrKillSwitch.pauseNewEntries ? 'warning' : 'success'}>
+            <ReadinessRow label="Pause new entries" value={yesNo(ibkrKillSwitch.pauseNewEntries === true)} />
+            <ReadinessRow label="Reason" value={ibkrKillSwitch.reason || 'none'} />
+            <ReadinessRow label="Updated" value={ibkrKillSwitch.updatedAt ? new Date(ibkrKillSwitch.updatedAt).toLocaleString('sv-SE') : '–'} />
+            <ReadinessRow label="Emergency flatten" value="shadow-disabled" />
+          </ReadinessCard>
+
+          <ReadinessCard title="Feature flags" status={ibkrFlags.orderSubmissionMode || 'disabled'} tone={brokerStatusTone(ibkrExecutionStatus)}>
+            <ReadinessRow label="IBKR_PAPER_EXECUTION_ENABLED" value={yesNo(ibkrFlags.executionEnabled === true)} />
+            <ReadinessRow label="IBKR_PAPER_EXECUTION_SHADOW_MODE" value={yesNo(ibkrFlags.shadowMode === true)} />
+            <ReadinessRow label="IBKR_PAPER_ORDER_SUBMISSION_ENABLED" value={yesNo(ibkrFlags.submissionEnabled === true)} />
+            <ReadinessRow label="Live execution" value="false" />
+          </ReadinessCard>
+        </div>
+      </section>
+      )}
 
       <div style={{ ...sectionStyle(), marginTop: 14, display: 'flex', flexWrap: 'wrap', gap: 8, alignItems: 'center' }}>
         <Pill tone={ibDataLayer.connected ? 'success' : (ibDataLayer.enabled ? 'danger' : 'warning')}>

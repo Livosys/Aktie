@@ -31,6 +31,7 @@ const IBKR_TABS = [
   { id: 'status', label: 'Status' },
   { id: 'konto', label: 'Konto' },
   { id: 'gateway', label: 'Gateway' },
+  { id: 'futures-exec', label: 'Futures Exec' },
   { id: 'paper-only', label: 'Paper Only' },
   { id: 'teknik', label: 'Teknik' },
 ];
@@ -949,6 +950,7 @@ export default function InteractiveBrokersPage() {
         ['blueprint', fetchJsonWithTimeout('/api/interactive-brokers/trade-blueprint', { signal: controller.signal })],
         ['scaffold', fetchJsonWithTimeout('/api/interactive-brokers/dry-run-scaffold', { signal: controller.signal })],
         ['executionStatus', fetchJsonWithTimeout('/api/interactive-brokers/execution-status', { signal: controller.signal })],
+        ['futuresExecutionStatus', fetchJsonWithTimeout('/api/interactive-brokers/paper-execution/futures-status', { signal: controller.signal })],
         ['gatewayHealth', fetchJsonWithTimeout('/api/interactive-brokers/gateway-health', { signal: controller.signal })],
         ['executionPreview', fetchJsonWithTimeout('/api/interactive-brokers/paper-execution-preview', {
           method: 'POST',
@@ -972,6 +974,7 @@ export default function InteractiveBrokersPage() {
           blueprint: null,
           scaffold: null,
           executionStatus: null,
+          futuresExecutionStatus: null,
           executionPreview: null,
           gatewayHealth: null,
           protectivePreflight: null,
@@ -986,6 +989,7 @@ export default function InteractiveBrokersPage() {
         blueprint: null,
         scaffold: null,
         executionStatus: null,
+        futuresExecutionStatus: null,
         executionPreview: null,
         gatewayHealth: null,
         protectivePreflight: null,
@@ -1046,6 +1050,7 @@ export default function InteractiveBrokersPage() {
     blueprint,
     scaffold,
     executionStatus,
+    futuresExecutionStatus,
     executionPreview,
     gatewayHealth,
     protectivePreflight,
@@ -1053,7 +1058,7 @@ export default function InteractiveBrokersPage() {
     finalGateStatus,
   } = state;
 
-  const hasAnyError = Boolean(errors.status || errors.readiness || errors.truth || errors.preview || errors.orderPreview || errors.blueprint || errors.scaffold || errors.executionStatus || errors.executionPreview || errors.gatewayHealth || errors.protectivePreflight);
+  const hasAnyError = Boolean(errors.status || errors.readiness || errors.truth || errors.preview || errors.orderPreview || errors.blueprint || errors.scaffold || errors.executionStatus || errors.futuresExecutionStatus || errors.executionPreview || errors.gatewayHealth || errors.protectivePreflight);
   const statusView = status || SAFE_FALLBACK_STATUS;
   const gatewayHealthView = gatewayHealth || SAFE_FALLBACK_GATEWAY_HEALTH;
   const conn = readiness || SAFE_FALLBACK_STATUS.connection;
@@ -1094,6 +1099,7 @@ export default function InteractiveBrokersPage() {
   const scaffoldPrimary = scaffoldView.primaryCandidate || null;
   const scaffoldBlueprints = Array.isArray(scaffoldView.candidateBlueprints) ? scaffoldView.candidateBlueprints : [];
   const executionStatusView = executionStatus || SAFE_FALLBACK_PAPER_EXECUTION;
+  const futuresExecutionStatusView = futuresExecutionStatus || null;
   const executionPreviewView = executionPreview || SAFE_FALLBACK_EXECUTION_PREVIEW;
   const executionStatusBlockers = filterCurrentExecutionBlockers(executionStatusView.blockers, executionStatusView);
   const executionStatusBlockedReason = currentBlockedReason(executionStatusView.blockedReason || executionStatusView.disableReason, executionStatusView);
@@ -1673,6 +1679,69 @@ export default function InteractiveBrokersPage() {
               Trading OS kan visa och starta IB Gateway, men ska inte kringgå IBKR:s säkerhetsinloggning.
               {' '}Om login krävs öppnar du Gateway-login och godkänner med IBKR Mobile/2FA.
             </p>
+          </div>
+
+          <div hidden={activeTab !== 'futures-exec'} style={{ ...CARD_STYLE, borderColor: 'rgba(59,130,246,0.35)' }}>
+            <h2 style={{ marginTop: 0 }}>IBKR Futures Paper Execution</h2>
+            {errors.futuresExecutionStatus && (
+              <div style={{ color: 'var(--warning)', marginBottom: 12 }}>
+                Futures execution-status kunde inte laddas. Detalj: {errors.futuresExecutionStatus}
+              </div>
+            )}
+            <Row label="Status">
+              <code>{futuresExecutionStatusView?.status || 'disabled'}</code>
+            </Row>
+            <Row label="Order submission mode">
+              <code>{futuresExecutionStatusView?.orderSubmissionMode || futuresExecutionStatusView?.flags?.orderSubmissionMode || 'disabled'}</code>
+            </Row>
+            <Row label="Paper broker enabled">
+              <Badge ok={futuresExecutionStatusView?.paperBrokerExecutionEnabled === true} labelTrue="true" labelFalse="false" />
+            </Row>
+            <Row label="Paper account verified">
+              <Badge ok={futuresExecutionStatusView?.paperAccountVerified === true} labelTrue="true" labelFalse="false" />
+            </Row>
+            <Row label="Live account blocked">
+              <Badge ok={futuresExecutionStatusView?.liveAccountBlocked !== false} labelTrue="true" labelFalse="false" />
+            </Row>
+            <Row label="Live broker execution">
+              <Badge ok={futuresExecutionStatusView?.liveBrokerExecutionEnabled === false} labelTrue="false" labelFalse="true" />
+            </Row>
+            <Row label="Gateway">
+              <code>{futuresExecutionStatusView?.executionClient?.host || '127.0.0.1'}:{futuresExecutionStatusView?.executionClient?.port || 4002}</code>
+            </Row>
+            <Row label="Data clientId">
+              <code>{futuresExecutionStatusView?.clientIds?.dataClientId ?? 955}</code>
+            </Row>
+            <Row label="Execution clientId">
+              <code>{futuresExecutionStatusView?.clientIds?.executionClientId ?? futuresExecutionStatusView?.executionClient?.clientId ?? 956}</code>
+            </Row>
+            <Row label="Probe clientId">
+              <code>{futuresExecutionStatusView?.clientIds?.probeClientId ?? 957}</code>
+            </Row>
+            <Row label="Execution client connected">
+              <Badge ok={futuresExecutionStatusView?.executionClient?.connected === true} labelTrue="true" labelFalse="false" />
+            </Row>
+            <Row label="nextValidId">
+              <code>{futuresExecutionStatusView?.executionClient?.nextValidIdReady ? (futuresExecutionStatusView?.executionClient?.nextOrderId || 'ready') : 'missing'}</code>
+            </Row>
+            <Row label="Open orders">
+              <code>{futuresExecutionStatusView?.reconciliation?.counts?.openOrders ?? 0}</code>
+            </Row>
+            <Row label="Executions">
+              <code>{futuresExecutionStatusView?.reconciliation?.counts?.executions ?? 0}</code>
+            </Row>
+            <Row label="Positions">
+              <code>{futuresExecutionStatusView?.reconciliation?.counts?.positions ?? 0}</code>
+            </Row>
+            <Row label="Reconciliation">
+              <code>{futuresExecutionStatusView?.reconciliation?.status || 'unknown'}{futuresExecutionStatusView?.reconciliation?.blockedReason ? ` · ${futuresExecutionStatusView.reconciliation.blockedReason}` : ''}</code>
+            </Row>
+            <Row label="Kill switch">
+              <code>{futuresExecutionStatusView?.killSwitch?.pauseNewEntries ? `paused · ${futuresExecutionStatusView.killSwitch.reason || 'no_reason'}` : 'pause_new_entries=false'}</code>
+            </Row>
+            <Row label="No-live-order capability">
+              <code>{futuresExecutionStatusView?.executionClient?.noLiveOrderCapability ? 'paper-only adapter' : 'not connected'}</code>
+            </Row>
           </div>
 
           <div hidden={activeTab !== 'status'} style={{ ...CARD_STYLE, borderColor: 'rgba(248,113,113,0.35)' }}>

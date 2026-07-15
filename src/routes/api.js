@@ -153,6 +153,8 @@ const interactiveBrokersPaperPreflightService = require('../services/interactive
 const interactiveBrokersPaperReadinessLoaderService = require('../services/interactiveBrokersPaperReadinessLoaderService');
 const interactiveBrokersPaperExecutionPreviewService = require('../services/interactiveBrokersPaperExecutionPreviewService');
 const interactiveBrokersGatewayHealthService = require('../services/interactiveBrokersGatewayHealthService');
+const ibPaperExecutionConfigService = require('../services/ibPaperExecutionConfigService');
+const ibPaperExecutionOrchestratorService = require('../services/ibPaperExecutionOrchestratorService');
 const tradingViewPreviewLogService = require('../services/tradingViewPreviewLogService');
 const TEST_LIVE_SEND_COOLDOWN_MS = 5 * 60 * 1000;
 let testLiveSendLastAt = 0;
@@ -4018,6 +4020,65 @@ router.get('/futures-paper/market-data/:root', (req, res) => {
   }
 });
 
+router.get('/futures-paper/ibkr-paper-execution/status', async (req, res) => {
+  try {
+    const connect = req.query.connect !== 'false';
+    res.json(await ibPaperExecutionOrchestratorService.defaultIbPaperExecutionOrchestratorService.buildExecutionStatus({ connect }));
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message, ...ibPaperExecutionOrchestratorService.SAFETY });
+  }
+});
+
+router.post('/futures-paper/ibkr-paper-execution/shadow', async (req, res) => {
+  try {
+    const body = req.body && typeof req.body === 'object' ? req.body : {};
+    const requestedBrokerSubmit = body.actualSubmit === true || body.submit === true || body['place' + 'Order'] === true;
+    if (requestedBrokerSubmit) {
+      return res.status(403).json({
+        ok: false,
+        error: 'first_paper_order_requires_explicit_user_approval_not_in_shadow_route',
+        wouldSubmit: false,
+        actualSubmit: false,
+        ...ibPaperExecutionOrchestratorService.SAFETY,
+      });
+    }
+    const result = await ibPaperExecutionOrchestratorService.defaultIbPaperExecutionOrchestratorService.buildShadowExecution({
+      candidate: body.candidate || null,
+      now: body.now || undefined,
+      actualSubmit: false,
+    });
+    return res.json(result);
+  } catch (err) {
+    return res.status(500).json({ ok: false, error: err.message, ...ibPaperExecutionOrchestratorService.SAFETY });
+  }
+});
+
+router.post('/futures-paper/ibkr-paper-execution/pause-new-entries', (req, res) => {
+  try {
+    const body = req.body && typeof req.body === 'object' ? req.body : {};
+    if (body.live_trading_enabled === true || body.live_broker_enabled === true || body.live_order_submission_enabled === true || body.live_account_orders_allowed === true) {
+      return res.status(400).json({ ok: false, error: 'live_execution_is_not_allowed', ...ibPaperExecutionConfigService.buildSafetyView() });
+    }
+    const killSwitch = ibPaperExecutionConfigService.setPauseNewEntries(true, body.reason || 'manual_pause_new_entries');
+    return res.json({ ok: true, killSwitch, ...ibPaperExecutionConfigService.buildSafetyView() });
+  } catch (err) {
+    return res.status(500).json({ ok: false, error: err.message, ...ibPaperExecutionConfigService.buildSafetyView() });
+  }
+});
+
+router.post('/futures-paper/ibkr-paper-execution/resume-new-entries', (req, res) => {
+  try {
+    const body = req.body && typeof req.body === 'object' ? req.body : {};
+    if (body.live_trading_enabled === true || body.live_broker_enabled === true || body.live_order_submission_enabled === true || body.live_account_orders_allowed === true) {
+      return res.status(400).json({ ok: false, error: 'live_execution_is_not_allowed', ...ibPaperExecutionConfigService.buildSafetyView() });
+    }
+    const killSwitch = ibPaperExecutionConfigService.setPauseNewEntries(false, body.reason || 'manual_resume_new_entries');
+    return res.json({ ok: true, killSwitch, ...ibPaperExecutionConfigService.buildSafetyView() });
+  } catch (err) {
+    return res.status(500).json({ ok: false, error: err.message, ...ibPaperExecutionConfigService.buildSafetyView() });
+  }
+});
+
 // Read-only IB PAPER-kontosummary (NetLiquidation m.fl.). Cache-first med
 // service-level timeout så att UI:t aldrig hänger på ett långsamt IB-anrop.
 router.get('/futures-paper/ib-account', async (req, res) => {
@@ -5406,6 +5467,14 @@ router.get('/interactive-brokers/paper-execution/status', async (req, res) => {
     }));
   } catch (err) {
     res.status(500).json({ ok: false, error: err.message, safety: paperTradingTruthService.SAFETY });
+  }
+});
+router.get('/interactive-brokers/paper-execution/futures-status', async (req, res) => {
+  try {
+    const connect = req.query.connect !== 'false';
+    res.json(await ibPaperExecutionOrchestratorService.defaultIbPaperExecutionOrchestratorService.buildExecutionStatus({ connect }));
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message, ...ibPaperExecutionOrchestratorService.SAFETY });
   }
 });
 router.get('/interactive-brokers/execution-status', async (req, res) => {
