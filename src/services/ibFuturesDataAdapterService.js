@@ -118,6 +118,7 @@ function createIbFuturesDataAdapterService(options = {}) {
   const pending = new Map(); // reqId -> {kind, rows, done, timer, extra}
   const quoteState = new Map(); // root -> quote cache
   const quoteReqByReqId = new Map(); // reqId -> root
+  const quoteSubscribeInFlight = new Map(); // root -> pågående subscribe-promise
   const contractCache = new Map(); // root -> {contract, resolvedAt, all}
 
   // Seriell pacing-kö för historical/contract/account-requests.
@@ -168,6 +169,7 @@ function createIbFuturesDataAdapterService(options = {}) {
 
   function attachHandlers(client) {
     client.on(EventName.error, (err, code, reqId) => {
+      if (client !== ib) return; // sent event från gammal, ersatt klient
       const message = err instanceof Error ? err.message : String(err);
       const numCode = Number(code);
       const informational = INFORMATIONAL_ERROR_CODES.has(numCode);
@@ -181,10 +183,20 @@ function createIbFuturesDataAdapterService(options = {}) {
       if (!connected && !connecting && !stopRequested) scheduleReconnect();
     });
     client.on(EventName.disconnected, () => {
+      if (client !== ib) return; // sent event från gammal, ersatt klient
       const wasConnected = connected;
       connected = false;
       connecting = false;
       clearAllPending('ib_disconnected');
+      // Reconnect skapar en NY IBApi-klient — streaming-subscriptions dör med
+      // socketen. Utan nollställning här gör subscribeQuote() early-return
+      // (alreadySubscribed) och reqMktData skickas aldrig på nya klienten →
+      // permanent frusen tick-ström.
+      for (const [, state] of quoteState) {
+        if (state.reqId != null) quoteReqByReqId.delete(state.reqId);
+        state.reqId = null;
+        state.subscribed = false;
+      }
       if (wasConnected && !stopRequested) {
         recordError(null, 'ib_disconnected');
         scheduleReconnect();
@@ -368,8 +380,20 @@ function createIbFuturesDataAdapterService(options = {}) {
     });
   }
 
-  async function subscribeQuote(root) {
+  function subscribeQuote(root) {
     const key = String(root || '').trim().toUpperCase();
+    // In-flight-dedupe: samtidiga anrop för samma root (t.ex. resubscribe efter
+    // reconnect parallellt med refresh-loopen) får dela en subscription i
+    // stället för att skicka dubbla reqMktData.
+    const inFlight = quoteSubscribeInFlight.get(key);
+    if (inFlight) return inFlight;
+    const promise = doSubscribeQuote(key)
+      .finally(() => { quoteSubscribeInFlight.delete(key); });
+    quoteSubscribeInFlight.set(key, promise);
+    return promise;
+  }
+
+  async function doSubscribeQuote(key) {
     const resolved = await resolveContract(key);
     if (!resolved.ok) return resolved;
     if (!(await ensureConnected())) return { ok: false, error: 'ib_not_connected' };

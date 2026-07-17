@@ -89,6 +89,107 @@ assert.equal(adapterModule.classifyAccountId(''), 'unknown');
   const st = failingAdapter.getStatus();
   assert.ok(st.reconnectCount >= 1, 'reconnectCount ska räknas');
 
+  // ── 7. Reconnect-regression: resubscribe måste skicka reqMktData igen ─────
+  // (FAS 18-fix: disconnected nollställer subscribed/reqId; utan det gör
+  // subscribeQuote early-return och tick-strömmen fryser permanent.)
+  const { EventEmitter } = require('events');
+  const { EventName } = require('@stoqey/ib');
+  const clients = [];
+  function makeFakeIb() {
+    const c = new EventEmitter();
+    c.mktDataCalls = [];
+    c.cancelCalls = [];
+    c.contractDetailsCalls = 0;
+    c.connect = () => {
+      c.emit(EventName.server, 193);
+      c.emit(EventName.nextValidId, 1);
+    };
+    c.disconnect = () => {};
+    c.reqMarketDataType = () => {};
+    c.reqMktData = (reqId) => { c.mktDataCalls.push(reqId); };
+    c.cancelMktData = (reqId) => { c.cancelCalls.push(reqId); };
+    c.reqContractDetails = (reqId) => {
+      c.contractDetailsCalls += 1;
+      setImmediate(() => {
+        c.emit(EventName.contractDetails, reqId, {
+          contract: {
+            conId: 42, localSymbol: 'MNQZ9', tradingClass: 'MNQ',
+            lastTradeDateOrContractMonth: '20991218', exchange: 'CME',
+            currency: 'USD', multiplier: 2,
+          },
+        });
+        c.emit(EventName.contractDetailsEnd, reqId);
+      });
+    };
+    clients.push(c);
+    return c;
+  }
+  const waitFor = async (fn, label, timeoutMs = 2000) => {
+    const t0 = Date.now();
+    while (!fn()) {
+      if (Date.now() - t0 > timeoutMs) throw new Error(`timeout: ${label}`);
+      await new Promise((r) => setTimeout(r, 5));
+    }
+  };
+  const rcAdapter = adapterModule.createIbFuturesDataAdapterService({
+    reconnectBaseMs: 30,
+    historicalPacingMs: 1,
+    roots: ['MNQ'],
+    ibFactory: makeFakeIb,
+  });
+  assert.equal(await rcAdapter.start(), true, 'start ska ansluta mot fake-IB');
+  await waitFor(() => clients[0].mktDataCalls.length === 1, 'första reqMktData');
+  const firstReqId = clients[0].mktDataCalls[0];
+  clients[0].emit(EventName.tickPrice, firstReqId, 4, 100);
+  assert.equal(rcAdapter.getQuote('MNQ').last, 100, 'tick före disconnect');
+
+  // Disconnect → reconnect skapar ny klient som MÅSTE få ett nytt reqMktData.
+  clients[0].emit(EventName.disconnected);
+  await waitFor(() => clients.length >= 2 && clients[1].mktDataCalls.length === 1,
+    'resubscribe på ny klient efter reconnect');
+  const secondReqId = clients[1].mktDataCalls[0];
+  assert.notEqual(secondReqId, firstReqId, 'ny subscription ska ha nytt reqId');
+  assert.equal(clients[1].mktDataCalls.length, 1, 'exakt EN subscription per root på nya klienten');
+  assert.equal(clients[1].cancelCalls.length, 0, 'ingen cancelMktData för död reqId på nya klienten');
+  assert.equal(clients[1].contractDetailsCalls, 0, 'kontrakt ska komma ur cachen vid resubscribe');
+
+  // Tickflödet återupptas på nya reqId:t — och gamla reqId:t är dött.
+  clients[1].emit(EventName.tickPrice, secondReqId, 4, 200);
+  assert.equal(rcAdapter.getQuote('MNQ').last, 200, 'tick efter reconnect ska flöda');
+  clients[1].emit(EventName.tickPrice, firstReqId, 4, 999);
+  assert.equal(rcAdapter.getQuote('MNQ').last, 200, 'gammalt reqId får inte uppdatera quotes');
+
+  // Sena event från den GAMLA klienten får inte korrumpera nya sessionen.
+  clients[0].emit(EventName.disconnected);
+  clients[0].emit(EventName.error, new Error('stale socket'), 502, -1);
+  assert.equal(rcAdapter.isConnected(), true, 'stale disconnected från gammal klient ska ignoreras');
+  assert.equal(clients.length, 2, 'stale event får inte trigga extra reconnect');
+
+  // Inga listener-läckor: handlers sitter på klient-instansen, en per event.
+  for (const ev of [EventName.disconnected, EventName.tickPrice, EventName.error]) {
+    assert.ok(clients[1].listenerCount(ev) <= 1, `max en listener för ${String(ev)}`);
+  }
+
+  // In-flight-dedupe: samtidiga subscribeQuote för samma root → en reqMktData.
+  const dedupeClients = [];
+  const dedupeAdapter = adapterModule.createIbFuturesDataAdapterService({
+    reconnectBaseMs: 30,
+    historicalPacingMs: 1,
+    roots: [],
+    ibFactory: () => { const c = makeFakeIb(); dedupeClients.push(c); return c; },
+  });
+  assert.equal(await dedupeAdapter.start(), true);
+  const results = await Promise.all([
+    dedupeAdapter.subscribeQuote('MNQ'),
+    dedupeAdapter.subscribeQuote('MNQ'),
+    dedupeAdapter.subscribeQuote('MNQ'),
+  ]);
+  assert.ok(results.every((r) => r.ok), 'alla samtidiga subscribe ska lyckas');
+  assert.equal(dedupeClients[0].mktDataCalls.length, 1, 'samtidiga subscribe → exakt en reqMktData');
+  assert.equal(dedupeClients[0].contractDetailsCalls, 1, 'samtidiga subscribe → exakt en contractDetails');
+  rcAdapter.stop();
+  dedupeAdapter.stop();
+
   console.log('ibFuturesDataAdapterService.test.js OK');
 })().catch((err) => {
   console.error('TEST FAIL:', err.message);
