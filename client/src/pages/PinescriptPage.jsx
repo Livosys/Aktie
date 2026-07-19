@@ -121,9 +121,9 @@ function Badge({ children, tone = 'neutral' }) {
 }
 
 function toneForStatus(status) {
-  if (['ready_for_test', 'static_valid', 'completed', 'matched', 'candidate'].includes(status)) return 'success';
-  if (['blocked', 'invalid', 'static_invalid', 'major_differences', 'provider_error', 'rejected'].includes(status)) return 'danger';
-  if (['draft', 'generated', 'partial', 'needs_review', 'minor_differences'].includes(status)) return 'warning';
+  if (['ready_for_test', 'static_valid', 'completed', 'matched', 'candidate', 'certified', 'ready', 'exact', 'equivalent'].includes(status)) return 'success';
+  if (['blocked', 'invalid', 'static_invalid', 'major_differences', 'provider_error', 'rejected', 'missing', 'unsupported'].includes(status)) return 'danger';
+  if (['draft', 'generated', 'partial', 'needs_review', 'minor_differences', 'insufficient', 'unknown'].includes(status)) return 'warning';
   return 'neutral';
 }
 
@@ -438,6 +438,79 @@ function evaluationBasis(row) {
   return `${row.testRunIds.length} interna testkörningar ingår i underlaget.`;
 }
 
+function latestCompletedRun(testRuns, pineVersionId) {
+  return testRuns
+    .filter((run) => run.pineVersionId === pineVersionId && run.status === 'completed')
+    .sort((a, b) => String(b.completedAt || b.createdAt).localeCompare(String(a.completedAt || a.createdAt)))[0] || null;
+}
+
+function VersionComparisonSection({ versions, testRuns, baselineVersionId, compareVersionId, setCompareVersionId }) {
+  const baselineRun = latestCompletedRun(testRuns, baselineVersionId);
+  const compareId = compareVersionId || versions.find((v) => v.pineVersionId !== baselineVersionId)?.pineVersionId || '';
+  const compareRun = latestCompletedRun(testRuns, compareId);
+  const rows = [
+    ['Trades', (run) => formatNumber(run?.tradeCount)],
+    ['Win rate', (run) => formatPercent(run?.metrics?.winRate)],
+    ['Profit factor', (run) => formatNumber(run?.metrics?.profitFactor)],
+    ['Net PnL', (run) => formatNumber(run?.metrics?.netPnl)],
+    ['Max drawdown', (run) => formatNumber(run?.metrics?.maxDrawdown)],
+    ['Long/Short', (run) => (run ? `${formatNumber(run.metrics?.longTrades)}/${formatNumber(run.metrics?.shortTrades)}` : '–')],
+    ['Datakvalitet', (run) => (run?.metrics?.dataQualityWarnings || []).join(', ') || (run ? 'Inga varningar' : '–')],
+  ];
+  return (
+    <Section
+      title="Jämförelse: baseline vs nästa version"
+      actions={(
+        <select value={compareId} onChange={(event) => setCompareVersionId(event.target.value)} style={inputStyle}>
+          {versions.map((version) => <option key={version.pineVersionId} value={version.pineVersionId}>{version.pineVersionId}</option>)}
+        </select>
+      )}
+    >
+      {baselineRun || compareRun ? (
+        <div style={{ overflowX: 'auto', border: '1px solid var(--border)', borderRadius: 8 }}>
+          <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 560 }}>
+            <thead>
+              <tr>
+                <th style={compareThStyle}>Mätvärde</th>
+                <th style={compareThStyle}>{baselineVersionId || 'baseline'}</th>
+                <th style={compareThStyle}>{compareId || 'nästa version'}</th>
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map(([label, render]) => (
+                <tr key={label}>
+                  <td style={compareTdStyle}>{label}</td>
+                  <td style={compareTdStyle}>{render(baselineRun)}</td>
+                  <td style={compareTdStyle}>{render(compareRun)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      ) : (
+        <EmptyState>
+          Ingen slutförd testkörning finns ännu för de valda versionerna. Jämförelsen fylls i när minst ett TestRun har slutförts (kräver certified paritet och ready data).
+        </EmptyState>
+      )}
+    </Section>
+  );
+}
+
+const compareThStyle = {
+  textAlign: 'left',
+  padding: '10px 12px',
+  borderBottom: '1px solid var(--border)',
+  color: 'var(--muted)',
+  fontSize: 12,
+  whiteSpace: 'nowrap',
+};
+
+const compareTdStyle = {
+  padding: '10px 12px',
+  borderBottom: '1px solid var(--border)',
+  verticalAlign: 'top',
+};
+
 function PineResearchPage() {
   const [tab, setTab] = useState('overview');
   const [data, setData] = useState(EMPTY);
@@ -453,6 +526,9 @@ function PineResearchPage() {
   const [selectedVersionId, setSelectedVersionId] = useState('');
   const [selectedValidationId, setSelectedValidationId] = useState('');
   const [csvForm, setCsvForm] = useState({ symbol: 'MNQ', timeframe: '5m', tradesCsv: '', performanceCsv: '' });
+  const [previewForm, setPreviewForm] = useState({ symbol: 'MNQ', timeframe: '5m' });
+  const [singlePreview, setSinglePreview] = useState(null);
+  const [compareVersionId, setCompareVersionId] = useState('');
 
   const load = async () => {
     setLoading(true);
@@ -816,34 +892,138 @@ function PineResearchPage() {
         ) : null}
 
         {tab === 'tests' ? (
-          <Section
-            title="Tester"
-            actions={(
-              <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-                <button type="button" disabled={!selectedVersion} onClick={() => mutate('Skapa testpreview', '/api/pine-research/test-runs/preview', { pineVersionId: selectedVersion?.pineVersionId })} style={buttonStyle()}>Preview testplan</button>
-                <button type="button" disabled={!selectedVersion} onClick={() => mutate('Kör isolerad testplan', '/api/pine-research/test-runs/run', { pineVersionId: selectedVersion?.pineVersionId })} style={buttonStyle('primary')}>Kör isolerat</button>
-              </div>
-            )}
-          >
-            <DataTable
-              rows={data.testRuns}
-              empty="Inga interna testkörningar finns ännu."
-              columns={[
-                { key: 'pineVersionId', label: 'Version' },
-                { key: 'engine', label: 'Motor' },
-                { key: 'symbol', label: 'Symbol' },
-                { key: 'timeframe', label: 'Timeframe' },
-                { key: 'direction', label: 'Riktning' },
-                { key: 'status', label: 'Status', render: (row) => <Badge tone={toneForStatus(row.status)}>{row.status}</Badge> },
-                { key: 'parityStatus', label: 'Paritet', render: (row) => <Badge tone={toneForStatus(row.parityStatus)}>{row.parityStatus}</Badge> },
-                { key: 'tradeCount', label: 'Trades', render: (row) => formatNumber(row.tradeCount) },
-                { key: 'winRate', label: 'Win rate', render: (row) => formatPercent(row.metrics?.winRate) },
-                { key: 'profitFactor', label: 'PF', render: (row) => formatNumber(row.metrics?.profitFactor) },
-                { key: 'drawdown', label: 'DD', render: (row) => formatNumber(row.metrics?.maxDrawdown) },
-                { key: 'blockedReason', label: 'Blockerad av' },
-              ]}
+          <>
+            <Section
+              title="Paritet & data-readiness (preview)"
+              actions={(
+                <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                  <select value={selectedVersion?.pineVersionId || ''} onChange={(event) => setSelectedVersionId(event.target.value)} style={inputStyle}>
+                    {data.versions.map((version) => <option key={version.pineVersionId} value={version.pineVersionId}>{version.pineVersionId}</option>)}
+                  </select>
+                  <select value={previewForm.symbol} onChange={(event) => setPreviewForm((prev) => ({ ...prev, symbol: event.target.value }))} style={inputStyle}>
+                    <option value="MNQ">MNQ</option>
+                    <option value="MES">MES</option>
+                  </select>
+                  <select value={previewForm.timeframe} onChange={(event) => setPreviewForm((prev) => ({ ...prev, timeframe: event.target.value }))} style={inputStyle}>
+                    <option value="1m">1m</option>
+                    <option value="5m">5m</option>
+                    <option value="15m">15m</option>
+                  </select>
+                  <button
+                    type="button"
+                    disabled={!selectedVersion}
+                    onClick={async () => {
+                      const result = await mutate('Preview paritet + data', '/api/pine-research/test-runs/preview', {
+                        pineVersionId: selectedVersion?.pineVersionId,
+                        singlePreview: true,
+                        symbol: previewForm.symbol,
+                        timeframe: previewForm.timeframe,
+                      });
+                      if (result) setSinglePreview(result);
+                    }}
+                    style={buttonStyle('primary')}
+                  >
+                    Kör preview
+                  </button>
+                  <button
+                    type="button"
+                    disabled={!selectedVersion || !singlePreview?.wouldRun || singlePreview?.pineVersionId !== selectedVersion?.pineVersionId}
+                    title={singlePreview?.wouldRun ? 'Kör exakt ett isolerat TestRun' : 'Kräver parity=certified och data=ready från preview'}
+                    onClick={async () => {
+                      const result = await mutate('Kör exakt ett TestRun', '/api/pine-research/test-runs/run', {
+                        pineVersionId: selectedVersion?.pineVersionId,
+                        single: true,
+                        symbol: previewForm.symbol,
+                        timeframe: previewForm.timeframe,
+                      });
+                      if (result?.preview) setSinglePreview(result.preview);
+                    }}
+                    style={buttonStyle('primary')}
+                  >
+                    Kör exakt ett TestRun
+                  </button>
+                </div>
+              )}
+            >
+              {singlePreview ? (
+                <div style={{ display: 'grid', gap: 12 }}>
+                  <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                    <Badge tone={toneForStatus(singlePreview.parityStatus)}>paritet: {singlePreview.parityStatus}</Badge>
+                    <Badge tone={toneForStatus(singlePreview.dataStatus)}>data: {singlePreview.dataStatus}</Badge>
+                    <Badge tone={singlePreview.wouldRun ? 'success' : 'danger'}>wouldRun: {String(singlePreview.wouldRun)}</Badge>
+                    <Badge>{singlePreview.resolvedSymbol || singlePreview.symbol} · {singlePreview.timeframe}</Badge>
+                    <Badge>{formatNumber(singlePreview.bars)} bars · {formatNumber(singlePreview.completeSessionDays)} kompletta dagar</Badge>
+                    <Badge>{singlePreview.dataSource || 'okänd källa'}</Badge>
+                  </div>
+                  {singlePreview.blockedReason ? (
+                    <EmptyState>
+                      Blockerad: <strong>{singlePreview.blockedReason}</strong>
+                      {singlePreview.unsupportedRules?.length ? ` · Regler: ${singlePreview.unsupportedRules.join(', ')}` : ''}
+                    </EmptyState>
+                  ) : null}
+                  {(singlePreview.dataQualityWarnings || []).length ? (
+                    <div>
+                      <h3 style={smallHeadingStyle}>Datakvalitet</h3>
+                      <ul style={listStyle}>{singlePreview.dataQualityWarnings.map((item) => <li key={item}>{item}</li>)}</ul>
+                    </div>
+                  ) : null}
+                  <DataTable
+                    rows={(singlePreview.parityMatrix || []).map((row, idx) => ({ ...row, id: `${row.rule}-${idx}` }))}
+                    empty="Ingen paritetsmatris."
+                    columns={[
+                      { key: 'rule', label: 'Regel' },
+                      { key: 'matchStatus', label: 'Status', render: (row) => <Badge tone={toneForStatus(row.matchStatus)}>{row.matchStatus}</Badge> },
+                      { key: 'pineBehavior', label: 'Pine' },
+                      { key: 'internalMotor', label: 'Intern motor' },
+                      { key: 'difference', label: 'Skillnad' },
+                    ]}
+                  />
+                </div>
+              ) : (
+                <EmptyState>
+                  Kör preview för att se paritetsstatus (exact/equivalent/partial/unsupported/unknown per regel), data-readiness och blockeringsorsak innan ett TestRun kan startas.
+                </EmptyState>
+              )}
+            </Section>
+            <Section
+              title="Tester"
+              actions={(
+                <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                  <button type="button" disabled={!selectedVersion} onClick={() => mutate('Skapa testpreview', '/api/pine-research/test-runs/preview', { pineVersionId: selectedVersion?.pineVersionId })} style={buttonStyle()}>Preview testplan</button>
+                  <button type="button" disabled={!selectedVersion} onClick={() => mutate('Kör isolerad testplan', '/api/pine-research/test-runs/run', { pineVersionId: selectedVersion?.pineVersionId })} style={buttonStyle()}>Kör isolerat</button>
+                </div>
+              )}
+            >
+              <DataTable
+                rows={data.testRuns}
+                empty="Inga interna testkörningar finns ännu."
+                columns={[
+                  { key: 'pineVersionId', label: 'Version' },
+                  { key: 'engine', label: 'Motor' },
+                  { key: 'symbol', label: 'Symbol' },
+                  { key: 'timeframe', label: 'Timeframe' },
+                  { key: 'direction', label: 'Riktning' },
+                  { key: 'status', label: 'Status', render: (row) => <Badge tone={toneForStatus(row.status)}>{row.status}</Badge> },
+                  { key: 'parityStatus', label: 'Paritet', render: (row) => <Badge tone={toneForStatus(row.parityStatus)}>{row.parityStatus}</Badge> },
+                  { key: 'tradeCount', label: 'Trades', render: (row) => formatNumber(row.tradeCount) },
+                  { key: 'winRate', label: 'Win rate', render: (row) => formatPercent(row.metrics?.winRate) },
+                  { key: 'profitFactor', label: 'PF', render: (row) => formatNumber(row.metrics?.profitFactor) },
+                  { key: 'netPnl', label: 'Net PnL', render: (row) => formatNumber(row.metrics?.netPnl) },
+                  { key: 'drawdown', label: 'DD', render: (row) => formatNumber(row.metrics?.maxDrawdown) },
+                  { key: 'longShort', label: 'Long/Short', render: (row) => (Number.isFinite(Number(row.metrics?.longTrades)) ? `${formatNumber(row.metrics?.longTrades)}/${formatNumber(row.metrics?.shortTrades)}` : '–') },
+                  { key: 'dataQuality', label: 'Datakvalitet', render: (row) => <InlineList items={row.metrics?.dataQualityWarnings} empty="–" /> },
+                  { key: 'blockedReason', label: 'Blockerad av' },
+                ]}
+              />
+            </Section>
+            <VersionComparisonSection
+              versions={data.versions}
+              testRuns={data.testRuns}
+              baselineVersionId={selectedVersion?.pineVersionId || ''}
+              compareVersionId={compareVersionId}
+              setCompareVersionId={setCompareVersionId}
             />
-          </Section>
+          </>
         ) : null}
 
         {tab === 'ai' ? (

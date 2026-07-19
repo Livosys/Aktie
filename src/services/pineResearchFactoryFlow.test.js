@@ -20,6 +20,7 @@ async function main() {
   const root = tempDir();
   try {
     const store = createPineResearchStore({ rootDir: root });
+    const emptyDataRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'pine-research-data-'));
     const pilot = loop.ensureOrbPilot(store);
     const version = pilot.versions.find((item) => item.pineVersionId === 'opening_range_breakout_v3_short_only') || pilot.versions[0];
 
@@ -27,22 +28,33 @@ async function main() {
     assert.equal(plan.safety.actions_allowed, false);
     assert.ok(plan.plans.length > 0);
     assert.ok(plan.plans.every((run) => ['blocked', 'planned'].includes(run.status)));
-    assert.ok(plan.plans.every((run) => run.parityStatus !== 'certified'));
+    assert.ok(plan.plans.some((run) => run.parityStatus === 'certified'), 'ORB parity adapter certifies internal_preview plans');
     assert.ok(plan.plans.every((run) => Array.isArray(run.parityMatrix)));
 
-    const runResult = testRunService.runTestPlan(version, { store, maxTests: 2 });
+    // Certified parity does not run anything by itself: with no historical
+    // data available every run must block on data readiness, never fabricate.
+    const runResult = testRunService.runTestPlan(version, { store, maxTests: 2, dataRootDir: emptyDataRoot });
     assert.equal(runResult.status, 'blocked');
+    assert.ok(runResult.testRuns.every((run) => run.status === 'blocked'));
     assert.ok(runResult.testRuns.every((run) => run.tradeCount === 0));
     assert.ok(runResult.testRuns.every((run) => !run.resultArtifact));
 
-    const preview = testRunService.previewSingleTestRun(version, { engine: 'batch', symbol: 'MNQ', timeframe: '5m' });
+    const preview = testRunService.previewSingleTestRun(version, { symbol: 'MNQ', timeframe: '5m', dataRootDir: emptyDataRoot });
     assert.equal(preview.candidateId, version.candidateId);
     assert.equal(preview.pineVersionId, version.pineVersionId);
     assert.equal(preview.symbol, 'MNQ');
     assert.equal(preview.timeframe, '5m');
-    assert.equal(preview.parityStatus, 'blocked');
+    assert.equal(preview.parityStatus, 'certified');
+    assert.equal(preview.dataStatus, 'missing');
     assert.equal(preview.wouldRun, false);
-    assert.ok(preview.unsupportedRules.includes('opening range start'));
+    assert.ok(String(preview.blockedReason || '').includes('bars_in_shared_candle_store'));
+    assert.equal(preview.unsupportedRules.length, 0);
+
+    const batchPreview = testRunService.previewSingleTestRun(version, { engine: 'batch', symbol: 'MNQ', timeframe: '5m', dataRootDir: emptyDataRoot });
+    assert.equal(batchPreview.parityStatus, 'blocked');
+    assert.equal(batchPreview.wouldRun, false);
+    assert.ok(batchPreview.unsupportedRules.includes('engine support'));
+    fs.rmSync(emptyDataRoot, { recursive: true, force: true });
 
     const validJson = JSON.stringify({
       verdict: 'needs_improvement',
