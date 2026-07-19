@@ -1,12 +1,12 @@
 'use strict';
 
 // Futures Paper scanner + candidate queue för MNQ/MES.
-// Scannern får läsa data, utvärdera strategier, skapa server-side candidates
-// och skriva diagnostik. Aktiv execution är alltid IBKR Paper shadow/execution;
+// Scannern läser canonical signaler, använder den canonical Candidate-adaptern
+// och skriver kö-/scanstatus. Aktiv execution är alltid IBKR Paper shadow/execution;
 // den interna futures-simulatorn är pensionerad och får inte muteras.
 //
 // Automation-regler (Futures Paper Automation Engine):
-// - strategikälla = paper allowlist + strategy performance
+// - strategikälla = Strategy Registry execution allowlist + paper readiness + strategy performance
 // - cooldown per strategyId (FUTURES_PAPER_STRATEGY_COOLDOWN_MINUTES om satt,
 //   annars central STRATEGY_COOLDOWN_MINUTES, default 30 — strategyTradeControlService)
 // - strategy family-exklusivitet: endast bästa kandidaten i en familj per scan,
@@ -20,9 +20,9 @@ const futuresPaperQuoteSourceService = require('./futuresPaperQuoteSourceService
 const strategyPerformanceReadService = require('./strategyPerformanceReadService');
 const paperAllowlistService = require('./paperAllowlistService');
 const futuresTradingOsSignalAdapterService = require('./futuresTradingOsSignalAdapterService');
+const futuresCanonicalSignalProviderService = require('./futuresCanonicalSignalProviderService');
 const strategyTradeControl = require('./strategyTradeControlService');
-const futuresPaperStrategyApproval = require('./futuresPaperStrategyApprovalService');
-const futuresMnqGlobexMomentumProducerService = require('./futuresMnqGlobexMomentumProducerService');
+const strategyRegistryService = require('./strategyRegistryService');
 const executionTargetReservationModule = require('./futuresPaperExecutionTargetReservationService');
 const { buildFuturesSessionMetadata } = require('./futuresMarketHoursService');
 const internalSimulationRetirement = require('./futuresInternalSimulationRetirementService');
@@ -42,7 +42,6 @@ const SAFETY = Object.freeze({
 const SCANNER_SYMBOLS = Object.freeze(['MNQ', 'MES']);
 const MAX_QUEUE_LENGTH = 10;
 const MAX_OPEN_POSITIONS = 2;
-const ENGINE_TEST_MODE_ENV = 'FUTURES_PAPER_ENGINE_TEST_MODE';
 
 const BLOCK_REASON_COOLDOWN = strategyTradeControl.BLOCK_REASON_STRATEGY_COOLDOWN;
 const FAMILY_BLOCK_REASONS = new Set([
@@ -60,15 +59,39 @@ function envInt(name, fallback) {
   return Number.isFinite(n) && n > 0 ? Math.floor(n) : fallback;
 }
 
-function envBool(name, fallback = false) {
-  const value = process.env[name];
-  if (value == null || value === '') return fallback;
-  return ['1', 'true', 'yes', 'on'].includes(String(value).trim().toLowerCase());
+function timestampMs(value) {
+  const ms = Date.parse(value || '');
+  return Number.isFinite(ms) ? ms : null;
 }
 
-function createCandidateId(now = new Date()) {
-  const ts = new Date(now).getTime();
-  return `futures_candidate_${Number.isFinite(ts) ? ts : Date.now()}_${Math.random().toString(16).slice(2, 8)}`;
+function candidateAgeMs(candidate = {}, now = new Date()) {
+  const ts = candidate.signalTimestamp || candidate.timestamp || candidate.createdAt || candidate.candleTimestamp || null;
+  const parsed = timestampMs(ts);
+  const current = new Date(now).getTime();
+  if (parsed == null || !Number.isFinite(current)) return null;
+  return Math.max(0, current - parsed);
+}
+
+function pruneStaleQueuedCandidates(queue = [], { now = new Date(), maxAgeMs = 120000 } = {}) {
+  const keep = [];
+  const pruned = [];
+  for (const candidate of Array.isArray(queue) ? queue : []) {
+    const ageMs = candidateAgeMs(candidate, now);
+    if (ageMs != null && ageMs > maxAgeMs) {
+      pruned.push({
+        candidateId: candidate.candidateId || null,
+        signalId: candidate.signalId || null,
+        strategyId: candidate.strategyId || null,
+        symbol: candidate.symbol || candidate.futuresSymbol || null,
+        signalTimestamp: candidate.signalTimestamp || candidate.timestamp || candidate.createdAt || null,
+        ageMs,
+        maxAgeMs,
+      });
+    } else {
+      keep.push(candidate);
+    }
+  }
+  return { queue: keep, pruned };
 }
 
 function createScanId(now = new Date()) {
@@ -96,9 +119,10 @@ function createFuturesPaperScannerService(options = {}) {
   const priceFeed = options.priceFeedService || futuresPaperQuoteSourceService.defaultFuturesPaperQuoteSourceService;
   const performanceService = options.performanceService || strategyPerformanceReadService;
   const allowlistService = options.allowlistService || paperAllowlistService;
+  const signalProvider = options.signalProviderService
+    || futuresCanonicalSignalProviderService.defaultFuturesCanonicalSignalProviderService;
   const signalAdapter = options.signalAdapterService || futuresTradingOsSignalAdapterService.defaultFuturesTradingOsSignalAdapterService;
-  const nativeFuturesDiagnosticsProducer = options.nativeFuturesDiagnosticsProducer
-    || futuresMnqGlobexMomentumProducerService.defaultFuturesMnqGlobexMomentumProducerService;
+  const strategyRegistry = options.strategyRegistryService || strategyRegistryService;
   const executionTargetReservations = options.executionTargetReservationService
     || executionTargetReservationModule.createFuturesPaperExecutionTargetReservationService({
       dir: path.join(storage.rootDir, 'execution-target-reservations'),
@@ -108,7 +132,6 @@ function createFuturesPaperScannerService(options = {}) {
   const stateFile = path.join(storage.rootDir, 'scanner-state.json');
   const candidatesFile = path.join(storage.rootDir, 'candidates.json');
   const scanHistoryFile = path.join(storage.rootDir, 'scan-history.json');
-  const nativeFuturesDiagnosticsFile = path.join(storage.rootDir, 'native-futures-diagnostics.json');
   let autoTimer = null;
 
   function emptyPositionsSummary() {
@@ -138,12 +161,10 @@ function createFuturesPaperScannerService(options = {}) {
         ?? envInt('FUTURES_PAPER_SCAN_HISTORY_LIMIT', 10),
       closedTradesLimit: configOverrides.closedTradesLimit
         ?? envInt('FUTURES_PAPER_CLOSED_TRADES_LIMIT', 100),
-      nativeFuturesDiagnosticsHistoryLimit: configOverrides.nativeFuturesDiagnosticsHistoryLimit
-        ?? envInt('FUTURES_PAPER_NATIVE_DIAGNOSTICS_HISTORY_LIMIT', 2880),
       autoIntervalSeconds: configOverrides.autoIntervalSeconds
         ?? envInt('FUTURES_PAPER_AUTO_INTERVAL_SECONDS', 60),
-      engineTestMode: configOverrides.engineTestMode
-        ?? envBool(ENGINE_TEST_MODE_ENV, false),
+      candidateMaxAgeMs: configOverrides.candidateMaxAgeMs
+        ?? envInt('FUTURES_PAPER_CANDIDATE_MAX_AGE_MS', envInt('IBKR_PAPER_PILOT_MAX_INTENT_AGE_MS', 120000)),
     };
   }
 
@@ -217,18 +238,6 @@ function createFuturesPaperScannerService(options = {}) {
     const scans = [scanRecord, ...readScanHistory()].slice(0, limit);
     storageService.writeJson(scanHistoryFile, { scans, updatedAt: nowIso() });
     return scans;
-  }
-
-  function readNativeFuturesDiagnosticsHistory() {
-    const raw = storageService.readJson(nativeFuturesDiagnosticsFile, null);
-    return Array.isArray(raw?.diagnostics) ? raw.diagnostics.filter(Boolean) : [];
-  }
-
-  function appendNativeFuturesDiagnosticsHistory(row) {
-    const limit = getEngineConfig().nativeFuturesDiagnosticsHistoryLimit;
-    const diagnostics = [row, ...readNativeFuturesDiagnosticsHistory()].slice(0, limit);
-    storageService.writeJson(nativeFuturesDiagnosticsFile, { diagnostics, updatedAt: nowIso() });
-    return diagnostics;
   }
 
   function bumpLastScan(patch) {
@@ -313,9 +322,9 @@ function createFuturesPaperScannerService(options = {}) {
   }
 
   function isRealStrategyTrade(row = {}) {
-    return row.tradeType === 'trading_os_signal'
-      && row.usedRealStrategyLogic === true
-      && row.excludedFromStats === false;
+    return row.usedRealStrategyLogic === true
+      && row.excludedFromStats === false
+      && !['engine_test', 'manual_simulation', 'curl_test', 'cleanup'].includes(String(row.tradeType || ''));
   }
 
   function isExcludedTrade(row = {}) {
@@ -336,7 +345,7 @@ function createFuturesPaperScannerService(options = {}) {
     const realOpen = open.filter(isRealStrategyTrade);
     const realClosed = closed.filter(isRealStrategyTrade);
     const excluded = [...open, ...closed].filter(isExcludedTrade);
-    const testTrades = [...open, ...closed].filter((row) => row.tradeType && row.tradeType !== 'trading_os_signal');
+    const testTrades = [...open, ...closed].filter((row) => row.tradeType && !isRealStrategyTrade(row));
     let lastTradeAtMs = 0;
     for (const row of [...open, ...closed]) {
       const openedMs = Date.parse(row.openedAt || '') || 0;
@@ -481,116 +490,6 @@ function createFuturesPaperScannerService(options = {}) {
     };
   }
 
-  function buildEngineTestCandidate({ symbol, quote, now = new Date() }) {
-    const price = Number(quote?.price) || null;
-    const previous = Number(quote?.previousPrice) || price;
-    const direction = price != null && previous != null && price < previous ? 'short' : 'long';
-    const timestamp = nowIso(now);
-    const sessionMetadata = buildFuturesSessionMetadata(timestamp);
-    return {
-      candidateId: createCandidateId(now),
-      symbol,
-      futuresSymbol: symbol,
-      mappedFuturesSymbol: symbol,
-      direction,
-      confidence: 0.5,
-      strategyId: 'futures_paper_engine_test',
-      strategyName: 'Futures Paper Engine Test',
-      entryReason: `Engine-test: simulerad ${direction}-momentum på fallback-pris ${price ?? 'okänt'}.`,
-      referencePrice: price,
-      entryPrice: price,
-      priceSource: quote?.source || 'simulated_fallback',
-      simulatedData: true,
-      testOnly: true,
-      tradeType: 'engine_test',
-      signalSource: 'fallback_test',
-      dataSource: 'simulated_fallback',
-      usedRealStrategyLogic: false,
-      usedFallbackPrice: true,
-      excludedFromStats: true,
-      strategyLogicVersion: null,
-      originalSignalId: null,
-      originalSymbol: symbol,
-      originalMarket: 'mini_futures',
-      mappingReason: 'engine_test_no_trading_os_signal',
-      mappingConfidence: 1,
-      sessionMetadata,
-      session: sessionMetadata?.session || null,
-      sessionId: sessionMetadata?.sessionId || null,
-      sessionLabel: sessionMetadata?.sessionLabel || null,
-      exchangeTimezone: sessionMetadata?.exchangeTimezone || null,
-      exchangeLocalDate: sessionMetadata?.exchangeLocalDate || null,
-      exchangeLocalTime: sessionMetadata?.exchangeLocalTime || null,
-      isRth: sessionMetadata?.isRth ?? null,
-      isMarketOpen: sessionMetadata?.isMarketOpen ?? null,
-      timestamp,
-      source: 'futures_paper_scanner_engine_test',
-      paperOnly: true,
-      status: 'queued',
-      ...SAFETY,
-    };
-  }
-
-  function runNativeFuturesDiagnostics({ now = new Date(), feed = null } = {}) {
-    let result;
-    try {
-      result = nativeFuturesDiagnosticsProducer.evaluate({
-        now,
-        priceFeedService: priceFeed,
-        feed,
-      });
-    } catch (err) {
-      const timestamp = nowIso(now);
-      result = {
-        ok: false,
-        strategyId: 'mnq_globex_momentum_v1',
-        instrument: 'MNQ',
-        signalState: 'blocked',
-        blockedReason: 'producer_error',
-        error: err?.message || 'producer_error',
-        direction: null,
-        dryRun: true,
-        diagnosticOnly: true,
-        executionEnabled: false,
-        wouldCreateCandidate: false,
-        wouldOpenPosition: false,
-        entryEligible: false,
-        eligibleForPaperEntry: false,
-        dataQuality: 'unknown',
-        timestamp,
-        sessionMetadata: buildFuturesSessionMetadata(timestamp),
-        ...SAFETY,
-      };
-    }
-
-    const strategyId = result.strategyId || 'mnq_globex_momentum_v1';
-    const isSignal = result.signalState === 'diagnostic_signal' && result.direction;
-    const isBlocked = result.ok === false || result.signalState === 'blocked';
-    return {
-      [strategyId]: {
-        runs: 1,
-        signals: isSignal ? 1 : 0,
-        noSignal: result.signalState === 'no_signal' ? 1 : 0,
-        blocked: isBlocked ? 1 : 0,
-        blockedReason: result.blockedReason || null,
-        candidatesCreated: 0,
-        positionsOpened: 0,
-        direction: result.direction || null,
-        signalState: result.signalState || null,
-        dataQuality: result.dataQuality || null,
-        latestCandleTimestamp: result.producerEvidence?.latestCandleTimestamp || null,
-        sessionId: result.sessionId || result.sessionMetadata?.sessionId || null,
-        sessionLabel: result.sessionLabel || result.sessionMetadata?.sessionLabel || null,
-        entryEligible: result.entryEligible === true,
-        eligibleForPaperEntry: result.eligibleForPaperEntry === true,
-        dryRun: true,
-        diagnosticOnly: true,
-        wouldOpenPosition: false,
-        result,
-      },
-    };
-  }
-
   function reserveCandidateForIbkrPaper(candidate = {}, { now = new Date() } = {}) {
     const signalTimestamp = candidate.signalTimestamp || candidate.timestamp || candidate.createdAt || null;
     const nextCandidate = {
@@ -636,17 +535,35 @@ function createFuturesPaperScannerService(options = {}) {
     };
   }
 
-  // Trading OS-driven scan: läs riktiga Trading OS-signaler via adapter och
-  // skapa endast futures-kandidater när signalen har riktning, risk och mapping.
+  // Canonical signal-driven scan: skapa endast futures-kandidater via adaptern
+  // när signalen har riktning, risk och mapping.
   function runScannerOnce({ now = new Date() } = {}) {
     const startedAt = nowIso(now);
     const scanSessionMetadata = buildFuturesSessionMetadata(startedAt);
     const config = getEngineConfig();
     const feed = priceFeed.tickQuotes(now);
-    const nativeFuturesDiagnostics = runNativeFuturesDiagnostics({ now, feed });
+    const signalInputResult = signalProvider.getCanonicalSignals({
+      now,
+      priceFeedService: priceFeed,
+      feed,
+    });
+    const signalInputs = Array.isArray(signalInputResult?.signalInputs) ? signalInputResult.signalInputs : [];
     const { allowlistError } = getApprovedStrategySource();
     const positionsSummary = getActivePositionsSummary();
-    const queue = readQueue();
+    const rawQueue = readQueue();
+    const queuePrune = pruneStaleQueuedCandidates(rawQueue, {
+      now,
+      maxAgeMs: config.candidateMaxAgeMs,
+    });
+    const queue = queuePrune.queue;
+    const staleQueuedCandidates = queuePrune.pruned;
+    if (staleQueuedCandidates.length > 0) {
+      writeQueue(queue);
+      persistEvent('FUTURES_SCANNER_STALE_CANDIDATES_PRUNED', {
+        count: staleQueuedCandidates.length,
+        candidates: staleQueuedCandidates.slice(0, 10),
+      }, now);
+    }
     const added = [];
     const skippedStrategies = [];
     const blockedByCooldown = [];
@@ -664,8 +581,9 @@ function createFuturesPaperScannerService(options = {}) {
     const adapterResult = signalAdapter.getFuturesCandidates({
       now,
       quotes: feed.quotes || [],
+      signalInputs,
     });
-    const tradingOsCandidates = Array.isArray(adapterResult?.candidates) ? adapterResult.candidates : [];
+    const canonicalCandidates = Array.isArray(adapterResult?.candidates) ? adapterResult.candidates : [];
     const adapterSkipped = Array.isArray(adapterResult?.skipped) ? adapterResult.skipped : [];
     for (const row of adapterSkipped) {
       const target = row.skipReason === 'no_safe_futures_mapping'
@@ -678,11 +596,11 @@ function createFuturesPaperScannerService(options = {}) {
 
     // Family-exklusivitet: rangordna kandidaterna inom sina familjer så att
     // endast bästa kandidaten (högst confidence) i varje familj kan gå vidare.
-    const familyRanks = strategyTradeControl.rankFamilyCandidates(tradingOsCandidates, {
+    const familyRanks = strategyTradeControl.rankFamilyCandidates(canonicalCandidates, {
       familyOf: familyOfCandidate,
     });
 
-    for (const candidate of tradingOsCandidates) {
+    for (const candidate of canonicalCandidates) {
       const strategyId = String(candidate.strategyId || '');
       const familyMeta = familyRanks.get(candidate)
         || { strategyFamily: familyOfCandidate(candidate), familyRank: null, isBestInFamily: true };
@@ -695,16 +613,16 @@ function createFuturesPaperScannerService(options = {}) {
         skippedStrategies.push({ strategyId, signalId: candidate.signalId || null, reason: 'unsupported_futures_symbol' });
         continue;
       }
-      // Futures-scopat approval-lager (separat från vanlig paper). Kompatibilitets-
-      // + godkännande-grind INNAN session/risk/dedup. Skapar aldrig en trade.
-      // Fail-open vid internt fel så dagens sex aldrig blockeras av ett store-fel.
-      const approvalGate = futuresPaperStrategyApproval.evaluateFuturesApprovalGate({ strategyId });
-      if (!approvalGate.allowed) {
+      const executionAllowlist = typeof strategyRegistry.canExecuteStrategy === 'function'
+        ? strategyRegistry.canExecuteStrategy(strategyId)
+        : { allowed: false, blockedReason: 'strategy_registry_execution_allowlist_unavailable' };
+      if (!executionAllowlist.allowed) {
         skippedStrategies.push({
           strategyId,
           signalId: candidate.signalId || null,
-          reason: approvalGate.blockedReason,
-          canonicalReplacementId: approvalGate.canonicalReplacementId || null,
+          reason: executionAllowlist.blockedReason || 'strategy_not_in_execution_allowlist',
+          registryStatus: executionAllowlist.status || null,
+          registryEnabled: executionAllowlist.enabled ?? null,
         });
         continue;
       }
@@ -819,31 +737,9 @@ function createFuturesPaperScannerService(options = {}) {
       busySymbols.add(symbol);
     }
 
-    let engineTestCandidates = [];
-    if (added.length === 0 && config.engineTestMode === true) {
-      const freeSymbol = SCANNER_SYMBOLS.find((symbol) => !busySymbols.has(symbol));
-      if (freeSymbol && queue.length < MAX_QUEUE_LENGTH) {
-        const quote = (feed.quotes || []).find((row) => row.root === freeSymbol || row.symbol === freeSymbol) || null;
-        const candidate = buildEngineTestCandidate({ symbol: freeSymbol, quote, now });
-        const reservation = reserveCandidateForIbkrPaper(candidate, { now });
-        if (reservation.ok) {
-          added.push(reservation.candidate);
-          engineTestCandidates = [reservation.candidate];
-        } else {
-          blockedByExecutionTarget.push({
-            strategyId: candidate.strategyId,
-            signalId: candidate.signalId || null,
-            candidateId: candidate.candidateId || null,
-            reason: reservation.reservation?.blocker || reservation.reservation?.error || 'execution_target_reservation_failed',
-            executionTarget: 'ibkr_paper',
-          });
-        }
-      }
-    }
-
     const nextQueue = writeQueue([...queue, ...added]);
     const finishedAt = nowIso();
-    const realSignalCandidates = added.filter((row) => row.tradeType === 'trading_os_signal');
+    const canonicalPipelineCandidates = added.filter(isRealStrategyTrade);
     const scanId = createScanId(now);
     const scanRecord = {
       scanId,
@@ -859,32 +755,31 @@ function createFuturesPaperScannerService(options = {}) {
       isRth: scanSessionMetadata?.isRth ?? null,
       isMarketOpen: scanSessionMetadata?.isMarketOpen ?? null,
       symbolsScanned: SCANNER_SYMBOLS,
-      strategiesChecked: tradingOsCandidates.length,
-      approvedStrategies: tradingOsCandidates.length,
+      strategiesChecked: canonicalCandidates.length,
+      approvedStrategies: canonicalCandidates.length,
       candidatesCreated: added.length,
       skippedStrategies,
       tradesOpened: 0,
-      tradesOpenedFromRealSignals: 0,
+      tradesOpenedFromCanonicalSignals: 0,
       tradesOpenedFromTests: 0,
       blockedByCooldown,
       blockedByFamilyGate,
       blockedByExecutionTarget,
+      staleQueuedCandidatesPruned: staleQueuedCandidates.length,
+      staleQueuedCandidateDetails: staleQueuedCandidates.slice(0, 10),
       dataSource: feed.feed.source,
       simulatedData: feed.feed.simulated === true,
       allowlistError: allowlistError || null,
-      tradingOsSignalsRead: adapterResult?.stats?.tradingOsSignalsRead || 0,
+      signalInputsRead: adapterResult?.stats?.signalInputsRead || 0,
+      readerSignalsRead: signalInputResult?.stats?.readerSignalsRead || 0,
+      providerSignalsRead: signalInputResult?.stats?.providerSignalsRead || 0,
+      providersEvaluated: signalInputResult?.stats?.providersEvaluated || 0,
       signalsMappedToFutures: adapterResult?.stats?.signalsMappedToFutures || 0,
       signalsSkippedNoMapping: signalsSkippedNoMapping.length,
       signalsSkippedNoRisk: signalsSkippedNoRisk.length,
       signalsSkippedOther: signalsSkippedOther.length,
-      nativeFuturesDiagnostics,
-      diagnosticProducerResults: nativeFuturesDiagnostics,
-      producerPreviews: Object.fromEntries(Object.entries(nativeFuturesDiagnostics).map(([strategyId, row]) => [
-        strategyId,
-        row.result?.diagnosticCandidatePreview || null,
-      ])),
-      engineTestCandidates: engineTestCandidates.length,
-      realSignalCandidates: realSignalCandidates.length,
+      signalProviderResults: signalInputResult?.providerResults || {},
+      canonicalPipelineCandidates: canonicalPipelineCandidates.length,
       skippedSignalDetails: {
         noMapping: signalsSkippedNoMapping.slice(0, 10),
         noRisk: signalsSkippedNoRisk.slice(0, 10),
@@ -893,42 +788,19 @@ function createFuturesPaperScannerService(options = {}) {
       status: 'completed',
       executionTarget: 'ibkr_paper',
       internalSimulationRetired: true,
-      summary: `${adapterResult?.stats?.tradingOsSignalsRead || 0} Trading OS-signaler lästa, `
-        + `${realSignalCandidates.length} reala futures-kandidater, ${engineTestCandidates.length} engine-test, `
+      summary: `${adapterResult?.stats?.signalInputsRead || 0} canonical signal inputs lästa, `
+        + `${canonicalPipelineCandidates.length} futures-kandidater köade, `
+        + `${staleQueuedCandidates.length} stale-kandidater rensade, `
         + `${blockedByCooldown.length} cooldown-blockerade, ${blockedByFamilyGate.length} family-gate-blockerade, ${blockedByExecutionTarget.length} execution-target-blockerade, `
         + `${signalsSkippedNoMapping.length} utan mapping, ${signalsSkippedNoRisk.length} utan risk.`,
       config: {
         cooldownMinutes: config.cooldownMinutes,
         familyCooldownMinutes: config.familyCooldownMinutes,
         familyExclusiveEnabled: config.familyExclusiveEnabled,
-        engineTestMode: config.engineTestMode,
       },
       ...SAFETY,
     };
     appendScanHistory(scanRecord);
-    for (const [strategyId, row] of Object.entries(nativeFuturesDiagnostics)) {
-      appendNativeFuturesDiagnosticsHistory({
-        scanId,
-        timestamp: startedAt,
-        strategyId,
-        instrument: 'MNQ',
-        sessionId: row.sessionId || null,
-        sessionLabel: row.sessionLabel || null,
-        signalState: row.signalState || null,
-        direction: row.direction || null,
-        blockedReason: row.blockedReason || null,
-        dataQuality: row.dataQuality || null,
-        latestCandleTimestamp: row.latestCandleTimestamp || null,
-        entryEligible: row.entryEligible === true,
-        eligibleForPaperEntry: row.eligibleForPaperEntry === true,
-        dryRun: true,
-        diagnosticOnly: true,
-        wouldOpenPosition: false,
-        candidatesCreated: 0,
-        positionsOpened: 0,
-        ...SAFETY,
-      });
-    }
     writeScannerState({ lastScanAt: startedAt, lastScanSummary: scanRecord });
     if (added.length > 0) {
       persistEvent('FUTURES_SCANNER_CANDIDATES_ADDED', { candidates: added, scanId: scanRecord.scanId }, now);
@@ -1152,8 +1024,8 @@ function createFuturesPaperScannerService(options = {}) {
       reasons.push({ code: 'empty_candidate_queue', message: 'Candidate queue är tom — inväntar legitim signal för IBKR Paper shadow.' });
     }
     const lastScan = state.lastScanSummary || null;
-    if (queue.length === 0 && lastScan && Number(lastScan.realSignalCandidates || 0) === 0) {
-      reasons.push({ code: 'no_trading_os_signal_available', message: 'Ingen godkänd Trading OS-signal kunde adapteras till MNQ/MES i senaste scan.' });
+    if (queue.length === 0 && lastScan && Number(lastScan.canonicalPipelineCandidates || 0) === 0) {
+      reasons.push({ code: 'no_canonical_signal_candidate_available', message: 'Ingen godkänd canonical signal kunde adapteras till MNQ/MES i senaste scan.' });
     }
     return reasons;
   }
@@ -1174,7 +1046,7 @@ function createFuturesPaperScannerService(options = {}) {
         lastTickSummary: state.lastTickSummary,
         maxQueueLength: MAX_QUEUE_LENGTH,
         maxOpenPositions: MAX_OPEN_POSITIONS,
-        nativeFuturesDiagnostics: state.lastScanSummary?.nativeFuturesDiagnostics || {},
+        signalProviderResults: state.lastScanSummary?.signalProviderResults || {},
       },
       autoSimulation: {
         enabled: false,
@@ -1189,7 +1061,6 @@ function createFuturesPaperScannerService(options = {}) {
         candidates: queue,
       },
       scanHistory: readScanHistory(),
-      nativeFuturesDiagnosticsHistory: readNativeFuturesDiagnosticsHistory(),
       dataFeed: feed.feed,
       quotes: feed.quotes,
       engineConfig: getEngineConfig(),
@@ -1208,7 +1079,6 @@ function createFuturesPaperScannerService(options = {}) {
     stopAutoTimer();
     storageService.writeJson(stateFile, createDefaultScannerState());
     storageService.writeJson(scanHistoryFile, { scans: [], updatedAt: nowIso() });
-    storageService.writeJson(nativeFuturesDiagnosticsFile, { diagnostics: [], updatedAt: nowIso() });
     writeQueue([]);
     return { ok: true, ...SAFETY };
   }
@@ -1231,7 +1101,6 @@ function createFuturesPaperScannerService(options = {}) {
     stateFile,
     candidatesFile,
     scanHistoryFile,
-    nativeFuturesDiagnosticsFile,
     assertPaperOnly,
     getEngineConfig,
     readScannerState,
@@ -1239,6 +1108,7 @@ function createFuturesPaperScannerService(options = {}) {
     getStrategyTradeStats,
     getFamilyTradeStats,
     familyOfCandidate,
+    pruneStaleQueuedCandidates,
     evaluateStrategyGate,
     runScannerOnce,
     getCandidates,
@@ -1248,7 +1118,6 @@ function createFuturesPaperScannerService(options = {}) {
     setAutoSimulation,
     getStrategyStatus,
     getScanHistory,
-    readNativeFuturesDiagnosticsHistory,
     buildStatusReasons,
     getScannerRuntime,
     resetScanner,

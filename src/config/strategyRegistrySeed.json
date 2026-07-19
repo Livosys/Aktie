@@ -1,0 +1,19 @@
+[
+  {
+    "strategy_id": "mnq_globex_momentum_v1",
+    "strategy_name": "MNQ Globex Momentum",
+    "source": "manual",
+    "status": "active",
+    "enabled": true,
+    "disabled_reason": null,
+    "mode": "paper_only",
+    "description": "MNQ Globex momentum canonical signal producer routed through the Futures Paper Candidate Pipeline.",
+    "market_regime_tags": ["futures", "mnq", "globex", "momentum"],
+    "allowed_timeframes": ["1m"],
+    "entry_rules": ["GLOBEX_MOMENTUM"],
+    "exit_rules": ["managed_by_ibkr_paper_bracket"],
+    "registry_managed": true,
+    "created_at": "2026-07-16T00:00:00.000Z",
+    "updated_at": "2026-07-16T00:00:00.000Z"
+  }
+]

@@ -365,7 +365,7 @@ assert.equal(riskTrend.paperStatus, 'RISK_BLOCKED');
 assert.equal(riskTrend.canTradeNow, false);
 
 // Ej godkänd → APPROVAL_BLOCKED; saknat entry contract → ENTRY_CONTRACT_BLOCKED;
-// inaktiv runtime-connector → DATA_BLOCKED; replay-only → DIAGNOSTIC_ONLY.
+// inaktiv runtime-connector → DATA_BLOCKED; replay-only → REPLAY_ONLY.
 const variantOverview = svc.buildCanonicalStrategyOverview({
   now: '2026-07-06T15:00:00.000Z',
   session: openRthSession,
@@ -384,7 +384,7 @@ const variantById = new Map(variantOverview.strategies.map((row) => [row.strateg
 assert.equal(variantById.get('trend_continuation').paperStatus, 'APPROVAL_BLOCKED');
 assert.equal(variantById.get('gap_fade').paperStatus, 'ENTRY_CONTRACT_BLOCKED');
 assert.equal(variantById.get('support_bounce').paperStatus, 'DATA_BLOCKED');
-assert.equal(variantById.get('narrow_breakout').paperStatus, 'DIAGNOSTIC_ONLY');
+assert.equal(variantById.get('narrow_breakout').paperStatus, 'REPLAY_ONLY');
 for (const row of variantOverview.strategies) {
   assert.ok(svc.PAPER_STATUSES.includes(row.paperStatus), `variant ${row.strategyId} status ${row.paperStatus}`);
   assert.equal(row.canTradeNow === true && row.marketOpen !== true, false, 'canTradeNow kräver öppen/tillåten session');

@@ -1,32 +1,45 @@
 'use strict';
 
 const assert = require('assert/strict');
-const previewSvc = require('./interactiveBrokersPreviewService');
 const scaffoldSvc = require('./interactiveBrokersDryRunScaffoldService');
 
 async function run() {
-  const orderPreview = previewSvc.getIbPaperOrderPreview({
-    candidates: [
-      {
-        symbol: 'AAPL',
-        canonicalStrategyId: 'vwap_failed_breakout_short',
-        strategyName: 'VWAP Failed Breakout Short',
-        direction: 'short',
-        source: 'scanner',
-        score: 91,
-        confidence: 88,
-      },
-      {
-        symbol: 'QQQ',
-        canonicalStrategyId: 'narrow_breakout',
-        strategyName: 'Narrow Breakout',
-        direction: 'long',
-        source: 'scanner',
-        score: 80,
-        confidence: 80,
-      },
-    ],
-  });
+  const readyCandidate = {
+    symbol: 'MNQ',
+    strategyId: 'ema_pullback_continuation',
+    strategyName: 'EMA Pullback Continuation',
+    direction: 'long',
+    marketGroup: 'futures',
+    allowedForIbPaperPreview: true,
+    blockers: [],
+    reasonSv: 'Read-only pipeline ready.',
+    wouldCreateIbPaperOrder: false,
+    orderSendingBlocked: true,
+  };
+  const blockedCandidate = {
+    symbol: 'MNQ',
+    strategyId: 'disabled_strategy',
+    strategyName: 'Disabled Strategy',
+    direction: 'long',
+    marketGroup: 'futures',
+    allowedForIbPaperPreview: false,
+    blockers: ['strategy_not_in_execution_allowlist'],
+    reasonSv: 'Blockerad: strategy_not_in_execution_allowlist',
+    wouldCreateIbPaperOrder: false,
+    orderSendingBlocked: true,
+  };
+  const orderPreview = {
+    ok: true,
+    mode: 'preview_only',
+    candidates: [readyCandidate, blockedCandidate],
+    allowedCandidates: [readyCandidate],
+    blockedCandidates: [blockedCandidate],
+    summary: {
+      totalScanned: 2,
+      allowedCandidates: 1,
+      blockedCandidates: 1,
+    },
+  };
 
   const scaffold = await scaffoldSvc.buildDryRunExecutionScaffold({
     orderPreview,
@@ -37,7 +50,11 @@ async function run() {
       gatewayReachable: true,
       blockedReason: 'reachable_read_only_no_orders',
     },
-    approvedStrategiesPreview: previewSvc.getApprovedStrategiesPreview(),
+    registryPreview: {
+      ok: true,
+      registryStrategyCount: 5,
+      registryStrategies: Array.from({ length: 5 }, (_, index) => ({ strategy_id: `strategy_${index}`, status: 'active', enabled: true })),
+    },
   });
 
   assert.equal(scaffold.ok, true);
@@ -53,10 +70,10 @@ async function run() {
   assert.equal(scaffold.steps.length, 4);
   assert.equal(scaffold.summary.allowedCount, orderPreview.allowedCandidates.length);
   assert.equal(scaffold.summary.blockedCount, orderPreview.blockedCandidates.length);
-  assert.equal(scaffold.summary.approvedStrategyCount, 5);
+  assert.equal(scaffold.summary.registryStrategyCount, 5);
   assert.ok(Array.isArray(scaffold.candidateBlueprints));
   assert.equal(scaffold.candidateBlueprints.length, 2);
-  assert.equal(scaffold.primaryCandidate.symbol, 'AAPL');
+  assert.equal(scaffold.primaryCandidate.symbol, 'MNQ');
   assert.equal(scaffold.primaryCandidate.wouldCreateIbPaperOrder, false);
   assert.equal(scaffold.primaryCandidate.orderSendingBlocked, true);
 

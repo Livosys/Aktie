@@ -224,13 +224,81 @@ async function main() {
   });
 
   assert.equal(execution.ok, true);
-  assert.equal(execution.mode, 'paper_only');
+  assert.equal(execution.mode, 'ibkr_paper');
   assert.equal(execution.accountMode, 'ib_paper');
   assert.equal(execution.executionEnabled, false);
   assert.equal(execution.orderSendingBlocked, true);
   assert.equal(execution.selectedBlueprint.symbol, 'AAPL');
   assert.equal(execution.paperAccountVerified, false);
   assert.equal(execution.safety.actions_allowed, false);
+
+  let runtimeStatusCalls = 0;
+  const runtimeStatus = {
+    ok: true,
+    mode: 'ibkr_paper',
+    status: 'shadow',
+    source: 'ib_paper_execution_runtime_singleton',
+    flags: { executionEnabled: true, shadowMode: true, submissionEnabled: false },
+    paperBrokerExecutionEnabled: true,
+    executionConnected: true,
+    nextValidIdReady: true,
+    nextValidId: 956001,
+    managedAccounts: [{ accountIdMasked: 'DU***596', classification: 'paper' }],
+    managedAccountCount: 1,
+    paperAccountVerified: true,
+    account: { ok: true, accountIdMasked: 'DU***596', classification: 'paper' },
+    readiness: {
+      source: 'ib_paper_execution_runtime_singleton',
+      gatewayReachable: true,
+      ibApiVerified: true,
+      paperAccountVerified: true,
+      sessionVerified: true,
+      nextValidId: 956001,
+      runtimeState: 'READY',
+      managedAccounts: ['DUQ565596'],
+      managedAccountCount: 1,
+      connectedSince: '2026-07-16T14:00:00.000Z',
+      lastHeartbeat: '2026-07-16T14:00:15.000Z',
+      reconnectCount: 0,
+    },
+    runtimeState: 'READY',
+    executionRuntimeState: 'READY',
+    connectedSince: '2026-07-16T14:00:00.000Z',
+    lastHeartbeat: '2026-07-16T14:00:15.000Z',
+    reconnectCount: 0,
+    runtimeLifecycleState: 'IDLE',
+    reconciliation: { status: 'ok', degraded: false, newEntriesAllowed: false, discrepancies: [], counts: {} },
+    brokerOpenOrders: [],
+    brokerExecutions: [],
+    brokerPositions: [],
+    safety: { mode: 'ibkr_paper', actions_allowed: false, can_place_orders: false, live_trading_enabled: false, broker_enabled: false },
+  };
+  const unifiedExecution = await svc.buildExecutionStatus({
+    runtime: truth.runtime,
+    paperStatus: truth.paperStatus,
+    allowlist: truth.allowlist,
+    approvals: truth.approvals,
+    topStrategies: truth.topStrategies,
+    ibPaperStatus: truth.ibPaper.status,
+    connectionReadiness: runtimeStatus.readiness,
+    ibOrderPreview: truth.ibPaper.orderPreview,
+    ibBlueprint: truth.ibPaper.tradeBlueprint,
+    executionOrchestratorService: {
+      buildExecutionStatus: async () => {
+        runtimeStatusCalls += 1;
+        return runtimeStatus;
+      },
+    },
+  });
+  assert.equal(runtimeStatusCalls, 1);
+  assert.equal(unifiedExecution.source, 'ib_paper_execution_runtime_singleton');
+  assert.equal(unifiedExecution.featureFlag, 'IBKR_PAPER_EXECUTION_ENABLED');
+  assert.equal(unifiedExecution.executionConnected, true);
+  assert.equal(unifiedExecution.nextValidIdReady, true);
+  assert.equal(unifiedExecution.nextValidId, 956001);
+  assert.equal(unifiedExecution.paperAccountVerified, true);
+  assert.equal(unifiedExecution.runtimeState, 'READY');
+  assert.equal(unifiedExecution.runtimeLifecycleState, 'IDLE');
 
   console.log('paperTradingTruthService.test.js: OK');
 }

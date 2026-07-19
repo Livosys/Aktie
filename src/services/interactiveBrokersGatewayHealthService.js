@@ -56,7 +56,7 @@ function parseProcessRows(psOutput) {
 function isGatewayProcess(row) {
   const command = safeString(row?.command);
   if (!command) return false;
-  if (/vnc|novnc|websockify|fluxbox|grep|rg|systemctl/i.test(command)) return false;
+  if (/\b(?:Xtigervnc|vncserver|x11vnc|novnc|websockify|fluxbox|grep|rg|systemctl)\b/i.test(command)) return false;
   return /(ibgateway|ib gateway|jts|tws|ibcontroller)/i.test(command);
 }
 
@@ -112,8 +112,8 @@ async function getGatewayHealth(options = {}) {
   const display = safeString(options.display || process.env.IB_GATEWAY_DISPLAY || process.env.DISPLAY || DEFAULT_DISPLAY) || DEFAULT_DISPLAY;
   const vncPort = Number(options.vncPort || process.env.IB_GATEWAY_VNC_PORT || DEFAULT_VNC_PORT) || DEFAULT_VNC_PORT;
 
-  const [psOutput, ssOutput, apiPortOpen] = await Promise.all([
-    execFileText('/bin/ps', ['-eo', 'pid,user,args']),
+  const [psOutput, ssOutput, tcpOpen] = await Promise.all([
+    execFileText('/bin/ps', ['-eww', '-o', 'pid,user,args']),
     execFileText('/usr/sbin/ss', ['-ltnp']),
     tcpPortOpen(apiHost, apiPort),
   ]);
@@ -126,11 +126,12 @@ async function getGatewayHealth(options = {}) {
 
   let readiness = null;
   try {
-    readiness = await interactiveBrokersPreviewService.getConnectionReadiness();
+    readiness = options.readiness || await interactiveBrokersPreviewService.getConnectionReadiness();
   } catch (err) {
     readiness = { ok: false, error: err?.message || String(err), status: 'error' };
   }
 
+  const apiPortOpen = readiness?.gatewayReachable === true || listeningPorts.has(apiPort) || tcpOpen;
   const connected = readiness?.gatewayReachable === true && (readiness?.connected === true || readiness?.ibApiVerified === true);
   const authenticated = readiness?.sessionVerified === true || readiness?.paperAccountVerified === true;
   const gatewayProcessRunning = Boolean(gatewayProcess);

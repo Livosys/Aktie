@@ -185,6 +185,20 @@ function createIbPaperExecutionIntentService(options = {}) {
 	      'orderRefs',
 	      'reconciliationRequired',
 	      'blocker',
+	      'ibErrorCode',
+	      'ibErrorMessage',
+	      'rejectedOrderId',
+	      'rejectedReason',
+	      'cancelledOrderId',
+	      'cancelReason',
+	      'protectiveOrderCancelledId',
+	      'protectiveOrderCancelReason',
+	      'entryFilledOrderId',
+	      'entryFilledAt',
+	      'filledOrderId',
+	      'filledLeg',
+	      'filledAt',
+	      'filledPrice',
 	    ]) {
 	      if (Object.prototype.hasOwnProperty.call(extra, key)) record[key] = extra[key];
 	    }

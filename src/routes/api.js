@@ -150,6 +150,10 @@ const lossReviewQueueService = require('../services/lossReviewQueueService');
 const tradingViewPaperReplayPreviewService = require('../services/tradingViewPaperReplayPreviewService');
 const interactiveBrokersTradeBlueprintService = require('../services/interactiveBrokersTradeBlueprintService');
 const interactiveBrokersPaperPreflightService = require('../services/interactiveBrokersPaperPreflightService');
+const interactiveBrokersPaperProtectiveOrderService = require('../services/interactiveBrokersPaperProtectiveOrderService');
+const interactiveBrokersPaperBracketSubmissionService = require('../services/interactiveBrokersPaperBracketSubmissionService');
+const interactiveBrokersPaperOneShotArmService = require('../services/interactiveBrokersPaperOneShotArmService');
+const interactiveBrokersPaperFinalGateStatusService = require('../services/interactiveBrokersPaperFinalGateStatusService');
 const interactiveBrokersPaperReadinessLoaderService = require('../services/interactiveBrokersPaperReadinessLoaderService');
 const interactiveBrokersPaperExecutionPreviewService = require('../services/interactiveBrokersPaperExecutionPreviewService');
 const interactiveBrokersGatewayHealthService = require('../services/interactiveBrokersGatewayHealthService');
@@ -3680,7 +3684,7 @@ router.get('/futures-paper/legacy-simulation/account', (req, res) => {
 
 router.get('/futures-paper/positions', async (req, res) => {
   try {
-    const status = await ibPaperExecutionOrchestratorService.defaultIbPaperExecutionOrchestratorService.buildExecutionStatus({ connect: false });
+    const status = await ibPaperExecutionOrchestratorService.defaultIbPaperExecutionOrchestratorService.buildExecutionStatus();
     const positions = Array.isArray(status.brokerPositions) ? status.brokerPositions : [];
     res.json({
       ok: true,
@@ -3719,7 +3723,7 @@ router.get('/futures-paper/legacy-simulation/positions', (req, res) => {
 
 router.get('/futures-paper/trades', async (req, res) => {
   try {
-    const status = await ibPaperExecutionOrchestratorService.defaultIbPaperExecutionOrchestratorService.buildExecutionStatus({ connect: false });
+    const status = await ibPaperExecutionOrchestratorService.defaultIbPaperExecutionOrchestratorService.buildExecutionStatus();
     const executions = Array.isArray(status.brokerExecutions) ? status.brokerExecutions : [];
     res.json({
       ok: true,
@@ -3889,27 +3893,26 @@ router.get('/futures-paper/strategies/:strategyId', (req, res) => {
   }
 });
 
-function handleFuturesStrategyMutation(action) {
-  return (req, res) => {
-    try {
-      const body = req.body && typeof req.body === 'object' ? req.body : {};
-      // paper-only-vakt: aldrig tillåt live/broker/order via denna väg.
-      if (body.live_trading_enabled === true || body.broker_enabled === true || body.can_place_orders === true || body.actions_allowed === true) {
-        return res.status(400).json({ status: 'error', ok: false, error: 'futures_strategy_approval_is_paper_only', ...futuresPaperStrategyApprovalService.SAFETY });
-      }
-      const result = futuresPaperStrategyApprovalService[action](req.params.strategyId, { source: 'api' });
-      const code = result.code || (result.ok ? 200 : 400);
-      res.status(code).json({ ...result, action });
-    } catch (err) {
-      res.status(500).json({ status: 'error', ok: false, error: err.message, ...futuresPaperStrategyApprovalService.SAFETY });
-    }
-  };
+function retiredFuturesStrategyMutation(req, res) {
+  return res.status(410).json({
+    ok: false,
+    status: 'retired',
+    error: 'futures_strategy_approval_mutation_retired',
+    blocker: 'use_strategy_registry_execution_allowlist',
+    strategyId: req.params.strategyId || null,
+    registryRoutes: {
+      activate: `/api/strategies/registry/${req.params.strategyId}/activate`,
+      pause: `/api/strategies/registry/${req.params.strategyId}/pause`,
+      status: '/api/strategies/registry/status',
+    },
+    ...strategyRegistry.SAFETY,
+  });
 }
 
-router.post('/futures-paper/strategies/:strategyId/approve', handleFuturesStrategyMutation('approve'));
-router.post('/futures-paper/strategies/:strategyId/pause', handleFuturesStrategyMutation('pause'));
-router.post('/futures-paper/strategies/:strategyId/resume', handleFuturesStrategyMutation('resume'));
-router.post('/futures-paper/strategies/:strategyId/remove', handleFuturesStrategyMutation('remove'));
+router.post('/futures-paper/strategies/:strategyId/approve', retiredFuturesStrategyMutation);
+router.post('/futures-paper/strategies/:strategyId/pause', retiredFuturesStrategyMutation);
+router.post('/futures-paper/strategies/:strategyId/resume', retiredFuturesStrategyMutation);
+router.post('/futures-paper/strategies/:strategyId/remove', retiredFuturesStrategyMutation);
 
 router.post('/futures-paper/manual/open', (req, res) => {
   return sendRetiredInternalSimulation(res, 'manual_open_internal_futures_position_route');
@@ -4024,8 +4027,7 @@ router.get('/futures-paper/market-data/:root', (req, res) => {
 
 router.get('/futures-paper/ibkr-paper-execution/status', async (req, res) => {
   try {
-    const connect = req.query.connect === 'true';
-    res.json(await ibPaperExecutionOrchestratorService.defaultIbPaperExecutionOrchestratorService.buildExecutionStatus({ connect }));
+    res.json(await ibPaperExecutionOrchestratorService.defaultIbPaperExecutionOrchestratorService.buildExecutionStatus());
   } catch (err) {
     res.status(500).json({ ok: false, error: err.message, ...ibPaperExecutionOrchestratorService.SAFETY });
   }
@@ -4123,6 +4125,47 @@ router.post('/futures-paper/ibkr-paper-execution/resume-new-entries', (req, res)
   }
 });
 
+router.post('/futures-paper/ibkr-paper-execution/modify-owned-order', async (req, res) => {
+  try {
+    const body = req.body && typeof req.body === 'object' ? req.body : {};
+    if (body.live_trading_enabled === true || body.live_broker_enabled === true || body.live_order_submission_enabled === true || body.live_account_orders_allowed === true || body.can_place_orders === true) {
+      return res.status(400).json({ ok: false, error: 'live_execution_is_not_allowed', ...ibPaperExecutionConfigService.buildSafetyView() });
+    }
+    const result = await ibPaperExecutionOrchestratorService.defaultIbPaperExecutionOrchestratorService.modifyOwnedProtectiveOrder({
+      orderId: body.orderId,
+      idempotencyKey: body.idempotencyKey || null,
+      orderRef: body.orderRef || null,
+      orderPatch: body.orderPatch || {},
+      reason: body.reason || null,
+    });
+    res.status(result.ok ? 200 : 400).json(result);
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message, ...ibPaperExecutionConfigService.buildSafetyView() });
+  }
+});
+
+// EMERGENCY FLATTEN — R2. Stänger en öppen, ägd paper-position (MNQ/MES) med
+// EN stängande MKT via adapterns enda placeOrder-väg. Inert tills submission är
+// armad. Vägrar hårt varje live-flagga. Kräver admin-session + CSRF + reason.
+router.post('/futures-paper/ibkr-paper-execution/emergency-flatten', async (req, res) => {
+  try {
+    const body = req.body && typeof req.body === 'object' ? req.body : {};
+    if (body.live_trading_enabled === true || body.live_broker_enabled === true || body.live_order_submission_enabled === true || body.live_account_orders_allowed === true || body.can_place_orders === true) {
+      return res.status(400).json({ ok: false, error: 'live_execution_is_not_allowed', ...ibPaperExecutionConfigService.buildSafetyView() });
+    }
+    if (!body.reason) return res.status(400).json({ ok: false, error: 'flatten_reason_required', ...ibPaperExecutionConfigService.buildSafetyView() });
+    if (!body.root) return res.status(400).json({ ok: false, error: 'root_required', ...ibPaperExecutionConfigService.buildSafetyView() });
+    const result = await ibPaperExecutionOrchestratorService.defaultIbPaperExecutionOrchestratorService.flattenOwnedPosition({
+      root: body.root,
+      reason: body.reason,
+      audit: { via: 'api_emergency_flatten', at: new Date().toISOString() },
+    });
+    res.status(result.ok ? 200 : 400).json(result);
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message, ...ibPaperExecutionConfigService.buildSafetyView() });
+  }
+});
+
 // Read-only IB PAPER-kontosummary (NetLiquidation m.fl.). Cache-first med
 // service-level timeout så att UI:t aldrig hänger på ett långsamt IB-anrop.
 router.get('/futures-paper/ib-account', async (req, res) => {
@@ -4180,7 +4223,7 @@ router.get('/futures-paper/scan-history', (req, res) => {
 
 router.get('/futures-paper/closed-trades', async (req, res) => {
   try {
-    const status = await ibPaperExecutionOrchestratorService.defaultIbPaperExecutionOrchestratorService.buildExecutionStatus({ connect: false });
+    const status = await ibPaperExecutionOrchestratorService.defaultIbPaperExecutionOrchestratorService.buildExecutionStatus();
     const executions = Array.isArray(status.brokerExecutions) ? status.brokerExecutions : [];
     res.json({
       ok: true,
@@ -5516,8 +5559,8 @@ router.get('/interactive-brokers/trade-blueprint', async (req, res) => {
   }
   catch (err) { res.status(500).json({ ok: false, error: err.message, safety: interactiveBrokersTradeBlueprintService.SAFETY }); }
 });
-// Read-only connection readiness. Never logs in, never sends orders; a harmless
-// TCP reachability probe only (disabled by default via IB_CONNECTION_CHECK_ENABLED).
+// Read-only connection readiness. Never logs in, never sends orders; reads the
+// permanent IBKR Paper execution-runtime singleton.
 router.get('/interactive-brokers/connection-readiness', async (req, res) => {
   try { res.json(await interactiveBrokersPreviewService.getConnectionReadiness()); }
   catch (err) { res.status(500).json({ ok: false, error: err.message, safety: interactiveBrokersPreviewService.SAFETY }); }
@@ -5528,34 +5571,21 @@ router.get('/interactive-brokers/gateway-health', async (req, res) => {
 });
 router.get('/interactive-brokers/paper-execution/status', async (req, res) => {
   try {
-    const truth = await paperTradingTruthService.buildPaperTradingTruth({
-      now: req.query.now || undefined,
-    });
-    res.json(truth?.ibPaper?.executionStatus || await paperTradingTruthService.buildExecutionStatus({
-      now: req.query.now || undefined,
-      readiness: truth?.ibPaper?.connectionReadiness || truth?.readiness || undefined,
-    }));
+    res.json(await ibPaperExecutionOrchestratorService.defaultIbPaperExecutionOrchestratorService.buildExecutionStatus());
   } catch (err) {
     res.status(500).json({ ok: false, error: err.message, safety: paperTradingTruthService.SAFETY });
   }
 });
 router.get('/interactive-brokers/paper-execution/futures-status', async (req, res) => {
   try {
-    const connect = req.query.connect === 'true';
-    res.json(await ibPaperExecutionOrchestratorService.defaultIbPaperExecutionOrchestratorService.buildExecutionStatus({ connect }));
+    res.json(await ibPaperExecutionOrchestratorService.defaultIbPaperExecutionOrchestratorService.buildExecutionStatus());
   } catch (err) {
     res.status(500).json({ ok: false, error: err.message, ...ibPaperExecutionOrchestratorService.SAFETY });
   }
 });
 router.get('/interactive-brokers/execution-status', async (req, res) => {
   try {
-    const truth = await paperTradingTruthService.buildPaperTradingTruth({
-      now: req.query.now || undefined,
-    });
-    res.json(truth?.ibPaper?.executionStatus || await paperTradingTruthService.buildExecutionStatus({
-      now: req.query.now || undefined,
-      readiness: truth?.ibPaper?.connectionReadiness || truth?.readiness || undefined,
-    }));
+    res.json(await ibPaperExecutionOrchestratorService.defaultIbPaperExecutionOrchestratorService.buildExecutionStatus());
   } catch (err) {
     res.status(500).json({ ok: false, error: err.message, safety: paperTradingTruthService.SAFETY });
   }
@@ -5621,6 +5651,296 @@ router.post('/interactive-brokers/paper-execute/preflight', async (req, res) => 
     });
   } catch (err) {
     res.status(500).json({ ok: false, error: err.message, safety: interactiveBrokersPaperPreflightService.SAFETY });
+  }
+});
+
+async function buildInteractiveBrokersPaperExecuteRouteContext(req, body = {}) {
+  const requestBody = body && typeof body === 'object' ? body : {};
+  const now = requestBody.now || req.query.now || undefined;
+  const truth = await paperTradingTruthService.buildPaperTradingTruth({ now });
+  const executionStatus = truth?.ibPaper?.executionStatus || await paperTradingTruthService.buildExecutionStatus({ now });
+  const staleReadiness = truth?.ibPaper?.connectionReadiness || truth?.readiness || executionStatus?.readiness || undefined;
+  const liveReadinessSnapshot = await interactiveBrokersPaperReadinessLoaderService.loadLiveIbPaperReadinessForPreflight({
+    staleReadiness,
+  });
+  const readiness = liveReadinessSnapshot || staleReadiness;
+  const tradeBlueprint = await interactiveBrokersTradeBlueprintService.getTradeBlueprint({
+    now,
+    readiness,
+    topStrategies: truth?.topStrategies,
+  });
+  const selectedBlueprint = requestBody.selectedBlueprint
+    || tradeBlueprint?.selectedBlueprint
+    || tradeBlueprint?.previewBlueprint
+    || (Array.isArray(tradeBlueprint?.blueprints) ? tradeBlueprint.blueprints[0] : null)
+    || null;
+  const blueprintId = requestBody.blueprintId
+    || requestBody.selectedBlueprintId
+    || selectedBlueprint?.blueprintId
+    || null;
+
+  return {
+    now,
+    truth,
+    executionStatus,
+    staleReadiness,
+    liveReadinessSnapshot,
+    readiness,
+    tradeBlueprint,
+    selectedBlueprint,
+    blueprintId,
+  };
+}
+
+async function buildInteractiveBrokersPaperExecutePreflightForRoute(context, body = {}, options = {}) {
+  const confirmationPhrase = typeof options.confirmationPhrase === 'string'
+    ? options.confirmationPhrase
+    : (body.confirmationPhrase || body.confirmationText || body.confirmText || '');
+  return await interactiveBrokersPaperPreflightService.buildPaperExecutionPreflight({
+    now: context.now,
+    blueprintId: context.blueprintId,
+    confirmationPhrase,
+    preflightOnly: options.preflightOnly === true,
+    truth: context.truth,
+    executionStatus: context.executionStatus,
+    tradeBlueprint: context.tradeBlueprint,
+    selectedBlueprint: context.selectedBlueprint,
+    readiness: context.readiness,
+    liveReadinessSnapshot: context.liveReadinessSnapshot,
+  });
+}
+
+function buildInteractiveBrokersPaperProtectivePreflightForRoute(context, body = {}) {
+  return interactiveBrokersPaperProtectiveOrderService.buildProtectivePreflightResponse({
+    now: context.now,
+    blueprintId: context.blueprintId,
+    selectedBlueprintId: body.selectedBlueprintId || body.blueprintId || context.blueprintId,
+    selectedBlueprint: context.selectedBlueprint,
+    truth: context.truth,
+    executionStatus: context.executionStatus,
+    tradeBlueprint: context.tradeBlueprint,
+    readiness: context.readiness,
+  });
+}
+
+function findInteractiveBrokersPaperExecuteForbiddenBrokerField(body = {}) {
+  const forbiddenFields = [
+    'candidate',
+    'approval',
+    'approvalEvidence',
+    'entryContract',
+    'entryContractEvidence',
+    'risk',
+    'brokerRisk',
+    'orderPlan',
+    'contract',
+    'accountId',
+    'executionTarget',
+    'root',
+    'symbol',
+    'conId',
+    'localSymbol',
+    'expiry',
+    'lastTradeDateOrContractMonth',
+    'quantity',
+    'side',
+    'direction',
+    'orderType',
+    'price',
+    'limitPrice',
+    'stopLoss',
+    'stopLossPrice',
+    'takeProfit',
+    'takeProfitPrice',
+    'tif',
+    'timeInForce',
+    'outsideRth',
+    'now',
+  ];
+  return forbiddenFields.find((field) => body[field] != null) || null;
+}
+
+async function buildInteractiveBrokersPaperExecuteOrchestratorRoute(req, options = {}) {
+  const body = req.body && typeof req.body === 'object' ? req.body : {};
+  const requestedBrokerSubmit = body.actualSubmit === true || body.submit === true || body['place' + 'Order'] === true;
+  if (requestedBrokerSubmit && options.allowSubmitRequest !== true) {
+    return {
+      status: 403,
+      body: {
+        ok: false,
+        error: 'paper_submit_requires_submit_route',
+        routeName: options.routeName || null,
+        wouldSubmit: false,
+        actualSubmit: false,
+        ...ibPaperExecutionOrchestratorService.SAFETY,
+      },
+    };
+  }
+  const forbiddenField = findInteractiveBrokersPaperExecuteForbiddenBrokerField(body);
+  if (forbiddenField) {
+    return {
+      status: 400,
+      body: {
+        ok: false,
+        error: 'client_supplied_broker_candidate_not_allowed',
+        forbiddenField,
+        routeName: options.routeName || null,
+        wouldSubmit: false,
+        actualSubmit: false,
+        diagnosticPreview: false,
+        ...ibPaperExecutionOrchestratorService.SAFETY,
+      },
+    };
+  }
+  const result = await ibPaperExecutionOrchestratorService.defaultIbPaperExecutionOrchestratorService.buildShadowExecution({
+    candidateId: body.candidateId || null,
+    actualSubmit: options.allowSubmitRequest === true && requestedBrokerSubmit === true,
+  });
+  return {
+    status: 200,
+    body: {
+      ...result,
+      routeName: options.routeName || null,
+      method: req.method,
+      executionPipeline: 'execution_runtime_singleton_orchestrator_adapter',
+    },
+  };
+}
+
+router.get('/interactive-brokers/paper-execute/arm-status', async (req, res) => {
+  try {
+    const context = await buildInteractiveBrokersPaperExecuteRouteContext(req, {});
+    res.json({
+      ...interactiveBrokersPaperOneShotArmService.getArmStatus({
+        now: context.now,
+        truth: context.truth,
+        executionStatus: context.executionStatus,
+        tradeBlueprint: context.tradeBlueprint,
+        readiness: context.readiness,
+      }),
+      routeName: 'interactive-brokers.paper-execute.arm-status',
+      method: req.method,
+      readinessSource: context.liveReadinessSnapshot?.source || null,
+    });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message, safety: interactiveBrokersPaperOneShotArmService.SAFETY });
+  }
+});
+
+router.get('/interactive-brokers/paper-execute/final-gate-status', async (req, res) => {
+  try {
+    const context = await buildInteractiveBrokersPaperExecuteRouteContext(req, {});
+    const preflight = await buildInteractiveBrokersPaperExecutePreflightForRoute(context, {}, {
+      confirmationPhrase: interactiveBrokersPaperPreflightService.REQUIRED_CONFIRMATION_PHRASE || 'CONFIRM PAPER TRADE',
+      preflightOnly: true,
+    });
+    const protectivePreflight = buildInteractiveBrokersPaperProtectivePreflightForRoute(context, {});
+    const bracketSubmissionPlan = interactiveBrokersPaperBracketSubmissionService.buildBracketSubmissionPreflight({
+      now: context.now,
+      truth: context.truth,
+      executionStatus: context.executionStatus,
+      tradeBlueprint: context.tradeBlueprint,
+      readiness: context.readiness,
+      selectedBlueprint: context.selectedBlueprint,
+      protectivePlan: protectivePreflight,
+      nextValidId: context.readiness?.nextValidId || context.executionStatus?.readiness?.nextValidId || null,
+    });
+    const armStatus = interactiveBrokersPaperOneShotArmService.getArmStatus({
+      now: context.now,
+      truth: context.truth,
+      executionStatus: context.executionStatus,
+      tradeBlueprint: context.tradeBlueprint,
+      readiness: context.readiness,
+    });
+    res.json({
+      ...interactiveBrokersPaperFinalGateStatusService.buildFinalGateStatus({
+        now: context.now,
+        truth: context.truth,
+        executionStatus: context.executionStatus,
+        tradeBlueprint: context.tradeBlueprint,
+        selectedBlueprint: context.selectedBlueprint,
+        preflight,
+        protectivePreflight,
+        bracketSubmissionPlan,
+        armStatus,
+        readiness: context.readiness,
+      }),
+      routeName: 'interactive-brokers.paper-execute.final-gate-status',
+      method: req.method,
+      readinessSource: context.liveReadinessSnapshot?.source || null,
+    });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message, safety: interactiveBrokersPaperFinalGateStatusService.SAFETY });
+  }
+});
+
+router.post('/interactive-brokers/paper-execute/protective-preflight', async (req, res) => {
+  try {
+    const body = req.body && typeof req.body === 'object' ? req.body : {};
+    const context = await buildInteractiveBrokersPaperExecuteRouteContext(req, body);
+    res.json({
+      ...buildInteractiveBrokersPaperProtectivePreflightForRoute(context, body),
+      routeName: 'interactive-brokers.paper-execute.protective-preflight',
+      method: req.method,
+      readinessSource: context.liveReadinessSnapshot?.source || null,
+    });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message, safety: interactiveBrokersPaperProtectiveOrderService.SAFETY });
+  }
+});
+
+router.post('/interactive-brokers/paper-execute/arm', async (req, res) => {
+  try {
+    const body = req.body && typeof req.body === 'object' ? req.body : {};
+    const context = await buildInteractiveBrokersPaperExecuteRouteContext(req, body);
+    const preflight = await buildInteractiveBrokersPaperExecutePreflightForRoute(context, body);
+    const protectivePlan = buildInteractiveBrokersPaperProtectivePreflightForRoute(context, body);
+    res.json({
+      ...interactiveBrokersPaperOneShotArmService.armOneShot({
+        now: context.now,
+        body,
+        truth: context.truth,
+        executionStatus: context.executionStatus,
+        tradeBlueprint: context.tradeBlueprint,
+        selectedBlueprint: context.selectedBlueprint,
+        preflight,
+        protectivePlan,
+        readiness: context.readiness,
+        blueprintId: context.blueprintId,
+        selectedBlueprintId: body.selectedBlueprintId || body.blueprintId || context.blueprintId,
+        idempotencyKey: body.idempotencyKey || '',
+        ttlSeconds: body.ttlSeconds,
+      }),
+      routeName: 'interactive-brokers.paper-execute.arm',
+      method: req.method,
+      readinessSource: context.liveReadinessSnapshot?.source || null,
+    });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message, safety: interactiveBrokersPaperOneShotArmService.SAFETY });
+  }
+});
+
+router.post('/interactive-brokers/paper-execute/submit', async (req, res) => {
+  try {
+    const result = await buildInteractiveBrokersPaperExecuteOrchestratorRoute(req, {
+      routeName: 'interactive-brokers.paper-execute.submit',
+      allowSubmitRequest: true,
+    });
+    res.status(result.status).json(result.body);
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message, ...ibPaperExecutionOrchestratorService.SAFETY });
+  }
+});
+
+router.post('/interactive-brokers/paper-execute', async (req, res) => {
+  try {
+    const result = await buildInteractiveBrokersPaperExecuteOrchestratorRoute(req, {
+      routeName: 'interactive-brokers.paper-execute',
+      allowSubmitRequest: false,
+    });
+    res.status(result.status).json(result.body);
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message, ...ibPaperExecutionOrchestratorService.SAFETY });
   }
 });
 // ── API 404 — never return HTML for unknown /api/* paths ──────────────────────

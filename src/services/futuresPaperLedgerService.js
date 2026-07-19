@@ -548,13 +548,14 @@ function createFuturesPaperLedgerService(options = {}) {
     const strategyName = input.strategyName ? String(input.strategyName).trim() : null;
     const entryReason = input.entryReason ? String(input.entryReason).trim() : null;
     const tradeType = input.tradeType ? String(input.tradeType).trim() : 'manual_simulation';
-    const signalSource = input.signalSource ? String(input.signalSource).trim() : (tradeType === 'trading_os_signal' ? 'trading_os' : 'manual');
+    const isCanonicalSignalTrade = tradeType === 'canonical_signal' || tradeType === 'trading_os_signal';
+    const signalSource = input.signalSource ? String(input.signalSource).trim() : (isCanonicalSignalTrade ? 'canonical_signal' : 'manual');
     const dataSource = input.dataSource ? String(input.dataSource).trim() : 'simulated_fallback';
     const usedRealStrategyLogic = booleanValue(input.usedRealStrategyLogic, false);
     const usedFallbackPrice = booleanValue(input.usedFallbackPrice, dataSource === 'simulated_fallback');
     const excludedFromStats = booleanValue(
       input.excludedFromStats,
-      !(tradeType === 'trading_os_signal' && usedRealStrategyLogic === true && usedFallbackPrice === false),
+      !(isCanonicalSignalTrade && usedRealStrategyLogic === true && usedFallbackPrice === false),
     );
     const strategyControlMetadata = normalizeStrategyControlMetadata({
       strategyId,

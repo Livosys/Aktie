@@ -58,6 +58,14 @@ const REQUEST_TIMEOUT_MS = 25000;
 
 function sleep(ms) { return new Promise((r) => setTimeout(r, ms)); }
 
+function ibUtcDateTime(date = new Date()) {
+  const d = new Date(date);
+  const pad = (n) => String(n).padStart(2, '0');
+  return `${d.getUTCFullYear()}${pad(d.getUTCMonth() + 1)}${pad(d.getUTCDate())}`
+    + ` ${pad(d.getUTCHours())}:${pad(d.getUTCMinutes())}:${pad(d.getUTCSeconds())}`
+    + ' UTC';
+}
+
 function buildFutContract(symbol) {
   return { symbol, secType: 'FUT', exchange: 'CME', currency: 'USD' };
 }
@@ -253,7 +261,7 @@ async function main() {
     const tReqId = nextReqId++;
     const tPromise = track(tReqId, 'historicalTicks');
     try {
-      ib.reqHistoricalTicks(tReqId, contract, '', new Date().toISOString().slice(0, 10).replace(/-/g, '') + ' 23:59:59', 1000, 'TRADES', 0, false);
+      ib.reqHistoricalTicks(tReqId, contract, '', ibUtcDateTime(), 1000, 'TRADES', 0, false);
       const t = await tPromise;
       symReport.ticks = { ok: t.ok && t.rows.length > 0, count: t.rows.length, error: t.ok ? null : t.error, code: t.code || null };
     } catch (err) {

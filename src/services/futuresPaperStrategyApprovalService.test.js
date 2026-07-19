@@ -266,7 +266,8 @@ test('READY list is backend-derived with producer evidence', () => {
     ['resistance_rejection', 'closed_trades'],
     ['trend_continuation', 'both'],
     ['vwap_failed_breakout_short', 'both'],
-    ['vwap_volume_breakout_long', 'scanner_emitter'],
+    // Den här strategin har både scanner-emitter och historiska closed trades i ledgern.
+    ['vwap_volume_breakout_long', 'both'],
   ]);
   const ready = new Map(
     info.strategies

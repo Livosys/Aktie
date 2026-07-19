@@ -3,7 +3,7 @@
 /**
  * IB Paper execution preflight.
  *
- * Read-only control chain that checks whether a future manually approved IB
+ * Read-only control chain that checks whether a future manually confirmed IB
  * Paper order would be eligible. It never places orders, never calls submit,
  * never transmits and never changes safety state.
  */
@@ -25,7 +25,7 @@ const SAFETY = Object.freeze({
 const REQUIRED_CONFIRMATION_PHRASE = 'CONFIRM PAPER TRADE';
 const EXPECTED_PAPER_ACCOUNT = 'DUQ565596';
 const REQUIRED_STOP_LOSS_MIN_PCT = 0.10;
-const SUPPORTED_US_EQUITY_MARKET_GROUPS = new Set(['stock', 'stocks', 'equity', 'us_stock', 'us_equity', 'mag7', 'nasdaq100']);
+const SUPPORTED_MARKET_GROUPS = new Set(['futures', 'future', 'fut', 'stock', 'stocks', 'equity', 'us_stock', 'us_equity', 'mag7', 'nasdaq100']);
 const BLOCKED_ETF_MARKET_GROUPS = new Set(['etf', 'leveraged_etf']);
 
 function safeString(value) {
@@ -86,7 +86,7 @@ function resolveBlueprint(tradeBlueprint, selectedBlueprintId = null) {
       || blueprints.find((row) => safeString(row?.symbol) && safeString(row?.strategyId) && `${safeString(row.symbol)}:${safeString(row.strategyId)}` === safeString(selectedBlueprintId));
     return match || null;
   }
-  return tradeBlueprint?.selectedBlueprint || blueprints.find((row) => row?.manualApprovalReady === true) || blueprints.find((row) => row?.blueprintReady === true) || blueprints[0] || null;
+  return tradeBlueprint?.selectedBlueprint || blueprints.find((row) => row?.executionReady === true) || blueprints.find((row) => row?.blueprintReady === true) || blueprints[0] || null;
 }
 
 function normalizeMarketGroup(symbol, rawMarketGroup, assetClass = null) {
@@ -103,7 +103,8 @@ function normalizeMarketGroup(symbol, rawMarketGroup, assetClass = null) {
   if (BLOCKED_ETF_MARKET_GROUPS.has(marketGroup) || normalizedSymbol === 'QQQ' || normalizedSymbol === 'SPY') {
     return marketGroup || 'etf';
   }
-  if (SUPPORTED_US_EQUITY_MARKET_GROUPS.has(marketGroup)) {
+  if (SUPPORTED_MARKET_GROUPS.has(marketGroup)) {
+    if (['futures', 'future', 'fut'].includes(marketGroup)) return 'futures';
     return 'stock';
   }
   if (!marketGroup && normalizedSymbol && normalizedAssetClass !== 'CRYPTO') {
@@ -188,15 +189,13 @@ function getProtectiveSelectedBlueprintCandidate(protectivePreflight = {}) {
 
 function getTradeBlueprintSelectedBlueprintCandidate(tradeBlueprint = {}) {
   return tradeBlueprint?.selectedBlueprint
-    || tradeBlueprint?.manualApproval?.selectedBlueprint
     || (Array.isArray(tradeBlueprint?.blueprints)
-      ? tradeBlueprint.blueprints.find((row) => row?.selected === true || row?.manualApprovalReady === true || row?.blueprintReady === true) || tradeBlueprint.blueprints[0] || null
+      ? tradeBlueprint.blueprints.find((row) => row?.selected === true || row?.executionReady === true || row?.blueprintReady === true) || tradeBlueprint.blueprints[0] || null
       : null);
 }
 
 function getTruthSelectedBlueprintCandidate(truth = {}) {
   return truth?.ibPaper?.selectedBlueprint
-    || truth?.ibPaper?.manualApproval?.selectedBlueprint
     || truth?.ibPaper?.tradeBlueprint?.selectedBlueprint
     || truth?.selectedBlueprint
     || null;
@@ -355,11 +354,11 @@ function buildBlueprintChecks({ selectedBlueprint, truth, tradeBlueprint, readin
   const riskReward = Number(selectedBlueprint?.riskReward || selectedBlueprint?.riskRewardRatio || 0);
   const symbol = safeString(selectedBlueprint?.symbol);
   const strategyId = safeString(selectedBlueprint?.strategyId);
-  const strategyApproved = Boolean(strategyId) && Boolean(safeArray(tradeBlueprint?.blueprints).find((row) => safeString(row?.strategyId) === strategyId && row?.blueprintReady === true));
+  const strategyRegistryAllowed = Boolean(strategyId) && Boolean(safeArray(tradeBlueprint?.blueprints).find((row) => safeString(row?.strategyId) === strategyId && row?.blueprintReady === true));
   const strategyInTop3 = topStrategyIds.includes(strategyId) || Number(selectedBlueprint?.top3Rank || 0) > 0;
   const accountMode = safeString(selectedBlueprint?.accountMode) === 'ib_paper';
   const marketGroup = safeString(selectedBlueprint?.marketGroup);
-  const supportedMarket = ['stock', 'stocks', 'equity', 'us_stock', 'us_equity', 'mag7', 'nasdaq100'].includes(marketGroup);
+  const supportedMarket = ['futures', 'future', 'fut', 'stock', 'stocks', 'equity', 'us_stock', 'us_equity', 'mag7', 'nasdaq100'].includes(marketGroup);
   const isCrypto = /USDT$/i.test(symbol) || marketGroup === 'crypto' || safeString(selectedBlueprint?.assetClass).toUpperCase() === 'CRYPTO';
   const isEtf = ['etf', 'leveraged_etf'].includes(marketGroup) || symbol === 'QQQ' || symbol === 'SPY';
   const isCfd = marketGroup === 'cfd' || safeString(selectedBlueprint?.assetClass).toUpperCase() === 'CFD';
@@ -370,9 +369,8 @@ function buildBlueprintChecks({ selectedBlueprint, truth, tradeBlueprint, readin
       : !marketGroup
         ? 'selected_blueprint_market_group_missing'
         : 'selected_blueprint_unsupported_market_group';
-  const manualApproval = tradeBlueprint?.manualApproval || truth?.ibPaper?.manualApproval || null;
   const confirmationInput = safeString(confirmationText);
-  const confirmationRequired = safeString(manualApproval?.requiredConfirmationPhrase || REQUIRED_CONFIRMATION_PHRASE);
+  const confirmationRequired = REQUIRED_CONFIRMATION_PHRASE;
   const noLivePaths = true;
 
   return {
@@ -398,13 +396,13 @@ function buildBlueprintChecks({ selectedBlueprint, truth, tradeBlueprint, readin
       buildCheck('blueprint_id_valid', Boolean(selectedBlueprint?.blueprintId), 'hard', selectedBlueprint?.blueprintId ? 'BlueprintId är giltigt.' : 'BlueprintId saknas.', 'selectedBlueprint.blueprintId', selectedBlueprint?.blueprintId ? null : 'missing_blueprint'),
       buildCheck('blueprint_not_stale', !isStale, 'hard', !isStale ? 'Blueprint är färsk.' : 'Blueprint har blivit stale.', 'selectedBlueprint.expiresAt', !isStale ? null : 'stale_blueprint'),
       buildCheck('symbol_exists', Boolean(symbol), 'hard', symbol ? `Symbol: ${symbol}` : 'Symbol saknas.', 'selectedBlueprint.symbol', symbol ? null : 'selected_blueprint_symbol_missing'),
-      buildCheck('supported_us_equity', Boolean(symbol) && accountMode && supportedMarket && !isCrypto && !isEtf && !isCfd, 'hard', (!isCrypto && !isEtf && !isCfd && supportedMarket && accountMode) ? 'Symbolen är en tillåten US equity.' : 'Symbolen är inte tillåten i Fas 4A.', 'selectedBlueprint.marketGroup', (!isCrypto && !isEtf && !isCfd && supportedMarket && accountMode) ? null : marketBlocker),
+      buildCheck('supported_instrument', Boolean(symbol) && accountMode && supportedMarket && !isCrypto && !isEtf && !isCfd, 'hard', (!isCrypto && !isEtf && !isCfd && supportedMarket && accountMode) ? 'Instrumentet är tillåtet för IB Paper-pipeline.' : 'Instrumentet är inte tillåtet för IB Paper-pipeline.', 'selectedBlueprint.marketGroup', (!isCrypto && !isEtf && !isCfd && supportedMarket && accountMode) ? null : marketBlocker),
       buildCheck('crypto_blocked', !isCrypto, 'hard', !isCrypto ? 'Crypto är blockerat.' : 'Crypto är blockerat i Fas 4A.', 'selectedBlueprint.marketGroup', isCrypto ? 'crypto_not_allowed_for_ib_paper_first_order' : null),
       buildCheck('etf_blocked_phase_1', !isEtf, 'hard', !isEtf ? 'ETF är inte vald.' : 'ETF är blockerat i denna fas.', 'selectedBlueprint.marketGroup', isEtf ? 'etf_not_allowed_for_ib_paper_first_order' : null),
       buildCheck('cfd_blocked_phase_1', !isCfd, 'hard', !isCfd ? 'CFD är inte vald.' : 'CFD är blockerat i denna fas.', 'selectedBlueprint.marketGroup', isCfd ? 'selected_blueprint_unsupported_market_group' : null),
       buildCheck('qqq_blocked', safeString(selectedBlueprint?.symbol) !== 'QQQ', 'hard', safeString(selectedBlueprint?.symbol) !== 'QQQ' ? 'QQQ är inte vald.' : 'QQQ är blockerat i denna fas.', 'selectedBlueprint.symbol', safeString(selectedBlueprint?.symbol) === 'QQQ' ? 'etf_not_allowed_for_ib_paper_first_order' : null),
       buildCheck('strategy_in_top3', strategyInTop3 === true, 'hard', strategyInTop3 === true ? 'Strategin är i top 3.' : 'Strategin är inte i top 3.', 'topStrategies.topStrategies', strategyInTop3 === true ? null : 'not_top_3_strategy'),
-      buildCheck('strategy_approved', strategyApproved === true, 'hard', strategyApproved === true ? 'Strategin är godkänd.' : 'Strategin är inte godkänd.', 'tradeBlueprint.blueprints', strategyApproved === true ? null : 'unapproved_strategy'),
+      buildCheck('strategy_registry_allowed', strategyRegistryAllowed === true, 'hard', strategyRegistryAllowed === true ? 'Strategin finns i execution allowlist.' : 'Strategin saknas i execution allowlist.', 'tradeBlueprint.blueprints', strategyRegistryAllowed === true ? null : 'strategy_not_in_execution_allowlist'),
       buildCheck('strategy_mapped', Boolean(strategyId), 'hard', strategyId ? 'StrategyId finns.' : 'StrategyId saknas.', 'selectedBlueprint.strategyId', strategyId ? null : 'unmapped_strategy'),
       buildCheck('direction_clear', ['long', 'short'].includes(safeString(selectedBlueprint?.direction)), 'hard', ['long', 'short'].includes(safeString(selectedBlueprint?.direction)) ? 'Riktningen är tydlig.' : 'Riktningen är oklar.', 'selectedBlueprint.direction', ['long', 'short'].includes(safeString(selectedBlueprint?.direction)) ? null : 'unknown_direction'),
       buildCheck('side_resolved', ['BUY', 'SELL'].includes(safeString(selectedBlueprint?.side)), 'hard', ['BUY', 'SELL'].includes(safeString(selectedBlueprint?.side)) ? 'Side är resolvat.' : 'Side kunde inte resolvas.', 'selectedBlueprint.side', ['BUY', 'SELL'].includes(safeString(selectedBlueprint?.side)) ? null : 'selected_blueprint_side_missing'),
@@ -419,7 +417,6 @@ function buildBlueprintChecks({ selectedBlueprint, truth, tradeBlueprint, readin
       buildCheck('estimated_notional_exists', Number(selectedBlueprint?.estimatedNotional || 0) > 0, 'info', Number(selectedBlueprint?.estimatedNotional || 0) > 0 ? 'estimatedNotional finns.' : 'estimatedNotional saknas.', 'selectedBlueprint.estimatedNotional', null),
       ...buildExecutionGateChecks({ selectedBlueprint, executionStatus }),
       buildCheck('manual_confirmation_phrase', confirmationInput === confirmationRequired, 'hard', confirmationInput === confirmationRequired ? 'Bekräftelsefrasen matchar.' : 'Bekräftelsefrasen saknas eller matchar inte.', 'request.confirmationPhrase', confirmationInput === confirmationRequired ? null : (confirmationInput ? 'manual_confirmation_mismatch' : 'manual_confirmation_required')),
-      buildCheck('manual_approval_status_ready', ['waiting_for_user', 'ready_for_future_execution', 'preflight_accepted'].includes(safeString(manualApproval?.approvalStatus)), 'hard', ['waiting_for_user', 'ready_for_future_execution', 'preflight_accepted'].includes(safeString(manualApproval?.approvalStatus)) ? `approvalStatus=${manualApproval?.approvalStatus || 'unknown'}` : 'approvalStatus är inte redo.', 'tradeBlueprint.manualApproval', ['waiting_for_user', 'ready_for_future_execution', 'preflight_accepted'].includes(safeString(manualApproval?.approvalStatus)) ? null : 'manual_approval_not_ready'),
       buildCheck('user_confirmation_present', confirmationInput === confirmationRequired, 'info', confirmationInput === confirmationRequired ? 'User confirmation finns.' : 'User confirmation saknas.', 'request.confirmationPhrase', null),
       buildCheck('post_auth_respected', true, 'info', 'Eventuell POST-auth kontrolleras av befintlig router-/middleware-konfiguration.', 'routes/api.js', null),
       buildCheck('execution_feature_disabled_phase_4a', true, 'info', 'Execution-funktionen är fortsatt avstängd i Fas 4A.', 'interactiveBrokersPaperExecutionService', null),
@@ -432,7 +429,10 @@ function buildBlueprintChecks({ selectedBlueprint, truth, tradeBlueprint, readin
     account,
     topStrategies: topStrategies.slice(0, 3),
     paperReadyTop3Count: paperReadyTop3.length,
-    manualApproval,
+    manualSafetyGate: {
+      requiredConfirmationPhrase: REQUIRED_CONFIRMATION_PHRASE,
+      confirmationEntered: confirmationInput === REQUIRED_CONFIRMATION_PHRASE,
+    },
     confirmationText: confirmationInput,
     stale: isStale,
     quantityCalculated,
@@ -473,7 +473,7 @@ async function buildPaperExecutionPreflight(options = {}) {
   const selectedBlueprint = normalizedBlueprintVerification.selectedBlueprint || null;
   const requestedConfirmation = safeString(options.confirmationPhrase || options.confirmationText || options.confirmText || '');
 
-  const { checks, account, topStrategies, paperReadyTop3Count, manualApproval } = buildBlueprintChecks({
+  const { checks, account, topStrategies, paperReadyTop3Count, manualSafetyGate } = buildBlueprintChecks({
     selectedBlueprint,
     truth,
     tradeBlueprint,
@@ -516,7 +516,7 @@ async function buildPaperExecutionPreflight(options = {}) {
     nextValidId: readiness?.nextValidId ?? executionStatus?.readiness?.nextValidId ?? null,
   });
   const nextRequiredAction = readyForFirstPaperOrder
-    ? 'Fas 4B kräver separat explicit godkännande innan någon IB Paper-order skickas.'
+    ? 'Första IB Paper-piloten kräver separat explicit manuell säkerhetsgrind innan någon order skickas.'
     : (blockers.length > 0
       ? `Åtgärda blockerarna och kör preflight igen. Första blocker: ${blockers[0]}.`
       : 'Kör preflight med exakt CONFIRM PAPER TRADE.');
@@ -555,14 +555,13 @@ async function buildPaperExecutionPreflight(options = {}) {
     timeInForce: selectedBlueprint.timeInForce || null,
     readiness: selectedBlueprint.readiness || null,
     blueprintReady: selectedBlueprint.blueprintReady === true,
-    manualApprovalReady: selectedBlueprint.manualApprovalReady === true,
-    executionReady: false,
+    executionReady: selectedBlueprint.executionReady === true,
     blockers: safeArray(selectedBlueprint.blockers),
     warnings: safeArray(selectedBlueprint.warnings),
     blockedReason,
     wouldCreateOrder: false,
     wouldSendOrder: false,
-    requiresManualApproval: true,
+    requiresManualSafetyConfirmation: true,
     orderSendingBlocked: true,
     safety: { ...SAFETY },
   } : null;
@@ -587,7 +586,7 @@ async function buildPaperExecutionPreflight(options = {}) {
     checks,
     blockers,
     warnings: checks.filter((check) => check.ok === true && (check.severity === 'warning' || check.severity === 'info')).map((check) => check.code),
-    manualApproval,
+    manualSafetyGate,
     summary: {
       totalChecks: checks.length,
       passedChecks,

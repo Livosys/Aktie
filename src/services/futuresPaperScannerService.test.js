@@ -8,14 +8,12 @@ const path = require('path');
 const now = '2026-07-06T11:00:00.000Z';
 const signalTimestamp = '2026-07-06T12:45:00.000Z';
 const rootDir = fs.mkdtempSync(path.join(os.tmpdir(), 'futures-paper-scanner-'));
-process.env.FUTURES_PAPER_STRATEGY_APPROVALS_FILE = path.join(rootDir, 'futures-strategy-approvals.json');
 
 const { createFuturesPaperStorageService } = require('./futuresPaperStorageService');
 const { createFuturesPaperAccountService } = require('./futuresPaperAccountService');
 const { createFuturesPaperLedgerService } = require('./futuresPaperLedgerService');
 const { createFuturesPaperScannerService } = require('./futuresPaperScannerService');
 const { createFuturesPaperExecutionTargetReservationService } = require('./futuresPaperExecutionTargetReservationService');
-const approvalService = require('./futuresPaperStrategyApprovalService');
 const { createFuturesTradingOsSignalAdapterService } = require('./futuresTradingOsSignalAdapterService');
 
 const storage = createFuturesPaperStorageService({ rootDir });
@@ -31,6 +29,19 @@ ledger.openFuturesPaperPosition = (input) => {
   return originalOpenFuturesPaperPosition(input);
 };
 let signals = [];
+let providerSignals = [];
+let registryEntries = new Map();
+
+function setRegistryStrategy(strategyId, status = 'active', enabled = true) {
+  registryEntries.set(strategyId, { status, enabled });
+}
+
+function resetRegistry() {
+  registryEntries = new Map();
+  setRegistryStrategy('trend_continuation');
+}
+
+resetRegistry();
 
 const priceFeed = {
   tickQuotes: () => ({
@@ -55,7 +66,7 @@ const priceFeed = {
 };
 
 const signalAdapter = createFuturesTradingOsSignalAdapterService({
-  signalReader: () => signals,
+  signalReader: () => [],
   approvalService: {
     evaluateSignal: () => ({
       approved: true,
@@ -66,56 +77,80 @@ const signalAdapter = createFuturesTradingOsSignalAdapterService({
   },
 });
 
-let nativeProducerRuns = 0;
-const nativeFuturesDiagnosticsProducer = {
-  evaluate: ({ now: diagnosticNow }) => {
-    nativeProducerRuns += 1;
+let signalProviderRuns = 0;
+function mnqCanonicalSignal() {
+  return {
+    signalId: `mnq-provider-${signalTimestamp}`,
+    strategyId: 'mnq_globex_momentum_v1',
+    strategyName: 'MNQ Globex Momentum',
+    family: 'futures_globex_momentum',
+    strategyFamily: 'futures_globex_momentum',
+    signalFamily: 'futures_globex_momentum',
+    signalSubtype: 'GLOBEX_MOMENTUM',
+    symbol: 'MNQ',
+    originalSymbol: 'MNQ',
+    market: 'futures',
+    marketType: 'futures',
+    direction: 'long',
+    confidence: 0.72,
+    entry: 20000,
+    entryPrice: 20000,
+    referencePrice: 20000,
+    stopLossPct: 0.3,
+    takeProfitPct: 0.6,
+    riskReward: 2,
+    timeframe: '1m',
+    status: 'ready',
+    signalStatus: 'ready',
+    source: 'futures_provider_mnq_candles',
+    signalSource: 'futures_provider_mnq_candles',
+    dataSource: 'real_market_data',
+    dataFreshness: 'LIVE',
+    closedCandleConfirmed: true,
+    latestCandleClosed: true,
+    candleTimestamp: signalTimestamp,
+    createdAt: signalTimestamp,
+    timestamp: signalTimestamp,
+    strategyLogicVersion: 'mnq_globex_momentum_v1',
+  };
+}
+
+function mnqCanonicalSignalAt(ts, direction = 'long') {
+  return {
+    ...mnqCanonicalSignal(),
+    signalId: `mnq-provider-${ts}-${direction}`,
+    direction,
+    candleTimestamp: ts,
+    createdAt: ts,
+    timestamp: ts,
+  };
+}
+
+const signalProvider = {
+  getCanonicalSignals: () => {
+    signalProviderRuns += 1;
+    const signalInputs = [...signals, ...providerSignals];
     return {
       ok: true,
-      strategyId: 'mnq_globex_momentum_v1',
-      family: 'futures_globex_momentum',
-      instrument: 'MNQ',
-      producerType: 'futures_native',
-      signalState: 'diagnostic_signal',
-      direction: 'long',
-      dryRun: true,
-      diagnosticOnly: true,
-      executionEnabled: false,
-      wouldCreateCandidate: true,
-      wouldOpenPosition: false,
-      entryEligible: false,
-      eligibleForPaperEntry: false,
-      dataQuality: 'simulated',
-      sessionId: 'europe',
-      sessionLabel: 'Europe',
-      sessionMetadata: {
-        session: 'Globex',
-        sessionId: 'europe',
-        sessionLabel: 'Europe',
-        exchangeTimezone: 'America/Chicago',
-        isRth: false,
-        isMarketOpen: true,
+      signalInputs,
+      signals: signalInputs,
+      providerResults: providerSignals.length ? {
+        mnq_globex_momentum_v1: {
+          providerId: 'mnq_globex_momentum_v1',
+          ok: true,
+          signals: providerSignals.length,
+          signalState: 'signal',
+          direction: 'long',
+          dataQuality: 'real',
+          latestSignalTimestamp: signalTimestamp,
+        },
+      } : {},
+      stats: {
+        signalInputsRead: signalInputs.length,
+        readerSignalsRead: signals.length,
+        providerSignalsRead: providerSignals.length,
+        providersEvaluated: providerSignals.length ? 1 : 0,
       },
-      producerEvidence: {
-        source: 'futures_native_mnq_candles',
-        latestCandleTimestamp: signalTimestamp,
-        closedCandlesUsed: 5,
-      },
-      diagnosticCandidatePreview: {
-        strategyId: 'mnq_globex_momentum_v1',
-        instrument: 'MNQ',
-        direction: 'long',
-        dryRun: true,
-        diagnosticOnly: true,
-        wouldOpenPosition: false,
-        entryEligible: false,
-      },
-      timestamp: new Date(diagnosticNow).toISOString(),
-      mode: 'paper_only',
-      actions_allowed: false,
-      can_place_orders: false,
-      live_trading_enabled: false,
-      broker_enabled: false,
     };
   },
 };
@@ -125,9 +160,33 @@ const scanner = createFuturesPaperScannerService({
   ledgerService: ledger,
   allowInternalSimulationForTests: true,
   priceFeedService: priceFeed,
+  signalProviderService: signalProvider,
   signalAdapterService: signalAdapter,
-  nativeFuturesDiagnosticsProducer,
   executionTargetReservationService: executionTargetReservations,
+  strategyRegistryService: {
+    canExecuteStrategy: (strategyId) => {
+      const entry = registryEntries.get(strategyId);
+      if (!entry) {
+        return {
+          allowed: false,
+          blockedReason: 'strategy_not_in_execution_allowlist',
+          strategyId,
+          status: null,
+          enabled: false,
+          source: 'strategy_registry_execution_allowlist',
+        };
+      }
+      const allowed = entry.enabled !== false && entry.status === 'active';
+      return {
+        allowed,
+        blockedReason: allowed ? null : (entry.enabled === false ? 'strategy_disabled_in_registry' : 'strategy_not_active_in_registry'),
+        strategyId,
+        status: entry.status,
+        enabled: entry.enabled !== false,
+        source: 'strategy_registry_execution_allowlist',
+      };
+    },
+  },
   allowlistService: {
     getPaperAllowlistStatus: () => ({
       allowlist: [{
@@ -172,9 +231,11 @@ const scanner = createFuturesPaperScannerService({
     scanHistoryLimit: 10,
     closedTradesLimit: 100,
     autoIntervalSeconds: 60,
-    engineTestMode: false,
+    candidateMaxAgeMs: 120000,
   },
 });
+
+providerSignals = [mnqCanonicalSignal()];
 
 function resetScenario() {
   scanner.resetScanner();
@@ -182,10 +243,9 @@ function resetScenario() {
   ledger.resetState();
   ledgerOpenCalls = 0;
   signals = [];
-  approvalService.__resetLastKnownGood();
-  if (fs.existsSync(process.env.FUTURES_PAPER_STRATEGY_APPROVALS_FILE)) {
-    fs.unlinkSync(process.env.FUTURES_PAPER_STRATEGY_APPROVALS_FILE);
-  }
+  providerSignals = [mnqCanonicalSignal()];
+  signalProviderRuns = 0;
+  resetRegistry();
 }
 
 function seedClosedRealTrade(strategyId, openedAt, closedAt) {
@@ -230,39 +290,27 @@ assert.equal(auto.broker_enabled, false);
 assert.equal(auto.actions_allowed, false);
 assert.equal(auto.can_place_orders, false);
 
-const approvalFile = process.env.FUTURES_PAPER_STRATEGY_APPROVALS_FILE;
-assert.equal(fs.existsSync(approvalFile), false);
-
 let scan = scanner.runScannerOnce({ now });
 assert.equal(scan.ok, true);
 assert.equal(scan.scan.sessionMetadata.sessionId, 'europe');
 assert.equal(scan.scan.sessionId, 'europe');
-assert.equal(scan.scan.tradingOsSignalsRead, 0);
-assert.equal(scan.scan.realSignalCandidates, 0);
-assert.equal(scan.scan.engineTestCandidates, 0);
+assert.equal(scan.scan.signalInputsRead, 1);
+assert.equal(scan.scan.readerSignalsRead, 0);
+assert.equal(scan.scan.providerSignalsRead, 1);
+assert.equal(scan.scan.signalsMappedToFutures, 1);
+assert.equal(scan.scan.canonicalPipelineCandidates, 0);
 assert.equal(scan.candidates.length, 0);
 assert.equal(scanner.getCandidates().totalCandidates, 0);
-assert.equal(nativeProducerRuns, 1);
-assert.equal(scan.scan.nativeFuturesDiagnostics.mnq_globex_momentum_v1.runs, 1);
-assert.equal(scan.scan.nativeFuturesDiagnostics.mnq_globex_momentum_v1.signals, 1);
-assert.equal(scan.scan.nativeFuturesDiagnostics.mnq_globex_momentum_v1.candidatesCreated, 0);
-assert.equal(scan.scan.nativeFuturesDiagnostics.mnq_globex_momentum_v1.positionsOpened, 0);
-assert.equal(scan.scan.nativeFuturesDiagnostics.mnq_globex_momentum_v1.result.wouldOpenPosition, false);
-assert.equal(scan.scan.nativeFuturesDiagnostics.mnq_globex_momentum_v1.result.executionEnabled, false);
-assert.equal(scan.scan.diagnosticProducerResults.mnq_globex_momentum_v1.signals, 1);
-assert.equal(scan.scan.producerPreviews.mnq_globex_momentum_v1.strategyId, 'mnq_globex_momentum_v1');
-assert.equal(scan.scan.producerPreviews.mnq_globex_momentum_v1.wouldOpenPosition, false);
-assert.equal(scan.scan.producerPreviews.mnq_globex_momentum_v1.entryEligible, false);
-const diagnosticHistory = scanner.readNativeFuturesDiagnosticsHistory();
-assert.equal(diagnosticHistory.length, 1);
-assert.equal(diagnosticHistory[0].strategyId, 'mnq_globex_momentum_v1');
-assert.equal(diagnosticHistory[0].positionsOpened, 0);
-assert.equal(diagnosticHistory[0].candidatesCreated, 0);
-assert.equal(diagnosticHistory[0].wouldOpenPosition, false);
+assert.equal(signalProviderRuns, 1);
+assert.equal(scan.scan.signalProviderResults.mnq_globex_momentum_v1.signals, 1);
+assert.equal(scan.scan.signalProviderResults.mnq_globex_momentum_v1.signalState, 'signal');
+assert.equal(scan.scan.skippedStrategies.some((row) => (
+  row.strategyId === 'mnq_globex_momentum_v1'
+  && row.reason === 'strategy_not_in_execution_allowlist'
+)), true);
 assert.equal(ledger.getPositionsSummary().open.length, 0);
 assert.equal(ledger.getPositionsSummary().closed.length, 0);
 assert.equal(ledgerOpenCalls, 0);
-assert.equal(fs.existsSync(approvalFile), false);
 
 signals = [{
   signalId: 'sig-qqq-long-1',
@@ -287,10 +335,11 @@ signals = [{
 
 scan = scanner.runScannerOnce({ now });
 assert.equal(scan.ok, true);
-assert.equal(scan.scan.tradingOsSignalsRead, 1);
-assert.equal(scan.scan.signalsMappedToFutures, 1);
-assert.equal(scan.scan.realSignalCandidates, 1);
-assert.equal(scan.scan.engineTestCandidates, 0);
+assert.equal(scan.scan.signalInputsRead, 2);
+assert.equal(scan.scan.readerSignalsRead, 1);
+assert.equal(scan.scan.providerSignalsRead, 1);
+assert.equal(scan.scan.signalsMappedToFutures, 2);
+assert.equal(scan.scan.canonicalPipelineCandidates, 1);
 assert.equal(scan.candidates.length, 1);
 assert.equal(scan.candidates.some((row) => row.strategyId === 'mnq_globex_momentum_v1'), false);
 assert.equal(scanner.getCandidates().candidates.some((row) => row.strategyId === 'mnq_globex_momentum_v1'), false);
@@ -314,6 +363,44 @@ assert.equal(simulated.error, 'internal_futures_simulation_disabled');
 assert.equal(simulated.code, 'internal_futures_simulation_retired');
 assert.equal(ledgerOpenCalls, 0);
 assert.equal(scanner.getCandidates().totalCandidates, 1);
+
+resetScenario();
+setRegistryStrategy('mnq_globex_momentum_v1');
+scan = scanner.runScannerOnce({ now });
+assert.equal(scan.ok, true);
+assert.equal(scan.scan.signalInputsRead, 1);
+assert.equal(scan.scan.readerSignalsRead, 0);
+assert.equal(scan.scan.providerSignalsRead, 1);
+assert.equal(scan.scan.signalsMappedToFutures, 1);
+assert.equal(scan.scan.canonicalPipelineCandidates, 1);
+assert.equal(scan.candidates.length, 1);
+assert.equal(scan.candidates[0].strategyId, 'mnq_globex_momentum_v1');
+assert.equal(scan.candidates[0].symbol, 'MNQ');
+assert.equal(scan.candidates[0].direction, 'long');
+assert.equal(scan.candidates[0].entryPrice, 20000);
+assert.equal(scan.candidates[0].stopLoss, 19940);
+assert.equal(scan.candidates[0].takeProfit, 20120);
+assert.equal(scan.candidates[0].riskReward, 2);
+assert.equal(scan.candidates[0].source, 'trading_os_signal_adapter');
+assert.equal(scan.candidates[0].signalSource, 'futures_provider_mnq_candles');
+assert.equal(scan.candidates[0].tradeType, 'canonical_signal');
+assert.equal(scan.candidates[0].usedRealStrategyLogic, true);
+assert.equal(scan.candidates[0].excludedFromStats, false);
+assert.equal(scan.candidates[0].executionTarget, 'ibkr_paper');
+assert.equal(scan.candidates[0].executionSource, 'ibkr_paper');
+assert.equal(scan.candidates[0].internalSimulationRetired, true);
+assert.equal(scanner.getCandidates().totalCandidates, 1);
+
+providerSignals = [mnqCanonicalSignalAt('2026-07-06T12:50:00.000Z', 'short')];
+scan = scanner.runScannerOnce({ now: '2026-07-06T12:50:30.000Z' });
+assert.equal(scan.ok, true);
+assert.equal(scan.scan.staleQueuedCandidatesPruned, 1);
+assert.equal(scan.scan.canonicalPipelineCandidates, 1);
+assert.equal(scan.candidates.length, 1);
+assert.equal(scan.candidates[0].direction, 'short');
+assert.equal(scan.candidates[0].signalTimestamp, '2026-07-06T12:50:00.000Z');
+assert.equal(scanner.getCandidates().totalCandidates, 1);
+assert.equal(scanner.getCandidates().candidates[0].candidateId, scan.candidates[0].candidateId);
 
 const closedReal = seedClosedRealTrade(
   'trend_continuation',
@@ -371,9 +458,7 @@ assert.equal(row.pnlRealSignals > 0, true);
 assert.equal(row.pnlAll < row.pnlRealSignals, true);
 
 resetScenario();
-approvalService.ensureMigrated();
-approvalService.approve('trend_continuation');
-approvalService.pause('trend_continuation');
+setRegistryStrategy('trend_continuation', 'paused', false);
 signals = [{
   signalId: 'sig-qqq-paused',
   strategyId: 'trend_continuation',
@@ -394,10 +479,10 @@ signals = [{
   strategyLogicVersion: 'test-v1',
   createdAt: '2026-07-06T11:06:00.000Z',
 }];
-const approvalDeniedScan = scanner.runScannerOnce({ now: '2026-07-06T11:06:00.000Z' });
-assert.equal(approvalDeniedScan.ok, true);
-assert.equal(approvalDeniedScan.candidates.length, 0);
-assert.equal(approvalDeniedScan.scan.skippedStrategies.some((row) => row.reason === 'futures_strategy_paused'), true);
+const registryDeniedScan = scanner.runScannerOnce({ now: '2026-07-06T11:06:00.000Z' });
+assert.equal(registryDeniedScan.ok, true);
+assert.equal(registryDeniedScan.candidates.length, 0);
+assert.equal(registryDeniedScan.scan.skippedStrategies.some((row) => row.reason === 'strategy_disabled_in_registry'), true);
 
 resetScenario();
 for (let i = 0; i < 9; i += 1) {
@@ -440,8 +525,6 @@ assert.equal(nineRow.canTradeNow, true);
 assert.equal(nineRow.blockReason, null);
 
 resetScenario();
-approvalService.ensureMigrated();
-approvalService.approve('trend_continuation');
 for (let i = 0; i < 11; i += 1) {
   const minute = String(i).padStart(2, '0');
   seedClosedRealTrade(
@@ -485,8 +568,6 @@ assert.equal(elevenSimulated.ok, false);
 assert.equal(elevenSimulated.error, 'internal_futures_simulation_disabled');
 
 resetScenario();
-approvalService.ensureMigrated();
-approvalService.approve('trend_continuation');
 const hundredBase = new Date('2026-07-04T09:00:00.000Z').getTime();
 for (let i = 0; i < 100; i += 1) {
   const openedAt = new Date(hundredBase + i * 60_000).toISOString();
@@ -520,7 +601,7 @@ signals = [{
 const hundredScan = scanner.runScannerOnce({ now: '2026-07-06T11:30:00.000Z' });
 assert.equal(hundredScan.ok, true);
 assert.equal(hundredScan.candidates.length, 1);
-assert.equal(hundredScan.scan.skippedStrategies.some((row) => row.reason === 'futures_strategy_paused'), false);
+assert.equal(hundredScan.scan.skippedStrategies.some((row) => row.reason === 'strategy_disabled_in_registry'), false);
 assert.equal(scanner.getStrategyStatus({ now: '2026-07-06T11:30:00.000Z' }).strategies.find((item) => item.strategyId === 'trend_continuation').totalTradesAll, 100);
 
 const legacyTrade = ledger.openFuturesPaperPosition({
@@ -574,7 +655,7 @@ signals = [{
   strategyLogicVersion: 'test-v1',
   createdAt: '2026-07-06T11:31:00.000Z',
 }];
-approvalService.approve('narrow_breakout');
+setRegistryStrategy('narrow_breakout');
 const noPerfScan = scanner.runScannerOnce({ now: '2026-07-06T11:31:00.000Z' });
 assert.equal(noPerfScan.ok, true);
 const noPerfStatus = scanner.getStrategyStatus({ now: '2026-07-06T11:31:00.000Z' }).strategies

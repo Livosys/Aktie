@@ -18,18 +18,73 @@ const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'ib-paper-orchestrator-test-')
 const intentService = intentModule.createIbPaperExecutionIntentService({ dir: path.join(tmp, 'intents') });
 const reservationService = reservationModule.createFuturesPaperExecutionTargetReservationService({ dir: path.join(tmp, 'reservations') });
 let submitCalls = 0;
+let startRuntimeCalls = 0;
 
 const fakeAdapter = {
+  startPermanentRuntime: async () => {
+    startRuntimeCalls += 1;
+    return { ok: true, ready: true, state: 'READY' };
+  },
   connectPaperExecutionClient: async () => ({ ok: true }),
   getStatus: () => ({
+    ready: true,
+    state: 'READY',
+    connectionState: 'READY',
     connected: true,
     host: '127.0.0.1',
     port: 4002,
     clientId: 956,
+    connectedSince: '2026-07-15T22:30:00.000Z',
     nextValidIdReady: true,
+    nextValidId: 9000,
     managedAccounts: [{ accountIdMasked: 'DU***596', classification: 'paper' }],
+    managedAccountCount: 1,
+    lastConnected: '2026-07-15T22:30:00.000Z',
+    lastHeartbeat: '2026-07-15T22:30:05.000Z',
+    lastReadyAt: '2026-07-15T22:30:01.000Z',
+    uptimeMs: 60000,
+    reconnectCount: 0,
+    runtimeLifecycle: { expected: ['DISCONNECTED', 'CONNECTING', 'CONNECTED', 'READY', 'HEARTBEAT', 'IDLE'], current: 'IDLE' },
+    runtimeLifecycleState: 'IDLE',
     noLiveOrderCapability: 'paper-only',
   }),
+  getAccountSummary: () => ({
+    ok: true,
+    generatedAt: '2026-07-15T22:30:00.000Z',
+    account: {
+      accountIdMasked: 'DU***596',
+      classification: 'paper',
+      currency: 'SEK',
+      netLiquidation: 100000,
+      realizedPnl: 0,
+      unrealizedPnl: 0,
+    },
+    cacheAgeMs: 0,
+  }),
+  getConnectionReadinessSnapshot: () => ({
+    ok: true,
+    source: 'ib_paper_execution_runtime_singleton',
+    runtimeState: 'READY',
+    gatewayReachable: true,
+    status: 'verified',
+    blockedReason: 'read_only_session_verified',
+    paperMode: 'paper_only',
+    paperModeVerified: true,
+    ibApiVerified: true,
+    paperAccountVerified: true,
+    managedAccounts: ['DUQ565596'],
+    managedAccountCount: 1,
+    paperAccountId: 'DUQ565596',
+    sessionVerified: true,
+    nextValidId: 9000,
+    connectedSince: '2026-07-15T22:30:00.000Z',
+    lastHeartbeat: '2026-07-15T22:30:05.000Z',
+    uptimeMs: 60000,
+    reconnectCount: 0,
+    runtimeLifecycle: { expected: ['DISCONNECTED', 'CONNECTING', 'CONNECTED', 'READY', 'HEARTBEAT', 'IDLE'], current: 'IDLE' },
+    runtimeLifecycleState: 'IDLE',
+  }),
+  markReconciled: () => {},
   verifyPaperAccount: () => ({ ok: true, accountIdMasked: 'DU***596', classification: 'paper', live_account_detected: false }),
   buildOrderRef: (executionId, leg) => `TOS-PAPER-${executionId}-${leg}`,
   createExecutionEvidence: ({ orderPlan }) => ({
@@ -102,17 +157,41 @@ const serverCandidate = {
   orderType: 'MKT',
   stopLossPrice: 22980,
   takeProfitPrice: 23040,
-  approval: { allowed: false },
+  executionAllowlist: { allowed: false },
   entryContract: { allowed: false },
 };
+
+{
+  const normalizedNative = orchestratorModule.normalizeCandidate({
+    candidateId: 'native-1',
+    strategyId: 'mnq_globex_momentum_v1',
+    symbol: 'MNQ',
+    direction: 'long',
+    signalStatus: 'ready',
+    signalSubtype: 'GLOBEX_MOMENTUM',
+    closedCandleConfirmed: true,
+    signalTimestamp: '2026-07-15T22:29:30.000Z',
+  });
+  assert.equal(normalizedNative.signalSubtype, 'GLOBEX_MOMENTUM');
+  assert.equal(normalizedNative.signalStatus, 'ready');
+  assert.equal(normalizedNative.subtype, 'GLOBEX_MOMENTUM');
+  assert.equal(normalizedNative.latestCandleClosed, true);
+}
 
 const service = orchestratorModule.createIbPaperExecutionOrchestratorService({
   adapter: fakeAdapter,
   intentService,
   reconciliationService: fakeReconciliation,
   executionTargetReservationService: reservationService,
-  strategyApprovalService: {
-    evaluateFuturesApprovalGate: ({ strategyId }) => ({ allowed: strategyId === 'ema_pullback_continuation', strategyId, source: 'server_test_approval' }),
+  strategyRegistryService: {
+    canExecuteStrategy: (strategyId) => ({
+      allowed: strategyId === 'ema_pullback_continuation',
+      strategyId,
+      source: 'strategy_registry_execution_allowlist',
+      status: strategyId === 'ema_pullback_continuation' ? 'active' : null,
+      enabled: strategyId === 'ema_pullback_continuation',
+      blockedReason: strategyId === 'ema_pullback_continuation' ? null : 'strategy_not_in_execution_allowlist',
+    }),
   },
   entryContractService: {
     evaluatePaperEntryContract: ({ strategyId }) => ({ allowed: strategyId === 'ema_pullback_continuation', entryContractVersion: 'server_test_contract' }),
@@ -173,12 +252,30 @@ const service = orchestratorModule.createIbPaperExecutionOrchestratorService({
 });
 
 (async () => {
+  const runtimeStart = await service.startRuntime();
+  assert.equal(runtimeStart.ok, true);
+  assert.equal(startRuntimeCalls, 1);
+  const runtimeStatus = await service.buildExecutionStatus();
+  assert.equal(runtimeStatus.executionClient.clientId, 956);
+  assert.equal(runtimeStatus.executionConnected, true);
+  assert.equal(runtimeStatus.nextValidIdReady, true);
+  assert.equal(runtimeStatus.nextValidId, 9000);
+  assert.equal(runtimeStatus.paperAccountVerified, true);
+  assert.equal(runtimeStatus.reconciliation.status, 'ok');
+  assert.equal(runtimeStatus.readiness.source, 'ib_paper_execution_runtime_singleton');
+  assert.equal(runtimeStatus.connectedSince, '2026-07-15T22:30:00.000Z');
+  assert.equal(runtimeStatus.runtimeLifecycleState, 'IDLE');
+  const cachedStatus = service.getCachedExecutionStatus();
+  assert.equal(cachedStatus.cached, true);
+  assert.equal(cachedStatus.nextValidId, 9000);
+  assert.equal(startRuntimeCalls, 1);
+
   const ignoredClientCandidate = await service.buildShadowExecution({
     candidate: {
       candidateId: 'client-fake',
       strategyId: 'ema_pullback_continuation',
       root: 'MNQ',
-      approval: { allowed: true },
+      executionAllowlist: { allowed: true },
       entryContract: { allowed: true },
       quantity: 1,
       conId: 793356225,
@@ -188,7 +285,8 @@ const service = orchestratorModule.createIbPaperExecutionOrchestratorService({
   assert.equal(ignoredClientCandidate.normalizedOrder.candidateId, 'cand-1');
   assert.equal(ignoredClientCandidate.normalizedOrder.quantity, 1);
   assert.equal(ignoredClientCandidate.candidate.quantity, 1);
-  assert.equal(ignoredClientCandidate.approval.source, 'server_test_approval');
+  assert.equal(ignoredClientCandidate.executionAllowlist.source, 'strategy_registry_execution_allowlist');
+  assert.equal(ignoredClientCandidate.executionAllowlist.status, 'active');
   assert.equal(ignoredClientCandidate.entryContract.entryContractVersion, 'server_test_contract');
 
   const unknown = await service.buildShadowExecution({
@@ -198,13 +296,13 @@ const service = orchestratorModule.createIbPaperExecutionOrchestratorService({
   assert.equal(unknown.status, 'READY_WAITING_FOR_SIGNAL');
   assert.equal(unknown.actualSubmit, false);
 
-  const first = await service.buildShadowExecution({
-    candidateId: 'cand-1',
-    now: new Date('2026-07-15T22:30:00.000Z'),
-  });
-  assert.equal(first.ok, true);
-  assert.equal(first.status, 'blocked');
-  assert(first.blockers.includes('duplicate_intent'));
+	  const first = await service.buildShadowExecution({
+	    candidateId: 'cand-1',
+	    now: new Date('2026-07-15T22:30:00.000Z'),
+	  });
+	  assert.equal(first.ok, true);
+	  assert.equal(first.status, 'blocked');
+	  assert(first.blockers.includes('duplicate_intent'));
   assert.equal(first.actualSubmit, false);
   assert.equal(submitCalls, 0);
   assert.equal(first.normalizedOrder.root, 'MNQ');
@@ -226,8 +324,15 @@ const service = orchestratorModule.createIbPaperExecutionOrchestratorService({
     },
     reconciliationService: fakeReconciliation,
     executionTargetReservationService: reservationModule.createFuturesPaperExecutionTargetReservationService({ dir: path.join(tmp, 'race-reservations') }),
-    strategyApprovalService: {
-      evaluateFuturesApprovalGate: ({ strategyId }) => ({ allowed: strategyId === 'ema_pullback_continuation', strategyId, source: 'server_test_approval' }),
+    strategyRegistryService: {
+      canExecuteStrategy: (strategyId) => ({
+        allowed: strategyId === 'ema_pullback_continuation',
+        strategyId,
+        source: 'strategy_registry_execution_allowlist',
+        status: strategyId === 'ema_pullback_continuation' ? 'active' : null,
+        enabled: strategyId === 'ema_pullback_continuation',
+        blockedReason: strategyId === 'ema_pullback_continuation' ? null : 'strategy_not_in_execution_allowlist',
+      }),
     },
     entryContractService: {
       evaluatePaperEntryContract: ({ strategyId }) => ({ allowed: strategyId === 'ema_pullback_continuation', entryContractVersion: 'server_test_contract' }),

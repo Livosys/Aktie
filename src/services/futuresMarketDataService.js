@@ -241,10 +241,6 @@ function createFuturesMarketDataService(options = {}) {
 
   const DATA_SAFETY = Object.freeze({
     readOnly: true,
-    wouldCreateCandidate: false,
-    wouldOpenPosition: false,
-    entryEligible: false,
-    executionEnabled: false,
     actions_allowed: false,
     can_place_orders: false,
     live_trading_enabled: false,

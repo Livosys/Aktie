@@ -91,15 +91,14 @@ function entryContractApproved(evidence = {}) {
   return evidence?.allowed === true
     || evidence?.entryContractApproved === true
     || evidence?.entryContract?.allowed === true
-    || evidence?.paperEntryContract?.allowed === true
-    || evidence?.approvalEvidence?.entryContractApproved === true;
+    || evidence?.paperEntryContract?.allowed === true;
 }
 
-function strategyApproved(evidence = {}) {
+function strategyExecutionAllowed(evidence = {}) {
   return evidence?.allowed === true
-    || evidence?.strategyApproved === true
-    || evidence?.approval?.allowed === true
-    || evidence?.approvalEvidence?.strategyApproved === true;
+    || evidence?.executionAllowed === true
+    || evidence?.strategyExecutionAllowed === true
+    || evidence?.executionAllowlist?.allowed === true;
 }
 
 function evaluatePaperExecutionGuard({
@@ -112,7 +111,7 @@ function evaluatePaperExecutionGuard({
   adapterVerification = null,
   brokerRisk = null,
   reconciliation = null,
-  approval = null,
+  executionAllowlist = null,
   entryContract = null,
   idempotency = null,
   session = null,
@@ -135,6 +134,7 @@ function evaluatePaperExecutionGuard({
     && Boolean(accountMasked)
     && adapterVerification.accountIdMasked === accountMasked;
   const expectedMasked = client.expectedPaperAccountMasked || null;
+  const strategyGate = executionAllowlist;
 
   addCheck(checks, 'environment_paper', environment === 'paper', 'environment_not_paper', { environment });
   addCheck(checks, 'gateway_paper_port', Number(client.port) === 4002, 'wrong_gateway_port', { port: client.port });
@@ -149,7 +149,12 @@ function evaluatePaperExecutionGuard({
   const contractValidation = validateContract(contract, root, now);
   checks.push(...contractValidation.checks);
 
-	  addCheck(checks, 'strategy_approval_passed', strategyApproved(approval), approval?.blockedReason || 'strategy_not_approved', { strategyId: intent.strategyId || candidate.strategyId || null });
+	  addCheck(checks, 'strategy_execution_allowlist_passed', strategyExecutionAllowed(strategyGate), strategyGate?.blockedReason || 'strategy_not_in_execution_allowlist', {
+    strategyId: intent.strategyId || candidate.strategyId || null,
+    registryStatus: strategyGate?.status || null,
+    registryEnabled: strategyGate?.enabled ?? null,
+    allowlistSource: strategyGate?.source || null,
+  });
 	  addCheck(checks, 'entry_contract_passed', entryContractApproved(entryContract), entryContract?.reasonCode || entryContract?.blockedReason || 'entry_contract_not_approved');
   addCheck(checks, 'risk_approval_passed', brokerRisk?.allowed === true, brokerRisk?.blockedReason || 'broker_risk_blocked', { riskBlockers: brokerRisk?.blockers || [] });
   addCheck(checks, 'idempotency_key_present', Boolean(intent.idempotencyKey), 'idempotency_key_missing');

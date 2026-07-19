@@ -50,6 +50,7 @@ function makeRegistry() {
   const registry = createStrategyRegistryService({
     registryFile,
     daytradingCatalog: makeCatalog(),
+    seedRecords: [],
   });
   registry.registerTradingViewStrategy('TV_ACTIVE', {
     strategy_name: 'TV Active',

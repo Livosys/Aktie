@@ -48,7 +48,7 @@ const ENTRY_CONTRACT_BLOCK_REASONS = new Set(Object.values(REASON_CODES));
 const OBSERVATION_STATUSES = new Set(['watch', 'caution', 'wait', 'avoid', 'no_trade', 'observe', 'observing']);
 const WATCH_STATUSES = new Set(['watch', 'observe', 'observing']);
 const WAIT_STATUSES = new Set(['wait', 'avoid', 'no_trade']);
-const READY_STATUSES = new Set(['active', 'confirmed', 'entry', 'entry_ready', 'ready']);
+const READY_STATUSES = new Set(['active', 'confirmed', 'entry', 'entry_ready', 'ready', 'queued', 'ready_waiting_for_signal']);
 const LONG_DIRECTIONS = new Set(['UP', 'LONG', 'BUY', 'BULL', 'BULLISH']);
 const SHORT_DIRECTIONS = new Set(['DOWN', 'SHORT', 'SELL', 'BEAR', 'BEARISH']);
 const STALE_FRESHNESS = new Set(['STALE', 'MARKET_CLOSED', 'DELAYED', 'MISSING', 'UNKNOWN']);
@@ -113,6 +113,25 @@ const CONTRACTS = Object.freeze({
     volumePolicy: 'strong_or_confirmed',
     requiresVwapContext: true,
     marketType: 'stocks',
+  }),
+  mnq_globex_momentum_v1: Object.freeze({
+    strategyId: 'mnq_globex_momentum_v1',
+    version: PAPER_ENTRY_CONTRACT_VERSION,
+    status: 'ready',
+    allowedSubtypes: Object.freeze(['GLOBEX_MOMENTUM']),
+    allowedDirections: Object.freeze(['LONG', 'UP', 'SHORT', 'DOWN']),
+    allowedStatuses: Object.freeze(['active', 'confirmed', 'entry', 'entry_ready', 'ready', 'queued', 'ready_waiting_for_signal']),
+    blockedStatuses: Object.freeze(['watch', 'caution', 'wait', 'avoid', 'no_trade']),
+    requiredConfirmations: Object.freeze(['closed_candle_confirmation']),
+    requiresFreshData: true,
+    maxSignalAgeMs: 15 * 60 * 1000,
+    requiresClosedCandle: true,
+    requiresMarketOpen: true,
+    allowedSessions: Object.freeze(['overnight', 'asia', 'europe', 'us_premarket', 'us_rth', 'us_after_hours', 'globex']),
+    lateEntryPolicy: 'block',
+    extendedMovePolicy: 'block',
+    volumePolicy: null,
+    marketType: 'futures',
   }),
 });
 
@@ -243,6 +262,28 @@ function hasLongDirection(candidate = {}) {
   if (tokens.some((token) => LONG_DIRECTIONS.has(token))) return true;
   const subtype = subtypeOf(candidate);
   return subtype === 'NARROW_BULL_ENTRY' || subtype === 'EMA_PULLBACK_UP' || subtype === 'VWAP_RECLAIM_UP';
+}
+
+function contractAllowsObservedDirection(contract = {}, candidate = {}) {
+  const allowedDirections = arr(contract.allowedDirections).map(upper);
+  const allowsLong = allowedDirections.some((token) => LONG_DIRECTIONS.has(token));
+  const allowsShort = allowedDirections.some((token) => SHORT_DIRECTIONS.has(token));
+  const longObserved = hasLongDirection(candidate);
+  const shortObserved = hasShortIntent(candidate);
+  const disallowedLongObserved = longObserved && !allowsLong;
+  const disallowedShortObserved = shortObserved && !allowsShort;
+  return {
+    allowed: !disallowedLongObserved
+      && !disallowedShortObserved
+      && ((longObserved && allowsLong) || (shortObserved && allowsShort)),
+    allowsLong,
+    allowsShort,
+    longObserved,
+    shortObserved,
+    disallowedLongObserved,
+    disallowedShortObserved,
+    directionTokens: directionTokens(candidate),
+  };
 }
 
 function boolAt(obj, keys) {
@@ -506,7 +547,7 @@ function baseDecision(contract, candidate, now, marketContext) {
       symbol: candidate?.symbol || null,
       marketType: marketTypeOf(candidate, marketContext),
       session: sessionOf(candidate, marketContext) || null,
-      status: lower(candidate?.status || candidate?.priority || ''),
+      status: lower(candidate?.signalStatus || candidate?.entryStatus || candidate?.status || candidate?.priority || ''),
       signalSubtype: subtypeOf(candidate) || null,
       nextMoveBias: upper(candidate?.nextMoveBias || candidate?.next_move_bias || candidate?.direction || ''),
       confidenceScore: candidate?.confidenceScore ?? null,
@@ -554,15 +595,23 @@ function evaluatePaperEntryContract({ strategyId, candidate = {}, now = new Date
   }
   pass(decision, 'subtype', { observedSubtype: subtype });
 
-  if (hasShortIntent(candidate) || !hasLongDirection(candidate)) {
+  const directionDecision = contractAllowsObservedDirection(contract, candidate);
+  if (!directionDecision.allowed) {
     return block(decision, REASON_CODES.INVALID_DIRECTION, 'direction', {
-      directionTokens: directionTokens(candidate),
-      shortIntentObserved: hasShortIntent(candidate),
+      directionTokens: directionDecision.directionTokens,
+      shortIntentObserved: directionDecision.shortObserved,
+      longIntentObserved: directionDecision.longObserved,
+      allowedDirections: contract.allowedDirections,
     });
   }
-  pass(decision, 'direction', { directionTokens: directionTokens(candidate) });
+  pass(decision, 'direction', {
+    directionTokens: directionDecision.directionTokens,
+    shortIntentObserved: directionDecision.shortObserved,
+    longIntentObserved: directionDecision.longObserved,
+    allowedDirections: contract.allowedDirections,
+  });
 
-  const status = lower(candidate.status || candidate.priority || '');
+  const status = lower(candidate.signalStatus || candidate.entryStatus || candidate.status || candidate.priority || '');
   if (WATCH_STATUSES.has(status)) {
     return block(decision, REASON_CODES.WATCH_ONLY, 'status', { observedStatus: status });
   }

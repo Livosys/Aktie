@@ -34,7 +34,13 @@ const base = {
   adapterVerification: { ok: true, accountIdMasked: 'DU***596', classification: 'paper', live_account_detected: false },
   brokerRisk: { allowed: true, blockers: [] },
   reconciliation: { degraded: false, status: 'ok' },
-  approval: { allowed: true },
+  executionAllowlist: {
+    allowed: true,
+    strategyId: 'ema_pullback_continuation',
+    status: 'active',
+    enabled: true,
+    source: 'strategy_registry_execution_allowlist',
+  },
   entryContract: { allowed: true },
   idempotency: { duplicate: false },
   session: { isMarketOpen: true, closedReason: null, sessionId: 'overnight' },
@@ -46,6 +52,28 @@ const base = {
   assert.equal(result.allowed, true);
   assert.equal(result.verifiedPaperAccount, true);
   assert.equal(result.liveAccountBlocked, true);
+}
+
+{
+  const result = guard.evaluatePaperExecutionGuard({
+    ...base,
+    intent: {
+      ...base.intent,
+      strategyId: 'mnq_globex_momentum_v1',
+    },
+    candidate: {
+      ...base.candidate,
+      strategyId: 'mnq_globex_momentum_v1',
+    },
+    executionAllowlist: {
+      allowed: true,
+      strategyId: 'mnq_globex_momentum_v1',
+      status: 'active',
+      enabled: true,
+      source: 'strategy_registry_execution_allowlist',
+    },
+  });
+  assert.equal(result.allowed, true);
 }
 
 {
@@ -147,13 +175,20 @@ const base = {
 }
 
 {
-  const result = guard.evaluatePaperExecutionGuard({
-    ...base,
-    approval: { allowed: false, blockedReason: 'strategy_not_approved' },
-  });
-  assert.equal(result.allowed, false);
-  assert(result.blockers.includes('strategy_not_approved'));
-}
+	  const result = guard.evaluatePaperExecutionGuard({
+	    ...base,
+	    executionAllowlist: {
+	      allowed: false,
+	      blockedReason: 'strategy_not_active_in_registry',
+	      strategyId: 'ema_pullback_continuation',
+	      status: 'paper_only',
+	      enabled: true,
+	      source: 'strategy_registry_execution_allowlist',
+	    },
+	  });
+	  assert.equal(result.allowed, false);
+	  assert(result.blockers.includes('strategy_not_active_in_registry'));
+	}
 
 {
   const result = guard.evaluatePaperExecutionGuard({

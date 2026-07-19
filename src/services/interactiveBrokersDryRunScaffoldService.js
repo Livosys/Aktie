@@ -70,7 +70,9 @@ async function buildDryRunExecutionScaffold(options = {}) {
   const readiness = options.readiness || (options.getReadiness
     ? await options.getReadiness()
     : await interactiveBrokersPreviewService.getConnectionReadiness());
-  const approved = options.approvedStrategiesPreview || interactiveBrokersPreviewService.getApprovedStrategiesPreview();
+  const registryPreview = options.registryPreview
+    || options.approvedStrategiesPreview
+    || interactiveBrokersPreviewService.getApprovedStrategiesPreview();
 
   const previewCandidates = Array.isArray(orderPreview?.candidates) ? orderPreview.candidates : [];
   const allowedCandidates = Array.isArray(orderPreview?.allowedCandidates) ? orderPreview.allowedCandidates : previewCandidates.filter((row) => row.allowedForIbPaperPreview === true);
@@ -115,7 +117,7 @@ async function buildDryRunExecutionScaffold(options = {}) {
     safety: { ...SAFETY },
     status: status?.ok === true ? status : interactiveBrokersPreviewService.getIbPaperStatus(),
     readiness,
-    approvedStrategiesPreview: approved,
+    registryPreview,
     executionEnabled: false,
     orderQueueEnabled: false,
     liveTradingEnabled: false,
@@ -125,13 +127,13 @@ async function buildDryRunExecutionScaffold(options = {}) {
       paperOrderQueue: { locked: true, reason: 'scaffold_only' },
       brokerExecution: { locked: true, reason: 'scaffold_only' },
       liveTrading: { locked: true, reason: 'scaffold_only' },
-      manualApprovalRequired: true,
+      manualSafetyGateRequired: true,
     },
     summary: {
       totalScanned: Number(orderPreview?.summary?.totalScanned ?? previewCandidates.length ?? 0),
       allowedCount: allowedCandidates.length,
       blockedCount: blockedCandidates.length,
-      approvedStrategyCount: Number(approved?.approvedStrategiesCount ?? approved?.approvedStrategies?.length ?? 0),
+      registryStrategyCount: Number(registryPreview?.registryStrategyCount ?? registryPreview?.registryStrategies?.length ?? 0),
       selectedCount: previewCandidates.length,
       scaffoldStepCount: scaffoldSteps.length,
       previewMode: orderPreview?.mode || 'preview_only',

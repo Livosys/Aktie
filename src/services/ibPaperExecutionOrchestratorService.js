@@ -11,7 +11,7 @@ const reconciliationModule = require('./ibPaperBrokerReconciliationService');
 const futuresMarketDataService = require('./futuresMarketDataService');
 const futuresPaperQuoteSourceService = require('./futuresPaperQuoteSourceService');
 const futuresPaperScannerService = require('./futuresPaperScannerService');
-const futuresPaperStrategyApprovalService = require('./futuresPaperStrategyApprovalService');
+const strategyRegistryService = require('./strategyRegistryService');
 const paperStrategyEntryContractService = require('./paperStrategyEntryContractService');
 const ibPaperAccountSummaryService = require('./ibPaperAccountSummaryService');
 const futuresMarketHoursService = require('./futuresMarketHoursService');
@@ -68,6 +68,23 @@ function ageMsFromTimestamp(ts, now = new Date()) {
   return Math.max(0, current - parsed);
 }
 
+function ageMsFromGeneratedAt(generatedAt, now = new Date()) {
+  const parsed = Date.parse(generatedAt || '');
+  const current = new Date(now).getTime();
+  if (!Number.isFinite(parsed) || !Number.isFinite(current)) return null;
+  return Math.max(0, current - parsed);
+}
+
+function withCacheAge(summary, now = new Date()) {
+  if (!summary || typeof summary !== 'object') return summary;
+  const explicitAge = safeNumber(summary.cacheAgeMs ?? summary.ageMs);
+  const generatedAge = explicitAge == null ? ageMsFromGeneratedAt(summary.generatedAt, now) : null;
+  return {
+    ...summary,
+    cacheAgeMs: explicitAge ?? generatedAge,
+  };
+}
+
 function buildExecutionId(seed) {
   return `fxp_${crypto.createHash('sha256').update(String(seed || `${Date.now()}:${Math.random()}`)).digest('hex').slice(0, 16)}`;
 }
@@ -78,25 +95,43 @@ function normalizeCandidate(input = {}) {
   const strategyId = safeString(candidate.strategyId || candidate.strategy_id || candidate.canonicalStrategyId);
   const direction = sideFromCandidate(candidate);
   const signalTimestamp = candidateTimestamp(candidate);
+  const signalSubtype = candidate.signalSubtype
+    || candidate.signal_subtype
+    || candidate.subtype
+    || candidate.entrySubtype
+    || candidate.patternSubtype
+    || null;
+  const signalStatus = candidate.signalStatus || candidate.signal_status || candidate.status || candidate.priority || null;
   return {
     candidateId: safeString(candidate.candidateId || candidate.id || candidate.eventId),
     originalSignalId: safeString(candidate.originalSignalId || candidate.signalId),
-    status: candidate.status || candidate.priority || null,
-    subtype: candidate.subtype || candidate.signalSubtype || candidate.entrySubtype || candidate.patternSubtype || null,
+    status: signalStatus,
+    signalStatus,
+    signalSubtype,
+    signal_subtype: signalSubtype,
+    subtype: signalSubtype,
     dataFreshness: candidate.dataFreshness || null,
+    market: candidate.market || null,
+    marketType: candidate.marketType || candidate.market || null,
     sessionId: candidate.sessionId || candidate.sessionMetadata?.sessionId || null,
+    session: candidate.session || candidate.sessionMetadata?.session || null,
     sessionMetadata: candidate.sessionMetadata || null,
     closedCandleConfirmed: candidate.closedCandleConfirmed === true || candidate.hasClosedCandle === true,
+    latestCandleClosed: candidate.latestCandleClosed === true || candidate.closedCandleConfirmed === true || candidate.hasClosedCandle === true,
     twoMinuteConfirmation: candidate.twoMinuteConfirmation === true,
     emaPullbackConfirmation: candidate.emaPullbackConfirmation === true,
     vwapReclaimConfirmation: candidate.vwapReclaimConfirmation === true,
     volumeConfirmation: candidate.volumeConfirmation === true,
     confidence: candidate.confidence ?? null,
+    nextMoveBias: candidate.nextMoveBias || candidate.next_move_bias || direction,
     root,
     symbol: root,
     strategyId,
     direction,
     signalTimestamp,
+    candleTimestamp: candidate.candleTimestamp || candidate.barTimestamp || signalTimestamp,
+    timestamp: candidate.timestamp || signalTimestamp,
+    createdAt: candidate.createdAt || signalTimestamp,
     quantity: 1,
     orderType: safeUpper(candidate.orderType || candidate.entryOrderType || 'MKT'),
     limitPrice: safeNumber(candidate.limitPrice ?? candidate.entryLimitPrice),
@@ -127,13 +162,16 @@ function createIbPaperExecutionOrchestratorService(options = {}) {
   const marketData = options.marketDataService || futuresMarketDataService.defaultFuturesMarketDataService;
   const quoteSource = options.quoteSourceService || futuresPaperQuoteSourceService.defaultFuturesPaperQuoteSourceService;
 	  const scanner = options.scannerService || futuresPaperScannerService.defaultFuturesPaperScannerService;
-	  const accountSummaryService = options.accountSummaryService || ibPaperAccountSummaryService.defaultIbPaperAccountSummaryService;
-	  const strategyApprovalService = options.strategyApprovalService || futuresPaperStrategyApprovalService;
+		  const accountSummaryService = options.accountSummaryService || ibPaperAccountSummaryService.defaultIbPaperAccountSummaryService;
+		  const strategyRegistry = options.strategyRegistryService || strategyRegistryService;
 	  const entryContractService = options.entryContractService || paperStrategyEntryContractService;
 	  const executionTargetReservations = options.executionTargetReservationService
 	    || executionTargetReservationModule.defaultFuturesPaperExecutionTargetReservationService;
   const reconciliation = options.reconciliationService
     || reconciliationModule.createIbPaperBrokerReconciliationService({ adapter, intentService });
+  const statusCacheTtlMs = Number(options.statusCacheTtlMs || 1_000);
+  let statusCache = null;
+  let statusInflight = null;
 
 	  function selectCandidate(candidateId = null) {
 	    const queue = scanner.getCandidates();
@@ -153,34 +191,210 @@ function createIbPaperExecutionOrchestratorService(options = {}) {
     return marketData.adapter.resolveContract(root);
   }
 
-  async function buildExecutionStatus({ connect = false } = {}) {
-    const flags = configService.getFlags();
-    let connectionAttempt = null;
-    if (connect && flags.executionEnabled) {
-      connectionAttempt = await adapter.connectPaperExecutionClient();
+  function buildBlockedAccountSummary(blocker = 'paper_account_summary_not_ready') {
+    return {
+      ok: false,
+      status: 'pending',
+      blocker,
+      account: null,
+      generatedAt: nowIso(),
+    };
+  }
+
+  function readRuntimeAccountSummary(now = new Date()) {
+    if (typeof adapter.getAccountSummary === 'function') {
+      const summary = adapter.getAccountSummary();
+      if (summary && typeof summary === 'object') return withCacheAge(summary, now);
     }
+    if (typeof accountSummaryService.getCachedSummary === 'function') {
+      return withCacheAge(accountSummaryService.getCachedSummary(), now);
+    }
+    return null;
+  }
+
+  async function readFreshRuntimeAccountSummary(adapterStatus = {}, now = new Date()) {
+    let summary = readRuntimeAccountSummary(now);
+    const limits = configService.getPilotLimits();
+    const ageMs = safeNumber(summary?.cacheAgeMs);
+    const stale = !summary || summary.ok !== true || ageMs == null || ageMs > limits.maxAccountSummaryAgeMs;
+    const ready = adapterStatus.ready === true || adapterStatus.connectionState === 'READY';
+    if (stale && ready && typeof adapter.refreshAccountSummary === 'function') {
+      try {
+        const refreshed = await adapter.refreshAccountSummary();
+        summary = withCacheAge(refreshed, now);
+      } catch (_) {
+        summary = withCacheAge(summary, now);
+      }
+    }
+    return summary;
+  }
+
+  async function reconcileRuntime({ force = false } = {}) {
     const adapterStatus = adapter.getStatus();
-    const accountSummary = await accountSummaryService.getSummary({ maxAgeMs: configService.getPilotLimits().maxAccountSummaryAgeMs }).catch((err) => ({ ok: false, blocker: err.message }));
+    if (adapterStatus.ready !== true && adapterStatus.connectionState !== 'READY') {
+      return reconciliation.getCachedReconciliation();
+    }
+    const snapshot = await reconciliation.reconcilePaperBroker({ force });
+    if (typeof adapter.markReconciled === 'function') adapter.markReconciled();
+    return snapshot;
+  }
+
+  async function startRuntime() {
+    const flags = configService.getFlags();
+    if (!flags.executionEnabled) {
+      return { ok: false, error: 'ibkr_paper_execution_disabled', flags, ...SAFETY };
+    }
+    const connectionAttempt = typeof adapter.startPermanentRuntime === 'function'
+      ? await adapter.startPermanentRuntime()
+      : await adapter.connectPaperExecutionClient();
+    if (connectionAttempt?.ready === true || connectionAttempt?.state === 'READY') {
+      await reconcileRuntime({ force: true });
+    }
+    await buildExecutionStatus({ force: true });
+    return { ok: connectionAttempt?.ok === true, connectionAttempt, flags, ...SAFETY };
+  }
+
+  function getRuntimeReadinessSnapshot() {
+    if (typeof adapter.getConnectionReadinessSnapshot === 'function') {
+      return adapter.getConnectionReadinessSnapshot();
+    }
+    const adapterStatus = typeof adapter.getStatus === 'function' ? adapter.getStatus() : {};
+    const runtimeState = adapterStatus.connectionState || adapterStatus.state || (adapterStatus.connected ? 'CONNECTED' : 'DISCONNECTED');
+    const managedAccounts = Array.isArray(adapterStatus.managedAccounts)
+      ? adapterStatus.managedAccounts.map((row) => row?.accountIdMasked || row).filter(Boolean)
+      : [];
+    const ready = adapterStatus.ready === true || runtimeState === 'READY';
+    return {
+      ...SAFETY,
+      ok: true,
+      dryRun: true,
+      source: 'ib_paper_execution_runtime_singleton',
+      runtimeState,
+      gatewayReachable: adapterStatus.connected === true || ready,
+      status: ready ? 'verified' : String(runtimeState || 'DISCONNECTED').toLowerCase(),
+      blockedReason: ready ? 'read_only_session_verified' : 'execution_runtime_not_ready',
+      paperMode: ready ? 'paper_only' : 'unknown',
+      paperModeVerified: ready,
+      ibApiVerified: adapterStatus.nextValidIdReady === true,
+      paperAccountVerified: ready,
+      managedAccounts,
+      managedAccountCount: managedAccounts.length,
+      paperAccountId: null,
+      sessionVerified: ready,
+	      verificationMethod: 'execution_runtime_singleton_956',
+	      nextValidId: adapterStatus.nextValidId ?? null,
+	      lastConnected: adapterStatus.lastConnected || null,
+      connectedSince: adapterStatus.connectedSince || adapterStatus.connectedAt || null,
+      runtimeStartedAt: adapterStatus.runtimeStartedAt || null,
+	      lastHeartbeat: adapterStatus.lastHeartbeat || null,
+	      lastReconnect: adapterStatus.lastReconnect || null,
+	      lastReadyAt: adapterStatus.lastReadyAt || null,
+      lastReconciliationAt: adapterStatus.lastReconciliationAt || null,
+      uptimeMs: adapterStatus.uptimeMs ?? null,
+      uptime: adapterStatus.uptime ?? adapterStatus.uptimeMs ?? null,
+      runtimeUptimeMs: adapterStatus.runtimeUptimeMs ?? adapterStatus.uptimeMs ?? null,
+      connectionUptimeMs: adapterStatus.connectionUptimeMs ?? null,
+      runtimeLifecycle: adapterStatus.runtimeLifecycle || null,
+      runtimeLifecycleState: adapterStatus.runtimeLifecycleState || null,
+	      reconnectCount: adapterStatus.reconnectCount || 0,
+      orderSendingBlocked: true,
+      wouldCreateIbPaperOrder: false,
+      internalPaperTradingUnaffected: true,
+      passwordStored: false,
+    };
+  }
+
+	  function getCachedExecutionStatus() {
+	    if (statusCache?.payload) {
+	      return { ...statusCache.payload, cached: true, cacheAgeMs: Date.now() - statusCache.atMs };
+	    }
+	    const adapterStatus = typeof adapter.getStatus === 'function' ? adapter.getStatus() : {};
+    const runtimeReadiness = getRuntimeReadinessSnapshot();
+	    return {
+	      ok: true,
+	      generatedAt: nowIso(),
+	      status: configService.getFlags().executionEnabled ? 'pending' : 'disabled',
+	      runtimeState: adapterStatus.connectionState || adapterStatus.state || (adapterStatus.connected ? 'CONNECTED' : 'DISCONNECTED'),
+	      executionRuntimeState: adapterStatus.connectionState || adapterStatus.state || (adapterStatus.connected ? 'CONNECTED' : 'DISCONNECTED'),
+      runtimeReadiness,
+      readiness: runtimeReadiness,
+      connectionReadiness: runtimeReadiness,
+	      executionClient: adapterStatus,
+	      executionConnected: adapterStatus.ready === true || adapterStatus.connected === true,
+	      nextValidId: adapterStatus.nextValidId ?? null,
+	      nextValidIdReady: adapterStatus.nextValidIdReady === true,
+	      managedAccounts: adapterStatus.managedAccounts || [],
+	      managedAccountCount: adapterStatus.managedAccountCount ?? (Array.isArray(adapterStatus.managedAccounts) ? adapterStatus.managedAccounts.length : 0),
+      connectedSince: adapterStatus.connectedSince || adapterStatus.connectedAt || runtimeReadiness.connectedSince || null,
+      lastHeartbeat: adapterStatus.lastHeartbeat || runtimeReadiness.lastHeartbeat || null,
+      lastReconnect: adapterStatus.lastReconnect || runtimeReadiness.lastReconnect || null,
+      uptimeMs: adapterStatus.uptimeMs ?? runtimeReadiness.uptimeMs ?? null,
+      uptime: adapterStatus.uptime ?? runtimeReadiness.uptime ?? adapterStatus.uptimeMs ?? null,
+      reconnectCount: adapterStatus.reconnectCount ?? runtimeReadiness.reconnectCount ?? 0,
+      runtimeLifecycle: adapterStatus.runtimeLifecycle || runtimeReadiness.runtimeLifecycle || null,
+      runtimeLifecycleState: adapterStatus.runtimeLifecycleState || runtimeReadiness.runtimeLifecycleState || null,
+	      ...SAFETY,
+	    };
+	  }
+
+  async function buildExecutionStatus({ force = false } = {}) {
+    const cachedAge = statusCache ? Date.now() - statusCache.atMs : null;
+    if (!force && statusCache && cachedAge != null && cachedAge <= statusCacheTtlMs) {
+      return { ...statusCache.payload, cached: true, cacheAgeMs: cachedAge };
+    }
+    if (!force && statusInflight) return statusInflight;
+    statusInflight = (async () => {
+	    const flags = configService.getFlags();
+	    const connectionAttempt = null;
+	    const adapterStatus = adapter.getStatus();
+    const runtimeReadiness = getRuntimeReadinessSnapshot();
+      const statusNow = new Date();
+	    const runtimeAccountSummary = await readFreshRuntimeAccountSummary(adapterStatus, statusNow);
+    const accountSummary = runtimeAccountSummary || buildBlockedAccountSummary();
     const verification = adapter.verifyPaperAccount(accountSummary?.account?.accountIdMasked || null);
-    const rec = adapterStatus.connected ? await reconciliation.reconcilePaperBroker({ force: false }) : reconciliation.getCachedReconciliation();
+    const rec = adapterStatus.ready === true || adapterStatus.connectionState === 'READY'
+      ? await reconcileRuntime({ force: false })
+      : reconciliation.getCachedReconciliation();
     const safety = configService.buildSafetyView();
     const brokerOpenOrders = Array.isArray(rec.openOrders) ? rec.openOrders : [];
     const brokerExecutions = Array.isArray(rec.executions) ? rec.executions : [];
     const brokerPositions = Array.isArray(rec.positions) ? rec.positions : [];
     const brokerOrderStatuses = Array.isArray(rec.orderStatuses) ? rec.orderStatuses : [];
     const brokerCommissions = typeof adapter.getCommissions === 'function' ? adapter.getCommissions() : [];
-    return {
+    const payload = {
       ok: true,
       generatedAt: nowIso(),
       status: !flags.executionEnabled ? 'disabled' : (flags.shadowMode ? 'shadow' : (flags.submissionEnabled ? 'pilot' : 'paused')),
-      flags,
+	      runtimeState: adapterStatus.connectionState || adapterStatus.state || (adapterStatus.connected ? 'CONNECTED' : 'DISCONNECTED'),
+	      executionRuntimeState: adapterStatus.connectionState || adapterStatus.state || (adapterStatus.connected ? 'CONNECTED' : 'DISCONNECTED'),
+      runtimeReadiness,
+      readiness: runtimeReadiness,
+      connectionReadiness: runtimeReadiness,
+	      flags,
       safety: {
         ...safety,
         verifiedPaperAccount: verification.ok === true && accountSummary?.ok === true,
         liveAccountBlocked: verification.live_account_detected !== true,
       },
       clientIds: configService.getExecutionClientConfig(),
-      executionClient: adapterStatus,
+	      executionClient: adapterStatus,
+	      executionConnected: adapterStatus.ready === true || adapterStatus.connected === true,
+	      nextValidId: adapterStatus.nextValidId ?? null,
+	      nextValidIdReady: adapterStatus.nextValidIdReady === true,
+	      managedAccounts: adapterStatus.managedAccounts || [],
+	      managedAccountCount: adapterStatus.managedAccountCount ?? (Array.isArray(adapterStatus.managedAccounts) ? adapterStatus.managedAccounts.length : 0),
+      connectedSince: adapterStatus.connectedSince || adapterStatus.connectedAt || runtimeReadiness.connectedSince || null,
+      lastHeartbeat: adapterStatus.lastHeartbeat || runtimeReadiness.lastHeartbeat || null,
+      lastReconnect: adapterStatus.lastReconnect || runtimeReadiness.lastReconnect || null,
+      lastReadyAt: adapterStatus.lastReadyAt || runtimeReadiness.lastReadyAt || null,
+      lastReconciliationAt: adapterStatus.lastReconciliationAt || runtimeReadiness.lastReconciliationAt || null,
+      uptimeMs: adapterStatus.uptimeMs ?? runtimeReadiness.uptimeMs ?? null,
+      uptime: adapterStatus.uptime ?? runtimeReadiness.uptime ?? adapterStatus.uptimeMs ?? null,
+      runtimeUptimeMs: adapterStatus.runtimeUptimeMs ?? runtimeReadiness.runtimeUptimeMs ?? adapterStatus.uptimeMs ?? null,
+      connectionUptimeMs: adapterStatus.connectionUptimeMs ?? runtimeReadiness.connectionUptimeMs ?? null,
+      reconnectCount: adapterStatus.reconnectCount ?? runtimeReadiness.reconnectCount ?? 0,
+      runtimeLifecycle: adapterStatus.runtimeLifecycle || runtimeReadiness.runtimeLifecycle || null,
+      runtimeLifecycleState: adapterStatus.runtimeLifecycleState || runtimeReadiness.runtimeLifecycleState || null,
       account: {
         ok: accountSummary?.ok === true,
         blocker: accountSummary?.blocker || verification.blocker || null,
@@ -193,15 +407,19 @@ function createIbPaperExecutionOrchestratorService(options = {}) {
         buyingPower: accountSummary?.account?.buyingPower ?? null,
         realizedPnl: accountSummary?.account?.realizedPnl ?? null,
         unrealizedPnl: accountSummary?.account?.unrealizedPnl ?? null,
-        cacheAgeMs: accountSummary?.cacheAgeMs ?? null,
+        cacheAgeMs: accountSummary?.cacheAgeMs ?? ageMsFromGeneratedAt(accountSummary?.generatedAt, statusNow),
 	        generatedAt: accountSummary?.generatedAt || null,
 	      },
-      paperAccountVerified: verification.ok === true && accountSummary?.ok === true,
-      verifiedPaperAccount: verification.ok === true && accountSummary?.ok === true,
+	      paperAccountVerified: verification.ok === true && accountSummary?.ok === true,
+	      verifiedPaperAccount: verification.ok === true && accountSummary?.ok === true,
       liveAccountBlocked: verification.live_account_detected !== true,
       liveAccountDetected: verification.live_account_detected === true,
-      orderSubmissionMode: flags.orderSubmissionMode,
-      paperBrokerExecutionEnabled: flags.executionEnabled,
+	      orderSubmissionMode: flags.orderSubmissionMode,
+      orderSendingBlocked: true,
+      wouldCreateIbPaperOrder: false,
+      can_place_orders: false,
+      actions_allowed: false,
+	      paperBrokerExecutionEnabled: flags.executionEnabled,
       liveBrokerExecutionEnabled: false,
       reconciliation: {
         status: rec.status,
@@ -228,7 +446,115 @@ function createIbPaperExecutionOrchestratorService(options = {}) {
       connectionAttempt,
       ...SAFETY,
     };
+    statusCache = { payload, atMs: Date.now() };
+    return payload;
+    })().finally(() => { statusInflight = null; });
+    return statusInflight;
   }
+
+  async function modifyOwnedProtectiveOrder({
+    orderId,
+    idempotencyKey = null,
+    orderRef = null,
+    orderPatch = {},
+    reason = null,
+  } = {}) {
+    const wantedOrderId = Number(orderId);
+    if (!Number.isInteger(wantedOrderId) || wantedOrderId <= 0) {
+      return { ok: false, modified: false, blocker: 'order_id_required', ...SAFETY };
+    }
+    if (!reason) return { ok: false, modified: false, blocker: 'modify_reason_required', ...SAFETY };
+    const patch = orderPatch && typeof orderPatch === 'object' ? orderPatch : {};
+    const patchKeys = Object.keys(patch);
+    if (patchKeys.length !== 1 || !['lmtPrice', 'auxPrice'].includes(patchKeys[0])) {
+      return { ok: false, modified: false, blocker: 'modify_patch_field_not_allowed', ...SAFETY };
+    }
+    const status = await buildExecutionStatus({ force: true });
+    const openOrders = Array.isArray(status.brokerOpenOrders) ? status.brokerOpenOrders : [];
+    const openOrder = openOrders.find((row) => Number(row.orderId) === wantedOrderId
+      || (orderRef && String(row.order?.orderRef || '') === String(orderRef)));
+    if (!openOrder) return { ok: false, modified: false, blocker: 'order_not_open_at_adapter', orderId: wantedOrderId, ...SAFETY };
+    const orderType = safeUpper(openOrder.order?.orderType || openOrder.orderType);
+    if ((patchKeys[0] === 'lmtPrice' && orderType !== 'LMT') || (patchKeys[0] === 'auxPrice' && orderType !== 'STP')) {
+      return { ok: false, modified: false, blocker: 'modify_patch_field_not_allowed_for_order_type', orderId: wantedOrderId, orderType, ...SAFETY };
+    }
+    const adapterVerification = adapter.verifyPaperAccount(status.account?.accountIdMasked || null);
+    const guardDecision = {
+      allowed: status.runtimeState === 'READY'
+        && status.paperAccountVerified === true
+        && adapterVerification.ok === true
+        && status.liveAccountDetected !== true,
+      environment: 'paper',
+      verifiedPaperAccount: status.paperAccountVerified === true && adapterVerification.ok === true,
+      liveAccountBlocked: status.liveAccountDetected !== true,
+      checks: [
+        { code: 'runtime_ready', ok: status.runtimeState === 'READY' },
+        { code: 'paper_account_verified', ok: status.paperAccountVerified === true && adapterVerification.ok === true },
+        { code: 'live_account_blocked', ok: status.liveAccountDetected !== true },
+        { code: 'owned_order_open', ok: true },
+      ],
+      blockers: [],
+    };
+    if (guardDecision.allowed !== true) {
+      const blocker = guardDecision.checks.find((check) => check.ok !== true)?.code || 'guard_not_passed';
+      return { ok: false, modified: false, blocker, guard: guardDecision, ...SAFETY };
+    }
+    const result = await adapter.modifyPaperOrder({
+      orderId: wantedOrderId,
+      idempotencyKey,
+      orderRef: orderRef || openOrder.order?.orderRef || null,
+      orderPatch: patch,
+      contract: openOrder.contract,
+      guardDecision,
+      verifiedAccount: adapterVerification,
+      reason,
+    });
+    return {
+      ...result,
+      orderId: wantedOrderId,
+      orderRef: orderRef || openOrder.order?.orderRef || null,
+      orderType,
+      orderPatch: patch,
+      guard: guardDecision,
+      ...SAFETY,
+    };
+  }
+
+	  // EMERGENCY FLATTEN — R2. Speglar modifyOwnedProtectiveOrder: verifierar
+	  // paper-konto + runtime READY, bygger guardDecision, delegerar till adapterns
+	  // enda placeOrder-modul. Skapar ingen kandidat, rör ej canonical pipeline.
+	  async function flattenOwnedPosition({ root = null, reason = null, audit = {} } = {}) {
+	    if (!reason) return { ok: false, flattened: false, blocker: 'flatten_reason_required', ...SAFETY };
+	    if (!root) return { ok: false, flattened: false, blocker: 'root_required', ...SAFETY };
+	    const status = await buildExecutionStatus({ force: true });
+	    const adapterVerification = adapter.verifyPaperAccount(status.account?.accountIdMasked || null);
+	    const guardDecision = {
+	      allowed: status.runtimeState === 'READY'
+	        && status.paperAccountVerified === true
+	        && adapterVerification.ok === true
+	        && status.liveAccountDetected !== true,
+	      environment: 'paper',
+	      verifiedPaperAccount: status.paperAccountVerified === true && adapterVerification.ok === true,
+	      liveAccountBlocked: status.liveAccountDetected !== true,
+	      checks: [
+	        { code: 'runtime_ready', ok: status.runtimeState === 'READY' },
+	        { code: 'paper_account_verified', ok: status.paperAccountVerified === true && adapterVerification.ok === true },
+	        { code: 'live_account_blocked', ok: status.liveAccountDetected !== true },
+	      ],
+	      blockers: [],
+	    };
+	    if (guardDecision.allowed !== true) {
+	      const blocker = guardDecision.checks.find((check) => check.ok !== true)?.code || 'guard_not_passed';
+	      return { ok: false, flattened: false, blocker, guard: guardDecision, ...SAFETY };
+	    }
+	    const result = await adapter.flattenOwnedPosition({
+	      root: String(root).toUpperCase(),
+	      reason,
+	      verifiedAccount: adapterVerification,
+	      audit,
+	    });
+	    return { ...result, guard: guardDecision, ...SAFETY };
+	  }
 
 	  async function buildShadowExecution({ candidateId = null, now = new Date(), actualSubmit = false } = {}) {
 	    const flags = configService.getFlags();
@@ -250,7 +576,7 @@ function createIbPaperExecutionOrchestratorService(options = {}) {
     const limits = configService.getPilotLimits();
 	    const signalTimestamp = candidate.signalTimestamp || null;
 	    const ageMs = ageMsFromTimestamp(signalTimestamp, now);
-    const status = await buildExecutionStatus({ connect: flags.executionEnabled });
+    const status = await buildExecutionStatus();
     const contractResult = await resolveContract(candidate.root);
     const quote = quoteSource.getQuote(candidate.root, now);
     const contract = contractResult.ok ? contractResult.contract : {
@@ -276,7 +602,9 @@ function createIbPaperExecutionOrchestratorService(options = {}) {
     });
     const executionId = buildExecutionId(idempotencyKey || `${candidate.strategyId}:${candidate.candidateId}:${signalTimestamp}`);
     const duplicate = idempotencyKey ? intentService.getIntent(idempotencyKey) : null;
-	    const approval = strategyApprovalService.evaluateFuturesApprovalGate({ strategyId: candidate.strategyId });
+		    const executionAllowlist = typeof strategyRegistry.canExecuteStrategy === 'function'
+		      ? strategyRegistry.canExecuteStrategy(candidate.strategyId)
+		      : { allowed: false, blockedReason: 'strategy_registry_execution_allowlist_unavailable', strategyId: candidate.strategyId, source: 'strategy_registry_execution_allowlist' };
 	    const session = futuresMarketHoursService.getCmeEquityIndexFuturesSessionState(now);
 	    const entryContract = entryContractService.evaluatePaperEntryContract({
 	      strategyId: candidate.strategyId,
@@ -345,10 +673,10 @@ function createIbPaperExecutionOrchestratorService(options = {}) {
       },
       adapterStatus: status.executionClient,
       adapterVerification,
-      brokerRisk,
-      reconciliation: rec,
-      approval,
-      entryContract,
+	      brokerRisk,
+				      reconciliation: rec,
+				      executionAllowlist,
+					      entryContract,
       idempotency: { duplicate: Boolean(duplicate), existing: duplicate },
 	      session,
 	      now,
@@ -422,10 +750,10 @@ function createIbPaperExecutionOrchestratorService(options = {}) {
 		      ? adapter.createExecutionEvidence({
 		        guardDecision: finalGuard,
 		        intentRecord: intentCreate.record,
-	        orderPlan,
-	        brokerRisk,
-	        approval,
-	        entryContract,
+		        orderPlan,
+						        brokerRisk,
+					        executionAllowlist,
+					        entryContract,
 	        reconciliation: rec,
 	        verifiedAccount: adapterVerification,
 	        now,
@@ -477,10 +805,10 @@ function createIbPaperExecutionOrchestratorService(options = {}) {
 	        intentRecord: intentCreate.record,
 	        orderPlan,
 	        verifiedAccount: adapterVerification,
-	        executionEvidence,
-	        brokerRisk,
-	        approval,
-	        entryContract,
+		        executionEvidence,
+						        brokerRisk,
+					        executionAllowlist,
+					        entryContract,
 	        reconciliation: rec,
 	        now,
 	      });
@@ -503,10 +831,10 @@ function createIbPaperExecutionOrchestratorService(options = {}) {
 		      blockers: finalGuard.blockers,
       candidate,
       contract,
-      quote,
-      accountMasked,
-      approval,
-      entryContract,
+	      quote,
+	      accountMasked,
+					      executionAllowlist,
+				      entryContract,
       brokerRisk,
 		      guard: finalGuard,
 	      executionTargetReservation: reservation,
@@ -529,8 +857,14 @@ function createIbPaperExecutionOrchestratorService(options = {}) {
 
   return {
     SAFETY,
-    selectCandidate,
-    buildExecutionStatus,
+	    selectCandidate,
+      startRuntime,
+      reconcileRuntime,
+      getRuntimeReadinessSnapshot,
+      getCachedExecutionStatus,
+	    buildExecutionStatus,
+    modifyOwnedProtectiveOrder,
+    flattenOwnedPosition,
     buildShadowExecution,
     reconciliation,
   };

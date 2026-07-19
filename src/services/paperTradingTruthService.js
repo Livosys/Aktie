@@ -7,7 +7,7 @@ const automationApprovalService = require('./automationApprovalService');
 const strategyScoreService = require('./strategyScoreService');
 const interactiveBrokersPreviewService = require('./interactiveBrokersPreviewService');
 const interactiveBrokersTradeBlueprintService = require('./interactiveBrokersTradeBlueprintService');
-const interactiveBrokersPaperExecutionService = require('./interactiveBrokersPaperExecutionService');
+const ibPaperExecutionOrchestratorService = require('./ibPaperExecutionOrchestratorService');
 
 const SAFETY = Object.freeze({
   mode: 'paper_only',
@@ -26,6 +26,76 @@ function safeString(value) {
 
 function safeArray(value) {
   return Array.isArray(value) ? value : [];
+}
+
+function isRuntimeReady(execution = {}, readiness = null) {
+  const source = readiness || execution.readiness || execution.connectionReadiness || execution.runtimeReadiness || {};
+  return (execution.executionConnected === true || source.gatewayReachable === true)
+    && (execution.nextValidIdReady === true || source.ibApiVerified === true)
+    && (execution.paperAccountVerified === true || source.paperAccountVerified === true);
+}
+
+async function buildRuntimeExecutionStatus(options = {}) {
+  const orchestrator = options.executionOrchestratorService
+    || ibPaperExecutionOrchestratorService.defaultIbPaperExecutionOrchestratorService;
+  if (!orchestrator || typeof orchestrator.buildExecutionStatus !== 'function') {
+    return {
+      ok: false,
+      mode: 'ibkr_paper',
+      accountMode: 'ib_paper',
+      executionEnabled: false,
+      orderSendingBlocked: true,
+      liveTradingEnabled: false,
+      can_place_orders: false,
+      actions_allowed: false,
+      broker_enabled: false,
+      blockedReason: 'execution_runtime_unavailable',
+      blockers: ['execution_runtime_unavailable'],
+      source: 'ib_paper_execution_runtime_singleton',
+      safety: { ...SAFETY },
+    };
+  }
+  const status = await orchestrator.buildExecutionStatus({ force: options.forceExecutionStatus === true });
+  const readiness = status.readiness || status.connectionReadiness || status.runtimeReadiness || null;
+  const executionEnabled = status.paperBrokerExecutionEnabled === true || status.flags?.executionEnabled === true;
+  const blockedReason = status.reconciliation?.blockedReason
+    || status.account?.blocker
+    || (executionEnabled ? null : 'ibkr_paper_execution_disabled');
+  const blockers = [
+    blockedReason,
+    ...(Array.isArray(status.reconciliation?.discrepancies)
+      ? status.reconciliation.discrepancies.map((row) => row?.type || row?.blocker).filter(Boolean)
+      : []),
+  ].filter(Boolean);
+
+  return {
+    ...status,
+    mode: status.mode || 'ibkr_paper',
+    accountMode: 'ib_paper',
+    source: 'ib_paper_execution_runtime_singleton',
+    featureFlag: 'IBKR_PAPER_EXECUTION_ENABLED',
+    enabled: executionEnabled,
+    executionEnabled,
+    orderSendingBlocked: true,
+    liveTradingEnabled: false,
+    can_place_orders: false,
+    actions_allowed: false,
+    broker_enabled: false,
+    blockedReason,
+    blockers,
+    readiness,
+    gatewayReachable: readiness?.gatewayReachable === true || status.executionConnected === true,
+    ibApiVerified: readiness?.ibApiVerified === true || status.nextValidIdReady === true,
+    paperAccountVerified: status.paperAccountVerified === true || readiness?.paperAccountVerified === true,
+    accountVerified: status.paperAccountVerified === true || readiness?.paperAccountVerified === true,
+    dailyQuota: status.dailyQuota || { used: 0, max: 3, remaining: 3 },
+    openTrades: status.brokerOpenOrders || [],
+    openTradeCount: Array.isArray(status.brokerOpenOrders) ? status.brokerOpenOrders.length : 0,
+    closedTrades: status.brokerExecutions || [],
+    closedTradeCount: Array.isArray(status.brokerExecutions) ? status.brokerExecutions.length : 0,
+    lastExecutionResult: null,
+    safety: { ...SAFETY, ...(status.safety || {}) },
+  };
 }
 
 function buildTopStrategySelector(options = {}) {
@@ -329,25 +399,24 @@ async function buildPaperTradingTruth(options = {}) {
 
   let ibExecution = null;
   try {
-    ibExecution = options.ibExecution || await interactiveBrokersPaperExecutionService.getExecutionStatus({
-      readiness: options.readiness || connectionReadiness,
-      readTrades: options.readTrades,
-      loadState: options.loadState,
+    ibExecution = options.ibExecution || await buildRuntimeExecutionStatus({
+      forceExecutionStatus: options.forceExecutionStatus === true,
+      executionOrchestratorService: options.executionOrchestratorService,
     });
   } catch (err) {
-    issues.push({ source: 'interactiveBrokersPaperExecutionService.getExecutionStatus', error: err.message || String(err) });
+    issues.push({ source: 'ibPaperExecutionOrchestratorService.buildExecutionStatus', error: err.message || String(err) });
     ibExecution = {
       ok: false,
       dryRun: true,
-      mode: 'paper_execution',
+      mode: 'ibkr_paper',
       executionEnabled: false,
       orderSendingBlocked: true,
       liveTradingEnabled: false,
       can_place_orders: false,
       actions_allowed: false,
       broker_enabled: false,
-      blockedReason: 'ib_execution_unavailable',
-      blockers: ['ib_execution_unavailable'],
+      blockedReason: 'execution_runtime_unavailable',
+      blockers: ['execution_runtime_unavailable'],
       safety: { ...SAFETY },
       dailyQuota: { used: 0, max: 3, remaining: 3 },
       openTrades: [],
@@ -355,7 +424,7 @@ async function buildPaperTradingTruth(options = {}) {
       closedTrades: [],
       closedTradeCount: 0,
       lastExecutionResult: null,
-      featureFlag: 'IB_PAPER_EXECUTION_ENABLED',
+      featureFlag: 'IBKR_PAPER_EXECUTION_ENABLED',
       readiness: connectionReadiness || ibPaperStatus.connection || { gatewayReachable: false, status: 'error', blockedReason: 'ib_execution_unavailable' },
     };
   }
@@ -448,7 +517,7 @@ async function buildPaperTradingTruth(options = {}) {
       safety: { ...SAFETY },
       topStrategies: topStrategyList,
       readiness: ibExecution?.readiness || connectionReadiness || ibPaperStatus?.connection || null,
-      disableReason: ibExecution?.blockedReason || (connectionReadiness?.gatewayReachable === true ? 'ib_api_not_verified' : ibPaperStatus?.blockedReason || 'paper_only'),
+      disableReason: ibExecution?.blockedReason || (isRuntimeReady(ibExecution, connectionReadiness) ? null : (connectionReadiness?.gatewayReachable === true ? 'ib_api_not_verified' : ibPaperStatus?.blockedReason || 'paper_only')),
     },
     summary: {
       runtimeOpenCount: Number(runtime?.summary?.openCount || 0),
@@ -467,26 +536,48 @@ async function buildExecutionStatus(options = {}) {
   const truth = await buildPaperTradingTruth(options);
   const execution = truth.ibPaper.executionStatus || {};
   const selectedBlueprint = truth.ibPaper.selectedBlueprint || null;
+  const readiness = execution.readiness || execution.connectionReadiness || execution.runtimeReadiness || truth.ibPaper.readiness || null;
+  const executionEnabled = execution.executionEnabled === true
+    || execution.paperBrokerExecutionEnabled === true
+    || execution.flags?.executionEnabled === true;
+  const runtimeReady = isRuntimeReady(execution, readiness);
+  const blockedReason = execution.blockedReason || truth.ibPaper.disableReason || (executionEnabled ? null : 'ibkr_paper_execution_disabled');
   return {
+    ...execution,
     ok: true,
-    mode: 'paper_only',
+    mode: execution.mode || 'ibkr_paper',
     accountMode: 'ib_paper',
-    featureFlag: execution.featureFlag || 'IB_PAPER_EXECUTION_ENABLED',
-    enabled: execution.executionEnabled === true,
-    executionEnabled: execution.executionEnabled === true,
+    featureFlag: execution.featureFlag || 'IBKR_PAPER_EXECUTION_ENABLED',
+    enabled: executionEnabled,
+    executionEnabled,
     orderSendingBlocked: execution.orderSendingBlocked !== false,
     liveTradingEnabled: false,
     can_place_orders: false,
     actions_allowed: false,
     broker_enabled: false,
     safety: { ...SAFETY },
-    blockedReason: execution.blockedReason || truth.ibPaper.disableReason || 'ib_paper_execution_disabled',
-    disableReason: execution.blockedReason || truth.ibPaper.disableReason || 'ib_paper_execution_disabled',
+    blockedReason,
+    disableReason: blockedReason,
     blockers: safeArray(execution.blockers),
-    readiness: execution.readiness || truth.ibPaper.readiness || null,
-    gatewayReachable: execution.gatewayReachable === true,
-    ibApiVerified: execution.ibApiVerified === true,
-    paperAccountVerified: execution.paperAccountVerified === true,
+    readiness,
+    gatewayReachable: execution.gatewayReachable === true || readiness?.gatewayReachable === true || execution.executionConnected === true,
+    ibApiVerified: execution.ibApiVerified === true || readiness?.ibApiVerified === true || execution.nextValidIdReady === true,
+    paperAccountVerified: execution.paperAccountVerified === true || readiness?.paperAccountVerified === true,
+    executionConnected: execution.executionConnected === true || readiness?.gatewayReachable === true,
+    nextValidIdReady: execution.nextValidIdReady === true || readiness?.ibApiVerified === true,
+    nextValidId: execution.nextValidId ?? readiness?.nextValidId ?? null,
+    managedAccounts: execution.managedAccounts || readiness?.managedAccounts || [],
+    managedAccountCount: execution.managedAccountCount ?? readiness?.managedAccountCount ?? 0,
+    runtimeState: execution.runtimeState || execution.executionRuntimeState || readiness?.runtimeState || null,
+    executionRuntimeState: execution.executionRuntimeState || execution.runtimeState || readiness?.runtimeState || null,
+    connectedSince: execution.connectedSince || readiness?.connectedSince || null,
+    lastHeartbeat: execution.lastHeartbeat || readiness?.lastHeartbeat || null,
+    lastReconnect: execution.lastReconnect || readiness?.lastReconnect || null,
+    uptime: execution.uptime ?? execution.uptimeMs ?? readiness?.uptime ?? null,
+    reconnectCount: execution.reconnectCount ?? readiness?.reconnectCount ?? 0,
+    runtimeLifecycle: execution.runtimeLifecycle || readiness?.runtimeLifecycle || null,
+    runtimeLifecycleState: execution.runtimeLifecycleState || readiness?.runtimeLifecycleState || null,
+    runtimeReady,
     dailyQuota: execution.dailyQuota || { used: 0, max: 3, remaining: 3 },
     openTrades: safeArray(execution.openTrades),
     openTradeCount: Number(execution.openTradeCount || safeArray(execution.openTrades).length || 0),
@@ -500,10 +591,10 @@ async function buildExecutionStatus(options = {}) {
     candidateReadiness: truth.candidateReadiness,
     noLiveTradingBadge: true,
     manualApprovalRequired: true,
-    accountVerified: execution.paperAccountVerified === true,
-    paperAccountVerified: execution.paperAccountVerified === true,
-    gatewayReachable: execution.gatewayReachable === true,
-    ibApiVerified: execution.ibApiVerified === true,
+    accountVerified: execution.paperAccountVerified === true || readiness?.paperAccountVerified === true,
+    paperAccountVerified: execution.paperAccountVerified === true || readiness?.paperAccountVerified === true,
+    gatewayReachable: execution.gatewayReachable === true || readiness?.gatewayReachable === true || execution.executionConnected === true,
+    ibApiVerified: execution.ibApiVerified === true || readiness?.ibApiVerified === true || execution.nextValidIdReady === true,
     generatedAt: truth.generatedAt,
     issues: truth.issues,
     summary: {

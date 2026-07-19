@@ -87,7 +87,7 @@ assert.equal(disabledCandles.error, 'ib_futures_data_disabled');
   assert.equal(mnq.quality.status, 'ok');
   assert.equal(mnq.safety.readOnly, true);
   assert.equal(mnq.safety.can_place_orders, false);
-  assert.equal(mnq.safety.executionEnabled, false);
+  assert.equal(mnq.safety.actions_allowed, false);
   const mes = service.getQuote('MES');
   assert.equal(mes.instrument, 'MES');
   assert.equal(mes.tickSize, 0.25);

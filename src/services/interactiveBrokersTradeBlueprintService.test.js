@@ -3,162 +3,136 @@
 const assert = require('assert/strict');
 const svc = require('./interactiveBrokersTradeBlueprintService');
 
-function candidate(overrides = {}) {
+function previewCandidate(overrides = {}) {
   return {
-    symbol: 'AAPL',
-    strategyId: 'narrow_breakout',
-    strategyName: 'Narrow Breakout',
-    direction: 'short',
-    marketGroup: 'stocks',
+    blueprintId: 'ibpb-ready',
+    candidateId: 'cand-1',
+    symbol: 'MNQ',
+    root: 'MNQ',
+    strategyId: 'ema_pullback_continuation',
+    strategyName: 'EMA Pullback Continuation',
+    direction: 'long',
+    side: 'BUY',
+    marketGroup: 'futures',
+    assetClass: 'FUT',
+    secType: 'FUT',
+    exchange: 'CME',
+    currency: 'USD',
+    quantity: 1,
+    quantityStatus: 'calculated',
+    entryReferencePrice: 23000,
+    entryPrice: 23000,
+    stopLoss: 22980,
+    takeProfit: 23040,
+    riskReward: 2,
+    riskPct: 0.25,
     allowedForIbPaperPreview: true,
+    blueprintReady: true,
+    executionReady: true,
+    wouldCreateOrder: false,
+    wouldSendOrder: false,
+    orderSendingBlocked: true,
+    bracket: {
+      ok: true,
+      orderCount: 3,
+      transmitSequence: ['entry:false', 'takeProfit:false', 'stopLoss:true'],
+    },
+    blockers: [],
     ...overrides,
   };
 }
 
 async function run() {
-  const verifiedReadiness = {
-    ok: true,
-    dryRun: true,
-    status: 'verified',
-    gatewayReachable: true,
-    host: '127.0.0.1',
-    port: 4002,
-    portConfigured: true,
-    clientIdConfigured: true,
-    paperMode: 'paper_only',
-    paperModeVerified: true,
-    ibApiVerified: true,
-    paperAccountVerified: true,
-    paperAccountId: 'DUQ565596',
-    managedAccounts: ['DUQ565596'],
-    managedAccountCount: 1,
-    sessionVerified: true,
-    blockedReason: 'read_only_session_verified',
-  };
   const result = await svc.getTradeBlueprint({
-    skipRedis: true,
-    readiness: verifiedReadiness,
-    topStrategies: {
-      topStrategies: [
-        { strategyId: 'vwap_failed_breakout_short', rank: 1 },
-        { strategyId: 'ema_pullback_continuation', rank: 2 },
+    executionPreview: {
+      ok: true,
+      source: 'execution_runtime_pipeline_preview',
+      executionEnabled: false,
+      brokerExecutionEnabled: false,
+      readiness: {
+        gatewayReachable: true,
+        ibApiVerified: true,
+        paperAccountVerified: true,
+      },
+      allCandidates: [
+        previewCandidate(),
+        previewCandidate({
+          blueprintId: 'ibpb-native-mnq',
+          candidateId: 'cand-native-mnq',
+          strategyId: 'mnq_globex_momentum_v1',
+          strategyName: 'MNQ Globex Momentum',
+        }),
+        previewCandidate({
+          blueprintId: 'ibpb-blocked',
+          candidateId: 'cand-2',
+          strategyId: 'disabled_strategy',
+          allowedForIbPaperPreview: false,
+          blueprintReady: false,
+          executionReady: false,
+          blockedReason: 'strategy_not_in_execution_allowlist',
+          blockers: ['strategy_not_in_execution_allowlist'],
+        }),
       ],
-    },
-    orderPreview: {
-      allowedCandidates: [
-        candidate({ symbol: 'AAPL', strategyId: 'vwap_failed_breakout_short', strategyName: 'VWAP Failed Breakout Short', direction: 'short' }),
-        candidate({ symbol: 'MSFT', strategyId: 'ema_pullback_continuation', strategyName: 'EMA Pullback Continuation', direction: 'long' }),
-      ],
-      source: { approvedStrategyCount: 5 },
-    },
-    priceIndex: {
-      AAPL: 215.40,
-      MSFT: 300.00,
+      summary: { previewSource: 'futuresPaperScannerService.getCandidates' },
     },
   });
 
   assert.equal(result.ok, true);
   assert.equal(result.mode, 'trade_blueprint');
+  assert.equal(result.source, 'execution_runtime_pipeline');
   assert.equal(result.executionEnabled, false);
   assert.equal(result.orderQueueEnabled, false);
   assert.equal(result.brokerExecutionEnabled, false);
   assert.equal(result.liveTradingEnabled, false);
   assert.equal(result.orderSendingBlocked, true);
   assert.equal(result.wouldCreateOrder, false);
-  assert.equal(result.requiredStopLossMinPct, 0.10);
-  assert.ok(Array.isArray(result.blueprints));
-  assert.equal(result.blueprints.length, 2);
-  assert.equal(result.summary.totalCandidates, 2);
+  assert.equal(Object.prototype.hasOwnProperty.call(result, 'manualApproval'), false);
+  assert.equal(result.blueprints.length, 3);
+  assert.equal(result.summary.totalCandidates, 3);
   assert.equal(result.summary.blueprintReadyCount, 2);
-  assert.equal(result.summary.manualApprovalReadyCount, 2);
-  assert.equal(result.summary.executionReadyCount, 0);
-  assert.equal(result.summary.blockedCount, 0);
+  assert.equal(result.summary.executionReadyCount, 2);
+  assert.equal(result.summary.blockedCount, 1);
+  assert.deepEqual(result.summary.pipeline, ['execution_runtime', 'strategy_registry', 'risk', 'entry_contract', 'bracket_plan']);
 
-  const short = result.blueprints.find((row) => row.symbol === 'AAPL');
-  assert.ok(short, 'expected AAPL short blueprint');
-  assert.equal(short.blueprintReady, true);
-  assert.equal(short.manualApprovalReady, true);
-  assert.equal(short.executionReady, false);
-  assert.equal(short.blueprintId.startsWith('ibpb_'), true);
-  assert.equal(short.accountMode, 'ib_paper');
-  assert.equal(short.orderType, 'LMT');
-  assert.equal(short.timeInForce, 'DAY');
-  assert.equal(short.direction, 'short');
-  assert.equal(short.entryReferencePrice, 215.4);
-  assert.equal(short.stopLoss, 215.62);
-  assert.equal(short.takeProfit1, 214.97);
-  assert.equal(short.takeProfit2, 214.54);
-  assert.equal(short.stopLossPct, 0.1021);
-  assert.equal(short.riskReward, 1.95);
-  assert.equal(short.requiredStopLossMinPct, 0.10);
-  assert.equal(short.readyForFutureIbPaper, true);
-  assert.equal(short.wouldCreateOrder, false);
-  assert.equal(short.wouldSendOrder, false);
-  assert.equal(short.orderSendingBlocked, true);
-  assert.equal(short.executionEnabled, false);
-  assert.equal(short.blueprintOnly, true);
-  assert.equal(short.quantityStatus, 'calculated');
-  assert.equal(short.quantity > 0, true);
-  assert.equal(short.quantityBlockers?.length || 0, 0);
-  assert.equal(short.blockedReason, 'ib_paper_execution_disabled');
-  assert.ok(short.blockers.includes('ib_paper_execution_disabled'));
-  assert.ok(short.blockers.includes('order_sending_disabled_phase_3'));
-  assert.equal(short.blockers.includes('ib_api_not_verified'), false);
-  assert.equal(short.blockers.includes('paper_account_not_verified'), false);
-  assert.equal(result.selectedBlueprintId, short.blueprintId);
-  assert.equal(result.selectedBlueprintSource, 'trade_blueprint');
+  const selected = result.selectedBlueprint;
+  assert.ok(selected, 'expected selected pipeline-ready blueprint');
+  assert.equal(selected.blueprintId, 'ibpb-ready');
+  assert.equal(selected.source, 'execution_runtime_pipeline');
+  assert.equal(selected.blueprintReady, true);
+  assert.equal(selected.executionReady, true);
+  assert.equal(selected.bracketPlanReady, true);
+  assert.equal(selected.wouldCreateOrder, false);
+  assert.equal(selected.wouldSendOrder, false);
+  assert.equal(selected.wouldCreateIbPaperOrder, false);
+  assert.equal(selected.orderSendingBlocked, true);
+  assert.equal(Object.prototype.hasOwnProperty.call(selected, 'manualApprovalReady'), false);
+  assert.equal(result.selectedBlueprintSource, 'execution_runtime_pipeline');
   assert.equal(result.selectedBlueprintSafety.safeForArm, true);
   assert.equal(result.selectedBlueprintSafety.safeForSubmit, false);
-  assert.equal(result.selectedBlueprintSafety.safetyStatus, 'manual_ready');
+  assert.equal(result.selectedBlueprintSafety.safetyStatus, 'pipeline_ready_read_only');
 
-  const long = result.blueprints.find((row) => row.symbol === 'MSFT');
-  assert.ok(long, 'expected MSFT long blueprint');
-  assert.equal(long.direction, 'long');
-  assert.equal(long.entryReferencePrice, 300.0);
-  assert.equal(long.stopLoss, 299.7);
-  assert.equal(long.takeProfit1, 300.6);
-  assert.equal(long.takeProfit2, 301.2);
-  assert.equal(long.stopLossPct, 0.1);
-  assert.equal(long.riskReward, 2.0);
-  assert.equal(long.readyForFutureIbPaper, true);
-  assert.equal(long.wouldCreateOrder, false);
-  assert.equal(long.orderSendingBlocked, true);
-  assert.equal(long.executionEnabled, false);
-  assert.equal(long.blueprintReady, true);
-  assert.equal(long.manualApprovalReady, true);
-  assert.equal(long.executionReady, false);
-  assert.equal(long.blockers.includes('ib_api_not_verified'), false);
-  assert.equal(long.blockers.includes('paper_account_not_verified'), false);
+  const blocked = result.blueprints.find((row) => row.strategyId === 'disabled_strategy');
+  assert.equal(blocked.blueprintReady, false);
+  assert.equal(blocked.executionReady, false);
+  assert.equal(blocked.blockedReason, 'strategy_not_in_execution_allowlist');
+  assert.ok(blocked.blockers.includes('strategy_not_in_execution_allowlist'));
 
-  const blocked = await svc.getTradeBlueprint({
-    skipRedis: true,
-    readiness: verifiedReadiness,
-    orderPreview: {
-      allowedCandidates: [
-        candidate({
-          symbol: 'AAPL',
-          strategyId: 'vwap_failed_breakout_short',
-          strategyName: 'VWAP Failed Breakout Short',
-          direction: 'short',
-        }),
-      ],
-      source: { approvedStrategyCount: 1 },
+  const native = result.blueprints.find((row) => row.strategyId === 'mnq_globex_momentum_v1');
+  assert.ok(native, 'expected native MNQ blueprint from same preview pipeline');
+  assert.equal(native.blueprintReady, true);
+  assert.equal(native.executionReady, true);
+  assert.equal(native.source, 'execution_runtime_pipeline');
+
+  const empty = await svc.getTradeBlueprint({
+    executionPreview: {
+      ok: true,
+      allCandidates: [],
+      readiness: {},
+      summary: { previewSource: 'test' },
     },
-    priceIndex: {},
   });
-
-  assert.equal(blocked.blueprints.length, 1);
-  assert.equal(blocked.blueprints[0].blueprintReady, false);
-  assert.equal(blocked.blueprints[0].manualApprovalReady, false);
-  assert.equal(blocked.blueprints[0].executionReady, false);
-  assert.equal(blocked.blueprints[0].wouldCreateOrder, false);
-  assert.equal(blocked.blueprints[0].orderSendingBlocked, true);
-  assert.equal(blocked.blueprints[0].executionEnabled, false);
-  assert.ok(blocked.blueprints[0].blockedReason.includes('missing_entry'));
-  assert.equal(blocked.selectedBlueprintId, null);
-  assert.equal(blocked.selectedBlueprint, null);
-  assert.equal(blocked.previewBlueprintId, blocked.blueprints[0].blueprintId);
-  assert.equal(blocked.selectedBlueprintSafety.blockedReason, 'no_manual_ready_trade_blueprint');
+  assert.equal(empty.selectedBlueprint, null);
+  assert.equal(empty.selectedBlueprintSafety.blockedReason, 'no_execution_pipeline_ready_blueprint');
 
   console.log('interactiveBrokersTradeBlueprintService.test.js: OK');
 }

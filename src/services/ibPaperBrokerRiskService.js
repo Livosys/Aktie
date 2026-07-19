@@ -25,6 +25,13 @@ function numberOrNull(value) {
   return Number.isFinite(n) ? n : null;
 }
 
+function ageMsFromGeneratedAt(generatedAt, now = new Date()) {
+  const parsed = Date.parse(generatedAt || '');
+  const current = nowMs(now);
+  if (!Number.isFinite(parsed) || !Number.isFinite(current)) return null;
+  return Math.max(0, current - parsed);
+}
+
 function addCheck(checks, code, ok, blocker, detail = {}) {
   checks.push({
     code,
@@ -83,7 +90,8 @@ function evaluateBrokerRisk({
 	  const contractNotionalUsd = price != null && catalog ? price * catalog.pointValueUsd * qty : null;
 	  const stop = numberOrNull(stopLossPrice);
 	  const stopRiskUsd = price != null && stop != null && catalog ? Math.abs(price - stop) * catalog.pointValueUsd * qty : null;
-	  const accountAgeMs = numberOrNull(accountSummary?.cacheAgeMs ?? accountSummary?.ageMs);
+	  const accountAgeMs = numberOrNull(accountSummary?.cacheAgeMs ?? accountSummary?.ageMs)
+	    ?? ageMsFromGeneratedAt(accountSummary?.generatedAt, now);
 	  const realizedPnl = numberOrNull(accountSummary?.account?.realizedPnl ?? accountSummary?.realizedPnl);
   const openPositionCount = getPositionCount(positions);
   const pendingEntries = countPendingEntries(openOrders);

@@ -16,12 +16,38 @@ class FakeIB extends EventEmitter {
     this.cancelOrderCalls = [];
   }
 
-  connect() {
-    setImmediate(() => {
-      this.emit(EventName.managedAccounts, 'DUQ565596');
-      this.emit(EventName.nextValidId, 9000);
-    });
-  }
+	  connect() {
+	    setImmediate(() => {
+	      this.emit(EventName.connected);
+	      this.emit(EventName.managedAccounts, 'DUQ565596');
+	      this.emit(EventName.nextValidId, 9000);
+	    });
+	  }
+
+	  reqAccountSummary(reqId) {
+	    setImmediate(() => {
+	      this.emit(EventName.accountSummary, reqId, 'DUQ565596', 'AccountType', 'INDIVIDUAL', '');
+	      this.emit(EventName.accountSummary, reqId, 'DUQ565596', 'NetLiquidation', '100000', 'USD');
+	      this.emit(EventName.accountSummary, reqId, 'DUQ565596', 'TotalCashValue', '100000', 'USD');
+	      this.emit(EventName.accountSummaryEnd, reqId);
+	    });
+	  }
+
+	  cancelAccountSummary() {}
+
+	  reqPositions() {
+	    setImmediate(() => {
+	      this.emit(EventName.positionEnd);
+	    });
+	  }
+
+	  cancelPositions() {}
+
+	  reqExecutions(reqId) {
+	    setImmediate(() => {
+	      this.emit(EventName.execDetailsEnd, reqId);
+	    });
+	  }
 
   disconnect() {
     this.emit(EventName.disconnected);
@@ -108,12 +134,20 @@ function makeOrderPlan(service, quantity = 1) {
   });
 }
 
+function wait(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 (async () => {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'ib-paper-adapter-test-'));
   const intentService = intentModule.createIbPaperExecutionIntentService({ dir: tmp });
   const fake = new FakeIB();
+  let factoryCalls = 0;
   const service = adapterModule.createIbPaperExecutionAdapterService({
-    ibFactory: () => fake,
+    ibFactory: () => {
+      factoryCalls += 1;
+      return fake;
+    },
     flagsProvider: () => flags,
     intentService,
     connectTimeoutMs: 1000,
@@ -125,9 +159,61 @@ function makeOrderPlan(service, quantity = 1) {
 
   const connected = await service.connectPaperExecutionClient();
   assert.equal(connected.ok, true);
-  assert.equal(service.getStatus().nextValidIdReady, true);
-  assert.equal(Object.prototype.hasOwnProperty.call(service.getStatus(), 'nextOrderId'), false);
+  const readyStatus = service.getStatus();
+  assert.equal(readyStatus.connectionState, 'READY');
+  assert.equal(readyStatus.ready, true);
+  assert.equal(readyStatus.nextValidIdReady, true);
+  assert.equal(readyStatus.nextValidId, 9000);
+  assert.equal(readyStatus.managedAccountCount, 1);
+  assert.equal(readyStatus.accountSummary.ok, true);
+  assert.equal(Boolean(readyStatus.connectedSince), true);
+  assert.equal(Number.isFinite(readyStatus.uptimeMs), false);
+  assert.equal(readyStatus.runtimeLifecycle.expected.includes('HEARTBEAT'), true);
+  assert.equal(Object.prototype.hasOwnProperty.call(readyStatus, 'nextOrderId'), false);
+  const readinessSnapshot = service.getConnectionReadinessSnapshot();
+  assert.equal(readinessSnapshot.source, 'ib_paper_execution_runtime_singleton');
+  assert.equal(readinessSnapshot.sessionVerified, true);
+  assert.equal(readinessSnapshot.nextValidId, 9000);
+  assert.equal(readinessSnapshot.connectedSince, readyStatus.connectedSince);
+  const alreadyConnected = await service.connectPaperExecutionClient();
+  assert.equal(alreadyConnected.alreadyConnected, true);
+  assert.equal(factoryCalls, 1);
   assert.equal(service.verifyPaperAccount('DU***596').ok, true);
+
+  const runtimeClients = [];
+  const runtimeService = adapterModule.createIbPaperExecutionAdapterService({
+    ibFactory: () => {
+      const client = new FakeIB();
+      runtimeClients.push(client);
+      return client;
+    },
+    flagsProvider: () => flags,
+    intentService,
+    connectTimeoutMs: 1000,
+    requestTimeoutMs: 1000,
+    heartbeatMs: 50,
+    reconnectBaseDelayMs: 10,
+    reconnectMaxDelayMs: 50,
+  });
+  const runtimeStart = await runtimeService.startPermanentRuntime();
+  assert.equal(runtimeStart.ready, true);
+  assert.equal(runtimeService.getStatus().connectionState, 'READY');
+  assert.equal(runtimeService.getStatus().runtimeLifecycleState, 'READY');
+  await wait(70);
+  assert.equal(runtimeService.getStatus().lastHeartbeat != null, true);
+  assert.equal(runtimeService.getStatus().runtimeLifecycleState, 'IDLE');
+  assert.equal(runtimeService.getStatus().recentEvents.some((row) => row.type === 'startExecutionClient'), true);
+  assert.equal(runtimeService.getStatus().recentEvents.some((row) => row.type === 'new IBApi client'), true);
+  assert.equal(runtimeService.getStatus().recentEvents.some((row) => row.type === 'connect(host,4002,956)'), true);
+  assert.equal(runtimeService.getStatus().recentEvents.some((row) => row.type === 'READY'), true);
+  runtimeClients[0].emit(EventName.disconnected);
+  assert.equal(runtimeService.getStatus().connectionState, 'RECONNECTING');
+  await wait(40);
+  assert.equal(runtimeClients.length, 2);
+  assert.equal(runtimeService.getStatus().connectionState, 'READY');
+  assert.equal(runtimeService.getStatus().reconnectCount >= 1, true);
+  assert.equal(runtimeService.getStatus().nextValidId, 9000);
+  runtimeService.disconnect();
 
   const orderPlan = makeOrderPlan(service);
   assert.deepEqual(orderPlan.transmitSequence, ['entry:false', 'takeProfit:false', 'stopLoss:true']);
@@ -135,12 +221,34 @@ function makeOrderPlan(service, quantity = 1) {
   assert.equal(orderPlan.takeProfit.transmit, false);
   assert.equal(orderPlan.stopLoss.transmit, true);
   assert.equal(orderPlan.stopLoss.ocaGroup, orderPlan.takeProfit.ocaGroup);
+  const roundedTickPlan = service.buildOrderPlan({
+    executionId: 'fxp_tick_rounding',
+    contract: {
+      root: 'MNQ',
+      conId: 793356225,
+      localSymbol: 'MNQU6',
+      expiry: '20260918',
+      exchange: 'CME',
+      currency: 'USD',
+    },
+    side: 'short',
+    quantity: 1,
+    entryType: 'MKT',
+    stopLossPrice: 28782.59,
+    takeProfitPrice: 28524.32,
+  });
+  assert.equal(roundedTickPlan.stopLoss.auxPrice, 28782.5);
+  assert.equal(roundedTickPlan.takeProfit.lmtPrice, 28524.25);
 
   flags = { ...flags, shadowMode: false, submissionEnabled: true, orderSubmissionMode: 'paper_pilot' };
   const verifiedAccount = { ok: true, classification: 'paper', accountIdMasked: 'DU***596' };
   const guardDecision = baseGuard();
   const brokerRisk = baseRisk();
-  const approval = { allowed: true, strategyId: 'ema_pullback_continuation', source: 'test' };
+  const executionAllowlist = {
+    allowed: true,
+    strategyId: 'ema_pullback_continuation',
+    source: 'test',
+  };
   const entryContract = { allowed: true, entryContractVersion: 'test' };
   const reconciliation = { status: 'ok', degraded: false, counts: { openOrders: 0, positions: 0, executions: 0 } };
   const intentRecord = makeIntent(intentService);
@@ -151,7 +259,7 @@ function makeOrderPlan(service, quantity = 1) {
     orderPlan,
     verifiedAccount,
     brokerRisk,
-    approval,
+    executionAllowlist,
     entryContract,
     reconciliation,
   });
@@ -164,7 +272,7 @@ function makeOrderPlan(service, quantity = 1) {
     intentRecord,
     orderPlan,
     brokerRisk,
-    approval,
+    executionAllowlist,
     entryContract,
     reconciliation,
     verifiedAccount,
@@ -183,7 +291,7 @@ function makeOrderPlan(service, quantity = 1) {
     verifiedAccount,
     executionEvidence: evidence,
     brokerRisk,
-    approval,
+    executionAllowlist,
     entryContract,
     reconciliation,
     now: new Date('2026-07-15T22:30:01.000Z'),
@@ -198,7 +306,7 @@ function makeOrderPlan(service, quantity = 1) {
     verifiedAccount,
     executionEvidence: { ...evidence, expiresAt: '2026-07-15T22:29:59.000Z' },
     brokerRisk,
-    approval,
+    executionAllowlist,
     entryContract,
     reconciliation,
     now: new Date('2026-07-15T22:30:01.000Z'),
@@ -217,7 +325,7 @@ function makeOrderPlan(service, quantity = 1) {
     intentRecord: fractionalIntent,
     orderPlan: fractionalPlan,
     brokerRisk,
-    approval,
+    executionAllowlist,
     entryContract,
     reconciliation,
     verifiedAccount,
@@ -229,12 +337,57 @@ function makeOrderPlan(service, quantity = 1) {
     verifiedAccount,
     executionEvidence: fractionalEvidence,
     brokerRisk,
-    approval,
+    executionAllowlist,
     entryContract,
     reconciliation,
   });
   assert.equal(fractional.submitted, false);
   assert.equal(fractional.blocker, 'quantity_must_be_exactly_one');
+
+  const noTakeProfitPlan = service.buildOrderPlan({
+    executionId: 'fxp_no_take_profit',
+    contract: {
+      root: 'MNQ',
+      conId: 793356225,
+      localSymbol: 'MNQU6',
+      expiry: '20260918',
+      exchange: 'CME',
+      currency: 'USD',
+    },
+    side: 'long',
+    quantity: 1,
+    entryType: 'MKT',
+    stopLossPrice: 22980,
+  });
+  const noTakeProfitIntent = intentService.createIntent({
+    idempotencyKey: 'idem-no-take-profit',
+    executionId: 'fxp_no_take_profit',
+    intent: { ...intentRecord, idempotencyKey: 'idem-no-take-profit', executionId: 'fxp_no_take_profit' },
+  }).record;
+  const noTakeProfitEvidence = service.createExecutionEvidence({
+    guardDecision,
+    intentRecord: noTakeProfitIntent,
+    orderPlan: noTakeProfitPlan,
+    brokerRisk,
+    executionAllowlist,
+    entryContract,
+    reconciliation,
+    verifiedAccount,
+  });
+  const noTakeProfit = await service.submitPaperOrder({
+    guardDecision,
+    intentRecord: noTakeProfitIntent,
+    orderPlan: noTakeProfitPlan,
+    verifiedAccount,
+    executionEvidence: noTakeProfitEvidence,
+    brokerRisk,
+    executionAllowlist,
+    entryContract,
+    reconciliation,
+  });
+  assert.equal(noTakeProfit.submitted, false);
+  assert.equal(noTakeProfit.blocker, 'take_profit_required');
+  assert.equal(fake.placeOrderCalls.length, 0);
 
   flags = { ...flags, submissionEnabled: false, orderSubmissionMode: 'armed_but_submission_off' };
   const disabled = await service.submitPaperOrder({
@@ -244,7 +397,7 @@ function makeOrderPlan(service, quantity = 1) {
     verifiedAccount,
     executionEvidence: evidence,
     brokerRisk,
-    approval,
+    executionAllowlist,
     entryContract,
     reconciliation,
   });
@@ -257,7 +410,7 @@ function makeOrderPlan(service, quantity = 1) {
     verifiedAccount,
     executionEvidence: evidence,
     brokerRisk,
-    approval,
+    executionAllowlist,
     entryContract,
     reconciliation,
   });
@@ -286,10 +439,10 @@ function makeOrderPlan(service, quantity = 1) {
 	  const persistFailEvidence = servicePersistFail.createExecutionEvidence({
 	    guardDecision,
 	    intentRecord: persistFailIntent,
-	    orderPlan: persistFailPlan,
-	    brokerRisk,
-	    approval,
-	    entryContract,
+			    orderPlan: persistFailPlan,
+			    brokerRisk,
+			    executionAllowlist,
+		    entryContract,
 	    reconciliation,
 	    verifiedAccount,
 	  });
@@ -298,10 +451,10 @@ function makeOrderPlan(service, quantity = 1) {
 	    intentRecord: persistFailIntent,
 	    orderPlan: persistFailPlan,
 	    verifiedAccount,
-	    executionEvidence: persistFailEvidence,
-	    brokerRisk,
-	    approval,
-	    entryContract,
+			    executionEvidence: persistFailEvidence,
+			    brokerRisk,
+			    executionAllowlist,
+		    entryContract,
 	    reconciliation,
 	  });
 	  assert.equal(persistFail.submitted, false);
@@ -318,7 +471,7 @@ function makeOrderPlan(service, quantity = 1) {
     verifiedAccount,
     executionEvidence: evidence,
     brokerRisk,
-    approval,
+    executionAllowlist,
     entryContract,
     reconciliation,
     now: new Date('2026-07-15T22:30:02.000Z'),
@@ -336,6 +489,61 @@ function makeOrderPlan(service, quantity = 1) {
   assert.equal(fake.placeOrderCalls[2].order.parentId, 9000);
   assert.equal(fake.placeOrderCalls[0].order.account, 'DUQ565596');
   fake.beforePlaceOrder = null;
+
+  const readOnlyRejectIntent = intentService.createIntent({
+    idempotencyKey: 'idem-readonly-reject',
+    executionId: 'fxp_readonly_reject',
+    intent: {
+      ...intentRecord,
+      idempotencyKey: 'idem-readonly-reject',
+      executionId: 'fxp_readonly_reject',
+      executionTarget: 'ibkr_paper',
+    },
+  }).record;
+  const readOnlyRejectPlan = service.buildOrderPlan({
+    executionId: 'fxp_readonly_reject',
+    contract: {
+      root: 'MNQ',
+      conId: 793356225,
+      localSymbol: 'MNQU6',
+      expiry: '20260918',
+      exchange: 'CME',
+      currency: 'USD',
+    },
+    side: 'long',
+    quantity: 1,
+    entryType: 'MKT',
+    stopLossPrice: 22980,
+    takeProfitPrice: 23040,
+  });
+  const readOnlyRejectEvidence = service.createExecutionEvidence({
+    guardDecision,
+    intentRecord: readOnlyRejectIntent,
+    orderPlan: readOnlyRejectPlan,
+    brokerRisk,
+    executionAllowlist,
+    entryContract,
+    reconciliation,
+    verifiedAccount,
+  });
+  const readOnlyRejectSubmit = await service.submitPaperOrder({
+    guardDecision,
+    intentRecord: readOnlyRejectIntent,
+    orderPlan: readOnlyRejectPlan,
+    verifiedAccount,
+    executionEvidence: readOnlyRejectEvidence,
+    brokerRisk,
+    executionAllowlist,
+    entryContract,
+    reconciliation,
+  });
+  assert.equal(readOnlyRejectSubmit.submitted, true);
+  fake.emit(EventName.error, new Error("Error validating request.-'bC' : cause - The API interface is currently in Read-Only mode."), 321, 9003);
+  const rejectedIntent = intentService.getIntent('idem-readonly-reject');
+  assert.equal(rejectedIntent.status, 'rejected');
+  assert.equal(rejectedIntent.blocker, 'ibkr_order_rejected');
+  assert.equal(rejectedIntent.ibErrorCode, 321);
+  assert.equal(rejectedIntent.rejectedOrderId, 9003);
 
   fake.emit(EventName.orderStatus, 9000, 'Submitted', 0, 1, 0, 777, 0, 0);
   assert.equal(service.getPaperOrderStatus(9000).status, 'submitted');

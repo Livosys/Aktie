@@ -3,7 +3,17 @@
 const fs = require('fs');
 const path = require('path');
 
-const ROOT_DIR = path.resolve(__dirname, '../../data/futures-paper');
+const DEFAULT_ROOT_DIR = path.resolve(__dirname, '../../data/futures-paper');
+
+function resolveRootDirFromEnv() {
+  const override = process.env.FUTURES_PAPER_DATA_DIR;
+  if (typeof override === 'string' && override.trim()) {
+    return path.resolve(override.trim());
+  }
+  return DEFAULT_ROOT_DIR;
+}
+
+const ROOT_DIR = resolveRootDirFromEnv();
 const FILES = Object.freeze({
   accountConfig: path.join(ROOT_DIR, 'account-config.json'),
   accountState: path.join(ROOT_DIR, 'account-state.json'),
@@ -63,7 +73,7 @@ function appendJsonl(file, row) {
 }
 
 function createFuturesPaperStorageService(options = {}) {
-  const rootDir = options.rootDir || ROOT_DIR;
+  const rootDir = options.rootDir || resolveRootDirFromEnv();
   const files = {
     accountConfig: path.join(rootDir, 'account-config.json'),
     accountState: path.join(rootDir, 'account-state.json'),
@@ -151,8 +161,10 @@ function createFuturesPaperStorageService(options = {}) {
 const defaultFuturesPaperStorageService = createFuturesPaperStorageService();
 
 module.exports = {
+  DEFAULT_ROOT_DIR,
   ROOT_DIR,
   FILES,
+  resolveRootDirFromEnv,
   nowIso,
   ensureDir,
   readJson,

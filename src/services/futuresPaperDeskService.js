@@ -103,7 +103,7 @@ const PAPER_STATUSES = Object.freeze([
   'ENTRY_CONTRACT_BLOCKED',
   'RISK_BLOCKED',
   'TRADE_CAP_BLOCKED',
-  'DIAGNOSTIC_ONLY',
+  'REPLAY_ONLY',
   'NOT_APPLICABLE',
 ]);
 
@@ -143,7 +143,7 @@ const STATUS_FALLBACK_BLOCKER = Object.freeze({
   APPROVAL_BLOCKED: 'not_approved_or_enabled_for_paper',
   RISK_BLOCKED: 'risk_blocked',
   TRADE_CAP_BLOCKED: 'trade_cap_blocked',
-  DIAGNOSTIC_ONLY: 'diagnostic_only',
+  REPLAY_ONLY: 'replay_only',
   NOT_APPLICABLE: 'unsupported_futures_mapping',
   SESSION_CLOSED: 'session_closed',
   READY_WAITING_FOR_SIGNAL: 'waiting_for_signal',
@@ -164,7 +164,7 @@ function normalizePaperExecutionStatus(row = {}, {
     return 'PRODUCER_NOT_IMPLEMENTED';
   }
   if (row.readiness === 'READY_FOR_REPLAY' || row.paperEligibility === 'TECHNICALLY_ALLOWED_BUT_LONG_ONLY_INCOMPATIBLE') {
-    return 'DIAGNOSTIC_ONLY';
+    return 'REPLAY_ONLY';
   }
   if (row.runtimeConnectorStatus && row.runtimeConnectorStatus !== 'active') return 'DATA_BLOCKED';
   if (row.entryContractStatus === 'missing') return 'ENTRY_CONTRACT_BLOCKED';
@@ -324,7 +324,7 @@ function buildCanonicalStrategyOverview({
     if (row.paperStatus === 'RISK_BLOCKED') acc.riskBlocked += 1;
     if (row.paperStatus === 'TRADE_CAP_BLOCKED') acc.tradeCapBlocked += 1;
     if (row.paperStatus === 'READY_WAITING_FOR_SIGNAL') acc.readyWaitingForSignal += 1;
-    if (row.paperStatus === 'DIAGNOSTIC_ONLY') acc.diagnosticOnly += 1;
+    if (row.paperStatus === 'REPLAY_ONLY') acc.replayOnly += 1;
     if (row.paperStatus === 'NOT_APPLICABLE') acc.notApplicable += 1;
     return acc;
   }, {
@@ -339,7 +339,7 @@ function buildCanonicalStrategyOverview({
     entryContractBlocked: 0,
     riskBlocked: 0,
     tradeCapBlocked: 0,
-    diagnosticOnly: 0,
+    replayOnly: 0,
     notApplicable: 0,
   });
 
@@ -669,7 +669,7 @@ function buildFuturesPaperDeskRuntime(options = {}) {
       marketGroup: universe.groups?.mini_futures || null,
       selectedSymbols: instruments.map((row) => row.symbol),
       note: 'Futures-desken använder befintliga strategier som kandidatkällor och fokuserar på MNQ/MES.',
-      signalSource: 'trading_os_signal_adapter',
+      signalSource: 'canonical_signal_pipeline',
       connected: Boolean(scannerRuntime?.scanner?.connected),
       lastScanAt: scannerRuntime?.scanner?.lastScanAt || null,
       lastScanSummary: scannerRuntime?.scanner?.lastScanSummary || null,

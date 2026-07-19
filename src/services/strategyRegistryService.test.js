@@ -48,6 +48,7 @@ function makeRegistry() {
   return createStrategyRegistryService({
     registryFile,
     daytradingCatalog: makeCatalog(),
+    seedRecords: [],
   });
 }
 
@@ -66,12 +67,15 @@ function assertSafety(result, label) {
   assert.ok(snapshot.some((strategy) => strategy.strategy_id === 'INTERNAL_ACTIVE'), 'internal active exists');
   assert.ok(snapshot.some((strategy) => strategy.strategy_id === 'INTERNAL_PAUSED'), 'internal paused exists');
 
-  const active = registry.getStrategy('INTERNAL_ACTIVE');
-  assert.equal(active.status, 'active', 'internal active status');
-  assert.equal(active.enabled, true, 'internal active enabled');
-  assert.equal(active.source, 'internal', 'internal active source');
-  assert.equal(active.performance_summary.trades, 18, 'internal active learning summary');
-  assert.deepEqual(active.allowed_timeframes, ['5m'], 'internal active timeframes');
+	  const active = registry.getStrategy('INTERNAL_ACTIVE');
+	  assert.equal(active.status, 'active', 'internal active status');
+	  assert.equal(active.enabled, true, 'internal active enabled');
+	  assert.equal(active.source, 'internal', 'internal active source');
+	  assert.equal(active.performance_summary.trades, 18, 'internal active learning summary');
+	  assert.deepEqual(active.allowed_timeframes, ['5m'], 'internal active timeframes');
+	  const activeExecution = registry.canExecuteStrategy('INTERNAL_ACTIVE');
+	  assert.equal(activeExecution.allowed, true, 'internal active can execute');
+	  assert.equal(activeExecution.source, 'strategy_registry_execution_allowlist', 'internal active execution source');
 
   const paused = registry.getStrategy('INTERNAL_PAUSED');
   assert.equal(paused.status, 'paused', 'internal paused status');
@@ -88,11 +92,14 @@ function assertSafety(result, label) {
   assert.equal(created.created, true, 'tv created');
   assertSafety(created, 'tv create safety');
 
-  const tvAlpha = registry.getStrategy('TV_ALPHA');
-  assert.equal(tvAlpha.source, 'tradingview', 'tv alpha source');
-  assert.equal(tvAlpha.status, 'paper_only', 'tv alpha status');
-  assert.equal(tvAlpha.enabled, true, 'tv alpha enabled');
-  assert.deepEqual(tvAlpha.recommended_tests, ['paper_forward'], 'tv alpha learning tests');
+	  const tvAlpha = registry.getStrategy('TV_ALPHA');
+	  assert.equal(tvAlpha.source, 'tradingview', 'tv alpha source');
+	  assert.equal(tvAlpha.status, 'paper_only', 'tv alpha status');
+	  assert.equal(tvAlpha.enabled, true, 'tv alpha enabled');
+	  assert.deepEqual(tvAlpha.recommended_tests, ['paper_forward'], 'tv alpha learning tests');
+	  const paperOnlyExecution = registry.canExecuteStrategy('TV_ALPHA');
+	  assert.equal(paperOnlyExecution.allowed, false, 'paper_only tv cannot execute');
+	  assert.equal(paperOnlyExecution.blockedReason, 'strategy_not_active_in_registry', 'paper_only tv block reason');
 
   const pausedTv = registry.pauseStrategy('TV_ALPHA', 'poor performance');
   assert.equal(pausedTv.ok, true, 'pause ok');
@@ -101,16 +108,22 @@ function assertSafety(result, label) {
   assert.equal(pausedTv.strategy.disabled_reason, 'poor performance', 'paused tv reason');
   assertSafety(pausedTv, 'pause safety');
 
-  const blockedPaused = registry.canForwardStrategy('TV_ALPHA');
-  assert.equal(blockedPaused.allowed, false, 'paused tv blocked');
-  assert.equal(blockedPaused.blocked_reason, 'strategy_disabled', 'paused tv block reason');
+	  const blockedPaused = registry.canForwardStrategy('TV_ALPHA');
+	  assert.equal(blockedPaused.allowed, false, 'paused tv blocked');
+	  assert.equal(blockedPaused.blocked_reason, 'strategy_disabled', 'paused tv block reason');
+	  const pausedExecution = registry.canExecuteStrategy('TV_ALPHA');
+	  assert.equal(pausedExecution.allowed, false, 'paused tv cannot execute');
+	  assert.equal(pausedExecution.blockedReason, 'strategy_disabled_in_registry', 'paused tv execution block reason');
 
   const reactivated = registry.activateStrategy('TV_ALPHA');
   assert.equal(reactivated.ok, true, 'activate ok');
   assert.equal(reactivated.strategy.status, 'active', 'activated tv status');
-  assert.equal(reactivated.strategy.enabled, true, 'activated tv enabled');
-  assert.equal(reactivated.strategy.disabled_reason, null, 'activated tv reason cleared');
-  assertSafety(reactivated, 'activate safety');
+	  assert.equal(reactivated.strategy.enabled, true, 'activated tv enabled');
+	  assert.equal(reactivated.strategy.disabled_reason, null, 'activated tv reason cleared');
+	  assertSafety(reactivated, 'activate safety');
+	  const reactivatedExecution = registry.canExecuteStrategy('TV_ALPHA');
+	  assert.equal(reactivatedExecution.allowed, true, 'activated tv can execute');
+	  assert.equal(reactivatedExecution.status, 'active', 'activated tv execution status');
 
   const deprecated = registry.ensureStrategy('TV_BETA', {
     source: 'tradingview',
@@ -123,9 +136,16 @@ function assertSafety(result, label) {
   assert.equal(deprecated.strategy.status, 'deprecated', 'deprecated status');
   assert.equal(deprecated.strategy.enabled, false, 'deprecated disabled');
 
-  const blockedDeprecated = registry.canForwardStrategy('TV_BETA');
-  assert.equal(blockedDeprecated.allowed, false, 'deprecated blocked');
-  assert.equal(blockedDeprecated.blocked_reason, 'strategy_disabled', 'deprecated block reason');
+	  const blockedDeprecated = registry.canForwardStrategy('TV_BETA');
+	  assert.equal(blockedDeprecated.allowed, false, 'deprecated blocked');
+	  assert.equal(blockedDeprecated.blocked_reason, 'strategy_disabled', 'deprecated block reason');
+	  const deprecatedExecution = registry.canExecuteStrategy('TV_BETA');
+	  assert.equal(deprecatedExecution.allowed, false, 'deprecated cannot execute');
+	  assert.equal(deprecatedExecution.blockedReason, 'strategy_disabled_in_registry', 'deprecated execution block reason');
+	
+	  const missingExecution = registry.canExecuteStrategy('__missing__');
+	  assert.equal(missingExecution.allowed, false, 'missing cannot execute');
+	  assert.equal(missingExecution.blockedReason, 'strategy_not_in_execution_allowlist', 'missing execution block reason');
 
   const status = registry.getStatus();
   assert.equal(status.total_strategies, 4, 'status total strategies');
@@ -137,6 +157,19 @@ function assertSafety(result, label) {
   assert.ok(status.latest_tradingview_strategy, 'status latest tradingview strategy');
   assert.equal(status.latest_tradingview_strategy.source, 'tradingview', 'latest tradingview source');
   assertSafety(status, 'status safety');
+}
+
+{
+  const seeded = createStrategyRegistryService({
+    registryFile: path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'strategy-registry-seeded-')), 'strategy-registry.jsonl'),
+    daytradingCatalog: { getCatalog: () => ({ strategies: [] }) },
+  });
+  const mnq = seeded.getStrategy('mnq_globex_momentum_v1');
+  assert.ok(mnq, 'seeded MNQ Globex strategy exists');
+  assert.equal(mnq.status, 'active', 'seeded MNQ Globex status');
+  assert.equal(mnq.enabled, true, 'seeded MNQ Globex enabled');
+  assert.equal(seeded.canExecuteStrategy('mnq_globex_momentum_v1').allowed, true, 'seeded MNQ Globex can execute');
+  assert.equal(seeded.SEED_FILE.endsWith('src/config/strategyRegistrySeed.json'), true, 'seed file is versioned config');
 }
 
 console.log('Strategy registry tests passed.');

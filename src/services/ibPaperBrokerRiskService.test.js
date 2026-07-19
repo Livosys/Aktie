@@ -129,6 +129,21 @@ const quote = {
     reconciliation: { degraded: false },
     now: new Date('2026-07-15T22:30:00.000Z'),
   });
+  assert.equal(result.allowed, true);
+  assert(!result.blockers.includes('account_summary_stale'));
+}
+
+{
+  const result = risk.evaluateBrokerRisk({
+    root: 'MNQ',
+    quantity: 1,
+    orderType: 'MKT',
+    stopLossPrice: 22980,
+    quote,
+    accountSummary: { ok: true, generatedAt: '2026-07-15T22:20:00.000Z', account: { accountIdMasked: 'DU***596', classification: 'paper', realizedPnl: 0 } },
+    reconciliation: { degraded: false },
+    now: new Date('2026-07-15T22:30:00.000Z'),
+  });
   assert.equal(result.allowed, false);
   assert(result.blockers.includes('account_summary_stale'));
 }

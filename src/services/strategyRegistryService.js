@@ -19,6 +19,7 @@ const SAFETY = Object.freeze({
 const STATUS_VALUES = new Set(['active', 'paper_only', 'watch', 'experimental', 'paused', 'deprecated']);
 const SOURCE_VALUES = new Set(['internal', 'tradingview', 'replay', 'batch', 'manual']);
 const DEFAULT_REGISTRY_FILE = path.resolve(__dirname, '../../data/strategy-registry.jsonl');
+const DEFAULT_SEED_FILE = path.resolve(__dirname, '../config/strategyRegistrySeed.json');
 
 function nowIso() {
   return new Date().toISOString();
@@ -87,6 +88,10 @@ function defaultPerformanceSummary() {
 
 function createStrategyRegistryService(options = {}) {
   const registryFile = options.registryFile || DEFAULT_REGISTRY_FILE;
+  const seedFile = Object.prototype.hasOwnProperty.call(options, 'seedFile')
+    ? options.seedFile
+    : DEFAULT_SEED_FILE;
+  const seedRecords = Array.isArray(options.seedRecords) ? options.seedRecords : null;
   const catalogService = options.daytradingCatalog || daytradingCatalog;
 
   function readJsonl() {
@@ -104,6 +109,20 @@ function createStrategyRegistryService(options = {}) {
           }
         })
         .filter(Boolean);
+    } catch (_) {
+      return [];
+    }
+  }
+
+  function readSeedRecords() {
+    if (seedRecords) return seedRecords.filter(Boolean);
+    if (!seedFile) return [];
+    try {
+      if (!fs.existsSync(seedFile)) return [];
+      const parsed = JSON.parse(fs.readFileSync(seedFile, 'utf8'));
+      if (Array.isArray(parsed)) return parsed.filter(Boolean);
+      if (Array.isArray(parsed?.strategies)) return parsed.strategies.filter(Boolean);
+      return [];
     } catch (_) {
       return [];
     }
@@ -233,7 +252,7 @@ function createStrategyRegistryService(options = {}) {
       byId.set(strategy.id, baseStrategyFromCatalog(strategy));
     }
 
-    for (const record of loadHistory()) {
+    for (const record of [...readSeedRecords(), ...loadHistory()]) {
       const strategyId = safeString(record.strategy_id || record.strategyId);
       if (!strategyId) continue;
       const existing = byId.get(strategyId) || blankStrategy(strategyId);
@@ -417,6 +436,42 @@ function createStrategyRegistryService(options = {}) {
     };
   }
 
+  function canExecuteStrategy(strategyOrId) {
+    const strategy = typeof strategyOrId === 'string' ? getStrategy(strategyOrId) : strategyOrId;
+    if (!strategy) {
+      return {
+        allowed: false,
+        blockedReason: 'strategy_not_in_execution_allowlist',
+        blocked_reason: 'strategy_not_in_execution_allowlist',
+        strategy: null,
+        strategyId: typeof strategyOrId === 'string' ? safeString(strategyOrId) : null,
+        status: null,
+        enabled: false,
+        source: 'strategy_registry_execution_allowlist',
+        executionAllowlist: true,
+        ...SAFETY,
+      };
+    }
+    const status = normalizeStatus(strategy.status, 'paper_only');
+    const enabled = strategy.enabled !== false;
+    const allowed = enabled && status === 'active';
+    const blockedReason = allowed
+      ? null
+      : (enabled ? 'strategy_not_active_in_registry' : 'strategy_disabled_in_registry');
+    return {
+      allowed,
+      blockedReason,
+      blocked_reason: blockedReason,
+      strategy,
+      strategyId: strategy.strategy_id || null,
+      status,
+      enabled,
+      source: 'strategy_registry_execution_allowlist',
+      executionAllowlist: true,
+      ...SAFETY,
+    };
+  }
+
   function getLatestTradingViewStrategy() {
     const strategies = listStrategies().filter((strategy) => strategy.source === 'tradingview');
     if (strategies.length === 0) return null;
@@ -459,6 +514,7 @@ function createStrategyRegistryService(options = {}) {
   return {
     SAFETY,
     REGISTRY_FILE: registryFile,
+    SEED_FILE: seedFile,
     getStatus,
     getStrategy,
     getSnapshot,
@@ -468,6 +524,7 @@ function createStrategyRegistryService(options = {}) {
     pauseStrategy,
     activateStrategy,
     canForwardStrategy,
+    canExecuteStrategy,
   };
 }
 
@@ -476,6 +533,7 @@ const defaultStrategyRegistry = createStrategyRegistryService();
 module.exports = {
   SAFETY,
   DEFAULT_REGISTRY_FILE,
+  DEFAULT_SEED_FILE,
   STATUS_VALUES,
   SOURCE_VALUES,
   createStrategyRegistryService,

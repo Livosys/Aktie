@@ -2,67 +2,196 @@
 
 const assert = require('assert/strict');
 const svc = require('./interactiveBrokersPreviewService');
+const paperStrategyEntryContractService = require('./paperStrategyEntryContractService');
+
+const now = '2026-07-16T14:00:00.000Z';
 
 function candidate(overrides = {}) {
   return {
     candidateId: 'cand-1',
-    symbol: 'AAPL',
-    canonicalStrategyId: 'narrow_breakout',
-    strategyName: 'Narrow Breakout',
-    setup: 'NARROW_BULL_ENTRY',
-    source: 'scanner',
-    score: 71,
-    confidence: 84,
+    root: 'MNQ',
+    symbol: 'MNQ',
+    strategyId: 'ema_pullback_continuation',
+    strategyName: 'EMA Pullback Continuation',
+    direction: 'long',
+    quantity: 1,
+    orderType: 'MKT',
+    entryPrice: 23000,
+    stopLoss: 22980,
+    takeProfit: 23040,
+    riskPct: 0.25,
+    riskAmount: 20,
+    riskReward: 2,
+    createdAt: now,
     ...overrides,
   };
 }
 
-function assertBlocked(row, expectedSubstring, message) {
-  assert.equal(row.allowedForIbPaperPreview, false, message || 'candidate should be blocked');
-  assert.ok(Array.isArray(row.blockers), 'blockers is an array');
-  assert.ok(row.blockers.some((item) => String(item).toLowerCase().includes(String(expectedSubstring).toLowerCase())), `expected blocker containing "${expectedSubstring}"`);
-  assert.equal(row.wouldCreateIbPaperOrder, false, 'wouldCreateIbPaperOrder stays false');
-  assert.equal(row.orderSendingBlocked, true, 'orderSendingBlocked stays true');
+function threeLegPlan(overrides = {}) {
+  return {
+    environment: 'paper',
+    contract: { root: 'MNQ', localSymbol: 'MNQU6', expiry: '20260918', exchange: 'CME', currency: 'USD' },
+    entry: { action: 'BUY', orderType: 'MKT', totalQuantity: 1, transmit: false, orderRef: 'TOS-PAPER-entry' },
+    takeProfit: { action: 'SELL', orderType: 'LMT', totalQuantity: 1, lmtPrice: 23040, transmit: false, orderRef: 'TOS-PAPER-tp' },
+    stopLoss: { action: 'SELL', orderType: 'STP', totalQuantity: 1, auxPrice: 22980, transmit: true, orderRef: 'TOS-PAPER-sl' },
+    transmitSequence: ['entry:false', 'takeProfit:false', 'stopLoss:true'],
+    ocaGroup: 'oca-test',
+    ...overrides,
+  };
+}
+
+function dependencies(overrides = {}) {
+  const allowedStrategies = new Set(overrides.allowedStrategies || ['ema_pullback_continuation']);
+  return {
+    strategyRegistryService: {
+      canExecuteStrategy(strategyId) {
+        return allowedStrategies.has(strategyId)
+          ? { allowed: true, strategyId, source: 'strategy_registry_execution_allowlist', status: 'active', enabled: true }
+          : { allowed: false, strategyId, blockedReason: 'strategy_not_in_execution_allowlist', source: 'strategy_registry_execution_allowlist' };
+      },
+    },
+    entryContractService: {
+      evaluatePaperEntryContract() {
+        return { allowed: true, reasonCode: null, source: 'paperStrategyEntryContractService' };
+      },
+    },
+    brokerRiskService: {
+      evaluateBrokerRisk() {
+        return { allowed: true, blockedReason: null, checks: [{ code: 'reconciliation_ok', ok: true }] };
+      },
+    },
+    adapter: {
+      buildOrderPlan() {
+        return threeLegPlan(overrides.orderPlan);
+      },
+    },
+    quotesByRoot: {
+      MNQ: { root: 'MNQ', price: 23000, localSymbol: 'MNQU6', expiry: '20260918', exchange: 'CME', currency: 'USD' },
+    },
+    ...overrides,
+  };
+}
+
+function readiness() {
+  return {
+    ok: true,
+    source: 'ib_paper_execution_runtime_singleton',
+    status: 'verified',
+    runtimeState: 'READY',
+    gatewayReachable: true,
+    paperModeVerified: true,
+    ibApiVerified: true,
+    paperAccountVerified: true,
+    sessionVerified: true,
+    nextValidId: 9000,
+    managedAccounts: ['DUQ565596'],
+    managedAccountCount: 1,
+    paperAccountId: 'DUQ565596',
+  };
+}
+
+function executionStatus() {
+  return {
+    ready: true,
+    executionEnabled: false,
+    paperBrokerExecutionEnabled: false,
+    executionConnected: true,
+    nextValidId: 9000,
+    paperAccountVerified: true,
+    reconciliation: { status: 'ok', degraded: false, openOrders: [], positions: [], executions: [] },
+    brokerOpenOrders: [],
+    brokerPositions: [],
+    brokerExecutions: [],
+    account: {
+      ok: true,
+      generatedAt: now,
+      account: { classification: 'paper', accountIdMasked: 'DU***596' },
+    },
+  };
 }
 
 function run() {
-  // ── The public endpoint/service surface is always preview_only and hard-blocked ──
   const preview = svc.getIbPaperOrderPreview({
+    now,
+    readiness: readiness(),
+    executionStatus: executionStatus(),
     candidates: [
-      candidate({ symbol: 'AAPL', canonicalStrategyId: 'narrow_breakout', direction: 'long' }),
-      candidate({ symbol: 'META', canonicalStrategyId: 'trend_continuation', direction: 'long', setup: 'REGULAR_PULLBACK' }),
-      candidate({ symbol: 'NVDA', canonicalStrategyId: 'narrow_state_expansion_long', direction: 'long' }),
-      candidate({ symbol: 'MSFT', canonicalStrategyId: 'ema_pullback_continuation', direction: 'short' }),
+      candidate(),
+      candidate({ candidateId: 'cand-disabled', strategyId: 'disabled_strategy' }),
     ],
+    ...dependencies(),
   });
 
   assert.equal(preview.ok, true);
   assert.equal(preview.mode, 'preview_only');
-  assert.equal(preview.maxPerDay, 3);
-  assert.equal(preview.cryptoBlocked, true);
-  assert.equal(preview.etfBlocked, true);
-  assert.equal(preview.qqqBlocked, true);
-  assert.equal(preview.executionEnabled, false);
-  assert.equal(preview.orderQueueEnabled, false);
-  assert.equal(preview.brokerExecutionEnabled, false);
-  assert.equal(preview.liveTradingEnabled, false);
+  assert.equal(preview.source, 'execution_runtime_pipeline_preview');
   assert.equal(preview.orderSendingBlocked, true);
   assert.equal(preview.wouldCreateIbPaperOrder, false);
-  assert.ok(Array.isArray(preview.candidates));
-  assert.equal(preview.candidates.length, 3, 'visible list caps at 3');
-  assert.equal(preview.summary.totalCandidates, 4);
-  assert.equal(preview.summary.totalScanned, 4);
-  assert.equal(preview.summary.allowedCandidates, 4);
-  assert.equal(preview.summary.blockedCandidates, 0);
-  assert.equal(preview.summary.allowedVisibleCount, 3);
-  assert.equal(preview.summary.blockedVisibleCount, 0);
-  assert.equal(preview.requiredStopLossMinPct, 0.10);
-  assert.ok(String(preview.stopLossPolicy).includes('0,10 %'));
-  assert.ok(preview.summary.noteSv.includes('Tre kandidater'));
-  assert.ok(Array.isArray(preview.allowedCandidates));
-  assert.equal(preview.allowedCandidates.length, 4);
-  assert.ok(Array.isArray(preview.blockedCandidates));
-  assert.equal(preview.blockedCandidates.length, 0);
+  assert.equal(preview.summary.totalCandidates, 2);
+  assert.equal(preview.summary.allowedCandidates, 1);
+  assert.equal(preview.summary.blockedCandidates, 1);
+  assert.deepEqual(preview.summary.pipeline, ['execution_runtime', 'strategy_registry', 'risk', 'entry_contract', 'bracket_plan']);
+
+  const allowed = preview.allowedCandidates[0];
+  assert.equal(allowed.strategyId, 'ema_pullback_continuation');
+  assert.equal(allowed.allowedForIbPaperPreview, true);
+  assert.equal(allowed.blueprintReady, true);
+  assert.equal(allowed.executionReady, true);
+  assert.equal(allowed.executionAllowlist.source, 'strategy_registry_execution_allowlist');
+  assert.equal(allowed.entryContract.allowed, true);
+  assert.equal(allowed.brokerRisk.allowed, true);
+  assert.equal(allowed.bracket.ok, true);
+  assert.equal(allowed.bracket.orderCount, 3);
+  assert.deepEqual(allowed.bracket.transmitSequence, ['entry:false', 'takeProfit:false', 'stopLoss:true']);
+  assert.equal(allowed.wouldCreateOrder, false);
+  assert.equal(allowed.wouldSendOrder, false);
+  assert.equal(allowed.orderSendingBlocked, true);
+
+  const blocked = preview.blockedCandidates[0];
+  assert.equal(blocked.allowedForIbPaperPreview, false);
+  assert.equal(blocked.blockedReason, 'strategy_not_in_execution_allowlist');
+  assert.ok(blocked.blockers.includes('strategy_not_in_execution_allowlist'));
+  assert.equal(blocked.orderSendingBlocked, true);
+
+  const nativePreview = svc.getIbPaperOrderPreview({
+    now,
+    readiness: readiness(),
+    executionStatus: executionStatus(),
+    candidates: [
+      candidate({
+        candidateId: 'cand-native-mnq',
+        strategyId: 'mnq_globex_momentum_v1',
+        strategyName: 'MNQ Globex Momentum',
+        signalSubtype: 'GLOBEX_MOMENTUM',
+        signalStatus: 'ready',
+        marketType: 'futures',
+        dataFreshness: 'LIVE',
+        closedCandleConfirmed: true,
+        signalTimestamp: now,
+        createdAt: now,
+      }),
+    ],
+    ...dependencies({
+      allowedStrategies: ['mnq_globex_momentum_v1'],
+      entryContractService: paperStrategyEntryContractService,
+    }),
+  });
+  assert.equal(nativePreview.ok, true);
+  assert.equal(nativePreview.summary.totalCandidates, 1);
+  assert.equal(nativePreview.summary.allowedCandidates, 1);
+  assert.equal(nativePreview.allowedCandidates[0].strategyId, 'mnq_globex_momentum_v1');
+  assert.equal(nativePreview.allowedCandidates[0].entryContract.allowed, true);
+  assert.equal(nativePreview.allowedCandidates[0].blueprintReady, true);
+
+  const noTpBracket = svc._internal.buildOrderPreviewCandidate(candidate(), {
+    now: new Date(now),
+    readiness: readiness(),
+    executionStatus: executionStatus(),
+    ...dependencies({ orderPlan: { takeProfit: null, transmitSequence: ['entry:false', 'stopLoss:true'] } }),
+  });
+  assert.equal(noTpBracket.allowedForIbPaperPreview, false);
+  assert.equal(noTpBracket.bracket.ok, false);
+  assert.equal(noTpBracket.bracket.blocker, 'bracket_requires_entry_take_profit_stop_loss');
 
   const verificationBase = svc._internal.buildVerificationBase({
     host: '127.0.0.1',
@@ -84,108 +213,6 @@ function run() {
   assert.equal(verification.paperAccountVerified, true);
   assert.equal(verification.ibApiVerified, true);
   assert.equal(verification.paperAccountId, 'DUQ565596');
-  assert.equal(verification.blockedReason, 'read_only_session_verified');
-
-  for (const row of preview.candidates) {
-    assert.equal(row.allowedForIbPaperPreview, true, 'allowed row stays allowed');
-    assert.equal(row.wouldCreateIbPaperOrder, false, 'allowed row still never creates order');
-    assert.equal(row.orderSendingBlocked, true, 'allowed row still blocks order sending');
-    assert.equal(typeof row.reasonSv, 'string');
-    assert.ok(row.reasonSv.length > 0);
-  }
-
-  // ── Allowed Nasdaq/US-stock candidates must outrank blocked crypto/unclear rows ──
-  const approvedIndex = svc._internal.buildApprovedStrategyIndex();
-  const approvedStrategyId = Array.from(approvedIndex.approved)[0] || 'narrow_breakout';
-  const prioritized = svc.getIbPaperOrderPreview({
-    candidates: [
-      candidate({ symbol: 'BTCUSDT', canonicalStrategyId: approvedStrategyId, strategyName: 'Approved Crypto', direction: 'long', score: 99, confidence: 99 }),
-      candidate({ symbol: 'QQQ', canonicalStrategyId: approvedStrategyId, strategyName: 'Approved QQQ', direction: 'long', score: 98, confidence: 98 }),
-      candidate({ symbol: 'AAPL', canonicalStrategyId: approvedStrategyId, strategyName: 'Approved AAPL', direction: 'long', score: 70, confidence: 70 }),
-      candidate({ symbol: 'NVDA', canonicalStrategyId: approvedStrategyId, strategyName: 'Approved NVDA', direction: 'long', score: 69, confidence: 69 }),
-    ],
-  });
-  assert.equal(prioritized.candidates.length, 3, 'prioritized preview still caps at 3');
-  assert.equal(prioritized.allowedCandidates.length, 2);
-  assert.equal(prioritized.blockedCandidates.length, 2);
-  assert.equal(prioritized.summary.allowedCandidates, 2);
-  assert.equal(prioritized.summary.blockedCandidates, 2);
-  assert.equal(prioritized.candidates[0].symbol, 'AAPL', 'allowed US-stock should outrank blocked crypto/unclear');
-  assert.equal(prioritized.candidates[0].allowedForIbPaperPreview, true);
-  assert.equal(prioritized.candidates[1].symbol, 'NVDA', 'allowed US-stock should stay ahead of blocked rows');
-  assert.equal(prioritized.candidates[1].allowedForIbPaperPreview, true);
-  assert.equal(prioritized.candidates[2].allowedForIbPaperPreview, false, 'blocked rows are shown only after allowed candidates');
-  assert.ok(String(prioritized.summary.insufficientAllowedReason).includes('Endast 2 tillåtna'));
-
-  // ── Crypto is blocked even when the strategy itself is approved ─────────────
-  const crypto = svc._internal.buildOrderPreviewCandidate(candidate({
-    symbol: 'BTCUSDT',
-    canonicalStrategyId: 'narrow_breakout',
-    strategyName: 'Narrow Breakout',
-    setup: 'NARROW_BULL_ENTRY',
-    direction: 'long',
-  }));
-  assertBlocked(crypto, 'krypto', 'crypto candidate must be blocked');
-
-  // ── QQQ / ETF are blocked in this phase ────────────────────────────────────
-  const qqq = svc._internal.buildOrderPreviewCandidate(candidate({
-    symbol: 'QQQ',
-    canonicalStrategyId: 'narrow_breakout',
-    strategyName: 'Narrow Breakout',
-    direction: 'long',
-    setup: 'NARROW_BULL_ENTRY',
-  }));
-  assertBlocked(qqq, 'QQQ', 'QQQ candidate must be blocked');
-
-  const etf = svc._internal.buildOrderPreviewCandidate(candidate({
-    symbol: 'SPY',
-    canonicalStrategyId: 'trend_continuation',
-    strategyName: 'Trend Continuation',
-    direction: 'long',
-    setup: 'REGULAR_PULLBACK',
-  }));
-  assertBlocked(etf, 'ETF', 'ETF candidate must be blocked');
-
-  // ── Unapproved strategy is blocked ─────────────────────────────────────────
-  const unapproved = svc._internal.buildOrderPreviewCandidate(candidate({
-    symbol: 'AAPL',
-    canonicalStrategyId: 'totally_new_strategy',
-    strategyName: 'Totally New',
-    direction: 'long',
-    setup: 'NARROW_BULL_ENTRY',
-  }));
-  assertBlocked(unapproved, 'godkänd', 'unapproved strategy must be blocked');
-
-  // ── Missing / unclear direction is blocked ─────────────────────────────────
-  const missingDirection = svc._internal.buildOrderPreviewCandidate(candidate({
-    symbol: 'META',
-    canonicalStrategyId: 'trend_continuation',
-    strategyName: 'Trend Continuation',
-    setup: 'REGULAR_PULLBACK',
-    direction: null,
-  }));
-  assertBlocked(missingDirection, 'riktningen', 'missing direction must be blocked');
-
-  // ── max 3 candidates is enforced even if more are provided ─────────────────
-  const capped = svc.getIbPaperOrderPreview({
-    candidates: [
-      candidate({ symbol: 'AAPL', canonicalStrategyId: 'narrow_breakout', direction: 'long' }),
-      candidate({ symbol: 'META', canonicalStrategyId: 'trend_continuation', direction: 'long' }),
-      candidate({ symbol: 'NVDA', canonicalStrategyId: 'narrow_state_expansion_long', direction: 'long' }),
-      candidate({ symbol: 'MSFT', canonicalStrategyId: 'ema_pullback_continuation', direction: 'short' }),
-      candidate({ symbol: 'GOOGL', canonicalStrategyId: 'vwap_failed_breakout_short', direction: 'short' }),
-    ],
-  });
-  assert.equal(capped.candidates.length, 3, 'preview list capped at 3');
-  assert.equal(capped.allCandidates.length, 5, 'full diagnostic pool is retained');
-  assert.equal(capped.summary.totalCandidates, 5);
-  assert.equal(capped.summary.totalScanned, 5);
-  assert.equal(capped.executionEnabled, false);
-  assert.equal(capped.orderQueueEnabled, false);
-  assert.equal(capped.brokerExecutionEnabled, false);
-  assert.equal(capped.liveTradingEnabled, false);
-  assert.equal(capped.orderSendingBlocked, true);
-  assert.equal(capped.wouldCreateIbPaperOrder, false);
 
   console.log('interactiveBrokersPreviewService.test.js: OK');
 }

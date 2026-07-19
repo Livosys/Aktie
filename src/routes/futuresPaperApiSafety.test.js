@@ -57,6 +57,20 @@ async function assertRetired(baseUrl, path, payload = {}) {
   assert.equal(result.body.internalSimulationRetired, true);
 }
 
+async function assertRetiredStrategyMutation(baseUrl, path, payload = {}) {
+  const result = await postJson(baseUrl, path, payload);
+  assert.equal(result.status, 410, `${path} should be retired`);
+  assert.equal(result.body.ok, false);
+  assert.equal(result.body.status, 'retired');
+  assert.equal(result.body.error, 'futures_strategy_approval_mutation_retired');
+  assert.equal(result.body.blocker, 'use_strategy_registry_execution_allowlist');
+  assert.equal(result.body.mode, 'paper_only');
+  assert.equal(result.body.live_trading_enabled, false);
+  assert.equal(result.body.broker_enabled, false);
+  assert.equal(result.body.actions_allowed, false);
+  assert.equal(result.body.can_place_orders, false);
+}
+
 async function main() {
   const retiredEndpoints = [
     '/api/futures-paper/account/reset',
@@ -66,6 +80,12 @@ async function main() {
     '/api/futures-paper/candidates/simulate',
     '/api/futures-paper/simulation/tick',
     '/api/futures-paper/auto-simulation',
+  ];
+  const retiredStrategyMutations = [
+    '/api/futures-paper/strategies/vwap_volume_breakout_long/approve',
+    '/api/futures-paper/strategies/vwap_volume_breakout_long/pause',
+    '/api/futures-paper/strategies/vwap_volume_breakout_long/resume',
+    '/api/futures-paper/strategies/vwap_volume_breakout_long/remove',
   ];
   const cases = [
     [{ live_trading_enabled: true }, 'live_trading_is_not_allowed'],
@@ -82,6 +102,10 @@ async function main() {
     for (const endpoint of retiredEndpoints) {
       await assertRetired(baseUrl, endpoint, {});
       await assertRetired(baseUrl, endpoint, { live_trading_enabled: true });
+    }
+    for (const endpoint of retiredStrategyMutations) {
+      await assertRetiredStrategyMutation(baseUrl, endpoint, {});
+      await assertRetiredStrategyMutation(baseUrl, endpoint, { live_trading_enabled: true });
     }
 
     const injectedQuantity = await postJson(baseUrl, '/api/futures-paper/ibkr-paper-execution/shadow', {

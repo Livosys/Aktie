@@ -41,6 +41,11 @@ function buildLocalIndex(intents = []) {
 function compareSnapshots({ intents = [], openOrders = [], executions = [], positions = [], orderStatuses = [] } = {}) {
   const local = buildLocalIndex(intents);
   const discrepancies = [];
+  const terminalStatusByOrderId = new Map(
+    orderStatuses
+      .map((row) => [Number(row.orderId), String(row.status || row.ibStatus || '').toLowerCase()])
+      .filter(([orderId, status]) => Number.isFinite(orderId) && ['cancelled', 'filled', 'inactive'].includes(status)),
+  );
   const brokerOrderRefs = new Set(openOrders.map(orderRefOf).filter(Boolean));
   const brokerExecutionRefs = new Set(executions.map(orderRefOf).filter(Boolean));
   const brokerRefs = new Set([...brokerOrderRefs, ...brokerExecutionRefs]);
@@ -68,7 +73,9 @@ function compareSnapshots({ intents = [], openOrders = [], executions = [], posi
   const activeStops = openOrders.filter((row) => {
     const orderType = String(row.order?.orderType || row.orderType || '').toUpperCase();
     const status = String(row.status || row.state || '').toLowerCase();
-    return orderType === 'STP' && !['cancelled', 'filled'].includes(status);
+    return orderType === 'STP'
+      && !['cancelled', 'filled', 'inactive'].includes(status)
+      && !terminalStatusByOrderId.has(Number(row.orderId));
   });
   if (nonFlatPositions.length > 0 && activeStops.length === 0) {
     discrepancies.push({ type: 'unprotected_position', positions: nonFlatPositions.length });
@@ -134,11 +141,12 @@ function createIbPaperBrokerReconciliationService(options = {}) {
       return snapshot;
     }
 
-    const [openOrdersResult, executionsResult, positionsResult] = await Promise.all([
-      adapter.getOpenPaperOrders(),
-      adapter.getPaperExecutions(),
-      adapter.getPaperPositions(),
-    ]);
+    const openOrdersResult = await adapter.getOpenPaperOrders();
+    const positionsResult = await adapter.getPaperPositions();
+    const executionsResult = await adapter.getPaperExecutions();
+    const accountSummaryResult = typeof adapter.refreshAccountSummary === 'function'
+      ? await adapter.refreshAccountSummary()
+      : (typeof adapter.getAccountSummary === 'function' ? adapter.getAccountSummary() : { ok: false, blocker: 'account_summary_unavailable' });
 	    const openOrders = openOrdersResult.orders || [];
 	    const executions = executionsResult.executions || [];
 	    const positions = positionsResult.positions || [];
@@ -148,6 +156,7 @@ function createIbPaperBrokerReconciliationService(options = {}) {
 	    if (openOrdersResult.ok !== true || openOrdersResult.timedOut === true) requestDiscrepancies.push({ type: 'reconciliation_open_orders_timeout', blocker: openOrdersResult.blocker || openOrdersResult.error || 'reconciliation_open_orders_timeout' });
 	    if (executionsResult.ok !== true || executionsResult.timedOut === true) requestDiscrepancies.push({ type: 'reconciliation_executions_timeout', blocker: executionsResult.blocker || executionsResult.error || 'reconciliation_executions_timeout' });
 	    if (positionsResult.ok !== true || positionsResult.timedOut === true) requestDiscrepancies.push({ type: 'reconciliation_positions_timeout', blocker: positionsResult.blocker || positionsResult.error || 'reconciliation_positions_timeout' });
+	    if (accountSummaryResult.ok !== true || accountSummaryResult.timedOut === true) requestDiscrepancies.push({ type: 'reconciliation_account_summary_unavailable', blocker: accountSummaryResult.blocker || accountSummaryResult.error || 'reconciliation_account_summary_unavailable' });
 	    const allDiscrepancies = [...requestDiscrepancies, ...compared.discrepancies];
 	    const degraded = allDiscrepancies.length > 0;
 	    const snapshot = {
@@ -161,14 +170,16 @@ function createIbPaperBrokerReconciliationService(options = {}) {
       openOrders,
       executions,
       positions,
-      orderStatuses,
+	      orderStatuses,
+	      accountSummary: accountSummaryResult,
 	      discrepancies: allDiscrepancies,
       counts: compared.counts,
       requestStatus: {
-        openOrders: { ok: openOrdersResult.ok === true, timedOut: openOrdersResult.timedOut === true },
-        executions: { ok: executionsResult.ok === true, timedOut: executionsResult.timedOut === true },
-        positions: { ok: positionsResult.ok === true, timedOut: positionsResult.timedOut === true },
-      },
+	        openOrders: { ok: openOrdersResult.ok === true, timedOut: openOrdersResult.timedOut === true },
+	        executions: { ok: executionsResult.ok === true, timedOut: executionsResult.timedOut === true },
+	        positions: { ok: positionsResult.ok === true, timedOut: positionsResult.timedOut === true },
+	        accountSummary: { ok: accountSummaryResult.ok === true, timedOut: accountSummaryResult.timedOut === true },
+	      },
       force,
       ...SAFETY,
     };

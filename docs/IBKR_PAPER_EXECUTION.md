@@ -29,11 +29,16 @@ can enable live broker execution.
 
 ## Flow
 
-Server-side strategy candidate id -> server-loaded candidate -> recomputed
-entry/approval/risk evidence -> execution-target reservation -> execution
-intent -> signed evidence fingerprint -> `ibPaperExecutionGuardService` ->
-`ibPaperExecutionAdapterService` -> IB Gateway paper account -> reconciliation
-mirror.
+Server-side strategy candidate id -> server-loaded candidate -> Strategy Registry
+execution allowlist -> recomputed entry/risk evidence -> execution-target
+reservation -> execution intent -> signed evidence fingerprint ->
+`ibPaperExecutionGuardService` -> `ibPaperExecutionAdapterService` -> IB
+Gateway paper account -> reconciliation mirror.
+
+Strategies do not have a separate approval flow for execution. A strategy reaches
+IBKR Paper execution only when `strategyRegistryService.canExecuteStrategy()`
+returns allowed, which requires the strategy to be active and enabled in the
+central Strategy Registry/Execution Allowlist.
 
 Market data remains separate:
 
@@ -54,6 +59,8 @@ Default runtime is shadow-safe:
 - GET status is read-only by default (`connect=false`)
 
 The shadow route rejects `actualSubmit`, `submit`, and `placeOrder` request flags.
+That temporary manual safety gate for the first IBKR Paper pilot order is a
+submit boundary only; it is not a strategy approval mechanism.
 
 ## Submit Boundary
 
@@ -65,7 +72,8 @@ last safety layer and requires:
 - `environment=paper`, live flags false, shadow off, submit flag on
 - MNQ/MES dated FUT contract, quantity exactly `1`, one stop, safe bracket
   sequence `parent(false), takeProfit(false), stopLoss(true)`
-- risk, approval, entry-contract, reconciliation and idempotency pass
+- strategy execution allowlist, risk, entry-contract, reconciliation and
+  idempotency pass
 - durable `submit_started` persisted before the first `placeOrder`
 
 ## Rollback

@@ -53,6 +53,7 @@ function makeHarness(secret) {
   const registry = createStrategyRegistryService({
     registryFile,
     daytradingCatalog: makeCatalog(),
+    seedRecords: [],
   });
   const connector = createTradingViewConnectorService({
     logFile,

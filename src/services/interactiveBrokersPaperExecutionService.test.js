@@ -245,6 +245,7 @@ async function main() {
   assert.equal(missingTp.submitted, false);
   assert.equal(missingTp.blockedReason, 'missing_take_profit');
 
+  const today = new Date().toISOString().slice(0, 10);
   const dailyQuotaBlocked = await svc.submitPaperOrder(candidate({
     symbol: 'MSFT',
     strategyId: 'ema_pullback_continuation',
@@ -254,9 +255,9 @@ async function main() {
     orderPreview: allowedOrderPreview([{ symbol: 'MSFT', strategyId: 'ema_pullback_continuation' }]),
     skipBroker: true,
     readTrades: () => [
-	      trade({ tradeId: 't1', symbol: 'AAPL', strategyId: 's1', openedAt: '2026-07-15T09:00:00.000Z', result: 'CLOSED', closedAt: '2026-07-15T10:00:00.000Z' }),
-	      trade({ tradeId: 't2', symbol: 'MSFT', strategyId: 's2', openedAt: '2026-07-15T09:30:00.000Z', result: 'CLOSED', closedAt: '2026-07-15T10:30:00.000Z' }),
-	      trade({ tradeId: 't3', symbol: 'NVDA', strategyId: 's3', openedAt: '2026-07-15T11:00:00.000Z', result: 'CLOSED', closedAt: '2026-07-15T12:00:00.000Z' }),
+	      trade({ tradeId: 't1', symbol: 'AAPL', strategyId: 's1', openedAt: `${today}T09:00:00.000Z`, result: 'CLOSED', closedAt: `${today}T10:00:00.000Z` }),
+	      trade({ tradeId: 't2', symbol: 'MSFT', strategyId: 's2', openedAt: `${today}T09:30:00.000Z`, result: 'CLOSED', closedAt: `${today}T10:30:00.000Z` }),
+	      trade({ tradeId: 't3', symbol: 'NVDA', strategyId: 's3', openedAt: `${today}T11:00:00.000Z`, result: 'CLOSED', closedAt: `${today}T12:00:00.000Z` }),
     ],
     loadState: () => state(),
   });
@@ -346,7 +347,18 @@ async function main() {
   const serverSource = fs.readFileSync(path.join('/var/www/nasdaq-scanner-prod', 'server.js'), 'utf8');
 	  assert.match(serverSource, /app\.use\('\/api', apiLimiter, requireTradingOsApiAuth, requireTradingOsCsrf, apiRouter\)/, 'API mutations stay behind existing auth and CSRF middleware');
   const routeSource = fs.readFileSync(path.join('/var/www/nasdaq-scanner-prod', 'src/routes/api.js'), 'utf8');
-	  assert.match(routeSource, /router\.post\('\/interactive-brokers\/paper-execute\/preflight'/, 'only paper execute preflight endpoint is production-mounted');
+  [
+    "router.post('/interactive-brokers/paper-execute'",
+    "router.post('/interactive-brokers/paper-execute/arm'",
+    "router.get('/interactive-brokers/paper-execute/arm-status'",
+    "router.get('/interactive-brokers/paper-execute/final-gate-status'",
+    "router.post('/interactive-brokers/paper-execute/protective-preflight'",
+    "router.post('/interactive-brokers/paper-execute/submit'",
+  ].forEach((needle) => {
+    assert.ok(routeSource.includes(needle), `${needle} is production-mounted`);
+  });
+  assert.match(routeSource, /defaultIbPaperExecutionOrchestratorService\.buildShadowExecution/, 'paper-execute submit facade uses the runtime singleton orchestrator');
+  assert.doesNotMatch(routeSource, /interactiveBrokersPaperOneShotExecutionService/, 'production paper-execute route does not mount the deprecated one-shot submit service');
 
   console.log('interactiveBrokersPaperExecutionService.test.js: OK');
 }

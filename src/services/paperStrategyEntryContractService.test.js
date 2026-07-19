@@ -69,11 +69,12 @@ function assertBlock(strategyId, candidate, reasonCode, message) {
 function main() {
   assert.equal(catalog.getCatalog().strategies.length, 33, 'catalog still has 33 canonical strategies');
   assert.equal(svc.entryContractsEnabled(), false, 'code default/flag false keeps rollout off');
-  assert.equal(svc.listEntryContracts().length, 3, 'only the three active strategies have contracts');
+  assert.equal(svc.listEntryContracts().length, 4, 'three TradingOS strategies plus native MNQ have entry contracts');
 
   assert.deepEqual(svc.getEntryContract('narrow_state_expansion_long').allowedSubtypes, ['NARROW_BULL_ENTRY']);
   assert.deepEqual(svc.getEntryContract('ema_pullback_continuation').allowedSubtypes, ['EMA_PULLBACK_UP']);
   assert.deepEqual(svc.getEntryContract('vwap_volume_breakout_long').allowedSubtypes, ['VWAP_RECLAIM_UP']);
+  assert.deepEqual(svc.getEntryContract('mnq_globex_momentum_v1').allowedSubtypes, ['GLOBEX_MOMENTUM']);
   assert.equal(svc.getEntryContract('narrow_breakout'), null, 'non-active strategy has no contract');
 
   assertBlock(
@@ -135,6 +136,24 @@ function main() {
 
   assertBlock('ema_pullback_continuation', { ...emaReady, side: 'SELL' }, svc.REASON_CODES.INVALID_DIRECTION, 'side=SELL cannot pass contract');
   assertBlock('ema_pullback_continuation', { ...emaReady, signal: 'SHORT_TRIGGERED' }, svc.REASON_CODES.INVALID_DIRECTION, 'bearish producer signal cannot pass contract');
+
+  const nativeReady = {
+    symbol: 'MNQ',
+    marketType: 'futures',
+    session: 'europe',
+    signalStatus: 'ready',
+    status: 'READY_WAITING_FOR_SIGNAL',
+    direction: 'long',
+    signalSubtype: 'GLOBEX_MOMENTUM',
+    dataFreshness: 'LIVE',
+    signalTimestamp: '2026-07-11T17:59:00.000Z',
+    closedCandleConfirmed: true,
+    extensionLevel: 'none',
+  };
+  assertPass('mnq_globex_momentum_v1', nativeReady, 'native MNQ long can pass its futures entry contract');
+  assertPass('mnq_globex_momentum_v1', { ...nativeReady, direction: 'short' }, 'native MNQ short can pass its futures entry contract');
+  assertBlock('mnq_globex_momentum_v1', { ...nativeReady, signalSubtype: 'OTHER' }, svc.REASON_CODES.INVALID_SUBTYPE);
+  assertBlock('mnq_globex_momentum_v1', { ...nativeReady, closedCandleConfirmed: false }, svc.REASON_CODES.MISSING_CLOSED_CANDLE);
 
   process.env.PAPER_ENTRY_CONTRACTS_ENABLED = 'true';
   assert.equal(svc.entryContractsEnabled(), true, 'flag true enables runtime rollout');

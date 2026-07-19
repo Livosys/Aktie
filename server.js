@@ -325,6 +325,15 @@ app.listen(PORT, '127.0.0.1', () => {
       console.log('[Server] IB futures data layer disabled via IB_FUTURES_DATA_ENABLED=false');
     }
   }
+  {
+    const ibPaperExecutionOrchestratorService = require('./src/services/ibPaperExecutionOrchestratorService');
+    ibPaperExecutionOrchestratorService.defaultIbPaperExecutionOrchestratorService.startRuntime()
+      .then((result) => {
+        const state = result?.connectionAttempt?.state || result?.connectionAttempt?.error || result?.error || 'unknown';
+        console.log(`[IBPaperExecutionRuntime] start: ${result.ok ? 'ok' : state}`);
+      })
+      .catch((err) => console.warn('[IBPaperExecutionRuntime] start failed:', err.message));
+  }
   redisService.connect().then((connected) => {
     console.log(`[Redis] ${connected ? 'connected' : 'fallback mode'} (${redisService.status().clientStatus})`);
   }).catch((err) => {

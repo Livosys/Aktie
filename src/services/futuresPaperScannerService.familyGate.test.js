@@ -15,7 +15,6 @@ const os = require('os');
 const path = require('path');
 
 const rootDir = fs.mkdtempSync(path.join(os.tmpdir(), 'futures-paper-family-gate-'));
-process.env.FUTURES_PAPER_STRATEGY_APPROVALS_FILE = path.join(rootDir, 'futures-strategy-approvals.json');
 
 const { createFuturesPaperStorageService } = require('./futuresPaperStorageService');
 const { createFuturesPaperAccountService } = require('./futuresPaperAccountService');
@@ -48,7 +47,7 @@ const priceFeed = {
 
 // Godkänn signalens egen strategi (echo) så olika strategyId kan testas.
 const signalAdapter = createFuturesTradingOsSignalAdapterService({
-  signalReader: () => signals,
+  signalReader: () => [],
   approvalService: {
     evaluateSignal: (signal) => ({
       approved: true,
@@ -59,12 +58,38 @@ const signalAdapter = createFuturesTradingOsSignalAdapterService({
   },
 });
 
+const signalProvider = {
+  getCanonicalSignals: () => ({
+    ok: true,
+    signalInputs: signals,
+    signals,
+    providerResults: {},
+    stats: {
+      signalInputsRead: signals.length,
+      readerSignalsRead: signals.length,
+      providerSignalsRead: 0,
+      providersEvaluated: 0,
+    },
+  }),
+};
+
 const scanner = createFuturesPaperScannerService({
   storageService: storage,
   ledgerService: ledger,
   allowInternalSimulationForTests: true,
   priceFeedService: priceFeed,
+  signalProviderService: signalProvider,
   signalAdapterService: signalAdapter,
+  strategyRegistryService: {
+    canExecuteStrategy: (strategyId) => ({
+      allowed: ['vwap_volume_breakout_long', 'vwap_failed_breakout_short', 'ema_breakdown'].includes(strategyId),
+      strategyId,
+      source: 'strategy_registry_execution_allowlist',
+      status: ['vwap_volume_breakout_long', 'vwap_failed_breakout_short', 'ema_breakdown'].includes(strategyId) ? 'active' : null,
+      enabled: ['vwap_volume_breakout_long', 'vwap_failed_breakout_short', 'ema_breakdown'].includes(strategyId),
+      blockedReason: ['vwap_volume_breakout_long', 'vwap_failed_breakout_short', 'ema_breakdown'].includes(strategyId) ? null : 'strategy_not_in_execution_allowlist',
+    }),
+  },
   allowlistService: {
     getPaperAllowlistStatus: () => ({
       allowlist: [
@@ -80,7 +105,6 @@ const scanner = createFuturesPaperScannerService({
     scanHistoryLimit: 10,
     closedTradesLimit: 100,
     autoIntervalSeconds: 60,
-    engineTestMode: false,
   },
 });
 

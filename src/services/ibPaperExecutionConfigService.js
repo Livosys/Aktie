@@ -151,7 +151,7 @@ function buildSafetyView() {
     reject_live_account: true,
     require_explicit_symbol_allowlist: true,
     require_risk_approval: true,
-    require_strategy_approval: true,
+    require_strategy_execution_allowlist: true,
     require_entry_contract: true,
   };
 }

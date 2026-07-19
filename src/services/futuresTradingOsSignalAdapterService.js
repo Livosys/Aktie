@@ -2,12 +2,8 @@
 
 const crypto = require('crypto');
 
-const { getLatestResults, getStockFeedStatus } = require('../scanner/scheduler');
-const { getCryptoResults } = require('../scanner/cryptoScheduler');
-const { buildDecisionMonitor } = require('../scanner/decisionMonitor');
 const { getRiskProfile } = require('../markets/marketProfiles');
-const paperApprovalGate = require('./paperApprovalGateService');
-const strategyRuntimeConnector = require('./strategyRuntimeConnectorService');
+const { buildFuturesSessionMetadata } = require('./futuresMarketHoursService');
 
 const SAFETY = Object.freeze({
   mode: 'paper_only',
@@ -129,6 +125,14 @@ function signalIdOf(signal = {}) {
     || null;
 }
 
+function signalTimestampOf(signal = {}) {
+  return safeString(signal.createdAt)
+    || safeString(signal.timestamp)
+    || safeString(signal.detected_at)
+    || safeString(signal.lastUpdate)
+    || null;
+}
+
 function strategyIdOf(signal = {}, approval = null) {
   return safeString(signal.strategyId)
     || safeString(signal.strategy_id)
@@ -240,7 +244,7 @@ function resolveEntry(signal = {}, mapping, quote = null) {
   const originalSymbol = normalizeSymbol(signal.originalSymbol || signal.symbol || signal.ticker);
   const isAlreadyFutures = originalSymbol === mapping.futuresSymbol || originalSymbol.startsWith(mapping.futuresSymbol);
   if (isAlreadyFutures && signalEntry != null && signalEntry > 0) {
-    return { entryPrice: signalEntry, usedFallbackPrice: false, entrySource: 'trading_os_signal' };
+    return { entryPrice: signalEntry, usedFallbackPrice: false, entrySource: 'canonical_signal' };
   }
 
   const quotePrice = safeNumber(quote?.price);
@@ -345,76 +349,26 @@ function deriveRiskFromSignal(signal = {}, { entryPrice, direction, mapping }) {
   };
 }
 
-function defaultSignalReader() {
-  const dm = buildDecisionMonitor({
-    stockResults: getLatestResults() || [],
-    cryptoResults: getCryptoResults() || [],
-    stockFeedStatus: typeof getStockFeedStatus === 'function' ? getStockFeedStatus() : null,
-  });
-  return Array.isArray(dm?.candidates) ? dm.candidates : [];
-}
-
-function defaultApprovalDecision(signal = {}) {
-  if (signal.approved === true) {
-    return {
-      approved: true,
-      strategyId: signal.strategyId || signal.strategy_id || signal.resolvedStrategyId || null,
-      strategyName: signal.strategyName || signal.strategy_name || signal.resolvedStrategyName || null,
-      approvalReason: signal.approvalReason || 'signal_marked_approved',
-      strategy: null,
-    };
-  }
-
-  const runtimeDecision = strategyRuntimeConnector.canCreatePaperTradeForSignal(signal);
-  const runtimeStrategy = runtimeDecision.strategy || {};
-  const strategyId = runtimeStrategy.strategy_id
-    || runtimeStrategy.strategyId
-    || paperApprovalGate.resolveStrategyId(signal);
-  const allowlistApproved = paperApprovalGate.isApprovedStrategyId(strategyId);
-  const approved = runtimeDecision.allowed === true && allowlistApproved;
-  return {
-    approved,
-    strategyId,
-    strategyName: runtimeStrategy.strategy_name || signal.strategyName || signal.strategy_name || null,
-    approvalReason: approved
-      ? 'runtime_active_and_in_paper_allowlist'
-      : runtimeDecision.reason || (allowlistApproved ? 'runtime_not_allowed' : paperApprovalGate.NOT_APPROVED_REASON),
-    strategy: runtimeStrategy,
-  };
-}
-
 function createFuturesTradingOsSignalAdapterService(options = {}) {
-  const readSignals = typeof options.signalReader === 'function' ? options.signalReader : defaultSignalReader;
-  const approveSignal = typeof options.approvalService?.evaluateSignal === 'function'
-    ? (signal) => options.approvalService.evaluateSignal(signal)
-    : defaultApprovalDecision;
+  const readSignals = typeof options.signalReader === 'function' ? options.signalReader : () => [];
   const nowFn = typeof options.now === 'function' ? options.now : () => new Date();
 
   function adaptSignal(signal = {}, context = {}) {
     const now = context.now ? new Date(context.now) : nowFn();
+    const signalTimestamp = signalTimestampOf(signal);
+    const signalSessionMetadata = buildFuturesSessionMetadata(signalTimestamp);
     const mapping = mapSignalToFutures(signal);
     if (!mapping.futuresSymbol) {
-      return { ok: false, skipReason: 'no_safe_futures_mapping', mapping, signal };
+      return { ok: false, skipReason: 'no_safe_futures_mapping', mapping, signal, signalTimestamp, signalSessionMetadata };
     }
 
     const direction = normalizeDirection(signal);
-    if (!direction) return { ok: false, skipReason: 'missing_signal_direction', mapping, signal };
-
-    const approval = approveSignal(signal) || {};
-    if (approval.approved !== true) {
-      return {
-        ok: false,
-        skipReason: 'signal_not_approved',
-        approvalReason: approval.approvalReason || approval.reason || null,
-        mapping,
-        signal,
-      };
-    }
+    if (!direction) return { ok: false, skipReason: 'missing_signal_direction', mapping, signal, signalTimestamp, signalSessionMetadata };
 
     const quote = quoteFor(context.quotes, mapping.futuresSymbol);
     const entry = resolveEntry(signal, mapping, quote);
     if (!entry.entryPrice || entry.entryPrice <= 0) {
-      return { ok: false, skipReason: 'no_futures_entry_price', mapping, signal };
+      return { ok: false, skipReason: 'no_futures_entry_price', mapping, signal, signalTimestamp, signalSessionMetadata };
     }
 
     const risk = deriveRiskFromSignal(signal, {
@@ -423,19 +377,16 @@ function createFuturesTradingOsSignalAdapterService(options = {}) {
       mapping,
     });
     if (!risk.stopLoss || !risk.takeProfit || !risk.riskReward) {
-      return { ok: false, skipReason: 'missing_trading_os_risk', mapping, signal };
+      return { ok: false, skipReason: 'missing_trading_os_risk', mapping, signal, signalTimestamp, signalSessionMetadata };
     }
 
     const dataSource = dataSourceOf(signal, quote, entry.usedFallbackPrice);
     const excludedFromStats = dataSource === 'simulated_fallback' || entry.usedFallbackPrice === true;
-    const createdAt = safeString(signal.createdAt)
-      || safeString(signal.timestamp)
-      || safeString(signal.detected_at)
-      || safeString(signal.lastUpdate)
-      || nowIso(now);
+    const createdAt = signalTimestamp || nowIso(now);
+    const sessionMetadata = buildFuturesSessionMetadata(createdAt);
     const originalSignalId = signalIdOf(signal);
-    const strategyId = strategyIdOf(signal, approval);
-    const strategyName = strategyNameOf(signal, approval);
+    const strategyId = strategyIdOf(signal);
+    const strategyName = strategyNameOf(signal);
 
     return {
       ok: true,
@@ -450,6 +401,9 @@ function createFuturesTradingOsSignalAdapterService(options = {}) {
         mappedFuturesSymbol: mapping.futuresSymbol,
         direction,
         confidence: normalizeConfidence(signal),
+        signalStatus: safeString(signal.signalStatus || signal.status) || null,
+        signalFamily: safeString(signal.signalFamily || signal.family || signal.strategyFamily) || null,
+        signalSubtype: safeString(signal.signalSubtype || signal.signal_subtype || signal.setup) || null,
         entryPrice: round(entry.entryPrice, 2),
         referencePrice: round(entry.entryPrice, 2),
         stopLoss: risk.stopLoss,
@@ -461,15 +415,32 @@ function createFuturesTradingOsSignalAdapterService(options = {}) {
         timeframe: safeString(signal.timeframe) || DEFAULT_TIMEFRAME,
         source: SOURCE,
         signalSource: sourceOf(signal),
+        market: safeString(signal.market) || null,
+        marketType: safeString(signal.marketType || signal.market) || null,
         dataSource,
+        dataFreshness: safeString(signal.dataFreshness) || null,
         priceSource: entry.entrySource,
+        closedCandleConfirmed: signal.closedCandleConfirmed === true || signal.latestCandleClosed === true,
+        latestCandleClosed: signal.latestCandleClosed === true || signal.closedCandleConfirmed === true,
+        candleTimestamp: safeString(signal.candleTimestamp || signal.barTimestamp) || null,
         paperOnly: true,
-        approved: true,
-        approvalReason: approval.approvalReason || signal.approvalReason || null,
+        executionGate: 'strategy_registry_execution_allowlist',
+        registryGatePending: true,
+        signalTimestamp,
+        signalSessionMetadata,
+        sessionMetadata,
+        session: sessionMetadata?.session || null,
+        sessionId: sessionMetadata?.sessionId || null,
+        sessionLabel: sessionMetadata?.sessionLabel || null,
+        exchangeTimezone: sessionMetadata?.exchangeTimezone || null,
+        exchangeLocalDate: sessionMetadata?.exchangeLocalDate || null,
+        exchangeLocalTime: sessionMetadata?.exchangeLocalTime || null,
+        isRth: sessionMetadata?.isRth ?? null,
+        isMarketOpen: sessionMetadata?.isMarketOpen ?? null,
         usedRealStrategyLogic: true,
         usedFallbackPrice: entry.usedFallbackPrice === true,
         excludedFromStats,
-        tradeType: 'trading_os_signal',
+        tradeType: 'canonical_signal',
         strategyLogicVersion: safeString(signal.strategyLogicVersion)
           || safeString(signal.strategy_logic_version)
           || safeString(signal.paperRulesVersion)
@@ -491,6 +462,8 @@ function createFuturesTradingOsSignalAdapterService(options = {}) {
           signalSubtype: signal.signalSubtype || null,
           nextMoveBias: signal.nextMoveBias || null,
           dataFreshness: signal.dataFreshness || null,
+          timestamp: signalTimestamp,
+          sessionMetadata: signalSessionMetadata,
         },
         createdAt,
         timestamp: createdAt,
@@ -500,11 +473,14 @@ function createFuturesTradingOsSignalAdapterService(options = {}) {
     };
   }
 
-  function getFuturesCandidates({ now = new Date(), quotes = [] } = {}) {
-    const signals = readSignals() || [];
+  function getFuturesCandidates({ now = new Date(), quotes = [], signalInputs = null } = {}) {
+    const readerSignals = signalInputs == null ? readSignals() || [] : [];
+    const signals = Array.isArray(signalInputs)
+      ? signalInputs.filter(Boolean)
+      : (Array.isArray(readerSignals) ? readerSignals.filter(Boolean) : []);
     const candidates = [];
     const skipped = [];
-    for (const signal of Array.isArray(signals) ? signals : []) {
+    for (const signal of signals) {
       const result = adaptSignal(signal, { now, quotes });
       if (result.ok) candidates.push(result.candidate);
       else skipped.push({
@@ -512,7 +488,8 @@ function createFuturesTradingOsSignalAdapterService(options = {}) {
         symbol: signal?.symbol || signal?.originalSymbol || null,
         strategyId: signal?.strategyId || signal?.strategy_id || signal?.resolvedStrategyId || null,
         skipReason: result.skipReason,
-        approvalReason: result.approvalReason || null,
+        signalTimestamp: result.signalTimestamp || signalTimestampOf(signal),
+        signalSessionMetadata: result.signalSessionMetadata || buildFuturesSessionMetadata(signalTimestampOf(signal)),
         mapping: result.mapping || null,
       });
     }
@@ -520,16 +497,16 @@ function createFuturesTradingOsSignalAdapterService(options = {}) {
     return {
       ok: true,
       generatedAt: nowIso(now),
-      signalsRead: Array.isArray(signals) ? signals.length : 0,
+      signalsRead: signals.length,
       candidates,
       skipped,
       stats: {
-        tradingOsSignalsRead: Array.isArray(signals) ? signals.length : 0,
+        signalInputsRead: signals.length,
+        readerSignalsRead: Array.isArray(readerSignals) ? readerSignals.length : 0,
         signalsMappedToFutures: candidates.length,
         signalsSkippedNoMapping: skipped.filter((row) => row.skipReason === 'no_safe_futures_mapping').length,
         signalsSkippedNoRisk: skipped.filter((row) => row.skipReason === 'missing_trading_os_risk').length,
         signalsSkippedNoDirection: skipped.filter((row) => row.skipReason === 'missing_signal_direction').length,
-        signalsSkippedNotApproved: skipped.filter((row) => row.skipReason === 'signal_not_approved').length,
       },
       ...SAFETY,
     };
