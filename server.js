@@ -11,6 +11,7 @@ const { startAutoMachineScheduler } = require('./src/jobs/autoMachineScheduler')
 const { startNarrowAutopilotScheduler } = require('./src/jobs/narrowAutopilotScheduler');
 const { startBatchAutopilotScheduler } = require('./src/jobs/batchAutopilotScheduler');
 const { startReplayAutopilotScheduler } = require('./src/jobs/replayAutopilotScheduler');
+const { startFuturesAutonomousScheduler } = require('./src/jobs/futuresAutonomousScheduler');
 const apiRouter = require('./src/routes/api');
 const { initOnStartup: initPaperTrading } = require('./src/paperTrading/paperTradingAgent');
 const { buildProviderStatus } = require('./src/providerStatus');
@@ -35,6 +36,8 @@ const ENABLE_BATCH_AUTOPILOT_SCHEDULER = envEnabled('ENABLE_BATCH_AUTOPILOT_SCHE
 const ENABLE_REPLAY_AUTOPILOT_SCHEDULER = envEnabled('ENABLE_REPLAY_AUTOPILOT_SCHEDULER', true);
 const ENABLE_DAILY_INTELLIGENCE_SCHEDULER = envEnabled('ENABLE_DAILY_INTELLIGENCE_SCHEDULER', true);
 const ENABLE_PAPER_TRADING_INIT = envEnabled('ENABLE_PAPER_TRADING_INIT', true);
+// Autonomous IBKR-paper futures driver — OFF by default; must be explicitly opted in.
+const ENABLE_FUTURES_AUTONOMOUS_SCHEDULER = envEnabled('ENABLE_FUTURES_AUTONOMOUS_SCHEDULER', false);
 app.set('trust proxy', 'loopback');
 
 // ── Basic Auth middleware ─────────────────────────────────────────────────────
@@ -334,6 +337,11 @@ app.listen(PORT, '127.0.0.1', () => {
       })
       .catch((err) => console.warn('[IBPaperExecutionRuntime] start failed:', err.message));
   }
+  // Autonomous futures driver — starts only when explicitly enabled. Thin wrapper
+  // that drives the existing IBKR-paper pipeline (scanner -> shadow execution)
+  // during CME hours; all safety gates remain in the underlying services.
+  if (ENABLE_FUTURES_AUTONOMOUS_SCHEDULER) startFuturesAutonomousScheduler();
+  else console.log('[Server] Futures autonomous scheduler disabled via ENABLE_FUTURES_AUTONOMOUS_SCHEDULER=false');
   redisService.connect().then((connected) => {
     console.log(`[Redis] ${connected ? 'connected' : 'fallback mode'} (${redisService.status().clientStatus})`);
   }).catch((err) => {
