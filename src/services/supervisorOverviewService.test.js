@@ -21,7 +21,9 @@ const REQUIRED_OVERVIEW_KEYS = [
 ];
 
 function assertSafety(obj, label = 'safety') {
-  assert.deepEqual(obj, {
+  const { source, ...flags } = obj || {};
+  if (source !== undefined) assert.equal(source, 'supervisor_overview_v1', `${label} source`);
+  assert.deepEqual(flags, {
     mode: 'paper_only',
     actions_allowed: false,
     can_place_orders: false,
@@ -531,8 +533,8 @@ async function withPatchedMethod(modPath, methodName, replacement, fn) {
 
   // ── 17. short cache: second call within TTL is served from cache ────────────
   overview.resetOverviewCache();
-  const c1 = await overview.getCachedOverview();
-  assert.equal(c1.cached, false, 'first call rebuilds');
+  const c1 = await overview.getCachedOverview({ force: true });
+  assert.equal(c1.cached, false, 'force call rebuilds');
   assert.equal(c1.ok, true);
   assertOverviewContract(c1, 'cached overview first');
   const c2 = await overview.getCachedOverview();

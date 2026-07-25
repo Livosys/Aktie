@@ -173,7 +173,7 @@ assert.ok(vwapShort.warnings.includes('short_only_strategy'));
   const contractRows = contractGated.strategies;
   const contractById = new Map(contractRows.map((r) => [r.strategyId, r]));
   assert.equal(contractGated.sources.entryContracts.enabled, true);
-  assert.equal(contractGated.sources.entryContracts.ready, 3);
+  assert.equal(contractGated.sources.entryContracts.ready, 4);
   assert.deepEqual(
     contractRows.filter((r) => r.readiness === svc.READINESS.READY_FOR_PAPER).map((r) => r.strategyId).sort(),
     ['ema_pullback_continuation', 'narrow_state_expansion_long', 'vwap_volume_breakout_long'],

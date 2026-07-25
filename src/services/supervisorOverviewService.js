@@ -2751,7 +2751,7 @@ function buildOverviewPlaceholder(reason = 'overview_refresh_in_background') {
     paper_status: { status: 'degraded', source: 'paperTradingStatusService', message: 'Paperstatus laddas.', ...SAFETY },
     trading_view_preview_status: { status: 'degraded', source: 'tradingViewPaperReplayPreviewService', message: 'TradingView preview laddas.', ...SAFETY },
     learning_status: { status: 'degraded', source: 'learningConnectorService', message: 'Learningstatus laddas.', ...SAFETY },
-    strategy_ranking: { status: 'degraded', source: 'strategyScoreService', message: 'Strategiranking laddas.', topStrategies: [], weakStrategies: [], strategiesNeedingMoreData: [], ...SAFETY },
+    strategy_ranking: { status: 'degraded', source: 'strategyScoreService', message: 'Strategiranking laddas.', emptyReason: reason, topStrategies: [], weakStrategies: [], strategiesNeedingMoreData: [], ...SAFETY },
     strategy_research: { status: 'degraded', source: 'strategyResearchManagerService', message: 'Researchstatus laddas.', recommendations: [], blockedReasons: [], ...SAFETY },
     market_regime_detection: { status: 'degraded', source: 'marketRegimeDetectorService', message: 'Marknadsregim laddas.', ...SAFETY },
     paper_summary: { status: 'degraded', source: 'supervisorOverviewService', message: 'Papersammanfattning laddas.', ...SAFETY },

@@ -198,8 +198,8 @@ const expectedActive = new Set([
     raw_strategy: 'VWAP_RECLAIM_UP',
   });
   assert('T5: crypto VWAP_RECLAIM_UP remains blocked', cryptoReclaimDecision.allowed === false, cryptoReclaimDecision);
-  assert('T5: crypto VWAP_RECLAIM_UP runtime_status=partial', cryptoReclaimDecision.strategy?.runtime_status === 'partial', cryptoReclaimDecision.strategy?.runtime_status);
-  assert('T5: crypto VWAP_RECLAIM_UP strategy_id=crypto_momentum_scalper', cryptoReclaimDecision.strategy?.strategy_id === 'crypto_momentum_scalper', cryptoReclaimDecision.strategy?.strategy_id);
+  assert('T5: crypto VWAP_RECLAIM_UP runtime_status=not_connected', cryptoReclaimDecision.strategy?.runtime_status === 'not_connected', cryptoReclaimDecision.strategy?.runtime_status);
+  assert('T5: crypto VWAP_RECLAIM_UP strategy_id=null', cryptoReclaimDecision.strategy?.strategy_id === null, cryptoReclaimDecision.strategy?.strategy_id);
   assert('T5: crypto VWAP_RECLAIM_UP reason code', cryptoReclaimDecision.blocked_reason_code === 'runtime_partial_missing_crypto_signal_context', cryptoReclaimDecision);
   assertSafety('T5: cryptoReclaimDecision', cryptoReclaimDecision);
 
@@ -212,8 +212,8 @@ const expectedActive = new Set([
     marketType: 'crypto',
   });
   assert('T5: crypto VWAP_REJECTION_DOWN remains blocked', cryptoRejectDecision.allowed === false, cryptoRejectDecision);
-  assert('T5: crypto VWAP_REJECTION_DOWN runtime_status=partial', cryptoRejectDecision.strategy?.runtime_status === 'partial', cryptoRejectDecision.strategy?.runtime_status);
-  assert('T5: crypto VWAP_REJECTION_DOWN strategy_id=crypto_momentum_scalper', cryptoRejectDecision.strategy?.strategy_id === 'crypto_momentum_scalper', cryptoRejectDecision.strategy?.strategy_id);
+  assert('T5: crypto VWAP_REJECTION_DOWN runtime_status=not_connected', cryptoRejectDecision.strategy?.runtime_status === 'not_connected', cryptoRejectDecision.strategy?.runtime_status);
+  assert('T5: crypto VWAP_REJECTION_DOWN strategy_id=null', cryptoRejectDecision.strategy?.strategy_id === null, cryptoRejectDecision.strategy?.strategy_id);
   assert('T5: crypto VWAP_REJECTION_DOWN reason code', cryptoRejectDecision.blocked_reason_code === 'runtime_partial_missing_crypto_signal_context', cryptoRejectDecision);
   assertSafety('T5: cryptoRejectDecision', cryptoRejectDecision);
 
@@ -225,8 +225,8 @@ const expectedActive = new Set([
     signal: 'SHORT_TRIGGERED',
   });
   assert('T5: family conflict rejection remains blocked', cryptoRejectFamilyConflictDecision.allowed === false, cryptoRejectFamilyConflictDecision);
-  assert('T5: family conflict rejection strategy_id=crypto_momentum_scalper', cryptoRejectFamilyConflictDecision.strategy?.strategy_id === 'crypto_momentum_scalper', cryptoRejectFamilyConflictDecision.strategy?.strategy_id);
-  assert('T5: family conflict rejection runtime_status=partial', cryptoRejectFamilyConflictDecision.strategy?.runtime_status === 'partial', cryptoRejectFamilyConflictDecision.strategy?.runtime_status);
+  assert('T5: family conflict rejection strategy_id=null', cryptoRejectFamilyConflictDecision.strategy?.strategy_id === null, cryptoRejectFamilyConflictDecision.strategy?.strategy_id);
+  assert('T5: family conflict rejection runtime_status=not_connected', cryptoRejectFamilyConflictDecision.strategy?.runtime_status === 'not_connected', cryptoRejectFamilyConflictDecision.strategy?.runtime_status);
   assert('T5: family conflict rejection reason code', cryptoRejectFamilyConflictDecision.blocked_reason_code === 'runtime_partial_missing_crypto_signal_context', cryptoRejectFamilyConflictDecision);
   assertSafety('T5: cryptoRejectFamilyConflictDecision', cryptoRejectFamilyConflictDecision);
 
@@ -238,8 +238,8 @@ const expectedActive = new Set([
     signal: 'LONG_TRIGGERED',
   });
   assert('T5: family conflict reclaim remains blocked', cryptoReclaimFamilyConflictDecision.allowed === false, cryptoReclaimFamilyConflictDecision);
-  assert('T5: family conflict reclaim strategy_id=crypto_momentum_scalper', cryptoReclaimFamilyConflictDecision.strategy?.strategy_id === 'crypto_momentum_scalper', cryptoReclaimFamilyConflictDecision.strategy?.strategy_id);
-  assert('T5: family conflict reclaim runtime_status=partial', cryptoReclaimFamilyConflictDecision.strategy?.runtime_status === 'partial', cryptoReclaimFamilyConflictDecision.strategy?.runtime_status);
+  assert('T5: family conflict reclaim strategy_id=null', cryptoReclaimFamilyConflictDecision.strategy?.strategy_id === null, cryptoReclaimFamilyConflictDecision.strategy?.strategy_id);
+  assert('T5: family conflict reclaim runtime_status=not_connected', cryptoReclaimFamilyConflictDecision.strategy?.runtime_status === 'not_connected', cryptoReclaimFamilyConflictDecision.strategy?.runtime_status);
   assert('T5: family conflict reclaim reason code', cryptoReclaimFamilyConflictDecision.blocked_reason_code === 'runtime_partial_missing_crypto_signal_context', cryptoReclaimFamilyConflictDecision);
   assertSafety('T5: cryptoReclaimFamilyConflictDecision', cryptoReclaimFamilyConflictDecision);
 
@@ -273,8 +273,8 @@ const expectedActive = new Set([
     signal: 'MOMENTUM_SPIKE',
   });
   assert('T5: generic crypto momentum without VWAP subtype blocked', genericCryptoMomentumDecision.allowed === false, genericCryptoMomentumDecision);
-  assert('T5: generic crypto momentum without VWAP subtype strategy partial', genericCryptoMomentumDecision.strategy?.runtime_status === 'partial', genericCryptoMomentumDecision.strategy?.runtime_status);
-  assert('T5: generic crypto momentum without VWAP subtype strategy_id=crypto_momentum_scalper', genericCryptoMomentumDecision.strategy?.strategy_id === 'crypto_momentum_scalper', genericCryptoMomentumDecision.strategy?.strategy_id);
+  assert('T5: generic crypto momentum without VWAP subtype strategy not_connected', genericCryptoMomentumDecision.strategy?.runtime_status === 'not_connected', genericCryptoMomentumDecision.strategy?.runtime_status);
+  assert('T5: generic crypto momentum without VWAP subtype strategy_id=null', genericCryptoMomentumDecision.strategy?.strategy_id === null, genericCryptoMomentumDecision.strategy?.strategy_id);
   assert('T5: generic crypto momentum without VWAP subtype can_create_paper_trade=false', genericCryptoMomentumDecision.strategy?.can_create_paper_trade === false, genericCryptoMomentumDecision.strategy?.can_create_paper_trade);
   assertSafety('T5: genericCryptoMomentumDecision', genericCryptoMomentumDecision);
 

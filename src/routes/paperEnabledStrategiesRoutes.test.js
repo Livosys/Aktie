@@ -16,6 +16,7 @@ const APPROVAL_STORE = path.join(TMP_DIR, 'strategy-approvals.json');
 const ENTRY_EVENTS = path.join(TMP_DIR, 'events.jsonl');
 const ENTRY_TRADES = path.join(TMP_DIR, 'trades.jsonl');
 const AUTH_AUDIT = path.join(TMP_DIR, 'auth-audit.jsonl');
+const ENTRY_FIXTURE_AT = new Date(Date.now() - 60_000).toISOString();
 
 process.env.PAPER_ENABLED_STRATEGIES_FILE = ENABLED_STORE;
 process.env.PAPER_STRATEGY_APPROVALS_FILE = APPROVAL_STORE;
@@ -29,7 +30,7 @@ fs.writeFileSync(APPROVAL_STORE, JSON.stringify({
   updatedAt: '2026-07-11T00:00:00.000Z',
 }, null, 2));
 fs.writeFileSync(ENTRY_EVENTS, `${JSON.stringify({
-  timestamp: '2026-07-13T07:00:00.000Z',
+  timestamp: ENTRY_FIXTURE_AT,
   type: 'GATE_BLOCKED',
   strategyId: 'narrow_state_expansion_long',
   symbol: 'BTCUSDT',
@@ -39,7 +40,7 @@ fs.writeFileSync(ENTRY_EVENTS, `${JSON.stringify({
   entryContractVersion: 'paper_entry_contract_v1',
 })}\n`);
 fs.writeFileSync(ENTRY_TRADES, `${JSON.stringify({
-  entryTime: '2026-07-13T06:58:00.000Z',
+  entryTime: ENTRY_FIXTURE_AT,
   tradeId: 'pt_route_test',
   strategyId: 'narrow_state_expansion_long',
   symbol: 'BTCUSDT',
