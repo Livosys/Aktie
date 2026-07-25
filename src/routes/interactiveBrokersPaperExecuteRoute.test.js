@@ -45,7 +45,7 @@ const selectedGooGlBlueprint = {
   blueprintReady: true,
   manualApprovalReady: true,
   executionReady: false,
-  expiresAt: '2026-07-16T23:10:00.000Z',
+  expiresAt: '2099-07-16T23:10:00.000Z',
 };
 
 const originalBuildPaperTradingTruth = paperTradingTruthService.buildPaperTradingTruth.bind(paperTradingTruthService);
