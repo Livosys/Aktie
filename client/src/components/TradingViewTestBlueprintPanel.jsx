@@ -1,6 +1,11 @@
 import React, { useMemo, useState } from 'react';
+import {
+  resolveStrategy,
+  strategyDisplayName,
+} from '../stores/strategyStore.js';
+import { EMPTY_VALUE, fmtNumber, hasValue, numberOrNull } from '../utils/tradingFormatters.js';
 
-function safeString(value, fallback = '–') {
+function safeString(value, fallback = EMPTY_VALUE) {
   if (value === null || value === undefined) return fallback;
   const text = String(value).trim();
   return text || fallback;
@@ -10,9 +15,12 @@ function safeArray(value) {
   return Array.isArray(value) ? value.filter((item) => item != null) : [];
 }
 
-function toPositiveNumber(value) {
-  const num = Number(value);
-  return Number.isFinite(num) && num > 0 ? num : 0;
+function toBackendNumber(value) {
+  return numberOrNull(value);
+}
+
+function displayCount(value) {
+  return hasValue(value) ? fmtNumber(value) : EMPTY_VALUE;
 }
 
 function sectionStyle(theme = 'dark') {
@@ -75,6 +83,9 @@ function CompactLine({ children, tone = 'neutral' }) {
 }
 
 function BlueprintCard({ blueprint }) {
+  const strategy = resolveStrategy(blueprint || {});
+  const strategyId = safeString(strategy.strategyId, '—');
+  const strategyName = strategyDisplayName(strategy, '—');
   const missing = safeArray(blueprint?.missingFields);
   const warnings = safeArray(blueprint?.warnings);
   const possible = blueprint?.pineScriptPossible === true;
@@ -85,8 +96,8 @@ function BlueprintCard({ blueprint }) {
       <summary style={{ cursor: 'pointer', listStyle: 'none' }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap', alignItems: 'center' }}>
           <div>
-            <div style={{ fontSize: 16, fontWeight: 900, color: 'var(--text)' }}>{safeString(blueprint?.strategyName, blueprint?.displayName || blueprint?.strategyId)}</div>
-            <div style={{ color: 'var(--muted)', fontSize: 12, marginTop: 4 }}>{safeString(blueprint?.strategyId)} · {safeString(blueprint?.direction)} · {safeString(blueprint?.timeframe)}</div>
+            <div style={{ fontSize: 16, fontWeight: 900, color: 'var(--text)' }}>{strategyName}</div>
+            <div style={{ color: 'var(--muted)', fontSize: 12, marginTop: 4 }}>{strategyId} · {safeString(blueprint?.direction)} · {safeString(blueprint?.timeframe)}</div>
           </div>
           <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, justifyContent: 'flex-end' }}>
             <span style={badgeStyle(tone)}>{possible ? 'pineScriptPossible=true' : 'pineScriptPossible=false'}</span>
@@ -98,7 +109,7 @@ function BlueprintCard({ blueprint }) {
       </summary>
 
       <div style={{ marginTop: 14, display: 'grid', gap: 0 }}>
-        <FieldRow label="Strategy" value={`${safeString(blueprint?.strategyId)} · ${safeString(blueprint?.strategyName, blueprint?.displayName)}`} />
+        <FieldRow label="Strategy" value={`${strategyId} · ${strategyName}`} />
         <FieldRow label="Direction" value={safeString(blueprint?.direction)} />
         <FieldRow label="Symbol" value={safeString(blueprint?.symbol)} />
         <FieldRow label="Timeframe" value={safeString(blueprint?.timeframe)} />
@@ -124,10 +135,11 @@ export default function TradingViewTestBlueprintPanel({ data, theme = 'dark' }) 
   const summary = data?.summary || {};
   const fieldInventory = data?.fieldInventory || {};
   const blueprints = Array.isArray(data?.blueprints) ? data.blueprints : [];
-  const pineScriptPossibleCount = toPositiveNumber(summary.pineScriptPossible) || blueprints.filter((blueprint) => blueprint?.pineScriptPossible === true).length;
-  const needsAttentionCount = toPositiveNumber(summary.needsAttention) || blueprints.filter((blueprint) => safeArray(blueprint?.warnings).length > 0 || safeArray(blueprint?.missingFields).length > 0).length;
-  const directionBothCount = toPositiveNumber(summary.directionBoth) || blueprints.filter((blueprint) => String(blueprint?.direction || '').toLowerCase() === 'both').length;
-  const strategiesCount = toPositiveNumber(summary.strategies) || toPositiveNumber(summary.totalStrategies) || blueprints.length;
+  const hasBlueprintSnapshot = Array.isArray(data?.blueprints);
+  const pineScriptPossibleCount = toBackendNumber(summary.pineScriptPossible) ?? (hasBlueprintSnapshot ? blueprints.filter((blueprint) => blueprint?.pineScriptPossible === true).length : null);
+  const needsAttentionCount = toBackendNumber(summary.needsAttention) ?? (hasBlueprintSnapshot ? blueprints.filter((blueprint) => safeArray(blueprint?.warnings).length > 0 || safeArray(blueprint?.missingFields).length > 0).length : null);
+  const directionBothCount = toBackendNumber(summary.directionBoth) ?? (hasBlueprintSnapshot ? blueprints.filter((blueprint) => String(blueprint?.direction || '').toLowerCase() === 'both').length : null);
+  const strategiesCount = toBackendNumber(summary.strategies) ?? toBackendNumber(summary.totalStrategies) ?? (hasBlueprintSnapshot ? blueprints.length : null);
   const [showAllBlueprints, setShowAllBlueprints] = useState(false);
   const [showTechnicalDetails, setShowTechnicalDetails] = useState(false);
   const visibleBlueprints = useMemo(
@@ -135,7 +147,7 @@ export default function TradingViewTestBlueprintPanel({ data, theme = 'dark' }) 
     [blueprints, showAllBlueprints],
   );
   const emptyState = data?.status === 'empty' || (!blueprints.length && summary.totalStrategies === 0);
-  const sourceLabel = safeString(data?.source, data?.status === 'empty' ? 'none' : 'unknown');
+  const sourceLabel = safeString(data?.source);
   const canShowMore = blueprints.length > 5;
 
   return (
@@ -148,18 +160,18 @@ export default function TradingViewTestBlueprintPanel({ data, theme = 'dark' }) 
           </div>
         </div>
         <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
-          <span style={badgeStyle('neutral')}>status {safeString(data?.status, 'unknown')}</span>
+          <span style={badgeStyle('neutral')}>status {safeString(data?.status)}</span>
           <span style={badgeStyle('neutral')}>source {sourceLabel}</span>
-          <span style={badgeStyle('success')}>strategies {strategiesCount}</span>
-          <span style={badgeStyle('info')}>pineScriptPossible {pineScriptPossibleCount}</span>
-          <span style={badgeStyle('warning')}>needsAttention {needsAttentionCount}</span>
-          <span style={badgeStyle('neutral')}>directionBoth {directionBothCount}</span>
+          <span style={badgeStyle('success')}>strategies {displayCount(strategiesCount)}</span>
+          <span style={badgeStyle('info')}>pineScriptPossible {displayCount(pineScriptPossibleCount)}</span>
+          <span style={badgeStyle('warning')}>needsAttention {displayCount(needsAttentionCount)}</span>
+          <span style={badgeStyle('neutral')}>directionBoth {displayCount(directionBothCount)}</span>
         </div>
       </div>
 
       <div style={{ display: 'grid', gap: 10, marginBottom: 14 }}>
-        <CompactLine tone="success">{strategiesCount} strategier kan göras Pine-ready.</CompactLine>
-        <CompactLine tone="warning">{needsAttentionCount} behöver kompletteras med symbol/filter/session innan exakt TradingView-test.</CompactLine>
+        <CompactLine tone="success">{displayCount(strategiesCount)} strategier kan göras Pine-ready.</CompactLine>
+        <CompactLine tone="warning">{displayCount(needsAttentionCount)} behöver kompletteras med symbol/filter/session innan exakt TradingView-test.</CompactLine>
         <CompactLine tone="neutral">Nästa steg: välj toppstrategier och skapa manuella Pine Script-tester.</CompactLine>
       </div>
 

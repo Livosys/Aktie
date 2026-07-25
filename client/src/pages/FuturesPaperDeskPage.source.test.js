@@ -35,7 +35,7 @@ for (const required of [
   'Open broker positions',
   'Open broker orders',
   'Reconciliation status',
-  'source=ibkr_paper',
+  'brokerMirrorSourceText',
   'source=internal_legacy_simulation',
   'Äldre interna simuleringar',
 ]) {

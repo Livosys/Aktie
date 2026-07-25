@@ -1,5 +1,6 @@
 import React, { useEffect, useState, useCallback } from 'react';
 import { SectionHeader } from '../shared.jsx';
+import { EMPTY_VALUE, fmtNumber, hasValue, numberOrNull } from '../utils/tradingFormatters.js';
 
 const QUICK_QUESTIONS = [
   'Varför öppnas inga trades?',
@@ -21,28 +22,40 @@ function Badge({ label, color = 'gray' }) {
 }
 
 function ConfidenceBar({ value }) {
-  const pct = Math.min(100, Math.max(0, Number(value) || 0));
-  const color = pct >= 75 ? 'var(--green)' : pct >= 50 ? 'var(--yellow)' : 'var(--red)';
+  const n = numberOrNull(value);
+  const pct = n === null ? null : Math.min(100, Math.max(0, n));
+  const color = pct === null ? 'var(--muted)' : pct >= 75 ? 'var(--green)' : pct >= 50 ? 'var(--yellow)' : 'var(--red)';
   return (
     <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 4 }}>
       <div style={{ flex: 1, background: 'var(--card-border)', borderRadius: 4, height: 6 }}>
-        <div style={{ width: `${pct}%`, background: color, borderRadius: 4, height: 6, transition: 'width 0.4s' }} />
+        <div style={{ width: `${pct === null ? 0 : pct}%`, background: color, borderRadius: 4, height: 6, transition: 'width 0.4s' }} />
       </div>
-      <small style={{ color: 'var(--muted)', minWidth: 36 }}>{pct}%</small>
+      <small style={{ color: 'var(--muted)', minWidth: 36 }}>{pct === null ? EMPTY_VALUE : `${pct}%`}</small>
     </div>
   );
 }
 
 function AdjBadge({ value }) {
-  const n = Number(value) || 0;
+  const n = numberOrNull(value);
+  if (n === null) return <span style={{ color: 'var(--muted)', fontWeight: 700, fontSize: 13 }}>{EMPTY_VALUE}</span>;
   const color = n > 0 ? 'var(--green)' : n < 0 ? 'var(--red)' : 'var(--muted)';
   return <span style={{ color, fontWeight: 700, fontSize: 13 }}>{n >= 0 ? `+${n}` : n}</span>;
 }
 
 function RecBadge({ rec }) {
   const colors = { BUY: 'var(--green)', SELL: 'var(--red)', HOLD: 'var(--yellow)', OBSERVE: 'var(--blue)' };
-  const r = String(rec || 'OBSERVE').toUpperCase();
+  const r = hasValue(rec) ? String(rec).toUpperCase() : EMPTY_VALUE;
   return <span style={{ background: colors[r] || 'var(--muted)', color: '#fff', borderRadius: 4, padding: '2px 10px', fontSize: 12, fontWeight: 700 }}>{r}</span>;
+}
+
+function displayCount(value) {
+  return hasValue(value) ? fmtNumber(value) : EMPTY_VALUE;
+}
+
+function displayBoolean(value) {
+  if (value === true) return 'true';
+  if (value === false) return 'false';
+  return EMPTY_VALUE;
 }
 
 // ── TradingAgents panel ───────────────────────────────────────────────────────
@@ -164,7 +177,7 @@ function TradingAgentsPanel() {
           )}
 
           <p style={{ marginTop: 10, fontSize: 11, color: 'var(--muted)', borderTop: '1px solid var(--card-border)', paddingTop: 8 }}>
-            ⚠ Read-only AI research layer. can_place_orders: {String(ta.can_place_orders)} · actions_allowed: {String(ta.actions_allowed)} · {ta.source}
+            ⚠ Read-only AI research layer. can_place_orders: {displayBoolean(ta.can_place_orders)} · actions_allowed: {displayBoolean(ta.actions_allowed)} · {ta.source || EMPTY_VALUE}
           </p>
         </div>
       )}
@@ -234,16 +247,16 @@ function LearningConnectorPanel() {
         <Badge label={`Replay ${status?.replay_connected ? '✓' : '–'}`} color={status?.replay_connected ? 'info' : 'gray'} />
         <Badge label={`Batch ${status?.batch_connected ? '✓' : '–'}`} color={status?.batch_connected ? 'info' : 'gray'} />
         <Badge label={`Agenter ${status?.agents_connected ? '✓' : '–'}`} color={status?.agents_connected ? 'info' : 'gray'} />
-        <Badge label="can_place_orders: false" color="high" />
+        <Badge label={`can_place_orders: ${displayBoolean(status?.can_place_orders)}`} color={status?.can_place_orders === false ? 'high' : 'gray'} />
       </div>
 
       <div style={{ display: 'flex', flexWrap: 'wrap', gap: 16, fontSize: 13, color: 'var(--muted)' }}>
-        <span>Totalt events: <b style={{ color: 'var(--text)' }}>{status?.total_events ?? 0}</b></span>
-        <span>Scanner: <b style={{ color: 'var(--text)' }}>{ebs.scanner ?? 0}</b></span>
-        <span>Paper: <b style={{ color: 'var(--text)' }}>{ebs.paper ?? 0}</b></span>
-        <span>Replay: <b style={{ color: 'var(--text)' }}>{ebs.replay ?? 0}</b></span>
-        <span>Batch: <b style={{ color: 'var(--text)' }}>{ebs.batch ?? 0}</b></span>
-        <span>Agent findings: <b style={{ color: 'var(--text)' }}>{ebs.agent ?? 0}</b></span>
+        <span>Totalt events: <b style={{ color: 'var(--text)' }}>{displayCount(status?.total_events)}</b></span>
+        <span>Scanner: <b style={{ color: 'var(--text)' }}>{displayCount(ebs.scanner)}</b></span>
+        <span>Paper: <b style={{ color: 'var(--text)' }}>{displayCount(ebs.paper)}</b></span>
+        <span>Replay: <b style={{ color: 'var(--text)' }}>{displayCount(ebs.replay)}</b></span>
+        <span>Batch: <b style={{ color: 'var(--text)' }}>{displayCount(ebs.batch)}</b></span>
+        <span>Agent findings: <b style={{ color: 'var(--text)' }}>{displayCount(ebs.agent)}</b></span>
         <span>Senaste: <b style={{ color: 'var(--text)' }}>{status?.last_event_at ? new Date(status.last_event_at).toLocaleString('sv-SE') : '–'}</b></span>
       </div>
 
@@ -274,9 +287,9 @@ function LearningConnectorPanel() {
                   <td>{a.agent_name}</td>
                   <td><Dot on={a.runs} /></td>
                   <td><Dot on={a.gives_output} /></td>
-                  <td><Dot on={a.output_used} /></td>
-                  <td>{a.findings_count || 0}</td>
-                  <td>{a.last_finding_at ? new Date(a.last_finding_at).toLocaleString('sv-SE') : '–'}</td>
+	                  <td><Dot on={a.output_used} /></td>
+	                  <td>{displayCount(a.findings_count)}</td>
+	                  <td>{a.last_finding_at ? new Date(a.last_finding_at).toLocaleString('sv-SE') : '–'}</td>
                 </tr>
               ))}
             </tbody>
@@ -296,11 +309,11 @@ function LearningConnectorPanel() {
             <tbody>
               {strategies.map((s) => (
                 <tr key={s.strategy_id} style={{ borderTop: '1px solid var(--card-border)' }}>
-                  <td>{s.strategy_name || s.strategy_id}</td>
-                  <td><Dot on={s.scanner_enabled} /></td>
-                  <td>{s.paper_trades || 0}</td>
-                  <td>{s.replay_tests || 0}</td>
-                  <td>{s.batch_tests || 0}</td>
+	                  <td>{s.strategy_name || s.strategy_id}</td>
+	                  <td><Dot on={s.scanner_enabled} /></td>
+	                  <td>{displayCount(s.paper_trades)}</td>
+	                  <td>{displayCount(s.replay_tests)}</td>
+	                  <td>{displayCount(s.batch_tests)}</td>
                   <td><b>{s.learning_score ?? '–'}</b></td>
                   <td>
                     <span style={{ background: REC_COLORS[s.recommendation] || 'var(--muted)', color: '#fff', borderRadius: 4, padding: '2px 8px', fontSize: 12, fontWeight: 700 }}>

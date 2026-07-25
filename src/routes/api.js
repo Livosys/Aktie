@@ -3944,6 +3944,24 @@ router.get('/futures-paper/scanner', (req, res) => {
   }
 });
 
+// Diagnostic/admin-only endpoint.
+//
+// Intentionally retained without a production UI entry point.
+//
+// This endpoint exists to support supervised diagnostics,
+// integration tests, and explicit administrator workflows.
+//
+// The Futures Paper production UI is intentionally read-only;
+// do not expose this endpoint through the standard operator UI
+// without preserving ALL of the following existing safety guards:
+//   - paper-only enforcement (rejectIfNotFuturesPaperOnly below)
+//   - shadow-mode restrictions (no live order submission)
+//   - admin authentication
+//   - CSRF protection (where applicable)
+//
+// See commit edb89c6 ("refactor(futures): retire internal simulation
+// for ibkr paper execution") for the verified decision to remove the
+// production UI trigger while retaining this backend endpoint.
 router.post('/futures-paper/scanner/run-once', (req, res) => {
   try {
     if (rejectIfNotFuturesPaperOnly(req, res)) return;

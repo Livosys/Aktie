@@ -6,6 +6,16 @@ import {
   ChartCard,
   DashboardShell,
 } from '../components/dashboard/DashboardKit.jsx';
+import {
+  createDecisionStore,
+  createTradingEventStore,
+  SupervisorIntelligence,
+} from '../components/trading/index.js';
+import {
+  createStrategyStore,
+  resolveKnownStrategy,
+  strategyDisplayName,
+} from '../stores/strategyStore.js';
 
 const REFRESH_MS = 30_000;
 
@@ -60,7 +70,7 @@ function first(...values) {
   return values.find((value) => value !== undefined && value !== null && value !== '') ?? null;
 }
 
-function text(value, fallback = 'Saknas') {
+function text(value, fallback = '—') {
   if (value === undefined || value === null || value === '') return fallback;
   if (typeof value === 'string') return value;
   if (typeof value === 'number' && Number.isFinite(value)) return String(value);
@@ -70,25 +80,53 @@ function text(value, fallback = 'Saknas') {
   return fallback;
 }
 
+function supervisorStrategyModel(row = {}) {
+  return resolveKnownStrategy(row);
+}
+
+function supervisorStrategyLabel(row = {}, fallback = 'Strategi') {
+  return strategyDisplayName(supervisorStrategyModel(row), fallback);
+}
+
 function number(value, fallback = null) {
+  if (value === null || value === undefined || value === '') return fallback;
+  if (typeof value === 'boolean') return fallback;
   const n = Number(value);
   return Number.isFinite(n) ? n : fallback;
 }
 
 function fmtNumber(value, fallback = '—') {
+  if (value === null || value === undefined || value === '') return fallback;
+  if (typeof value === 'boolean') return fallback;
   const n = Number(value);
   return Number.isFinite(n) ? new Intl.NumberFormat('sv-SE').format(n) : fallback;
 }
 
 function fmtPct(value, digits = 1) {
+  if (value === null || value === undefined || value === '') return '—';
+  if (typeof value === 'boolean') return '—';
   const n = Number(value);
   return Number.isFinite(n) ? `${n.toFixed(digits)}%` : '—';
 }
 
 function fmtSigned(value, digits = 3) {
+  if (value === null || value === undefined || value === '') return '—';
+  if (typeof value === 'boolean') return '—';
   const n = Number(value);
   if (!Number.isFinite(n)) return '—';
   return `${n > 0 ? '+' : ''}${n.toFixed(digits)}%`;
+}
+
+function countLabel(value, suffix = '') {
+  const n = number(value, null);
+  if (n === null) return '—';
+  return suffix ? `${fmtNumber(n)} ${suffix}` : fmtNumber(n);
+}
+
+function boolString(value) {
+  if (value === true) return 'true';
+  if (value === false) return 'false';
+  return '—';
 }
 
 function timeText(value) {
@@ -132,27 +170,27 @@ function statusLabel(status) {
     error: 'Fel',
     missing: 'Saknas',
     paused: 'Pausad',
-  }[key] || text(status, 'Okänd');
+  }[key] || text(status, '—');
 }
 
 function overviewSafety(overview = {}) {
   const safety = overview?.safety || {};
   return {
-    mode: safety.mode || overview.mode || 'paper_only',
-    actions_allowed: safety.actions_allowed === true || overview.actions_allowed === true,
-    can_place_orders: safety.can_place_orders === true || overview.can_place_orders === true,
-    live_trading_enabled: safety.live_trading_enabled === true || overview.live_trading_enabled === true,
-    broker_enabled: safety.broker_enabled === true || overview.broker_enabled === true,
+    mode: first(safety.mode, overview.mode),
+    actions_allowed: first(safety.actions_allowed, overview.actions_allowed),
+    can_place_orders: first(safety.can_place_orders, overview.can_place_orders),
+    live_trading_enabled: first(safety.live_trading_enabled, overview.live_trading_enabled),
+    broker_enabled: first(safety.broker_enabled, overview.broker_enabled),
   };
 }
 
 function safetyLocked(overview) {
   const safety = overviewSafety(overview);
   return safety.mode === 'paper_only'
-    && !safety.actions_allowed
-    && !safety.can_place_orders
-    && !safety.live_trading_enabled
-    && !safety.broker_enabled;
+    && safety.actions_allowed === false
+    && safety.can_place_orders === false
+    && safety.live_trading_enabled === false
+    && safety.broker_enabled === false;
 }
 
 function useTradingOsData() {
@@ -439,63 +477,104 @@ export default function SupervisorBrainPage() {
   const strategyResearch = overview.strategyResearch || {};
   const marketRegime = overview.marketRegime || {};
   const paperSummary = overview.paperSummary || {};
+  const hasResearchRecommendations = Array.isArray(strategyResearch.recommendations);
   const researchRecommendations = arr(strategyResearch.recommendations);
   const paperEligibleRecommendations = researchRecommendations.filter((row) => row && row.paperEligible);
   const approvalRecommendations = researchRecommendations.filter((row) => row && row.requiresUserApproval);
+  const hasOverviewRisks = Array.isArray(overview.risks);
+  const overviewRisks = arr(overview.risks);
   const technical = overview.technical || {};
   const allowlist = data.allowlist?.ok ? data.allowlist : null;
   const automationPlan = data.automationPlan?.ok ? data.automationPlan : null;
   const aiLatest = data.aiLatest?.ok ? data.aiLatest : null;
+  const supervisorStrategyStore = useMemo(() => createStrategyStore({
+    runtimeSnapshot: overview,
+    strategyOverview: overview.strategyOverview || [],
+    strategyStatus: overview.strategyStatus || [],
+    strategyPulse: overview.strategyPulse || [],
+    strategies: [
+      ...arr(allowlist?.allowlist),
+      ...arr(strategyResearch.recommendations),
+      strategyRanking.bestJustNow,
+      strategyRanking.weakestJustNow,
+    ].filter(Boolean),
+  }), [allowlist, overview, strategyRanking.bestJustNow, strategyRanking.weakestJustNow, strategyResearch.recommendations]);
+  const tradingEventStore = useMemo(() => createTradingEventStore({
+    supervisorSnapshot: overview,
+    liveActivity,
+    replaySnapshot: replay,
+    batchSnapshot: batches,
+    automationPlan,
+    aiLatest,
+    strategyStore: supervisorStrategyStore,
+  }), [aiLatest, automationPlan, batches, liveActivity, overview, replay, supervisorStrategyStore]);
+  const decisionStore = useMemo(() => createDecisionStore({
+    eventStore: tradingEventStore,
+    supervisorSnapshot: overview,
+    liveActivity,
+    replaySnapshot: replay,
+    batchSnapshot: batches,
+    automationPlan,
+    aiLatest,
+  }), [aiLatest, automationPlan, batches, liveActivity, overview, replay, tradingEventStore]);
   const safetyIsLocked = safetyLocked(overview);
 
   const readySymbolNames = arr(dataStatus.readyForReplaySymbols);
   const readySymbolsDetailed = useMemo(() => {
     const readySet = new Set(readySymbolNames);
-    return symbols.filter((row) => readySet.has(row.symbol)).sort((a, b) => Number(b.total_candle_count || 0) - Number(a.total_candle_count || 0));
+    return symbols.filter((row) => readySet.has(row.symbol)).sort((a, b) => number(b.total_candle_count, 0) - number(a.total_candle_count, 0));
   }, [symbols, readySymbolNames]);
 
   const missingSymbols = arr(dataStatus.missingSymbols);
-  const totalCandles = useMemo(
-    () => readySymbolsDetailed.reduce((sum, row) => sum + (number(row.total_candle_count, 0) || 0), 0),
-    [readySymbolsDetailed],
-  );
-  const maxHistoryDays = useMemo(
-    () => readySymbolsDetailed.reduce((max, row) => Math.max(max, number(row.candles_2m_days, 0) || 0), 0),
-    [readySymbolsDetailed],
-  );
+  const totalCandles = useMemo(() => {
+    const values = readySymbolsDetailed
+      .map((row) => number(row.total_candle_count, null))
+      .filter((value) => value !== null);
+    return values.length ? values.reduce((sum, value) => sum + value, 0) : null;
+  }, [readySymbolsDetailed]);
+  const maxHistoryDays = useMemo(() => {
+    const values = readySymbolsDetailed
+      .map((row) => number(row.candles_2m_days, null))
+      .filter((value) => value !== null);
+    return values.length ? Math.max(...values) : null;
+  }, [readySymbolsDetailed]);
 
   const liveEvents = arr(liveActivitySummary.latestEvents).length
     ? arr(liveActivitySummary.latestEvents)
     : arr(liveActivity?.events).slice(0, 5);
-  const liveCount = number(first(liveActivitySummary.count, liveActivity?.count), 0) || 0;
+  const liveCount = number(first(liveActivitySummary.count, liveActivity?.count), null);
   const liveLatestEvent = liveEvents[0] || null;
   const liveSourceBreakdown = arr(liveActivitySummary.sourceBreakdown);
-  const liveStatus = liveActivitySummary.status || liveActivity?.status || 'empty';
+  const liveStatus = liveActivitySummary.status || liveActivity?.status || null;
 
   const recentReplays = arr(replay.recentReplays);
   const latestReplay = replayStatus.latestReplay || replay.latestReplay || overview.replaySummary?.latestReplay || null;
   const bestReplaySymbol = latestReplay?.bestSymbol || recentReplays[0]?.bestSymbol || null;
-  const totalReplayRuns = number(first(replayStatus.totalReplayRuns, overview.replaySummary?.totalReplayTests), 0) || 0;
-  const replayEventsTotal = number(first(replayStatus.summary?.totalEvents, overview.replaySummary?.summary?.totalEvents), 0) || 0;
-  const replaySymbolCount = number(first(latestReplay?.symbolCount, arr(latestReplay?.symbols).length, arr(replayStatus.symbols).length), 0) || 0;
+  const totalReplayRuns = number(first(replayStatus.totalReplayRuns, overview.replaySummary?.totalReplayTests), null);
+  const replayEventsTotal = number(first(replayStatus.summary?.totalEvents, overview.replaySummary?.summary?.totalEvents), null);
+  const replaySymbolCount = number(first(
+    latestReplay?.symbolCount,
+    Array.isArray(latestReplay?.symbols) ? latestReplay.symbols.length : null,
+    Array.isArray(replayStatus.symbols) ? replayStatus.symbols.length : null,
+  ), null);
   const replayTimeframe = text(first(latestReplay?.timeframe, arr(replayStatus.timeframes)[0]), 'Saknas');
 
   const latestBatch = batchStatus.latestBatch || batches.latestBatch || overview.batchSummary?.latestBatch || null;
   const bestBatch = batchStatus.bestOutcome || batches.bestOutcome || overview.batchSummary?.bestOutcome || null;
   const worstBatch = batchStatus.worstOutcome || batches.worstOutcome || overview.batchSummary?.worstOutcome || null;
-  const batchCombinations = number(first(latestBatch?.totalCombinations, latestBatch?.combinationsTested), 0) || 0;
-  const batchResultRows = number(first(overview.batchSummary?.batchResultRows, batchStatus.batchResultRows), 0) || 0;
+  const batchCombinations = number(first(latestBatch?.totalCombinations, latestBatch?.combinationsTested), null);
+  const batchResultRows = number(first(overview.batchSummary?.batchResultRows, batchStatus.batchResultRows), null);
 
   const topStrategies = arr(strategyRanking.topStrategies).slice(0, 4);
   const weakStrategies = arr(strategyRanking.weakStrategies).slice(0, 4);
   const needsMoreData = arr(strategyRanking.strategiesNeedingMoreData).slice(0, 6);
   const bestJustNow = strategyRanking.bestJustNow || topStrategies[0] || null;
   const weakestJustNow = strategyRanking.weakestJustNow || weakStrategies[0] || null;
-  const strategyTests = number(strategyRanking.strategyTests, 0) || 0;
-  const uniqueStrategies = number(strategyRanking.uniqueStrategies, 0) || 0;
-  const strategyBatchRows = number(strategyRanking.batchResultRows, 0) || 0;
+  const strategyTests = number(strategyRanking.strategyTests, null);
+  const uniqueStrategies = number(strategyRanking.uniqueStrategies, null);
+  const strategyBatchRows = number(strategyRanking.batchResultRows, null);
   const historicalCoverageSource = text(strategyRanking.historicalCoverageSource, 'Saknas');
-  const hasHistoricalStrategyCoverage = strategyTests > 0 || uniqueStrategies > 0 || strategyBatchRows > 0;
+  const hasHistoricalStrategyCoverage = [strategyTests, uniqueStrategies, strategyBatchRows].some((value) => value !== null && value > 0);
 
   const learningRecommendations = arr(learningStatus.learningRecommendations);
   const nextRecommendedActions = arr(overview.nextRecommendedActions);
@@ -506,9 +585,10 @@ export default function SupervisorBrainPage() {
     learningStatus.narrowLearning?.totalNarrowTrades,
     learningStatus.signalLearningSummary?.totalOutcomes,
     learningStatus.connectorSummary?.connectorSummary?.totalEvents,
-  ), 0) || 0;
-  const learningReplayCount = number(learningStatus.connectorSummary?.connectorSummary?.bySource?.replay, 0) || 0;
-  const learningBatchCount = number(learningStatus.connectorSummary?.connectorSummary?.bySource?.batch, 0) || 0;
+  ), null);
+  const learningReplayCount = number(learningStatus.connectorSummary?.connectorSummary?.bySource?.replay, null);
+  const learningBatchCount = number(learningStatus.connectorSummary?.connectorSummary?.bySource?.batch, null);
+  const paperTradeCount = number(paperStatus.count, null);
   const latestAiOutput = first(
     aiStatus.latestOutputSummary,
     aiLatest?.latest?.summary,
@@ -519,6 +599,8 @@ export default function SupervisorBrainPage() {
     aiLatest?.output?.text,
   );
   const latestAiTimestamp = first(aiStatus.latestGeneratedAt, aiLatest?.latest?.generatedAt, aiLatest?.generatedAt, aiStatus.latestTimestamp);
+  const hasLatestAiFlag = typeof aiStatus.latestExists === 'boolean';
+  const hasAiJournalData = liveCount > 0 || aiStatus.latestExists === true;
   const aiEnvironmentNote = !aiStatus.enabled && aiStatus.latestExists
     ? 'Lokal AI-sammanfattning finns sparad trots att AI Analyst är avstängd i denna miljö.'
     : null;
@@ -528,27 +610,27 @@ export default function SupervisorBrainPage() {
       sectionId: 'live',
       name: 'Aktivitet',
       status: statusLabel(liveStatus),
-      count: liveCount > 0 ? `${fmtNumber(liveCount)} händelser` : 'Tomt ännu',
+      count: liveCount !== null ? (liveCount > 0 ? `${fmtNumber(liveCount)} händelser` : 'Tomt ännu') : '—',
       meaning: 'Visar vad systemet faktiskt har gjort senast i read-only-läge.',
       tone: statusTone(liveStatus),
-      missing: liveCount > 0 ? 'Det finns verkliga händelser att läsa i Supervisor.' : text(liveActivitySummary.message, 'Ingen aktivitet sparad ännu.'),
+      missing: liveCount !== null && liveCount > 0 ? 'Det finns verkliga händelser att läsa i Supervisor.' : text(liveActivitySummary.message, liveCount === 0 ? 'Ingen aktivitet sparad ännu.' : '—'),
       next: liveLatestEvent ? `Granska senaste händelsen: ${text(liveLatestEvent.title, 'Senaste aktivitet')}.` : 'När systemet sparar nya händelser visas de här först.',
     },
     {
       sectionId: 'data',
       name: 'Data',
       status: statusLabel(dataStatus.status),
-      count: `${fmtNumber(dataStatus.readyForReplay || 0)} redo`,
+      count: countLabel(dataStatus.readyForReplay, 'redo'),
       meaning: 'Historiska candles finns så att systemet kan testa säkert.',
       tone: statusTone(dataStatus.status),
-      missing: dataStatus.missingData > 0 ? `${fmtNumber(dataStatus.missingData)} symboler saknar data.` : 'Inga tydliga datagap just nu.',
+      missing: number(dataStatus.missingData, null) === null ? '—' : dataStatus.missingData > 0 ? `${fmtNumber(dataStatus.missingData)} symboler saknar data.` : 'Inga tydliga datagap just nu.',
       next: nextRecommendedActions.find((item) => /backfill|data/i.test(text(item.title, '')))?.reason || 'Fyll på saknade symboler innan fler tester.',
     },
     {
       sectionId: 'replay',
       name: 'Replay',
       status: statusLabel(replayStatus.status),
-      count: `${fmtNumber(totalReplayRuns)} körningar`,
+      count: countLabel(totalReplayRuns, 'körningar'),
       meaning: 'Replay testar historiska signaler på riktig data.',
       tone: statusTone(replayStatus.status),
       missing: latestReplay ? 'Senaste replay finns sparad och kan jämföras.' : 'Ingen replayhistorik sparad ännu.',
@@ -558,7 +640,7 @@ export default function SupervisorBrainPage() {
       sectionId: 'batch',
       name: 'Batch',
       status: statusLabel(batchStatus.status),
-      count: `${fmtNumber(batchStatus.totalBatches || 0)} batchtester`,
+      count: countLabel(batchStatus.totalBatches, 'batchtester'),
       meaning: 'Batch jämför många strategi-inställningar.',
       tone: statusTone(batchStatus.status),
       missing: latestBatch ? 'Det finns minst en batch att läsa resultat från.' : 'Ingen batch ännu att jämföra.',
@@ -568,7 +650,7 @@ export default function SupervisorBrainPage() {
       sectionId: 'learning',
       name: 'Learning',
       status: statusLabel(learningStatus.status),
-      count: `${fmtNumber(learningOutcomeCount)} utfall`,
+      count: countLabel(learningOutcomeCount, 'utfall'),
       meaning: 'Learning sammanfattar vad testerna faktiskt lärde systemet.',
       tone: statusTone(learningStatus.status),
       missing: learningStatus.topInsight ? 'Det finns redan mönster att arbeta vidare med.' : 'Fler testutfall behövs innan tydliga slutsatser går att dra.',
@@ -578,7 +660,7 @@ export default function SupervisorBrainPage() {
       sectionId: 'ai',
       name: 'AI Analyst',
       status: statusLabel(aiStatus.readiness || aiStatus.status),
-      count: aiStatus.latestExists ? '1 sparad analys' : 'Ingen sparad analys',
+      count: hasLatestAiFlag ? (aiStatus.latestExists ? '1 sparad analys' : 'Ingen sparad analys') : '—',
       meaning: 'AI Analyst läser testdata och föreslår nästa säkra test. AI kan inte handla.',
       tone: statusTone(aiStatus.readiness || aiStatus.status),
       missing: latestAiOutput ? 'Det finns en sparad AI-text att läsa.' : 'Ingen sparad AI-sammanfattning ännu.',
@@ -588,10 +670,10 @@ export default function SupervisorBrainPage() {
       sectionId: 'paper',
       name: 'Paper',
       status: statusLabel(paperStatus.status),
-      count: `${fmtNumber(paperStatus.count || 0)} paper trades`,
+      count: countLabel(paperTradeCount, 'paper trades'),
       meaning: 'Paper Trading är sista säkra teststeget innan något ens kan jämföras i större skala.',
       tone: statusTone(paperStatus.status),
-      missing: paperStatus.count > 0 ? 'Paper-resultat finns att läsa.' : text(paperStatus.message, 'Inga paper trades finns ännu.'),
+      missing: paperTradeCount !== null && paperTradeCount > 0 ? 'Paper-resultat finns att läsa.' : text(paperStatus.message, 'Inga paper trades finns ännu.'),
       next: text(automationPlan?.nextSafeStep, 'Välj en strategi manuellt för ett paper-only replay efter granskning.'),
     },
   ];
@@ -608,35 +690,35 @@ export default function SupervisorBrainPage() {
   const aiBrainRoles = [
     {
       role: 'Observer',
-      status: first(systemHealthBlock.status, dataStatus.status, liveStatus, 'ok'),
+      status: first(systemHealthBlock.status, dataStatus.status, liveStatus),
       visible: 'Supervisor',
       source: 'Supervisor Overview, aktivitet, data och systemhälsa',
       note: 'Ser nuläge, varningar och saknad data.',
     },
     {
       role: 'Analyst',
-      status: first(aiStatus.readiness, aiStatus.status, 'ok'),
+      status: first(aiStatus.readiness, aiStatus.status),
       visible: 'AI Analyst och signalanalys',
       source: 'AI Analyst, Signal Analyst och Agent Reasoning',
       note: 'Förklarar signaler och testresultat. Den kan inte handla.',
     },
     {
       role: 'Planner',
-      status: first(strategyResearch.status, 'ok'),
+      status: first(strategyResearch.status),
       visible: 'Strategiforskning',
       source: 'Strategy Research Manager och Strategy Test Planner',
       note: 'Föreslår nästa säkra research- eller paper-only-steg.',
     },
     {
       role: 'Researcher',
-      status: first(strategyResearch.status, 'ok'),
+      status: first(strategyResearch.status),
       visible: 'Strategiforskning och Lab',
       source: 'AI Optimization Agent, TradingAgents och Agent Debate',
       note: 'Letar testideer för strategier som inte är trade-godkända.',
     },
     {
       role: 'Reviewer',
-      status: approvalRecommendations.length ? 'warning' : 'ok',
+      status: hasResearchRecommendations ? (approvalRecommendations.length ? 'warning' : 'ok') : null,
       visible: 'Strategiforskning',
       source: 'Research Control och blockeringsregler',
       note: 'Markerar när mer data eller manuell granskning behövs.',
@@ -674,21 +756,21 @@ export default function SupervisorBrainPage() {
     {
       step: 'observe',
       label: 'Observera',
-      status: first(systemHealthBlock.status, dataStatus.status, 'ok'),
+      status: first(systemHealthBlock.status, dataStatus.status),
       source: 'Systemhälsa, data och aktivitet',
       note: 'Systemet kan läsa nuläge och hitta luckor.',
     },
     {
       step: 'analyze',
       label: 'Analysera',
-      status: first(aiStatus.readiness, aiStatus.status, 'ok'),
+      status: first(aiStatus.readiness, aiStatus.status),
       source: 'AI Analyst, Agent Reasoning och regelmotorer',
       note: 'Analys finns både som intern logik och extern AI Analyst.',
     },
     {
       step: 'plan',
       label: 'Planera',
-      status: first(strategyResearch.status, 'ok'),
+      status: first(strategyResearch.status),
       source: 'Strategy Research Control',
       note: 'Planen är read-only och kräver manuell granskning vid skyddade delar.',
     },
@@ -709,14 +791,14 @@ export default function SupervisorBrainPage() {
     {
       step: 'improve',
       label: 'Förbättra',
-      status: 'ok',
+      status: hasResearchRecommendations ? 'ok' : null,
       source: 'AI Optimization och research-förslag',
       note: 'Förbättringar får bara vara förslag i research eller paper-only.',
     },
     {
       step: 'journal',
       label: 'Journal',
-      status: liveCount > 0 || aiStatus.latestExists ? 'degraded' : 'warning',
+      status: (liveCount !== null || hasLatestAiFlag) ? (hasAiJournalData ? 'degraded' : 'warning') : null,
       source: 'Audit Trail, activity och AI Analyst-logg',
       note: 'Journal finns delvis. En samlad AI Journal saknas ännu.',
     },
@@ -730,11 +812,11 @@ export default function SupervisorBrainPage() {
     { name: 'Strategy approval', status: 'Manuell process', note: 'AI får inte godkänna eller flytta upp strategier själv.' },
   ];
   const aiBrainSafetyRows = [
-    { label: 'mode', value: overviewSafety(overview).mode, good: overviewSafety(overview).mode === 'paper_only' },
-    { label: 'actions_allowed', value: String(overviewSafety(overview).actions_allowed), good: overviewSafety(overview).actions_allowed === false },
-    { label: 'can_place_orders', value: String(overviewSafety(overview).can_place_orders), good: overviewSafety(overview).can_place_orders === false },
-    { label: 'live_trading_enabled', value: String(overviewSafety(overview).live_trading_enabled), good: overviewSafety(overview).live_trading_enabled === false },
-    { label: 'broker_enabled', value: String(overviewSafety(overview).broker_enabled), good: overviewSafety(overview).broker_enabled === false },
+    { label: 'mode', value: text(overviewSafety(overview).mode, '—'), good: overviewSafety(overview).mode === 'paper_only' },
+    { label: 'actions_allowed', value: boolString(overviewSafety(overview).actions_allowed), good: overviewSafety(overview).actions_allowed === false },
+    { label: 'can_place_orders', value: boolString(overviewSafety(overview).can_place_orders), good: overviewSafety(overview).can_place_orders === false },
+    { label: 'live_trading_enabled', value: boolString(overviewSafety(overview).live_trading_enabled), good: overviewSafety(overview).live_trading_enabled === false },
+    { label: 'broker_enabled', value: boolString(overviewSafety(overview).broker_enabled), good: overviewSafety(overview).broker_enabled === false },
   ];
   const supervisorKpis = [
     {
@@ -746,18 +828,18 @@ export default function SupervisorBrainPage() {
     {
       label: 'Safety',
       value: safetyIsLocked ? 'Låst' : 'Kontrollera',
-      hint: overviewSafety(overview).mode,
+      hint: text(overviewSafety(overview).mode, '—'),
       tone: safetyIsLocked ? 'good' : 'danger',
     },
     {
       label: 'Paper trades',
-      value: fmtNumber(paperStatus.count || 0),
+      value: fmtNumber(paperTradeCount),
       hint: statusLabel(paperStatus.status),
       tone: statusTone(paperStatus.status),
     },
     {
       label: 'Batchtester',
-      value: fmtNumber(batchStatus.totalBatches || 0),
+      value: fmtNumber(batchStatus.totalBatches),
       hint: latestBatch ? timeText(first(latestBatch.completedAt, latestBatch.startedAt)) : 'Ingen batch ännu',
       tone: statusTone(batchStatus.status),
     },
@@ -778,7 +860,7 @@ export default function SupervisorBrainPage() {
     ? [
         { label: 'Batch', value: batchResultRows, tone: 'purple' },
         { label: 'Replay', value: totalReplayRuns, tone: 'warning' },
-        { label: 'Paper', value: Number(paperStatus.count || 0), tone: 'good' },
+        { label: 'Paper', value: paperTradeCount, tone: 'good' },
         { label: 'Learning', value: learningOutcomeCount, tone: 'blue' },
       ]
     : [];
@@ -824,6 +906,22 @@ export default function SupervisorBrainPage() {
         ) : null}
 
         {activeSection === 'oversikt' ? (
+          <SupervisorIntelligence
+            overview={overview}
+            liveActivity={liveActivity}
+            replay={replay}
+            batches={batches}
+            allowlist={allowlist}
+            automationPlan={automationPlan}
+            aiLatest={aiLatest}
+            updatedAt={data.updatedAt}
+            eventStore={tradingEventStore}
+            decisionStore={decisionStore}
+            waiting={data.loading}
+          />
+        ) : null}
+
+        {activeSection === 'oversikt' ? (
           <section className="tos-section">
             <div className="tos-section-head">
               <div>
@@ -848,8 +946,8 @@ export default function SupervisorBrainPage() {
                 />
                 <Metric
                   label="Paper trading"
-                  value={paperStatus.count > 0 ? `${fmtNumber(paperStatus.count)} trades` : 'Inga trades ännu'}
-                  help={paperStatus.count > 0 ? timeText(first(paperStatus.latestPaperTrade?.timestamp, paperStatus.latestPaperTrade?.createdAt)) : text(paperStatus.emptyReason, 'no_paper_trades')}
+                  value={paperTradeCount !== null && paperTradeCount > 0 ? `${fmtNumber(paperTradeCount)} trades` : paperTradeCount === 0 ? 'Inga trades ännu' : '—'}
+                  help={paperTradeCount !== null && paperTradeCount > 0 ? timeText(first(paperStatus.latestPaperTrade?.timestamp, paperStatus.latestPaperTrade?.createdAt)) : text(paperStatus.emptyReason, paperTradeCount === 0 ? 'no_paper_trades' : 'Saknas')}
                   tone={statusTone(paperStatus.status)}
                 />
                 <Metric
@@ -972,7 +1070,7 @@ export default function SupervisorBrainPage() {
                 <Metric label="Extern AI" value={providerStatusText} help={`${text(aiStatus.provider, 'okänd provider')} · ${text(aiStatus.model, 'ingen modell')}`} tone={aiStatus.enabled ? 'good' : 'warning'} />
                 <Metric label="Intern AI" value={`${fmtNumber(aiBrainRoles.length)} roller`} help="Regelbaserade agenter, analyst och researchlager finns redan." tone="blue" />
                 <Metric label="Minne / learning" value={statusLabel(learningStatus.status)} help="Learning Connector och minneslager finns delvis." tone={statusTone(learningStatus.status)} />
-                <Metric label="Journal / audit" value={liveCount > 0 || aiStatus.latestExists ? 'Delvis' : 'Saknas delvis'} help="Audit och events finns, men inte en samlad AI Journal." tone={liveCount > 0 || aiStatus.latestExists ? 'warning' : 'danger'} />
+                <Metric label="Journal / audit" value={(liveCount !== null || hasLatestAiFlag) ? (hasAiJournalData ? 'Delvis' : 'Saknas delvis') : '—'} help="Audit och events finns, men inte en samlad AI Journal." tone={(liveCount !== null || hasLatestAiFlag) ? (hasAiJournalData ? 'warning' : 'danger') : 'neutral'} />
                 <Metric label="Research Control" value={statusLabel(strategyResearch.status)} help="Styr vad AI får föreslå för strategier." tone={statusTone(strategyResearch.status)} />
                 <Metric label="Doctor" value={statusLabel(systemHealthStatus)} help={text(systemHealthSummary.summarySv, 'System Health är Doctor-liknande status.')} tone={statusTone(systemHealthStatus)} />
                 <Metric label="Loop Engine" value="Delvis" help="Loopens delar finns, men inte som en samlad motor ännu." tone="warning" />
@@ -1041,7 +1139,7 @@ export default function SupervisorBrainPage() {
                   </div>
                   <div className="tos-list-row">
                     <strong>AI Analyst-logg</strong>
-                    <span>{aiStatus.latestExists ? 'Senaste AI Analyst-resultat finns sparat.' : 'Ingen sparad AI Analyst-text visas här.'}</span>
+                    <span>{hasLatestAiFlag ? (aiStatus.latestExists ? 'Senaste AI Analyst-resultat finns sparat.' : 'Ingen sparad AI Analyst-text visas här.') : 'AI Analyst-latest saknas i backend-snapshoten.'}</span>
                     <span>{latestAiTimestamp ? timeText(latestAiTimestamp) : 'Tidsstämpel saknas'}</span>
                   </div>
                   <div className="tos-list-row">
@@ -1057,7 +1155,7 @@ export default function SupervisorBrainPage() {
               <SectionCard title="Strategy Research Control" tone="blue">
                 <MeaningBlock
                   meaning="AI får föreslå research och paper-only tester för strategier som inte är skyddade."
-                  missing={approvalRecommendations.length ? `${fmtNumber(approvalRecommendations.length)} förslag kräver manuell granskning eller mer data.` : 'Inga tydliga research-blockeringar i denna vy just nu.'}
+                  missing={hasResearchRecommendations ? (approvalRecommendations.length ? `${fmtNumber(approvalRecommendations.length)} förslag kräver manuell granskning eller mer data.` : 'Inga tydliga research-blockeringar i denna vy just nu.') : 'Research-förslag saknas i backend-snapshoten.'}
                   nextStep="Behåll trade-godkända strategier skyddade. Låt AI bara föreslå research eller manuell granskning."
                 />
                 <div className="tos-safety-line">
@@ -1162,7 +1260,7 @@ export default function SupervisorBrainPage() {
               renderItem={(row) => (
                 <>
                   <strong>{text(row.name, 'Källa')}</strong>
-                  <span>{statusLabel(row.status)} · {fmtNumber(row.count || 0)} händelser</span>
+                  <span>{statusLabel(row.status)} · {fmtNumber(row.count)} händelser</span>
                   <span>{timeText(row.latestAt)}</span>
                 </>
               )}
@@ -1182,8 +1280,8 @@ export default function SupervisorBrainPage() {
             </div>
 
             <div className="tos-metrics-grid">
-              <Metric label="Redo symboler" value={fmtNumber(dataStatus.readyForReplay || 0)} help="Kan användas i replay direkt." tone="good" />
-              <Metric label="Saknar data" value={fmtNumber(dataStatus.missingData || 0)} help="Behöver backfill eller provider-stöd." tone={dataStatus.missingData > 0 ? 'warning' : 'good'} />
+              <Metric label="Redo symboler" value={fmtNumber(dataStatus.readyForReplay)} help="Kan användas i replay direkt." tone="good" />
+              <Metric label="Saknar data" value={fmtNumber(dataStatus.missingData)} help="Behöver backfill eller provider-stöd." tone={number(dataStatus.missingData, null) === null ? 'blue' : number(dataStatus.missingData, null) > 0 ? 'warning' : 'good'} />
               <Metric label="Candles" value={fmtNumber(totalCandles)} help="Summerat från read-only symbolstatus." tone="blue" />
               <Metric label="Dagar historik" value={fmtNumber(maxHistoryDays)} help="Bästa tillgängliga 2m-fönstret just nu." tone="blue" />
             </div>
@@ -1264,9 +1362,9 @@ export default function SupervisorBrainPage() {
               {latestReplay ? (
                 <div className="tos-detail-grid">
                   <span><b>Period</b>{`${text(latestReplay.period?.from, '?')} → ${text(latestReplay.period?.to, '?')}`}</span>
-                  <span><b>Symboler</b>{fmtNumber(latestReplay.symbolCount || arr(latestReplay.symbols).length)}</span>
-                  <span><b>Events</b>{fmtNumber(latestReplay.totalEvents || 0)}</span>
-                  <span><b>Candles</b>{fmtNumber(latestReplay.totalCandles || 0)}</span>
+                  <span><b>Symboler</b>{fmtNumber(first(latestReplay.symbolCount, Array.isArray(latestReplay.symbols) ? latestReplay.symbols.length : null))}</span>
+                  <span><b>Events</b>{fmtNumber(latestReplay.totalEvents)}</span>
+                  <span><b>Candles</b>{fmtNumber(latestReplay.totalCandles)}</span>
                   <span><b>Bästa symbol</b>{text(latestReplay.bestSymbol?.symbol, 'Saknas')}</span>
                   <span><b>Sammanfattning</b>{text(latestReplay.outcome, 'Saknas')}</span>
                 </div>
@@ -1282,7 +1380,7 @@ export default function SupervisorBrainPage() {
               renderItem={(row) => (
                 <>
                   <strong>{timeText(row.createdAt)}</strong>
-                  <span>{text(row.bestSymbol?.symbol, 'Ingen topprad')} · {fmtNumber(row.totalEvents || 0)} events</span>
+                  <span>{text(row.bestSymbol?.symbol, 'Ingen topprad')} · {fmtNumber(row.totalEvents)} events</span>
                   <span>{text(row.outcome, 'Saknas')}</span>
                 </>
               )}
@@ -1302,7 +1400,7 @@ export default function SupervisorBrainPage() {
             </div>
 
             <div className="tos-metrics-grid">
-              <Metric label="Batchtester" value={fmtNumber(batchStatus.totalBatches || 0)} help="Sparade batchkörningar." tone="blue" />
+              <Metric label="Batchtester" value={fmtNumber(batchStatus.totalBatches)} help="Sparade batchkörningar." tone="blue" />
               <Metric label="Kombinationer" value={fmtNumber(batchCombinations)} help="Inställningar testade i senaste batch." tone="blue" />
               <Metric label="Resultatrader" value={fmtNumber(batchResultRows)} help="Totalt lästa batch-resultatrader från historiken." tone="blue" />
               <Metric label="Senaste batch" value={latestBatch ? timeText(latestBatch.completedAt || latestBatch.startedAt) : 'Saknas'} help="Visar senaste jämförelsen." tone={latestBatch ? 'good' : 'warning'} />
@@ -1355,9 +1453,9 @@ export default function SupervisorBrainPage() {
             </div>
 
             <div className="tos-metrics-grid">
-              <Metric label="Strategitester" value={fmtNumber(strategyTests)} help="Historiska strategy_tests från Data Center." tone={strategyTests > 0 ? 'good' : 'warning'} />
-              <Metric label="Unika strategier" value={fmtNumber(uniqueStrategies)} help="Antal unika strategier med historisk coverage." tone={uniqueStrategies > 0 ? 'good' : 'warning'} />
-              <Metric label="Batch-resultatrader" value={fmtNumber(strategyBatchRows)} help="Historiska batch_result_rows från Data Center." tone={strategyBatchRows > 0 ? 'good' : 'warning'} />
+              <Metric label="Strategitester" value={fmtNumber(strategyTests)} help="Historiska strategy_tests från Data Center." tone={strategyTests === null ? 'blue' : strategyTests > 0 ? 'good' : 'warning'} />
+              <Metric label="Unika strategier" value={fmtNumber(uniqueStrategies)} help="Antal unika strategier med historisk coverage." tone={uniqueStrategies === null ? 'blue' : uniqueStrategies > 0 ? 'good' : 'warning'} />
+              <Metric label="Batch-resultatrader" value={fmtNumber(strategyBatchRows)} help="Historiska batch_result_rows från Data Center." tone={strategyBatchRows === null ? 'blue' : strategyBatchRows > 0 ? 'good' : 'warning'} />
               <Metric label="Coverage-källa" value={historicalCoverageSource} help="Read-only källa för historisk strategitäckning." tone={hasHistoricalStrategyCoverage ? 'blue' : 'warning'} />
             </div>
 
@@ -1376,7 +1474,7 @@ export default function SupervisorBrainPage() {
                 emptyText="Ingen topplista ännu."
                 renderItem={(row) => (
                   <>
-                    <strong>{text(row.name || row.key, 'Strategi')}</strong>
+                    <strong>{supervisorStrategyLabel(row)}</strong>
                     <span>Win rate {fmtPct(row.winRate)} · Avg PnL {fmtSigned(row.avgPnl)}</span>
                     <span>{strategyEvidenceText(row, hasHistoricalStrategyCoverage)} · Senaste test {timeText(row.lastTested)}</span>
                   </>
@@ -1388,7 +1486,7 @@ export default function SupervisorBrainPage() {
                 emptyText="Ingen svaghetslista ännu."
                 renderItem={(row) => (
                   <>
-                    <strong>{text(row.name || row.key, 'Strategi')}</strong>
+                    <strong>{supervisorStrategyLabel(row)}</strong>
                     <span>Win rate {fmtPct(row.winRate)} · Avg PnL {fmtSigned(row.avgPnl)}</span>
                     <span>{strategyEvidenceText(row, hasHistoricalStrategyCoverage)} · {text(row.recommendedAction, 'Saknas')}</span>
                   </>
@@ -1402,8 +1500,8 @@ export default function SupervisorBrainPage() {
               emptyText="Ingen strategi står ut som datatunn just nu."
                 renderItem={(row) => (
                   <>
-                    <strong>{text(row.name || row.key, 'Strategi')}</strong>
-                    <span>{strategyEvidenceText(row, hasHistoricalStrategyCoverage)} · Confidence {fmtNumber(row.confidence || 0)}</span>
+                    <strong>{supervisorStrategyLabel(row)}</strong>
+                    <span>{strategyEvidenceText(row, hasHistoricalStrategyCoverage)} · Confidence {fmtNumber(row.confidence)}</span>
                     <span>{text(row.recommendedAction, 'Behöver fler tester')}</span>
                   </>
                 )}
@@ -1425,8 +1523,8 @@ export default function SupervisorBrainPage() {
             <div className="tos-metrics-grid">
               <Metric label="Learning status" value={statusLabel(learningStatus.status)} help="Read-only sammanfattning av lärdomar." tone={statusTone(learningStatus.status)} />
               <Metric label="Confidence" value={text(learningStatus.narrowLearning?.dataConfidence, 'Saknas')} help="Hur säkra de nuvarande slutsatserna är." tone="blue" />
-              <Metric label="Replay-koppling" value={fmtNumber(learningReplayCount)} help="Antal replay-events i learning-connectorn." tone={learningReplayCount > 0 ? 'good' : 'warning'} />
-              <Metric label="Batch-koppling" value={fmtNumber(learningBatchCount)} help="Antal batch-events i learning-connectorn." tone={learningBatchCount > 0 ? 'good' : 'warning'} />
+              <Metric label="Replay-koppling" value={fmtNumber(learningReplayCount)} help="Antal replay-events i learning-connectorn." tone={learningReplayCount === null ? 'blue' : learningReplayCount > 0 ? 'good' : 'warning'} />
+              <Metric label="Batch-koppling" value={fmtNumber(learningBatchCount)} help="Antal batch-events i learning-connectorn." tone={learningBatchCount === null ? 'blue' : learningBatchCount > 0 ? 'good' : 'warning'} />
               <Metric label="Bästa strategi" value={text(learningStatus.bestLearning?.name, 'Saknas')} help={learningStatus.bestLearning?.winRate != null ? `Win rate ${fmtPct(learningStatus.bestLearning.winRate)}` : 'Saknas'} tone="good" />
               <Metric label="Svagaste punkt" value={text(learningStatus.worstWeakness?.name || learningStatus.signalLearningSummary?.failureAnalysis?.[0]?.labelSv, 'Saknas')} help="Visar var systemet lär sig mest just nu." tone="warning" />
             </div>
@@ -1476,8 +1574,8 @@ export default function SupervisorBrainPage() {
             <div className="tos-metrics-grid">
               <Metric label="Marknadsläge" value={text(marketRegime.regimeLabelSv || marketRegime.regime, 'Saknas')} help="Nuvarande marknadsregim (read-only)." tone="blue" />
               <Metric label="Stagnation" value={strategyResearch.stagnation?.detected ? 'Upptäckt' : 'Nej'} help="Om forskningen står still och behöver mer data." tone={strategyResearch.stagnation?.detected ? 'warning' : 'good'} />
-              <Metric label="Paper-redo förslag" value={fmtNumber(first(strategyResearch.paperEligibleCount, paperEligibleRecommendations.length, 0) || 0)} help="Förslag som redan är godkända för paper-only." tone="good" />
-              <Metric label="Kräver godkännande" value={fmtNumber(first(strategyResearch.requiresApprovalCount, approvalRecommendations.length, 0) || 0)} help="Förslag som behöver din manuella granskning först." tone="warning" />
+              <Metric label="Paper-redo förslag" value={fmtNumber(first(strategyResearch.paperEligibleCount, Array.isArray(strategyResearch.recommendations) ? paperEligibleRecommendations.length : null))} help="Förslag som redan är godkända för paper-only." tone="good" />
+              <Metric label="Kräver godkännande" value={fmtNumber(first(strategyResearch.requiresApprovalCount, Array.isArray(strategyResearch.recommendations) ? approvalRecommendations.length : null))} help="Förslag som behöver din manuella granskning först." tone="warning" />
             </div>
 
             <MeaningBlock
@@ -1490,7 +1588,7 @@ export default function SupervisorBrainPage() {
 
             {strategyResearch.topRecommendation ? (
               <SectionCard title="Toppförslag just nu" tone="blue" aside={<Badge tone="blue">{text(strategyResearch.topRecommendation.type, 'förslag')}</Badge>}>
-                <p><strong>{text(strategyResearch.topRecommendation.strategyId, 'Strategi')}</strong></p>
+                <p><strong>{supervisorStrategyLabel(strategyResearch.topRecommendation)}</strong></p>
                 <p>{text(strategyResearch.topRecommendation.reason, 'Saknas')}</p>
                 <div className="tos-safety-line">
                   <Badge tone={strategyResearch.topRecommendation.paperEligible ? 'good' : 'warning'}>{strategyResearch.topRecommendation.paperEligible ? 'Paper-redo' : 'Kräver godkännande'}</Badge>
@@ -1506,7 +1604,7 @@ export default function SupervisorBrainPage() {
                 emptyText="Inga förslag är paper-redo ännu. De flesta kräver mer data eller ditt godkännande."
                 renderItem={(row) => (
                   <>
-                    <strong>{text(row.strategyId, 'Strategi')}</strong>
+                    <strong>{supervisorStrategyLabel(row)}</strong>
                     <span>{text(row.reason, 'Saknas')}</span>
                     <span>paper-runtime: {row.paperRuntimeReady ? 'aktiv (paper-only)' : 'väntar på koppling'}</span>
                   </>
@@ -1518,7 +1616,7 @@ export default function SupervisorBrainPage() {
                 emptyText="Inga förslag väntar på granskning just nu."
                 renderItem={(row) => (
                   <>
-                    <strong>{text(row.strategyId, 'Strategi')}</strong>
+                    <strong>{supervisorStrategyLabel(row)}</strong>
                     <span>{text(row.blockedReason || row.reason, 'Saknas')}</span>
                     <span>krävs först: {text(arr(row.requiredBeforePaper), 'inget')}</span>
                   </>
@@ -1545,7 +1643,7 @@ export default function SupervisorBrainPage() {
               <Metric label="Senaste AI-status" value={statusLabel(aiStatus.latestStatus || aiStatus.status)} help="Status från sparad latest.json om filen finns." tone={statusTone(aiStatus.latestStatus || aiStatus.status)} />
               <Metric label="Senaste AI-tid" value={timeText(latestAiTimestamp)} help="Timestamp från overview.aiAnalystStatus eller latest.json." tone={latestAiTimestamp ? 'good' : 'warning'} />
               <Metric label="AI output" value={text(aiStatus.latestOutputSummary, 'Saknas')} help="Senaste overview-sammanfattning från AI Analyst när den finns." tone={aiStatus.latestOutputSummary ? 'blue' : 'warning'} />
-              <Metric label="Risker" value={fmtNumber(arr(overview.risks).length)} help="Risker i Trading OS översikten." tone={arr(overview.risks).length ? 'warning' : 'good'} />
+              <Metric label="Risker" value={hasOverviewRisks ? fmtNumber(overviewRisks.length) : '—'} help="Risker i Trading OS översikten." tone={hasOverviewRisks ? (overviewRisks.length ? 'warning' : 'good') : 'neutral'} />
             </div>
 
             <MeaningBlock
@@ -1572,9 +1670,11 @@ export default function SupervisorBrainPage() {
                 <p className="tos-muted">AI läser bara test- och sammanfattningsdata. Ingen brokerkoppling används.</p>
               </SectionCard>
               <SectionCard title="Risker att lyfta" tone="warning">
-                {arr(overview.risks).length ? (
+                {!hasOverviewRisks ? (
+                  <p className="tos-empty">Riskfältet saknas i Trading OS-översikten.</p>
+                ) : overviewRisks.length ? (
                   <div className="tos-list">
-                    {arr(overview.risks).slice(0, 4).map((risk, index) => (
+                    {overviewRisks.slice(0, 4).map((risk, index) => (
                       <div key={`${text(risk.code, 'risk')}-${index}`} className="tos-list-row">
                         <strong>{text(risk.level, 'risk')}</strong>
                         <span>{text(risk.message_sv, 'Saknas')}</span>
@@ -1601,18 +1701,18 @@ export default function SupervisorBrainPage() {
             </div>
 
             <div className="tos-metrics-grid">
-              <Metric label="Paper trades" value={fmtNumber(paperStatus.count || 0)} help="Sparade låtsasaffärer." tone="blue" />
+              <Metric label="Paper trades" value={fmtNumber(paperTradeCount)} help="Sparade låtsasaffärer." tone="blue" />
               <Metric label="Allowlist-status" value={allowlist ? 'Läst' : 'Saknas'} help="Read-only lista över godkända strategier." tone={allowlist ? 'good' : 'warning'} />
-              <Metric label="Godkända strategier" value={fmtNumber(first(allowlist?.totalApproved, paperAllowlist.totalApproved, 0) || 0)} help="Godkända som paper-only research-kandidater. Betyder inte live trading eller broker." tone="good" />
-              <Metric label="Redo i paper-runtime" value={fmtNumber(first(allowlist?.readyForPaperRuntime, paperAllowlist.readyForPaperRuntime, 0) || 0)} help="Antal vars paper-simulations-runtime är aktiv (paper-only, ingen broker)." tone="good" />
-              <Metric label="Väntar på runtime" value={fmtNumber(first(allowlist?.pendingRuntimeConnection, paperAllowlist.pendingRuntimeConnection, 0) || 0)} help="Godkända men paper-runtime-kopplingen är ännu inte aktiv." tone="warning" />
+              <Metric label="Godkända strategier" value={fmtNumber(first(allowlist?.totalApproved, paperAllowlist.totalApproved))} help="Godkända som paper-only research-kandidater. Betyder inte live trading eller broker." tone="good" />
+              <Metric label="Redo i paper-runtime" value={fmtNumber(first(allowlist?.readyForPaperRuntime, paperAllowlist.readyForPaperRuntime))} help="Antal vars paper-simulations-runtime är aktiv (paper-only, ingen broker)." tone="good" />
+              <Metric label="Väntar på runtime" value={fmtNumber(first(allowlist?.pendingRuntimeConnection, paperAllowlist.pendingRuntimeConnection))} help="Godkända men paper-runtime-kopplingen är ännu inte aktiv." tone="warning" />
             </div>
 
             <p className="tos-muted">Paper-redo = en säker research-kandidat i paper-only. Det betyder INTE live trading, broker eller riktiga order.</p>
 
             <MeaningBlock
               meaning="Paper är ett säkert sista steg där strategier kan följas i en låtsasmiljö. Inga riktiga order eller pengar används."
-              missing={paperStatus.count > 0 ? 'Det finns paperutfall att analysera, men allowlist och runtime-koppling måste fortfarande vara tydlig.' : text(paperStatus.message, 'Inga paper trades finns ännu.')}
+              missing={paperTradeCount !== null && paperTradeCount > 0 ? 'Det finns paperutfall att analysera, men allowlist och runtime-koppling måste fortfarande vara tydlig.' : text(paperStatus.message, 'Inga paper trades finns ännu.')}
               nextStep={text(automationPlan?.nextSafeStep, 'Nästa säkra steg är att välja en strategi manuellt för ett paper-only replay efter egen granskning.')}
             />
 
@@ -1673,10 +1773,10 @@ export default function SupervisorBrainPage() {
             </div>
 
             <div className="tos-metrics-grid">
-              <Metric label="Cache age" value={fmtNumber(overview.cacheAgeMs || technical.cacheAgeMs || 0)} help="Millisekunder från overview-cache." tone="blue" />
-              <Metric label="Block total" value={fmtNumber(technical.counts?.total || 0)} help="Antal block i overview." tone="blue" />
-              <Metric label="Degraded" value={fmtNumber(technical.counts?.degraded || 0)} help="Block som bara svarade delvis." tone={(technical.counts?.degraded || 0) > 0 ? 'warning' : 'good'} />
-              <Metric label="Errors" value={fmtNumber(technical.counts?.error || 0)} help="Block som kastade fel i overview." tone={(technical.counts?.error || 0) > 0 ? 'danger' : 'good'} />
+              <Metric label="Cache age" value={fmtNumber(first(overview.cacheAgeMs, technical.cacheAgeMs))} help="Millisekunder från overview-cache." tone="blue" />
+              <Metric label="Block total" value={fmtNumber(technical.counts?.total)} help="Antal block i overview." tone="blue" />
+              <Metric label="Degraded" value={fmtNumber(technical.counts?.degraded)} help="Block som bara svarade delvis." tone={number(technical.counts?.degraded, null) === null ? 'blue' : number(technical.counts?.degraded, null) > 0 ? 'warning' : 'good'} />
+              <Metric label="Errors" value={fmtNumber(technical.counts?.error)} help="Block som kastade fel i overview." tone={number(technical.counts?.error, null) === null ? 'blue' : number(technical.counts?.error, null) > 0 ? 'danger' : 'good'} />
             </div>
 
             <MeaningBlock

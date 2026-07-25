@@ -1,21 +1,48 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { SectionHeader } from '../shared.jsx';
+import { createDecisionStore } from '../stores/decisionStore.js';
+import { createTradingEventStore } from '../stores/tradingEventStore.js';
+import {
+  EMPTY_VALUE,
+  boolText,
+  fmtMoney as formatMoney,
+  fmtNumber,
+  fmtPercent,
+  fmtTime as formatTimestamp,
+  hasValue,
+  numberOrNull,
+} from '../utils/tradingFormatters.js';
 
 function fmtPct(value) {
-  const n = Number(value);
-  if (!Number.isFinite(n)) return '0.00%';
-  return `${n.toFixed(2)}%`;
+  return fmtPercent(value, 2);
 }
 
 function fmtMoney(value) {
-  const n = Number(value);
-  if (!Number.isFinite(n)) return '-';
-  return new Intl.NumberFormat('sv-SE', { style: 'currency', currency: 'USD', maximumFractionDigits: 0 }).format(n);
+  return formatMoney(value, null, 0);
 }
 
 function fmtTime(value) {
-  if (!value) return '-';
-  return new Date(value).toLocaleString('sv-SE', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' });
+  return formatTimestamp(value);
+}
+
+function displayCount(value) {
+  return hasValue(value) ? fmtNumber(value) : EMPTY_VALUE;
+}
+
+function displayRawNumber(value, digits = 2) {
+  return hasValue(value) ? fmtNumber(value, digits) : EMPTY_VALUE;
+}
+
+function pnlClass(value) {
+  const n = numberOrNull(value);
+  if (n == null) return '';
+  return n >= 0 ? 'replay-v2-pos' : 'replay-v2-neg';
+}
+
+function metricColor(value, positive = 'var(--green)', negative = 'var(--red)', missing = 'var(--text)') {
+  const n = numberOrNull(value);
+  if (n == null) return missing;
+  return n >= 0 ? positive : negative;
 }
 
 function todayMinus(days) {
@@ -37,8 +64,9 @@ function statusSv(status) {
 }
 
 function decisionClass(decision, pnl) {
-  if (decision === 'ENTER' && Number(pnl) > 0) return 'badge-green';
-  if (decision === 'ENTER' && Number(pnl) < 0) return 'badge-red';
+  const n = numberOrNull(pnl);
+  if (decision === 'ENTER' && n != null && n > 0) return 'badge-green';
+  if (decision === 'ENTER' && n != null && n < 0) return 'badge-red';
   if (decision === 'L_SKIP') return 'badge-yellow';
   return 'badge-gray';
 }
@@ -354,7 +382,7 @@ function SessionList({ sessions, selectedId, onSelect }) {
           <span className="rpl-run-syms">{session.config.symbols.join(', ')}</span>
           <span className="rpl-run-stats">
             <span className="rpl-run-stat"><span className="rpl-run-stat-val">{statusSv(session.status)}</span><span className="rpl-run-stat-label">status</span></span>
-            <span className="rpl-run-stat"><span className="rpl-run-stat-val">{session.progress?.eventsLogged ?? 0}</span><span className="rpl-run-stat-label">events</span></span>
+            <span className="rpl-run-stat"><span className="rpl-run-stat-val">{displayCount(session.progress?.eventsLogged)}</span><span className="rpl-run-stat-label">events</span></span>
           </span>
           <span className="rpl-run-created">{fmtTime(session.createdAt)}</span>
         </button>
@@ -373,7 +401,7 @@ function ControlBar({ session, onRun, onPause, onStop, onRefresh }) {
     <div className="replay-v2-controls">
       <span className="status-pill">replay_mode: true</span>
       <span className="status-pill">{statusSv(session.status)}</span>
-      <span className="status-pill">{session.progress?.processedCandles ?? 0}/{session.progress?.totalCandles ?? 0} candles</span>
+      <span className="status-pill">{displayCount(session.progress?.processedCandles)}/{displayCount(session.progress?.totalCandles)} candles</span>
       <button className="btn" onClick={onRun} disabled={!canRun}>Kör</button>
       <button className="btn" onClick={onPause} disabled={!running}>Pausa</button>
       <button className="btn" onClick={onStop} disabled={!canStop}>Stoppa</button>
@@ -384,12 +412,12 @@ function ControlBar({ session, onRun, onPause, onStop, onRefresh }) {
 
 function MetricCards({ summary }) {
   const cards = [
-    ['P/L', fmtPct(summary?.total_pl_pct), Number(summary?.total_pl_pct) >= 0 ? 'var(--green)' : 'var(--red)'],
-    ['Win rate', fmtPct(summary?.win_rate), 'var(--green)'],
-    ['Trades', summary?.total_trades ?? 0, 'var(--text)'],
+    ['P/L', fmtPct(summary?.total_pl_pct), metricColor(summary?.total_pl_pct)],
+    ['Win rate', fmtPct(summary?.win_rate), numberOrNull(summary?.win_rate) == null ? 'var(--text)' : 'var(--green)'],
+    ['Trades', displayCount(summary?.total_trades), 'var(--text)'],
     ['Max drawdown', fmtPct(summary?.max_drawdown), 'var(--yellow)'],
-    ['Agentpåverkan', summary?.agent_impact?.avg_adjustment ?? 0, 'var(--blue)'],
-    ['Minnespåverkan', summary?.memory_impact?.avg_adjustment ?? 0, 'var(--purple)'],
+    ['Agentpåverkan', displayRawNumber(summary?.agent_impact?.avg_adjustment), 'var(--blue)'],
+    ['Minnespåverkan', displayRawNumber(summary?.memory_impact?.avg_adjustment), 'var(--purple)'],
   ];
 
   return (
@@ -418,27 +446,27 @@ function ImpactPanel({ summary }) {
     <div className="replay-v2-impact-grid">
       <div className="rpl-sym-group">
         <div className="rpl-sym-group-title">Agentpåverkan</div>
-        <div className="replay-v2-kv"><span>Aktiv</span><strong>{agent.enabled ? 'Ja' : 'Nej'}</strong></div>
-        <div className="replay-v2-kv"><span>Snittjustering</span><strong>{agent.avg_adjustment ?? 0}</strong></div>
-        <div className="replay-v2-kv"><span>Negativa events</span><strong>{agent.negative_events ?? 0}</strong></div>
-        <div className="replay-v2-kv"><span>Positiva events</span><strong>{agent.positive_events ?? 0}</strong></div>
+        <div className="replay-v2-kv"><span>Aktiv</span><strong>{boolText(agent.enabled)}</strong></div>
+        <div className="replay-v2-kv"><span>Snittjustering</span><strong>{displayRawNumber(agent.avg_adjustment)}</strong></div>
+        <div className="replay-v2-kv"><span>Negativa events</span><strong>{displayCount(agent.negative_events)}</strong></div>
+        <div className="replay-v2-kv"><span>Positiva events</span><strong>{displayCount(agent.positive_events)}</strong></div>
       </div>
       <div className="rpl-sym-group">
         <div className="rpl-sym-group-title">Minnespåverkan</div>
-        <div className="replay-v2-kv"><span>Aktiv</span><strong>{memory.enabled ? 'Ja' : 'Nej'}</strong></div>
-        <div className="replay-v2-kv"><span>Snittjustering</span><strong>{memory.avg_adjustment ?? 0}</strong></div>
-        <div className="replay-v2-kv"><span>Negativa events</span><strong>{memory.negative_events ?? 0}</strong></div>
-        <div className="replay-v2-kv"><span>Positiva events</span><strong>{memory.positive_events ?? 0}</strong></div>
+        <div className="replay-v2-kv"><span>Aktiv</span><strong>{boolText(memory.enabled)}</strong></div>
+        <div className="replay-v2-kv"><span>Snittjustering</span><strong>{displayRawNumber(memory.avg_adjustment)}</strong></div>
+        <div className="replay-v2-kv"><span>Negativa events</span><strong>{displayCount(memory.negative_events)}</strong></div>
+        <div className="replay-v2-kv"><span>Positiva events</span><strong>{displayCount(memory.positive_events)}</strong></div>
       </div>
       <div className="rpl-sym-group">
         <div className="rpl-sym-group-title">Blockerade affärer</div>
-        <div className="replay-v2-kv"><span>Skulle ha förlorat</span><strong>{summary?.blocked_trades_that_would_have_lost ?? 0}</strong></div>
-        <div className="replay-v2-kv"><span>Skulle ha vunnit</span><strong>{summary?.blocked_trades_that_would_have_won ?? 0}</strong></div>
+        <div className="replay-v2-kv"><span>Skulle ha förlorat</span><strong>{displayCount(summary?.blocked_trades_that_would_have_lost)}</strong></div>
+        <div className="replay-v2-kv"><span>Skulle ha vunnit</span><strong>{displayCount(summary?.blocked_trades_that_would_have_won)}</strong></div>
       </div>
       <div className="rpl-sym-group">
         <div className="rpl-sym-group-title">Risk Engine v2</div>
-        <div className="replay-v2-kv"><span>Risk blocks</span><strong>{risk.risk_blocks ?? 0}</strong></div>
-        <div className="replay-v2-kv"><span>Trades reduced by sizing</span><strong>{risk.trades_reduced_by_sizing ?? 0}</strong></div>
+        <div className="replay-v2-kv"><span>Risk blocks</span><strong>{displayCount(risk.risk_blocks)}</strong></div>
+        <div className="replay-v2-kv"><span>Trades reduced by sizing</span><strong>{displayCount(risk.trades_reduced_by_sizing)}</strong></div>
         <div className="replay-v2-kv"><span>Avoided losses</span><strong>{fmtPct(risk.avoided_losses)}</strong></div>
         <div className="replay-v2-kv"><span>Missed winners</span><strong>{fmtPct(risk.missed_winners)}</strong></div>
         <div className="replay-v2-kv"><span>Avg position size</span><strong>{fmtMoney(risk.avg_position_size)}</strong></div>
@@ -446,24 +474,24 @@ function ImpactPanel({ summary }) {
       </div>
       <div className="rpl-sym-group">
         <div className="rpl-sym-group-title">Exit Engine v1</div>
-        <div className="replay-v2-kv"><span>Aktiv</span><strong>{exit.enabled ? 'Ja' : 'Nej'}</strong></div>
-        <div className="replay-v2-kv"><span>Timeout minskning</span><strong>{exit.timeout_reduction ?? 0}</strong></div>
+        <div className="replay-v2-kv"><span>Aktiv</span><strong>{boolText(exit.enabled)}</strong></div>
+        <div className="replay-v2-kv"><span>Timeout minskning</span><strong>{displayCount(exit.timeout_reduction)}</strong></div>
         <div className="replay-v2-kv"><span>Avg P/L change</span><strong>{fmtPct(exit.avg_pl_change)}</strong></div>
-        <div className="replay-v2-kv"><span>Räddade vinster</span><strong>{exit.near_target_saved_trades ?? 0}</strong></div>
-        <div className="replay-v2-kv"><span>Trailing exits</span><strong>{exit.trailing_stop_exits ?? 0}</strong></div>
-        <div className="replay-v2-kv"><span>Momentum fade exits</span><strong>{exit.momentum_fade_exits ?? 0}</strong></div>
-        <div className="replay-v2-kv"><span>Missade större vinnare</span><strong>{exit.missed_bigger_winners ?? 0}</strong></div>
-        <div className="replay-v2-kv"><span>Förbättrade exits</span><strong>{exit.improved_exits_vs_baseline ?? 0}</strong></div>
+        <div className="replay-v2-kv"><span>Räddade vinster</span><strong>{displayCount(exit.near_target_saved_trades)}</strong></div>
+        <div className="replay-v2-kv"><span>Trailing exits</span><strong>{displayCount(exit.trailing_stop_exits)}</strong></div>
+        <div className="replay-v2-kv"><span>Momentum fade exits</span><strong>{displayCount(exit.momentum_fade_exits)}</strong></div>
+        <div className="replay-v2-kv"><span>Missade större vinnare</span><strong>{displayCount(exit.missed_bigger_winners)}</strong></div>
+        <div className="replay-v2-kv"><span>Förbättrade exits</span><strong>{displayCount(exit.improved_exits_vs_baseline)}</strong></div>
       </div>
       <div className="rpl-sym-group">
         <div className="rpl-sym-group-title">Execution Safety v1</div>
-        <div className="replay-v2-kv"><span>Aktiv</span><strong>{safety.enabled ? 'Ja' : 'Nej'}</strong></div>
-        <div className="replay-v2-kv"><span>Safety blocks</span><strong>{safety.safety_blocks ?? 0}</strong></div>
-        <div className="replay-v2-kv"><span>Stale data blocks</span><strong>{safety.stale_data_blocks ?? 0}</strong></div>
-        <div className="replay-v2-kv"><span>Risk pause blocks</span><strong>{safety.risk_pause_blocks ?? 0}</strong></div>
-        <div className="replay-v2-kv"><span>Kill switch blocks</span><strong>{safety.kill_switch_blocks ?? 0}</strong></div>
-        <div className="replay-v2-kv"><span>Entries prevented</span><strong>{safety.entries_prevented ?? 0}</strong></div>
-        <div className="replay-v2-kv"><span>Would-have-entered</span><strong>{safety.would_have_entered_count ?? 0}</strong></div>
+        <div className="replay-v2-kv"><span>Aktiv</span><strong>{boolText(safety.enabled)}</strong></div>
+        <div className="replay-v2-kv"><span>Safety blocks</span><strong>{displayCount(safety.safety_blocks)}</strong></div>
+        <div className="replay-v2-kv"><span>Stale data blocks</span><strong>{displayCount(safety.stale_data_blocks)}</strong></div>
+        <div className="replay-v2-kv"><span>Risk pause blocks</span><strong>{displayCount(safety.risk_pause_blocks)}</strong></div>
+        <div className="replay-v2-kv"><span>Kill switch blocks</span><strong>{displayCount(safety.kill_switch_blocks)}</strong></div>
+        <div className="replay-v2-kv"><span>Entries prevented</span><strong>{displayCount(safety.entries_prevented)}</strong></div>
+        <div className="replay-v2-kv"><span>Would-have-entered</span><strong>{displayCount(safety.would_have_entered_count)}</strong></div>
       </div>
     </div>
   );
@@ -502,7 +530,7 @@ function EventTimeline({ events }) {
               <td>{event.execution_safety_allowed === false ? `Safety: ${(event.execution_safety_block_reasons || []).join(', ')}` : event.risk_allowed === false ? `Block: ${(event.risk_block_reasons || []).join(', ')}` : event.risk_position_size_sek ? fmtMoney(event.risk_position_size_sek) : '-'}</td>
               <td>{event.final_confidence}</td>
               <td><span className={`badge ${decisionClass(event.decision, event.simulated_pnl_pct)}`}>{event.decision}</span></td>
-              <td className={Number(event.simulated_pnl_pct) >= 0 ? 'replay-v2-pos' : 'replay-v2-neg'}>{fmtPct(event.simulated_pnl_pct)}</td>
+              <td className={pnlClass(event.simulated_pnl_pct)}>{fmtPct(event.simulated_pnl_pct)}</td>
             </tr>
           ))}
         </tbody>
@@ -519,7 +547,7 @@ function DecisionList({ title, rows }) {
       {rows.slice(0, 6).map((event, index) => (
         <div className="replay-v2-decision-row" key={`${title}_${event.symbol}_${event.timestamp}_${index}`}>
           <span>{event.symbol}</span>
-          <strong className={Number(event.simulated_pnl_pct) >= 0 ? 'replay-v2-pos' : 'replay-v2-neg'}>{fmtPct(event.simulated_pnl_pct)}</strong>
+          <strong className={pnlClass(event.simulated_pnl_pct)}>{fmtPct(event.simulated_pnl_pct)}</strong>
           <span>{event.reason}</span>
         </div>
       ))}
@@ -550,8 +578,8 @@ function LatestDailyReplayBanner({ latest }) {
   return (
     <div className="rpl-daily-banner">
       <strong>Senaste dagliga replay</strong> ({latest.replayMode || 'daily'}) · {day} ·{' '}
-      {(latest.symbols || []).join(', ') || 'Saknas'} · {latest.totalEvents ?? 0} events ·{' '}
-      {latest.totalCandles ?? 0} candles · snittbetyg {latest.avgTradeScore ?? '–'}
+      {(latest.symbols || []).join(', ') || 'Saknas'} · {displayCount(latest.totalEvents)} events ·{' '}
+      {displayCount(latest.totalCandles)} candles · snittbetyg {displayRawNumber(latest.avgTradeScore)}
     </div>
   );
 }
@@ -585,9 +613,28 @@ export default function ReplayPage() {
   }
 
   const blockedRows = useMemo(() => summary?.blocked_trades || [], [summary]);
+  const tradingEventStore = useMemo(() => createTradingEventStore({
+    replaySnapshot: {
+      session,
+      summary,
+      events,
+    },
+    events,
+  }), [events, session, summary]);
+  const tradingEventCount = tradingEventStore.getAllEvents().length;
+  const decisionStore = useMemo(() => createDecisionStore({
+    eventStore: tradingEventStore,
+    replaySnapshot: {
+      session,
+      summary,
+      events,
+    },
+    decisions: events,
+  }), [events, session, summary, tradingEventStore]);
+  const decisionCount = decisionStore.getDecisions().length;
 
   return (
-    <div>
+    <div data-trading-event-count={tradingEventCount} data-decision-count={decisionCount}>
       <div className="page-hero">
         <div className="hero-left">
           <div className="hero-title">Replay Intelligence v2</div>

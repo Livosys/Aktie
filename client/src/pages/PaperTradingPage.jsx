@@ -4,9 +4,22 @@ import { DashboardShell, EmptyState } from '../components/dashboard/DashboardKit
 import PaperCandidatePanel from '../components/PaperCandidatePanel.jsx';
 import PaperStrategyListPanel from '../components/paper/PaperStrategyListPanel.jsx';
 import TradingViewTestResultsPanel from '../components/TradingViewTestResultsPanel.jsx';
+import {
+  resolveStrategy,
+  strategyDisplayName,
+} from '../stores/strategyStore.js';
+import { createDecisionStore } from '../stores/decisionStore.js';
+import { createTradingEventStore } from '../stores/tradingEventStore.js';
+import {
+  EMPTY_VALUE,
+  fmtNumber as formatNumber,
+  hasValue,
+  numberOrNull,
+} from '../utils/tradingFormatters.js';
 
 const REFRESH_MS = 15_000;
 const FETCH_TIMEOUT_MS = 6_500;
+const WAITING_RUNTIME = 'Waiting for runtime...';
 const PAPER_TABS = [
   { id: 'oversikt', label: 'Översikt' },
   { id: 'positioner', label: 'Positioner' },
@@ -111,6 +124,53 @@ function fmtPct(value) {
   if (value == null || Number.isNaN(Number(value))) return '–';
   const num = Number(value);
   return `${num > 0 ? '+' : ''}${num.toFixed(2)}%`;
+}
+
+function hasOwn(source, key) {
+  return Boolean(source && Object.prototype.hasOwnProperty.call(source, key));
+}
+
+function backendNumber(source, key) {
+  return hasOwn(source, key) ? numberOrNull(source[key]) : null;
+}
+
+function displayBackendNumber(source, key, waiting = false) {
+  if (!hasOwn(source, key)) return waiting ? WAITING_RUNTIME : EMPTY_VALUE;
+  return hasValue(source[key]) ? formatNumber(source[key]) : EMPTY_VALUE;
+}
+
+function firstExistingNumber(candidates = [], waiting = false) {
+  for (const candidate of candidates) {
+    if (!candidate || !hasOwn(candidate.source, candidate.key)) continue;
+    return hasValue(candidate.source[candidate.key]) ? formatNumber(candidate.source[candidate.key]) : EMPTY_VALUE;
+  }
+  return waiting ? WAITING_RUNTIME : EMPTY_VALUE;
+}
+
+function displayNumberValue(value, digits = 0) {
+  return hasValue(value) ? formatNumber(value, digits) : EMPTY_VALUE;
+}
+
+function displayPercentValue(value, digits = 0) {
+  return hasValue(value) ? `${formatNumber(value, digits)}%` : EMPTY_VALUE;
+}
+
+function previewPercent(value, fallback = EMPTY_VALUE) {
+  const text = previewValue(value, fallback);
+  return text === fallback ? fallback : `${text}%`;
+}
+
+function displayKnownArrayCount(value) {
+  return Array.isArray(value) ? formatNumber(value.length) : EMPTY_VALUE;
+}
+
+function appendKnownLabel(value, label) {
+  return value === EMPTY_VALUE ? EMPTY_VALUE : `${value} ${label}`;
+}
+
+function displayFirstValue(...values) {
+  const value = values.find((entry) => hasValue(entry));
+  return hasValue(value) ? String(value) : EMPTY_VALUE;
 }
 
 function toneForResult(result) {
@@ -219,8 +279,8 @@ function SafetyBanner({ safety }) {
       <span style={statusPillStyle('success')}>Inga riktiga order</span>
       <span style={statusPillStyle('neutral')}>Broker avstängd</span>
       <span style={statusPillStyle('neutral')}>Live trading avstängd</span>
-      <span style={statusPillStyle('info')}>actions_allowed={String(safety?.actions_allowed === true)}</span>
-      <span style={statusPillStyle('info')}>can_place_orders={String(safety?.can_place_orders === true)}</span>
+      <span style={statusPillStyle('info')}>actions_allowed={displayBooleanFlag(safety?.actions_allowed)}</span>
+      <span style={statusPillStyle('info')}>can_place_orders={displayBooleanFlag(safety?.can_place_orders)}</span>
     </div>
   );
 }
@@ -230,6 +290,20 @@ function previewValue(value, fallback = '–') {
   if (typeof value === 'object') return fallback;
   const text = String(value).trim();
   return text || fallback;
+}
+
+function displayBooleanFlag(value) {
+  if (value === true) return 'true';
+  if (value === false) return 'false';
+  return EMPTY_VALUE;
+}
+
+function paperStrategyModel(row = {}) {
+  return resolveStrategy(row);
+}
+
+function paperStrategyLabel(row = {}, fallback = '—') {
+  return strategyDisplayName(paperStrategyModel(row), fallback);
 }
 
 function previewNumber(value, digits = 2, fallback = '–') {
@@ -247,27 +321,27 @@ function previewDecision(value) {
 function DailySelectionPreviewPanel({ preview }) {
   const theme = useThemeMode();
   const candidates = Array.isArray(preview?.candidates) ? preview.candidates.slice(0, 3) : [];
-  const selectionCount = Number(preview?.selectionCount) || 3;
-  const selectedCount = Number(preview?.selectedCount) || candidates.length;
+  const selectionCount = numberOrNull(preview?.selectionCount);
+  const selectedCount = numberOrNull(preview?.selectedCount) ?? (Array.isArray(preview?.candidates) ? candidates.length : null);
   const dateLabel = previewValue(preview?.date);
   const emptyText = previewValue(preview?.emptyStateText, 'Inga säkra kandidater just nu');
-  const partialState = selectedCount > 0 && selectedCount < selectionCount;
+  const partialState = selectedCount !== null && selectionCount !== null && selectedCount > 0 && selectedCount < selectionCount;
 
   return (
     <div style={sectionStyle()}>
       <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap', alignItems: 'flex-start', marginBottom: 12 }}>
         <div>
-          <h2 style={{ margin: 0, fontSize: 22 }}>Dagens 3 paper-kandidater</h2>
+          <h2 style={{ margin: 0, fontSize: 22 }}>Dagens paper-kandidater</h2>
           <div style={{ ...mutedTextStyle(theme), marginTop: 4, fontSize: 13 }}>
-            Systemet visar 3 möjliga kandidater för framtida daglig paper trading. Inga trades skapas härifrån.
+            Systemet visar möjliga kandidater för framtida daglig paper trading. Inga trades skapas härifrån.
           </div>
         </div>
         <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, alignItems: 'center' }}>
           <span style={statusPillStyle('info', theme)}>
-            Preview av framtida 3-per-dag-logik
+            Preview av framtida daglig logik
           </span>
           <span style={statusPillStyle('neutral', theme)}>
-            {selectedCount}/{selectionCount}
+            {displayNumberValue(selectedCount)}/{displayNumberValue(selectionCount)}
           </span>
         </div>
       </div>
@@ -278,13 +352,14 @@ function DailySelectionPreviewPanel({ preview }) {
 
       {partialState ? (
         <div style={{ marginBottom: 12, padding: '10px 12px', borderRadius: 12, border: statusPillStyle('warning', theme).border, background: 'var(--surface-2)', color: 'var(--text)', fontSize: 13, fontWeight: 700 }}>
-          Det finns inte 3 säkra kandidater just nu. Systemet väntar på bättre signaler.
+          Det finns färre säkra kandidater än målantalet just nu. Systemet väntar på bättre signaler.
         </div>
       ) : null}
 
       {candidates.length ? (
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(250px, 1fr))', gap: 12 }}>
           {candidates.map((candidate, index) => {
+            const strategy = paperStrategyModel(candidate || {});
             const key = candidate?.candidateId || `${previewValue(candidate?.canonicalStrategyId)}:${previewValue(candidate?.symbol)}:${index}`;
             return (
               <div
@@ -300,10 +375,10 @@ function DailySelectionPreviewPanel({ preview }) {
                 <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10, alignItems: 'flex-start' }}>
                   <div>
                     <div style={{ fontSize: 18, fontWeight: 900, lineHeight: 1.15 }}>
-                      {previewValue(candidate?.symbol)} <span style={{ ...mutedTextStyle(theme), fontWeight: 700 }}>· {previewValue(candidate?.strategyName)}</span>
+                      {previewValue(candidate?.symbol)} <span style={{ ...mutedTextStyle(theme), fontWeight: 700 }}>· {paperStrategyLabel(candidate)}</span>
                     </div>
                     <div style={{ ...mutedTextStyle(theme), marginTop: 4, fontSize: 12 }}>
-                      {previewValue(candidate?.canonicalStrategyId)}
+                      {previewValue(strategy.strategyId)}
                     </div>
                   </div>
                   <span style={statusPillStyle('info', theme)}>
@@ -394,7 +469,7 @@ function TopStrategySelectorPanel({ preview }) {
               <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap' }}>
                 <div>
                   <div style={{ fontWeight: 900, color: 'var(--text)' }}>
-                    {row.strategyName || row.canonicalStrategyId || row.strategyId || 'Okänd strategi'}
+                    {paperStrategyLabel(row, 'Okänd strategi')}
                   </div>
                   <div style={{ marginTop: 4, color: 'var(--muted)', fontSize: 12 }}>
                     {previewValue(row.symbol)} · {previewValue(row.source)}
@@ -434,8 +509,11 @@ function TopStrategySelectorPanel({ preview }) {
 function SummaryGrid({ runtime }) {
   const theme = useThemeMode();
   const summary = runtime?.summary || {};
-  const shown = summary.returnedCount ?? 0;
-  const limit = summary.limit ?? 50;
+  const waiting = !runtime;
+  const shown = displayBackendNumber(summary, 'returnedCount', waiting);
+  const limit = displayBackendNumber(summary, 'limit', waiting);
+  const shownNumber = backendNumber(summary, 'returnedCount');
+  const limitNumber = backendNumber(summary, 'limit');
   return (
     <div style={sectionStyle()}>
       <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap', marginBottom: 14 }}>
@@ -451,10 +529,10 @@ function SummaryGrid({ runtime }) {
 
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(170px, 1fr))', gap: 10 }}>
         {[
-          ['Open', summary.openCount ?? 0],
-          ['Closed', summary.closedCount ?? 0],
-          ['Events', summary.eventCount ?? 0],
-          ['Blocked', summary.blockedCount ?? 0],
+          ['Open', displayBackendNumber(summary, 'openCount', waiting)],
+          ['Closed', displayBackendNumber(summary, 'closedCount', waiting)],
+          ['Events', displayBackendNumber(summary, 'eventCount', waiting)],
+          ['Blocked', displayBackendNumber(summary, 'blockedCount', waiting)],
         ].map(([label, value]) => (
           <div key={label} style={{ border: '1px solid var(--border)', borderRadius: 12, padding: 14, background: 'var(--surface-2)' }}>
             <div style={{ ...mutedTextStyle(theme), fontSize: 11, textTransform: 'uppercase', letterSpacing: '0.08em' }}>{label}</div>
@@ -468,7 +546,7 @@ function SummaryGrid({ runtime }) {
         <span>Senaste event: {fmtTime(summary.latestEventAt)}</span>
         <span>mode=paper_only</span>
       </div>
-      {shown < limit && (
+      {shownNumber != null && limitNumber != null && shownNumber < limitNumber && (
         <div style={{ marginTop: 10, ...mutedTextStyle(theme), fontSize: 13 }}>
           Visar senaste {shown}/{limit} paper records. Systemet har inte skapat {limit} ännu.
         </div>
@@ -847,7 +925,7 @@ function tradeLookupKey(trade) {
   if (!trade) return null;
   if (trade.tradeId) return trade.tradeId;
   const symbol = previewValue(trade.symbol, 'unknown');
-  const strategyId = previewValue(trade.strategy_id || trade.strategyId || trade.canonicalStrategyId || trade.resolvedStrategyId, 'unknown');
+  const strategyId = previewValue(paperStrategyModel(trade).strategyId, 'unknown');
   const openedAt = previewValue(trade.opened_at || trade.openedAt, 'unknown');
   return `${symbol}:${strategyId}:${openedAt}`;
 }
@@ -857,7 +935,7 @@ function tradeLookupParams(trade) {
   const params = new URLSearchParams();
   if (trade.tradeId) params.set('tradeId', trade.tradeId);
   if (trade.symbol) params.set('symbol', trade.symbol);
-  const strategyId = trade.strategy_id || trade.strategyId || trade.canonicalStrategyId || trade.resolvedStrategyId;
+  const strategyId = paperStrategyModel(trade).strategyId;
   if (strategyId) params.set('strategyId', strategyId);
   if (trade.opened_at || trade.openedAt) params.set('openedAt', trade.opened_at || trade.openedAt);
   if (trade.closed_at || trade.closedAt) params.set('closedAt', trade.closed_at || trade.closedAt);
@@ -887,7 +965,7 @@ function ClosedTradeExplanationPanel({ explanation, trade, theme }) {
   const exit = explanation?.exit || {};
   const diagnosis = explanation?.diagnosis || {};
   const stats = explanation?.tradeStats || diagnosis?.tradeStats || {};
-  const tradeLabel = trade?.symbol ? `${trade.symbol} · ${trade.strategy_id || trade.strategyId || 'unknown'}` : 'unknown';
+  const tradeLabel = trade?.symbol ? `${trade.symbol} · ${paperStrategyLabel(trade, 'unknown')}` : 'unknown';
   const mfePct = stats.mfePct == null ? '–' : `${stats.mfePct >= 0 ? '+' : ''}${Number(stats.mfePct).toFixed(2)}%`;
   const maePct = stats.maePct == null ? '–' : `${stats.maePct >= 0 ? '+' : ''}${Number(stats.maePct).toFixed(2)}%`;
   const exitProfile = explanationValue(exit.exitProfile, 'unknown');
@@ -1075,7 +1153,7 @@ function EntryQualityGatePanel({ gate, theme }) {
   const recommendations = Array.isArray(gate.recommendations) ? gate.recommendations : [];
   const missingFields = Array.isArray(gate.missingFields) ? gate.missingFields : [];
   const statusTone = gateTone(gate.entryQuality);
-  const score = Number.isFinite(Number(gate.score)) ? Number(gate.score) : 0;
+  const score = numberOrNull(gate.score);
 
   const cards = [
     { key: 'lateEntry', label: 'Sen entry', data: checks.lateEntry },
@@ -1105,7 +1183,7 @@ function EntryQualityGatePanel({ gate, theme }) {
             Entry quality: {gateLabel(gate.entryQuality)}
           </span>
           <span style={explanationBadgeStyle('info', false, theme)}>
-            Score: {score}
+            Score: {score == null ? EMPTY_VALUE : formatNumber(score)}
           </span>
         </div>
       </div>
@@ -1200,7 +1278,7 @@ function ExitProfileComparisonPanel({ comparison, theme }) {
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 10 }}>
         <div style={{ border: '1px solid var(--border)', borderRadius: 12, padding: 14, background: 'var(--surface-2)' }}>
           <div style={{ ...mutedTextStyle(theme), fontSize: 11, textTransform: 'uppercase', letterSpacing: '0.08em' }}>Trades</div>
-          <div style={{ marginTop: 6, fontSize: 20, fontWeight: 900, color: 'var(--text)' }}>{previewValue(baseline.trades, baseline.simulated_trades ?? 0)}</div>
+          <div style={{ marginTop: 6, fontSize: 20, fontWeight: 900, color: 'var(--text)' }}>{displayFirstValue(baseline.trades, baseline.simulated_trades)}</div>
           <div style={{ marginTop: 4, ...mutedTextStyle(theme), fontSize: 12 }}>Baseline</div>
         </div>
         <div style={{ border: '1px solid var(--border)', borderRadius: 12, padding: 14, background: 'var(--surface-2)' }}>
@@ -1210,22 +1288,22 @@ function ExitProfileComparisonPanel({ comparison, theme }) {
         </div>
         <div style={{ border: '1px solid var(--border)', borderRadius: 12, padding: 14, background: 'var(--surface-2)' }}>
           <div style={{ ...mutedTextStyle(theme), fontSize: 11, textTransform: 'uppercase', letterSpacing: '0.08em' }}>Winrate</div>
-          <div style={{ marginTop: 6, fontSize: 20, fontWeight: 900, color: 'var(--text)' }}>{previewValue(baseline.winrate)}%</div>
+          <div style={{ marginTop: 6, fontSize: 20, fontWeight: 900, color: 'var(--text)' }}>{previewPercent(baseline.winrate)}</div>
           <div style={{ marginTop: 4, ...mutedTextStyle(theme), fontSize: 12 }}>Baseline</div>
         </div>
         <div style={{ border: '1px solid var(--border)', borderRadius: 12, padding: 14, background: 'var(--surface-2)' }}>
           <div style={{ ...mutedTextStyle(theme), fontSize: 11, textTransform: 'uppercase', letterSpacing: '0.08em' }}>Median PnL</div>
-          <div style={{ marginTop: 6, fontSize: 20, fontWeight: 900, color: 'var(--text)' }}>{previewValue(baseline.median_pnl_pct)}%</div>
+          <div style={{ marginTop: 6, fontSize: 20, fontWeight: 900, color: 'var(--text)' }}>{previewPercent(baseline.median_pnl_pct)}</div>
           <div style={{ marginTop: 4, ...mutedTextStyle(theme), fontSize: 12 }}>Baseline</div>
         </div>
         <div style={{ border: '1px solid var(--border)', borderRadius: 12, padding: 14, background: 'var(--surface-2)' }}>
           <div style={{ ...mutedTextStyle(theme), fontSize: 11, textTransform: 'uppercase', letterSpacing: '0.08em' }}>Avg PnL</div>
-          <div style={{ marginTop: 6, fontSize: 20, fontWeight: 900, color: 'var(--text)' }}>{previewValue(baseline.avg_pnl_pct)}%</div>
+          <div style={{ marginTop: 6, fontSize: 20, fontWeight: 900, color: 'var(--text)' }}>{previewPercent(baseline.avg_pnl_pct)}</div>
           <div style={{ marginTop: 4, ...mutedTextStyle(theme), fontSize: 12 }}>Baseline</div>
         </div>
         <div style={{ border: '1px solid var(--border)', borderRadius: 12, padding: 14, background: 'var(--surface-2)' }}>
           <div style={{ ...mutedTextStyle(theme), fontSize: 11, textTransform: 'uppercase', letterSpacing: '0.08em' }}>Max adverse</div>
-          <div style={{ marginTop: 6, fontSize: 20, fontWeight: 900, color: 'var(--text)' }}>{previewValue(baseline.max_adverse_excursion_pct)}%</div>
+          <div style={{ marginTop: 6, fontSize: 20, fontWeight: 900, color: 'var(--text)' }}>{previewPercent(baseline.max_adverse_excursion_pct)}</div>
           <div style={{ marginTop: 4, ...mutedTextStyle(theme), fontSize: 12 }}>Baseline</div>
         </div>
       </div>
@@ -1241,12 +1319,12 @@ function ExitProfileComparisonPanel({ comparison, theme }) {
           const risky = profile.recommendation === 'Lovande men högre risk';
           const tone = profile.degraded ? 'warning' : better ? 'success' : worse ? 'danger' : risky ? 'warning' : 'neutral';
           const counts = [
-            `target ${previewValue(profile.target_hit_count, 0)}`,
-            `stop ${previewValue(profile.stop_hit_count, 0)}`,
-            `trailing ${previewValue(profile.trailing_stop_count, 0)}`,
-            `break-even ${previewValue(profile.break_even_count, 0)}`,
-            `momentum ${previewValue(profile.momentum_fade_count, 0)}`,
-            `timeout ${previewValue(profile.timeout_count, 0)}`,
+            `target ${previewValue(profile.target_hit_count, EMPTY_VALUE)}`,
+            `stop ${previewValue(profile.stop_hit_count, EMPTY_VALUE)}`,
+            `trailing ${previewValue(profile.trailing_stop_count, EMPTY_VALUE)}`,
+            `break-even ${previewValue(profile.break_even_count, EMPTY_VALUE)}`,
+            `momentum ${previewValue(profile.momentum_fade_count, EMPTY_VALUE)}`,
+            `timeout ${previewValue(profile.timeout_count, EMPTY_VALUE)}`,
           ].join(' · ');
           const statusText = profile.degraded ? `degraded${profile.degraded_reason ? `: ${profile.degraded_reason}` : ''}` : profile.data_status || 'ok';
           const deltas = profile.delta_vs_baseline || {};
@@ -1265,21 +1343,21 @@ function ExitProfileComparisonPanel({ comparison, theme }) {
               </div>
 
               <div style={{ marginTop: 12, display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(170px, 1fr))', gap: 10 }}>
-                <MetricCard label="Trades" value={previewValue(profile.simulated_trades, 0)} tone="neutral" note={`Skippade: ${previewValue(profile.trades_skipped, 0)}`} />
+                <MetricCard label="Trades" value={previewValue(profile.simulated_trades, EMPTY_VALUE)} tone="neutral" note={`Skippade: ${previewValue(profile.trades_skipped, EMPTY_VALUE)}`} />
                 <MetricCard label="Median duration" value={previewValue(profile.median_duration_label, '–')} tone="neutral" note={profile.degraded ? 'degraded' : null} />
-                <MetricCard label="Winrate" value={`${previewValue(profile.winrate, 2)}%`} tone="neutral" note={`Δ ${previewNumber(deltas.winrate, 2)} pp`} />
-                <MetricCard label="Median PnL" value={`${previewValue(profile.median_pnl_pct, 4)}%`} tone="neutral" note={`Δ ${previewNumber(deltas.median_pnl_pct, 4)}%`} />
-                <MetricCard label="Avg PnL" value={`${previewValue(profile.avg_pnl_pct, 4)}%`} tone="neutral" note={`Δ ${previewNumber(deltas.avg_pnl_pct, 4)}%`} />
-                <MetricCard label="Max adverse" value={`${previewValue(profile.max_adverse_excursion_pct, 4)}%`} tone="neutral" note={`Baseline ${previewValue(baseline.max_adverse_excursion_pct, 4)}%`} />
+                <MetricCard label="Winrate" value={previewPercent(profile.winrate)} tone="neutral" note={`Δ ${previewNumber(deltas.winrate, 2)} pp`} />
+                <MetricCard label="Median PnL" value={previewPercent(profile.median_pnl_pct)} tone="neutral" note={`Δ ${previewNumber(deltas.median_pnl_pct, 4)}%`} />
+                <MetricCard label="Avg PnL" value={previewPercent(profile.avg_pnl_pct)} tone="neutral" note={`Δ ${previewNumber(deltas.avg_pnl_pct, 4)}%`} />
+                <MetricCard label="Max adverse" value={previewPercent(profile.max_adverse_excursion_pct)} tone="neutral" note={`Baseline ${previewPercent(baseline.max_adverse_excursion_pct)}`} />
               </div>
 
               <div style={{ marginTop: 10, display: 'flex', flexWrap: 'wrap', gap: 8 }}>
-                <span style={statusPillStyle('neutral', theme)}>target_hit {previewValue(profile.target_hit_count, 0)}</span>
-                <span style={statusPillStyle('neutral', theme)}>stop_hit {previewValue(profile.stop_hit_count, 0)}</span>
-                <span style={statusPillStyle('neutral', theme)}>trailing_stop {previewValue(profile.trailing_stop_count, 0)}</span>
-                <span style={statusPillStyle('neutral', theme)}>break_even {previewValue(profile.break_even_count, 0)}</span>
-                <span style={statusPillStyle('neutral', theme)}>momentum_fade {previewValue(profile.momentum_fade_count, 0)}</span>
-                <span style={statusPillStyle('neutral', theme)}>timeout {previewValue(profile.timeout_count, 0)}</span>
+                <span style={statusPillStyle('neutral', theme)}>target_hit {previewValue(profile.target_hit_count, EMPTY_VALUE)}</span>
+                <span style={statusPillStyle('neutral', theme)}>stop_hit {previewValue(profile.stop_hit_count, EMPTY_VALUE)}</span>
+                <span style={statusPillStyle('neutral', theme)}>trailing_stop {previewValue(profile.trailing_stop_count, EMPTY_VALUE)}</span>
+                <span style={statusPillStyle('neutral', theme)}>break_even {previewValue(profile.break_even_count, EMPTY_VALUE)}</span>
+                <span style={statusPillStyle('neutral', theme)}>momentum_fade {previewValue(profile.momentum_fade_count, EMPTY_VALUE)}</span>
+                <span style={statusPillStyle('neutral', theme)}>timeout {previewValue(profile.timeout_count, EMPTY_VALUE)}</span>
               </div>
 
               <div style={{ marginTop: 10, color: 'var(--text)', fontSize: 12, lineHeight: 1.6 }}>
@@ -1338,9 +1416,9 @@ function LossReviewQueuePanel({ review, loading, error, theme, previewState, onP
           </div>
         </div>
         <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
-          <span style={statusPillStyle('neutral', theme)}>mode={previewValue(safety.mode || 'paper_only')}</span>
-          <span style={statusPillStyle('danger', theme)}>{previewValue(summary.totalLosses, 0)} losses</span>
-          <span style={statusPillStyle('info', theme)}>{previewValue(summary.topIssue, 'unknown') || 'unknown'}</span>
+          <span style={statusPillStyle('neutral', theme)}>mode={previewValue(safety.mode, EMPTY_VALUE)}</span>
+          <span style={statusPillStyle('danger', theme)}>{displayNumberValue(summary.totalLosses)} losses</span>
+          <span style={statusPillStyle('info', theme)}>{previewValue(summary.topIssue, EMPTY_VALUE)}</span>
         </div>
       </div>
 
@@ -1350,15 +1428,15 @@ function LossReviewQueuePanel({ review, loading, error, theme, previewState, onP
 
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(170px, 1fr))', gap: 10, marginTop: 14 }}>
         {[
-          ['Closed', summary.totalClosed ?? 0],
-          ['Losses', summary.totalLosses ?? 0],
-          ['Reviewed', summary.reviewedLosses ?? 0],
-          ['Top issue', summary.topIssue || 'unknown'],
-          ['Top strategy', summary.topStrategyIssue || 'unknown'],
+          ['Closed', displayNumberValue(summary.totalClosed)],
+          ['Losses', displayNumberValue(summary.totalLosses)],
+          ['Reviewed', displayNumberValue(summary.reviewedLosses)],
+          ['Top issue', previewValue(summary.topIssue, EMPTY_VALUE)],
+          ['Top strategy', previewValue(summary.topStrategyIssue, EMPTY_VALUE)],
         ].map(([label, value]) => (
           <div key={label} style={{ border: '1px solid var(--border)', borderRadius: 12, padding: 14, background: 'var(--surface-2)' }}>
             <div style={{ ...mutedTextStyle(theme), fontSize: 11, textTransform: 'uppercase', letterSpacing: '0.08em' }}>{label}</div>
-            <div style={{ fontSize: 18, fontWeight: 900, marginTop: 6, color: 'var(--text)' }}>{previewValue(value, 'unknown')}</div>
+            <div style={{ fontSize: 18, fontWeight: 900, marginTop: 6, color: 'var(--text)' }}>{previewValue(value, EMPTY_VALUE)}</div>
           </div>
         ))}
       </div>
@@ -1387,7 +1465,7 @@ function LossReviewQueuePanel({ review, loading, error, theme, previewState, onP
                     </div>
                   </div>
                   <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, alignItems: 'center' }}>
-                    <span style={statusPillStyle(tone, theme)}>{previewValue(group.count, 0)} lossar</span>
+                    <span style={statusPillStyle(tone, theme)}>{appendKnownLabel(previewValue(group.count, EMPTY_VALUE), 'lossar')}</span>
                     <span style={statusPillStyle('info', theme)}>Snitt PnL {group.avgPnlPct == null ? '–' : `${group.avgPnlPct >= 0 ? '+' : ''}${group.avgPnlPct.toFixed(2)}%`}</span>
                     <button
                       type="button"
@@ -1583,7 +1661,7 @@ function RiskPauseSummaryPanel({ riskPauseSummary, gateStatus, runtime, onRefres
   const canResume = active && !reviewActive;
   const reasonText = summary.pause_reason || (Array.isArray(summary.pause_reasons) ? summary.pause_reasons.join(', ') : null) || '–';
   const latestEventText = latestEvent?.timestamp
-    ? `${fmtTime(latestEvent.timestamp)} · ${latestEvent.symbol || '–'} · ${latestEvent.strategy_id || latestEvent.strategy_name || '–'}`
+    ? `${fmtTime(latestEvent.timestamp)} · ${latestEvent.symbol || '–'} · ${paperStrategyLabel(latestEvent)}`
     : '–';
   const consecutiveText = `${summary.consecutive_losses ?? '–'} / ${summary.max_consecutive_losses ?? '–'}`;
   const latestAuditEvent = riskReview.latestAuditEvent || null;
@@ -1701,7 +1779,7 @@ function RiskPauseSummaryPanel({ riskPauseSummary, gateStatus, runtime, onRefres
         />
         <MetricCard
           label="TRADE_OPENED 60m"
-          value={last60m.tradesOpenedLast60m ?? 0}
+          value={displayNumberValue(last60m.tradesOpenedLast60m)}
           tone="neutral"
         />
       </div>
@@ -1771,18 +1849,20 @@ function RiskPauseSummaryPanel({ riskPauseSummary, gateStatus, runtime, onRefres
 function WhyNoTradesPanel({ runtime, allowlist, riskPauseSummary, gateStatus, onRefresh }) {
   const theme = useThemeMode();
   const summary = runtime?.summary || {};
-  const open = Number(summary.openCount) || 0;
-  const closed = Number(summary.closedCount) || 0;
-  const blocked = Number(summary.blockedCount) || 0;
+  const open = backendNumber(summary, 'openCount');
+  const closed = backendNumber(summary, 'closedCount');
+  const blocked = backendNumber(summary, 'blockedCount');
   const blockedCandidates = Array.isArray(runtime?.blockedCandidates) ? runtime.blockedCandidates : [];
   const approved = allowlist?.totalApproved;
   const ready = allowlist?.readyForPaperRuntime;
-  const runtimeActive = runtime?.safety?.mode === 'paper_only' || runtime?.status === 'ok';
+  const runtimeActive = runtime ? (runtime?.safety?.mode === 'paper_only' || runtime?.status === 'ok') : null;
   const topReason = mostCommonReason(blockedCandidates);
   const reasonIsAllowlist = !!(topReason && /allowlist/i.test(topReason.reason));
 
   let conclusion;
-  if (open > 0) {
+  if (!runtime) {
+    conclusion = 'Runtime-snapshot saknas ännu. Frontend kan inte avgöra trade-läget förrän backend levererar paper runtime.';
+  } else if (open > 0) {
     conclusion = `Det finns ${open} öppna paper trades just nu.`;
   } else if (closed > 0) {
     conclusion = `Inga öppna paper trades just nu, men ${closed} stängda finns i historiken.`;
@@ -1800,13 +1880,13 @@ function WhyNoTradesPanel({ runtime, allowlist, riskPauseSummary, gateStatus, on
       <div style={{ fontSize: 12, ...mutedTextStyle(theme), marginBottom: 12 }}>Read-only diagnos. Inga riktiga order, inga actions härifrån.</div>
       <RiskPauseSummaryPanel riskPauseSummary={riskPauseSummary} gateStatus={gateStatus} runtime={runtime} onRefresh={onRefresh} />
       <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10 }}>
-        <MetricCard label="Runtime" value={runtimeActive ? 'Aktiv' : 'Avvaktar'} tone={runtimeActive ? 'good' : 'warn'} note="paper_only, read-only" />
-        <MetricCard label="Öppna trades" value={open} tone="neutral" />
-        <MetricCard label="Stängda trades" value={closed} tone="neutral" />
-        <MetricCard label="Blockerade events" value={blocked} tone={blocked > 0 ? 'warn' : 'neutral'} />
-        <MetricCard label="Godkända strategier" value={approved == null ? '–' : approved} tone="neutral" note={ready == null ? null : `${ready} redo för runtime`} />
+        <MetricCard label="Runtime" value={runtimeActive == null ? WAITING_RUNTIME : (runtimeActive ? 'Aktiv' : 'Avvaktar')} tone={runtimeActive ? 'good' : 'warn'} note="paper_only, read-only" />
+        <MetricCard label="Öppna trades" value={displayBackendNumber(summary, 'openCount', !runtime)} tone="neutral" />
+        <MetricCard label="Stängda trades" value={displayBackendNumber(summary, 'closedCount', !runtime)} tone="neutral" />
+        <MetricCard label="Blockerade events" value={displayBackendNumber(summary, 'blockedCount', !runtime)} tone={blocked > 0 ? 'warn' : 'neutral'} />
+        <MetricCard label="Godkända strategier" value={approved == null ? '–' : formatNumber(approved)} tone="neutral" note={ready == null ? null : `${formatNumber(ready)} redo för runtime`} />
         <MetricCard label="Senaste event" value={fmtTime(summary.latestEventAt)} tone="neutral" />
-        <MetricCard label="Vanligaste orsak" value={topReason ? `${topReason.count}×` : '–'} tone={blocked > 0 ? 'warn' : 'neutral'} note={topReason ? topReason.reason : 'Ingen blockering i fönstret'} />
+        <MetricCard label="Vanligaste orsak" value={topReason ? `${formatNumber(topReason.count)}×` : '–'} tone={blocked > 0 ? 'warn' : 'neutral'} note={topReason ? topReason.reason : 'Ingen blockering i fönstret'} />
       </div>
       <div style={{ ...sectionStyle(), marginTop: 12, marginBottom: 0, background: 'var(--surface-2)' }}>
         <strong>Slutsats:</strong> {conclusion}
@@ -1839,6 +1919,22 @@ function bestStrategyFromPerformance(performance) {
   const rows = Array.isArray(performance?.strategies) ? performance.strategies : [];
   const ranked = rows.filter((row) => Number.isFinite(Number(row?.netPnlPct)) || Number.isFinite(Number(row?.winRatePct)));
   if (!ranked.length) return { best: null, worst: null };
+  const compareBackendNumberDesc = (left, right) => {
+    const ln = numberOrNull(left);
+    const rn = numberOrNull(right);
+    if (ln == null && rn == null) return 0;
+    if (ln == null) return 1;
+    if (rn == null) return -1;
+    return rn - ln;
+  };
+  const compareBackendNumberAsc = (left, right) => {
+    const ln = numberOrNull(left);
+    const rn = numberOrNull(right);
+    if (ln == null && rn == null) return 0;
+    if (ln == null) return 1;
+    if (rn == null) return -1;
+    return ln - rn;
+  };
   const best = ranked.slice().sort((a, b) => {
     const an = Number(a?.netPnlPct);
     const bn = Number(b?.netPnlPct);
@@ -1846,7 +1942,7 @@ function bestStrategyFromPerformance(performance) {
     const aw = Number(a?.winRatePct);
     const bw = Number(b?.winRatePct);
     if (Number.isFinite(bw) && Number.isFinite(aw) && bw !== aw) return bw - aw;
-    return Number(b?.closedTrades || 0) - Number(a?.closedTrades || 0);
+    return compareBackendNumberDesc(a?.closedTrades, b?.closedTrades);
   })[0] || null;
   const worst = ranked.slice().sort((a, b) => {
     const an = Number(a?.netPnlPct);
@@ -1855,7 +1951,7 @@ function bestStrategyFromPerformance(performance) {
     const aw = Number(a?.winRatePct);
     const bw = Number(b?.winRatePct);
     if (Number.isFinite(bw) && Number.isFinite(aw) && bw !== aw) return aw - bw;
-    return Number(a?.closedTrades || 0) - Number(b?.closedTrades || 0);
+    return compareBackendNumberAsc(a?.closedTrades, b?.closedTrades);
   })[0] || null;
   return { best, worst };
 }
@@ -1865,26 +1961,43 @@ function PaperControlRoomPanel({ runtime, safetyStatus, gateStatus, approvalPrev
   const summary = runtime?.summary || {};
   const strategyPerformance = runtime?.strategyPerformance || {};
   const perfSummary = strategyPerformance?.summary || {};
-  const dailySelectionPreview = runtime?.dailySelectionPreview || {};
+  const hasDailySelectionPreview = runtime?.dailySelectionPreview && typeof runtime.dailySelectionPreview === 'object';
+  const dailySelectionPreview = hasDailySelectionPreview ? runtime.dailySelectionPreview : {};
   const closedTrades = Array.isArray(runtime?.closedTrades) ? runtime.closedTrades : [];
-  const recentEvents = Array.isArray(runtime?.recentEvents) ? runtime.recentEvents : [];
-  const blockedCandidates = Array.isArray(runtime?.blockedCandidates) ? runtime.blockedCandidates : [];
+  const hasRecentEventsSnapshot = Array.isArray(runtime?.recentEvents);
+  const recentEvents = hasRecentEventsSnapshot ? runtime.recentEvents : [];
+  const hasBlockedCandidatesSnapshot = Array.isArray(runtime?.blockedCandidates);
+  const blockedCandidates = hasBlockedCandidatesSnapshot ? runtime.blockedCandidates : [];
+  const hasBlockerSnapshot = hasRecentEventsSnapshot || hasBlockedCandidatesSnapshot;
   const { best, worst } = bestStrategyFromPerformance(strategyPerformance);
   const latestTrade = closedTrades[0] || null;
   const latestEvent = recentEvents[0] || null;
-  const approvedStrategyIds = Array.isArray(allowlist?.approvedStrategyIds) && allowlist.approvedStrategyIds.length
+  const hasAllowlistApprovedIds = Array.isArray(allowlist?.approvedStrategyIds);
+  const hasApprovalPreviewApprovedIds = Array.isArray(approvalPreview?.approvedStrategyIds);
+  const approvedStrategyIds = hasAllowlistApprovedIds
     ? allowlist.approvedStrategyIds
-    : Array.isArray(approvalPreview?.approvedStrategyIds)
+    : hasApprovalPreviewApprovedIds
       ? approvalPreview.approvedStrategyIds
       : [];
-  const tradableStrategyIds = Array.isArray(allowlist?.tradableStrategyIds) ? allowlist.tradableStrategyIds : [];
-  const previewCandidates = Array.isArray(dailySelectionPreview?.candidates) ? dailySelectionPreview.candidates : [];
+  const hasTradableStrategyIds = Array.isArray(allowlist?.tradableStrategyIds);
+  const tradableStrategyIds = hasTradableStrategyIds ? allowlist.tradableStrategyIds : [];
+  const hasPreviewCandidates = Array.isArray(dailySelectionPreview?.candidates);
+  const previewCandidates = hasPreviewCandidates ? dailySelectionPreview.candidates : [];
+  const previewCandidateCount = displayKnownArrayCount(dailySelectionPreview?.candidates);
+  const approvedStrategyCount = hasValue(allowlist?.totalApproved)
+    ? formatNumber(allowlist.totalApproved)
+    : (hasAllowlistApprovedIds || hasApprovalPreviewApprovedIds ? formatNumber(approvedStrategyIds.length) : EMPTY_VALUE);
+  const tradableStrategyCount = hasTradableStrategyIds ? formatNumber(tradableStrategyIds.length) : EMPTY_VALUE;
+  const blockedCandidateCount = hasBlockedCandidatesSnapshot ? formatNumber(blockedCandidates.length) : EMPTY_VALUE;
   const gatePipeline = gateStatus?.pipeline || {};
   const nearMissLearning = gateStatus?.nearMissLearning || {};
   const safety = safetyStatus?.status && typeof safetyStatus.status === 'object'
     ? safetyStatus.status
     : (runtime?.safety || {});
   const blockers = useMemo(() => {
+    if (!hasBlockerSnapshot) {
+      return { exactTop: [], categories: [], available: false };
+    }
     const blockedEvents = recentEvents.filter((row) => {
       const type = String(row?.type || '').toUpperCase();
       const status = String(row?.status || '').toLowerCase();
@@ -1912,17 +2025,20 @@ function PaperControlRoomPanel({ runtime, safetyStatus, gateStatus, approvalPrev
     return {
       exactTop: counts.slice(0, 8),
       categories: categorized,
+      available: true,
     };
-  }, [blockedCandidates, recentEvents]);
+  }, [blockedCandidates, recentEvents, hasBlockerSnapshot]);
   const latestTradeLabel = latestTrade
-    ? `${latestTrade.symbol || '–'} · ${latestTrade.strategy_id || 'unknown'} · ${latestTrade.result || '–'}`
+    ? `${latestTrade.symbol || '–'} · ${paperStrategyLabel(latestTrade, 'unknown')} · ${latestTrade.result || '–'}`
     : '–';
   const latestEventLabel = latestEvent
     ? `${latestEvent.type || '–'} · ${latestEvent.symbol || '–'} · ${latestEvent.reasonSv || latestEvent.blockedReason || latestEvent.result || '–'}`
     : '–';
-  const closedCount = Number(summary.closedCount || 0);
+  const closedCount = backendNumber(summary, 'closedCount');
   const staleHours = summary.latestEventAt ? (Date.now() - new Date(summary.latestEventAt).getTime()) / 36e5 : null;
-  const sampleNote = closedCount < 30
+  const sampleNote = closedCount == null
+    ? 'Learning-data saknas i runtime-snapshoten.'
+    : closedCount < 30
     ? `Learning-data är fortfarande liten (${closedCount} closed trades).`
     : 'Learning-data är tillräcklig för att ge stabil riktning.';
   const freshnessNote = Number.isFinite(staleHours)
@@ -1930,7 +2046,11 @@ function PaperControlRoomPanel({ runtime, safetyStatus, gateStatus, approvalPrev
       ? 'Runtime-data är äldre än 6 timmar.'
       : 'Runtime-data är färsk.')
     : 'Runtime-datafärskhet kan inte bedömas ännu.';
-  const recommendation = blockers.categories.length
+  const recommendation = !runtime
+    ? 'Runtime-snapshot saknas ännu. Frontend väntar på backend innan den kan beskriva blockeringsläget.'
+    : !blockers.available
+    ? 'Blockerdata saknas i runtime-snapshoten. Frontend visar inte noll blockers förrän backend levererar blockeringsfältet.'
+    : blockers.categories.length
     ? `Systemet är säkert. Nya paper trades stoppas främst av ${blockers.categories.slice(0, 4).map((row) => row.label).join(', ')}. Nästa tekniska steg är att jämföra runtime, gate-status och approval-preview i Paper Trading. Ingen live trading-risk finns eftersom live trading är avstängt.`
     : 'Systemet är säkert och paper-only. När marknad och gate öppnar ska nya paper-trades kunna passera om kandidat, mapping och risk tillåter det.';
 
@@ -1963,26 +2083,26 @@ function PaperControlRoomPanel({ runtime, safetyStatus, gateStatus, approvalPrev
           <div style={{ ...mutedTextStyle(theme), fontSize: 11, textTransform: 'uppercase', letterSpacing: '0.08em' }}>Safety</div>
           <div style={{ marginTop: 8, fontWeight: 900, color: 'var(--text)' }}>Paper only</div>
           <div style={{ marginTop: 6, fontSize: 12, lineHeight: 1.5, color: 'var(--text)' }}>
-            actions_allowed={String(safety?.actions_allowed === true)}<br />
-            can_place_orders={String(safety?.can_place_orders === true)}<br />
-            live_trading_enabled={String(safety?.live_trading_enabled === true)}<br />
-            broker_enabled={String(safety?.broker_enabled === true)}
+            actions_allowed={displayBooleanFlag(safety?.actions_allowed)}<br />
+            can_place_orders={displayBooleanFlag(safety?.can_place_orders)}<br />
+            live_trading_enabled={displayBooleanFlag(safety?.live_trading_enabled)}<br />
+            broker_enabled={displayBooleanFlag(safety?.broker_enabled)}
           </div>
         </div>
         <div style={{ border: '1px solid var(--border)', borderRadius: 14, padding: 14, background: 'var(--surface)' }}>
           <div style={{ ...mutedTextStyle(theme), fontSize: 11, textTransform: 'uppercase', letterSpacing: '0.08em' }}>Runtime</div>
-          <div style={{ marginTop: 8, fontWeight: 900, color: 'var(--text)' }}>{summary.openCount ?? 0} open · {summary.closedCount ?? 0} closed</div>
+          <div style={{ marginTop: 8, fontWeight: 900, color: 'var(--text)' }}>{displayBackendNumber(summary, 'openCount', !runtime)} open · {displayBackendNumber(summary, 'closedCount', !runtime)} closed</div>
           <div style={{ marginTop: 6, fontSize: 12, lineHeight: 1.5, color: 'var(--text)' }}>
-            blocked={summary.blockedCount ?? 0}<br />
+            blocked={displayBackendNumber(summary, 'blockedCount', !runtime)}<br />
             latestEventAt={fmtTime(summary.latestEventAt)}
           </div>
         </div>
         <div style={{ border: '1px solid var(--border)', borderRadius: 14, padding: 14, background: 'var(--surface)' }}>
           <div style={{ ...mutedTextStyle(theme), fontSize: 11, textTransform: 'uppercase', letterSpacing: '0.08em' }}>Top candidates</div>
-          <div style={{ marginTop: 8, fontWeight: 900, color: 'var(--text)' }}>{previewCandidates.length} preview</div>
+          <div style={{ marginTop: 8, fontWeight: 900, color: 'var(--text)' }}>{appendKnownLabel(previewCandidateCount, 'preview')}</div>
           <div style={{ marginTop: 6, fontSize: 12, lineHeight: 1.5, color: 'var(--text)' }}>
-            selected={dailySelectionPreview?.selectedCount ?? '–'} / {dailySelectionPreview?.selectionCount ?? 3}<br />
-            scanned={dailySelectionPreview?.totalScanned ?? '–'}
+            selected={hasValue(dailySelectionPreview?.selectedCount) ? formatNumber(dailySelectionPreview.selectedCount) : '–'} / {hasValue(dailySelectionPreview?.selectionCount) ? formatNumber(dailySelectionPreview.selectionCount) : '–'}<br />
+            scanned={hasValue(dailySelectionPreview?.totalScanned) ? formatNumber(dailySelectionPreview.totalScanned) : '–'}
           </div>
         </div>
         <div style={{ border: '1px solid var(--border)', borderRadius: 14, padding: 14, background: 'var(--surface)' }}>
@@ -2004,7 +2124,7 @@ function PaperControlRoomPanel({ runtime, safetyStatus, gateStatus, approvalPrev
         </div>
         <div style={{ border: '1px solid var(--border)', borderRadius: 14, padding: 14, background: 'var(--surface)' }}>
           <div style={{ ...mutedTextStyle(theme), fontSize: 11, textTransform: 'uppercase', letterSpacing: '0.08em' }}>Approved / tradable</div>
-          <div style={{ marginTop: 8, fontWeight: 900, color: 'var(--text)' }}>{approvedStrategyIds.length} approved · {tradableStrategyIds.length} tradable</div>
+          <div style={{ marginTop: 8, fontWeight: 900, color: 'var(--text)' }}>{approvedStrategyCount} approved · {tradableStrategyCount} tradable</div>
           <div style={{ marginTop: 6, fontSize: 12, lineHeight: 1.5, color: 'var(--text)' }}>
             preview accepted={approvalPreview?.accepted ?? '–'} · blocked={approvalPreview?.blocked ?? '–'}
           </div>
@@ -2018,13 +2138,13 @@ function PaperControlRoomPanel({ runtime, safetyStatus, gateStatus, approvalPrev
           <div style={{ ...mutedTextStyle(theme), fontSize: 11, textTransform: 'uppercase', letterSpacing: '0.08em' }}>Runtime summary</div>
           <div style={{ marginTop: 8, fontWeight: 900, color: 'var(--text)' }}>{runtime?.status || '–'}</div>
           <div style={{ marginTop: 6, fontSize: 12, lineHeight: 1.5, color: 'var(--text)' }}>
-            allowlist={allowlist?.totalApproved ?? approvedStrategyIds.length}<br />
-            blockers={blockedCandidates.length}
+            allowlist={approvedStrategyCount}<br />
+            blockers={blockedCandidateCount}
           </div>
         </div>
         <div style={{ border: '1px solid var(--border)', borderRadius: 14, padding: 14, background: 'var(--surface)' }}>
           <div style={{ ...mutedTextStyle(theme), fontSize: 11, textTransform: 'uppercase', letterSpacing: '0.08em' }}>Learning</div>
-          <div style={{ marginTop: 8, fontWeight: 900, color: 'var(--text)' }}>{previewValue(perfSummary.winRatePct, '–')}% win rate</div>
+          <div style={{ marginTop: 8, fontWeight: 900, color: 'var(--text)' }}>{appendKnownLabel(previewPercent(perfSummary.winRatePct), 'win rate')}</div>
           <div style={{ marginTop: 6, fontSize: 12, lineHeight: 1.5, color: 'var(--text)' }}>
             net pnl={previewNumber(perfSummary.netPnlPct, 2)}<br />
             avg pnl={previewNumber(perfSummary.avgTradePct ?? perfSummary.avgPnlPct, 2)}
@@ -2036,7 +2156,9 @@ function PaperControlRoomPanel({ runtime, safetyStatus, gateStatus, approvalPrev
         <div style={{ border: '1px solid var(--border)', borderRadius: 14, padding: 14, background: 'var(--surface-2)' }}>
           <div style={{ fontWeight: 900, color: 'var(--text)' }}>Varför öppnas inga nya trades?</div>
           <div style={{ marginTop: 8, display: 'grid', gap: 8 }}>
-            {blockers.categories.length ? blockers.categories.slice(0, 6).map((row) => (
+            {!blockers.available ? (
+              <div style={{ fontSize: 12, color: 'var(--muted)' }}>Blockerdata saknas i runtime-snapshoten.</div>
+            ) : blockers.categories.length ? blockers.categories.slice(0, 6).map((row) => (
               <div key={row.key} style={{ display: 'flex', justifyContent: 'space-between', gap: 10, fontSize: 12, color: 'var(--text)' }}>
                 <span>{row.label}</span>
                 <strong>{row.count}</strong>
@@ -2049,7 +2171,9 @@ function PaperControlRoomPanel({ runtime, safetyStatus, gateStatus, approvalPrev
         <div style={{ border: '1px solid var(--border)', borderRadius: 14, padding: 14, background: 'var(--surface-2)' }}>
           <div style={{ fontWeight: 900, color: 'var(--text)' }}>Exakta toppblockers</div>
           <div style={{ marginTop: 8, display: 'grid', gap: 8 }}>
-            {blockers.exactTop.length ? blockers.exactTop.slice(0, 10).map((row) => (
+            {!blockers.available ? (
+              <div style={{ fontSize: 12, color: 'var(--muted)' }}>Blockerdata saknas i runtime-snapshoten.</div>
+            ) : blockers.exactTop.length ? blockers.exactTop.slice(0, 10).map((row) => (
               <div key={row.reason} style={{ fontSize: 12, color: 'var(--text)', lineHeight: 1.45 }}>
                 <strong>{row.count}x</strong> {row.reason}
               </div>
@@ -2077,13 +2201,13 @@ function PaperControlRoomPanel({ runtime, safetyStatus, gateStatus, approvalPrev
           <div style={{ marginTop: 8, fontSize: 12, lineHeight: 1.55, color: 'var(--text)' }}>
             {best ? (
               <>
-                Bäst: <strong>{best.strategy_name || best.strategy_id || '–'}</strong> ({previewValue(best.winRatePct)}% win rate, {previewNumber(best.netPnlPct, 2)} net pnl)
+                Bäst: <strong>{paperStrategyLabel(best)}</strong> ({appendKnownLabel(previewPercent(best.winRatePct), 'win rate')}, {previewNumber(best.netPnlPct, 2)} net pnl)
                 <br />
               </>
             ) : null}
             {worst ? (
               <>
-                Svagast: <strong>{worst.strategy_name || worst.strategy_id || '–'}</strong> ({previewValue(worst.winRatePct)}% win rate, {previewNumber(worst.netPnlPct, 2)} net pnl)
+                Svagast: <strong>{paperStrategyLabel(worst)}</strong> ({appendKnownLabel(previewPercent(worst.winRatePct), 'win rate')}, {previewNumber(worst.netPnlPct, 2)} net pnl)
                 <br />
               </>
             ) : null}
@@ -2101,7 +2225,15 @@ function PaperControlRoomPanel({ runtime, safetyStatus, gateStatus, approvalPrev
   );
 }
 
-function num(v) { const n = Number(v); return Number.isFinite(n) ? n : 0; }
+function numericValue(v) {
+  return numberOrNull(v);
+}
+
+function sumBackendNumbers(...values) {
+  const numbers = values.map(numericValue).filter((value) => value != null);
+  if (!numbers.length) return null;
+  return numbers.reduce((sum, value) => sum + value, 0);
+}
 
 function allowlistTone(status) {
   const key = String(status || 'pending').toLowerCase();
@@ -2250,11 +2382,11 @@ function PaperStrategyAdminPanel({ refreshKey, onRefresh }) {
       </div>
 
       <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10, marginTop: 12 }}>
-        <MetricCard label="Approved" value={summary.approved ?? 0} tone="good" />
-        <MetricCard label="Tradable" value={summary.tradable ?? 0} tone={(summary.tradable ?? 0) > 0 ? 'good' : 'warn'} note="approved + selected + READY" />
-        <MetricCard label="Removed" value={summary.removed ?? 0} tone={(summary.removed ?? 0) > 0 ? 'warn' : 'neutral'} />
-        <MetricCard label="READY" value={summary.ready ?? 0} tone="neutral" />
-        <MetricCard label="Families" value={summary.families ?? 0} tone="neutral" note="max en tradable per familj" />
+        <MetricCard label="Approved" value={displayNumberValue(summary.approved)} tone="good" />
+        <MetricCard label="Tradable" value={displayNumberValue(summary.tradable)} tone={numberOrNull(summary.tradable) > 0 ? 'good' : 'warn'} note="approved + selected + READY" />
+        <MetricCard label="Removed" value={displayNumberValue(summary.removed)} tone={numberOrNull(summary.removed) > 0 ? 'warn' : 'neutral'} />
+        <MetricCard label="READY" value={displayNumberValue(summary.ready)} tone="neutral" />
+        <MetricCard label="Families" value={displayNumberValue(summary.families)} tone="neutral" note="max en tradable per familj" />
       </div>
 
       {state.error ? (
@@ -2272,8 +2404,8 @@ function PaperStrategyAdminPanel({ refreshKey, onRefresh }) {
       {confirm ? (
         <div style={{ marginTop: 12, border: '1px solid rgba(56,189,248,0.24)', borderRadius: 12, padding: 12, background: 'var(--surface-2)', color: 'var(--text)', fontSize: 13, lineHeight: 1.5 }}>
           {confirm.action === 'approve'
-            ? `Godkänn och välj ${confirm.strategy.displayName || confirm.strategy.strategyId} för familjen ${confirm.strategy.family || 'okänd'}? Andra godkända strategier i samma familj blir kvar som approved men inte tradable.`
-            : `Markera ${confirm.strategy.displayName || confirm.strategy.strategyId} som removed i vanlig Paper Trading? Historik sparas.`}
+            ? `Godkänn och välj ${paperStrategyLabel(confirm.strategy, 'strategin')} för familjen ${confirm.strategy.family || 'okänd'}? Andra godkända strategier i samma familj blir kvar som approved men inte tradable.`
+            : `Markera ${paperStrategyLabel(confirm.strategy, 'strategin')} som removed i vanlig Paper Trading? Historik sparas.`}
           <div style={{ display: 'flex', gap: 8, marginTop: 10 }}>
             <button type="button" style={buttonStyle(confirm.action === 'remove' ? 'danger' : 'success', false)} onClick={runAction}>Bekräfta</button>
             <button type="button" style={buttonStyle('neutral', false)} onClick={() => setConfirm(null)}>Avbryt</button>
@@ -2303,8 +2435,8 @@ function PaperStrategyAdminPanel({ refreshKey, onRefresh }) {
         emptyText={state.loading ? 'Hämtar strategier...' : 'Inga strategier hittades.'}
         rowKey={(row) => row.strategyId}
         columns={[
-          { key: 'strategyId', label: 'Strategy id', render: (row) => <span style={{ fontWeight: 800 }}>{row.strategyId}</span> },
-          { key: 'displayName', label: 'Namn' },
+          { key: 'strategyId', label: 'Strategy id', render: (row) => <span style={{ fontWeight: 800 }}>{paperStrategyModel(row).strategyId || '—'}</span> },
+          { key: 'displayName', label: 'Namn', render: (row) => paperStrategyLabel(row) },
           { key: 'family', label: 'Familj', render: (row) => row.family || '–' },
           {
             key: 'approval',
@@ -2603,15 +2735,18 @@ function PaperAllowlistManager({ runtime, allowlist, refreshKey, onRefresh }) {
   }, [configState.data]);
 
   const safe = approvals?.safety || config?.safety || {};
-  const paperOnly = (safe.mode || 'paper_only') === 'paper_only'
-    && safe.actions_allowed !== true && safe.can_place_orders !== true && safe.live_trading_enabled !== true;
+  const paperOnly = safe.mode === 'paper_only'
+    && safe.actions_allowed === false && safe.can_place_orders === false && safe.live_trading_enabled === false;
 
   const approvedIds = Array.isArray(approvals?.approvedStrategyIds) ? approvals.approvedStrategyIds : [];
-  const maxApproved = num(config?.maxApproved ?? approvals?.maxApproved);
-  const hardMaxApproved = num(config?.hardMaxApproved ?? approvals?.hardMaxApproved) || 10;
-  const minApproved = num(config?.minApproved ?? approvals?.minApproved) || 1;
-  const approvedCount = approvedIds.length;
-  const slotFree = maxApproved > 0 && approvedCount < maxApproved;
+  const maxApproved = numericValue(config?.maxApproved ?? approvals?.maxApproved);
+  const hardMaxApproved = numericValue(config?.hardMaxApproved ?? approvals?.hardMaxApproved);
+  const minApproved = numericValue(config?.minApproved ?? approvals?.minApproved);
+  const approvedCount = approvals && Array.isArray(approvals.approvedStrategyIds) ? approvedIds.length : null;
+  const slotFree = maxApproved != null && approvedCount != null && maxApproved > 0 && approvedCount < maxApproved;
+  const maxApprovedOptions = hardMaxApproved != null && minApproved != null && hardMaxApproved >= minApproved
+    ? Array.from({ length: hardMaxApproved - minApproved + 1 }, (_, index) => index + minApproved)
+    : [];
 
   const strategies = Array.isArray(runtime?.strategies) ? runtime.strategies : [];
   const stratById = new Map(strategies.map((s) => [s.strategy_id, s]));
@@ -2621,11 +2756,12 @@ function PaperAllowlistManager({ runtime, allowlist, refreshKey, onRefresh }) {
   const approvedRows = approvedIds.map((id) => {
     const s = stratById.get(id) || {};
     const a = allowMap.get(id) || {};
+    const strategy = paperStrategyModel({ ...s, ...a, strategyId: id });
     return {
       id,
-      name: a.name || s.strategy_name || id,
-      runtimeReady: a.paperRuntimeReady === true,
-      events: num(s.openCount) + num(s.closedCount) + num(s.blockedCount),
+      name: strategyDisplayName(strategy, id),
+      runtimeReady: a.paperRuntimeReady === true ? true : (a.paperRuntimeReady === false ? false : null),
+      events: sumBackendNumbers(s.openCount, s.closedCount, s.blockedCount),
       latestAt: s.latestEventAt || '',
       allowlistStatus: 'approved',
     };
@@ -2635,19 +2771,21 @@ function PaperAllowlistManager({ runtime, allowlist, refreshKey, onRefresh }) {
     .filter((s) => !approvedIds.includes(s.strategy_id))
     .map((s) => ({
       id: s.strategy_id,
-      name: s.strategy_name || s.strategy_id,
-      blockedCount: num(s.blockedCount),
+      name: paperStrategyLabel(s, s.strategy_id || '—'),
+      blockedCount: numericValue(s.blockedCount),
       latestAt: s.latestEventAt || '',
       reason: s.latestBlockedReason || '',
       allowlistStatus: /max/i.test(s.latestBlockedReason || '') ? 'max_nått' : /allowlist|reject|block/i.test(s.latestBlockedReason || '') ? 'blocked' : 'pending',
     }))
-    .sort((a, b) => b.blockedCount - a.blockedCount);
+    .sort((a, b) => (b.blockedCount ?? -Infinity) - (a.blockedCount ?? -Infinity));
 
   function ask(action, id, name) { setMessage(null); setConfirm({ kind: 'strategy', action, id, name }); }
 
   function askConfigSave() {
     setMessage(null);
-    setConfirm({ kind: 'config', maxApproved: num(draftMaxApproved) });
+    const nextMaxApproved = numericValue(draftMaxApproved);
+    if (nextMaxApproved == null) return;
+    setConfirm({ kind: 'config', maxApproved: nextMaxApproved });
   }
 
   async function runAction() {
@@ -2713,6 +2851,7 @@ function PaperAllowlistManager({ runtime, allowlist, refreshKey, onRefresh }) {
     padding: '6px 10px',
     borderRadius: 8,
   });
+  const maxLimitKnown = maxApproved != null;
 
   return (
     <div className="allowlist-panel" style={sectionStyle()}>
@@ -2722,9 +2861,9 @@ function PaperAllowlistManager({ runtime, allowlist, refreshKey, onRefresh }) {
       </div>
 
       <div className="allowlist-metrics" style={{ display: 'flex', flexWrap: 'wrap', gap: 10, marginBottom: 12 }}>
-        <MetricCard label="Godkända" value={`${approvedCount} / ${maxApproved || '–'}`} tone={slotFree ? 'good' : 'warn'} note={slotFree ? 'Plats finns' : 'Max nått'} />
-        <MetricCard label="Max antal godkända" value={maxApproved || '–'} tone="neutral" note={`Manuell config, min ${minApproved}, max ${hardMaxApproved}`} />
-        <MetricCard label="Säkerhetsläge" value={paperOnly ? 'paper_only' : 'OKÄND'} tone={paperOnly ? 'good' : 'bad'} note="actions_allowed=false" />
+        <MetricCard label="Godkända" value={`${displayNumberValue(approvedCount)} / ${displayNumberValue(maxApproved)}`} tone={slotFree ? 'good' : 'warn'} note={slotFree ? 'Plats finns' : (approvedCount == null || maxApproved == null ? 'Config saknas' : 'Max nått')} />
+        <MetricCard label="Max antal godkända" value={displayNumberValue(maxApproved)} tone="neutral" note={`Manuell config, min ${displayNumberValue(minApproved)}, max ${displayNumberValue(hardMaxApproved)}`} />
+        <MetricCard label="Säkerhetsläge" value={paperOnly ? 'paper_only' : displayFirstValue(safe.mode)} tone={paperOnly ? 'good' : 'bad'} note="actions_allowed=false" />
       </div>
 
       <div style={{ ...sectionStyle(), marginTop: 12, marginBottom: 12, background: 'var(--surface-2)' }}>
@@ -2747,18 +2886,18 @@ function PaperAllowlistManager({ runtime, allowlist, refreshKey, onRefresh }) {
                 fontSize: 14,
               }}
             >
-              {Array.from({ length: hardMaxApproved }, (_, index) => index + minApproved).map((value) => (
+              {maxApprovedOptions.map((value) => (
                 <option key={value} value={String(value)}>{value}</option>
               ))}
             </select>
           </label>
           <div style={{ fontSize: 12, ...mutedTextStyle(theme) }}>
-            Max tillåtet: {hardMaxApproved}. Senast sparat: {num(config?.maxApproved ?? approvals?.maxApproved) || '–'}.
+            Max tillåtet: {displayNumberValue(hardMaxApproved)}. Senast sparat: {displayNumberValue(numericValue(config?.maxApproved ?? approvals?.maxApproved))}.
           </div>
           <button
             type="button"
-            disabled={busyId === 'config' || num(draftMaxApproved) === maxApproved}
-            style={btnStyle(busyId === 'config' || num(draftMaxApproved) === maxApproved, 'ok')}
+            disabled={busyId === 'config' || numericValue(draftMaxApproved) == null || numericValue(draftMaxApproved) === maxApproved}
+            style={btnStyle(busyId === 'config' || numericValue(draftMaxApproved) == null || numericValue(draftMaxApproved) === maxApproved, 'ok')}
             onClick={askConfigSave}
           >
             Spara max
@@ -2804,7 +2943,7 @@ function PaperAllowlistManager({ runtime, allowlist, refreshKey, onRefresh }) {
 
       {config?.warning ? (
         <div style={{ ...sectionStyle(), marginBottom: 12, borderColor: 'rgba(245, 158, 11, 0.22)', background: 'var(--surface-2)', color: 'var(--warning)' }}>
-          Allowlist-config saknade eller var trasig. Fallback {maxApproved || 4} används tills den sparas igen.
+          Allowlist-config saknade eller var trasig. UI visar saknade gränser som {EMPTY_VALUE} tills backend levererar eller config sparas igen.
         </div>
       ) : null}
 
@@ -2816,7 +2955,7 @@ function PaperAllowlistManager({ runtime, allowlist, refreshKey, onRefresh }) {
 
       {paperOnly ? (
         <>
-          <div style={{ fontWeight: 800, marginTop: 6, marginBottom: 6 }}>Godkända strategier ({approvedCount})</div>
+          <div style={{ fontWeight: 800, marginTop: 6, marginBottom: 6 }}>Godkända strategier ({displayNumberValue(approvedCount)})</div>
           {approvedRows.length > 0 ? (
             <div style={{ overflowX: 'auto', marginBottom: 14 }}>
               <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 640 }}>
@@ -2826,8 +2965,8 @@ function PaperAllowlistManager({ runtime, allowlist, refreshKey, onRefresh }) {
                     <tr key={r.id} className={`allowlist-row allowlist-row-approved allowlist-row-${allowlistTone(r.allowlistStatus)}`}>
                       <td style={cellStyle()}>{r.id}</td>
                       <td style={cellStyle()}>{r.name}</td>
-                      <td style={cellStyle()}>{r.runtimeReady ? 'Ja' : 'Nej'}</td>
-                      <td style={cellStyle()}>{r.events}</td>
+                      <td style={cellStyle()}>{r.runtimeReady === true ? 'Ja' : (r.runtimeReady === false ? 'Nej' : EMPTY_VALUE)}</td>
+                      <td style={cellStyle()}>{displayNumberValue(r.events)}</td>
                       <td style={cellStyle()}>{r.latestAt ? fmtTime(r.latestAt) : '–'}</td>
                       <td style={cellStyle()}>
                         <button type="button" disabled={busyId === r.id} style={btnStyle(busyId === r.id, 'danger')} onClick={() => ask('reject', r.id, r.name)}>Ta bort från paper allowlist</button>
@@ -2841,7 +2980,7 @@ function PaperAllowlistManager({ runtime, allowlist, refreshKey, onRefresh }) {
 
           <div style={{ fontWeight: 800, marginBottom: 6 }}>Icke-godkända strategier med aktivitet</div>
           <div style={{ fontSize: 11.5, ...mutedTextStyle(theme), marginBottom: 6 }}>
-            Sorterade efter antal blockeringar. {slotFree ? '' : 'Max antal godkända är nått — ta bort en strategi först eller höj maxgränsen. '}Om godkännande nekas visas exakt orsak från servern (t.ex. svag strategi eller maxgräns).
+            Sorterade efter antal blockeringar. {maxLimitKnown && !slotFree ? 'Max antal godkända är nått — ta bort en strategi först eller höj maxgränsen. ' : ''}Om godkännande nekas visas exakt orsak från servern (t.ex. svag strategi eller maxgräns).
           </div>
           {nonApproved.length > 0 ? (
             <div style={{ overflowX: 'auto' }}>
@@ -2852,12 +2991,14 @@ function PaperAllowlistManager({ runtime, allowlist, refreshKey, onRefresh }) {
                     <tr key={r.id} className={`allowlist-row allowlist-row-${allowlistTone(r.allowlistStatus)}`}>
                       <td style={cellStyle()}>{r.id}</td>
                       <td style={cellStyle()}>{r.name}</td>
-                      <td style={cellStyle()}>{r.blockedCount}</td>
+                      <td style={cellStyle()}>{displayNumberValue(r.blockedCount)}</td>
                       <td style={{ ...cellStyle(), maxWidth: 280 }}>{r.reason || '–'}</td>
                       <td style={cellStyle()}>{r.latestAt ? fmtTime(r.latestAt) : '–'}</td>
                       <td style={cellStyle()}>
                         {slotFree ? (
                           <button type="button" disabled={busyId === r.id} style={btnStyle(busyId === r.id, 'ok')} onClick={() => ask('approve', r.id, r.name)}>Lägg till i paper allowlist</button>
+                        ) : !maxLimitKnown ? (
+                          <span title="Max antal godkända saknas i backend-snapshoten." style={{ ...btnStyle(true, 'ok'), display: 'inline-block' }}>Config saknas</span>
                         ) : (
                           <span title="Max antal godkända är nått. Ta bort en strategi först eller höj maxgränsen." style={{ ...btnStyle(true, 'ok'), display: 'inline-block' }}>Max nått</span>
                         )}
@@ -2929,8 +3070,8 @@ function approvalTone(status) {
 
 function pipelineStrategyColumns(theme, primaryWindow = '7d') {
   return [
-    { key: 'strategyId', label: 'strategyId', render: (row) => <span style={{ fontWeight: 700 }}>{row.strategyId}</span> },
-    { key: 'name', label: 'Namn' },
+    { key: 'strategyId', label: 'strategyId', render: (row) => <span style={{ fontWeight: 700 }}>{paperStrategyModel(row).strategyId || '—'}</span> },
+    { key: 'name', label: 'Namn', render: (row) => paperStrategyLabel(row) },
     {
       key: 'approvalStatus',
       label: 'Status',
@@ -2939,9 +3080,9 @@ function pipelineStrategyColumns(theme, primaryWindow = '7d') {
     { key: 'hasDetector', label: 'Katalog/detector', render: (row) => (row.hasDetector ? 'ja' : 'nej') },
     { key: 'listedInApprovals', label: 'I approvals.json', render: (row) => (row.listedInApprovals ? 'ja' : 'nej') },
     { key: 'paperEnabled', label: 'Paper-enabled / allowlist', render: (row) => (row.paperEnabled ? 'ja' : 'nej') },
-    { key: 'signals', label: 'Signaler 24h/3d/7d', render: (row) => `${row.signals?.['24h'] ?? 0} / ${row.signals?.['3d'] ?? 0} / ${row.signals?.['7d'] ?? 0}` },
-    { key: 'candidates', label: 'Kandidater 24h/3d/7d', render: (row) => `${row.candidates?.['24h'] ?? 0} / ${row.candidates?.['3d'] ?? 0} / ${row.candidates?.['7d'] ?? 0}` },
-    { key: 'paperTrades', label: 'Trades 24h/3d/7d', render: (row) => `${row.paperTrades?.['24h'] ?? 0} / ${row.paperTrades?.['3d'] ?? 0} / ${row.paperTrades?.['7d'] ?? 0}` },
+    { key: 'signals', label: 'Signaler 24h/3d/7d', render: (row) => `${displayNumberValue(row.signals?.['24h'])} / ${displayNumberValue(row.signals?.['3d'])} / ${displayNumberValue(row.signals?.['7d'])}` },
+    { key: 'candidates', label: 'Kandidater 24h/3d/7d', render: (row) => `${displayNumberValue(row.candidates?.['24h'])} / ${displayNumberValue(row.candidates?.['3d'])} / ${displayNumberValue(row.candidates?.['7d'])}` },
+    { key: 'paperTrades', label: 'Trades 24h/3d/7d', render: (row) => `${displayNumberValue(row.paperTrades?.['24h'])} / ${displayNumberValue(row.paperTrades?.['3d'])} / ${displayNumberValue(row.paperTrades?.['7d'])}` },
     { key: 'commonBlockerReason', label: 'Vanligaste blocker', render: (row) => row.commonBlockerReason || '–' },
     {
       key: 'chainStop',
@@ -2972,10 +3113,10 @@ function StrategyPipelineTruthPanel({ pipeline, loading, error }) {
   const primary = pipeline.primaryWindow || '7d';
   const columns = pipelineStrategyColumns(theme, primary);
   const zeroColumns = [
-    { key: 'strategyId', label: 'strategyId', render: (row) => <span style={{ fontWeight: 700 }}>{row.strategyId}</span> },
-    { key: 'name', label: 'Namn' },
+    { key: 'strategyId', label: 'strategyId', render: (row) => <span style={{ fontWeight: 700 }}>{paperStrategyModel(row).strategyId || '—'}</span> },
+    { key: 'name', label: 'Namn', render: (row) => paperStrategyLabel(row) },
     { key: 'approvalStatus', label: 'Status', render: (row) => <span style={statusPillStyle(approvalTone(row.approvalStatus), theme, true)}>{row.approvalStatus}</span> },
-    { key: 'signals7d', label: 'Signaler 7d', render: (row) => row.signals7d ?? 0 },
+    { key: 'signals7d', label: 'Signaler 7d', render: (row) => displayNumberValue(row.signals7d) },
     { key: 'chainStop', label: 'Stannar', render: (row) => <span title={row.chainStopSv} style={statusPillStyle(chainStopTone(row.chainStop), theme, true)}>{row.chainStop}</span> },
     { key: 'chainStopSv', label: 'Förklaring', render: (row) => <span style={{ ...mutedTextStyle(theme), fontSize: 12 }}>{row.chainStopSv}</span> },
   ];
@@ -2989,12 +3130,12 @@ function StrategyPipelineTruthPanel({ pipeline, loading, error }) {
         </div>
       </div>
       <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10, marginBottom: 14 }}>
-        <MetricCard label="Strategier" value={counts.strategies ?? 0} />
-        <MetricCard label="Godkända" value={counts.approved ?? 0} tone="good" />
-        <MetricCard label="Godkända som tradar" value={counts.approvedTrading ?? 0} tone="good" />
-        <MetricCard label="Godkända utan trades" value={counts.approvedNotTrading ?? 0} tone="warn" />
-        <MetricCard label="Rejected" value={counts.rejected ?? 0} tone="bad" />
-        <MetricCard label="Föreslagna" value={counts.proposed ?? 0} />
+        <MetricCard label="Strategier" value={displayNumberValue(counts.strategies)} />
+        <MetricCard label="Godkända" value={displayNumberValue(counts.approved)} tone="good" />
+        <MetricCard label="Godkända som tradar" value={displayNumberValue(counts.approvedTrading)} tone="good" />
+        <MetricCard label="Godkända utan trades" value={displayNumberValue(counts.approvedNotTrading)} tone="warn" />
+        <MetricCard label="Rejected" value={displayNumberValue(counts.rejected)} tone="bad" />
+        <MetricCard label="Föreslagna" value={displayNumberValue(counts.proposed)} />
       </div>
       <DataTable
         title="Godkända som tradar"
@@ -3035,13 +3176,13 @@ function StrategyPipelineTruthPanel({ pipeline, loading, error }) {
 function shortExitStatColumns(theme) {
   return [
     { key: 'label', label: 'Grupp', render: (row) => <span style={{ fontWeight: 700 }}>{row.label}</span> },
-    { key: 'count', label: 'Trades', render: (row) => row.s?.count ?? 0 },
+    { key: 'count', label: 'Trades', render: (row) => displayNumberValue(row.s?.count) },
     { key: 'medianDurationSec', label: 'Median duration', render: (row) => fmtDurSec(row.s?.medianDurationSec) },
-    { key: 'pctUnder5min', label: '% under 5 min', render: (row) => `${row.s?.pctUnder5min ?? 0}%` },
-    { key: 'targetHits', label: 'Target hits', render: (row) => row.s?.targetHits ?? 0 },
-    { key: 'tightenedStop', label: 'tightened_stop', render: (row) => row.s?.tightenedStop ?? 0 },
-    { key: 'momentumFade', label: 'momentum_fade', render: (row) => row.s?.momentumFade ?? 0 },
-    { key: 'defaultExits', label: 'default', render: (row) => row.s?.defaultExits ?? 0 },
+    { key: 'pctUnder5min', label: '% under 5 min', render: (row) => displayPercentValue(row.s?.pctUnder5min) },
+    { key: 'targetHits', label: 'Target hits', render: (row) => displayNumberValue(row.s?.targetHits) },
+    { key: 'tightenedStop', label: 'tightened_stop', render: (row) => displayNumberValue(row.s?.tightenedStop) },
+    { key: 'momentumFade', label: 'momentum_fade', render: (row) => displayNumberValue(row.s?.momentumFade) },
+    { key: 'defaultExits', label: 'default', render: (row) => displayNumberValue(row.s?.defaultExits) },
   ];
 }
 
@@ -3062,7 +3203,7 @@ function ShortExitTruthPanel({ shortExit, loading, error }) {
   if (!shortExit?.ok) return null;
   const windowOptions = Object.keys(shortExit.windows || { '24h': 0, '3d': 0, '7d': 0 });
   const w = shortExit.windows?.[windowKey] || {};
-  const overall = w.overall || { count: 0 };
+  const overall = w.overall || {};
   const exitReasonTop = Array.isArray(overall.exitReasonTop) ? overall.exitReasonTop : [];
   const strategyRows = Object.entries(w.byStrategy || {}).map(([label, s]) => ({ label, s }));
   const setupRows = Object.entries(w.bySetup || {}).map(([label, s]) => ({ label, s }));
@@ -3095,13 +3236,13 @@ function ShortExitTruthPanel({ shortExit, loading, error }) {
         </div>
       </div>
       <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10, marginBottom: 14 }}>
-        <MetricCard label="Total trades" value={overall.count ?? 0} />
+        <MetricCard label="Total trades" value={displayNumberValue(overall.count)} />
         <MetricCard label="Median duration" value={fmtDurSec(overall.medianDurationSec)} />
-        <MetricCard label="% under 5 min" value={`${overall.pctUnder5min ?? 0}%`} tone={(overall.pctUnder5min ?? 0) >= 50 ? 'warn' : 'neutral'} />
-        <MetricCard label="Target hits" value={overall.targetHits ?? 0} tone="good" />
-        <MetricCard label="tightened_stop" value={overall.tightenedStop ?? 0} />
-        <MetricCard label="momentum_fade" value={overall.momentumFade ?? 0} />
-        <MetricCard label="default exits" value={overall.defaultExits ?? 0} />
+        <MetricCard label="% under 5 min" value={displayPercentValue(overall.pctUnder5min)} tone={numberOrNull(overall.pctUnder5min) >= 50 ? 'warn' : 'neutral'} />
+        <MetricCard label="Target hits" value={displayNumberValue(overall.targetHits)} tone="good" />
+        <MetricCard label="tightened_stop" value={displayNumberValue(overall.tightenedStop)} />
+        <MetricCard label="momentum_fade" value={displayNumberValue(overall.momentumFade)} />
+        <MetricCard label="default exits" value={displayNumberValue(overall.defaultExits)} />
       </div>
       <DataTable
         title="exitReasonCode-topplista"
@@ -3112,7 +3253,7 @@ function ShortExitTruthPanel({ shortExit, loading, error }) {
         columns={[
           { key: 'code', label: 'exitReasonCode', render: (row) => <span style={{ fontWeight: 700 }}>{row.code}</span> },
           { key: 'count', label: 'Antal' },
-          { key: 'pct', label: 'Andel', render: (row) => `${row.pct ?? 0}%` },
+          { key: 'pct', label: 'Andel', render: (row) => displayPercentValue(row.pct) },
         ]}
       />
       <DataTable
@@ -3184,13 +3325,13 @@ function PaperTradesTab({ runtime, allowlist, riskPauseSummary, gateStatus, onRe
       ) : null}
       <DataTable
         title="Closed paper trades"
-        subtitle={`Senaste closed trades. Total closed i runtime: ${summary.closedCount ?? 0}`}
+        subtitle={`Senaste closed trades. Total closed i runtime: ${displayBackendNumber(summary, 'closedCount')}`}
         rows={closedTrades}
         emptyText="Inga stängda paper trades ännu."
         rowKey={(row, index) => tradeLookupKey(row) || `${row.symbol}-${index}`}
         columns={[
           { key: 'symbol', label: 'Symbol' },
-          { key: 'strategy_id', label: 'Canonical strategy_id' },
+          { key: 'strategy_id', label: 'Canonical strategy_id', render: (row) => paperStrategyModel(row).strategyId || '—' },
           { key: 'setup', label: 'Setup' },
           { key: 'result', label: 'Result', render: (row) => <span style={{ color: toneForResult(row.result), fontWeight: 700 }}>{row.result || '–'}</span> },
           { key: 'pnlPct', label: 'PnL %', render: (row) => <span style={{ color: toneForResult(row.result) }}>{fmtPct(row.pnlPct)}</span> },
@@ -3307,7 +3448,7 @@ function PaperRuntimeTab({ runtime, refreshKey }) {
         rowKey={(row, index) => row.eventId || `${row.symbol}-${index}`}
         columns={[
           { key: 'symbol', label: 'Symbol' },
-          { key: 'strategy_id', label: 'Canonical strategy_id' },
+          { key: 'strategy_id', label: 'Canonical strategy_id', render: (row) => paperStrategyModel(row).strategyId || '—' },
           { key: 'gateStage', label: 'Gate stage' },
           { key: 'blockedReason', label: 'Blocked reason' },
           { key: 'timestamp', label: 'Timestamp', render: (row) => fmtTime(row.timestamp) },
@@ -3323,7 +3464,7 @@ function PaperRuntimeTab({ runtime, refreshKey }) {
         columns={[
           { key: 'type', label: 'Event type' },
           { key: 'symbol', label: 'Symbol' },
-          { key: 'strategy_id', label: 'Canonical strategy_id' },
+          { key: 'strategy_id', label: 'Canonical strategy_id', render: (row) => paperStrategyModel(row).strategyId || '—' },
           { key: 'timestamp', label: 'Timestamp', render: (row) => fmtTime(row.timestamp) },
           { key: 'reason', label: 'Reason / result', render: (row) => row.blockedReason || row.result || row.status || '–' },
           { key: 'source', label: 'Source' },
@@ -3336,7 +3477,7 @@ function PaperRuntimeTab({ runtime, refreshKey }) {
         emptyText="Inga strategier i runtime-fönstret ännu."
         rowKey={(row, index) => row.strategy_id || `strategy-${index}`}
         columns={[
-          { key: 'strategy_id', label: 'Canonical strategy_id' },
+          { key: 'strategy_id', label: 'Canonical strategy_id', render: (row) => paperStrategyModel(row).strategyId || '—' },
           { key: 'openCount', label: 'Open' },
           { key: 'closedCount', label: 'Closed' },
           { key: 'blockedCount', label: 'Blocked' },
@@ -3414,12 +3555,12 @@ export default function PaperTradingPage() {
   const summary = runtime?.summary || {};
   const performanceSummary = runtime?.strategyPerformance?.summary || {};
   const dashboardSafety = runtime?.safety || safetyState.data?.status || safetyState.data || runtime || {};
-  const paperPnl = Number(performanceSummary.netPnlPct);
+  const paperPnl = numberOrNull(performanceSummary.netPnlPct);
   const paperStatus = runtimeState.loading && !runtime
-    ? 'Laddar'
+    ? WAITING_RUNTIME
     : runtimeState.error
       ? 'Degraded'
-      : runtime?.status || 'Okänd';
+      : runtime?.status || EMPTY_VALUE;
   const kpis = [
     {
       label: 'Paper status',
@@ -3429,37 +3570,40 @@ export default function PaperTradingPage() {
     },
     {
       label: 'Paper PnL',
-      value: Number.isFinite(paperPnl) ? fmtPct(paperPnl) : '–',
+      value: paperPnl != null ? fmtPct(paperPnl) : EMPTY_VALUE,
       hint: 'Netto från strategy performance',
       tone: paperPnl > 0 ? 'good' : paperPnl < 0 ? 'danger' : 'neutral',
     },
     {
       label: 'Antal trades',
-      value: performanceSummary.closedTrades ?? summary.closedCount ?? 0,
+      value: firstExistingNumber([
+        { source: performanceSummary, key: 'closedTrades' },
+        { source: summary, key: 'closedCount' },
+      ], runtimeState.loading && !runtime),
       hint: 'Performance-underlag',
       tone: 'blue',
     },
     {
       label: 'Öppna positioner',
-      value: summary.openCount ?? 0,
+      value: displayBackendNumber(summary, 'openCount', runtimeState.loading && !runtime),
       hint: 'Aktiva paper-only trades',
-      tone: (summary.openCount ?? 0) > 0 ? 'warning' : 'neutral',
+      tone: backendNumber(summary, 'openCount') > 0 ? 'warning' : 'neutral',
     },
     {
       label: 'Stängda trades',
-      value: summary.closedCount ?? 0,
-      hint: `Visar ${Array.isArray(runtime?.closedTrades) ? runtime.closedTrades.length : 0} senaste`,
+      value: displayBackendNumber(summary, 'closedCount', runtimeState.loading && !runtime),
+      hint: `Visar ${Array.isArray(runtime?.closedTrades) ? formatNumber(runtime.closedTrades.length) : EMPTY_VALUE} senaste`,
       tone: 'neutral',
     },
     {
       label: 'Win rate',
-      value: performanceSummary.winRatePct == null ? '–' : `${Number(performanceSummary.winRatePct).toFixed(1)}%`,
+      value: performanceSummary.winRatePct == null ? EMPTY_VALUE : `${formatNumber(performanceSummary.winRatePct, 1)}%`,
       hint: 'Strategy performance',
-      tone: Number(performanceSummary.winRatePct) >= 50 ? 'good' : 'warning',
+      tone: numberOrNull(performanceSummary.winRatePct) >= 50 ? 'good' : 'warning',
     },
     {
       label: 'Runtime status',
-      value: runtime?.status || (runtimeState.loading ? 'Laddar' : 'Okänd'),
+      value: runtime?.status || (runtimeState.loading ? WAITING_RUNTIME : EMPTY_VALUE),
       hint: `Senaste event ${fmtTime(summary.latestEventAt)}`,
       tone: runtime?.status === 'ok' ? 'good' : runtimeState.error ? 'danger' : 'neutral',
     },
@@ -3473,6 +3617,22 @@ export default function PaperTradingPage() {
 
   const openTrades = runtime?.openTrades || [];
   const dailySelectionPreview = runtime?.dailySelectionPreview || null;
+  const tradingEventStore = useMemo(() => createTradingEventStore({
+    runtimeSnapshot: runtime || {},
+    candidateQueue: runtime?.candidateQueue || {},
+    strategyOverview: runtime?.strategyOverview || [],
+    strategyStatus: runtime?.strategyStatus || [],
+    strategyPulse: runtime?.strategyPulse || [],
+    analyticsSnapshot: runtime?.strategyPerformance || {},
+    events: runtime?.events || [],
+  }), [runtime]);
+  const tradingEventCount = tradingEventStore.getAllEvents().length;
+  const decisionStore = useMemo(() => createDecisionStore({
+    eventStore: tradingEventStore,
+    runtimeSnapshot: runtime || {},
+    analyticsSnapshot: runtime?.strategyPerformance || {},
+  }), [runtime, tradingEventStore]);
+  const decisionCount = decisionStore.getDecisions().length;
 
   return (
     <DashboardShell
@@ -3484,6 +3644,7 @@ export default function PaperTradingPage() {
       onTab={setActiveTab}
       kpis={kpis}
     >
+      <div data-trading-event-count={tradingEventCount} data-decision-count={decisionCount} style={{ display: 'contents' }}>
       {runtimeState.loading && !runtime ? (
         <div style={sectionStyle()}>Hämtar paper runtime...</div>
       ) : null}
@@ -3539,7 +3700,7 @@ export default function PaperTradingPage() {
             rowKey={(row, index) => row.tradeId || `${row.symbol}-${index}`}
             columns={[
               { key: 'symbol', label: 'Symbol' },
-              { key: 'strategy_id', label: 'Canonical strategy_id' },
+              { key: 'strategy_id', label: 'Canonical strategy_id', render: (row) => paperStrategyModel(row).strategyId || '—' },
               { key: 'setup', label: 'Setup' },
               { key: 'direction', label: 'Direction' },
               { key: 'source', label: 'Source' },
@@ -3587,6 +3748,7 @@ export default function PaperTradingPage() {
           <PaperCandidatePanel mode="paper" />
         </>
       )}
+      </div>
     </DashboardShell>
   );
 }

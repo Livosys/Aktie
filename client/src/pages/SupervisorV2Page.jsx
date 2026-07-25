@@ -5,13 +5,12 @@ import EmptyLearningState from '../components/tradingos/EmptyLearningState.jsx';
 import GlossaryTooltip from '../components/tradingos/GlossaryTooltip.jsx';
 import QuickHelpModal from '../components/tradingos/QuickHelpModal.jsx';
 import SimpleStatusCard from '../components/tradingos/SimpleStatusCard.jsx';
-
-const SAFETY_FLAGS = Object.freeze({
-  actions_allowed: false,
-  can_place_orders: false,
-  live_trading_enabled: false,
-  auto_apply_results: false,
-});
+import {
+  resolveKnownStrategy,
+  strategyDisplayName,
+} from '../stores/strategyStore.js';
+import { createDecisionStore } from '../stores/decisionStore.js';
+import { createTradingEventStore } from '../stores/tradingEventStore.js';
 
 const ENDPOINTS = [
   { key: 'status', url: '/api/status', label: 'Backend status' },
@@ -127,7 +126,11 @@ function buildAdvisorPrompt(advisor) {
   const summary = advisor.summary || {};
   const crypto = advisor.crypto_status || {};
   const highlights = advisor.strategy_highlights || {};
-  const topWorking = normalizeArray(highlights.working).slice(0, 2).map((row) => `${row.name} (${row.win_rate ?? 0}% WR, ${row.closed ?? 0} trades)`).join(', ');
+  const topWorking = normalizeArray(highlights.working).slice(0, 2).map((row) => {
+    const winRate = formatPct(row.win_rate, 0, 'Ej konfigurerad');
+    const closed = formatInt(row.closed, 'Ej konfigurerad');
+    return `${row.name} (${winRate} WR, ${closed} trades)`;
+  }).join(', ');
   const topBlocked = normalizeArray(highlights.blocked).slice(0, 2).map((row) => `${row.name} (${row.status || row.note || 'blockerad'})`).join(', ');
   const topFindings = normalizeArray(advisor.findings).slice(0, 4).map((item) => `${item.label}: ${item.text}`).join('\n');
 
@@ -139,7 +142,7 @@ function buildAdvisorPrompt(advisor) {
     `Vad stoppades: ${advisor.blockers?.[0] ? `${advisor.blockers[0].label} (${advisor.blockers[0].count})` : 'inga tydliga blockerare'}`,
     `Bäst fungerande strategi: ${topWorking || 'ingen tydlig vinnare'}`,
     `Blockerade/partial: ${topBlocked || 'inga tydliga blockeringar'}`,
-    `Crypto-status: signaler ${crypto.crypto_signals ?? 0}, runtime-active ${crypto.runtime_active ?? 0}, gate-blockade ${crypto.gate_blocked ?? 0}, VWAP ${crypto.vwap_routing_status || 'samlar data'}.`,
+    `Crypto-status: signaler ${formatInt(crypto.crypto_signals, 'Ej konfigurerad')}, runtime-active ${formatInt(crypto.runtime_active, 'Ej konfigurerad')}, gate-blockade ${formatInt(crypto.gate_blocked, 'Ej konfigurerad')}, VWAP ${crypto.vwap_routing_status || 'samlar data'}.`,
     `Rekommenderad nästa åtgärd: ${summary.next_action_sv || 'vänta och samla data'}.`,
     '',
     'Förklara kort varför inga eller få paper trades skapas och vad användaren bör testa eller bevaka härnäst.',
@@ -147,6 +150,7 @@ function buildAdvisorPrompt(advisor) {
 }
 
 function toNumber(value) {
+  if (value === null || value === undefined || value === '' || typeof value === 'boolean') return null;
   const n = Number(value);
   return Number.isFinite(n) ? n : null;
 }
@@ -175,6 +179,18 @@ function formatSignedPct(value, decimals = 2, fallback = 'Ej konfigurerad') {
   if (n === null) return fallback;
   const sign = n > 0 ? '+' : '';
   return `${sign}${formatDecimal(n, decimals, fallback)}%`;
+}
+
+function activeLabel(value) {
+  if (value === true) return 'Aktiv';
+  if (value === false) return 'Av';
+  return 'Ingen data ännu';
+}
+
+function onOffLabel(value) {
+  if (value === true) return 'på';
+  if (value === false) return 'av';
+  return 'Ingen data ännu';
 }
 
 function formatDateTime(iso) {
@@ -232,16 +248,12 @@ function uniqueText(values) {
   return out;
 }
 
+function supervisorV2StrategyModel(item = {}) {
+  return resolveKnownStrategy(item);
+}
+
 function strategyLabel(item) {
-  return firstText([
-    item?.strategy_name,
-    item?.strategyName,
-    item?.name,
-    item?.label,
-    item?.strategy_id,
-    item?.strategyId,
-    item?.strategy,
-  ], 'Ej konfigurerad');
+  return strategyDisplayName(supervisorV2StrategyModel(item), '—');
 }
 
 function strategyDescriptor(item) {
@@ -256,15 +268,8 @@ function strategyDescriptor(item) {
 }
 
 function strategyKey(item) {
-  const raw = firstText([
-    item?.strategy_id,
-    item?.strategyId,
-    item?.strategy_name,
-    item?.strategyName,
-    item?.name,
-    item?.label,
-    item?.symbol,
-  ], '');
+  const model = supervisorV2StrategyModel(item);
+  const raw = firstText([model.strategyId, model.strategyName, item?.strategy, item?.symbol], '');
   return raw ? raw.trim().toLowerCase() : '';
 }
 
@@ -351,14 +356,13 @@ function renderReasonLabel(item) {
 
 function renderReasonCount(item) {
   if (!item || typeof item !== 'object') return null;
-  const count = Number(item.count);
-  return Number.isFinite(count) ? count : null;
+  return toNumber(item.count);
 }
 
 function renderReasonShare(item) {
   if (!item || typeof item !== 'object') return null;
-  const share = Number(item.share);
-  if (!Number.isFinite(share)) return null;
+  const share = toNumber(item.share);
+  if (share === null) return null;
   const pctValue = share <= 1 ? share * 100 : share;
   return `${Math.round(pctValue)}%`;
 }
@@ -410,12 +414,51 @@ function commonEntry(rows, key) {
     .sort((a, b) => b.count - a.count || a.value.localeCompare(b.value, 'sv'))[0] || null;
 }
 
+function commonDerivedEntry(rows, getValue) {
+  const counts = new Map();
+  for (const row of normalizeArray(rows)) {
+    const value = textValue(getValue(row), '').trim();
+    if (!value) continue;
+    counts.set(value, (counts.get(value) || 0) + 1);
+  }
+  return [...counts.entries()]
+    .map(([value, count]) => ({ value, count }))
+    .sort((a, b) => b.count - a.count || a.value.localeCompare(b.value, 'sv'))[0] || null;
+}
+
+function eventTypeKey(event) {
+  const raw = String(event?.event_type || event?.type || '').trim().toLowerCase();
+  if (raw === 'gate_blocked' || raw === 'market_gate_blocked') return 'market_gate.blocked';
+  if (raw === 'trade_skipped' || raw === 'paper_trade_skipped') return 'paper_trade.skipped';
+  if (raw === 'trade_opened' || raw === 'paper_trade_opened') return 'paper_trade.opened';
+  if (raw === 'trade_closed' || raw === 'paper_trade_closed') return 'paper_trade.closed';
+  if (raw === 'signal_detected') return 'signal.detected';
+  if (raw === 'strategy_matched') return 'strategy.matched';
+  return raw;
+}
+
+function eventMarketValue(event) {
+  return firstText([event?.market, event?.marketType, event?.marketGroup], '');
+}
+
+function eventStrategyValue(event) {
+  return firstText([
+    event?.strategy,
+    event?.strategyId,
+    event?.strategyName,
+    event?.resolvedStrategyId,
+    event?.resolvedStrategyName,
+    event?.strategy_id,
+    event?.strategy_name,
+  ], '');
+}
+
 function summarizeStopReason(event) {
   const reason = textValue(event?.reason, '').trim();
   if (reason) return reason;
   const metaReason = textValue(event?.metadata?.reason_sv || event?.metadata?.reason || event?.metadata?.exit_reason_code || event?.metadata?.exit_source, '').trim();
   if (metaReason) return metaReason;
-  const type = String(event?.event_type || '').toLowerCase();
+  const type = eventTypeKey(event);
   if (type === 'market_gate.blocked') return 'Market Gate blockerade signalen';
   if (type === 'market_gate.observe_only') return 'Market Gate satte observe_only';
   if (type === 'paper_trade.skipped') return 'Paper trade skippades';
@@ -424,18 +467,40 @@ function summarizeStopReason(event) {
 
 function signalStopSummary(eventsResource) {
   const data = unwrap(eventsResource);
+  if (!Array.isArray(data?.events)) {
+    return {
+      hasEvents: false,
+      eventsUnavailable: true,
+      totalRelevant: null,
+      detected: null,
+      matched: null,
+      allowed: null,
+      blocked: null,
+      observeOnly: null,
+      opened: null,
+      skipped: null,
+      topReason: 'Ingen eventdata från backend',
+      topReasonCount: null,
+      topSymbol: 'Ingen data ännu',
+      topSymbolCount: null,
+      topStrategy: 'Ingen data ännu',
+      topStrategyCount: null,
+      latestBlocked: null,
+      conclusion: 'Eventfält saknas i backendsvaret.',
+    };
+  }
   const events = normalizeArray(data?.events);
   const counts = events.reduce((acc, event) => {
-    const type = String(event?.event_type || '').toLowerCase();
+    const type = eventTypeKey(event);
     if (!type) return acc;
     acc[type] = (acc[type] || 0) + 1;
     return acc;
   }, {});
   const sortedEvents = [...events].sort((a, b) => String(b.timestamp || '').localeCompare(String(a.timestamp || '')));
-  const lastBlocked = sortedEvents.find((event) => String(event?.event_type || '').toLowerCase() === 'market_gate.blocked') || null;
+  const lastBlocked = sortedEvents.find((event) => eventTypeKey(event) === 'market_gate.blocked') || null;
   const topReason = commonEntry(events, 'reason') || commonEntry(events.map((event) => ({ reason: summarizeStopReason(event) })), 'reason');
   const topSymbol = commonEntry(events, 'symbol');
-  const topStrategy = commonEntry(events, 'strategy');
+  const topStrategy = commonEntry(events, 'strategy') || commonDerivedEntry(events, eventStrategyValue);
   const detected = counts['signal.detected'] || 0;
   const matched = counts['strategy.matched'] || 0;
   const allowed = counts['market_gate.allowed'] || 0;
@@ -463,11 +528,11 @@ function signalStopSummary(eventsResource) {
     opened,
     skipped,
     topReason: topReason?.value || 'Ingen tydlig stopporsak sparad',
-    topReasonCount: topReason?.count || 0,
+    topReasonCount: topReason?.count ?? null,
     topSymbol: topSymbol?.value || 'Ingen data ännu',
-    topSymbolCount: topSymbol?.count || 0,
+    topSymbolCount: topSymbol?.count ?? null,
     topStrategy: topStrategy?.value || 'Ingen data ännu',
-    topStrategyCount: topStrategy?.count || 0,
+    topStrategyCount: topStrategy?.count ?? null,
     latestBlocked: lastBlocked,
     conclusion: strongestStop,
   };
@@ -477,7 +542,7 @@ function buildEventsByMarketSummary(events) {
   const rows = normalizeArray(events);
   const markets = ['crypto', 'stocks', 'nasdaq', 'unknown'];
   const normalizedMarket = (event) => {
-    const raw = textValue(event?.market, 'unknown').trim().toLowerCase();
+    const raw = textValue(eventMarketValue(event), 'unknown').trim().toLowerCase();
     return markets.includes(raw) ? raw : 'unknown';
   };
 
@@ -493,7 +558,7 @@ function buildEventsByMarketSummary(events) {
   const summaries = markets.map((market) => {
     const eventsForMarket = marketRows[market];
     const counts = eventsForMarket.reduce((acc, event) => {
-      const type = String(event?.event_type || '').toLowerCase();
+      const type = eventTypeKey(event);
       if (!type) return acc;
       acc[type] = (acc[type] || 0) + 1;
       return acc;
@@ -506,7 +571,7 @@ function buildEventsByMarketSummary(events) {
     const skipped = counts['paper_trade.skipped'] || 0;
     const topReason = commonEntry(eventsForMarket, 'reason') || commonEntry(eventsForMarket.map((event) => ({ reason: summarizeStopReason(event) })), 'reason');
     const topSymbol = commonEntry(eventsForMarket, 'symbol');
-    const topStrategy = commonEntry(eventsForMarket, 'strategy');
+    const topStrategy = commonEntry(eventsForMarket, 'strategy') || commonDerivedEntry(eventsForMarket, eventStrategyValue);
     const totalRelevant = detected + matched + blocked + observeOnly + opened + skipped;
     const tone = opened > 0
       ? 'green'
@@ -545,11 +610,11 @@ function buildEventsByMarketSummary(events) {
       opened,
       skipped,
       topReason: topReason?.value || 'Ingen tydlig stopporsak sparad',
-      topReasonCount: topReason?.count || 0,
+      topReasonCount: topReason?.count ?? null,
       topSymbol: topSymbol?.value || 'Ingen data ännu',
-      topSymbolCount: topSymbol?.count || 0,
+      topSymbolCount: topSymbol?.count ?? null,
       topStrategy: topStrategy?.value || 'Ingen data ännu',
-      topStrategyCount: topStrategy?.count || 0,
+      topStrategyCount: topStrategy?.count ?? null,
       tone,
       interpretation,
       hasEvents: eventsForMarket.length > 0,
@@ -561,6 +626,29 @@ function buildEventsByMarketSummary(events) {
 }
 
 function buildEventAiConclusion(events) {
+  if (!Array.isArray(events)) {
+    return {
+      tone: 'gray',
+      headline: 'Ingen eventdata från backend',
+      conclusion: 'Eventfält saknas i backendsvaret.',
+      interpretation: [
+        'Det finns inget backendunderlag för en eventslutsats ännu.',
+      ],
+      nextStep: 'Vänta på eventdata från backend.',
+      metrics: {
+        detected: null,
+        matched: null,
+        blocked: null,
+        observeOnly: null,
+        opened: null,
+        skipped: null,
+        topReason: 'Ingen data ännu',
+        topSymbol: 'Ingen data ännu',
+        topStrategy: 'Ingen data ännu',
+        topMarket: 'Ingen data ännu',
+      },
+    };
+  }
   const rows = normalizeArray(events);
   if (rows.length === 0) {
     return {
@@ -587,7 +675,7 @@ function buildEventAiConclusion(events) {
   }
 
   const counts = rows.reduce((acc, event) => {
-    const type = String(event?.event_type || '').toLowerCase();
+    const type = eventTypeKey(event);
     if (!type) return acc;
     acc[type] = (acc[type] || 0) + 1;
     return acc;
@@ -595,8 +683,8 @@ function buildEventAiConclusion(events) {
 
   const topReason = commonEntry(rows, 'reason') || commonEntry(rows.map((event) => ({ reason: summarizeStopReason(event) })), 'reason');
   const topSymbol = commonEntry(rows, 'symbol');
-  const topStrategy = commonEntry(rows, 'strategy');
-  const topMarket = commonEntry(rows, 'market');
+  const topStrategy = commonEntry(rows, 'strategy') || commonDerivedEntry(rows, eventStrategyValue);
+  const topMarket = commonEntry(rows, 'market') || commonDerivedEntry(rows, eventMarketValue);
 
   const detected = counts['signal.detected'] || 0;
   const matched = counts['strategy.matched'] || 0;
@@ -827,11 +915,19 @@ function buildPaperTradeDiagnostics(resources, model) {
   const paperEventsData = unwrap(resources.paperEvents) || {};
   const allowlist = unwrap(resources.paperAllowlistStatus) || {};
   const supervisorOverview = unwrap(resources.supervisorOverview) || {};
-  const paperRuntimeOverview = unwrap(supervisorOverview.paperRuntimeSummary) || {};
+  const paperRuntimeOverview = supervisorOverview.paperRuntimeSummary || unwrap(supervisorOverview.paperRuntimeSummary) || {};
+  const paperRuntimeSummary = paperRuntimeOverview.summary || {};
   const candidates = unwrap(resources.candidatesRecent) || {};
   const candidateStats = unwrap(resources.candidatesStats) || {};
   const replay = unwrap(resources.replaySessions) || {};
   const coverage = unwrap(resources.dataCoverageStatus) || {};
+  const hasRuntimeStrategies = Array.isArray(model?.runtimeStrategies);
+  const hasPaperEvents = Array.isArray(paperEventsData?.events);
+  const hasRecentTrades = Array.isArray(paperStatus?.recentPaperTrades);
+  const hasOpenTrades = Array.isArray(paperStatus?.openTrades);
+  const hasCandidateRows = Array.isArray(candidates?.candidates);
+  const hasReplaySessions = Array.isArray(replay?.sessions);
+  const hasAllowlistRows = Array.isArray(allowlist?.allowlist) || Array.isArray(allowlist?.approvedStrategies) || Array.isArray(allowlist?.strategies);
   const runtimeStrategies = normalizeArray(model?.runtimeStrategies);
   const runtimeStrategyRows = normalizeArray(paperRuntimeOverview?.strategies);
   const paperEvents = normalizeArray(paperEventsData?.events);
@@ -851,27 +947,39 @@ function buildPaperTradeDiagnostics(resources, model) {
   }
   const blocks = aggregatePaperBlocks(paperEvents, approvedIds);
 
-  const openCount = toNumber(paperStatus?.openCount) ?? normalizeArray(paperStatus?.openTrades).length;
+  const openCount = toNumber(paperStatus?.openCount)
+    ?? toNumber(paperRuntimeSummary.openCount)
+    ?? (hasOpenTrades ? normalizeArray(paperStatus?.openTrades).length : null);
   const closedCount = toNumber(paperStatus?.closedCount)
-    ?? recentTrades.filter((trade) => String(trade?.status || '').toLowerCase() === 'completed').length;
-  const blockedCount = toNumber(paperStatus?.blockedCount) ?? blocks.totalBlocked;
+    ?? toNumber(paperRuntimeSummary.closedCount)
+    ?? (hasRecentTrades ? recentTrades.filter((trade) => String(trade?.status || '').toLowerCase() === 'completed').length : null);
+  const blockedCount = toNumber(paperStatus?.blockedCount)
+    ?? toNumber(paperRuntimeSummary.blockedCount)
+    ?? (hasPaperEvents ? blocks.totalBlocked : null);
   const latestEventAt = firstText([
     paperStatus?.latestEventAt,
+    paperRuntimeSummary.latestEventAt,
     paperEvents[0]?.timestamp,
     recentTrades[0]?.timestamp,
   ], '');
-  const candidatesCount = toNumber(candidateStats?.total) ?? normalizeArray(candidates?.candidates).length;
-  const replayCount = normalizeArray(replay?.sessions).length;
+  const candidatesCount = toNumber(candidateStats?.total) ?? (hasCandidateRows ? normalizeArray(candidates?.candidates).length : null);
+  const replayCount = hasReplaySessions ? normalizeArray(replay?.sessions).length : null;
   const coverageScore = toNumber(coverage?.total_coverage_score);
   const missingDataCount = toNumber(coverage?.symbols_missing_data);
-  const paperEnabled = paperStatus?.enabled === true;
-  const allowlistReady = allowlist?.paperRuntimeReady === true || allowlist?.readyForPaperRuntime > 0;
-  const allowlistApprovedCount = toNumber(allowlist?.totalApproved) ?? approvedRows.length;
-  const allowlistReadyCount = toNumber(allowlist?.readyForPaperRuntime) ?? approvedRows.filter((row) => row?.paperRuntimeReady !== false).length;
-  const technicalPaperCount = toNumber(model?.paperTradeCount) ?? runtimeStrategies.filter((strategy) => strategy?.can_create_paper_trade === true).length;
-  const activeCount = toNumber(model?.selectedCount) ?? runtimeStrategies.filter((strategy) => strategy?.enabled_by_user === true).length;
-  const totalCount = runtimeStrategies.length;
-  const selectedButNotRunnableCount = toNumber(model?.selectedButNotRunnableCount) ?? runtimeStrategies.filter((strategy) => strategy?.enabled_by_user === true && strategy?.can_create_paper_trade !== true).length;
+  const paperEnabled = paperStatus?.enabled === true ? true : paperStatus?.enabled === false ? false : null;
+  const allowlistApprovedCount = toNumber(allowlist?.totalApproved) ?? (hasAllowlistRows ? approvedRows.length : null);
+  const allowlistReadyCount = toNumber(allowlist?.readyForPaperRuntime) ?? (hasAllowlistRows ? approvedRows.filter((row) => row?.paperRuntimeReady !== false).length : null);
+  const allowlistReady = allowlist?.paperRuntimeReady === true
+    ? true
+    : allowlist?.paperRuntimeReady === false
+      ? false
+      : allowlistReadyCount !== null
+        ? allowlistReadyCount > 0
+        : null;
+  const technicalPaperCount = toNumber(model?.paperTradeCount) ?? (hasRuntimeStrategies ? runtimeStrategies.filter((strategy) => strategy?.can_create_paper_trade === true).length : null);
+  const activeCount = toNumber(model?.selectedCount) ?? (hasRuntimeStrategies ? runtimeStrategies.filter((strategy) => strategy?.enabled_by_user === true).length : null);
+  const totalCount = hasRuntimeStrategies ? runtimeStrategies.length : null;
+  const selectedButNotRunnableCount = toNumber(model?.selectedButNotRunnableCount) ?? (hasRuntimeStrategies ? runtimeStrategies.filter((strategy) => strategy?.enabled_by_user === true && strategy?.can_create_paper_trade !== true).length : null);
 
   const matrix = [
     {
@@ -915,11 +1023,11 @@ function buildPaperTradeDiagnostics(resources, model) {
       latestTrade?.timestamp,
       row?.latestEventAt,
     ], '');
-    const blockedCount = toNumber(runtimeRow?.blockedCount) ?? 0;
+    const blockedCount = toNumber(runtimeRow?.blockedCount);
     return {
       id: id || textValue(row?.id, 'okänd-strategi'),
       name: firstText([row?.name, runtimeRow?.strategy_name, runtimeRow?.strategyName, row?.id], 'Okänd strategi'),
-      status: firstText([row?.paperRuntimeStatus, runtimeRow?.paperRuntimeStatus, row?.automaticStatus], 'active'),
+      status: firstText([row?.paperRuntimeStatus, runtimeRow?.paperRuntimeStatus, row?.automaticStatus], 'Ej konfigurerad'),
       runtimeReady: row?.paperRuntimeReady === true || row?.readyForPaperRuntime === true || runtimeRow?.paperRuntimeReady === true || runtimeRow?.readyForPaperRuntime === true,
       latestEventAt,
       latestTradeAt: latestTrade?.timestamp || '',
@@ -973,8 +1081,10 @@ function buildPaperTradeDiagnostics(resources, model) {
   if (replayCount === 0) {
     explanation.push('Replay-underlag saknas ännu, så mer analys måste vänta på historisk data.');
   }
-  if (!paperEnabled) {
+  if (paperEnabled === false) {
     explanation.push('Paper Trading är inte aktivt just nu.');
+  } else if (paperEnabled === null) {
+    explanation.push('Paper Trading enabled-status saknas i backendsvaret.');
   }
   if (allowlistReady && allowlistApprovedCount > 0) {
     explanation.push(`Allowlist är en säkerhetslista. Bara strategier på listan får skapa låtsasaffärer. ${allowlistApprovedCount} strategier är godkända och ${allowlistReadyCount} är redo för paper-runtime.`);
@@ -1086,9 +1196,9 @@ function getBatchUiStatus(batch) {
     return { key: 'none', emoji: '', label: 'Ingen batch', tone: 'none', sentence: 'Ingen batch finns ännu.', busy: false };
   }
   const status = String(batch.status || '').toLowerCase();
-  const total = Number(batch.progress?.total || 0);
-  const completed = Number(batch.progress?.completed || 0);
-  const done = total > 0 && completed >= total;
+  const total = toNumber(batch.progress?.total);
+  const completed = toNumber(batch.progress?.completed);
+  const done = total !== null && completed !== null && total > 0 && completed >= total;
   const hasError = !!batch.error || status === 'failed' || status === 'error';
 
   if (hasError) {
@@ -1238,7 +1348,7 @@ function queueNextStepText(item) {
 }
 
 function queueItemPriorityLabel(priority) {
-  const value = Number(priority);
+  const value = toNumber(priority);
   if (!Number.isFinite(value)) return textValue(priority, '–');
   if (value >= 8) return `Hög (${value})`;
   if (value >= 4) return `Medel (${value})`;
@@ -1256,13 +1366,13 @@ function readableDateTime(value) {
 }
 
 function drilldownRowLabel(strategy) {
-  return firstText([strategy?.strategy_id, strategy?.strategyId, strategy?.strategy_name, strategy?.strategyName], 'Ej konfigurerad');
+  return strategyLabel(strategy);
 }
 
 function drilldownRowMeta(strategy) {
   return [
-    `source=${textValue(strategy?.source, 'internal')}`,
-    `status=${textValue(strategy?.status, 'paper_only')}`,
+    `source=${textValue(strategy?.source, 'Ej konfigurerad')}`,
+    `status=${textValue(strategy?.status, 'Ej konfigurerad')}`,
     `score=${textValue(strategy?.score, '–')}`,
     `confidence=${textValue(strategy?.confidence, '–')}%`,
     `sample=${textValue(strategy?.sample_size, '–')}`,
@@ -1283,18 +1393,21 @@ function StrategyDrilldownCard({ title, kicker, badge, badgeTone, summary, items
       <p className="sup-v2-answer-main">{summary}</p>
       {rows.length > 0 ? (
         <ul className="sup-v2-answer-list">
-          {rows.map((strategy) => (
-            <li key={`${title}-${drilldownRowLabel(strategy)}`} style={{ listStyle: 'none' }}>
+          {rows.map((strategy) => {
+            const model = supervisorV2StrategyModel(strategy);
+            const strategyId = model.strategyId || '';
+            return (
+            <li key={`${title}-${strategyId || drilldownRowLabel(strategy)}`} style={{ listStyle: 'none' }}>
               <button
                 type="button"
-                onClick={() => onSelectStrategy?.(strategy?.strategy_id || strategy?.strategyId || strategy?.name || strategy?.label || '')}
+                onClick={() => onSelectStrategy?.(strategyId)}
                 style={{
                   width: '100%',
                   textAlign: 'left',
                   border: '1px solid rgba(148,163,184,0.16)',
                   borderRadius: 14,
                   padding: '10px 12px',
-                  background: selectedStrategyId === (strategy?.strategy_id || strategy?.strategyId || strategy?.name || strategy?.label)
+                  background: selectedStrategyId === strategyId
                     ? 'rgba(37, 99, 235, 0.14)'
                     : 'rgba(15, 23, 42, 0.24)',
                   color: 'inherit',
@@ -1303,7 +1416,7 @@ function StrategyDrilldownCard({ title, kicker, badge, badgeTone, summary, items
               >
                 <div style={{ display: 'flex', flexWrap: 'wrap', justifyContent: 'space-between', gap: 8, alignItems: 'center', marginBottom: 6 }}>
                   <strong>{drilldownRowLabel(strategy)}</strong>
-                  <span className={`badge badge-${strategyStatusBadgeTone(strategy?.status)}`}>{textValue(strategy?.status, 'paper_only')}</span>
+                  <span className={`badge badge-${strategyStatusBadgeTone(strategy?.status)}`}>{textValue(strategy?.status, 'Ej konfigurerad')}</span>
                 </div>
                 <div style={{ lineHeight: 1.45, marginBottom: 6 }}>
                   Score {textValue(strategy?.score, '–')} · Confidence {textValue(strategy?.confidence, '–')}%
@@ -1313,7 +1426,8 @@ function StrategyDrilldownCard({ title, kicker, badge, badgeTone, summary, items
                 </div>
               </button>
             </li>
-          ))}
+            );
+          })}
         </ul>
       ) : (
         <div className="sup-safety-copy" style={{ marginTop: 8 }}>
@@ -1338,8 +1452,8 @@ function StrategyPlannerCard({ item, onSelect, onQueue, queueBusyId }) {
       <p className="sup-v2-answer-main">{item.reason}</p>
       <div className="sup-v2-card-meta" style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
         <span className="sup-v2-chip">Priority {textValue(item.priority, '–')}</span>
-        <span className={`badge badge-${strategySourceBadgeTone(item.source)}`}>{textValue(item.source, 'internal')}</span>
-        <span className={`badge badge-${strategyStatusBadgeTone(item.status)}`}>{textValue(item.status, 'paper_only')}</span>
+        <span className={`badge badge-${strategySourceBadgeTone(item.source)}`}>{textValue(item.source, 'Ej konfigurerad')}</span>
+        <span className={`badge badge-${strategyStatusBadgeTone(item.status)}`}>{textValue(item.status, 'Ej konfigurerad')}</span>
         <span className="sup-v2-chip">Scope {textValue(item.suggested_scope, 'Ej konfigurerad')}</span>
         <span className="sup-v2-chip">Learning {textValue(item.expected_learning_value, 'Ej konfigurerad')}</span>
       </div>
@@ -1364,7 +1478,6 @@ function StrategyPlannerCard({ item, onSelect, onQueue, queueBusyId }) {
 function StrategyPlannerPanel({ planner, onSelectRecommendation, onQueueRecommendation, queueBusyId }) {
   const recommendations = normalizeArray(planner?.recommendations).slice(0, 5);
   const summary = planner?.summary || {};
-  const safety = planner?.safety || SAFETY_FLAGS;
 
   return (
     <section className="sup-section">
@@ -1377,14 +1490,14 @@ function StrategyPlannerPanel({ planner, onSelectRecommendation, onQueueRecommen
       </div>
 
       <div className="sup-v2-chip-row" style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginBottom: 12 }}>
-        <span className="sup-v2-chip">Totalt {textValue(summary.total_recommendations, '0')}</span>
-        <span className="sup-v2-chip">Replay {textValue(summary.replay_recommendations, '0')}</span>
-        <span className="sup-v2-chip">Batch {textValue(summary.batch_recommendations, '0')}</span>
-        <span className="sup-v2-chip">Paper {textValue(summary.paper_observation_recommendations, '0')}</span>
-        <span className="sup-v2-chip">History {textValue(summary.history_review_recommendations, '0')}</span>
-        <span className="sup-v2-chip">TradingView {textValue(summary.tradingview_recommendations, '0')}</span>
-        <span className="sup-v2-chip">Internal {textValue(summary.internal_recommendations, '0')}</span>
-        <span className="sup-v2-chip">Paused/deprecated {textValue(summary.skipped_paused_count, '0')}</span>
+        <span className="sup-v2-chip">Totalt {textValue(summary.total_recommendations, 'Ej konfigurerad')}</span>
+        <span className="sup-v2-chip">Replay {textValue(summary.replay_recommendations, 'Ej konfigurerad')}</span>
+        <span className="sup-v2-chip">Batch {textValue(summary.batch_recommendations, 'Ej konfigurerad')}</span>
+        <span className="sup-v2-chip">Paper {textValue(summary.paper_observation_recommendations, 'Ej konfigurerad')}</span>
+        <span className="sup-v2-chip">History {textValue(summary.history_review_recommendations, 'Ej konfigurerad')}</span>
+        <span className="sup-v2-chip">TradingView {textValue(summary.tradingview_recommendations, 'Ej konfigurerad')}</span>
+        <span className="sup-v2-chip">Internal {textValue(summary.internal_recommendations, 'Ej konfigurerad')}</span>
+        <span className="sup-v2-chip">Paused/deprecated {textValue(summary.skipped_paused_count, 'Ej konfigurerad')}</span>
       </div>
 
       {recommendations.length > 0 ? (
@@ -1785,8 +1898,8 @@ function StrategyHistoryDetail({ history, loading, error, onClear, plannerContex
               <h3>{data.strategy_id}</h3>
             </div>
             <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
-              <span className={`badge badge-${strategySourceBadgeTone(registry.source)}`}>{textValue(registry.source, 'internal')}</span>
-              <span className={`badge badge-${strategyStatusBadgeTone(registry.status)}`}>{textValue(registry.status, 'paper_only')}</span>
+              <span className={`badge badge-${strategySourceBadgeTone(registry.source)}`}>{textValue(registry.source, 'Ej konfigurerad')}</span>
+              <span className={`badge badge-${strategyStatusBadgeTone(registry.status)}`}>{textValue(registry.status, 'Ej konfigurerad')}</span>
               <button type="button" className="badge badge-blue" onClick={onClear} style={{ cursor: 'pointer', border: 'none' }}>
                 Stäng
               </button>
@@ -1794,7 +1907,7 @@ function StrategyHistoryDetail({ history, loading, error, onClear, plannerContex
           </div>
 
           <p className="sup-v2-answer-main">
-            Score {textValue(score.score, '–')} · Confidence {textValue(score.confidence, '–')}% · Sample size {textValue(score.sample_size, '0')}
+            Score {textValue(score.score, '–')} · Confidence {textValue(score.confidence, '–')}% · Sample size {textValue(score.sample_size, 'Ej konfigurerad')}
           </p>
 
           {planner ? (
@@ -1810,10 +1923,10 @@ function StrategyHistoryDetail({ history, loading, error, onClear, plannerContex
           ) : null}
 
           <div className="sup-v2-chip-row" style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginBottom: 10 }}>
-            <span className="sup-v2-chip">Paper {textValue(historySummary.paper_trades_count, '0')}</span>
-            <span className="sup-v2-chip">Replay {textValue(historySummary.replay_tests_count, '0')}</span>
-            <span className="sup-v2-chip">Batch {textValue(historySummary.batch_tests_count, '0')}</span>
-            <span className="sup-v2-chip">Learning {textValue(historySummary.learning_events_count, '0')}</span>
+            <span className="sup-v2-chip">Paper {textValue(historySummary.paper_trades_count, 'Ej konfigurerad')}</span>
+            <span className="sup-v2-chip">Replay {textValue(historySummary.replay_tests_count, 'Ej konfigurerad')}</span>
+            <span className="sup-v2-chip">Batch {textValue(historySummary.batch_tests_count, 'Ej konfigurerad')}</span>
+            <span className="sup-v2-chip">Learning {textValue(historySummary.learning_events_count, 'Ej konfigurerad')}</span>
             <span className="sup-v2-chip">Last signal {ageText(historySummary.last_signal_at)}</span>
             <span className="sup-v2-chip">Last test {ageText(historySummary.last_test_at)}</span>
           </div>
@@ -1831,9 +1944,9 @@ function StrategyHistoryDetail({ history, loading, error, onClear, plannerContex
             </article>
             <article className="sup-block sup-block-neutral">
               <span className="sup-block-title">Registry och timing</span>
-              <strong className="sup-block-value">{registry.mode || 'paper_only'}</strong>
+              <strong className="sup-block-value">{textValue(registry.mode, 'Ej konfigurerad')}</strong>
               <span className="sup-block-note">
-                Source {textValue(registry.source, 'internal')} · Status {textValue(registry.status, 'paper_only')} · Enabled {registry.enabled ? 'ja' : 'nej'}
+                Source {textValue(registry.source, 'Ej konfigurerad')} · Status {textValue(registry.status, 'Ej konfigurerad')} · Enabled {registry.enabled === true ? 'ja' : registry.enabled === false ? 'nej' : 'Ej konfigurerad'}
               </span>
             </article>
           </div>
@@ -1915,18 +2028,18 @@ function ResultWhyNoTradesPanel({ resources, model }) {
         <strong>Snabbtolkning:</strong>{' '}
         {diagnostics.candidatesCount === 0
           ? 'Just nu finns inga aktuella kandidater att öppna paper trades på.'
-          : `${diagnostics.candidatesCount} kandidater finns just nu.`}
+          : diagnostics.candidatesCount === null ? 'Kandidatantal saknas i backendsvaret.' : `${diagnostics.candidatesCount} kandidater finns just nu.`}
         <br />
-        <strong>Tydlig skillnad:</strong> {formatInt(technicalPaperCount, '0')} strategier har teknisk paper-koppling, men bara {formatInt(approvedCount, '0')} är godkända i allowlist just nu.
+        <strong>Tydlig skillnad:</strong> {formatInt(technicalPaperCount, 'Ingen data ännu')} strategier har teknisk paper-koppling, men {formatInt(approvedCount, 'Ingen data ännu')} är godkända i allowlist just nu.
         <br />
         <strong>Allowlist:</strong> bara strategier på listan får skapa låtsasaffärer. Andra strategier kan analyseras, men stoppas innan paper trade.
       </div>
 
       <div className="sup-grid sup-grid-2" style={{ display: 'grid', gap: 12, gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))', marginTop: 12 }}>
-        <article className={`sup-block ${diagnostics.paperEnabled ? 'sup-block-ok' : 'sup-block-warning'}`}>
+        <article className={`sup-block ${diagnostics.paperEnabled === true ? 'sup-block-ok' : diagnostics.paperEnabled === false ? 'sup-block-warning' : 'sup-block-neutral'}`}>
           <span className="sup-block-title">Paper Trading</span>
-          <strong className="sup-block-value">{diagnostics.paperEnabled ? 'Aktivt' : 'Ej aktivt'}</strong>
-          <span className="sup-block-note">Öppna {formatInt(diagnostics.openCount, '0')} · stängda {formatInt(diagnostics.closedCount, '0')} · blockerade {formatInt(diagnostics.blockedCount, '0')}</span>
+          <strong className="sup-block-value">{diagnostics.paperEnabled === true ? 'Aktivt' : diagnostics.paperEnabled === false ? 'Ej aktivt' : 'Ingen data ännu'}</strong>
+          <span className="sup-block-note">Öppna {formatInt(diagnostics.openCount, 'Ingen data ännu')} · stängda {formatInt(diagnostics.closedCount, 'Ingen data ännu')} · blockerade {formatInt(diagnostics.blockedCount, 'Ingen data ännu')}</span>
         </article>
         <article className="sup-block sup-block-neutral">
           <span className="sup-block-title">Senaste paper-event</span>
@@ -1935,22 +2048,22 @@ function ResultWhyNoTradesPanel({ resources, model }) {
         </article>
         <article className={`sup-block ${allowlistState.tone === 'good' ? 'sup-block-ok' : 'sup-block-neutral'}`}>
           <span className="sup-block-title">Allowlist</span>
-          <strong className="sup-block-value">{formatInt(diagnostics.allowlistReadyCount, '0')} redo</strong>
-          <span className="sup-block-note">{formatInt(diagnostics.allowlistApprovedCount, '0')} godkända · {formatInt(diagnostics.allowlist?.pendingRuntimeConnection, '0')} väntar på runtime</span>
+          <strong className="sup-block-value">{formatInt(diagnostics.allowlistReadyCount, 'Ingen data ännu')} redo</strong>
+          <span className="sup-block-note">{formatInt(diagnostics.allowlistApprovedCount, 'Ingen data ännu')} godkända · {formatInt(diagnostics.allowlist?.pendingRuntimeConnection, 'Ingen data ännu')} väntar på runtime</span>
         </article>
         <article className={`sup-block ${coverageState.tone === 'good' ? 'sup-block-ok' : 'sup-block-warning'}`}>
           <span className="sup-block-title">Data coverage</span>
           <strong className="sup-block-value">{diagnostics.coverageScore == null ? 'Ingen data ännu' : `${diagnostics.coverageScore}/100`}</strong>
-          <span className="sup-block-note">{formatInt(diagnostics.missingDataCount, '0')} symboler saknar data</span>
+          <span className="sup-block-note">{formatInt(diagnostics.missingDataCount, 'Ingen data ännu')} symboler saknar data</span>
         </article>
         <article className={`sup-block ${candidatesState.tone === 'good' ? 'sup-block-neutral' : 'sup-block-warning'}`}>
           <span className="sup-block-title">Candidates</span>
-          <strong className="sup-block-value">{formatInt(diagnostics.candidatesCount, '0')}</strong>
+          <strong className="sup-block-value">{formatInt(diagnostics.candidatesCount, 'Ingen data ännu')}</strong>
           <span className="sup-block-note">Aktuella kandidater i senaste GET-svaret.</span>
         </article>
         <article className={`sup-block ${replayState.tone === 'good' ? 'sup-block-neutral' : 'sup-block-warning'}`}>
           <span className="sup-block-title">Replay sessions</span>
-          <strong className="sup-block-value">{formatInt(diagnostics.replayCount, '0')}</strong>
+          <strong className="sup-block-value">{formatInt(diagnostics.replayCount, 'Ingen data ännu')}</strong>
           <span className="sup-block-note">Används som extra diagnos när historik saknas.</span>
         </article>
       </div>
@@ -1981,7 +2094,7 @@ function ResultWhyNoTradesPanel({ resources, model }) {
               {diagnostics.matrix.map((row) => (
                 <tr key={row.group}>
                   <td style={{ padding: '10px 12px', borderBottom: '1px solid rgba(148,163,184,.12)', fontWeight: 700 }}>{row.group}</td>
-                  <td style={{ padding: '10px 12px', borderBottom: '1px solid rgba(148,163,184,.12)' }}>{formatInt(row.count, '0')}</td>
+                  <td style={{ padding: '10px 12px', borderBottom: '1px solid rgba(148,163,184,.12)' }}>{formatInt(row.count, 'Ingen data ännu')}</td>
                   <td style={{ padding: '10px 12px', borderBottom: '1px solid rgba(148,163,184,.12)', lineHeight: 1.45 }}>{row.meaning}</td>
                 </tr>
               ))}
@@ -2027,7 +2140,7 @@ function ResultWhyNoTradesPanel({ resources, model }) {
                       {row.latestBlockedReason ? <div style={{ marginTop: 4, opacity: 0.8 }}>{row.latestBlockedReason}</div> : null}
                     </td>
                     <td style={{ padding: '10px 12px', borderBottom: '1px solid rgba(148,163,184,.12)' }}>
-                      {formatInt(row.blockedCount, '0')}
+                      {formatInt(row.blockedCount, 'Ingen data ännu')}
                     </td>
                   </tr>
                 ))}
@@ -2060,7 +2173,7 @@ function ResultWhyNoTradesPanel({ resources, model }) {
                       {row.id || row.name}
                       <div style={{ marginTop: 4, opacity: 0.8 }}>{row.name}</div>
                     </td>
-                    <td style={{ padding: '10px 12px', borderBottom: '1px solid rgba(148,163,184,.12)' }}>{formatInt(row.count, '0')}</td>
+                    <td style={{ padding: '10px 12px', borderBottom: '1px solid rgba(148,163,184,.12)' }}>{formatInt(row.count, 'Ingen data ännu')}</td>
                     <td style={{ padding: '10px 12px', borderBottom: '1px solid rgba(148,163,184,.12)', lineHeight: 1.45 }}>
                       {row.commonReason}
                       {row.latestReason && row.latestReason !== row.commonReason ? <div style={{ marginTop: 4, opacity: 0.8 }}>Senaste: {row.latestReason}</div> : null}
@@ -2103,7 +2216,7 @@ function PaperAllowlistPanel({ resources, model }) {
       )}
 
       <div className="sup-safety-copy" style={{ marginBottom: 12 }}>
-        <strong>Nyckelpoäng:</strong> {formatInt(diagnostics.technicalPaperCount, '0')} strategier har teknisk paper-koppling, men bara {formatInt(diagnostics.allowlistApprovedCount, '0')} är godkända i allowlist just nu.
+        <strong>Nyckelpoäng:</strong> {formatInt(diagnostics.technicalPaperCount, 'Ej konfigurerad')} strategier har teknisk paper-koppling, men bara {formatInt(diagnostics.allowlistApprovedCount, 'Ej konfigurerad')} är godkända i allowlist just nu.
       </div>
 
       <div className="sup-grid sup-grid-2" style={{ display: 'grid', gap: 12, gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))' }}>
@@ -2114,18 +2227,18 @@ function PaperAllowlistPanel({ resources, model }) {
         </article>
         <article className="sup-block sup-block-neutral">
           <span className="sup-block-title">Approved</span>
-          <strong className="sup-block-value">{formatInt(data?.totalApproved, '0')}</strong>
-          <span className="sup-block-note">{formatInt(data?.readyForPaperRuntime, '0')} redo · {formatInt(data?.pendingRuntimeConnection, '0')} väntar</span>
+          <strong className="sup-block-value">{formatInt(data?.totalApproved, 'Ej konfigurerad')}</strong>
+          <span className="sup-block-note">{formatInt(data?.readyForPaperRuntime, 'Ej konfigurerad')} redo · {formatInt(data?.pendingRuntimeConnection, 'Ej konfigurerad')} väntar</span>
         </article>
         <article className="sup-block sup-block-neutral">
           <span className="sup-block-title">Enabled for runtime</span>
           <strong className="sup-block-value">{textValue(data?.enabledForPaperRuntime, 'Ej angivet')}</strong>
           <span className="sup-block-note">automaticPaperOnlyTesting: {textValue(data?.automaticPaperOnlyTesting, 'Ej angivet')}</span>
         </article>
-        <article className="sup-block sup-block-ok">
+        <article className={`sup-block ${data?.safety ? 'sup-block-ok' : 'sup-block-neutral'}`}>
           <span className="sup-block-title">Safety</span>
-          <strong className="sup-block-value">{textValue(data?.safety?.mode, 'paper_only')}</strong>
-          <span className="sup-block-note">actions_allowed=false · can_place_orders=false · live_trading_enabled=false</span>
+          <strong className="sup-block-value">{textValue(data?.safety?.mode, 'Ej konfigurerad')}</strong>
+          <span className="sup-block-note">actions_allowed={onOffLabel(data?.safety?.actions_allowed)} · can_place_orders={onOffLabel(data?.safety?.can_place_orders)} · live_trading_enabled={onOffLabel(data?.safety?.live_trading_enabled)}</span>
         </article>
       </div>
 
@@ -2156,7 +2269,7 @@ function PaperAllowlistPanel({ resources, model }) {
                       {row.latestActivityAt ? `${row.latestActivityLabel} · ${ageText(row.latestActivityAt)}` : row.latestActivityLabel}
                       {row.latestBlockedReason ? <div style={{ marginTop: 4, opacity: 0.8 }}>{row.latestBlockedReason}</div> : null}
                     </td>
-                    <td style={{ padding: '10px 12px', borderBottom: '1px solid rgba(148,163,184,.12)' }}>{formatInt(row.blockedCount, '0')}</td>
+                    <td style={{ padding: '10px 12px', borderBottom: '1px solid rgba(148,163,184,.12)' }}>{formatInt(row.blockedCount, 'Ingen data ännu')}</td>
                   </tr>
                 ))}
               </tbody>
@@ -2190,7 +2303,7 @@ function PaperAllowlistPanel({ resources, model }) {
                       {row.id || row.name}
                       <div style={{ marginTop: 4, opacity: 0.8 }}>{row.name}</div>
                     </td>
-                    <td style={{ padding: '10px 12px', borderBottom: '1px solid rgba(148,163,184,.12)' }}>{formatInt(row.count, '0')}</td>
+                    <td style={{ padding: '10px 12px', borderBottom: '1px solid rgba(148,163,184,.12)' }}>{formatInt(row.count, 'Ingen data ännu')}</td>
                     <td style={{ padding: '10px 12px', borderBottom: '1px solid rgba(148,163,184,.12)', lineHeight: 1.45 }}>
                       {row.commonReason}
                       {row.latestReason && row.latestReason !== row.commonReason ? <div style={{ marginTop: 4, opacity: 0.8 }}>Senaste: {row.latestReason}</div> : null}
@@ -2271,7 +2384,8 @@ function RecentTradingEvents({ resource }) {
 function EventAiConclusion({ resource }) {
   const data = unwrap(resource);
   const state = endpointState(resource);
-  const events = normalizeArray(data?.events).slice(0, 100);
+  const hasEventsField = Array.isArray(data?.events);
+  const events = hasEventsField ? normalizeArray(data?.events).slice(0, 100) : null;
   const ai = buildEventAiConclusion(events);
   const toneClass = ai.tone === 'green'
     ? 'sup-block-ok'
@@ -2308,9 +2422,9 @@ function EventAiConclusion({ resource }) {
       <div className="sup-grid sup-grid-2" style={{ marginTop: 12 }}>
         <article className="sup-block sup-block-neutral">
           <span className="sup-block-title">Viktigaste datapunkter</span>
-          <strong className="sup-block-value">{ai.metrics.detected} signal.detected</strong>
+          <strong className="sup-block-value">{formatInt(ai.metrics.detected, 'Ingen data ännu')} signal.detected</strong>
           <span className="sup-block-note">
-            strategy.matched {ai.metrics.matched} · market_gate.blocked {ai.metrics.blocked} · market_gate.observe_only {ai.metrics.observeOnly} · paper_trade.opened {ai.metrics.opened} · paper_trade.skipped {ai.metrics.skipped}
+            strategy.matched {formatInt(ai.metrics.matched, 'Ingen data ännu')} · market_gate.blocked {formatInt(ai.metrics.blocked, 'Ingen data ännu')} · market_gate.observe_only {formatInt(ai.metrics.observeOnly, 'Ingen data ännu')} · paper_trade.opened {formatInt(ai.metrics.opened, 'Ingen data ännu')} · paper_trade.skipped {formatInt(ai.metrics.skipped, 'Ingen data ännu')}
           </span>
         </article>
 
@@ -2334,7 +2448,7 @@ function EventAiConclusion({ resource }) {
           <span className="sup-block-note">
             {ai.metrics.opened > 0
               ? 'Systemet fungerar och öppnar paper trades när reglerna godkänner.'
-              : 'Fortsätt bara observera eller kontrollera gate/risk om allt blockeras.'}
+              : ai.metrics.opened === null ? 'Ingen backenddata för öppnade paper trades ännu.' : 'Fortsätt bara observera eller kontrollera gate/risk om allt blockeras.'}
           </span>
         </article>
       </div>
@@ -2362,7 +2476,8 @@ function EventAiConclusion({ resource }) {
 function EventsByMarket({ resource }) {
   const data = unwrap(resource);
   const state = endpointState(resource);
-  const events = normalizeArray(data?.events).slice(0, 100);
+  const hasEventsField = Array.isArray(data?.events);
+  const events = hasEventsField ? normalizeArray(data?.events).slice(0, 100) : [];
   const summary = buildEventsByMarketSummary(events);
   const hasEvents = events.length > 0;
 
@@ -2390,8 +2505,10 @@ function EventsByMarket({ resource }) {
         </div>
       )}
 
-      {!hasEvents ? (
-        <div className="opt-empty">Inga events ännu. Systemet väntar på nya signaler.</div>
+      {!hasEventsField ? (
+        <div className="opt-empty">Ingen eventdata från backend ännu.</div>
+      ) : !hasEvents ? (
+        <div className="opt-empty">Backend returnerade 0 events i aktuell vy.</div>
       ) : (
         <>
           <div className="sup-v2-report-lead" style={{ marginBottom: 12 }}>
@@ -2402,10 +2519,10 @@ function EventsByMarket({ resource }) {
             {summary.summaries.map((item) => (
               <article key={item.market} className={`sup-block ${toneClassFor(item.tone)}`}>
                 <span className="sup-block-title">{item.market}</span>
-                <strong className="sup-block-value">{item.count} events</strong>
+                <strong className="sup-block-value">{formatInt(item.count, 'Ingen data ännu')} events</strong>
                 <span className="sup-block-note">{item.interpretation}</span>
                 <div className="sup-v2-report-lead" style={{ marginTop: 10, marginBottom: 0 }}>
-                  <strong>Nyckeltal:</strong> signal.detected {item.detected} · strategy.matched {item.matched} · market_gate.blocked {item.blocked} · market_gate.observe_only {item.observeOnly} · paper_trade.opened {item.opened} · paper_trade.skipped {item.skipped}
+                  <strong>Nyckeltal:</strong> signal.detected {formatInt(item.detected, 'Ingen data ännu')} · strategy.matched {formatInt(item.matched, 'Ingen data ännu')} · market_gate.blocked {formatInt(item.blocked, 'Ingen data ännu')} · market_gate.observe_only {formatInt(item.observeOnly, 'Ingen data ännu')} · paper_trade.opened {formatInt(item.opened, 'Ingen data ännu')} · paper_trade.skipped {formatInt(item.skipped, 'Ingen data ännu')}
                 </div>
                 <div className="sup-v2-report-lead" style={{ marginTop: 10, marginBottom: 0 }}>
                   <strong>Vanligast:</strong> {item.topReason}
@@ -2434,11 +2551,11 @@ function EventsByMarket({ resource }) {
 function EventSystemStatus({ resource }) {
   const data = unwrap(resource);
   const state = endpointState(resource);
-  const jsonlEnabled = data?.jsonl_enabled !== false;
-  const kafkaEnabled = data?.kafka_enabled === true;
-  const kafkaConfigured = data?.kafka_configured === true;
-  const kafkaTopic = textValue(data?.kafka_topic, 'trading.events');
-  const kafkaClientId = textValue(data?.kafka_client_id, 'trading-os-v2');
+  const jsonlEnabled = data?.jsonl_enabled === true ? true : data?.jsonl_enabled === false ? false : null;
+  const kafkaEnabled = data?.kafka_enabled === true ? true : data?.kafka_enabled === false ? false : null;
+  const kafkaConfigured = data?.kafka_configured === true ? true : data?.kafka_configured === false ? false : null;
+  const kafkaTopic = textValue(data?.kafka_topic, 'Ej konfigurerad');
+  const kafkaClientId = textValue(data?.kafka_client_id, 'Ej konfigurerad');
   const kafkaBrokers = Array.isArray(data?.kafka_brokers) ? data.kafka_brokers.filter(Boolean) : [];
   const kafkaError = textValue(data?.kafka_last_error, '');
   const kafkaLastPublishAt = data?.kafka_last_publish_at || null;
@@ -2449,11 +2566,13 @@ function EventSystemStatus({ resource }) {
     ['live_trading_enabled', data?.live_trading_enabled],
   ];
 
-  let statusMessage = 'Kafka är förberett men avstängt. Events sparas lokalt i JSONL.';
+  let statusMessage = 'Eventsystemets transportstatus saknas i backendsvaret.';
   if (kafkaEnabled && kafkaError) {
     statusMessage = 'Kafka har fel, men tradingflödet påverkas inte.';
   } else if (kafkaEnabled) {
     statusMessage = 'Kafka är aktivt som extra transportlager. JSONL är fortfarande primär.';
+  } else if (kafkaEnabled === false) {
+    statusMessage = 'Kafka är avstängt enligt backend. JSONL är primär om backend rapporterar den som aktiv.';
   }
 
   return (
@@ -2477,21 +2596,21 @@ function EventSystemStatus({ resource }) {
       </div>
 
       <div className="sup-grid sup-grid-2">
-        <article className={`sup-block ${jsonlEnabled ? 'sup-block-ok' : 'sup-block-neutral'}`}>
+        <article className={`sup-block ${jsonlEnabled === true ? 'sup-block-ok' : 'sup-block-neutral'}`}>
           <span className="sup-block-title">JSONL-logg</span>
-          <strong className="sup-block-value">{jsonlEnabled ? 'aktiv' : 'inaktiv'}</strong>
+          <strong className="sup-block-value">{jsonlEnabled === true ? 'aktiv' : jsonlEnabled === false ? 'inaktiv' : 'Ingen data ännu'}</strong>
           <span className="sup-block-note">Primär lagring i data/events/trading-events.jsonl.</span>
         </article>
 
         <article className={`sup-block ${kafkaEnabled && kafkaError ? 'sup-block-danger' : kafkaEnabled ? 'sup-block-ok' : 'sup-block-neutral'}`}>
           <span className="sup-block-title">Kafka</span>
-          <strong className="sup-block-value">{kafkaEnabled && !kafkaError ? 'aktiv' : kafkaEnabled ? 'på med fel' : 'av'}</strong>
+          <strong className="sup-block-value">{kafkaEnabled && !kafkaError ? 'aktiv' : kafkaEnabled ? 'på med fel' : kafkaEnabled === false ? 'av' : 'Ingen data ännu'}</strong>
           <span className="sup-block-note">{statusMessage}</span>
         </article>
 
-        <article className={`sup-block ${kafkaConfigured ? 'sup-block-ok' : 'sup-block-neutral'}`}>
+        <article className={`sup-block ${kafkaConfigured === true ? 'sup-block-ok' : 'sup-block-neutral'}`}>
           <span className="sup-block-title">Kafka konfigurerad</span>
-          <strong className="sup-block-value">{kafkaConfigured ? 'ja' : 'nej'}</strong>
+          <strong className="sup-block-value">{kafkaConfigured === true ? 'ja' : kafkaConfigured === false ? 'nej' : 'Ingen data ännu'}</strong>
           <span className="sup-block-note">
             Brokers: {Array.isArray(data?.kafka_brokers) && data.kafka_brokers.length ? data.kafka_brokers.join(', ') : 'ej konfigurerade'}.
           </span>
@@ -2499,7 +2618,7 @@ function EventSystemStatus({ resource }) {
 
         <article className={`sup-block ${kafkaEnabled && !kafkaError ? 'sup-block-ok' : 'sup-block-neutral'}`}>
           <span className="sup-block-title">Redpanda transport</span>
-          <strong className="sup-block-value">{kafkaEnabled && !kafkaError ? 'aktiv' : 'avvaktar'}</strong>
+          <strong className="sup-block-value">{kafkaEnabled && !kafkaError ? 'aktiv' : kafkaEnabled === false ? 'avvaktar' : 'Ingen data ännu'}</strong>
           <span className="sup-block-note">
             Kafka/Redpanda är {kafkaEnabled && !kafkaError ? 'aktivt som extra event-transport. JSONL är fortfarande primär.' : 'förberett men inte i aktiv drift.'}
           </span>
@@ -2527,11 +2646,11 @@ function EventSystemStatus({ resource }) {
           </span>
         </article>
 
-        <article className="sup-block sup-block-ok">
+        <article className="sup-block sup-block-neutral">
           <span className="sup-block-title">Safety</span>
-          <strong className="sup-block-value">låst</strong>
+          <strong className="sup-block-value">{safetyItems.some(([, value]) => value !== undefined && value !== null) ? 'backendfält' : 'Ingen data ännu'}</strong>
           <span className="sup-block-note">
-            {safetyItems.map(([key, value]) => `${key}=${String(value)}`).join(' · ')}
+            {safetyItems.map(([key, value]) => `${key}=${onOffLabel(value)}`).join(' · ')}
           </span>
         </article>
       </div>
@@ -2542,7 +2661,9 @@ function EventSystemStatus({ resource }) {
 function SignalStopSummary({ resource }) {
   const summary = signalStopSummary(resource);
   const latestBlocked = summary.latestBlocked;
-  const stoppedSignals = summary.blocked + summary.observeOnly + summary.skipped;
+  const stoppedSignals = [summary.blocked, summary.observeOnly, summary.skipped].every((value) => value !== null)
+    ? summary.blocked + summary.observeOnly + summary.skipped
+    : null;
 
   return (
     <section className="sup-section">
@@ -2554,25 +2675,27 @@ function SignalStopSummary({ resource }) {
         <SafetyTag />
       </div>
 
-      {!summary.hasEvents ? (
-        <div className="opt-empty">Inga events ännu. Systemet väntar på nya signaler.</div>
+      {summary.eventsUnavailable ? (
+        <div className="opt-empty">Ingen eventdata från backend ännu.</div>
+      ) : !summary.hasEvents ? (
+        <div className="opt-empty">Backend returnerade 0 events i aktuell vy.</div>
       ) : (
         <>
           <div className="sup-grid sup-grid-2">
             <article className="sup-block sup-block-neutral">
               <span className="sup-block-title">Vanligaste stopporsak</span>
               <strong className="sup-block-value">{summary.topReason}</strong>
-              <span className="sup-block-note">{summary.topReasonCount ? `${summary.topReasonCount} händelser` : 'Ingen tydlig stopporsak ännu.'}</span>
+              <span className="sup-block-note">{summary.topReasonCount !== null && summary.topReasonCount > 0 ? `${summary.topReasonCount} händelser` : 'Ingen tydlig stopporsak ännu.'}</span>
             </article>
             <article className="sup-block sup-block-neutral">
               <span className="sup-block-title">Antal stoppade signaler</span>
-              <strong className="sup-block-value">{stoppedSignals}</strong>
-              <span className="sup-block-note">{summary.blocked} blockerade · {summary.observeOnly} observe_only · {summary.skipped} skippade</span>
+              <strong className="sup-block-value">{formatInt(stoppedSignals, 'Ingen data ännu')}</strong>
+              <span className="sup-block-note">{formatInt(summary.blocked, 'Ingen data ännu')} blockerade · {formatInt(summary.observeOnly, 'Ingen data ännu')} observe_only · {formatInt(summary.skipped, 'Ingen data ännu')} skippade</span>
             </article>
             <article className="sup-block sup-block-neutral">
               <span className="sup-block-title">Kort förklaring</span>
               <strong className="sup-block-value">{summary.conclusion}</strong>
-              <span className="sup-block-note">{summary.allowed} tillåtna · {summary.opened} öppnade paper trades</span>
+              <span className="sup-block-note">{formatInt(summary.allowed, 'Ingen data ännu')} tillåtna · {formatInt(summary.opened, 'Ingen data ännu')} öppnade paper trades</span>
             </article>
             <article className="sup-block sup-block-neutral">
               <span className="sup-block-title">Senaste blockerade signal</span>
@@ -2595,10 +2718,11 @@ function SignalStopSummary({ resource }) {
 }
 
 function OptScoreBadge({ score }) {
-  const color = score >= 60 ? '#22c55e' : score >= 40 ? '#f59e0b' : '#ef4444';
+  const n = toNumber(score);
+  const color = n == null ? '#94a3b8' : n >= 60 ? '#22c55e' : n >= 40 ? '#f59e0b' : '#ef4444';
   return (
     <span className="opt-score-badge" style={{ background: `${color}18`, color, borderColor: `${color}50` }}>
-      {score}/100
+      {n == null ? '–' : `${formatDecimal(n, 0, '–')}/100`}
     </span>
   );
 }
@@ -2613,9 +2737,10 @@ function StatRow({ label, value, highlight }) {
 }
 
 function MiniBar({ pct, color }) {
+  const n = toNumber(pct);
   return (
     <div className="opt-minibar-track">
-      <div className="opt-minibar-fill" style={{ width: `${Math.max(0, Math.min(100, pct))}%`, background: color }} />
+      <div className="opt-minibar-fill" style={{ width: `${n == null ? 0 : Math.max(0, Math.min(100, n))}%`, background: color }} />
     </div>
   );
 }
@@ -2624,6 +2749,9 @@ function ConfigCard({ config, rank }) {
   const [open, setOpen] = React.useState(false);
   if (!config?.stats) return null;
   const { winRatePct, timeoutRatePct, avgPnl, n } = config.stats;
+  const winRate = toNumber(winRatePct);
+  const timeoutRate = toNumber(timeoutRatePct);
+  const pnl = toNumber(avgPnl);
   const isTop = rank <= 2;
   return (
     <div className={`opt-config-card ${isTop ? 'opt-config-top' : ''}`}>
@@ -2631,24 +2759,24 @@ function ConfigCard({ config, rank }) {
         <div className="opt-config-rank">#{rank}</div>
         <div className="opt-config-info">
           <div className="opt-config-label">{config.label}</div>
-          <div className="opt-config-n">{n} trades</div>
+          <div className="opt-config-n">{formatInt(n, '–')} trades</div>
         </div>
-        <OptScoreBadge score={config.score || 0} />
+        <OptScoreBadge score={config.score} />
       </div>
       <div className="opt-config-bars">
         <div className="opt-config-bar-row">
           <span>Win rate</span>
-          <MiniBar pct={winRatePct || 0} color={(winRatePct || 0) >= 50 ? '#22c55e' : (winRatePct || 0) >= 35 ? '#f59e0b' : '#ef4444'} />
-          <span className="opt-bar-val">{winRatePct}%</span>
+          <MiniBar pct={winRate} color={winRate == null ? '#94a3b8' : winRate >= 50 ? '#22c55e' : winRate >= 35 ? '#f59e0b' : '#ef4444'} />
+          <span className="opt-bar-val">{winRate == null ? '–' : `${formatDecimal(winRate, 1, '–')}%`}</span>
         </div>
         <div className="opt-config-bar-row">
           <span>Timeout</span>
-          <MiniBar pct={timeoutRatePct || 0} color={(timeoutRatePct || 0) > 50 ? '#ef4444' : (timeoutRatePct || 0) > 30 ? '#f59e0b' : '#22c55e'} />
-          <span className="opt-bar-val">{timeoutRatePct}%</span>
+          <MiniBar pct={timeoutRate} color={timeoutRate == null ? '#94a3b8' : timeoutRate > 50 ? '#ef4444' : timeoutRate > 30 ? '#f59e0b' : '#22c55e'} />
+          <span className="opt-bar-val">{timeoutRate == null ? '–' : `${formatDecimal(timeoutRate, 1, '–')}%`}</span>
         </div>
       </div>
-      <div className={`opt-config-pnl ${avgPnl >= 0 ? 'opt-pnl-pos' : 'opt-pnl-neg'}`}>
-        {avgPnl >= 0 ? '+' : ''}{(avgPnl * 100).toFixed(3)}% snitt P/L
+      <div className={`opt-config-pnl ${pnl == null || pnl === 0 ? '' : pnl > 0 ? 'opt-pnl-pos' : 'opt-pnl-neg'}`}>
+        {pnl == null ? '–' : formatSignedPct(pnl, 3, '–')} snitt P/L
       </div>
       <button className="opt-expand-btn" onClick={() => setOpen((v) => !v)} type="button">
         {open ? '▲ Dölj' : '▼ Parametrar'}
@@ -2667,6 +2795,8 @@ function ConfigCard({ config, rank }) {
 function WeakConfigCard({ config }) {
   if (!config?.stats) return null;
   const { winRatePct, timeoutRatePct, n } = config.stats;
+  const winRate = toNumber(winRatePct);
+  const timeoutRate = toNumber(timeoutRatePct);
   return (
     <div className="opt-weak-card">
       <div className="opt-weak-header">
@@ -2675,12 +2805,13 @@ function WeakConfigCard({ config }) {
           <div className="opt-weak-label">{config.label}</div>
           <div className="opt-weak-n">{n} trades</div>
         </div>
-        <OptScoreBadge score={config.score || 0} />
+        <OptScoreBadge score={config.score} />
       </div>
       {config.warning && <div className="opt-weak-warning">{config.warning}</div>}
       <div className="opt-weak-stats">
-        <span>WR: {winRatePct}%</span>
-        <span>Timeout: {timeoutRatePct}%</span>
+        <span>WR: {winRate == null ? '–' : `${formatDecimal(winRate, 1, '–')}%`}</span>
+        <span>Timeout: {timeoutRate == null ? '–' : `${formatDecimal(timeoutRate, 1, '–')}%`}</span>
+        <span>{formatInt(n, '–')} trades</span>
       </div>
     </div>
   );
@@ -2688,15 +2819,17 @@ function WeakConfigCard({ config }) {
 
 function BucketBar({ items, scoreKey = 'score', labelKey = 'label', metricKey = 'stats', metricField = 'winRatePct' }) {
   if (!items?.length) return <div className="opt-empty">Ingen data</div>;
-  const maxScore = Math.max(...items.map((item) => item?.[scoreKey] || 0));
+  const scores = items.map((item) => toNumber(item?.[scoreKey])).filter((value) => value !== null);
+  const maxScore = scores.length ? Math.max(...scores) : null;
   return (
     <div className="opt-bucket-list">
       {items.map((item, i) => {
         const st = item?.[metricKey];
         if (!st) return null;
-        const val = st[metricField] ?? 0;
-        const color = val >= 50 ? '#22c55e' : val >= 35 ? '#f59e0b' : '#ef4444';
-        const isBest = i === 0 || (item?.[scoreKey] || 0) === maxScore;
+        const val = toNumber(st[metricField]);
+        const color = val == null ? '#94a3b8' : val >= 50 ? '#22c55e' : val >= 35 ? '#f59e0b' : '#ef4444';
+        const score = toNumber(item?.[scoreKey]);
+        const isBest = maxScore !== null && (i === 0 || score === maxScore);
         return (
           <div key={`${item?.[labelKey] || i}`} className={`opt-bucket-row ${isBest ? 'opt-bucket-best' : ''}`}>
             <div className="opt-bucket-label">{item?.[labelKey]}</div>
@@ -2704,8 +2837,8 @@ function BucketBar({ items, scoreKey = 'score', labelKey = 'label', metricKey = 
               <MiniBar pct={val} color={color} />
             </div>
             <div className="opt-bucket-vals">
-              <span style={{ color, fontWeight: 600 }}>{val}%</span>
-              <span className="opt-bucket-n">n={st.n}</span>
+              <span style={{ color, fontWeight: 600 }}>{val == null ? '–' : `${formatDecimal(val, 1, '–')}%`}</span>
+              <span className="opt-bucket-n">n={formatInt(st.n, '–')}</span>
               {isBest && <span className="opt-bucket-best-badge">✓ Bäst</span>}
             </div>
           </div>
@@ -2781,12 +2914,12 @@ function buildOptimizationPrompt(optimization, sectionKey) {
         count: bestStrategy.count,
       } : null,
       topConfigs: topConfigs.slice(0, 4).map((item) => ({
-        label: item.label || item.strategy_name || item.name,
+        label: strategyLabel(item),
         score: item.score,
         stats: item.stats,
       })),
       weakConfigs: weakConfigs.slice(0, 4).map((item) => ({
-        label: item.label || item.strategy_name || item.name,
+        label: strategyLabel(item),
         score: item.score,
         stats: item.stats,
       })),
@@ -2794,13 +2927,13 @@ function buildOptimizationPrompt(optimization, sectionKey) {
     },
     configs: {
       topConfigs: topConfigs.slice(0, 5).map((item) => ({
-        label: item.label || item.strategy_name || item.name,
+        label: strategyLabel(item),
         score: item.score,
         stats: item.stats,
         params: item.params,
       })),
       weakConfigs: weakConfigs.slice(0, 5).map((item) => ({
-        label: item.label || item.strategy_name || item.name,
+        label: strategyLabel(item),
         score: item.score,
         warning: item.warning,
         stats: item.stats,
@@ -2818,8 +2951,8 @@ function buildOptimizationPrompt(optimization, sectionKey) {
     },
     exits_a: {
       exitReasons: normalizeArray(optimization.exits?.byReason).slice(0, 5),
-      timeoutCount: optimization.exits?.timeoutCount ?? 0,
-      timeoutPct: optimization.exits?.timeoutPct ?? 0,
+      timeoutCount: optimization.exits?.timeoutCount ?? null,
+      timeoutPct: optimization.exits?.timeoutPct ?? null,
       motorExitStats: optimization.exits?.motorExitStats || null,
       manualExitStats: optimization.exits?.manualExitStats || null,
       recommendations: normalizeArray(optimization.exits?.recommendations || []),
@@ -2886,9 +3019,9 @@ function optimizationSectionTitle(title, sectionKey, onAsk, description) {
 
 function OptimizationCenter({ optimization }) {
   const [section, setSection] = React.useState('overview');
-  const tradeCount = optimization?.tradeCount ?? 0;
-  const overallStats = optimization?.overallStats || optimization?.overall_stats || {};
-  const overallScore = optimization?.overallScore ?? 0;
+  const tradeCount = toNumber(optimization?.tradeCount);
+  const overallStats = optimization?.overallStats || optimization?.overall_stats || null;
+  const overallScore = toNumber(optimization?.overallScore);
   const topConfigs = normalizeArray(optimization?.topConfigs);
   const weakConfigs = normalizeArray(optimization?.weakConfigs);
   const stopLoss = optimization?.stopLoss || {};
@@ -2945,7 +3078,7 @@ function OptimizationCenter({ optimization }) {
           <div className="opt-header-left">
             <div className="opt-title">🤖 AI Optimization Agent</div>
             <div className="opt-subtitle">
-              Analyserar {tradeCount} historiska trades och förklarar vad som fungerar, vad som blockeras och vad nästa steg är.
+              Analyserar {formatInt(tradeCount, 'Ej konfigurerad')} historiska trades och förklarar vad som fungerar, vad som blockeras och vad nästa steg är.
             </div>
           </div>
           <div className="opt-header-right">
@@ -2983,32 +3116,32 @@ function OptimizationCenter({ optimization }) {
             {overallStats && (
               <div className="opt-overview-grid">
                 <div className="opt-overview-card">
-                  <div className="opt-ov-val" style={{ color: (overallStats.winRatePct || 0) >= 50 ? '#22c55e' : '#f59e0b' }}>
-                    {overallStats.winRatePct}%
+                  <div className="opt-ov-val" style={{ color: toNumber(overallStats.winRatePct) == null ? '#94a3b8' : toNumber(overallStats.winRatePct) >= 50 ? '#22c55e' : '#f59e0b' }}>
+                    {toNumber(overallStats.winRatePct) == null ? '–' : `${formatDecimal(overallStats.winRatePct, 1, '–')}%`}
                   </div>
                   <div className="opt-ov-label">Total win rate</div>
                 </div>
                 <div className="opt-overview-card">
-                  <div className="opt-ov-val" style={{ color: (overallStats.timeoutRatePct || 0) > 40 ? '#ef4444' : '#22c55e' }}>
-                    {overallStats.timeoutRatePct}%
+                  <div className="opt-ov-val" style={{ color: toNumber(overallStats.timeoutRatePct) == null ? '#94a3b8' : toNumber(overallStats.timeoutRatePct) > 40 ? '#ef4444' : '#22c55e' }}>
+                    {toNumber(overallStats.timeoutRatePct) == null ? '–' : `${formatDecimal(overallStats.timeoutRatePct, 1, '–')}%`}
                   </div>
                   <div className="opt-ov-label">Timeout-rate</div>
                 </div>
                 <div className="opt-overview-card">
-                  <div className="opt-ov-val" style={{ color: (overallStats.avgPnl || 0) >= 0 ? '#22c55e' : '#ef4444' }}>
-                    {(overallStats.avgPnl || 0) >= 0 ? '+' : ''}{((overallStats.avgPnl || 0) * 100).toFixed(3)}%
+                  <div className="opt-ov-val" style={{ color: toNumber(overallStats.avgPnl) == null ? '#94a3b8' : toNumber(overallStats.avgPnl) >= 0 ? '#22c55e' : '#ef4444' }}>
+                    {formatSignedPct(overallStats.avgPnl, 3, '–')}
                   </div>
                   <div className="opt-ov-label">Snitt P/L</div>
                 </div>
                 <div className="opt-overview-card">
-                  <div className="opt-ov-val">{tradeCount}</div>
+                  <div className="opt-ov-val">{formatInt(tradeCount, '–')}</div>
                   <div className="opt-ov-label">Trades analyserade</div>
                 </div>
               </div>
             )}
             <div className="opt-subsection">Snabba insikter</div>
             <RecommendationsList recs={recommendations} />
-            <div className="opt-rec-note">Bästa strategi: {bestStrategy?.strategy_name || 'Ingen tydlig vinnare ännu'}.</div>
+            <div className="opt-rec-note">Bästa strategi: {bestStrategy ? strategyLabel(bestStrategy) : 'Ingen tydlig vinnare ännu'}.</div>
           </div>
         )}
 
@@ -3071,20 +3204,20 @@ function OptimizationCenter({ optimization }) {
             <div className="opt-exit-meta">
               <div className="opt-exit-stat">
                 <span>Timeouts:</span>
-                <strong style={{ color: (exitsData?.timeoutPct || 0) > 40 ? '#ef4444' : '#22c55e' }}>
-                  {exitsData?.timeoutCount ?? 0} ({exitsData?.timeoutPct ?? 0}%)
+                <strong style={{ color: toNumber(exitsData?.timeoutPct) == null ? '#94a3b8' : toNumber(exitsData?.timeoutPct) > 40 ? '#ef4444' : '#22c55e' }}>
+                  {formatInt(exitsData?.timeoutCount, '–')} ({toNumber(exitsData?.timeoutPct) == null ? '–' : `${formatDecimal(exitsData.timeoutPct, 1, '–')}%`})
                 </strong>
               </div>
               {exitsData?.motorExitStats && (
                 <div className="opt-exit-stat">
                   <span>Exitmotor:</span>
-                  <strong>{exitsData.motorExitStats.winRatePct}% WR ({exitsData.motorExitStats.n} trades)</strong>
+                  <strong>{toNumber(exitsData.motorExitStats.winRatePct) == null ? '–' : `${formatDecimal(exitsData.motorExitStats.winRatePct, 1, '–')}%`} WR ({formatInt(exitsData.motorExitStats.n, '–')} trades)</strong>
                 </div>
               )}
               {exitsData?.manualExitStats && (
                 <div className="opt-exit-stat">
                   <span>Manuell exit:</span>
-                  <strong>{exitsData.manualExitStats.winRatePct}% WR ({exitsData.manualExitStats.n} trades)</strong>
+                  <strong>{toNumber(exitsData.manualExitStats.winRatePct) == null ? '–' : `${formatDecimal(exitsData.manualExitStats.winRatePct, 1, '–')}%`} WR ({formatInt(exitsData.manualExitStats.n, '–')} trades)</strong>
                 </div>
               )}
             </div>
@@ -3104,14 +3237,14 @@ function OptimizationCenter({ optimization }) {
                   <div key={i} className="opt-market-card">
                     <div className="opt-market-header">
                       <span className="opt-market-name">{m.marketSv}</span>
-                      <OptScoreBadge score={m.score || 0} />
+                      <OptScoreBadge score={m.score} />
                     </div>
                     {m.stats && (
                       <div className="opt-market-stats">
-                        <StatRow label="Win rate" value={`${m.stats.winRatePct}%`} highlight={m.stats.winRatePct >= 50} />
-                        <StatRow label="Timeout" value={`${m.stats.timeoutRatePct}%`} />
-                        <StatRow label="Trades" value={m.stats.n} />
-                        {m.avgHoldMin != null && <StatRow label="Snitt hålltid" value={`${m.avgHoldMin} min`} />}
+                        <StatRow label="Win rate" value={toNumber(m.stats.winRatePct) == null ? '–' : `${formatDecimal(m.stats.winRatePct, 1, '–')}%`} highlight={toNumber(m.stats.winRatePct) !== null && toNumber(m.stats.winRatePct) >= 50} />
+                        <StatRow label="Timeout" value={toNumber(m.stats.timeoutRatePct) == null ? '–' : `${formatDecimal(m.stats.timeoutRatePct, 1, '–')}%`} />
+                        <StatRow label="Trades" value={formatInt(m.stats.n, '–')} />
+                        {m.avgHoldMin != null && <StatRow label="Snitt hålltid" value={`${formatDecimal(m.avgHoldMin, 1, '–')} min`} />}
                       </div>
                     )}
                   </div>
@@ -3128,9 +3261,9 @@ function OptimizationCenter({ optimization }) {
                   <div key={i} className="opt-combo-card">
                     <div className="opt-combo-header">
                       <span className="opt-combo-label">{c.label}</span>
-                      <OptScoreBadge score={c.score || 0} />
+                      <OptScoreBadge score={c.score} />
                     </div>
-                    {c.stats && <div className="opt-combo-wr">{c.stats.winRatePct}% WR · {c.stats.n} trades</div>}
+                    {c.stats && <div className="opt-combo-wr">{toNumber(c.stats.winRatePct) == null ? '–' : `${formatDecimal(c.stats.winRatePct, 1, '–')}%`} WR · {formatInt(c.stats.n, '–')} trades</div>}
                   </div>
                 ))}
               </div>
@@ -3145,7 +3278,7 @@ function OptimizationCenter({ optimization }) {
               <>
                 <div className="opt-overview-grid">
                   <div className="opt-overview-card">
-                    <div className="opt-ov-val">{strategyBatchTesting.bestStrategy?.strategy_name || '–'}</div>
+                    <div className="opt-ov-val">{strategyBatchTesting.bestStrategy ? strategyLabel(strategyBatchTesting.bestStrategy) : '–'}</div>
                     <div className="opt-ov-label">Bästa strategi</div>
                   </div>
                   <div className="opt-overview-card">
@@ -3162,7 +3295,7 @@ function OptimizationCenter({ optimization }) {
                   </div>
                 </div>
                 <div className="opt-rec-note">
-                  Batch {strategyBatchTesting.latestBatch.name} · {getBatchUiStatus(strategyBatchTesting.latestBatch).emoji} {getBatchUiStatus(strategyBatchTesting.latestBatch).label} · {strategyBatchTesting.latestBatch.progress?.completed || 0}/{strategyBatchTesting.latestBatch.progress?.total || 0}
+                  Batch {strategyBatchTesting.latestBatch.name} · {getBatchUiStatus(strategyBatchTesting.latestBatch).emoji} {getBatchUiStatus(strategyBatchTesting.latestBatch).label} · {formatInt(strategyBatchTesting.latestBatch.progress?.completed, '–')}/{formatInt(strategyBatchTesting.latestBatch.progress?.total, '–')}
                 </div>
                 <RecommendationsList recs={strategyBatchTesting.recommendations} />
                 {pauseCandidates?.length > 0 && (
@@ -3172,12 +3305,12 @@ function OptimizationCenter({ optimization }) {
                       {pauseCandidates.slice(0, 6).map((s, i) => (
                         <div key={`${s.strategy_id}-${i}`} className="opt-market-card">
                           <div className="opt-market-header">
-                            <span className="opt-market-name">{s.strategy_name || s.strategy_id}</span>
-                            <OptScoreBadge score={s.score || 0} />
+                            <span className="opt-market-name">{strategyLabel(s)}</span>
+                            <OptScoreBadge score={s.score} />
                           </div>
                           <div className="opt-market-stats">
-                            <StatRow label="Win rate" value={`${s.win_rate || 0}%`} />
-                            <StatRow label="Trades" value={s.trades || 0} />
+                            <StatRow label="Win rate" value={toNumber(s.win_rate) == null ? '–' : `${formatDecimal(s.win_rate, 1, '–')}%`} />
+                            <StatRow label="Trades" value={formatInt(s.trades, '–')} />
                           </div>
                         </div>
                       ))}
@@ -3348,7 +3481,7 @@ function buildTechnicalCards(resources, decision) {
         bestOptimizationStrategy?.strategy_name ? `Bäst hittills: ${bestOptimizationStrategy.strategy_name}.` : '',
       ),
       points: [
-        `Trades ${formatInt(optimizationStats?.n || optimization?.tradeCount, 'Ingen data ännu')}`,
+        `Trades ${formatInt(optimizationStats?.n ?? optimization?.tradeCount, 'Ingen data ännu')}`,
         bestOptimizationStrategy?.strategy_name ? `Bäst: ${bestOptimizationStrategy.strategy_name}` : 'Bäst: Ej konfigurerad',
         normalizeArray(optimization?.weakConfigs).length ? `${formatInt(normalizeArray(optimization?.weakConfigs).length)} weak configs` : 'Inga weak configs',
         weakOptimizationStrategy.length ? `Pause candidates ${weakOptimizationStrategy.length}` : 'Inga pause candidates',
@@ -3388,9 +3521,9 @@ function buildTechnicalCards(resources, decision) {
       ),
       points: [
         `Öppna ${formatInt(paperStatus?.openCount, 'Ingen data ännu')}`,
-        `Win rate ${formatPct(paperPerformance?.win_rate, 1, 'Ingen data ännu')} (${winRateConfidence(paperPerformance?.trades ?? paperPerformance?.total_trades ?? paperPerformance?.count)})`,
-        `Timeout ${formatPct(paperPerformance?.timeout_rate, 0, 'Ingen data ännu')}`,
-        `Snitt-P/L ${formatSignedPct(paperPerformance?.avg_pnl, 2, 'Ingen data ännu')}`,
+        `Win rate ${formatPct(paperPerformance?.winRate ?? paperPerformance?.win_rate, 1, 'Ingen data ännu')} (${winRateConfidence(paperPerformance?.totalTrades ?? paperPerformance?.trades ?? paperPerformance?.total_trades ?? paperPerformance?.count)})`,
+        `Timeout ${formatPct(paperPerformance?.timeoutRate ?? paperPerformance?.timeout_rate, 0, 'Ingen data ännu')}`,
+        `Snitt-P/L ${formatSignedPct(paperPerformance?.avgPnlPct ?? paperPerformance?.avg_pnl, 2, 'Ingen data ännu')}`,
         paperPerformance?.latest_trade?.symbol ? `Senaste trade ${paperPerformance.latest_trade.symbol}` : 'Senaste trade: Ingen data ännu',
       ],
       source: '/api/paper-trading/status + /performance',
@@ -3441,6 +3574,8 @@ function buildDecisionModel(resources) {
   const marketRegime = unwrap(resources.marketRegime);
   const paperStatus = unwrap(resources.paperStatus);
   const paperPerformance = unwrap(resources.paperPerformance);
+  const supervisorOverview = unwrap(resources.supervisorOverview);
+  const supervisorPaperRuntimeSummary = supervisorOverview?.paperRuntimeSummary?.summary || {};
   const recommendation = unwrap(resources.recommendation);
   const runtime = unwrap(resources.runtimeStrategies);
   const registryStatus = unwrap(resources.registryStatus);
@@ -3449,19 +3584,29 @@ function buildDecisionModel(resources) {
   const tradingViewStatus = unwrap(resources.tradingviewStatus);
 
   const runtimeSummary = runtime?.summary || {};
+  const hasRuntimeStrategies = Array.isArray(runtime?.strategies);
   const runtimeStrategies = normalizeArray(runtime?.strategies);
   const topFocus = normalizeArray(priority?.topFocus || []);
   const avoidList = normalizeArray(priority?.avoid || []);
+  const hasPaperAllowlistRows = Array.isArray(paperAllowlistStatus?.allowlist);
   const paperAllowlistRows = normalizeArray(paperAllowlistStatus?.allowlist);
-  const allowlistApprovedCount = toNumber(paperAllowlistStatus?.totalApproved) ?? paperAllowlistRows.length;
-  const allowlistReadyCount = toNumber(paperAllowlistStatus?.readyForPaperRuntime) ?? paperAllowlistRows.filter((row) => row?.paperRuntimeReady !== false).length;
-  const candidateCount = toNumber(candidatesStats?.total) ?? normalizeArray(candidatesRecent?.candidates).length;
-  const replayCount = normalizeArray(replaySessions?.sessions).length;
-  const paperBlockCount = toNumber(paperStatus?.summary?.blockedCount) ?? normalizeArray(paperEvents?.events).filter((event) => {
-    const type = String(event?.type || event?.event_type || '').toLowerCase();
+  const hasCandidateRows = Array.isArray(candidatesRecent?.candidates);
+  const candidateRows = normalizeArray(candidatesRecent?.candidates);
+  const hasReplaySessions = Array.isArray(replaySessions?.sessions);
+  const replayRows = normalizeArray(replaySessions?.sessions);
+  const hasPaperEventRows = Array.isArray(paperEvents?.events);
+  const paperEventRows = normalizeArray(paperEvents?.events);
+  const allowlistApprovedCount = toNumber(paperAllowlistStatus?.totalApproved) ?? (hasPaperAllowlistRows ? paperAllowlistRows.length : null);
+  const allowlistReadyCount = toNumber(paperAllowlistStatus?.readyForPaperRuntime) ?? (hasPaperAllowlistRows ? paperAllowlistRows.filter((row) => row?.paperRuntimeReady !== false).length : null);
+  const candidateCount = toNumber(candidatesStats?.total) ?? (hasCandidateRows ? candidateRows.length : null);
+  const replayCount = hasReplaySessions ? replayRows.length : null;
+  const paperBlockCount = toNumber(paperStatus?.summary?.blockedCount)
+    ?? toNumber(supervisorPaperRuntimeSummary.blockedCount)
+    ?? (hasPaperEventRows ? paperEventRows.filter((event) => {
+    const type = eventTypeKey(event);
     const decision = String(event?.decision || '').toLowerCase();
     return type.includes('blocked') || type.includes('skip') || type.includes('gate') || decision === 'blocked' || decision === 'skipped';
-  }).length;
+  }).length : null);
   const coverageScore = toNumber(dataCoverageStatus?.total_coverage_score);
   const missingDataCount = toNumber(dataCoverageStatus?.symbols_missing_data);
   const catalogStatusCounts = runtimeStrategies.reduce((acc, strategy) => {
@@ -3469,12 +3614,14 @@ function buildDecisionModel(resources) {
     acc[key] = (acc[key] || 0) + 1;
     return acc;
   }, {});
+  const catalogStatusCount = (key) => (hasRuntimeStrategies ? (catalogStatusCounts[key] ?? 0) : null);
   const catalogStatusRows = runtimeStrategies
     .map((strategy) => {
       const statusKey = strategyCatalogStatusKey(strategy);
+      const model = supervisorV2StrategyModel(strategy);
       return {
-        id: strategy.id || strategy.strategy_id || '',
-        name: strategy.name || strategy.strategy_name || strategy.id || strategy.strategy_id || 'Okänd strategi',
+        id: model.strategyId || strategy.id || strategy.strategy_id || '',
+        name: strategyDisplayName(model, 'Okänd strategi'),
         statusKey,
         statusLabel: strategyCatalogStatusLabel(statusKey),
         supportsScanner: strategy.supportsScanner === true,
@@ -3491,18 +3638,18 @@ function buildDecisionModel(resources) {
   const selectedButNotRunnable = selectedStrategies.filter((strategy) => strategy.can_create_paper_trade !== true);
   const noEntryRule = runtimeStrategies.filter((strategy) => strategy.runtime_status === 'no_entry_rule');
   const noMapping = runtimeStrategies.filter((strategy) => strategy.runtime_status === 'not_connected');
-  const selectedButNotRunnableCount = selectedButNotRunnable.length;
-  const totalCount = toNumber(runtimeSummary.total) ?? runtimeStrategies.length;
-  const paperTradeCount = toNumber(runtimeSummary.can_create_paper_trade_count) ?? runnableStrategies.length;
-  const selectedCount = toNumber(runtimeSummary.enabled_by_user) ?? selectedStrategies.length;
-  const noEntryRuleCount = toNumber(runtimeSummary.runtime_no_entry_rule) ?? noEntryRule.length;
-  const noMappingCount = toNumber(runtimeSummary.runtime_not_connected) ?? noMapping.length;
+  const selectedButNotRunnableCount = hasRuntimeStrategies ? selectedButNotRunnable.length : null;
+  const totalCount = toNumber(runtimeSummary.total) ?? (hasRuntimeStrategies ? runtimeStrategies.length : null);
+  const paperTradeCount = toNumber(runtimeSummary.can_create_paper_trade_count) ?? (hasRuntimeStrategies ? runnableStrategies.length : null);
+  const selectedCount = toNumber(runtimeSummary.enabled_by_user) ?? (hasRuntimeStrategies ? selectedStrategies.length : null);
+  const noEntryRuleCount = toNumber(runtimeSummary.runtime_no_entry_rule) ?? (hasRuntimeStrategies ? noEntryRule.length : null);
+  const noMappingCount = toNumber(runtimeSummary.runtime_not_connected) ?? (hasRuntimeStrategies ? noMapping.length : null);
 
   const systemProblems = uniqueText([
     ...normalizeArray(safety?.warnings),
     ...normalizeArray(health?.issues),
     ...normalizeArray(health?.warnings),
-    ...(paperPerformance?.timeout_rate != null && toNumber(paperPerformance.timeout_rate) >= 30 ? [`Paper trading timeout-rate ${formatPct(paperPerformance.timeout_rate, 0)}.`] : []),
+    ...((paperPerformance?.timeoutRate ?? paperPerformance?.timeout_rate) != null && toNumber(paperPerformance?.timeoutRate ?? paperPerformance?.timeout_rate) >= 30 ? [`Paper trading timeout-rate ${formatPct(paperPerformance?.timeoutRate ?? paperPerformance?.timeout_rate, 0)}.`] : []),
     ...(learningSummary?.trades_total != null ? [] : ['Lärandesammanfattningen saknar underlag.']),
     ...(learningConnectorStatus?.errors?.length ? [`Learning Connector har ${formatInt(learningConnectorStatus.errors.length)} fel i kö.`] : []),
     ...(pipelineStatus?.warnings?.length ? [`Pipeline har ${formatInt(pipelineStatus.warnings.length)} varningar.`] : []),
@@ -3517,7 +3664,11 @@ function buildDecisionModel(resources) {
   const marketMode = marketRiskLabel(marketRegime);
   const volatilityText = marketVolatilityLabel(marketRegime);
   const systemStatus = systemProblems.length > 0 ? 'Problem' : 'Stabilt';
-  const tradingMode = SAFETY_FLAGS.live_trading_enabled ? 'Live blockerad' : 'Endast test';
+  const safetyMode = textValue(safety?.mode ?? safety?.trading_mode ?? safety?.profile, 'Ingen data ännu');
+  const safetyActionsAllowed = safety?.actions_allowed;
+  const safetyCanPlaceOrders = safety?.can_place_orders;
+  const safetyLiveTradingEnabled = safety?.live_trading_enabled;
+  const tradingMode = safetyMode;
 
   const bestStrategy = recommendation?.best_strategy
     || optimization?.daytradingStrategies?.bestStrategy
@@ -3545,41 +3696,47 @@ function buildDecisionModel(resources) {
 
   const selectedButNotRunnableLabel = selectedButNotRunnableCount > 0
     ? `${selectedButNotRunnableCount} strategier är valda men inte körbara`
-    : 'Inga valda strategier är blockerade';
+    : selectedButNotRunnableCount === 0 ? 'Inga valda strategier är blockerade' : 'Ingen runtime-data ännu';
   const entryRuleLabel = noEntryRuleCount > 0
     ? `${noEntryRuleCount} saknar entry-regel`
-    : 'Ingen strategi saknar entry-regel';
+    : noEntryRuleCount === 0 ? 'Ingen strategi saknar entry-regel' : 'Ingen runtime-data ännu';
   const mappingLabel = noMappingCount > 0
     ? `${noMappingCount} saknar mapping till runtime`
-    : 'Ingen strategi saknar mapping';
+    : noMappingCount === 0 ? 'Ingen strategi saknar mapping' : 'Ingen runtime-data ännu';
 
+  const totalCountText = formatInt(totalCount, 'Ingen data ännu');
+  const selectedCountText = formatInt(selectedCount, 'Ingen data ännu');
+  const paperTradeCountText = formatInt(paperTradeCount, 'Ingen data ännu');
+  const allowlistApprovedCountText = formatInt(allowlistApprovedCount, 'Ingen data ännu');
+  const selectedButNotRunnableCountText = formatInt(selectedButNotRunnableCount, 'Ingen data ännu');
   const systemSummary = systemProblems.length === 0
-    ? `${totalCount} strategier finns i katalogen, ${selectedCount} är aktiva, ${paperTradeCount} har teknisk paper-koppling och bara ${allowlistApprovedCount} är godkända i allowlist just nu.`
-    : `${totalCount} strategier finns i katalogen, ${selectedCount} är aktiva, ${paperTradeCount} har teknisk paper-koppling och bara ${allowlistApprovedCount} är godkända i allowlist just nu. ${selectedButNotRunnableCount} strategier är valda men saknar körbar koppling.`;
+    ? `${totalCountText} strategier finns i katalogen, ${selectedCountText} är aktiva, ${paperTradeCountText} har teknisk paper-koppling och ${allowlistApprovedCountText} är godkända i allowlist just nu.`
+    : `${totalCountText} strategier finns i katalogen, ${selectedCountText} är aktiva, ${paperTradeCountText} har teknisk paper-koppling och ${allowlistApprovedCountText} är godkända i allowlist just nu. ${selectedButNotRunnableCountText} strategier är valda men saknar körbar koppling.`;
 
   const systemSummaryExtra = uniqueText([
     selectedCount > 0 ? `${selectedCount} strategier är valda.` : '',
     noEntryRuleCount > 0 ? `${noEntryRuleCount} strategier saknar entry-regel.` : '',
     noMappingCount > 0 ? `${noMappingCount} strategier saknar mapping till runtime.` : '',
-    paperTradeCount > 0 ? `${paperTradeCount} strategier har teknisk paper-koppling, men bara ${allowlistApprovedCount} är godkända i allowlist.` : 'Ingen strategi har teknisk paper-koppling ännu.',
-    allowlistApprovedCount > 0 ? `${allowlistApprovedCount} strategier är godkända i allowlist.` : 'Inga strategier är godkända i allowlist ännu.',
-    candidateCount === 0 ? 'Just nu finns inga aktuella kandidater.' : `${candidateCount} kandidater finns just nu.`,
-    replayCount === 0 ? 'Replay-underlag saknas ännu.' : `${replayCount} replay-sessioner finns.`,
+    paperTradeCount > 0 ? `${paperTradeCount} strategier har teknisk paper-koppling, men ${allowlistApprovedCountText} är godkända i allowlist.` : paperTradeCount === 0 ? 'Ingen strategi har teknisk paper-koppling ännu.' : '',
+    allowlistApprovedCount > 0 ? `${allowlistApprovedCount} strategier är godkända i allowlist.` : allowlistApprovedCount === 0 ? 'Inga strategier är godkända i allowlist ännu.' : '',
+    candidateCount === 0 ? 'Just nu finns inga aktuella kandidater.' : candidateCount === null ? '' : `${candidateCount} kandidater finns just nu.`,
+    replayCount === 0 ? 'Replay-underlag saknas ännu.' : replayCount === null ? '' : `${replayCount} replay-sessioner finns.`,
     coverageScore != null ? `Data coverage: ${coverageScore}/100.` : '',
     missingDataCount != null && missingDataCount > 0 ? `${missingDataCount} symboler saknar data.` : '',
     daytradingLearning?.summary?.best_strategy?.key ? `Bäst i learning: ${daytradingLearning.summary.best_strategy.key}.` : '',
   ]);
 
   const registrySummary = {
-    total: toNumber(registryStatus?.total_strategies) ?? 0,
-    active: toNumber(registryStatus?.active_strategies) ?? 0,
-    tradingview: toNumber(registryStatus?.tradingview_strategies) ?? 0,
-    paused: toNumber(registryStatus?.paused_strategies) ?? 0,
-    deprecated: toNumber(registryStatus?.deprecated_strategies) ?? 0,
+    total: toNumber(registryStatus?.total_strategies),
+    active: toNumber(registryStatus?.active_strategies),
+    tradingview: toNumber(registryStatus?.tradingview_strategies),
+    paused: toNumber(registryStatus?.paused_strategies),
+    deprecated: toNumber(registryStatus?.deprecated_strategies),
     latestTradingView: registryStatus?.latest_tradingview_strategy || null,
     latestBlockedReason: registryStatus?.latest_blocked_reason || null,
   };
 
+  const hasScoreStrategies = Array.isArray(strategyScoreStatus?.strategies);
   const scoreStrategies = normalizeArray(strategyScoreStatus?.strategies);
   const scoreTop = scoreStrategies[0] || strategyScoreStatus?.top_scores?.[0] || null;
   const scoreWeak = strategyScoreStatus?.weakest_scores?.[0] || scoreStrategies[scoreStrategies.length - 1] || null;
@@ -3602,8 +3759,8 @@ function buildDecisionModel(resources) {
     .filter((row) => String(row.recommended_action || '').toLowerCase().includes('replay') || String(row.recommended_action || '').toLowerCase().includes('batch'))
     .slice(0, 5);
   const scoreSummary = {
-    total: toNumber(strategyScoreStatus?.total_strategies) ?? scoreStrategies.length,
-    uncertain: toNumber(strategyScoreStatus?.uncertain_count) ?? 0,
+    total: toNumber(strategyScoreStatus?.total_strategies) ?? (hasScoreStrategies ? scoreStrategies.length : null),
+    uncertain: toNumber(strategyScoreStatus?.uncertain_count) ?? (Array.isArray(strategyScoreStatus?.uncertain_strategies) ? scoreUncertainDrilldown.length : null),
     top: scoreTop,
     weak: scoreWeak,
     topDrilldown: scoreTopDrilldown.length > 0 ? scoreTopDrilldown : scoreTopFallback,
@@ -3668,12 +3825,12 @@ function buildDecisionModel(resources) {
   ]);
 
   const problemPoints = uniqueText([
-    `${totalCount} strategier i katalogen`,
-    `${selectedCount} aktiva strategier`,
-    `${paperTradeCount} tekniskt paper-kopplade`,
-    `${allowlistApprovedCount} godkända i allowlist`,
-    candidateCount === 0 ? 'Inga aktuella kandidater just nu' : `${candidateCount} kandidater just nu`,
-    paperBlockCount > 0 ? `${paperBlockCount} blockerade paper-events senaste perioden` : 'Inga blockerade paper-events senaste perioden',
+    `${totalCountText} strategier i katalogen`,
+    `${selectedCountText} aktiva strategier`,
+    `${paperTradeCountText} tekniskt paper-kopplade`,
+    `${allowlistApprovedCountText} godkända i allowlist`,
+    candidateCount === 0 ? 'Inga aktuella kandidater just nu' : candidateCount === null ? '' : `${candidateCount} kandidater just nu`,
+    paperBlockCount > 0 ? `${paperBlockCount} blockerade paper-events senaste perioden` : paperBlockCount === 0 ? 'Inga blockerade paper-events senaste perioden' : '',
   ]);
 
   const actionItems = [];
@@ -3708,9 +3865,9 @@ function buildDecisionModel(resources) {
   const riskSafetyPoints = uniqueText([
     `Market regime: ${marketMode}`,
     `Volatilitet: ${volatilityText}`,
-    `actions_allowed=${SAFETY_FLAGS.actions_allowed}`,
-    `can_place_orders=${SAFETY_FLAGS.can_place_orders}`,
-    `live_trading_enabled=${SAFETY_FLAGS.live_trading_enabled}`,
+    `actions_allowed=${onOffLabel(safetyActionsAllowed)}`,
+    `can_place_orders=${onOffLabel(safetyCanPlaceOrders)}`,
+    `live_trading_enabled=${onOffLabel(safetyLiveTradingEnabled)}`,
     'Supervisor är read-only. Den visar beslut och rekommendationer, men ändrar inte strategier.',
     marketMode === 'Risk-Off' ? 'Var försiktig med long-signaler. Prioritera test och riskkontroll.' : '',
   ]).slice(0, 5);
@@ -3803,6 +3960,7 @@ function buildDecisionModel(resources) {
     mixedAvoid: avoidMixed,
     systemProblems,
     catalogStatusCounts,
+    catalogStatusCount,
     catalogStatusRows,
     glossary,
     selectedButNotRunnableLabel,
@@ -3830,10 +3988,10 @@ function SafetyTag() {
   return (
     <span
       className="badge badge-gray"
-      title="actions_allowed=false · can_place_orders=false · live_trading_enabled=false"
+      title="Denna frontendvy är read-only och skickar inga order."
       style={{ whiteSpace: 'nowrap' }}
     >
-      🔒 Read-only · paper_only
+      🔒 Read-only UI
     </span>
   );
 }
@@ -3894,16 +4052,18 @@ function PaperTradingResultPanel({ resources, summary }) {
   const status = unwrap(resources.paperStatus) || {};
   const openTrades = normalizeArray(status.openTrades);
   const closedTrades = normalizeArray(status.recentPaperTrades || status.closedPaperTrades || status.closedTrades);
-  const openCount = toNumber(summary?.openCount) ?? openTrades.length;
-  const closedCount = toNumber(summary?.closedCount) ?? closedTrades.length;
-  const blockedCount = toNumber(summary?.blockedCount) ?? 0;
+  const openCount = toNumber(summary?.openCount) ?? (Array.isArray(status.openTrades) ? openTrades.length : null);
+  const closedCount = toNumber(summary?.closedCount) ?? (Array.isArray(status.recentPaperTrades) || Array.isArray(status.closedPaperTrades) || Array.isArray(status.closedTrades) ? closedTrades.length : null);
+  const blockedCount = toNumber(summary?.blockedCount);
   const winRate = perf?.winRate;
   const avgPnl = perf?.avgPnlPct;
-  const wins = toNumber(perf?.wins) ?? 0;
-  const losses = toNumber(perf?.losses) ?? 0;
-  const timeouts = toNumber(perf?.timeouts) ?? 0;
-  const hasTrades = openCount > 0 || closedCount > 0 || (toNumber(perf?.totalTrades) ?? 0) > 0;
-  const resultTone = wins > losses ? 'metric-good' : losses > wins ? 'metric-bad' : 'metric-neutral';
+  const wins = toNumber(perf?.wins);
+  const losses = toNumber(perf?.losses);
+  const timeouts = toNumber(perf?.timeouts);
+  const hasTrades = [openCount, closedCount, toNumber(perf?.totalTrades)].some((value) => value !== null && value > 0);
+  const hasResultCounts = [wins, losses, timeouts].some((value) => value !== null);
+  const resultCountSum = (wins ?? 0) + (losses ?? 0) + (timeouts ?? 0);
+  const resultTone = wins !== null && losses !== null && wins > losses ? 'metric-good' : wins !== null && losses !== null && losses > wins ? 'metric-bad' : 'metric-neutral';
 
   return (
     <section className="sup-section">
@@ -3918,18 +4078,18 @@ function PaperTradingResultPanel({ resources, summary }) {
       <div className="result-metric-grid">
         <article className="result-metric metric-neutral">
           <span className="result-metric-title">Öppna låtsasaffärer</span>
-          <strong className="result-metric-value">{formatInt(openCount, '0')}</strong>
+          <strong className="result-metric-value">{formatInt(openCount, 'Ej konfigurerad')}</strong>
           <span className="result-metric-note">Trades som fortfarande är igång.</span>
         </article>
         <article className="result-metric metric-neutral">
           <span className="result-metric-title">Stängda låtsasaffärer</span>
-          <strong className="result-metric-value">{formatInt(closedCount, '0')}</strong>
+          <strong className="result-metric-value">{formatInt(closedCount, 'Ej konfigurerad')}</strong>
           <span className="result-metric-note">Trades som är avslutade.</span>
         </article>
         <article className={`result-metric ${resultTone}`}>
           <span className="result-metric-title">Vinst / förlust</span>
-          <strong className="result-metric-value">{wins + losses + timeouts > 0 ? `${formatInt(wins, '0')} vinst · ${formatInt(losses, '0')} förlust` : 'Ingen data'}</strong>
-          <span className="result-metric-note">{timeouts > 0 ? `${formatInt(timeouts, '0')} timeouts` : 'Avslutade trades plus eller minus.'}</span>
+          <strong className="result-metric-value">{hasResultCounts ? `${formatInt(wins, 'Ej konfigurerad')} vinst · ${formatInt(losses, 'Ej konfigurerad')} förlust` : 'Ingen data'}</strong>
+          <span className="result-metric-note">{resultCountSum > 0 && timeouts !== null ? `${formatInt(timeouts, '0')} timeouts` : 'Avslutade trades plus eller minus.'}</span>
         </article>
         <article className={`result-metric ${winRateToneClass(winRate)}`}>
           <span className="result-metric-title">Win rate</span>
@@ -3941,9 +4101,9 @@ function PaperTradingResultPanel({ resources, summary }) {
           <strong className="result-metric-value">{avgPnl == null ? 'Ingen data' : formatSignedPct(avgPnl, 2)}</strong>
           <span className="result-metric-note">Snittresultat per avslutad trade.</span>
         </article>
-        <article className={`result-metric ${blockedCount > 0 ? 'metric-warn' : 'metric-neutral'}`}>
+        <article className={`result-metric ${blockedCount !== null && blockedCount > 0 ? 'metric-warn' : 'metric-neutral'}`}>
           <span className="result-metric-title">Blockerade paper-events</span>
-          <strong className="result-metric-value">{formatInt(blockedCount, '0')}</strong>
+          <strong className="result-metric-value">{formatInt(blockedCount, 'Ej konfigurerad')}</strong>
           <span className="result-metric-note">Stoppade innan en trade hann skapas.</span>
         </article>
         <article className="result-metric metric-neutral">
@@ -3974,7 +4134,7 @@ function PaperTradingResultPanel({ resources, summary }) {
                     <tr key={t?.id || `${t?.symbol}-${i}`}>
                       <td>{(t?.timestamp || t?.openedAt) ? formatDateTime(t.timestamp || t.openedAt) : '–'}</td>
                       <td>{textValue(t?.symbol, '–')}</td>
-                      <td>{textValue(t?.strategyName || t?.strategy_name || t?.strategyId || t?.strategy_id, '–')}</td>
+                      <td>{strategyLabel(t)}</td>
                       <td>{textValue(t?.entryPrice ?? t?.entry, '–')}</td>
                       <td>{textValue(t?.currentPrice ?? t?.lastPrice, '–')}</td>
                       <td className={pnlToneClass(t?.unrealizedPnl ?? plPct)}>{textValue(t?.unrealizedPnl, '–')}</td>
@@ -4003,15 +4163,15 @@ function PaperTradingResultPanel({ resources, summary }) {
               <tbody>
                 {closedTrades.map((t, i) => {
                   const plPct = t?.pnlPct ?? t?.realizedPnlPct;
-                  const plRef = toNumber(plPct) ?? toNumber(t?.pnl) ?? 0;
-                  const isWin = plRef > 0;
-                  const isLoss = plRef < 0;
+                  const plRef = toNumber(plPct) ?? toNumber(t?.pnl);
+                  const isWin = plRef !== null && plRef > 0;
+                  const isLoss = plRef !== null && plRef < 0;
                   return (
                     <tr key={t?.id || `${t?.symbol}-${i}`}>
                       <td>{(t?.openedAt || t?.entryTime) ? formatDateTime(t.openedAt || t.entryTime) : '–'}</td>
                       <td>{(t?.closedAt || t?.exitTime) ? formatDateTime(t.closedAt || t.exitTime) : '–'}</td>
                       <td>{textValue(t?.symbol, '–')}</td>
-                      <td>{textValue(t?.strategyName || t?.strategy_name || t?.strategyId || t?.strategy_id, '–')}</td>
+                      <td>{strategyLabel(t)}</td>
                       <td>{textValue(t?.entryPrice ?? t?.entry, '–')}</td>
                       <td>{textValue(t?.exitPrice ?? t?.exit, '–')}</td>
                       <td className={pnlToneClass(t?.pnl ?? plPct)}>{textValue(t?.pnl, '–')}</td>
@@ -4253,6 +4413,38 @@ export default function SupervisorV2Page() {
   const selectedHistorySummary = selectedHistory?.history_summary || {};
   const selectedHistoryLearningNotes = normalizeArray(selectedHistory?.learning_notes).slice(0, 5);
   const selectedHistoryNextSteps = normalizeArray(selectedHistory?.recommended_next_steps).slice(0, 5);
+  const tradingEventStore = useMemo(() => {
+    const eventsRecent = unwrap(resources.eventsRecent) || {};
+    const paperEvents = unwrap(resources.paperEvents) || {};
+    return createTradingEventStore({
+      supervisorSnapshot: unwrap(resources.supervisorOverview) || {},
+      liveActivity: eventsRecent,
+      aiSources: {
+        optimization: unwrap(resources.optimization) || {},
+        operationsAdvisor: selectedAdvisor || {},
+      },
+      analyticsSnapshot: unwrap(resources.daytradingLearningSummary) || {},
+      events: [
+        ...normalizeArray(eventsRecent.events),
+        ...normalizeArray(paperEvents.events),
+      ],
+    });
+  }, [resources, selectedAdvisor]);
+  const tradingEventCount = tradingEventStore.getAllEvents().length;
+  const decisionStore = useMemo(() => createDecisionStore({
+    eventStore: tradingEventStore,
+    supervisorSnapshot: unwrap(resources.supervisorOverview) || {},
+    aiSources: {
+      optimization: unwrap(resources.optimization) || {},
+      operationsAdvisor: selectedAdvisor || {},
+    },
+    analyticsSnapshot: unwrap(resources.daytradingLearningSummary) || {},
+    decisions: [
+      ...normalizeArray((unwrap(resources.eventsRecent) || {}).events),
+      ...normalizeArray((unwrap(resources.paperEvents) || {}).events),
+    ],
+  }), [resources, selectedAdvisor, tradingEventStore]);
+  const decisionCount = decisionStore.getDecisions().length;
 
   const topStrategies = normalizeArray(model.scoreSummary?.topDrilldown);
   const weakStrategies = normalizeArray(model.scoreSummary?.weakDrilldown);
@@ -4262,18 +4454,18 @@ export default function SupervisorV2Page() {
   const learningStrategies = normalizeArray(daytradingLearning?.by_strategy);
   const learningNeedsMoreData = learningStrategies.filter((row) => String(row?.status || '').toLowerCase() === 'needs_more_data').slice(0, 5);
 
-  const tvEnabled = tradingViewStatus?.enabled !== false;
-  const tvWebhookAuth = tradingViewStatus?.webhook_auth_configured === true;
-  const tvMode = textValue(tradingViewStatus?.mode, 'paper_only');
-  const tvAccepted = toNumber(tradingViewStatus?.accepted_signals) ?? 0;
-  const tvRejected = toNumber(tradingViewStatus?.rejected_signals) ?? 0;
+  const tvEnabled = tradingViewStatus?.enabled === true ? true : tradingViewStatus?.enabled === false ? false : null;
+  const tvWebhookAuth = tradingViewStatus?.webhook_auth_configured === true ? true : tradingViewStatus?.webhook_auth_configured === false ? false : null;
+  const tvMode = textValue(tradingViewStatus?.mode, 'Ingen data ännu');
+  const tvAccepted = toNumber(tradingViewStatus?.accepted_signals);
+  const tvRejected = toNumber(tradingViewStatus?.rejected_signals);
   const latestTvStrategy = registryStatus?.latest_tradingview_strategy || null;
   const latestBlockedReason = registryStatus?.latest_blocked_reason || null;
   const latestBlockedStrategy = registryStatus?.latest_blocked_strategy || null;
-  const totalStrategies = toNumber(registryStatus?.total_strategies) ?? 0;
-  const activeStrategies = toNumber(registryStatus?.active_strategies) ?? 0;
-  const pausedStrategies = toNumber(registryStatus?.paused_strategies) ?? 0;
-  const tradingViewCount = toNumber(registryStatus?.tradingview_strategies) ?? tradingViewStrategies.length;
+  const totalStrategies = toNumber(registryStatus?.total_strategies);
+  const activeStrategies = toNumber(registryStatus?.active_strategies);
+  const pausedStrategies = toNumber(registryStatus?.paused_strategies);
+  const tradingViewCount = toNumber(registryStatus?.tradingview_strategies) ?? (Array.isArray(model.scoreSummary?.tradingviewDrilldown) ? tradingViewStrategies.length : null);
   const uncertainStrategyCount = toNumber(model.scoreSummary?.uncertain) ?? uncertainStrategies.length;
   const internalStrategyCount = internalStrategies.length;
   const nextPlannerRecommendation = plannerRecommendations[0] || null;
@@ -4312,25 +4504,25 @@ export default function SupervisorV2Page() {
       summary: bestText(model.systemConclusion, 'Systemet är igång.'),
       detail: 'En enkel läsning av helhetsläget.',
       tone: summaryTone === 'good' ? 'good' : 'warning',
-      progress: model.systemProblems.length > 0 ? 45 : 82,
+      progress: null,
     },
     {
       icon: '🔒',
       title: 'Säkerhetsläge',
-      value: 'paper_only',
-      summary: 'Inga riktiga affärer körs.',
-      detail: 'actions_allowed=false · live_trading_enabled=false',
-      tone: 'good',
-      progress: 100,
+      value: tradingMode,
+      summary: safety ? 'Backend safety-status mottagen.' : 'Ingen safety-status mottagen från backend.',
+      detail: `actions_allowed=${onOffLabel(safetyActionsAllowed)} · live_trading_enabled=${onOffLabel(safetyLiveTradingEnabled)}`,
+      tone: safetyLiveTradingEnabled === false && safetyActionsAllowed === false ? 'good' : safety ? 'warning' : 'muted',
+      progress: null,
     },
     {
       icon: '📡',
       title: 'TradingView',
-      value: tvEnabled ? 'Aktiv' : 'Av',
-      summary: tvEnabled ? 'Signalflödet finns på plats.' : 'TradingView är avstängt just nu.',
-      detail: `Mode ${tvMode} · auth ${tvWebhookAuth ? 'på' : 'av'}`,
-      tone: tvEnabled ? 'good' : 'muted',
-      progress: tvEnabled ? 76 : 18,
+      value: activeLabel(tvEnabled),
+      summary: tvEnabled === true ? 'Signalflödet finns på plats.' : tvEnabled === false ? 'TradingView är avstängt just nu.' : 'TradingView-status saknas i backendsvaret.',
+      detail: `Mode ${tvMode} · auth ${onOffLabel(tvWebhookAuth)}`,
+      tone: tvEnabled === true ? 'good' : tvEnabled === false ? 'muted' : 'warning',
+      progress: null,
     },
     {
       icon: '🧩',
@@ -4339,7 +4531,7 @@ export default function SupervisorV2Page() {
       summary: `${formatInt(totalStrategies, 'Ingen data ännu')} totalt · ${formatInt(pausedStrategies, 'Ingen data ännu')} pausade`,
       detail: 'Hur många arbetssätt som just nu följs.',
       tone: 'info',
-      progress: totalStrategies ? Math.round((activeStrategies / Math.max(totalStrategies, 1)) * 100) : 0,
+      progress: null,
     },
     {
       icon: '📝',
@@ -4348,7 +4540,7 @@ export default function SupervisorV2Page() {
       summary: bestText(nextPlannerReason, 'Ingen rekommendation ännu.'),
       detail: 'Det här är bara ett förslag, inte en körning.',
       tone: 'info',
-      progress: plannerRecommendations.length ? 68 : 20,
+      progress: null,
     },
     {
       icon: '⚠️',
@@ -4357,13 +4549,13 @@ export default function SupervisorV2Page() {
       summary: 'Sidan är läsbar och avsedd för test.',
       detail: 'Ingen livehandel härifrån.',
       tone: model.systemProblems.length > 0 ? 'warning' : 'good',
-      progress: model.systemProblems.length > 0 ? 38 : 72,
+      progress: null,
     },
   ];
 
   if (loading && !resources.status) {
     return (
-      <div className="sup-page sup-v2-page">
+      <div className="sup-page sup-v2-page" data-trading-event-count={tradingEventCount} data-decision-count={decisionCount}>
         <div className="sup-hero sup-v2-hero">
           <div className="sup-hero-copy">
             <div className="sup-kicker">Trading OS</div>
@@ -4377,7 +4569,7 @@ export default function SupervisorV2Page() {
   }
 
   return (
-    <div className="sup-page sup-v2-page">
+    <div className="sup-page sup-v2-page" data-trading-event-count={tradingEventCount} data-decision-count={decisionCount}>
       <div className="sup-hero sup-v2-hero">
         <div className="sup-hero-copy">
           <div className="sup-kicker">Trading OS</div>
@@ -4418,13 +4610,13 @@ export default function SupervisorV2Page() {
             <SafetyTag />
           </div>
           <div className="sup-pill-grid sup-v2-pill-grid" style={{ display: 'grid', gap: 12, gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))' }}>
-            <div className="sup-pill sup-pill-good"><span>Säkerhetsläge</span><strong>paper_only</strong></div>
-            <div className="sup-pill sup-pill-neutral"><span>Alla strategier</span><strong>{formatInt(resultSummary.totalCount, '0')}</strong></div>
-            <div className="sup-pill sup-pill-good"><span>Aktiva</span><strong>{formatInt(resultSummary.activeCount, '0')}</strong></div>
-            <div className="sup-pill sup-pill-neutral"><span>Tekniskt paper-kopplade</span><strong>{formatInt(resultSummary.technicalPaperCount, '0')}</strong></div>
-            <div className="sup-pill sup-pill-warning"><span>Godkända i allowlist</span><strong>{formatInt(resultSummary.allowlistApprovedCount, '0')}</strong></div>
-            <div className="sup-pill sup-pill-neutral"><span>Kandidater nu</span><strong>{formatInt(resultSummary.candidatesCount, '0')}</strong></div>
-            <div className={`sup-pill ${resultSummary.blockedCount > 0 ? 'sup-pill-warning' : 'sup-pill-neutral'}`}><span>Blockerade</span><strong>{formatInt(resultSummary.blockedCount, '0')}</strong></div>
+            <div className="sup-pill sup-pill-neutral"><span>Säkerhetsläge</span><strong>{tradingMode}</strong></div>
+            <div className="sup-pill sup-pill-neutral"><span>Alla strategier</span><strong>{formatInt(resultSummary.totalCount, 'Ingen data ännu')}</strong></div>
+            <div className="sup-pill sup-pill-good"><span>Aktiva</span><strong>{formatInt(resultSummary.activeCount, 'Ingen data ännu')}</strong></div>
+            <div className="sup-pill sup-pill-neutral"><span>Tekniskt paper-kopplade</span><strong>{formatInt(resultSummary.technicalPaperCount, 'Ingen data ännu')}</strong></div>
+            <div className="sup-pill sup-pill-warning"><span>Godkända i allowlist</span><strong>{formatInt(resultSummary.allowlistApprovedCount, 'Ingen data ännu')}</strong></div>
+            <div className="sup-pill sup-pill-neutral"><span>Kandidater nu</span><strong>{formatInt(resultSummary.candidatesCount, 'Ingen data ännu')}</strong></div>
+            <div className={`sup-pill ${resultSummary.blockedCount !== null && resultSummary.blockedCount > 0 ? 'sup-pill-warning' : 'sup-pill-neutral'}`}><span>Blockerade</span><strong>{formatInt(resultSummary.blockedCount, 'Ingen data ännu')}</strong></div>
           </div>
           <div className="sup-safety-copy" style={{ marginTop: 12 }}>
             <strong>Varför inga paper trades just nu?</strong> {resultSummary.explanation?.[0] || 'Systemet är redo och väntar på godkända kandidater.'}
@@ -4447,10 +4639,10 @@ export default function SupervisorV2Page() {
         </div>
 
         <div className="sup-grid sup-grid-2" style={{ display: 'grid', gap: 12, gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))' }}>
-          <article className={`sup-block ${resultSummary.paperEnabled ? 'sup-block-ok' : 'sup-block-warning'}`}>
+          <article className={`sup-block ${resultSummary.paperEnabled === true ? 'sup-block-ok' : resultSummary.paperEnabled === false ? 'sup-block-warning' : 'sup-block-neutral'}`}>
             <span className="sup-block-title">Paper Trading</span>
-            <strong className="sup-block-value">{resultSummary.paperEnabled ? 'Synligt i Resultat' : 'Avvaktar'}</strong>
-            <span className="sup-block-note">Öppna {formatInt(resultSummary.openCount, '0')} · stängda {formatInt(resultSummary.closedCount, '0')} · blockerade {formatInt(resultSummary.blockedCount, '0')}</span>
+            <strong className="sup-block-value">{resultSummary.paperEnabled === true ? 'Synligt i Resultat' : resultSummary.paperEnabled === false ? 'Avvaktar' : 'Ingen data ännu'}</strong>
+            <span className="sup-block-note">Öppna {formatInt(resultSummary.openCount, 'Ingen data ännu')} · stängda {formatInt(resultSummary.closedCount, 'Ingen data ännu')} · blockerade {formatInt(resultSummary.blockedCount, 'Ingen data ännu')}</span>
           </article>
           <article className="sup-block sup-block-neutral">
             <span className="sup-block-title">Direktvy</span>
@@ -4650,14 +4842,14 @@ export default function SupervisorV2Page() {
           className="sup-grid sup-grid-2"
           style={{ display: 'grid', gap: 12, gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))' }}
         >
-          <article className={`sup-block ${tvEnabled ? 'sup-block-ok' : 'sup-block-neutral'}`}>
+          <article className={`sup-block ${tvEnabled === true ? 'sup-block-ok' : 'sup-block-neutral'}`}>
             <span className="sup-block-title">TradingView</span>
-            <strong className="sup-block-value">{tvEnabled ? 'Aktiv' : 'Av'}</strong>
+            <strong className="sup-block-value">{activeLabel(tvEnabled)}</strong>
             <span className="sup-block-note">Extern källa för signaler och tester.</span>
           </article>
           <article className="sup-block sup-block-neutral">
             <span className="sup-block-title">Webhook auth</span>
-            <strong className="sup-block-value">{tvWebhookAuth ? 'På' : 'Av'}</strong>
+            <strong className="sup-block-value">{onOffLabel(tvWebhookAuth)}</strong>
             <span className="sup-block-note">Avgör om signaler får komma in.</span>
           </article>
           <article className="sup-block sup-block-neutral">
@@ -4781,7 +4973,7 @@ export default function SupervisorV2Page() {
             <div className="sup-safety-copy" style={{ marginTop: 12 }}>
               <strong>History details:</strong> Score {textValue(selectedHistoryScore.score, '–')} · Confidence {textValue(selectedHistoryScore.confidence, '–')}% · Sample {textValue(selectedHistoryScore.sample_size, '–')}
               <br />
-              <strong>Summary:</strong> Paper {textValue(selectedHistorySummary.paper_trades_count, '0')} · Replay {textValue(selectedHistorySummary.replay_tests_count, '0')} · Batch {textValue(selectedHistorySummary.batch_tests_count, '0')} · Learning {textValue(selectedHistorySummary.learning_events_count, '0')}
+              <strong>Summary:</strong> Paper {textValue(selectedHistorySummary.paper_trades_count, 'Ej konfigurerad')} · Replay {textValue(selectedHistorySummary.replay_tests_count, 'Ej konfigurerad')} · Batch {textValue(selectedHistorySummary.batch_tests_count, 'Ej konfigurerad')} · Learning {textValue(selectedHistorySummary.learning_events_count, 'Ej konfigurerad')}
               {selectedHistoryLearningNotes.length > 0 ? (
                 <>
                   <br />
@@ -4845,7 +5037,7 @@ export default function SupervisorV2Page() {
               summary: model.systemSummary,
               conclusion: model.systemConclusion,
             },
-            safety: SAFETY_FLAGS,
+            safety: safety || null,
             registry: model.registrySummary,
             score: model.scoreSummary,
             planner: plannerSummary,
@@ -4937,18 +5129,18 @@ export default function SupervisorV2Page() {
           </article>
           <article className="sup-block sup-block-neutral">
             <span className="sup-block-title">Read-only</span>
-            <strong className="sup-block-value">På</strong>
-            <span className="sup-block-note">actions_allowed=false, can_place_orders=false, live_trading_enabled=false.</span>
+            <strong className="sup-block-value">{safety ? 'Backend safety' : 'Ingen data ännu'}</strong>
+            <span className="sup-block-note">actions_allowed={onOffLabel(safetyActionsAllowed)}, can_place_orders={onOffLabel(safetyCanPlaceOrders)}, live_trading_enabled={onOffLabel(safetyLiveTradingEnabled)}.</span>
           </article>
         </div>
         <details className="sup-advanced" style={{ marginTop: 12 }}>
           <summary>Visa katalogstatus</summary>
           <div className="sup-v2-chip-row" style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginTop: 12 }}>
-            <span className="sup-v2-chip">ACTIVE {model.catalogStatusCounts?.active || 0}</span>
-            <span className="sup-v2-chip">TESTING {model.catalogStatusCounts?.testing || 0}</span>
-            <span className="sup-v2-chip">PAUSED {model.catalogStatusCounts?.paused || 0}</span>
-            <span className="sup-v2-chip">ROADMAP {model.catalogStatusCounts?.roadmap || 0}</span>
-            <span className="sup-v2-chip">LEGACY {model.catalogStatusCounts?.legacy || 0}</span>
+            <span className="sup-v2-chip">ACTIVE {formatInt(model.catalogStatusCount?.('active'), 'Ingen data ännu')}</span>
+            <span className="sup-v2-chip">TESTING {formatInt(model.catalogStatusCount?.('testing'), 'Ingen data ännu')}</span>
+            <span className="sup-v2-chip">PAUSED {formatInt(model.catalogStatusCount?.('paused'), 'Ingen data ännu')}</span>
+            <span className="sup-v2-chip">ROADMAP {formatInt(model.catalogStatusCount?.('roadmap'), 'Ingen data ännu')}</span>
+            <span className="sup-v2-chip">LEGACY {formatInt(model.catalogStatusCount?.('legacy'), 'Ingen data ännu')}</span>
           </div>
           <div className="sup-v2-card-source" style={{ marginTop: 8 }}>
             Katalogstatus kommer från Strategy Catalog. Runtime-koppling, paper-körbarhet och learning-stöd visas separat i Lab och Teknik.
@@ -5111,9 +5303,9 @@ export default function SupervisorV2Page() {
               </div>
               <div className="sup-advisor-lead-meta">
                 <span>Uppdaterad: {formatDateTime(selectedAdvisor.generated_at)}</span>
-                <span>Signaler: {formatInt(selectedAdvisor.window_metrics.signals_seen, '0')}</span>
-                <span>Paper trades: {formatInt(selectedAdvisor.window_metrics.paper_trades_created, '0')}</span>
-                <span>VWAP: {selectedAdvisor.crypto_status.vwap_routing_status}</span>
+                <span>Signaler: {formatInt(selectedAdvisor.window_metrics?.signals_seen, 'Ingen data ännu')}</span>
+                <span>Paper trades: {formatInt(selectedAdvisor.window_metrics?.paper_trades_created, 'Ingen data ännu')}</span>
+                <span>VWAP: {textValue(selectedAdvisor.crypto_status?.vwap_routing_status, 'Ingen data ännu')}</span>
               </div>
             </div>
 
@@ -5138,12 +5330,12 @@ export default function SupervisorV2Page() {
                   title: 'Vad systemet såg',
                   tone: 'neutral',
                   badgeTone: 'blue',
-                  badge: `${formatInt(selectedAdvisor.window_metrics.signals_seen, '0')} signaler`,
+                  badge: `${formatInt(selectedAdvisor.window_metrics?.signals_seen, 'Ingen data ännu')} signaler`,
                   summary: selectedAdvisor.summary.short_sv,
                   points: uniqueText([
-                    `Paper trades: ${formatInt(selectedAdvisor.window_metrics.paper_trades_created, '0')}`,
-                    `Skippade signaler: ${formatInt(selectedAdvisor.window_metrics.learning_skipped, '0')}`,
-                    `Öppna trades: ${formatInt(selectedAdvisor.window_metrics.open_trades, '0')}`,
+                    `Paper trades: ${formatInt(selectedAdvisor.window_metrics?.paper_trades_created, 'Ingen data ännu')}`,
+                    `Skippade signaler: ${formatInt(selectedAdvisor.window_metrics?.learning_skipped, 'Ingen data ännu')}`,
+                    `Öppna trades: ${formatInt(selectedAdvisor.window_metrics?.open_trades, 'Ingen data ännu')}`,
                     selectedAdvisor.findings?.[0]?.text || '',
                   ]),
                 }}
@@ -5179,8 +5371,8 @@ export default function SupervisorV2Page() {
                   index: '5',
                   title: 'Blockerade / partial',
                   tone: 'warn',
-                  badgeTone: (selectedAdvisor.strategy_highlights?.blocked?.length || selectedAdvisor.strategy_highlights?.partial?.length) ? 'yellow' : 'gray',
-                  badge: `${(selectedAdvisor.strategy_highlights?.blocked?.length || 0) + (selectedAdvisor.strategy_highlights?.partial?.length || 0)} strategier`,
+                  badgeTone: (Array.isArray(selectedAdvisor.strategy_highlights?.blocked) && selectedAdvisor.strategy_highlights.blocked.length > 0) || (Array.isArray(selectedAdvisor.strategy_highlights?.partial) && selectedAdvisor.strategy_highlights.partial.length > 0) ? 'yellow' : 'gray',
+                  badge: `${formatInt(Array.isArray(selectedAdvisor.strategy_highlights?.blocked) || Array.isArray(selectedAdvisor.strategy_highlights?.partial) ? (Array.isArray(selectedAdvisor.strategy_highlights?.blocked) ? selectedAdvisor.strategy_highlights.blocked.length : 0) + (Array.isArray(selectedAdvisor.strategy_highlights?.partial) ? selectedAdvisor.strategy_highlights.partial.length : 0) : null, 'Ingen data ännu')} strategier`,
                   summary: selectedAdvisor.summary.blocked_strategy_sv,
                   points: uniqueText([
                     ...(selectedAdvisor.strategy_highlights?.blocked || []).slice(0, 3).map((item) => `${item.name} · ${item.status}`),
@@ -5192,15 +5384,15 @@ export default function SupervisorV2Page() {
                 item={{
                   index: '6',
                   title: 'Crypto-status och nästa steg',
-                  tone: selectedAdvisor.crypto_status?.vwap_routing_fungerar ? 'ok' : 'warn',
-                  badgeTone: selectedAdvisor.crypto_status?.vwap_routing_fungerar ? 'green' : selectedAdvisor.crypto_status?.vwap_routing_status === 'observe-only' ? 'yellow' : 'blue',
-                  badge: `VWAP ${selectedAdvisor.crypto_status?.vwap_routing_status || 'samlar data'}`,
+                  tone: selectedAdvisor.crypto_status?.vwap_routing_fungerar === true ? 'ok' : selectedAdvisor.crypto_status?.vwap_routing_fungerar === false ? 'warn' : 'neutral',
+                  badgeTone: selectedAdvisor.crypto_status?.vwap_routing_fungerar === true ? 'green' : selectedAdvisor.crypto_status?.vwap_routing_status === 'observe-only' ? 'yellow' : 'blue',
+                  badge: `VWAP ${textValue(selectedAdvisor.crypto_status?.vwap_routing_status, 'Ingen data ännu')}`,
                   summary: selectedAdvisor.summary.next_action_sv,
                   points: uniqueText([
-                    `Crypto-signaler ${selectedAdvisor.crypto_status?.crypto_signals ?? 0}`,
-                    `Runtime-active ${selectedAdvisor.crypto_status?.runtime_active ?? 0}`,
-                    `Gate-blockade ${selectedAdvisor.crypto_status?.gate_blocked ?? 0}`,
-                    `VWAP-papper ${selectedAdvisor.crypto_status?.vwap_paper_trades ?? 0}`,
+                    `Crypto-signaler ${formatInt(selectedAdvisor.crypto_status?.crypto_signals, 'Ingen data ännu')}`,
+                    `Runtime-active ${formatInt(selectedAdvisor.crypto_status?.runtime_active, 'Ingen data ännu')}`,
+                    `Gate-blockade ${formatInt(selectedAdvisor.crypto_status?.gate_blocked, 'Ingen data ännu')}`,
+                    `VWAP-papper ${formatInt(selectedAdvisor.crypto_status?.vwap_paper_trades, 'Ingen data ännu')}`,
                   ]),
                 }}
               />
@@ -5241,12 +5433,12 @@ export default function SupervisorV2Page() {
               title: 'Registry översikt',
               tone: 'neutral',
               badgeTone: 'blue',
-              badge: `${model.registrySummary.total} strategier`,
-              summary: `Aktiva ${model.registrySummary.active} · TradingView ${model.registrySummary.tradingview} · Paused ${model.registrySummary.paused} · Deprecated ${model.registrySummary.deprecated}.`,
+              badge: `${formatInt(model.registrySummary.total, 'Ingen data ännu')} strategier`,
+              summary: `Aktiva ${formatInt(model.registrySummary.active, 'Ingen data ännu')} · TradingView ${formatInt(model.registrySummary.tradingview, 'Ingen data ännu')} · Paused ${formatInt(model.registrySummary.paused, 'Ingen data ännu')} · Deprecated ${formatInt(model.registrySummary.deprecated, 'Ingen data ännu')}.`,
               points: uniqueText([
                 `Senaste TradingView: ${strategyDescriptor(model.registrySummary.latestTradingView)}`,
                 model.registrySummary.latestBlockedReason ? `Senaste blockering: ${model.registrySummary.latestBlockedReason}` : 'Ingen blockering sparad ännu.',
-                'Safety: actions_allowed=false · can_place_orders=false · live_trading_enabled=false · mode=paper_only',
+                `Safety: actions_allowed=${onOffLabel(safetyActionsAllowed)} · can_place_orders=${onOffLabel(safetyCanPlaceOrders)} · live_trading_enabled=${onOffLabel(safetyLiveTradingEnabled)} · mode=${tradingMode}`,
               ]),
             }}
           />
@@ -5372,7 +5564,7 @@ export default function SupervisorV2Page() {
           ok: testPlannerStatus?.ok !== false,
           recommendations: plannerRecommendations,
           summary: plannerSummary,
-          safety: testPlannerStatus?.safety || SAFETY_FLAGS,
+          safety: testPlannerStatus?.safety || null,
         }}
         onSelectRecommendation={loadStrategyHistory}
         onQueueRecommendation={addRecommendationToQueue}
@@ -5408,7 +5600,7 @@ export default function SupervisorV2Page() {
             <div className="sup-safety-copy" style={{ marginTop: 12 }}>
               <strong>History details:</strong> Score {textValue(selectedHistoryScore.score, '–')} · Confidence {textValue(selectedHistoryScore.confidence, '–')}% · Sample {textValue(selectedHistoryScore.sample_size, '–')}
               <br />
-              <strong>Summary:</strong> Paper {textValue(selectedHistorySummary.paper_trades_count, '0')} · Replay {textValue(selectedHistorySummary.replay_tests_count, '0')} · Batch {textValue(selectedHistorySummary.batch_tests_count, '0')} · Learning {textValue(selectedHistorySummary.learning_events_count, '0')}
+              <strong>Summary:</strong> Paper {textValue(selectedHistorySummary.paper_trades_count, '–')} · Replay {textValue(selectedHistorySummary.replay_tests_count, '–')} · Batch {textValue(selectedHistorySummary.batch_tests_count, '–')} · Learning {textValue(selectedHistorySummary.learning_events_count, '–')}
               {selectedHistoryLearningNotes.length > 0 ? (
                 <>
                   <br />
@@ -5472,7 +5664,7 @@ export default function SupervisorV2Page() {
         <details className="sup-advanced" style={{ marginTop: 14 }}>
           <summary>Teknisk debug</summary>
           <pre className="sup-json">{JSON.stringify({
-            safety_flags: SAFETY_FLAGS,
+            safety_flags: safety || null,
             system_status: model.systemStatus,
             trading_mode: model.tradingMode,
             market_mode: model.marketMode,

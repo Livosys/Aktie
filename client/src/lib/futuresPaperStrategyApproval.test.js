@@ -115,9 +115,13 @@ const path = require('path');
   assert.equal(summary.hasData, true);
 
   const noPerf = m.resultSummary(strat({ perf: null }));
-  assert.equal(noPerf.closedTrades, 0);
+  assert.equal(noPerf.closedTrades, null);
   assert.equal(noPerf.winRatePct, null);
+  assert.equal(noPerf.netPnlSek, null);
   assert.equal(noPerf.hasData, false);
+
+  const missingCurrentTest = m.progress({ currentTest: {} });
+  assert.deepEqual(missingCurrentTest, { current: null, target: null });
 
   // ── Filter ─────────────────────────────────────────────────────────────────
   const list = [

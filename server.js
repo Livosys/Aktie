@@ -40,6 +40,37 @@ const ENABLE_PAPER_TRADING_INIT = envEnabled('ENABLE_PAPER_TRADING_INIT', true);
 const ENABLE_FUTURES_AUTONOMOUS_SCHEDULER = envEnabled('ENABLE_FUTURES_AUTONOMOUS_SCHEDULER', false);
 app.set('trust proxy', 'loopback');
 
+function logStartupError(component, err) {
+  const detail = err && err.stack ? err.stack : (err && err.message ? err.message : err);
+  console.error(`[Server] ${component} startup failed:`, detail);
+}
+
+function startComponent(component, startFn) {
+  try {
+    return startFn();
+  } catch (err) {
+    logStartupError(component, err);
+    return null;
+  }
+}
+
+function startAsyncComponent(component, startFn, onSuccess) {
+  try {
+    return Promise.resolve(startFn())
+      .then((result) => {
+        if (onSuccess) onSuccess(result);
+        return result;
+      })
+      .catch((err) => {
+        logStartupError(component, err);
+        return null;
+      });
+  } catch (err) {
+    logStartupError(component, err);
+    return Promise.resolve(null);
+  }
+}
+
 // ── Basic Auth middleware ─────────────────────────────────────────────────────
 
 function safeCompare(a, b) {
@@ -294,57 +325,61 @@ app.listen(PORT, '127.0.0.1', () => {
     console.log(`[Memory] heap=${Math.round(m.heapUsed / 1024 / 1024)}MB rss=${Math.round(m.rss / 1024 / 1024)}MB ext=${Math.round(m.external / 1024 / 1024)}MB`);
   }, 5 * 60 * 1000);
   if (ENABLE_STOCK_SCANNER) {
-    startScheduler();
+    startComponent('Stock scanner', startScheduler);
   } else {
     console.log('[Server] Stock scanner disabled via ENABLE_STOCK_SCANNER=false');
   }
   if (ENABLE_CRYPTO_SCANNER) {
     console.log('[Server] Crypto scanner enabled for paper/test mode only');
-    startCryptoScheduler();
+    startComponent('Crypto scanner', startCryptoScheduler);
   } else {
     console.log('[Server] Crypto scanner disabled via ENABLE_CRYPTO_SCANNER=false');
   }
-  if (ENABLE_AUTO_MACHINE_SCHEDULER) startAutoMachineScheduler();
+  if (ENABLE_AUTO_MACHINE_SCHEDULER) startComponent('Auto Machine scheduler', startAutoMachineScheduler);
   else console.log('[Server] Auto Machine scheduler disabled via ENABLE_AUTO_MACHINE_SCHEDULER=false');
-  if (ENABLE_NARROW_AUTOPILOT_SCHEDULER) startNarrowAutopilotScheduler();
+  if (ENABLE_NARROW_AUTOPILOT_SCHEDULER) startComponent('Narrow autopilot scheduler', startNarrowAutopilotScheduler);
   else console.log('[Server] Narrow autopilot scheduler disabled via ENABLE_NARROW_AUTOPILOT_SCHEDULER=false');
-  if (ENABLE_BATCH_AUTOPILOT_SCHEDULER) startBatchAutopilotScheduler();
+  if (ENABLE_BATCH_AUTOPILOT_SCHEDULER) startComponent('Batch autopilot scheduler', startBatchAutopilotScheduler);
   else console.log('[Server] Batch autopilot scheduler disabled via ENABLE_BATCH_AUTOPILOT_SCHEDULER=false');
-  if (ENABLE_REPLAY_AUTOPILOT_SCHEDULER) startReplayAutopilotScheduler();
+  if (ENABLE_REPLAY_AUTOPILOT_SCHEDULER) startComponent('Replay autopilot scheduler', startReplayAutopilotScheduler);
   else console.log('[Server] Replay autopilot scheduler disabled via ENABLE_REPLAY_AUTOPILOT_SCHEDULER=false');
-  if (ENABLE_DAILY_INTELLIGENCE_SCHEDULER) dailyIntelligencePipeline.startScheduler();
+  if (ENABLE_DAILY_INTELLIGENCE_SCHEDULER) startComponent('Daily intelligence scheduler', () => dailyIntelligencePipeline.startScheduler());
   else console.log('[Server] Daily intelligence scheduler disabled via ENABLE_DAILY_INTELLIGENCE_SCHEDULER=false');
-  if (ENABLE_PAPER_TRADING_INIT) initPaperTrading();
+  if (ENABLE_PAPER_TRADING_INIT) startComponent('Paper trading init', initPaperTrading);
   else console.log('[Server] Paper trading init disabled via ENABLE_PAPER_TRADING_INIT=false');
   // Read-only IB futures-datalager (FUTURES_DATA_LAYER.md). Master-flagga
   // IB_FUTURES_DATA_ENABLED=false → helt inert (ingen IB-anslutning skapas).
   {
     const futuresMarketDataService = require('./src/services/futuresMarketDataService');
     if (futuresMarketDataService.defaultFuturesMarketDataService.isEnabled()) {
-      futuresMarketDataService.defaultFuturesMarketDataService.start()
-        .then((result) => console.log(`[IBFuturesData] start: ${result.ok ? 'ok' : result.error}`))
-        .catch((err) => console.warn('[IBFuturesData] start failed:', err.message));
+      startAsyncComponent(
+        'IB futures data layer',
+        () => futuresMarketDataService.defaultFuturesMarketDataService.start(),
+        (result) => console.log(`[IBFuturesData] start: ${result.ok ? 'ok' : result.error}`),
+      );
     } else {
       console.log('[Server] IB futures data layer disabled via IB_FUTURES_DATA_ENABLED=false');
     }
   }
   {
     const ibPaperExecutionOrchestratorService = require('./src/services/ibPaperExecutionOrchestratorService');
-    ibPaperExecutionOrchestratorService.defaultIbPaperExecutionOrchestratorService.startRuntime()
-      .then((result) => {
+    startAsyncComponent(
+      'IB paper execution runtime',
+      () => ibPaperExecutionOrchestratorService.defaultIbPaperExecutionOrchestratorService.startRuntime(),
+      (result) => {
         const state = result?.connectionAttempt?.state || result?.connectionAttempt?.error || result?.error || 'unknown';
         console.log(`[IBPaperExecutionRuntime] start: ${result.ok ? 'ok' : state}`);
-      })
-      .catch((err) => console.warn('[IBPaperExecutionRuntime] start failed:', err.message));
+      },
+    );
   }
   // Autonomous futures driver — starts only when explicitly enabled. Thin wrapper
   // that drives the existing IBKR-paper pipeline (scanner -> shadow execution)
   // during CME hours; all safety gates remain in the underlying services.
-  if (ENABLE_FUTURES_AUTONOMOUS_SCHEDULER) startFuturesAutonomousScheduler();
+  if (ENABLE_FUTURES_AUTONOMOUS_SCHEDULER) startComponent('Futures autonomous scheduler', startFuturesAutonomousScheduler);
   else console.log('[Server] Futures autonomous scheduler disabled via ENABLE_FUTURES_AUTONOMOUS_SCHEDULER=false');
-  redisService.connect().then((connected) => {
-    console.log(`[Redis] ${connected ? 'connected' : 'fallback mode'} (${redisService.status().clientStatus})`);
-  }).catch((err) => {
-    console.warn('[Redis] startup fallback:', err.message);
-  });
+  startAsyncComponent(
+    'Redis',
+    () => redisService.connect(),
+    (connected) => console.log(`[Redis] ${connected ? 'connected' : 'fallback mode'} (${redisService.status().clientStatus})`),
+  );
 });

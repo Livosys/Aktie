@@ -62,11 +62,12 @@ export function DashboardTabs({ tabs = [], active, onChange }) {
 }
 
 export function SafetyBadges({ safety = {} }) {
+  const showFlag = (value) => (value === null || value === undefined || value === '' ? '—' : String(value));
   const rows = [
-    ['mode', safety.mode || 'paper_only', (safety.mode || 'paper_only') === 'paper_only'],
-    ['live_trading', String(safety.live_trading_enabled === true), safety.live_trading_enabled !== true],
-    ['broker', String(safety.broker_enabled === true), safety.broker_enabled !== true],
-    ['can_place_orders', String(safety.can_place_orders === true), safety.can_place_orders !== true],
+    ['mode', showFlag(safety.mode), safety.mode === 'paper_only'],
+    ['live_trading', showFlag(safety.live_trading_enabled), safety.live_trading_enabled === false],
+    ['broker', showFlag(safety.broker_enabled), safety.broker_enabled === false],
+    ['can_place_orders', showFlag(safety.can_place_orders), safety.can_place_orders === false],
   ];
   return (
     <div className="dash-safety">

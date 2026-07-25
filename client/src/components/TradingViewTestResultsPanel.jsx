@@ -1,90 +1,43 @@
 import React, { useMemo } from 'react';
+import {
+  resolveStrategy,
+  strategyDisplayName,
+} from '../stores/strategyStore.js';
+import {
+  EMPTY_VALUE,
+  fmtMoney,
+  fmtNumber,
+  fmtTime,
+  hasValue,
+  numberOrNull,
+} from '../utils/tradingFormatters.js';
 
-const MOCK_TRADINGVIEW_RESULTS = [
-  {
-    strategyId: 'tv_aapl_sma20_sma200_clean_backtest',
-    strategyName: 'AAPL SMA20/SMA200 Clean Backtest',
-    symbol: 'AAPL',
-    timeframe: '15m',
-    source: 'TradingView CSV/backtest',
-    testedAt: '2026-06-18T07:30:00Z',
-    lookbackDays: 180,
-    maxTradesPerDay: 3,
-    cooldownMinutes: 60,
-    entryRulesHuman: 'Long only when SMA20 reclaims SMA200 and price closes above both averages with trend confirmation.',
-    exitRulesHuman: 'Exit on trend loss, opposing cross, or protective stop triggered by invalidation.',
-    filters: ['Equities only', 'NYSE/Nasdaq session', 'No earnings window'],
-    netProfitUsd: 603.00,
-    netProfitPct: 6.03,
-    profitFactor: 1.80,
-    winrate: 33.67,
-    maxDrawdownPct: -1.89,
-    totalTrades: 98,
-    avgTradePct: 0.062,
-    bestTradePct: 1.41,
-    worstTradePct: -0.84,
-    aiRating: 'Bästa hittills',
-    aiReason: 'Best balance between profit factor, drawdown control, and sample size. The clean trend filter looks stable.',
-    nextRecommendedTest: 'RSI > 50 + SMA200 uppåtlutning.',
-  },
-  {
-    strategyId: 'tv_googl_sma20_sma200_clean_backtest',
-    strategyName: 'GOOGL SMA20/SMA200 Clean Backtest',
-    symbol: 'GOOGL',
-    timeframe: '15m',
-    source: 'TradingView CSV/backtest',
-    testedAt: '2026-06-18T07:45:00Z',
-    lookbackDays: 180,
-    maxTradesPerDay: 3,
-    cooldownMinutes: 60,
-    entryRulesHuman: 'Long only when SMA20 crosses above SMA200 and momentum stays positive for the confirmation bar.',
-    exitRulesHuman: 'Exit on trend reversal, stop invalidation, or when the price loses the moving-average structure.',
-    filters: ['Equities only', 'NYSE/Nasdaq session', 'No earnings window'],
-    netProfitUsd: 490.00,
-    netProfitPct: 4.90,
-    profitFactor: 1.54,
-    winrate: 32.69,
-    maxDrawdownPct: -2.06,
-    totalTrades: 104,
-    avgTradePct: 0.047,
-    bestTradePct: 1.22,
-    worstTradePct: -0.91,
-    aiRating: 'Näst bäst hittills',
-    aiReason: 'Still positive, but weaker efficiency and deeper drawdown than AAPL on the same clean setup.',
-    nextRecommendedTest: 'RSI > 50 + SMA200 uppåtlutning.',
-  },
-];
-
-function safeText(value, fallback = '–') {
+function safeText(value, fallback = EMPTY_VALUE) {
   if (value === null || value === undefined) return fallback;
   if (typeof value === 'object') return fallback;
   const text = String(value).trim();
   return text || fallback;
 }
 
-function safeNum(value, digits = 2, fallback = '–') {
-  const num = Number(value);
-  if (!Number.isFinite(num)) return fallback;
-  return `${num > 0 ? '+' : ''}${num.toFixed(digits)}`;
+function safeNum(value, digits = 2, fallback = EMPTY_VALUE) {
+  const num = numberOrNull(value);
+  if (num === null) return fallback;
+  return `${num > 0 ? '+' : ''}${fmtNumber(num, digits)}`;
 }
 
 function formatUsd(value) {
-  const num = Number(value);
-  if (!Number.isFinite(num)) return '–';
-  return `${num > 0 ? '+' : ''}$${num.toFixed(2)}`;
+  const num = numberOrNull(value);
+  if (num === null) return EMPTY_VALUE;
+  return `${num > 0 ? '+' : ''}${fmtMoney(num, 'USD', 2)}`;
+}
+
+function safePct(value, digits = 2) {
+  const text = safeNum(value, digits);
+  return text === EMPTY_VALUE ? EMPTY_VALUE : `${text}%`;
 }
 
 function fmtDate(value) {
-  if (!value) return '–';
-  const date = new Date(value);
-  if (!Number.isFinite(date.getTime())) return '–';
-  return date.toLocaleString('sv-SE', {
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
-    hour: '2-digit',
-    minute: '2-digit',
-  });
+  return fmtTime(value);
 }
 
 function badgeStyle(tone = 'neutral') {
@@ -124,25 +77,30 @@ function sectionStyle(theme = 'dark') {
 
 function sortResults(rows) {
   return [...rows].sort((a, b) => {
-    const aProfitFactor = Number(a?.profitFactor);
-    const bProfitFactor = Number(b?.profitFactor);
-    if (Number.isFinite(aProfitFactor) && Number.isFinite(bProfitFactor) && aProfitFactor !== bProfitFactor) {
+    const aProfitFactor = numberOrNull(a?.profitFactor);
+    const bProfitFactor = numberOrNull(b?.profitFactor);
+    if (aProfitFactor !== null && bProfitFactor !== null && aProfitFactor !== bProfitFactor) {
       return bProfitFactor - aProfitFactor;
     }
 
-    const aNet = Number(a?.netProfitPct);
-    const bNet = Number(b?.netProfitPct);
-    if (Number.isFinite(aNet) && Number.isFinite(bNet) && aNet !== bNet) {
+    const aNet = numberOrNull(a?.netProfitPct);
+    const bNet = numberOrNull(b?.netProfitPct);
+    if (aNet !== null && bNet !== null && aNet !== bNet) {
       return bNet - aNet;
     }
 
-    const aDrawdown = Number(a?.maxDrawdownPct);
-    const bDrawdown = Number(b?.maxDrawdownPct);
-    if (Number.isFinite(aDrawdown) && Number.isFinite(bDrawdown) && aDrawdown !== bDrawdown) {
+    const aDrawdown = numberOrNull(a?.maxDrawdownPct);
+    const bDrawdown = numberOrNull(b?.maxDrawdownPct);
+    if (aDrawdown !== null && bDrawdown !== null && aDrawdown !== bDrawdown) {
       return bDrawdown - aDrawdown;
     }
 
-    return Number(b?.totalTrades || 0) - Number(a?.totalTrades || 0);
+    const aTrades = numberOrNull(a?.totalTrades);
+    const bTrades = numberOrNull(b?.totalTrades);
+    if (aTrades !== null && bTrades !== null && aTrades !== bTrades) {
+      return bTrades - aTrades;
+    }
+    return 0;
   });
 }
 
@@ -169,8 +127,17 @@ function Metric({ label, value, note, tone = 'neutral' }) {
 }
 
 function ResultCard({ result, isBest = false, rank = 1 }) {
+  const strategy = resolveStrategy(result || {});
+  const strategyId = safeText(strategy.strategyId, '—');
+  const strategyName = strategyDisplayName(strategy, '—');
   const aiTone = String(result?.aiRating || '').toLowerCase().includes('strong') ? 'success' : 'info';
-  const positive = Number(result?.netProfitPct) > 0;
+  const netProfitPct = numberOrNull(result?.netProfitPct);
+  const profitFactor = numberOrNull(result?.profitFactor);
+  const winrate = numberOrNull(result?.winrate);
+  const totalTrades = numberOrNull(result?.totalTrades);
+  const avgTradePct = numberOrNull(result?.avgTradePct);
+  const positive = netProfitPct !== null && netProfitPct > 0;
+  const negative = netProfitPct !== null && netProfitPct < 0;
 
   return (
     <article style={{
@@ -183,27 +150,27 @@ function ResultCard({ result, isBest = false, rank = 1 }) {
       <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap', alignItems: 'flex-start' }}>
         <div>
           <div style={{ fontSize: 18, fontWeight: 900, color: 'var(--text)' }}>
-            {isBest ? 'Topptest' : `Test #${rank}`}: {safeText(result?.strategyName)}
+            {isBest ? 'Topptest' : `Test #${rank}`}: {strategyName}
           </div>
           <div style={{ marginTop: 4, color: 'var(--muted)', fontSize: 12, lineHeight: 1.5 }}>
-            {safeText(result?.strategyId)} · {safeText(result?.symbol)} · {safeText(result?.timeframe)}
+            {strategyId} · {safeText(result?.symbol)} · {safeText(result?.timeframe)}
           </div>
         </div>
         <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
-          <span style={badgeStyle(aiTone)}>{safeText(result?.aiRating, 'AI rating')}</span>
-          <span style={badgeStyle('info')}>{safeText(result?.source, 'TradingView CSV/backtest')}</span>
+          <span style={badgeStyle(aiTone)}>{safeText(result?.aiRating)}</span>
+          <span style={badgeStyle('info')}>{safeText(result?.source)}</span>
           <span style={badgeStyle(isBest ? 'success' : positive ? 'info' : 'warning')}>{fmtDate(result?.testedAt)}</span>
         </div>
       </div>
 
       <div style={{ marginTop: 14, display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(170px, 1fr))', gap: 10 }}>
-        <Metric label="Net profit USD" value={formatUsd(result?.netProfitUsd)} tone={positive ? 'success' : 'danger'} />
-        <Metric label="Net profit %" value={safeNum(result?.netProfitPct, 2)} tone={positive ? 'success' : 'danger'} />
-        <Metric label="Profit factor" value={safeNum(result?.profitFactor, 2)} tone={Number(result?.profitFactor) >= 1.5 ? 'success' : 'neutral'} />
-        <Metric label="Winrate" value={`${safeNum(result?.winrate, 2)}%`} tone={Number(result?.winrate) >= 50 ? 'success' : 'neutral'} />
+        <Metric label="Net profit USD" value={formatUsd(result?.netProfitUsd)} tone={positive ? 'success' : negative ? 'danger' : 'neutral'} />
+        <Metric label="Net profit %" value={safeNum(result?.netProfitPct, 2)} tone={positive ? 'success' : negative ? 'danger' : 'neutral'} />
+        <Metric label="Profit factor" value={safeNum(result?.profitFactor, 2)} tone={profitFactor !== null && profitFactor >= 1.5 ? 'success' : 'neutral'} />
+        <Metric label="Winrate" value={safePct(result?.winrate, 2)} tone={winrate !== null && winrate >= 50 ? 'success' : 'neutral'} />
         <Metric label="Max drawdown %" value={safeNum(result?.maxDrawdownPct, 2)} tone="danger" />
-        <Metric label="Total trades" value={safeText(result?.totalTrades, '–')} tone={Number(result?.totalTrades) >= 50 ? 'success' : 'warning'} />
-        <Metric label="Avg trade %" value={safeNum(result?.avgTradePct, 3)} tone={Number(result?.avgTradePct) > 0 ? 'success' : 'neutral'} />
+        <Metric label="Total trades" value={safeText(result?.totalTrades, '–')} tone={totalTrades === null ? 'neutral' : totalTrades >= 50 ? 'success' : 'warning'} />
+        <Metric label="Avg trade %" value={safeNum(result?.avgTradePct, 3)} tone={avgTradePct !== null && avgTradePct > 0 ? 'success' : 'neutral'} />
         <Metric label="Best / worst trade" value={`${safeNum(result?.bestTradePct, 2)} / ${safeNum(result?.worstTradePct, 2)}`} tone="neutral" />
       </div>
 
@@ -219,7 +186,7 @@ function ResultCard({ result, isBest = false, rank = 1 }) {
         <div style={metricStyle()}>
           <div style={{ color: 'var(--muted)', fontSize: 10, textTransform: 'uppercase', letterSpacing: '0.08em' }}>Filters</div>
           <div style={{ marginTop: 6, color: 'var(--text)', fontSize: 12, lineHeight: 1.55 }}>
-            {Array.isArray(result?.filters) && result.filters.length ? result.filters.join(' · ') : '–'}
+            {Array.isArray(result?.filters) && result.filters.length ? result.filters.join(' · ') : EMPTY_VALUE}
           </div>
         </div>
       </div>
@@ -228,7 +195,7 @@ function ResultCard({ result, isBest = false, rank = 1 }) {
         <div style={metricStyle()}>
           <div style={{ color: 'var(--muted)', fontSize: 10, textTransform: 'uppercase', letterSpacing: '0.08em' }}>Strategy / runtime</div>
           <div style={{ marginTop: 6, color: 'var(--text)', fontSize: 12, lineHeight: 1.6 }}>
-            Strategy ID: {safeText(result?.strategyId)}<br />
+            Strategy ID: {safeText(strategy.strategyId)}<br />
             Tested at: {fmtDate(result?.testedAt)}<br />
             Lookback: {safeText(result?.lookbackDays)} days<br />
             Max trades/day: {safeText(result?.maxTradesPerDay)}<br />
@@ -251,7 +218,7 @@ function ResultCard({ result, isBest = false, rank = 1 }) {
 }
 
 export default function TradingViewTestResultsPanel({ data, theme = 'dark' }) {
-  const sourceRows = Array.isArray(data?.results) && data.results.length ? data.results : MOCK_TRADINGVIEW_RESULTS;
+  const sourceRows = Array.isArray(data?.results) ? data.results : [];
   const results = useMemo(() => sortResults(sourceRows), [sourceRows]);
   const best = results[0] || null;
 
@@ -269,7 +236,7 @@ export default function TradingViewTestResultsPanel({ data, theme = 'dark' }) {
         </div>
         <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
           <span style={badgeStyle('success')}>read-only</span>
-          <span style={badgeStyle('neutral')}>source=TradingView CSV/backtest</span>
+          <span style={badgeStyle('neutral')}>source={safeText(data?.source)}</span>
           <span style={badgeStyle('info')}>sorted by profitFactor → netProfitPct → maxDrawdownPct → trades</span>
         </div>
       </div>
@@ -282,9 +249,9 @@ export default function TradingViewTestResultsPanel({ data, theme = 'dark' }) {
         <div style={{ marginTop: 14, border: '1px solid rgba(34,197,94,0.22)', borderRadius: 14, padding: 14, background: 'linear-gradient(180deg, rgba(34,197,94,0.08) 0%, var(--surface-2) 100%)' }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap', alignItems: 'center' }}>
             <div>
-              <div style={{ fontSize: 16, fontWeight: 900, color: 'var(--text)' }}>Bästa manuella test hittills: {safeText(best.strategyName)}</div>
+              <div style={{ fontSize: 16, fontWeight: 900, color: 'var(--text)' }}>Bästa manuella test hittills: {strategyDisplayName(resolveStrategy(best), '—')}</div>
               <div style={{ marginTop: 4, color: 'var(--muted)', fontSize: 12 }}>
-                AAPL är starkast i de manuella testerna hittills. Föreslaget nästa manuella test: RSI &gt; 50 + SMA200 uppåtlutning.
+                Föreslaget nästa manuella test: {safeText(best.nextRecommendedTest)}
               </div>
             </div>
             <span style={badgeStyle('success')}>{safeText(best.aiRating)}</span>
@@ -295,17 +262,28 @@ export default function TradingViewTestResultsPanel({ data, theme = 'dark' }) {
             <Metric label="Timeframe" value={safeText(best.timeframe)} />
             <Metric label="Net profit %" value={safeNum(best.netProfitPct, 2)} tone="success" />
             <Metric label="Profit factor" value={safeNum(best.profitFactor, 2)} tone="success" />
-            <Metric label="Winrate" value={`${safeNum(best.winrate, 2)}%`} tone="neutral" />
+            <Metric label="Winrate" value={safePct(best.winrate, 2)} tone="neutral" />
             <Metric label="Max drawdown %" value={safeNum(best.maxDrawdownPct, 2)} tone="danger" />
           </div>
         </div>
       ) : null}
 
-      <div style={{ marginTop: 14, display: 'grid', gap: 12 }}>
-        {results.map((result, index) => (
-          <ResultCard key={result.strategyId} result={result} isBest={index === 0} rank={index + 1} />
-        ))}
-      </div>
+      {results.length ? (
+        <div style={{ marginTop: 14, display: 'grid', gap: 12 }}>
+          {results.map((result, index) => (
+            <ResultCard
+              key={[result.strategyId, result.resultId, result.testedAt, result.symbol, index].filter(hasValue).join('_')}
+              result={result}
+              isBest={index === 0}
+              rank={index + 1}
+            />
+          ))}
+        </div>
+      ) : (
+        <div style={{ marginTop: 14, border: '1px solid var(--border)', borderRadius: 12, padding: 14, background: 'var(--surface-2)', color: 'var(--muted)', fontSize: 13 }}>
+          Inga TradingView-resultat från backend.
+        </div>
+      )}
     </section>
   );
 }

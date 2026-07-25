@@ -1,12 +1,14 @@
 import React, { useEffect, useState } from 'react';
+import {
+  EMPTY_VALUE,
+  fmtPercent,
+} from '../utils/tradingFormatters.js';
 
 function fmtPct(v) {
-  const n = Number(v);
-  if (!Number.isFinite(n)) return '0.00%';
-  return `${n > 0 ? '+' : ''}${n.toFixed(2)}%`;
+  return fmtPercent(v, 2);
 }
 
-function text(value, fallback = 'saknas') {
+function text(value, fallback = EMPTY_VALUE) {
   if (value === undefined || value === null || value === '') return fallback;
   return String(value);
 }
@@ -16,7 +18,7 @@ function resultSv(result) {
   if (result === 'loss') return 'förlust';
   if (result === 'timeout') return 'timeout';
   if (result === 'open') return 'öppen';
-  return text(result, 'okänt');
+  return text(result);
 }
 
 function ReplayList({ title, items, empty }) {

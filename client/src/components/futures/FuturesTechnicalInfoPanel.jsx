@@ -1,4 +1,8 @@
 import React, { useEffect, useMemo, useState } from 'react';
+import {
+  resolveKnownStrategy,
+  strategyDisplayName,
+} from '../../stores/strategyStore.js';
 
 // Read-only "Teknisk info" (steg A + B) för Futures Paper.
 // Ingen edit, ingen apply, ingen aktivering/inaktivering, ingen risk, ingen order.
@@ -27,7 +31,7 @@ async function fetchJson(url, timeoutMs = FETCH_TIMEOUT_MS) {
 }
 
 // Säker rendering av godtyckliga värden (null/undefined/array/object/primitiv).
-function renderValue(value, emptyLabel = 'Ej tillgängligt') {
+function renderValue(value, emptyLabel = '—') {
   if (value === null || value === undefined || value === '') return emptyLabel;
   if (Array.isArray(value)) {
     if (value.length === 0) return emptyLabel;
@@ -45,7 +49,7 @@ function renderValue(value, emptyLabel = 'Ej tillgängligt') {
 }
 
 function fmtNum(value) {
-  if (value === null || value === undefined || Number.isNaN(Number(value))) return null;
+  if (value === null || value === undefined || value === '' || typeof value === 'boolean') return null;
   return Number(value);
 }
 
@@ -197,8 +201,8 @@ function SimulationSettings({ settings }) {
             </tr>
           </thead>
           <tbody>
-            {contracts.map((c) => (
-              <tr key={c.root || Math.random()}>
+            {contracts.map((c, index) => (
+              <tr key={c.root || c.name || c.localSymbol || `contract-${index}`}>
                 <td style={tdKey}>{renderValue(c.root)} <span style={{ color: 'var(--muted,#6b7280)', fontWeight: 400 }}>{renderValue(c.name, '')}</span></td>
                 <td style={td}>{renderValue(c.pointValueUsd)}</td>
                 <td style={td}>{renderValue(c.commissionPerSideUsd)}</td>
@@ -294,15 +298,16 @@ export default function FuturesTechnicalInfoPanel() {
                 </tr>
               </thead>
               <tbody>
-                {strategies.map((s) => {
-                  const id = s && s.strategyId ? s.strategyId : Math.random().toString(36);
+                {strategies.map((s, index) => {
+                  const strategy = resolveKnownStrategy(s || {});
+                  const id = strategy.strategyId || s?.id || s?.displayName || `strategy-${index}`;
                   const isOpen = expanded.has(id);
                   if (s && s.error) {
                     return (
                       <tr key={id}>
                         <td style={td}></td>
                         <td style={td} colSpan={13}>
-                          <Badge tone="danger">Fel</Badge> {renderValue(s.displayName || s.strategyId)} — {renderValue(s.errorMessage, 'kunde inte byggas')}
+                          <Badge tone="danger">Fel</Badge> {strategyDisplayName(strategy, '—')} — {renderValue(s.errorMessage, 'kunde inte byggas')}
                         </td>
                       </tr>
                     );
@@ -320,9 +325,9 @@ export default function FuturesTechnicalInfoPanel() {
                             {isOpen ? '−' : '+'}
                           </button>
                         </td>
-                        <td style={{ ...td, fontWeight: 600 }}>{renderValue(s.displayName)}</td>
-                        <td style={{ ...td, fontFamily: 'var(--mono, monospace)', fontSize: 12 }}>{renderValue(s.strategyId)}</td>
-                        <td style={td}>{renderValue(s.family)}</td>
+                        <td style={{ ...td, fontWeight: 600 }}>{strategyDisplayName(strategy, '—')}</td>
+                        <td style={{ ...td, fontFamily: 'var(--mono, monospace)', fontSize: 12 }}>{renderValue(strategy.strategyId)}</td>
+                        <td style={td}>{renderValue(strategy.strategyFamily)}</td>
                         <td style={td}>{renderValue(s.direction)}</td>
                         <td style={td}>{s.active ? <Badge tone="success">Ja</Badge> : <Badge tone="muted">Nej</Badge>}</td>
                         <td style={td}><Badge tone={statusTone(s.catalogStatus)}>{renderValue(s.catalogStatus)}</Badge></td>
@@ -333,7 +338,7 @@ export default function FuturesTechnicalInfoPanel() {
                         <td style={td}>{renderValue(fmtNum(s.defaultHoldingTimeMin))}</td>
                         <td style={td}>{Array.isArray(s.signalRules) ? s.signalRules.length : 0}</td>
                         <td style={{ ...td, fontFamily: 'var(--mono, monospace)', fontSize: 11 }}>
-                          {s.configHash ? String(s.configHash).slice(0, 12) + '…' : 'Ej tillgängligt'}
+                          {s.configHash ? String(s.configHash).slice(0, 12) + '…' : '—'}
                         </td>
                       </tr>
                       {isOpen ? (
@@ -341,7 +346,7 @@ export default function FuturesTechnicalInfoPanel() {
                           <td style={{ ...td, background: 'var(--surface-2, #fafafa)' }} colSpan={14}>
                             <div style={{ marginBottom: 6, color: 'var(--muted,#6b7280)', fontSize: 12 }}>
                               Datakälla vid körning: <Badge tone="warning">{renderValue(s.dataSource)}</Badge>{' · '}
-                              Symboler: {renderValue(s.supportedSymbols, s.supportedSymbolsNote || 'Ej tillgängligt i runtime')}
+                              Symboler: {renderValue(s.supportedSymbols, s.supportedSymbolsNote || '—')}
                             </div>
                             {StrategyDetails(s)}
                           </td>

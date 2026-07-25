@@ -8,8 +8,8 @@
 |---|---|
 | Live trading | FÖRBJUDEN — får ej aktiveras |
 | Broker live | FÖRBJUDEN — live broker saknar aktiverbar väg |
-| IBKR Paper Futures shadow | TILLÅTEN endast som shadow/readiness; `IBKR_PAPER_ORDER_SUBMISSION_ENABLED=false` |
-| IBKR submit | LÅST — ny futuresväg kräver signed evidence + submit flag; legacy submit är hard-blocked |
+| IBKR Paper Futures | TILLÅTEN i paper pilot när `IBKR_PAPER_EXECUTION_ENABLED=true`, `IBKR_PAPER_EXECUTION_SHADOW_MODE=false`, `IBKR_PAPER_ORDER_SUBMISSION_ENABLED=true` och alla paper-only gates passerar |
+| IBKR submit | TILLÅTEN endast via nya futuresvägen med signed evidence + submit flag + verifierat paperkonto; legacy submit är hard-blocked |
 | Riktig liveorder | FÖRBJUDEN |
 | Mini Future riktig order | FÖRBJUDEN — kräver separat explicit mänskligt godkännande |
 | Hög hävstång (10x/15x/20x) | TILLÅTEN endast i research/paper/simulation (`leverageTestLevels`, se `docs/MINI_FUTURE_RESEARCH.md`); riskmärks high/very_high/extreme; **all real-money med hög hävstång kräver separat explicit mänskligt godkännande** |
@@ -23,7 +23,7 @@
 - `live_trading_enabled=false`
 - `broker_enabled=false` i legacy/global safety; nya IBKR futures-vägen använder separata paper/live-flaggor
 - `actions_allowed=false`
-- `can_place_orders=false`
+- `can_place_orders=false` i legacy/global safety; nya IBKR futures-vägen använder separata paper-only submit-flaggor och live-hårdstopp
 
 ## Var skyddet sitter (verifierbart i kod)
 
@@ -34,9 +34,9 @@
    - Replay-kontext blockeras från exekvering (`replay_mode_blocked`).
    - Kill switch finns (`kill_switch_active`).
 2. **Env-gates**:
-   - `IBKR_PAPER_EXECUTION_ENABLED=true` kan vara aktivt för shadow/status.
-   - `IBKR_PAPER_EXECUTION_SHADOW_MODE=true`.
-   - `IBKR_PAPER_ORDER_SUBMISSION_ENABLED=false`.
+   - Produktion kör IBKR Paper Futures pilot med `IBKR_PAPER_EXECUTION_ENABLED=true`.
+   - `IBKR_PAPER_EXECUTION_SHADOW_MODE=false` krävs för faktisk paper-submit.
+   - `IBKR_PAPER_ORDER_SUBMISSION_ENABLED=true` krävs, men räcker inte ensamt; execution enabled + shadow off + alla guard checks krävs.
    - `IBKR_LIVE_EXECUTION_ENABLED=false` och `IBKR_LIVE_ORDER_SUBMISSION_ENABLED=false`.
    - Legacy `IB_PAPER_EXECUTION_ENABLED=true` räcker inte för submit; legacy submit blockas med `legacy_ibkr_submit_disabled`.
 3. **Batch/Replay-autopiloter** — `batchAutopilotService.js` fryser `SAFETY = { mode: 'paper_only', actions_allowed: false, can_place_orders: false, live_trading_enabled: false, broker_enabled: false }` och har ingen implementerad exekveringsväg; replay-scheduler är dry-run/plan-only.
@@ -54,7 +54,7 @@ Förväntad status: `mode:"paper"`, `live_trading_enabled:false`, `manual_armed:
 ## Farliga mönster som aldrig får introduceras utan explicit order
 
 - Nya anrop till `placeOrder`/`submitOrder` utanför `ibPaperExecutionAdapterService` och dess tester.
-- Env-ändringar som sätter `*_SUBMIT_*=true`, `live_trading_enabled=true`, `broker_enabled=true`.
+- Env-ändringar som aktiverar live, breddar paper-allowlists, höjer paper-limits eller skapar nya submitvägar.
 - Kod som sätter `actions_allowed=true` eller `can_place_orders=true`.
 - Ordervägar i Mini Future-koden (får inte existera i denna fas).
 - Att kringgå `executionSafetyService` (t.ex. egen order-klient).

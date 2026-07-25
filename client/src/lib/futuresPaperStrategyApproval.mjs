@@ -121,8 +121,8 @@ export function availableActions(strategy) {
 
 export function progress(strategy) {
   const t = (strategy && strategy.currentTest) || {};
-  const current = Number(t.currentTestClosedTrades) || 0;
-  const target = Number(t.currentTestTargetTrades) || 10;
+  const current = numOrNull(t.currentTestClosedTrades);
+  const target = numOrNull(t.currentTestTargetTrades);
   return { current, target };
 }
 
@@ -130,7 +130,7 @@ export function isTestComplete(strategy) {
   const t = (strategy && strategy.currentTest) || {};
   if (t.currentTestStatus === 'completed') return true;
   const { current, target } = progress(strategy);
-  return target > 0 && current >= target;
+  return target != null && current != null && target > 0 && current >= target;
 }
 
 // ── Resultat per strategi (simulated_fallback) ──────────────────────────────
@@ -143,13 +143,14 @@ export function resultSummary(strategy) {
   const p = (strategy && strategy.historicalPerformance) || null;
   const prog = progress(strategy);
   const t = (strategy && strategy.currentTest) || {};
+  const closedTrades = p ? numOrNull(p.closedTrades) : null;
   return {
-    closedTrades: p ? Number(p.closedTrades) || 0 : 0,
-    wins: p ? Number(p.wins) || 0 : 0,
-    losses: p ? Number(p.losses) || 0 : 0,
-    breakevenTrades: p ? Number(p.breakevenTrades) || 0 : 0,
+    closedTrades,
+    wins: p ? numOrNull(p.wins) : null,
+    losses: p ? numOrNull(p.losses) : null,
+    breakevenTrades: p ? numOrNull(p.breakevenTrades) : null,
     winRatePct: p && p.winRatePct !== null && p.winRatePct !== undefined ? Number(p.winRatePct) : null,
-    netPnlSek: p ? Number(p.netPnlSek) || 0 : 0,
+    netPnlSek: p ? numOrNull(p.netPnlSek) : null,
     avgNetPnlSek: p ? numOrNull(p.avgNetPnlSek) : null,
     profitFactor: p ? numOrNull(p.profitFactor) : null,
     profitFactorNote: p && p.profitFactorNote ? String(p.profitFactorNote) : null,
@@ -157,8 +158,8 @@ export function resultSummary(strategy) {
     progressCurrent: prog.current,
     progressTarget: prog.target,
     // Historiskt totalt separeras alltid från aktuell testomgång.
-    totalHistoricalClosedTrades: numOrNull(t.totalHistoricalClosedTrades) ?? (p ? Number(p.closedTrades) || 0 : 0),
-    hasData: Boolean(p && Number(p.closedTrades) > 0),
+    totalHistoricalClosedTrades: numOrNull(t.totalHistoricalClosedTrades) ?? closedTrades,
+    hasData: Boolean(p && closedTrades != null && closedTrades > 0),
   };
 }
 

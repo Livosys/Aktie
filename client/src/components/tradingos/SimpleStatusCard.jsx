@@ -1,7 +1,10 @@
 import React from 'react';
 
 export default function SimpleStatusCard({ icon = '•', title, summary, value, tone = 'blue', detail, progress = null }) {
-  const pct = Number.isFinite(Number(progress)) ? Math.max(0, Math.min(100, Number(progress))) : null;
+  const rawProgress = progress === null || progress === undefined || progress === '' || typeof progress === 'boolean'
+    ? null
+    : Number(progress);
+  const pct = Number.isFinite(rawProgress) ? Math.max(0, Math.min(100, rawProgress)) : null;
 
   return (
     <article className={`tr-status-card tr-status-${tone}`}>

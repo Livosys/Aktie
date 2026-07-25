@@ -10,6 +10,7 @@
 
 const fs = require('fs');
 const path = require('path');
+const { writeJsonAtomic } = require('./filePersistenceService');
 
 const KILL_SWITCH_FILE = path.resolve(__dirname, '../../data/futures-paper/ibkr-execution/kill-switch.json');
 
@@ -107,29 +108,47 @@ function getExecutionClientConfig() {
 
 // Kill switch (§22): pause new entries persisteras på disk så att den
 // överlever restart. Emergency flatten hanteras av separat flöde.
-function readKillSwitch() {
+function defaultKillSwitch() {
+  return { pauseNewEntries: false, reason: null, updatedAt: null };
+}
+
+function safeKillSwitchOnReadFailure(err) {
+  console.warn('[IBPaperExecutionConfig] kill switch read failed; pausing new entries:', err && err.message ? err.message : err);
+  return { pauseNewEntries: true, reason: 'kill_switch_read_failed', updatedAt: null };
+}
+
+function readKillSwitchFile(file) {
   try {
-    const raw = JSON.parse(fs.readFileSync(KILL_SWITCH_FILE, 'utf8'));
+    const raw = JSON.parse(fs.readFileSync(file, 'utf8'));
     return {
       pauseNewEntries: raw.pauseNewEntries === true,
       reason: raw.reason || null,
       updatedAt: raw.updatedAt || null,
     };
-  } catch (_) {
-    return { pauseNewEntries: false, reason: null, updatedAt: null };
+  } catch (err) {
+    if (err && err.code === 'ENOENT') return defaultKillSwitch();
+    return safeKillSwitchOnReadFailure(err);
   }
 }
 
-function setPauseNewEntries(paused, reason = null) {
-  const dir = path.dirname(KILL_SWITCH_FILE);
+function writeKillSwitchFile(file, paused, reason = null) {
+  const dir = path.dirname(file);
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
   const state = {
     pauseNewEntries: paused === true,
     reason: reason || null,
     updatedAt: new Date().toISOString(),
   };
-  fs.writeFileSync(KILL_SWITCH_FILE, JSON.stringify(state, null, 2), 'utf8');
+  writeJsonAtomic(file, state, { trailingNewline: false });
   return state;
+}
+
+function readKillSwitch() {
+  return readKillSwitchFile(KILL_SWITCH_FILE);
+}
+
+function setPauseNewEntries(paused, reason = null) {
+  return writeKillSwitchFile(KILL_SWITCH_FILE, paused, reason);
 }
 
 // Publik säkerhetsvy för API/UI (§2): tydlig paper/live-separation.
@@ -166,4 +185,8 @@ module.exports = {
   readKillSwitch,
   setPauseNewEntries,
   buildSafetyView,
+  _internal: {
+    readKillSwitchFile,
+    writeKillSwitchFile,
+  },
 };

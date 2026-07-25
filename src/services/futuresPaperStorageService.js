@@ -2,6 +2,7 @@
 
 const fs = require('fs');
 const path = require('path');
+const { writeJsonAtomic } = require('./filePersistenceService');
 
 const DEFAULT_ROOT_DIR = path.resolve(__dirname, '../../data/futures-paper');
 
@@ -41,9 +42,7 @@ function readJson(file, fallback = null) {
 }
 
 function writeJson(file, value) {
-  ensureDir(path.dirname(file));
-  fs.writeFileSync(file, `${JSON.stringify(value, null, 2)}\n`, 'utf8');
-  return value;
+  return writeJsonAtomic(file, value);
 }
 
 function readJsonl(file) {

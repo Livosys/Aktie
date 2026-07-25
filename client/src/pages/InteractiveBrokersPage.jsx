@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { DashboardShell, EmptyState } from '../components/dashboard/DashboardKit.jsx';
 import {
   REQUIRED_FINAL_EXECUTION_COMMAND,
@@ -14,6 +14,19 @@ import {
   mapBracketReadinessHttpError,
   readinessFalseLabel,
 } from '../lib/interactiveBrokersManualPaperReadiness.mjs';
+import {
+  resolveStrategy,
+  strategyDisplayName,
+} from '../stores/strategyStore.js';
+import { createDecisionStore } from '../stores/decisionStore.js';
+import { createTradingEventStore } from '../stores/tradingEventStore.js';
+import {
+  EMPTY_VALUE,
+  WAITING_BROKER,
+  fmtNumber,
+  hasValue,
+  numberOrNull,
+} from '../utils/tradingFormatters.js';
 const manualPaperHelperAvailable = typeof buildManualPaperBracketSubmitState === 'function';
 
 // Interactive Brokers Paper — Phase 1 read-only preview page.
@@ -44,6 +57,46 @@ const SAFE_EXECUTION_PREVIEW_BODY = Object.freeze({
   mockOnly: true,
   reason: 'ui_preview_status_no_order',
 });
+
+function strategyLabel(row, fallback = '—') {
+  return strategyDisplayName(resolveStrategy(row || {}), fallback);
+}
+
+function selectedBlueprintStrategyLabel(blueprint, fallback = '—') {
+  if (!blueprint) return fallback;
+  return `${blueprint.symbol || '—'} · ${strategyLabel(blueprint, '—')}`;
+}
+
+function hasOwn(source, key) {
+  return Boolean(source && Object.prototype.hasOwnProperty.call(source, key));
+}
+
+function displayField(value, available = true, waitingText = EMPTY_VALUE) {
+  if (!available) return waitingText;
+  if (!hasValue(value)) return EMPTY_VALUE;
+  return typeof value === 'number' ? fmtNumber(value) : String(value);
+}
+
+function displayNumberField(source, key, available = true, waitingText = EMPTY_VALUE) {
+  if (!available || !hasOwn(source, key)) return waitingText;
+  return hasValue(source[key]) ? fmtNumber(source[key]) : EMPTY_VALUE;
+}
+
+function displayCountValue(value, available = true, waitingText = EMPTY_VALUE) {
+  if (!available) return waitingText;
+  return hasValue(value) ? fmtNumber(value) : EMPTY_VALUE;
+}
+
+function displayRatio(numerator, numeratorAvailable, denominator, denominatorAvailable, waitingText = EMPTY_VALUE) {
+  return `${displayCountValue(numerator, numeratorAvailable, waitingText)}/${displayCountValue(denominator, denominatorAvailable, waitingText)}`;
+}
+
+function displayBooleanField(source, key, available = true, waitingText = EMPTY_VALUE) {
+  if (!available || !hasOwn(source, key)) return waitingText;
+  if (source[key] === true) return 'true';
+  if (source[key] === false) return 'false';
+  return EMPTY_VALUE;
+}
 
 async function fetchJsonWithTimeout(url, { timeoutMs = FETCH_TIMEOUT_MS, signal, ...fetchOptions } = {}) {
   const controller = new AbortController();
@@ -78,304 +131,6 @@ const CARD_STYLE = {
   background: 'var(--surface-2)',
   marginBottom: 16,
 };
-
-const SAFE_FALLBACK_ORDER_PREVIEW = Object.freeze({
-  ok: false,
-  mode: 'preview_only',
-  maxPerDay: PREVIEW_LIMIT,
-  cryptoBlocked: true,
-  etfBlocked: true,
-  qqqBlocked: true,
-  executionEnabled: false,
-  orderQueueEnabled: false,
-  brokerExecutionEnabled: false,
-  liveTradingEnabled: false,
-  orderSendingBlocked: true,
-  wouldCreateIbPaperOrder: false,
-  requiredStopLossMinPct: 0.10,
-  stopLossPolicy: 'Minst 0,10 % krävs innan framtida IB Paper-execution',
-  candidates: [],
-  allowedCandidates: [],
-  blockedCandidates: [],
-  allCandidates: [],
-  generatedAt: null,
-  summary: {
-    totalScanned: 0,
-    allowedCandidates: 0,
-    blockedCandidates: 0,
-    allowedVisibleCount: 0,
-    blockedVisibleCount: 0,
-    availableAllowedCandidates: 0,
-    availableBlockedCandidates: 0,
-    previewSource: 'safe_fallback',
-    noteSv: 'Förhandsvisning är inte tillgänglig just nu. Inga order skickas ännu.',
-    insufficientAllowedReason: 'Förhandsvisning är inte tillgänglig just nu.',
-    blockerCounts: {},
-    cryptoBlocked: true,
-    etfBlocked: true,
-    qqqBlocked: true,
-    requiredStopLossMinPct: 0.10,
-    stopLossPolicy: 'Minst 0,10 % krävs innan framtida IB Paper-execution',
-  },
-});
-
-const SAFE_FALLBACK_STATUS = Object.freeze({
-  ok: false,
-  dryRun: true,
-  ibPaper: { enabled: false, previewEnabled: false, orderQueueEnabled: false, executionEnabled: false },
-  safety: { mode: 'paper_only', actions_allowed: false, can_place_orders: false, live_trading_enabled: false, broker_enabled: false },
-  orderSendingBlocked: true,
-  orderQueueBlocked: true,
-  executionBlocked: true,
-  wouldCreateIbPaperOrder: false,
-  blockedReason: 'api_unavailable_safe_fallback',
-  nextPhaseLocked: {
-    paperOrderQueue: { locked: true },
-    brokerExecution: { locked: true },
-    liveTrading: { locked: true },
-    manualApprovalRequired: true,
-  },
-  approvedStrategies: [],
-  approvedStrategiesCount: 0,
-  approvedStrategiesSource: { available: false, status: 'degraded' },
-  internalPaperTradingUnaffected: true,
-  connection: {
-    connectionCheckEnabled: false,
-    gatewayReachable: false,
-    host: '127.0.0.1',
-    port: null,
-    portConfigured: false,
-    clientIdConfigured: false,
-    paperMode: 'unknown',
-    paperModeVerified: false,
-    blockedReason: 'ib_connection_check_disabled',
-  },
-});
-
-const SAFE_FALLBACK_GATEWAY_HEALTH = Object.freeze({
-  ok: false,
-  gatewayProcessRunning: false,
-  gatewayProcessCommand: null,
-  vncRunning: false,
-  display: ':2',
-  apiHost: '127.0.0.1',
-  apiPort: null,
-  apiPortOpen: false,
-  authenticated: false,
-  connected: false,
-  paperOnly: true,
-  safety: { mode: 'paper_only', actions_allowed: false, can_place_orders: false, live_trading_enabled: false, broker_enabled: false },
-  lastCheckedAt: null,
-  nextActionSv: 'Kan inte avgöra status',
-});
-
-const SAFE_FALLBACK_SCAFFOLD = Object.freeze({
-  ok: false,
-  dryRun: true,
-  mode: 'dry_run_execution_scaffold',
-  phase: 'scaffold_only',
-  safety: { mode: 'paper_only', actions_allowed: false, can_place_orders: false, live_trading_enabled: false, broker_enabled: false },
-  executionEnabled: false,
-  orderQueueEnabled: false,
-  liveTradingEnabled: false,
-  orderSendingBlocked: true,
-  wouldCreateIbPaperOrder: false,
-  summary: {
-    totalScanned: 0,
-    allowedCount: 0,
-    blockedCount: 0,
-    approvedStrategyCount: 0,
-    selectedCount: 0,
-    scaffoldStepCount: 0,
-    previewMode: 'preview_only',
-  },
-  steps: [],
-  primaryCandidate: null,
-  candidateBlueprints: [],
-  previewCandidates: [],
-  allowedCandidates: [],
-  blockedCandidates: [],
-  note: 'Dry-run scaffold only. No queue, no broker, no send path, no real order path.',
-});
-
-const SAFE_FALLBACK_TRUTH = Object.freeze({
-  ok: false,
-  mode: 'paper_only',
-  safety: { mode: 'paper_only', actions_allowed: false, can_place_orders: false, live_trading_enabled: false, broker_enabled: false },
-  issues: [],
-  topStrategies: { ok: false, mode: 'paper_only', selectionCount: 3, selectedCount: 0, topStrategies: [], summary: { totalScanned: 0, allowedCandidates: 0, blockedCandidates: 0, selectedCount: 0, selectionCount: 3, availableStrategies: 0, previewDate: null, previewSource: 'safe_fallback', note: null, insufficientAllowedReason: null } },
-  candidateReadiness: { totalScanned: 0, allowedCandidates: 0, blockedCandidates: 0, selectedCount: 0, selectionCount: 3, readyTopStrategies: 0, topStrategyIds: [], blockers: [], reason: 'truth_unavailable', insufficientAllowedReason: null, runtimeEmpty: true },
-  allowlist: { totalApproved: 0, readyForPaperRuntime: 0, pendingRuntimeConnection: 0, approvedStrategyIds: [], waitingForApproval: [], allowlist: [] },
-  blockers: [],
-  ibPaper: {
-    status: null,
-    orderPreview: null,
-    tradeBlueprint: null,
-    executionStatus: null,
-    selectedBlueprint: null,
-    accountMode: 'ib_paper',
-    manualApprovalRequired: true,
-    noLiveTradingBadge: true,
-    safety: { mode: 'paper_only', actions_allowed: false, can_place_orders: false, live_trading_enabled: false, broker_enabled: false },
-    topStrategies: [],
-    readiness: null,
-    disableReason: 'truth_unavailable',
-  },
-});
-
-const SAFE_FALLBACK_PAPER_EXECUTION = Object.freeze({
-  ok: false,
-  dryRun: true,
-  mode: 'paper_execution',
-  executionEnabled: false,
-  orderSendingBlocked: true,
-  liveTradingEnabled: false,
-  can_place_orders: false,
-  actions_allowed: false,
-  broker_enabled: false,
-  blockedReason: 'ib_paper_execution_disabled',
-  blockers: ['ib_paper_execution_disabled'],
-  safety: { mode: 'paper_only', actions_allowed: false, can_place_orders: false, live_trading_enabled: false, broker_enabled: false },
-  killSwitch: { active: false, reason: null, triggeredAt: null },
-  dailyQuota: { used: 0, max: 3, remaining: 3 },
-  openTrades: [],
-  openTradeCount: 0,
-  closedTrades: [],
-  closedTradeCount: 0,
-  lastExecutionResult: null,
-  featureFlag: 'IB_PAPER_EXECUTION_ENABLED',
-  readiness: {
-    gatewayReachable: false,
-    status: 'disabled',
-    blockedReason: 'ib_paper_execution_disabled',
-  },
-  gatewayReachable: false,
-  ibApiVerified: false,
-  paperAccountVerified: false,
-  manualApproval: {
-    requiredConfirmationPhrase: 'CONFIRM PAPER TRADE',
-    confirmationEntered: false,
-    approvalStatus: 'not_available',
-    blockers: ['ib_paper_execution_disabled'],
-    warnings: [],
-    createdAt: null,
-    expiresAt: null,
-    pendingBlueprints: [],
-    selectedBlueprint: null,
-  },
-});
-
-const SAFE_FALLBACK_EXECUTION_PREVIEW = Object.freeze({
-  ok: false,
-  mode: 'paper_only',
-  routeName: 'interactive-brokers.paper-execution-preview',
-  phase: 'preview_only',
-  previewOnly: true,
-  preflightOnly: true,
-  dryRun: true,
-  wouldPlaceOrder: false,
-  wouldSendOrder: false,
-  wouldCreateIbPaperOrder: false,
-  orderSent: false,
-  executed: false,
-  submitted: false,
-  placeOrderCalled: false,
-  submitFunctionCalled: false,
-  finalGateArmCreated: false,
-  realSubmitAllowed: false,
-  allowRealSubmit: false,
-  mockOnly: true,
-  blockedReason: 'preview_not_loaded',
-  blockers: ['preview_not_loaded'],
-  requestedOrder: { ...SAFE_EXECUTION_PREVIEW_BODY, symbolValid: false, actionValid: false, quantityValid: false, formatValid: false },
-  readOnlyApiRisk: { checked: false, likelyBlocksRealOrder: true, message: 'Read-Only API kontrolleras manuellt i IB Gateway.' },
-  safety: { mode: 'paper_only', actions_allowed: false, can_place_orders: false, live_trading_enabled: false, broker_enabled: false },
-});
-
-const SAFE_FALLBACK_ARM_STATUS = Object.freeze({
-  ok: false,
-  mode: 'paper_only',
-  armed: false,
-  armId: null,
-  currentArm: null,
-  blockedReason: 'one_shot_arm_not_armed',
-  nextRequiredAction: 'Ingen aktiv arm finns.',
-  safety: { mode: 'paper_only', actions_allowed: false, can_place_orders: false, live_trading_enabled: false, broker_enabled: false },
-});
-
-const SAFE_FALLBACK_FINAL_GATE_STATUS = Object.freeze({
-  ok: false,
-  mode: 'paper_only',
-  orderSent: false,
-  executed: false,
-  accepted: false,
-  selectedBlueprint: null,
-  selectedBlueprintId: null,
-  preflightReady: false,
-  protectiveReady: false,
-  bracketOrderCount: 0,
-  entryOnlyBlocked: true,
-  realSubmitGate: {
-    ready: false,
-    gateReady: false,
-    gateOpensRealSubmit: false,
-    blockedReason: 'one_shot_not_armed',
-    blockers: ['one_shot_not_armed'],
-    requiresFinalPhase: '4G-2D',
-  },
-  oneShotArm: {
-    status: 'not_armed',
-    armed: false,
-    armId: null,
-    expiresAt: null,
-    consumedAt: null,
-    idempotencyKey: null,
-    blueprintId: null,
-    selectedBlueprintId: null,
-    accountMatches: false,
-    blocker: 'one_shot_not_armed',
-    matchesSelectedBlueprint: true,
-    matchesIdempotencyKey: true,
-  },
-  openOrders: { checked: false, count: 0, readOnly: true },
-  positions: { checked: false, countForSymbol: 0, readOnly: true },
-  canArm: false,
-  submitReady: false,
-  blockers: ['one_shot_not_armed'],
-  nextRequiredAction: 'Ingen aktiv arm finns.',
-  safety: { mode: 'paper_only', actions_allowed: false, can_place_orders: false, live_trading_enabled: false, broker_enabled: false },
-});
-
-const SAFE_FALLBACK_TRADE_BLUEPRINT = Object.freeze({
-  ok: false,
-  dryRun: true,
-  mode: 'trade_blueprint',
-  executionEnabled: false,
-  orderQueueEnabled: false,
-  brokerExecutionEnabled: false,
-  liveTradingEnabled: false,
-  orderSendingBlocked: true,
-  wouldCreateOrder: false,
-  requiredStopLossMinPct: 0.10,
-  safety: { mode: 'paper_only', actions_allowed: false, can_place_orders: false, live_trading_enabled: false, broker_enabled: false },
-  blueprints: [],
-  blueprintsCount: 0,
-  summary: {
-    totalCandidates: 0,
-    readyCount: 0,
-    blockedCount: 0,
-    approvedStrategyCount: 0,
-    allowedCandidateCount: 0,
-    priceSource: 'safe_fallback',
-    candidateSource: 'safe_fallback',
-  },
-  source: {
-    candidateSource: 'safe_fallback',
-    priceSource: 'safe_fallback',
-    safety: { mode: 'paper_only', actions_allowed: false, can_place_orders: false, live_trading_enabled: false, broker_enabled: false },
-  },
-  note: 'Trade Blueprint is not available right now. No order is created or sent.',
-});
 
 // Read-only futures-datalager (marknadsdata + paper-konto) — tekniskt
 // kontrollrum för IB-dataadaptern. Ingen orderkapabilitet.
@@ -425,7 +180,7 @@ function IbFuturesDataStatusCard({ hidden }) {
           <Row label="Read-only clientId"><code>{adapter?.clientId ?? '–'}</code></Row>
           <Row label="Server version"><code>{adapter?.serverVersion ?? '–'}</code></Row>
           <Row label="CME market data"><Badge ok={adapter?.marketDataTypeLabel === 'realtime'} labelTrue="realtime" labelFalse={adapter?.marketDataTypeLabel || 'okänd'} /></Row>
-          <Row label="Reconnects"><code>{adapter?.reconnectCount ?? 0}</code></Row>
+          <Row label="Reconnects"><code>{displayCountValue(adapter?.reconnectCount, hasValue(adapter?.reconnectCount))}</code></Row>
           <Row label="Senaste fel"><code>{lastError ? `${lastError.code || ''} ${lastError.message}`.trim() : 'none'}</code></Row>
           <Row label="Kontrakt (front month)">
             <code>
@@ -449,7 +204,7 @@ function IbFuturesDataStatusCard({ hidden }) {
           <Row label="Paper-konto (read-only)">
             {account?.ok === true ? (
               <code>
-                {account.account.accountIdMasked} · {account.account.currency} · NetLiq {Number(account.account.netLiquidation).toLocaleString('sv-SE')}
+                {account.account.accountIdMasked} · {account.account.currency || EMPTY_VALUE} · NetLiq {displayCountValue(account.account.netLiquidation, hasValue(account.account.netLiquidation))}
               </code>
             ) : (
               <code>{account?.blocker || 'ej läst ännu'}</code>
@@ -466,6 +221,7 @@ function IbFuturesDataStatusCard({ hidden }) {
 
 function Badge({ ok, labelTrue, labelFalse }) {
   const good = ok === true;
+  const unknown = ok === null || ok === undefined;
   return (
     <span
       style={{
@@ -474,12 +230,12 @@ function Badge({ ok, labelTrue, labelFalse }) {
         borderRadius: 999,
         fontSize: 12,
         fontWeight: 600,
-        background: good ? 'rgba(34,197,94,0.15)' : 'rgba(248,113,113,0.15)',
-        color: good ? 'var(--success)' : 'var(--danger)',
-        border: `1px solid ${good ? 'rgba(34,197,94,0.4)' : 'rgba(248,113,113,0.4)'}`,
+        background: unknown ? 'rgba(148,163,184,0.12)' : good ? 'rgba(34,197,94,0.15)' : 'rgba(248,113,113,0.15)',
+        color: unknown ? 'var(--muted)' : good ? 'var(--success)' : 'var(--danger)',
+        border: `1px solid ${unknown ? 'rgba(148,163,184,0.3)' : good ? 'rgba(34,197,94,0.4)' : 'rgba(248,113,113,0.4)'}`,
       }}
     >
-      {good ? labelTrue : labelFalse}
+      {unknown ? WAITING_BROKER : good ? labelTrue : labelFalse}
     </span>
   );
 }
@@ -576,12 +332,11 @@ function buildIbPaperReadinessSnapshot({
   const bracketSubmissionPlanReady = protectiveView?.bracketSubmissionPlanReady === true
     || paperOneShotResult?.bracketSubmissionPlanReady === true
     || previousSnapshot?.bracketSubmissionPlanReady === true;
-  const bracketOrderCount = Number(pickFirstDefined(
+  const bracketOrderCount = numberOrNull(pickFirstDefined(
     protectiveView?.bracketOrderCount,
     paperOneShotResult?.bracketOrderCount,
     previousSnapshot?.bracketOrderCount,
-    0,
-  ) || 0);
+  ));
   const entryOnlyBlocked = protectiveView?.entryOnlyBlocked === true
     || paperOneShotResult?.entryOnlyBlocked === true
     || previousSnapshot?.entryOnlyBlocked === true;
@@ -589,10 +344,16 @@ function buildIbPaperReadinessSnapshot({
     || protectiveView?.bracketSubmissionPlanReady === true
     || paperOneShotResult?.helperReady === true
     || previousSnapshot?.helperReady === true;
-  const noOpenOrders = Number(executionStatus?.openTradeCount || 0) === 0
+  const executionOpenTradeCount = numberOrNull(executionStatus?.openTradeCount);
+  const executionOpenPositionCount = numberOrNull(executionStatus?.openPositionCount);
+  const hasOpenOrderTruth = executionOpenTradeCount != null || Array.isArray(executionStatus?.openTrades);
+  const hasPositionTruth = executionOpenPositionCount != null || Array.isArray(executionStatus?.openPositions) || Array.isArray(executionStatus?.positions);
+  const noOpenOrders = hasOpenOrderTruth
+    && (executionOpenTradeCount == null || executionOpenTradeCount === 0)
     && (!Array.isArray(executionStatus?.openTrades) || executionStatus.openTrades.length === 0)
     && (previousSnapshot?.noOpenOrders !== false);
-  const noPositions = Number(executionStatus?.openPositionCount || 0) === 0
+  const noPositions = hasPositionTruth
+    && (executionOpenPositionCount == null || executionOpenPositionCount === 0)
     && (!Array.isArray(executionStatus?.openPositions) || executionStatus.openPositions.length === 0)
     && (!Array.isArray(executionStatus?.positions) || executionStatus.positions.length === 0)
     && (previousSnapshot?.noPositions !== false);
@@ -709,6 +470,7 @@ function buildIbPaperReadinessSnapshot({
 function CandidateCard({ candidate }) {
   const ok = candidate.allowedForIbPaperPreview === true;
   const blockers = Array.isArray(candidate.blockers) ? candidate.blockers : [];
+  const strategy = resolveStrategy(candidate);
   return (
     <div
       style={{
@@ -720,13 +482,13 @@ function CandidateCard({ candidate }) {
     >
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap' }}>
         <strong style={{ color: 'var(--text)' }}>
-          {candidate.symbol || '–'} · {candidate.strategyName || candidate.strategyId || 'Okänd strategi'}
+          {candidate.symbol || '—'} · {strategyDisplayName(strategy, '—')}
         </strong>
         <Badge ok={ok} labelTrue="Tillåten" labelFalse="Blockerad" />
       </div>
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: 8, marginTop: 10, fontSize: 14 }}>
-        <div><span style={{ color: 'var(--muted)' }}>Strategi:</span> {candidate.strategyId || '–'}</div>
-        <div><span style={{ color: 'var(--muted)' }}>Riktning:</span> {candidate.direction || 'unknown'}</div>
+        <div><span style={{ color: 'var(--muted)' }}>Strategi:</span> {strategy.strategyId || '—'}</div>
+        <div><span style={{ color: 'var(--muted)' }}>Riktning:</span> {candidate.direction || EMPTY_VALUE}</div>
         <div><span style={{ color: 'var(--muted)' }}>Källa:</span> {candidate.source || '–'}</div>
         <div>
           <span style={{ color: 'var(--muted)' }}>Confidence/score:</span>{' '}
@@ -761,6 +523,7 @@ function CandidateCard({ candidate }) {
 }
 
 function BlueprintCard({ blueprint }) {
+  const strategy = resolveStrategy(blueprint || {});
   const blueprintReady = blueprint?.blueprintReady === true || blueprint?.readyForFutureIbPaper === true;
   const manualApprovalReady = blueprint?.manualApprovalReady === true;
   const executionReady = blueprint?.executionReady === true;
@@ -782,7 +545,7 @@ function BlueprintCard({ blueprint }) {
     >
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap' }}>
         <strong style={{ color: 'var(--text)' }}>
-          {blueprint?.symbol || '–'} · {blueprint?.strategyName || blueprint?.strategyId || 'Okänd strategi'}
+          {blueprint?.symbol || '—'} · {strategyDisplayName(strategy, '—')}
         </strong>
         <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
           <Badge ok={blueprintReady} labelTrue="Blueprint redo" labelFalse="Blueprint blockerad" />
@@ -795,14 +558,14 @@ function BlueprintCard({ blueprint }) {
         <div><span style={{ color: 'var(--muted)' }}>Candidate ID:</span> {blueprint?.candidateId || '–'}</div>
         <div><span style={{ color: 'var(--muted)' }}>Top 3 rank:</span> {blueprint?.top3Rank ?? '–'}</div>
         <div><span style={{ color: 'var(--muted)' }}>Källa:</span> {blueprint?.top3Source || '–'}</div>
-        <div><span style={{ color: 'var(--muted)' }}>Riktning:</span> {blueprint?.direction || 'unknown'}</div>
+        <div><span style={{ color: 'var(--muted)' }}>Riktning:</span> {blueprint?.direction || EMPTY_VALUE}</div>
         <div><span style={{ color: 'var(--muted)' }}>Side:</span> {blueprint?.side || '–'}</div>
         <div><span style={{ color: 'var(--muted)' }}>Entry:</span> {blueprint?.entryReferencePrice ?? blueprint?.entryPrice ?? '–'}</div>
         <div><span style={{ color: 'var(--muted)' }}>Stop loss:</span> {blueprint?.stopLoss ?? blueprint?.stopLossPrice ?? '–'}</div>
         <div><span style={{ color: 'var(--muted)' }}>TP1:</span> {blueprint?.takeProfit1 ?? '–'}</div>
         <div><span style={{ color: 'var(--muted)' }}>TP2:</span> {blueprint?.takeProfit2 ?? '–'}</div>
         <div><span style={{ color: 'var(--muted)' }}>RR:</span> {blueprint?.riskReward ?? blueprint?.riskRewardRatio ?? '–'}</div>
-        <div><span style={{ color: 'var(--muted)' }}>Quantity:</span> {blueprint?.quantity ?? '–'} ({blueprint?.quantityStatus || 'unknown'})</div>
+        <div><span style={{ color: 'var(--muted)' }}>Quantity:</span> {blueprint?.quantity ?? '–'} ({blueprint?.quantityStatus || EMPTY_VALUE})</div>
       </div>
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: 8, marginTop: 10, fontSize: 14 }}>
         <div><span style={{ color: 'var(--muted)' }}>Stop loss %:</span> {blueprint?.stopLossPct ?? blueprint?.stopLossDistancePct ?? '–'}</div>
@@ -838,28 +601,33 @@ function BlueprintCard({ blueprint }) {
 
 function ManualApprovalCard({ manualApproval, selectedBlueprint, selectedBlueprintLoadStatus = 'idle' }) {
   const approval = manualApproval || {};
-  const pendingCount = Array.isArray(approval.pendingBlueprints) ? approval.pendingBlueprints.length : 0;
+  const hasPendingBlueprints = Array.isArray(approval.pendingBlueprints);
+  const pendingCount = hasPendingBlueprints ? approval.pendingBlueprints.length : null;
+  const approvalStatusKnown = hasValue(approval.approvalStatus);
+  const approvalReady = approvalStatusKnown
+    ? (approval.approvalStatus === 'waiting_for_user' || approval.approvalStatus === 'ready_for_future_execution')
+    : null;
   const selected = approval.selectedBlueprint || selectedBlueprint || null;
   return (
     <div style={{ border: '1px solid rgba(251,191,36,0.35)', borderRadius: 14, padding: 14, background: 'rgba(251,191,36,0.06)' }}>
       <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap' }}>
         <strong style={{ color: 'var(--text)' }}>Manual approval panel</strong>
         <Badge
-          ok={approval.approvalStatus === 'waiting_for_user' || approval.approvalStatus === 'ready_for_future_execution'}
-          labelTrue={approval.approvalStatus || 'waiting_for_user'}
-          labelFalse={approval.approvalStatus || 'blocked'}
+          ok={approvalReady}
+          labelTrue={approval.approvalStatus}
+          labelFalse={approval.approvalStatus || EMPTY_VALUE}
         />
       </div>
       <div style={{ marginTop: 10, display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: 8, fontSize: 14 }}>
-        <div><span style={{ color: 'var(--muted)' }}>Required phrase:</span> {approval.requiredConfirmationPhrase || 'CONFIRM PAPER TRADE'}</div>
-        <div><span style={{ color: 'var(--muted)' }}>Confirmation entered:</span> {approval.confirmationEntered === true ? 'Ja' : 'Nej'}</div>
-        <div><span style={{ color: 'var(--muted)' }}>Approval status:</span> {approval.approvalStatus || 'not_available'}</div>
-        <div><span style={{ color: 'var(--muted)' }}>Pending blueprints:</span> {pendingCount}</div>
+        <div><span style={{ color: 'var(--muted)' }}>Required phrase:</span> {approval.requiredConfirmationPhrase || EMPTY_VALUE}</div>
+        <div><span style={{ color: 'var(--muted)' }}>Confirmation entered:</span> {approval.confirmationEntered === true ? 'Ja' : approval.confirmationEntered === false ? 'Nej' : EMPTY_VALUE}</div>
+        <div><span style={{ color: 'var(--muted)' }}>Approval status:</span> {approval.approvalStatus || EMPTY_VALUE}</div>
+        <div><span style={{ color: 'var(--muted)' }}>Pending blueprints:</span> {displayCountValue(pendingCount, hasPendingBlueprints)}</div>
         <div><span style={{ color: 'var(--muted)' }}>Created at:</span> {approval.createdAt || '–'}</div>
         <div><span style={{ color: 'var(--muted)' }}>Expires at:</span> {approval.expiresAt || '–'}</div>
       </div>
       <div style={{ marginTop: 10, color: 'var(--text)', lineHeight: 1.55 }}>
-        <div>Selected blueprint: {selected ? `${selected.symbol || '–'} · ${selected.strategyName || selected.strategyId || '–'}` : (selectedBlueprintLoadStatus === 'loading' ? 'Laddar…' : 'none')}</div>
+        <div>Selected blueprint: {selected ? selectedBlueprintStrategyLabel(selected) : (selectedBlueprintLoadStatus === 'loading' ? 'Laddar…' : '—')}</div>
         <div>Manual approval required: yes</div>
         <div>Execution remains blocked in this phase.</div>
         {Array.isArray(approval.blockers) && approval.blockers.length > 0 ? (
@@ -1059,48 +827,59 @@ export default function InteractiveBrokersPage() {
   } = state;
 
   const hasAnyError = Boolean(errors.status || errors.readiness || errors.truth || errors.preview || errors.orderPreview || errors.blueprint || errors.scaffold || errors.executionStatus || errors.futuresExecutionStatus || errors.executionPreview || errors.gatewayHealth || errors.protectivePreflight);
-  const statusView = status || SAFE_FALLBACK_STATUS;
-  const gatewayHealthView = gatewayHealth || SAFE_FALLBACK_GATEWAY_HEALTH;
-  const conn = readiness || SAFE_FALLBACK_STATUS.connection;
-  const safety = statusView.safety || SAFE_FALLBACK_STATUS.safety;
-  const ib = statusView.ibPaper || SAFE_FALLBACK_STATUS.ibPaper;
-  const nextPhase = statusView.nextPhaseLocked || SAFE_FALLBACK_STATUS.nextPhaseLocked;
-  const truthView = truth || SAFE_FALLBACK_TRUTH;
+  const statusView = status || {};
+  const gatewayHealthView = gatewayHealth || {};
+  const conn = readiness || {};
+  const safety = statusView.safety || {};
+  const ib = statusView.ibPaper || {};
+  const nextPhase = statusView.nextPhaseLocked || {};
+  const truthView = truth || {};
   const truthTopStrategies = Array.isArray(truthView?.topStrategies?.topStrategies) ? truthView.topStrategies.topStrategies : [];
-  const truthAllowlist = truthView?.allowlist || SAFE_FALLBACK_TRUTH.allowlist;
-  const truthReadiness = truthView?.candidateReadiness || SAFE_FALLBACK_TRUTH.candidateReadiness;
-  const truthExecutionStatus = truthView?.ibPaper?.executionStatus || SAFE_FALLBACK_TRUTH.ibPaper.executionStatus || null;
+  const truthAllowlist = truthView?.allowlist || {};
+  const truthReadiness = truthView?.candidateReadiness || {};
+  const truthExecutionStatus = truthView?.ibPaper?.executionStatus || null;
   const truthManualApproval = truthView?.ibPaper?.manualApproval || null;
   const strategies = Array.isArray(truthAllowlist?.allowlist) && truthAllowlist.allowlist.length
     ? truthAllowlist.allowlist
     : Array.isArray(preview?.approvedStrategies) ? preview.approvedStrategies : [];
-  const sourceStatus = preview?.approvedStrategiesSource?.status || (errors.preview ? 'degraded' : 'unknown');
+  const sourceStatus = preview?.approvedStrategiesSource?.status || (errors.preview ? 'degraded' : null);
   const sourceDegraded = sourceStatus === 'degraded' || Boolean(preview?.degraded) || Boolean(errors.preview);
-  const statusBlockedReason = statusView.blockedReason || 'unknown';
-  const ibPreview = orderPreview || SAFE_FALLBACK_ORDER_PREVIEW;
-  const previewSummary = ibPreview.summary || SAFE_FALLBACK_ORDER_PREVIEW.summary;
+  const statusBlockedReason = statusView.blockedReason || EMPTY_VALUE;
+  const hasStatusSnapshot = Boolean(status);
+  const hasTruthSnapshot = Boolean(truth);
+  const hasOrderPreviewSnapshot = Boolean(orderPreview);
+  const hasScaffoldSnapshot = Boolean(scaffold);
+  const hasTradeBlueprintSnapshot = Boolean(blueprint);
+  const hasExecutionStatusSnapshot = Boolean(executionStatus);
+  const hasFuturesExecutionStatusSnapshot = Boolean(futuresExecutionStatus);
+  const hasGatewayHealthSnapshot = Boolean(gatewayHealth);
+  const hasReadinessSnapshot = Boolean(readiness);
+  const hasFinalGateStatusSnapshot = Boolean(finalGateStatus);
+  const ibPreview = orderPreview || {};
+  const previewSummary = ibPreview.summary || {};
   const previewCandidates = Array.isArray(ibPreview.candidates) ? ibPreview.candidates : [];
   const visibleAllowedCandidates = previewCandidates.filter((candidate) => candidate.allowedForIbPaperPreview === true);
   const allowedPreviewCandidates = visibleAllowedCandidates.slice(0, PREVIEW_LIMIT);
   const blockedPreviewCandidates = Array.isArray(ibPreview.blockedCandidates)
     ? ibPreview.blockedCandidates
     : previewCandidates.filter((candidate) => candidate.allowedForIbPaperPreview !== true);
-  const allowedCount = Number(previewSummary.allowedCandidates || 0);
-  const blockedCount = Number(previewSummary.blockedCandidates || 0);
-  const stopLossMinPct = Number(previewSummary.requiredStopLossMinPct ?? ibPreview.requiredStopLossMinPct ?? 0.10) || 0.10;
-  const stopLossPolicy = previewSummary.stopLossPolicy || ibPreview.stopLossPolicy || 'Minst 0,10 % krävs innan framtida IB Paper-execution';
-  const tradeBlueprintView = blueprint || SAFE_FALLBACK_TRADE_BLUEPRINT;
-  const tradeBlueprintSummary = tradeBlueprintView.summary || SAFE_FALLBACK_TRADE_BLUEPRINT.summary;
+  const allowedCount = numberOrNull(previewSummary.allowedCandidates);
+  const blockedCount = numberOrNull(previewSummary.blockedCandidates);
+  const stopLossMinPct = numberOrNull(previewSummary.requiredStopLossMinPct ?? ibPreview.requiredStopLossMinPct);
+  const stopLossMinPctText = stopLossMinPct == null ? EMPTY_VALUE : `${fmtNumber(stopLossMinPct, 2)}%`;
+  const stopLossPolicy = hasOrderPreviewSnapshot ? (previewSummary.stopLossPolicy || ibPreview.stopLossPolicy || EMPTY_VALUE) : EMPTY_VALUE;
+  const tradeBlueprintView = blueprint || {};
+  const tradeBlueprintSummary = tradeBlueprintView.summary || {};
   const tradeBlueprints = Array.isArray(tradeBlueprintView.blueprints) ? tradeBlueprintView.blueprints : [];
   const readyBlueprints = tradeBlueprints.filter((row) => row.readyForFutureIbPaper === true);
-  const scaffoldView = scaffold || SAFE_FALLBACK_SCAFFOLD;
-  const scaffoldSummary = scaffoldView.summary || SAFE_FALLBACK_SCAFFOLD.summary;
+  const scaffoldView = scaffold || {};
+  const scaffoldSummary = scaffoldView.summary || {};
   const scaffoldSteps = Array.isArray(scaffoldView.steps) ? scaffoldView.steps : [];
   const scaffoldPrimary = scaffoldView.primaryCandidate || null;
   const scaffoldBlueprints = Array.isArray(scaffoldView.candidateBlueprints) ? scaffoldView.candidateBlueprints : [];
-  const executionStatusView = executionStatus || SAFE_FALLBACK_PAPER_EXECUTION;
+  const executionStatusView = executionStatus || {};
   const futuresExecutionStatusView = futuresExecutionStatus || null;
-  const executionPreviewView = executionPreview || SAFE_FALLBACK_EXECUTION_PREVIEW;
+  const executionPreviewView = executionPreview || {};
   const executionStatusBlockers = filterCurrentExecutionBlockers(executionStatusView.blockers, executionStatusView);
   const executionStatusBlockedReason = currentBlockedReason(executionStatusView.blockedReason || executionStatusView.disableReason, executionStatusView);
   const previewVerified = executionPreviewView.dryRun === true
@@ -1120,7 +899,7 @@ export default function InteractiveBrokersPage() {
     protectivePlanReady: previewPreflight.bracketSubmissionPlanReady === true,
     bracketSubmissionPlanReady: previewPreflight.bracketSubmissionPlanReady === true,
     bracketSubmissionRealSubmitEnabled: false,
-    bracketOrderCount: previewPreflight.bracketOrderCount || 0,
+    bracketOrderCount: numberOrNull(previewPreflight.bracketOrderCount),
     entryOnlyBlocked: previewPreflight.entryOnlyBlocked === true,
     blockedReason: previewPreflight.blockedReason || executionPreviewView.blockedReason || null,
     blockers: previewPreflight.blockers || executionPreviewView.blockers || [],
@@ -1145,7 +924,7 @@ export default function InteractiveBrokersPage() {
   const protectivePlanReady = protectivePreflightView?.protectivePlanReady === true;
   const bracketSubmissionPlanReady = protectivePreflightView?.bracketSubmissionPlanReady === true;
   const bracketSubmissionRealSubmitEnabled = false;
-  const bracketOrderCount = Number(protectivePreflightView?.bracketOrderCount || 0);
+  const bracketOrderCount = numberOrNull(protectivePreflightView?.bracketOrderCount);
   const bracketEntryOnlyBlocked = protectivePreflightView?.entryOnlyBlocked === true;
   const bracketPresentationBlockedReason = oneShotPresentationStatus?.blockedReason
     || protectivePreflightView?.bracketBlockedReason
@@ -1157,10 +936,10 @@ export default function InteractiveBrokersPage() {
       ? '3-leg bracket-helper är redo: Entry + Stop Loss + Take Profit. Riktig IB Paper-submit är fortfarande låst i auditläge.'
       : 'Kan inte skicka order: komplett bracket-/skyddsorder saknas.');
   const bracketPresentationButtonLocked = oneShotPresentationStatus?.orderButtonLocked !== false;
-  const armStatusView = armStatus || SAFE_FALLBACK_ARM_STATUS;
+  const armStatusView = armStatus || {};
   const armCurrent = armStatusView?.currentArm || null;
-  const finalGateStatusView = finalGateStatusResult || SAFE_FALLBACK_FINAL_GATE_STATUS;
-  const finalGateArmView = finalGateStatusView?.oneShotArm || SAFE_FALLBACK_FINAL_GATE_STATUS.oneShotArm;
+  const finalGateStatusView = finalGateStatusResult || {};
+  const finalGateArmView = finalGateStatusView?.oneShotArm || {};
   const blueprintLoadStatus = errors.blueprint
     ? (errors.blueprint.includes('timeout_after_') ? 'timeout' : (errors.blueprint.includes('HTTP 404') ? 'not_found' : 'error'))
     : (blueprint ? 'ok' : (loading ? 'loading' : 'idle'));
@@ -1266,7 +1045,7 @@ export default function InteractiveBrokersPage() {
         account: stableIbPaperSnapshot.account,
         protectiveExecutionReady: stableIbPaperSnapshot.helperReady === true,
         bracketSubmissionPlanReady: stableIbPaperSnapshot.bracketSubmissionPlanReady === true,
-        bracketOrderCount: stableIbPaperSnapshot.bracketOrderCount || 0,
+        bracketOrderCount: numberOrNull(stableIbPaperSnapshot.bracketOrderCount),
         entryOnlyBlocked: stableIbPaperSnapshot.entryOnlyBlocked === true,
       },
       realSubmitGate: stableIbPaperSnapshot.realSubmitGate || null,
@@ -1298,7 +1077,7 @@ export default function InteractiveBrokersPage() {
       helperReady: false,
       safeForBracketPreview: false,
       bracketSubmissionPlanReady: false,
-      bracketOrderCount: 0,
+      bracketOrderCount: null,
       entryOnlyBlocked: false,
       gateReadyPreview: false,
       realSubmitGateReady: false,
@@ -1335,52 +1114,113 @@ export default function InteractiveBrokersPage() {
     stableIbPaperSnapshot.account?.paperAccountId,
   );
   const gatewayConnected = gatewayHealthView.connected === true || gatewayHealthView.authenticated === true;
-  const gatewayStatus = gatewayConnected
+  const gatewayStatus = !hasGatewayHealthSnapshot
+    ? WAITING_BROKER
+    : gatewayConnected
     ? 'Ansluten'
     : gatewayHealthView.gatewayProcessRunning === true
       ? 'Aktiv'
       : 'Inaktiv';
-  const connectionStatus = conn.status || (conn.gatewayReachable === true ? 'reachable' : 'unknown');
+  const connectionStatus = hasReadinessSnapshot ? (conn.status || (conn.gatewayReachable === true ? 'reachable' : EMPTY_VALUE)) : WAITING_BROKER;
+  const brokerEnabled = hasStatusSnapshot && hasOwn(safety, 'broker_enabled') ? safety.broker_enabled : null;
+  const liveTradingEnabled = hasStatusSnapshot && hasOwn(safety, 'live_trading_enabled') ? safety.live_trading_enabled : null;
+  const canPlaceOrders = hasStatusSnapshot && hasOwn(safety, 'can_place_orders') ? safety.can_place_orders : null;
+  const safetyMode = hasStatusSnapshot && hasOwn(safety, 'mode') ? safety.mode : null;
   const kpis = [
     {
       label: 'Gateway-status',
       value: gatewayStatus,
-      hint: gatewayHealthView.lastCheckedAt
+      hint: !hasGatewayHealthSnapshot ? WAITING_BROKER : gatewayHealthView.lastCheckedAt
         ? `Kontrollerad ${new Date(gatewayHealthView.lastCheckedAt).toLocaleString('sv-SE')}`
         : 'Ingen färsk kontrolltid',
-      tone: gatewayConnected ? 'good' : gatewayHealthView.gatewayProcessRunning ? 'warning' : 'danger',
+      tone: !hasGatewayHealthSnapshot ? 'warning' : gatewayConnected ? 'good' : gatewayHealthView.gatewayProcessRunning ? 'warning' : 'danger',
     },
     {
       label: 'Broker enabled',
-      value: String(safety.broker_enabled === true),
-      hint: safety.broker_enabled === true ? 'Kontrollera safety' : 'Broker är avstängd',
-      tone: safety.broker_enabled === true ? 'danger' : 'good',
+      value: displayBooleanField(safety, 'broker_enabled', hasStatusSnapshot, WAITING_BROKER),
+      hint: brokerEnabled === true ? 'Kontrollera safety' : brokerEnabled === false ? 'Broker är avstängd' : WAITING_BROKER,
+      tone: brokerEnabled === true ? 'danger' : brokerEnabled === false ? 'good' : 'warning',
     },
     {
       label: 'Live trading',
-      value: String(safety.live_trading_enabled === true),
-      hint: safety.live_trading_enabled === true ? 'Kontrollera safety' : 'Live trading är avstängd',
-      tone: safety.live_trading_enabled === true ? 'danger' : 'good',
+      value: displayBooleanField(safety, 'live_trading_enabled', hasStatusSnapshot, WAITING_BROKER),
+      hint: liveTradingEnabled === true ? 'Kontrollera safety' : liveTradingEnabled === false ? 'Live trading är avstängd' : WAITING_BROKER,
+      tone: liveTradingEnabled === true ? 'danger' : liveTradingEnabled === false ? 'good' : 'warning',
     },
     {
       label: 'Paper-only status',
-      value: safety.mode || 'paper_only',
-      hint: `orders=${String(safety.can_place_orders === true)}`,
-      tone: safety.mode === 'paper_only' && safety.can_place_orders === false ? 'good' : 'warning',
+      value: safetyMode || WAITING_BROKER,
+      hint: `orders=${displayBooleanField(safety, 'can_place_orders', hasStatusSnapshot, WAITING_BROKER)}`,
+      tone: safetyMode === 'paper_only' && canPlaceOrders === false ? 'good' : 'warning',
     },
     {
       label: 'Paper account',
-      value: resolvedPaperAccountId || 'Saknas',
-      hint: executionStatusView.paperAccountVerified === true ? 'Verifierat paper-konto' : 'Inte verifierat',
-      tone: executionStatusView.paperAccountVerified === true ? 'blue' : 'warning',
+      value: resolvedPaperAccountId || (hasExecutionStatusSnapshot || hasReadinessSnapshot ? EMPTY_VALUE : WAITING_BROKER),
+      hint: hasExecutionStatusSnapshot ? (executionStatusView.paperAccountVerified === true ? 'Verifierat paper-konto' : 'Inte verifierat') : WAITING_BROKER,
+      tone: hasExecutionStatusSnapshot && executionStatusView.paperAccountVerified === true ? 'blue' : 'warning',
     },
     {
       label: 'Connection / sync',
       value: connectionStatus,
-      hint: executionStatusView.ibApiVerified === true ? 'IB API verifierat' : 'IB API ej verifierat',
-      tone: conn.gatewayReachable === true && executionStatusView.ibApiVerified === true ? 'good' : 'warning',
+      hint: hasExecutionStatusSnapshot ? (executionStatusView.ibApiVerified === true ? 'IB API verifierat' : 'IB API ej verifierat') : WAITING_BROKER,
+      tone: hasReadinessSnapshot && conn.gatewayReachable === true && hasExecutionStatusSnapshot && executionStatusView.ibApiVerified === true ? 'good' : 'warning',
     },
   ];
+  const tradingEventStore = useMemo(() => createTradingEventStore({
+    runtimeSnapshot: {
+      ...(status || {}),
+      truth,
+      orderPreview,
+      blueprint,
+      scaffold,
+      gatewayHealth,
+    },
+    executionSnapshot: {
+      ...(executionStatus || {}),
+      futuresExecutionStatus,
+      executionPreview,
+      protectivePreflight,
+      armStatus,
+      finalGateStatus,
+    },
+    strategyOverview: strategies,
+    candidateQueue: { candidates: previewCandidates },
+    events: [
+      ...tradeBlueprints,
+      ...scaffoldSteps,
+      ...scaffoldBlueprints,
+    ],
+  }), [
+    armStatus,
+    blueprint,
+    executionPreview,
+    executionStatus,
+    finalGateStatus,
+    futuresExecutionStatus,
+    gatewayHealth,
+    orderPreview,
+    previewCandidates,
+    protectivePreflight,
+    scaffold,
+    scaffoldBlueprints,
+    scaffoldSteps,
+    status,
+    strategies,
+    tradeBlueprints,
+    truth,
+  ]);
+  const tradingEventCount = tradingEventStore.getAllEvents().length;
+  const decisionStore = useMemo(() => createDecisionStore({
+    eventStore: tradingEventStore,
+    runtimeSnapshot: status || {},
+    executionSnapshot: executionStatus || {},
+    decisions: [
+      ...tradeBlueprints,
+      ...scaffoldSteps,
+      ...scaffoldBlueprints,
+    ],
+  }), [executionStatus, scaffoldBlueprints, scaffoldSteps, status, tradeBlueprints, tradingEventStore]);
+  const decisionCount = decisionStore.getDecisions().length;
 
   async function handlePaperPreflight() {
     setPaperPreflightSubmitting(true);
@@ -1529,7 +1369,7 @@ export default function InteractiveBrokersPage() {
       onTab={setActiveTab}
       kpis={kpis}
     >
-    <div className="ibkr-dashboard">
+    <div className="ibkr-dashboard" data-trading-event-count={tradingEventCount} data-decision-count={decisionCount}>
       {loading && <div style={CARD_STYLE}>Laddar…</div>}
       {!loading && hasAnyError && (
         <div style={{ ...CARD_STYLE, borderColor: 'rgba(251,191,36,0.35)', background: 'rgba(251,191,36,0.06)' }}>
@@ -1543,21 +1383,21 @@ export default function InteractiveBrokersPage() {
             <h2 style={{ marginTop: 0 }}>Paper-konto</h2>
             {resolvedPaperAccountId || (Array.isArray(conn.managedAccounts) && conn.managedAccounts.length) ? (
               <>
-                <Row label="Paper account">
-                  <code>{resolvedPaperAccountId || 'Saknas'}</code>
+	                <Row label="Paper account">
+	                  <code>{resolvedPaperAccountId || (hasReadinessSnapshot || hasExecutionStatusSnapshot ? EMPTY_VALUE : WAITING_BROKER)}</code>
+	                </Row>
+	                <Row label="Account mode">
+	                  <code>{hasReadinessSnapshot || hasExecutionStatusSnapshot ? (stableIbPaperSnapshot.accountMode || conn.accountMode || EMPTY_VALUE) : WAITING_BROKER}</code>
+	                </Row>
+	                <Row label="Managed accounts">
+	                  <code>{hasReadinessSnapshot ? (Array.isArray(conn.managedAccounts) && conn.managedAccounts.length ? conn.managedAccounts.join(', ') : EMPTY_VALUE) : WAITING_BROKER}</code>
                 </Row>
-                <Row label="Account mode">
-                  <code>{stableIbPaperSnapshot.accountMode || conn.accountMode || 'ib_paper'}</code>
-                </Row>
-                <Row label="Managed accounts">
-                  <code>{Array.isArray(conn.managedAccounts) && conn.managedAccounts.length ? conn.managedAccounts.join(', ') : 'inga'}</code>
-                </Row>
-                <Row label="Paper account verified">
-                  <Badge ok={executionStatusView.paperAccountVerified === true} labelTrue="Ja" labelFalse="Nej" />
-                </Row>
-                <Row label="Paper session verified">
-                  <Badge ok={conn.paperModeVerified === true} labelTrue="Ja" labelFalse="Nej" />
-                </Row>
+	                <Row label="Paper account verified">
+	                  <Badge ok={hasExecutionStatusSnapshot ? executionStatusView.paperAccountVerified === true : null} labelTrue="Ja" labelFalse="Nej" />
+	                </Row>
+	                <Row label="Paper session verified">
+	                  <Badge ok={hasReadinessSnapshot ? conn.paperModeVerified === true : null} labelTrue="Ja" labelFalse="Nej" />
+	                </Row>
               </>
             ) : (
               <EmptyState text="Ingen IBKR paper-kontodata är tillgänglig ännu." />
@@ -1571,51 +1411,51 @@ export default function InteractiveBrokersPage() {
                 API-status kunde inte laddas. Detalj: {errors.status}
               </div>
             )}
-            <Row label="IB Paper API">
-              <Badge ok={conn.gatewayReachable === true && executionStatusView.ibApiVerified === true && executionStatusView.paperAccountVerified === true && executionStatusView.readinessProfile?.sessionVerified !== false} labelTrue="Verifierad" labelFalse="Ej verifierad" />
-            </Row>
-            <Row label="Paper account">
-              <code>{conn.paperAccountId || executionStatusView.readinessProfile?.paperAccountId || resolvedPaperAccountId || 'Saknas'}</code>
-            </Row>
-            <Row label="Gateway TCP reachable">
-              <Badge ok={conn.gatewayReachable === true} labelTrue="Ja" labelFalse={conn.gatewayReachable === null ? 'Okänt' : 'Nej'} />
-            </Row>
-            <Row label="IB API verified">
-              <Badge ok={executionStatusView.ibApiVerified === true} labelTrue="Ja" labelFalse="Nej" />
-            </Row>
-            <Row label="Paper account verified">
-              <Badge ok={executionStatusView.paperAccountVerified === true} labelTrue="Ja" labelFalse="Nej" />
-            </Row>
-            <Row label="IB Paper execution feature">
-              <Badge ok={executionStatusView.executionEnabled === true} labelTrue="Aktiv" labelFalse="Av" />
-            </Row>
-            <Row label="Preview">
-              <Badge ok={previewVerified} labelTrue="Verifierad / Safe" labelFalse={errors.executionPreview ? 'Degraded' : 'Ej körd'} />
-            </Row>
+	            <Row label="IB Paper API">
+	              <Badge ok={hasReadinessSnapshot && hasExecutionStatusSnapshot ? conn.gatewayReachable === true && executionStatusView.ibApiVerified === true && executionStatusView.paperAccountVerified === true && executionStatusView.readinessProfile?.sessionVerified !== false : null} labelTrue="Verifierad" labelFalse="Ej verifierad" />
+	            </Row>
+	            <Row label="Paper account">
+	              <code>{conn.paperAccountId || executionStatusView.readinessProfile?.paperAccountId || resolvedPaperAccountId || (hasReadinessSnapshot || hasExecutionStatusSnapshot ? EMPTY_VALUE : WAITING_BROKER)}</code>
+	            </Row>
+	            <Row label="Gateway TCP reachable">
+	              <Badge ok={hasReadinessSnapshot ? conn.gatewayReachable === true : null} labelTrue="Ja" labelFalse={conn.gatewayReachable === null ? 'Okänt' : 'Nej'} />
+	            </Row>
+	            <Row label="IB API verified">
+	              <Badge ok={hasExecutionStatusSnapshot ? executionStatusView.ibApiVerified === true : null} labelTrue="Ja" labelFalse="Nej" />
+	            </Row>
+	            <Row label="Paper account verified">
+	              <Badge ok={hasExecutionStatusSnapshot ? executionStatusView.paperAccountVerified === true : null} labelTrue="Ja" labelFalse="Nej" />
+	            </Row>
+	            <Row label="IB Paper execution feature">
+	              <Badge ok={hasExecutionStatusSnapshot ? executionStatusView.executionEnabled === true : null} labelTrue="Aktiv" labelFalse="Av" />
+	            </Row>
+	            <Row label="Preview">
+	              <Badge ok={executionPreview ? previewVerified : null} labelTrue="Verifierad / Safe" labelFalse={errors.executionPreview ? 'Degraded' : 'Ej körd'} />
+	            </Row>
             <Row label="Bracket helper">
               <Badge ok={bracketSubmissionPlanReady === true && bracketOrderCount === 3} labelTrue="Redo i mock/read-only" labelFalse="Ej redo" />
             </Row>
-            <Row label="Real submit">
-              <Badge ok={executionPreviewView.realSubmitAllowed !== true && bracketSubmissionRealSubmitEnabled !== true} labelTrue="Låst" labelFalse="Öppen" />
-            </Row>
+	            <Row label="Real submit">
+	              <Badge ok={executionPreview ? executionPreviewView.realSubmitAllowed !== true && bracketSubmissionRealSubmitEnabled !== true : null} labelTrue="Låst" labelFalse="Öppen" />
+	            </Row>
             <Row label="Final gate">
               <Badge ok={armStatusView.armed !== true && finalGateArmView?.armed !== true} labelTrue="Inte armerad" labelFalse={finalGateArmView?.consumedAt ? 'Förbrukad' : 'Armerad'} />
             </Row>
             <Row label="Read-Only API">
               <Badge ok={executionPreviewView.readOnlyApiRisk?.likelyBlocksRealOrder === true} labelTrue="På / kräver manuell kontroll" labelFalse="Okänt" />
             </Row>
-            <Row label="Live broker-execution">
-              <Badge ok={executionStatusView.liveTradingEnabled === false && executionStatusView.broker_enabled === false} labelTrue="Av" labelFalse="På" />
-            </Row>
-            <Row label="Riktiga order">
-              <Badge ok={executionPreviewView.wouldPlaceOrder === false && executionPreviewView.orderSent === false} labelTrue="Blockerade" labelFalse="Risk" />
-            </Row>
-            <Row label="Paper-order skickad">
-              <Badge ok={executionPreviewView.orderSent === false && executionStatusView.lastExecutionResult == null} labelTrue="Nej" labelFalse="Ja" />
-            </Row>
-            <Row label="Dry-run / läsläge">
-              <Badge ok={statusView.dryRun === true} labelTrue="Ja" labelFalse="Nej" />
-            </Row>
+	            <Row label="Live broker-execution">
+	              <Badge ok={hasExecutionStatusSnapshot ? executionStatusView.liveTradingEnabled === false && executionStatusView.broker_enabled === false : null} labelTrue="Av" labelFalse="På" />
+	            </Row>
+	            <Row label="Riktiga order">
+	              <Badge ok={executionPreview ? executionPreviewView.wouldPlaceOrder === false && executionPreviewView.orderSent === false : null} labelTrue="Blockerade" labelFalse="Risk" />
+	            </Row>
+	            <Row label="Paper-order skickad">
+	              <Badge ok={executionPreview || hasExecutionStatusSnapshot ? executionPreviewView.orderSent === false && executionStatusView.lastExecutionResult == null : null} labelTrue="Nej" labelFalse="Ja" />
+	            </Row>
+	            <Row label="Dry-run / läsläge">
+	              <Badge ok={hasStatusSnapshot ? statusView.dryRun === true : null} labelTrue="Ja" labelFalse="Nej" />
+	            </Row>
             <p style={{ color: 'var(--muted)', marginBottom: 0, marginTop: 12, lineHeight: 1.6 }}>
               IB Paper API och preview är verifierade. Real submit är fortfarande låst bakom manuell final gate, och IB Gateway Read-Only API är inte ändrat.
             </p>
@@ -1628,27 +1468,27 @@ export default function InteractiveBrokersPage() {
                 Gateway-status kunde inte laddas. Detalj: {errors.gatewayHealth}
               </div>
             )}
-            <Row label="Gateway">
-              <Badge ok={gatewayHealthView.gatewayProcessRunning === true} labelTrue="Aktiv" labelFalse="Inaktiv" />
-            </Row>
-            <Row label="API">
-              <Badge ok={gatewayHealthView.apiPortOpen === true} labelTrue="Svarar" labelFalse="Svarar inte" />
-            </Row>
-            <Row label="Login">
-              <Badge
-                ok={gatewayHealthView.authenticated === true || gatewayHealthView.connected === true}
-                labelTrue="Inloggad"
-                labelFalse={gatewayHealthView.apiPortOpen === true ? 'Kräver login' : 'Okänt'}
-              />
-            </Row>
-            <Row label="VNC">
-              <Badge ok={gatewayHealthView.vncRunning === true} labelTrue="Aktiv" labelFalse="Inaktiv" />
-            </Row>
+	            <Row label="Gateway">
+	              <Badge ok={hasGatewayHealthSnapshot ? gatewayHealthView.gatewayProcessRunning === true : null} labelTrue="Aktiv" labelFalse="Inaktiv" />
+	            </Row>
+	            <Row label="API">
+	              <Badge ok={hasGatewayHealthSnapshot ? gatewayHealthView.apiPortOpen === true : null} labelTrue="Svarar" labelFalse="Svarar inte" />
+	            </Row>
+	            <Row label="Login">
+	              <Badge
+	                ok={hasGatewayHealthSnapshot ? gatewayHealthView.authenticated === true || gatewayHealthView.connected === true : null}
+	                labelTrue="Inloggad"
+	                labelFalse={gatewayHealthView.apiPortOpen === true ? 'Kräver login' : 'Okänt'}
+	              />
+	            </Row>
+	            <Row label="VNC">
+	              <Badge ok={hasGatewayHealthSnapshot ? gatewayHealthView.vncRunning === true : null} labelTrue="Aktiv" labelFalse="Inaktiv" />
+	            </Row>
             <Row label="Display">
-              <code>{gatewayHealthView.display || ':2'}</code>
+              <code>{hasGatewayHealthSnapshot ? (gatewayHealthView.display || EMPTY_VALUE) : WAITING_BROKER}</code>
             </Row>
             <Row label="API host/port">
-              <code>{gatewayHealthView.apiHost || '127.0.0.1'}:{gatewayHealthView.apiPort || 'ej konfigurerad'}</code>
+              <code>{hasGatewayHealthSnapshot ? `${gatewayHealthView.apiHost || EMPTY_VALUE}:${gatewayHealthView.apiPort || EMPTY_VALUE}` : WAITING_BROKER}</code>
             </Row>
             <Row label="Paper-only safety">
               <Badge
@@ -1662,14 +1502,14 @@ export default function InteractiveBrokersPage() {
                 labelFalse="Kontrollera"
               />
             </Row>
-            <Row label="Senaste heartbeat/statuskontroll">
-              <code>{gatewayHealthView.lastCheckedAt ? new Date(gatewayHealthView.lastCheckedAt).toLocaleString('sv-SE') : 'okänt'}</code>
-            </Row>
-            <Row label="Nästa åtgärd">
-              <code style={{ color: gatewayHealthView.nextActionSv === 'Allt ser OK ut' ? 'var(--success)' : 'var(--warning)' }}>
-                {gatewayHealthView.nextActionSv || 'Kan inte avgöra status'}
-              </code>
-            </Row>
+	            <Row label="Senaste heartbeat/statuskontroll">
+	              <code>{hasGatewayHealthSnapshot ? (gatewayHealthView.lastCheckedAt ? new Date(gatewayHealthView.lastCheckedAt).toLocaleString('sv-SE') : EMPTY_VALUE) : WAITING_BROKER}</code>
+	            </Row>
+	            <Row label="Nästa åtgärd">
+	              <code style={{ color: gatewayHealthView.nextActionSv === 'Allt ser OK ut' ? 'var(--success)' : 'var(--warning)' }}>
+	                {hasGatewayHealthSnapshot ? (gatewayHealthView.nextActionSv || EMPTY_VALUE) : WAITING_BROKER}
+	              </code>
+	            </Row>
             {gatewayHealthView.gatewayProcessCommand && (
               <Row label="Gateway process">
                 <code>{gatewayHealthView.gatewayProcessCommand}</code>
@@ -1689,84 +1529,84 @@ export default function InteractiveBrokersPage() {
               </div>
             )}
             <Row label="Status">
-              <code>{futuresExecutionStatusView?.status || 'disabled'}</code>
+              <code>{hasFuturesExecutionStatusSnapshot ? (futuresExecutionStatusView?.status || EMPTY_VALUE) : WAITING_BROKER}</code>
             </Row>
             <Row label="Order submission mode">
-              <code>{futuresExecutionStatusView?.orderSubmissionMode || futuresExecutionStatusView?.flags?.orderSubmissionMode || 'disabled'}</code>
+              <code>{hasFuturesExecutionStatusSnapshot ? (futuresExecutionStatusView?.orderSubmissionMode || futuresExecutionStatusView?.flags?.orderSubmissionMode || EMPTY_VALUE) : WAITING_BROKER}</code>
             </Row>
             <Row label="Paper broker enabled">
-              <Badge ok={futuresExecutionStatusView?.paperBrokerExecutionEnabled === true} labelTrue="true" labelFalse="false" />
+              <code>{hasFuturesExecutionStatusSnapshot && futuresExecutionStatusView?.paperBrokerExecutionEnabled != null ? String(futuresExecutionStatusView.paperBrokerExecutionEnabled) : WAITING_BROKER}</code>
             </Row>
             <Row label="Paper account verified">
-              <Badge ok={futuresExecutionStatusView?.paperAccountVerified === true} labelTrue="true" labelFalse="false" />
+              <code>{hasFuturesExecutionStatusSnapshot && futuresExecutionStatusView?.paperAccountVerified != null ? String(futuresExecutionStatusView.paperAccountVerified) : WAITING_BROKER}</code>
             </Row>
             <Row label="Live account blocked">
-              <Badge ok={futuresExecutionStatusView?.liveAccountBlocked !== false} labelTrue="true" labelFalse="false" />
+              <code>{hasFuturesExecutionStatusSnapshot && futuresExecutionStatusView?.liveAccountBlocked != null ? String(futuresExecutionStatusView.liveAccountBlocked) : WAITING_BROKER}</code>
             </Row>
             <Row label="Live broker execution">
-              <Badge ok={futuresExecutionStatusView?.liveBrokerExecutionEnabled === false} labelTrue="false" labelFalse="true" />
+              <code>{hasFuturesExecutionStatusSnapshot && futuresExecutionStatusView?.liveBrokerExecutionEnabled != null ? String(futuresExecutionStatusView.liveBrokerExecutionEnabled) : WAITING_BROKER}</code>
             </Row>
             <Row label="Gateway">
-              <code>{futuresExecutionStatusView?.executionClient?.host || '127.0.0.1'}:{futuresExecutionStatusView?.executionClient?.port || 4002}</code>
+              <code>{hasFuturesExecutionStatusSnapshot ? `${futuresExecutionStatusView?.executionClient?.host || EMPTY_VALUE}:${futuresExecutionStatusView?.executionClient?.port || EMPTY_VALUE}` : WAITING_BROKER}</code>
             </Row>
             <Row label="Data clientId">
-              <code>{futuresExecutionStatusView?.clientIds?.dataClientId ?? 955}</code>
+              <code>{displayCountValue(futuresExecutionStatusView?.clientIds?.dataClientId, hasFuturesExecutionStatusSnapshot, WAITING_BROKER)}</code>
             </Row>
             <Row label="Execution clientId">
-              <code>{futuresExecutionStatusView?.clientIds?.executionClientId ?? futuresExecutionStatusView?.executionClient?.clientId ?? 956}</code>
+              <code>{displayCountValue(futuresExecutionStatusView?.clientIds?.executionClientId ?? futuresExecutionStatusView?.executionClient?.clientId, hasFuturesExecutionStatusSnapshot, WAITING_BROKER)}</code>
             </Row>
             <Row label="Probe clientId">
-              <code>{futuresExecutionStatusView?.clientIds?.probeClientId ?? 957}</code>
+              <code>{displayCountValue(futuresExecutionStatusView?.clientIds?.probeClientId, hasFuturesExecutionStatusSnapshot, WAITING_BROKER)}</code>
             </Row>
             <Row label="Execution client connected">
-              <Badge ok={futuresExecutionStatusView?.executionClient?.connected === true} labelTrue="true" labelFalse="false" />
+              <code>{hasFuturesExecutionStatusSnapshot && futuresExecutionStatusView?.executionClient?.connected != null ? String(futuresExecutionStatusView.executionClient.connected) : WAITING_BROKER}</code>
             </Row>
             <Row label="nextValidId">
-              <code>{futuresExecutionStatusView?.executionClient?.nextValidIdReady ? 'ready' : 'missing'}</code>
+              <code>{hasFuturesExecutionStatusSnapshot && futuresExecutionStatusView?.executionClient?.nextValidIdReady != null ? (futuresExecutionStatusView.executionClient.nextValidIdReady ? 'ready' : 'missing') : WAITING_BROKER}</code>
             </Row>
             <Row label="Open orders">
-              <code>{futuresExecutionStatusView?.reconciliation?.counts?.openOrders ?? 0}</code>
+              <code>{displayNumberField(futuresExecutionStatusView?.reconciliation?.counts, 'openOrders', hasFuturesExecutionStatusSnapshot, WAITING_BROKER)}</code>
             </Row>
             <Row label="Executions">
-              <code>{futuresExecutionStatusView?.reconciliation?.counts?.executions ?? 0}</code>
+              <code>{displayNumberField(futuresExecutionStatusView?.reconciliation?.counts, 'executions', hasFuturesExecutionStatusSnapshot, WAITING_BROKER)}</code>
             </Row>
             <Row label="Positions">
-              <code>{futuresExecutionStatusView?.reconciliation?.counts?.positions ?? 0}</code>
+              <code>{displayNumberField(futuresExecutionStatusView?.reconciliation?.counts, 'positions', hasFuturesExecutionStatusSnapshot, WAITING_BROKER)}</code>
             </Row>
             <Row label="Reconciliation">
-              <code>{futuresExecutionStatusView?.reconciliation?.status || 'unknown'}{futuresExecutionStatusView?.reconciliation?.blockedReason ? ` · ${futuresExecutionStatusView.reconciliation.blockedReason}` : ''}</code>
+              <code>{hasFuturesExecutionStatusSnapshot ? (futuresExecutionStatusView?.reconciliation?.status || EMPTY_VALUE) : WAITING_BROKER}{futuresExecutionStatusView?.reconciliation?.blockedReason ? ` · ${futuresExecutionStatusView.reconciliation.blockedReason}` : ''}</code>
             </Row>
             <Row label="Kill switch">
               <code>{futuresExecutionStatusView?.killSwitch?.pauseNewEntries ? `paused · ${futuresExecutionStatusView.killSwitch.reason || 'no_reason'}` : 'pause_new_entries=false'}</code>
             </Row>
             <Row label="No-live-order capability">
-              <code>{futuresExecutionStatusView?.executionClient?.noLiveOrderCapability ? 'paper-only adapter' : 'not connected'}</code>
+              <code>{hasFuturesExecutionStatusSnapshot ? (futuresExecutionStatusView?.executionClient?.noLiveOrderCapability ? 'paper-only adapter' : 'not connected') : WAITING_BROKER}</code>
             </Row>
           </div>
 
           <div hidden={activeTab !== 'status'} style={{ ...CARD_STYLE, borderColor: 'rgba(248,113,113,0.35)' }}>
             <h2 style={{ marginTop: 0 }}>Execution status</h2>
-            <Row label="Paper-route">
-              <Badge ok={executionStatusView.executionEnabled === true} labelTrue="Aktiv, submit låst" labelFalse="Av" />
-            </Row>
+	            <Row label="Paper-route">
+	              <Badge ok={hasExecutionStatusSnapshot ? executionStatusView.executionEnabled === true : null} labelTrue="Aktiv, submit låst" labelFalse="Av" />
+	            </Row>
             <Row label="Skulle skapa IB Paper-order">
               <Badge ok={executionPreviewView.wouldCreateIbPaperOrder === false} labelTrue="Nej" labelFalse="Ja" />
             </Row>
-            <Row label="gatewayReachable">
-              <Badge ok={executionStatusView.gatewayReachable === true} labelTrue="true" labelFalse="false" />
-            </Row>
-            <Row label="ibApiVerified">
-              <Badge ok={executionStatusView.ibApiVerified === true} labelTrue="true" labelFalse="false" />
-            </Row>
-            <Row label="paperAccountVerified">
-              <Badge ok={executionStatusView.paperAccountVerified === true} labelTrue="true" labelFalse="false" />
-            </Row>
-            <Row label="Orsak (blockedReason)">
-              <code style={{ color: 'var(--warning)' }}>{executionStatusBlockedReason || executionPreviewView.blockedReason || 'none'}</code>
-            </Row>
-            <Row label="Aktuella blockers">
-              <code>{executionStatusBlockers.length > 0 ? executionStatusBlockers.join(', ') : 'none'}</code>
-            </Row>
+	            <Row label="gatewayReachable">
+	              <Badge ok={hasExecutionStatusSnapshot ? executionStatusView.gatewayReachable === true : null} labelTrue="true" labelFalse="false" />
+	            </Row>
+	            <Row label="ibApiVerified">
+	              <Badge ok={hasExecutionStatusSnapshot ? executionStatusView.ibApiVerified === true : null} labelTrue="true" labelFalse="false" />
+	            </Row>
+	            <Row label="paperAccountVerified">
+	              <Badge ok={hasExecutionStatusSnapshot ? executionStatusView.paperAccountVerified === true : null} labelTrue="true" labelFalse="false" />
+	            </Row>
+	            <Row label="Orsak (blockedReason)">
+	              <code style={{ color: 'var(--warning)' }}>{hasExecutionStatusSnapshot || executionPreview ? (executionStatusBlockedReason || executionPreviewView.blockedReason || EMPTY_VALUE) : WAITING_BROKER}</code>
+	            </Row>
+	            <Row label="Aktuella blockers">
+	              <code>{hasExecutionStatusSnapshot ? (executionStatusBlockers.length > 0 ? executionStatusBlockers.join(', ') : EMPTY_VALUE) : WAITING_BROKER}</code>
+	            </Row>
             <p style={{ color: 'var(--muted)', marginBottom: 0, marginTop: 12, lineHeight: 1.6 }}>
               Execution feature är aktiv för IB Paper-preview, men real submit är låst.
               Inga order skickas. Blueprint-blockers från äldre flaggläge visas inte som huvudorsak när aktuell execution-status är enabled.
@@ -1783,33 +1623,33 @@ export default function InteractiveBrokersPage() {
                 Preview kunde inte laddas. Detalj: {errors.executionPreview}
               </div>
             )}
-            <Row label="dryRun">
-              <Badge ok={executionPreviewView.dryRun === true} labelTrue="true" labelFalse="false" />
-            </Row>
-            <Row label="mockOnly">
-              <Badge ok={executionPreviewView.mockOnly === true} labelTrue="true" labelFalse="false" />
-            </Row>
-            <Row label="wouldPlaceOrder">
-              <Badge ok={executionPreviewView.wouldPlaceOrder === false} labelTrue="false" labelFalse="true" />
-            </Row>
-            <Row label="orderSent">
-              <Badge ok={executionPreviewView.orderSent === false} labelTrue="false" labelFalse="true" />
-            </Row>
-            <Row label="placeOrderCalled">
-              <Badge ok={executionPreviewView.placeOrderCalled === false} labelTrue="false" labelFalse="true" />
-            </Row>
-            <Row label="realSubmitAllowed">
-              <Badge ok={executionPreviewView.realSubmitAllowed === false} labelTrue="false" labelFalse="true" />
-            </Row>
-            <Row label="blockedReason">
-              <code>{executionPreviewView.blockedReason || 'none'}</code>
-            </Row>
-            <Row label="blockers">
-              <code>{Array.isArray(executionPreviewView.blockers) && executionPreviewView.blockers.length ? executionPreviewView.blockers.join(', ') : 'none'}</code>
-            </Row>
-            <Row label="requestedOrder">
-              <code>{executionPreviewView.requestedOrder?.symbol || SAFE_EXECUTION_PREVIEW_BODY.symbol} {executionPreviewView.requestedOrder?.action || SAFE_EXECUTION_PREVIEW_BODY.action} x{executionPreviewView.requestedOrder?.quantity || SAFE_EXECUTION_PREVIEW_BODY.quantity}</code>
-            </Row>
+	            <Row label="dryRun">
+	              <Badge ok={executionPreview ? executionPreviewView.dryRun === true : null} labelTrue="true" labelFalse="false" />
+	            </Row>
+	            <Row label="mockOnly">
+	              <Badge ok={executionPreview ? executionPreviewView.mockOnly === true : null} labelTrue="true" labelFalse="false" />
+	            </Row>
+	            <Row label="wouldPlaceOrder">
+	              <Badge ok={executionPreview ? executionPreviewView.wouldPlaceOrder === false : null} labelTrue="false" labelFalse="true" />
+	            </Row>
+	            <Row label="orderSent">
+	              <Badge ok={executionPreview ? executionPreviewView.orderSent === false : null} labelTrue="false" labelFalse="true" />
+	            </Row>
+	            <Row label="placeOrderCalled">
+	              <Badge ok={executionPreview ? executionPreviewView.placeOrderCalled === false : null} labelTrue="false" labelFalse="true" />
+	            </Row>
+	            <Row label="realSubmitAllowed">
+	              <Badge ok={executionPreview ? executionPreviewView.realSubmitAllowed === false : null} labelTrue="false" labelFalse="true" />
+	            </Row>
+	            <Row label="blockedReason">
+	              <code>{executionPreview ? (executionPreviewView.blockedReason || EMPTY_VALUE) : WAITING_BROKER}</code>
+	            </Row>
+	            <Row label="blockers">
+	              <code>{executionPreview ? (Array.isArray(executionPreviewView.blockers) && executionPreviewView.blockers.length ? executionPreviewView.blockers.join(', ') : EMPTY_VALUE) : WAITING_BROKER}</code>
+	            </Row>
+	            <Row label="requestedOrder">
+	              <code>{executionPreview ? `${executionPreviewView.requestedOrder?.symbol || EMPTY_VALUE} ${executionPreviewView.requestedOrder?.action || EMPTY_VALUE} x${displayCountValue(executionPreviewView.requestedOrder?.quantity, hasValue(executionPreviewView.requestedOrder?.quantity))}` : WAITING_BROKER}</code>
+	            </Row>
             <Row label="Read-Only API-risk">
               <code>{executionPreviewView.readOnlyApiRisk?.likelyBlocksRealOrder === true ? 'kan blockera verklig paper-order' : 'okänd'}</code>
             </Row>
@@ -1834,7 +1674,7 @@ export default function InteractiveBrokersPage() {
               <Badge ok={conn.connectionCheckEnabled === true} labelTrue="På" labelFalse="Av" />
             </Row>
             <Row label="Connection status">
-              <code>{conn.status || 'unknown'}</code>
+              <code>{hasReadinessSnapshot ? (conn.status || EMPTY_VALUE) : WAITING_BROKER}</code>
             </Row>
             <Row label="Konfigurerad">
               <Badge ok={conn.status !== 'not_configured'} labelTrue="Ja" labelFalse="Nej" />
@@ -1847,60 +1687,60 @@ export default function InteractiveBrokersPage() {
               />
             </Row>
             <Row label="Gateway host">
-              <code>{conn.host || '127.0.0.1'}</code>
+              <code>{hasReadinessSnapshot ? (conn.host || EMPTY_VALUE) : WAITING_BROKER}</code>
             </Row>
             <Row label="Gateway port">
-              <code>{conn.portConfigured ? conn.port : 'ej konfigurerad'}</code>
+              <code>{hasReadinessSnapshot ? (conn.portConfigured ? conn.port : 'ej konfigurerad') : WAITING_BROKER}</code>
             </Row>
             <Row label="Paper session verified">
               <Badge ok={conn.paperModeVerified === true} labelTrue="Verifierad" labelFalse="Ej verifierad" />
             </Row>
             <Row label="Paper account id">
-              <code>{conn.paperAccountId || 'okänt'}</code>
+              <code>{hasReadinessSnapshot ? (conn.paperAccountId || EMPTY_VALUE) : WAITING_BROKER}</code>
             </Row>
-            <Row label="Managed accounts">
-              <code>{Array.isArray(conn.managedAccounts) && conn.managedAccounts.length ? conn.managedAccounts.join(', ') : 'inga'}</code>
-            </Row>
+	            <Row label="Managed accounts">
+	              <code>{hasReadinessSnapshot ? (Array.isArray(conn.managedAccounts) && conn.managedAccounts.length ? conn.managedAccounts.join(', ') : EMPTY_VALUE) : WAITING_BROKER}</code>
+	            </Row>
             <Row label="Real submit">
               <Badge ok={executionPreviewView.realSubmitAllowed !== true} labelTrue="Låst" labelFalse="Öppen" />
             </Row>
             <Row label="Orsak (blockedReason)">
-              <code style={{ color: 'var(--warning)' }}>{conn.blockedReason || 'unknown'}</code>
+              <code style={{ color: 'var(--warning)' }}>{hasReadinessSnapshot ? (conn.blockedReason || EMPTY_VALUE) : WAITING_BROKER}</code>
             </Row>
           </div>
 
           <div hidden={activeTab !== 'status'} style={CARD_STYLE}>
             <h2 style={{ marginTop: 0 }}>Safety-status</h2>
             <Row label="mode">
-              <code>{safety.mode || 'paper_only'}</code>
+              <code>{safetyMode || WAITING_BROKER}</code>
             </Row>
             <Row label="actions_allowed">
-              <Badge ok={safety.actions_allowed === false} labelTrue="false" labelFalse="true" />
+              <code>{displayBooleanField(safety, 'actions_allowed', hasStatusSnapshot, WAITING_BROKER)}</code>
             </Row>
             <Row label="can_place_orders">
-              <Badge ok={safety.can_place_orders === false} labelTrue="false" labelFalse="true" />
+              <code>{displayBooleanField(safety, 'can_place_orders', hasStatusSnapshot, WAITING_BROKER)}</code>
             </Row>
             <Row label="live_trading_enabled">
-              <Badge ok={safety.live_trading_enabled === false} labelTrue="false" labelFalse="true" />
+              <code>{displayBooleanField(safety, 'live_trading_enabled', hasStatusSnapshot, WAITING_BROKER)}</code>
             </Row>
             <Row label="broker_enabled">
-              <Badge ok={safety.broker_enabled === false} labelTrue="false" labelFalse="true" />
+              <code>{displayBooleanField(safety, 'broker_enabled', hasStatusSnapshot, WAITING_BROKER)}</code>
             </Row>
           </div>
 
           <div hidden={activeTab !== 'oversikt'} style={CARD_STYLE}>
             <h2 style={{ marginTop: 0 }}>Canonical truth</h2>
             <Row label="Top 3 selected">
-              <code>{truthReadiness?.selectedCount ?? truthTopStrategies.length ?? 0}/{truthReadiness?.selectionCount ?? 3}</code>
+              <code>{displayRatio(truthReadiness?.selectedCount, hasTruthSnapshot && hasValue(truthReadiness?.selectedCount), truthReadiness?.selectionCount, hasTruthSnapshot && hasValue(truthReadiness?.selectionCount), WAITING_BROKER)}</code>
             </Row>
             <Row label="Approved strategies">
-              <code>{truthAllowlist?.totalApproved ?? strategies.length ?? 0}</code>
+              <code>{displayCountValue(truthAllowlist?.totalApproved, hasTruthSnapshot && hasValue(truthAllowlist?.totalApproved), WAITING_BROKER)}</code>
             </Row>
             <Row label="Ready for IB Paper">
-              <code>{truthReadiness?.readyTopStrategies ?? truthTopStrategies.filter((row) => row.readyForIbPaper === true).length ?? 0}</code>
+              <code>{displayCountValue(truthReadiness?.readyTopStrategies, hasTruthSnapshot && hasValue(truthReadiness?.readyTopStrategies), WAITING_BROKER)}</code>
             </Row>
             <Row label="Candidate blockers">
-              <code>{truthReadiness?.blockers?.length ?? truth?.blockers?.length ?? 0}</code>
+              <code>{displayCountValue(Array.isArray(truthReadiness?.blockers) ? truthReadiness.blockers.length : (Array.isArray(truth?.blockers) ? truth.blockers.length : null), hasTruthSnapshot && (Array.isArray(truthReadiness?.blockers) || Array.isArray(truth?.blockers)), WAITING_BROKER)}</code>
             </Row>
             <Row label="Blueprint ready">
               <Badge ok={tradeBlueprintSummary.blueprintReadyCount > 0} labelTrue="Ja" labelFalse="Nej" />
@@ -1914,7 +1754,7 @@ export default function InteractiveBrokersPage() {
             <Row label="Selected blueprint">
               <code>
                 {selectedPaperBlueprint
-                  ? `${selectedPaperBlueprint.symbol} · ${selectedPaperBlueprint.strategyName || selectedPaperBlueprint.strategyId}`
+                  ? selectedBlueprintStrategyLabel(selectedPaperBlueprint)
                   : 'none'}
               </code>
             </Row>
@@ -1970,10 +1810,10 @@ export default function InteractiveBrokersPage() {
               {' '}Previewn bygger på Trading OS-kandidater och visar varför varje kandidat är tillåten eller blockerad.
             </p>
             <div style={{ color: 'var(--muted)', marginTop: 0, marginBottom: 12, lineHeight: 1.7 }}>
-              • Max {ibPreview.maxPerDay || PREVIEW_LIMIT} kandidater per dag.<br />
+              • Max {displayNumberField(ibPreview, 'maxPerDay', hasOrderPreviewSnapshot, EMPTY_VALUE)} kandidater per dag.<br />
               • Crypto/ETF/QQQ blockerat i denna fas.<br />
               • Endast approved strategies och tydlig riktning visas som tillåtna.<br />
-              • Stop loss-policy: minst {stopLossMinPct.toFixed(2)}% krävs innan framtida IB Paper-execution.
+              • Stop loss-policy: minst {stopLossMinPctText} krävs innan framtida IB Paper-execution.
             </div>
             {errors.orderPreview && (
               <div style={{ color: 'var(--warning)', marginBottom: 12 }}>
@@ -1981,25 +1821,25 @@ export default function InteractiveBrokersPage() {
               </div>
             )}
             <Row label="Preview-läge">
-              <code>{ibPreview.mode || 'preview_only'}</code>
+              <code>{hasOrderPreviewSnapshot ? (ibPreview.mode || EMPTY_VALUE) : WAITING_BROKER}</code>
             </Row>
             <Row label="Total scanned">
-              <code>{previewSummary.totalScanned || 0}</code>
+              <code>{displayNumberField(previewSummary, 'totalScanned', hasOrderPreviewSnapshot, WAITING_BROKER)}</code>
             </Row>
             <Row label="Tillåtna kandidater">
-              <code>{allowedCount || 0}</code>
+              <code>{displayCountValue(allowedCount, hasOrderPreviewSnapshot && hasValue(previewSummary.allowedCandidates), WAITING_BROKER)}</code>
             </Row>
             <Row label="Blockerade kandidater">
-              <code>{blockedCount || 0}</code>
+              <code>{displayCountValue(blockedCount, hasOrderPreviewSnapshot && hasValue(previewSummary.blockedCandidates), WAITING_BROKER)}</code>
             </Row>
             <Row label="Stop loss policy">
               <code>{stopLossPolicy}</code>
             </Row>
             <Row label="Order skickas ännu">
-              <Badge ok={ibPreview.orderSendingBlocked === true} labelTrue="Nej" labelFalse="Ja" />
+              <code>{hasOrderPreviewSnapshot && ibPreview.orderSendingBlocked != null ? (ibPreview.orderSendingBlocked === true ? 'Nej' : 'Ja') : WAITING_BROKER}</code>
             </Row>
             <div style={{ marginTop: 12, padding: '12px 14px', borderRadius: 12, background: 'rgba(37,99,235,0.08)', border: '1px solid rgba(59,130,246,0.22)', color: 'var(--blue)', lineHeight: 1.6 }}>
-              {previewSummary.noteSv || 'Förhandsvisning endast. Inga order skickas ännu.'}
+              {hasOrderPreviewSnapshot ? (previewSummary.noteSv || EMPTY_VALUE) : WAITING_BROKER}
             </div>
             {previewSummary.insufficientAllowedReason && (
               <div style={{ marginTop: 10, color: 'var(--warning)', lineHeight: 1.5 }}>
@@ -2049,25 +1889,25 @@ export default function InteractiveBrokersPage() {
               </div>
             )}
             <Row label="Scaffold-läge">
-              <code>{scaffoldView.mode || 'dry_run_execution_scaffold'}</code>
+              <code>{hasScaffoldSnapshot ? (scaffoldView.mode || EMPTY_VALUE) : WAITING_BROKER}</code>
             </Row>
             <Row label="Steg">
-              <code>{scaffoldSummary.scaffoldStepCount || scaffoldSteps.length || 0}</code>
+              <code>{displayNumberField(scaffoldSummary, 'scaffoldStepCount', hasScaffoldSnapshot, WAITING_BROKER)}</code>
             </Row>
             <Row label="Tillåtna kandidater">
-              <code>{scaffoldSummary.allowedCount || 0}</code>
+              <code>{displayNumberField(scaffoldSummary, 'allowedCount', hasScaffoldSnapshot, WAITING_BROKER)}</code>
             </Row>
             <Row label="Blockerade kandidater">
-              <code>{scaffoldSummary.blockedCount || 0}</code>
+              <code>{displayNumberField(scaffoldSummary, 'blockedCount', hasScaffoldSnapshot, WAITING_BROKER)}</code>
             </Row>
             <Row label="Orderväg">
-              <Badge ok={scaffoldView.orderSendingBlocked === true} labelTrue="Blockerad" labelFalse="Tillåten" />
+              <code>{hasScaffoldSnapshot && scaffoldView.orderSendingBlocked != null ? (scaffoldView.orderSendingBlocked === true ? 'Blockerad' : 'Tillåten') : WAITING_BROKER}</code>
             </Row>
             <Row label="Live broker-execution">
-              <Badge ok={scaffoldView.liveTradingEnabled === false} labelTrue="Av" labelFalse="På" />
+              <code>{hasScaffoldSnapshot && scaffoldView.liveTradingEnabled != null ? (scaffoldView.liveTradingEnabled === false ? 'Av' : 'På') : WAITING_BROKER}</code>
             </Row>
             <div style={{ marginTop: 12, padding: '12px 14px', borderRadius: 12, background: 'rgba(168,85,247,0.08)', border: '1px solid rgba(168,85,247,0.22)', color: 'var(--purple)', lineHeight: 1.6 }}>
-              {scaffoldView.note || 'Dry-run scaffold only. No queue, no broker, no send path, no real order path.'}
+              {hasScaffoldSnapshot ? (scaffoldView.note || EMPTY_VALUE) : WAITING_BROKER}
             </div>
 
             {scaffoldPrimary && (
@@ -2124,38 +1964,38 @@ export default function InteractiveBrokersPage() {
               </div>
             )}
             <Row label="Blueprint-läge">
-              <code>{tradeBlueprintView.mode || 'trade_blueprint'}</code>
+              <code>{hasTradeBlueprintSnapshot ? (tradeBlueprintView.mode || EMPTY_VALUE) : WAITING_BROKER}</code>
             </Row>
-            <Row label="IB Paper execution feature">
-              <Badge ok={executionStatusView.executionEnabled === true} labelTrue="Aktiv" labelFalse="Av" />
-            </Row>
+	            <Row label="IB Paper execution feature">
+	              <Badge ok={hasExecutionStatusSnapshot ? executionStatusView.executionEnabled === true : null} labelTrue="Aktiv" labelFalse="Av" />
+	            </Row>
             <Row label="Real submit">
               <Badge ok={executionPreviewView.realSubmitAllowed !== true} labelTrue="Låst" labelFalse="Öppen" />
             </Row>
-            <Row label="Skulle skapa order">
-              <Badge ok={tradeBlueprintView.wouldCreateOrder === false} labelTrue="Nej" labelFalse="Ja" />
-            </Row>
+	            <Row label="Skulle skapa order">
+	              <Badge ok={hasTradeBlueprintSnapshot ? tradeBlueprintView.wouldCreateOrder === false : null} labelTrue="Nej" labelFalse="Ja" />
+	            </Row>
             <Row label="Blueprint-kandidater">
-              <code>{tradeBlueprintSummary.totalCandidates || tradeBlueprints.length || 0}</code>
+              <code>{displayNumberField(tradeBlueprintSummary, 'totalCandidates', hasTradeBlueprintSnapshot, WAITING_BROKER)}</code>
             </Row>
             <Row label="Blueprint ready">
-              <code>{tradeBlueprintSummary.blueprintReadyCount ?? tradeBlueprintSummary.readyCount ?? readyBlueprints.length ?? 0}</code>
+              <code>{displayCountValue(tradeBlueprintSummary.blueprintReadyCount ?? tradeBlueprintSummary.readyCount, hasTradeBlueprintSnapshot && (hasValue(tradeBlueprintSummary.blueprintReadyCount) || hasValue(tradeBlueprintSummary.readyCount)), WAITING_BROKER)}</code>
             </Row>
             <Row label="Manual approval ready">
-              <code>{tradeBlueprintSummary.manualApprovalReadyCount ?? 0}</code>
+              <code>{displayNumberField(tradeBlueprintSummary, 'manualApprovalReadyCount', hasTradeBlueprintSnapshot, WAITING_BROKER)}</code>
             </Row>
             <Row label="Execution ready">
-              <code>{tradeBlueprintSummary.executionReadyCount ?? 0}</code>
+              <code>{displayNumberField(tradeBlueprintSummary, 'executionReadyCount', hasTradeBlueprintSnapshot, WAITING_BROKER)}</code>
             </Row>
             <Row label="Blockerade blueprints">
-              <code>{tradeBlueprintSummary.blockedCount || 0}</code>
+              <code>{displayNumberField(tradeBlueprintSummary, 'blockedCount', hasTradeBlueprintSnapshot, WAITING_BROKER)}</code>
             </Row>
             <Row label="Min stop loss">
-              <code>{Number(tradeBlueprintView.requiredStopLossMinPct ?? 0.10).toFixed(2)}%</code>
+              <code>{hasTradeBlueprintSnapshot && hasValue(tradeBlueprintView.requiredStopLossMinPct) ? `${fmtNumber(tradeBlueprintView.requiredStopLossMinPct, 2)}%` : WAITING_BROKER}</code>
             </Row>
-            <div style={{ marginTop: 12, padding: '12px 14px', borderRadius: 12, background: 'rgba(14,165,233,0.06)', border: '1px solid rgba(14,165,233,0.18)', color: 'var(--blue)', lineHeight: 1.6 }}>
-              {tradeBlueprintView.note || 'Trade Blueprint is read-only. No order is created or sent.'}
-            </div>
+	            <div style={{ marginTop: 12, padding: '12px 14px', borderRadius: 12, background: 'rgba(14,165,233,0.06)', border: '1px solid rgba(14,165,233,0.18)', color: 'var(--blue)', lineHeight: 1.6 }}>
+	              {hasTradeBlueprintSnapshot ? (tradeBlueprintView.note || EMPTY_VALUE) : WAITING_BROKER}
+	            </div>
 
             {tradeBlueprints.length === 0 ? (
               <div style={{ marginTop: 12, color: 'var(--muted)' }}>
@@ -2184,7 +2024,7 @@ export default function InteractiveBrokersPage() {
               Preflight skickar ingen order. Den kontrollerar bara om systemet är redo för en framtida manuellt godkänd IB Paper-order.
             </p>
             <Row label="Selected blueprint">
-              <code>{selectedPaperBlueprint ? `${selectedPaperBlueprint.symbol} · ${selectedPaperBlueprint.strategyName || selectedPaperBlueprint.strategyId} · ${formatDirection(selectedPaperBlueprint.direction)}` : 'none'}</code>
+              <code>{selectedPaperBlueprint ? `${selectedBlueprintStrategyLabel(selectedPaperBlueprint)} · ${formatDirection(selectedPaperBlueprint.direction)}` : 'none'}</code>
             </Row>
             <Row label="Blueprint ready">
               <Badge ok={selectedPaperBlueprint?.blueprintReady === true} labelTrue="Ja" labelFalse="Nej" />
@@ -2257,14 +2097,14 @@ export default function InteractiveBrokersPage() {
                 <div><strong>readyForFirstPaperOrder:</strong> {paperPreflightResult.readyForFirstPaperOrder === true ? 'true' : 'false'}</div>
                 <div><strong>preflightOnly:</strong> {paperPreflightResult.preflightOnly === true ? 'true' : 'false'}</div>
                 <div><strong>dryRun:</strong> {paperPreflightResult.dryRun === true ? 'true' : 'false'}</div>
-                <div><strong>totalChecks:</strong> {paperPreflightResult.summary?.totalChecks ?? paperPreflightResult.checks?.length ?? 0}</div>
-                <div><strong>passedChecks:</strong> {paperPreflightResult.summary?.passedChecks ?? 0}</div>
-                <div><strong>failedHardChecks:</strong> {paperPreflightResult.summary?.failedHardChecks ?? 0}</div>
+                <div><strong>totalChecks:</strong> {displayCountValue(paperPreflightResult.summary?.totalChecks ?? (Array.isArray(paperPreflightResult.checks) ? paperPreflightResult.checks.length : null), hasValue(paperPreflightResult.summary?.totalChecks) || Array.isArray(paperPreflightResult.checks))}</div>
+                <div><strong>passedChecks:</strong> {displayCountValue(paperPreflightResult.summary?.passedChecks, hasValue(paperPreflightResult.summary?.passedChecks))}</div>
+                <div><strong>failedHardChecks:</strong> {displayCountValue(paperPreflightResult.summary?.failedHardChecks, hasValue(paperPreflightResult.summary?.failedHardChecks))}</div>
                 <div><strong>blockers:</strong> {Array.isArray(paperPreflightResult.blockers) && paperPreflightResult.blockers.length ? paperPreflightResult.blockers.join(', ') : 'none'}</div>
                 <div><strong>nextRequiredAction:</strong> {paperPreflightResult.nextRequiredAction || 'none'}</div>
                 <div><strong>orderSent:</strong> {paperPreflightResult.orderSent === true ? 'true' : 'false'}</div>
                 <div><strong>executed:</strong> {paperPreflightResult.executed === true ? 'true' : 'false'}</div>
-                <div><strong>account:</strong> {resolvedPaperAccountId || (manualPaperLoading ? 'Laddar…' : 'unknown')}</div>
+                <div><strong>account:</strong> {resolvedPaperAccountId || (manualPaperLoading ? 'Laddar…' : EMPTY_VALUE)}</div>
                 <div><strong>sessionVerification.selectedAccount:</strong> {paperPreflightResult.sessionVerification?.selectedAccount || 'none'}</div>
                 <div><strong>sessionVerification.paperAccountId:</strong> {paperPreflightResult.sessionVerification?.paperAccountId || 'none'}</div>
                 <div><strong>sessionVerification.accountMatches:</strong> {paperPreflightResult.sessionVerification?.accountMatches === true ? 'true' : 'false'}</div>
@@ -2299,7 +2139,7 @@ export default function InteractiveBrokersPage() {
               <code>{selectedPaperBlueprint?.symbol || (selectedBlueprintResolution.loadStatus === 'loading' ? 'Laddar…' : 'none')}</code>
             </Row>
             <Row label="Strategi">
-              <code>{selectedPaperBlueprint?.strategyName || selectedPaperBlueprint?.strategyId || (selectedBlueprintResolution.loadStatus === 'loading' ? 'Laddar…' : 'none')}</code>
+              <code>{selectedPaperBlueprint ? strategyLabel(selectedPaperBlueprint, '—') : (selectedBlueprintResolution.loadStatus === 'loading' ? 'Laddar…' : '—')}</code>
             </Row>
             <Row label="Side">
               <code>{selectedPaperBlueprint?.side || (selectedBlueprintResolution.loadStatus === 'loading' ? 'Laddar…' : 'none')}</code>
@@ -2317,7 +2157,7 @@ export default function InteractiveBrokersPage() {
               <code>{selectedPaperBlueprint?.takeProfit ?? selectedPaperBlueprint?.takeProfit1 ?? (selectedBlueprintResolution.loadStatus === 'loading' ? 'Laddar…' : 'none')}</code>
             </Row>
             <Row label="Account">
-              <code>{resolvedPaperAccountId || (manualPaperLoading ? 'Laddar…' : 'unknown')}</code>
+              <code>{resolvedPaperAccountId || (manualPaperLoading ? 'Laddar…' : EMPTY_VALUE)}</code>
             </Row>
             <Row label="Helper import">
               <code>{manualPaperHelperImportStatus}</code>
@@ -2395,10 +2235,10 @@ export default function InteractiveBrokersPage() {
               <code>{finalGateArmView?.consumedAt || 'none'}</code>
             </Row>
             <Row label="openOrders">
-              <code>{finalGateStatusView?.openOrders?.count ?? 0}</code>
+              <code>{displayCountValue(finalGateStatusView?.openOrders?.count, hasFinalGateStatusSnapshot && hasValue(finalGateStatusView?.openOrders?.count), WAITING_BROKER)}</code>
             </Row>
             <Row label="positions">
-              <code>{finalGateStatusView?.positions?.countForSymbol ?? 0}</code>
+              <code>{displayCountValue(finalGateStatusView?.positions?.countForSymbol, hasFinalGateStatusSnapshot && hasValue(finalGateStatusView?.positions?.countForSymbol), WAITING_BROKER)}</code>
             </Row>
             <Row label="nextRequiredAction">
               <code>{finalGateStatusView?.nextRequiredAction || 'none'}</code>
@@ -2519,7 +2359,7 @@ export default function InteractiveBrokersPage() {
                 <div><strong>accepted:</strong> {paperOneShotResult.accepted === true ? 'true' : 'false'}</div>
                 <div><strong>helperReady:</strong> {paperOneShotResult.helperReady === true ? 'true' : 'false'}</div>
                 <div><strong>bracketSubmissionPlanReady:</strong> {paperOneShotResult.bracketSubmissionPlanReady === true ? 'true' : 'false'}</div>
-                <div><strong>bracketOrderCount:</strong> {paperOneShotResult.bracketOrderCount || 0}</div>
+                <div><strong>bracketOrderCount:</strong> {displayCountValue(paperOneShotResult.bracketOrderCount, hasValue(paperOneShotResult.bracketOrderCount))}</div>
                 <div><strong>entryOnlyBlocked:</strong> {paperOneShotResult.entryOnlyBlocked === true ? 'true' : 'false'}</div>
                 <div><strong>runtimeBracketSubmitUnlocked:</strong> {paperOneShotResult.runtimeBracketSubmitUnlocked === true ? 'true' : 'false'}</div>
                 <div><strong>realSubmitGate.gateReady:</strong> {(paperOneShotResult.realSubmitGate?.gateReady === true || manualPaperBracketSubmitState.gateReadyPreview === true) ? 'true' : 'false'}</div>
@@ -2561,7 +2401,7 @@ export default function InteractiveBrokersPage() {
               <Badge ok={manualPaperLoading ? null : manualPaperBracketSubmitState.helperReady === true} labelTrue="true" labelFalse={readinessFalseLabel(protectiveReadinessStatus, 'false')} />
             </Row>
             <Row label="bracketOrderCount">
-              <code>{manualPaperLoading ? 'Laddar…' : (manualPaperIdle ? 'Ej körd' : (stableIbPaperSnapshot.bracketOrderCount || 0))}</code>
+              <code>{manualPaperLoading ? 'Laddar…' : (manualPaperIdle ? 'Ej körd' : displayCountValue(stableIbPaperSnapshot.bracketOrderCount, hasValue(stableIbPaperSnapshot.bracketOrderCount)))}</code>
             </Row>
             <Row label="entryOnlyBlocked">
               <Badge ok={manualPaperLoading ? null : stableIbPaperSnapshot.entryOnlyBlocked === true} labelTrue="true" labelFalse={readinessFalseLabel(protectiveReadinessStatus, 'false')} />
@@ -2588,12 +2428,12 @@ export default function InteractiveBrokersPage() {
               <Badge ok={manualPaperLoading ? null : protectivePreflightView?.protectiveOrderModelVerified === true} labelTrue="Ja" labelFalse={readinessFalseLabel(protectiveReadinessStatus, 'Nej')} />
             </Row>
             <Row label="account">
-              <code>{resolvedPaperAccountId || (manualPaperLoading ? 'Laddar…' : 'unknown')}</code>
+              <code>{resolvedPaperAccountId || (manualPaperLoading ? 'Laddar…' : EMPTY_VALUE)}</code>
             </Row>
             <Row label="summary">
               <code>
                 {protectivePlanSummary
-                  ? `${protectivePlanSummary.passedChecks ?? 0}/${protectivePlanSummary.totalChecks ?? protectivePlanChecks.length ?? 0} checks passed`
+                  ? `${displayCountValue(protectivePlanSummary.passedChecks, hasValue(protectivePlanSummary.passedChecks))}/${displayCountValue(protectivePlanSummary.totalChecks ?? (Array.isArray(protectivePlanChecks) ? protectivePlanChecks.length : null), hasValue(protectivePlanSummary.totalChecks) || Array.isArray(protectivePlanChecks))} checks passed`
                   : 'none'}
               </code>
             </Row>
@@ -2635,7 +2475,7 @@ export default function InteractiveBrokersPage() {
               Arming skickar ingen order. Det öppnar bara ett tidsbegränsat fönster för en framtida separat godkänd IB Paper-order.
             </p>
             <Row label="selected blueprint">
-              <code>{selectedPaperBlueprint ? `${selectedPaperBlueprint.symbol} · ${selectedPaperBlueprint.strategyName || selectedPaperBlueprint.strategyId} · ${formatDirection(selectedPaperBlueprint.direction)}` : (selectedBlueprintResolution.loadStatus === 'loading' ? 'Laddar…' : 'none')}</code>
+              <code>{selectedPaperBlueprint ? `${selectedBlueprintStrategyLabel(selectedPaperBlueprint)} · ${formatDirection(selectedPaperBlueprint.direction)}` : (selectedBlueprintResolution.loadStatus === 'loading' ? 'Laddar…' : 'none')}</code>
             </Row>
             <Row label="Blueprint source">
               <code>{selectedBlueprintResolution.source || 'none'}</code>
@@ -2659,7 +2499,7 @@ export default function InteractiveBrokersPage() {
               <Badge ok={manualPaperLoading ? null : stableIbPaperSnapshot.bracketSubmissionPlanReady === true} labelTrue="Ja" labelFalse={readinessFalseLabel(protectiveReadinessStatus, 'Nej')} />
             </Row>
             <Row label="bracket order count">
-              <code>{manualPaperLoading ? 'Laddar…' : (manualPaperIdle ? 'Ej körd' : (stableIbPaperSnapshot.bracketOrderCount || 0))}</code>
+              <code>{manualPaperLoading ? 'Laddar…' : (manualPaperIdle ? 'Ej körd' : displayCountValue(stableIbPaperSnapshot.bracketOrderCount, hasValue(stableIbPaperSnapshot.bracketOrderCount)))}</code>
             </Row>
             <Row label="entry-only blocked">
               <Badge ok={manualPaperLoading ? null : stableIbPaperSnapshot.entryOnlyBlocked === true} labelTrue="Ja" labelFalse={readinessFalseLabel(protectiveReadinessStatus, 'Nej')} />
@@ -2820,49 +2660,49 @@ export default function InteractiveBrokersPage() {
               </div>
             )}
             <Row label="Feature flag">
-              <Badge ok={executionStatusView.executionEnabled === true} labelTrue="Aktiv" labelFalse="Av" />
+              <code>{hasExecutionStatusSnapshot && executionStatusView.executionEnabled != null ? (executionStatusView.executionEnabled === true ? 'Aktiv' : 'Av') : WAITING_BROKER}</code>
             </Row>
             <Row label="Gateway reachable">
-              <Badge ok={executionStatusView.gatewayReachable === true} labelTrue="Ja" labelFalse="Nej" />
+              <code>{hasExecutionStatusSnapshot && executionStatusView.gatewayReachable != null ? (executionStatusView.gatewayReachable === true ? 'Ja' : 'Nej') : WAITING_BROKER}</code>
             </Row>
             <Row label="IB API verified">
-              <Badge ok={executionStatusView.ibApiVerified === true} labelTrue="Ja" labelFalse="Nej" />
+              <code>{hasExecutionStatusSnapshot && executionStatusView.ibApiVerified != null ? (executionStatusView.ibApiVerified === true ? 'Ja' : 'Nej') : WAITING_BROKER}</code>
             </Row>
             <Row label="Paper account verified">
-              <Badge ok={executionStatusView.paperAccountVerified === true} labelTrue="Ja" labelFalse="Nej" />
+              <code>{hasExecutionStatusSnapshot && executionStatusView.paperAccountVerified != null ? (executionStatusView.paperAccountVerified === true ? 'Ja' : 'Nej') : WAITING_BROKER}</code>
             </Row>
             <Row label="Daily quota">
-              <code>{executionStatusView.dailyQuota?.used ?? 0}/{executionStatusView.dailyQuota?.max ?? 3}</code>
+              <code>{displayRatio(executionStatusView.dailyQuota?.used, hasExecutionStatusSnapshot && hasValue(executionStatusView.dailyQuota?.used), executionStatusView.dailyQuota?.max, hasExecutionStatusSnapshot && hasValue(executionStatusView.dailyQuota?.max), WAITING_BROKER)}</code>
             </Row>
             <Row label="Open trades">
-              <code>{executionStatusView.openTradeCount ?? executionStatusView.openTrades?.length ?? 0}</code>
+              <code>{displayCountValue(executionStatusView.openTradeCount, hasExecutionStatusSnapshot && hasValue(executionStatusView.openTradeCount), WAITING_BROKER)}</code>
             </Row>
             <Row label="Closed trades">
-              <code>{executionStatusView.closedTradeCount ?? executionStatusView.closedTrades?.length ?? 0}</code>
+              <code>{displayCountValue(executionStatusView.closedTradeCount, hasExecutionStatusSnapshot && hasValue(executionStatusView.closedTradeCount), WAITING_BROKER)}</code>
             </Row>
-            <Row label="Last execution result">
-              <code>{executionStatusView.lastExecutionResult?.status || paperExecutionResult?.status || 'none'}</code>
-            </Row>
-            <Row label="Blockers">
-              <code>{executionStatusBlockers.length > 0 ? executionStatusBlockers.join(', ') : 'none'}</code>
-            </Row>
-            <Row label="No live trading badge">
-              <Badge ok={executionStatusView.liveTradingEnabled === false} labelTrue="No live trading" labelFalse="Live enabled" />
-            </Row>
-            <Row label="Feature flag key">
-              <code>{executionStatusView.featureFlag || 'IB_PAPER_EXECUTION_ENABLED'}</code>
-            </Row>
-            <Row label="Disable reason">
-              <code>{executionStatusBlockedReason || 'none'}</code>
-            </Row>
-            <Row label="Manual approval">
-              <code>{executionStatusView.manualApproval?.approvalStatus || truthManualApproval?.approvalStatus || 'not_available'}</code>
-            </Row>
+	            <Row label="Last execution result">
+	              <code>{hasExecutionStatusSnapshot || paperExecutionResult ? (executionStatusView.lastExecutionResult?.status || paperExecutionResult?.status || EMPTY_VALUE) : WAITING_BROKER}</code>
+	            </Row>
+	            <Row label="Blockers">
+	              <code>{hasExecutionStatusSnapshot ? (executionStatusBlockers.length > 0 ? executionStatusBlockers.join(', ') : EMPTY_VALUE) : WAITING_BROKER}</code>
+	            </Row>
+	            <Row label="No live trading badge">
+	              <Badge ok={hasExecutionStatusSnapshot ? executionStatusView.liveTradingEnabled === false : null} labelTrue="No live trading" labelFalse="Live enabled" />
+	            </Row>
+	            <Row label="Feature flag key">
+	              <code>{hasExecutionStatusSnapshot ? (executionStatusView.featureFlag || EMPTY_VALUE) : WAITING_BROKER}</code>
+	            </Row>
+	            <Row label="Disable reason">
+	              <code>{hasExecutionStatusSnapshot ? (executionStatusBlockedReason || EMPTY_VALUE) : WAITING_BROKER}</code>
+	            </Row>
+	            <Row label="Manual approval">
+	              <code>{hasExecutionStatusSnapshot || hasTruthSnapshot ? (executionStatusView.manualApproval?.approvalStatus || truthManualApproval?.approvalStatus || EMPTY_VALUE) : WAITING_BROKER}</code>
+	            </Row>
             <div style={{ marginTop: 12, borderTop: '1px solid rgba(148,163,184,0.12)', paddingTop: 12 }}>
               <div style={{ color: 'var(--text)', marginBottom: 8, lineHeight: 1.5 }}>
                 Selected blueprint:
                 {' '}
-                {selectedPaperBlueprint ? `${selectedPaperBlueprint.symbol} · ${selectedPaperBlueprint.strategyName || selectedPaperBlueprint.strategyId} · ${formatDirection(selectedPaperBlueprint.direction)}` : (selectedBlueprintResolution.loadStatus === 'loading' ? 'Laddar…' : 'none')}
+                {selectedPaperBlueprint ? `${selectedBlueprintStrategyLabel(selectedPaperBlueprint)} · ${formatDirection(selectedPaperBlueprint.direction)}` : (selectedBlueprintResolution.loadStatus === 'loading' ? 'Laddar…' : 'none')}
               </div>
               <div style={{ color: 'var(--muted)', marginBottom: 8, lineHeight: 1.5 }}>
                 Blueprint source: {selectedBlueprintResolution.source || 'none'} ·
@@ -2933,18 +2773,18 @@ export default function InteractiveBrokersPage() {
 
           <div hidden={activeTab !== 'teknik'} style={{ ...CARD_STYLE, borderColor: 'rgba(251,191,36,0.35)' }}>
             <h2 style={{ marginTop: 0 }}>Nästa fas — låst</h2>
-            <Row label="Paper order-kö">
-              <Badge ok={nextPhase.paperOrderQueue?.locked !== false} labelTrue="Låst" labelFalse="Öppen" />
-            </Row>
-            <Row label="Live broker-execution">
-              <Badge ok={nextPhase.brokerExecution?.locked !== false} labelTrue="Låst" labelFalse="Öppen" />
-            </Row>
-            <Row label="Live trading">
-              <Badge ok={nextPhase.liveTrading?.locked !== false} labelTrue="Låst" labelFalse="Öppen" />
-            </Row>
-            <Row label="Manuellt godkännande krävs">
-              <Badge ok={nextPhase.manualApprovalRequired === true} labelTrue="Ja" labelFalse="Nej" />
-            </Row>
+	            <Row label="Paper order-kö">
+	              <Badge ok={hasStatusSnapshot ? nextPhase.paperOrderQueue?.locked !== false : null} labelTrue="Låst" labelFalse="Öppen" />
+	            </Row>
+	            <Row label="Live broker-execution">
+	              <Badge ok={hasStatusSnapshot ? nextPhase.brokerExecution?.locked !== false : null} labelTrue="Låst" labelFalse="Öppen" />
+	            </Row>
+	            <Row label="Live trading">
+	              <Badge ok={hasStatusSnapshot ? nextPhase.liveTrading?.locked !== false : null} labelTrue="Låst" labelFalse="Öppen" />
+	            </Row>
+	            <Row label="Manuellt godkännande krävs">
+	              <Badge ok={hasStatusSnapshot ? nextPhase.manualApprovalRequired === true : null} labelTrue="Ja" labelFalse="Nej" />
+	            </Row>
             <p style={{ color: 'var(--muted)', marginBottom: 0, marginTop: 12, lineHeight: 1.6 }}>
               Inga framtida steg (order-kö, broker-execution, live trading) kan aktiveras härifrån.
               Varje steg kräver explicit manuellt godkännande och en separat byggnation.
@@ -2953,9 +2793,9 @@ export default function InteractiveBrokersPage() {
 
           <div hidden={activeTab !== 'oversikt'} style={{ ...CARD_STYLE, borderColor: 'rgba(34,197,94,0.3)' }}>
             <h2 style={{ marginTop: 0 }}>Separation från intern paper trading</h2>
-            <Row label="Intern paper trading opåverkad">
-              <Badge ok={statusView.internalPaperTradingUnaffected === true} labelTrue="Ja" labelFalse="Nej" />
-            </Row>
+	            <Row label="Intern paper trading opåverkad">
+	              <Badge ok={hasStatusSnapshot ? statusView.internalPaperTradingUnaffected === true : null} labelTrue="Ja" labelFalse="Nej" />
+	            </Row>
             <p style={{ color: 'var(--muted)', marginBottom: 0, marginTop: 12, lineHeight: 1.6 }}>
               Den interna paper trading-funktionen körs helt separat och är oförändrad.
               Den här vyn läser endast status och godkända strategier.

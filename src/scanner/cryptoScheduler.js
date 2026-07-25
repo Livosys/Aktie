@@ -180,84 +180,93 @@ async function runCryptoScan() {
   cryptoStatus.error = null;
 
   const results = [];
-  const activeSymbols = CRYPTO_SYMBOLS.filter((symbol) => marketUniverse.symbolEnabledFor(symbol, 'scanner', getMarketGroup(symbol) || 'crypto'));
+  try {
+    const activeSymbols = CRYPTO_SYMBOLS.filter((symbol) => marketUniverse.symbolEnabledFor(symbol, 'scanner', getMarketGroup(symbol) || 'crypto'));
 
-  for (const symbol of activeSymbols) {
-    const result = await scanCryptoSymbol(symbol);
-    results.push(result);
-    await delay(300);
+    for (const symbol of activeSymbols) {
+      const result = await scanCryptoSymbol(symbol);
+      results.push(result);
+      await delay(300);
+    }
+
+    // Engine v3: BTCUSDT as market reference for ETH/SOL; BTC uses itself
+    const btcResult = results.find((r) => r.symbol === 'BTCUSDT') || null;
+    const v3Results = results.map((r) => {
+      const ref = r.symbol === 'BTCUSDT' ? r : btcResult;
+      return applyEngineV3(r, ref);
+    });
+
+    // Market Regime V2: compute from enriched BTC result
+    const v3BtcResult = v3Results.find((r) => r.symbol === 'BTCUSDT') || null;
+    let mktCtxV2 = null;
+    try { mktCtxV2 = calcMarketRegimeV2(v3BtcResult); } catch (_) {}
+
+    cryptoResults = v3Results
+      .map((r) => applyMarketRegimeV2(r, mktCtxV2))
+      .map((r) => applyHistoricalEdge(r))
+      .map((r) => applyConfidenceEngine(r))
+      .map((r) => applyMtf(r))
+      .map((r) => applyMomentumContinuation(r))
+      .map((r) => applyFakeoutProbability(r))
+      .map((r) => applyLiquiditySweep(r))
+      .map((r) => applyAdaptiveEdge(r))
+      .map((r) => applyRuleMemory(r))
+      .map((r) => applySymbolPersonality(r))
+      .map((r) => applyRegimeProfile(r))
+      .map((r) => applyScoreCalibration(r))
+      .map((r) => applyFakeoutDna(r))
+      .map((r) => applyPreMove(r))
+      .map((r) => applyMarketFatigue(r))
+      .map((r) => applyStateGraph(r))
+      .map((r) => applySetupDNA(r))
+      .map((r) => orchestrateScores(r))
+      .map((r) => applyConfidenceDecay(r))
+      .map((r) => applyWavePhase(r))
+      .map((r) => applyMicroMove(r))
+      .map((r) => ({ ...r, narrow_state_data: r.narrow_state_data || r.stateGraph || null }))
+      .map((r) => enrichLiveIndicators(r))
+      .map((r) => stripPrivateFields(r))
+      .map((r) => ({ ...r, marketGroup: getMarketGroup(r.symbol) || 'CRYPTO_MAJOR' }));
+
+    // Market personality (computed from aggregate of major crypto only)
+    try { computeAndSavePersonality(cryptoResults.filter(r => CRYPTO_MAJOR.includes(r.symbol)), 'crypto'); } catch (_) {}
+    cacheScanState('crypto', cryptoResults, cryptoStatus);
+
+    // Feature logging (respects FEATURE_LOGGING_ENABLED env flag)
+    logResults(cryptoResults.filter(r => CRYPTO_MAJOR.includes(r.symbol)), 'crypto');
+    logResults(cryptoResults.filter(r => CRYPTO_SECONDARY.includes(r.symbol)), 'crypto_secondary');
+
+    cryptoStatus.lastScan = new Date().toISOString();
+
+    processScanResults(cryptoResults, {
+      group: 'crypto',
+      feedStatus: getCryptoFeedStatus(),
+    }).catch((err) => console.warn('[Notifier] crypto processing failed:', err.message));
+    notificationEngineV2.processStrongSignals(cryptoResults, {
+      group: 'crypto',
+      feedStatus: getCryptoFeedStatus(),
+    }).catch((err) => console.warn('[notification-v2] crypto processing failed:', err.message));
+
+    console.log(`[CryptoScanner] Scan complete at ${cryptoStatus.lastScan} – ${results.length} symbols (Engine v3)`);
+  } catch (err) {
+    cryptoStatus.error = err && err.message ? err.message : String(err);
+    console.warn('[CryptoScanner] Scan failed:', cryptoStatus.error);
+  } finally {
+    cryptoStatus.scanning = false;
   }
-
-  // Engine v3: BTCUSDT as market reference for ETH/SOL; BTC uses itself
-  const btcResult = results.find((r) => r.symbol === 'BTCUSDT') || null;
-  const v3Results = results.map((r) => {
-    const ref = r.symbol === 'BTCUSDT' ? r : btcResult;
-    return applyEngineV3(r, ref);
-  });
-
-  // Market Regime V2: compute from enriched BTC result
-  const v3BtcResult = v3Results.find((r) => r.symbol === 'BTCUSDT') || null;
-  let mktCtxV2 = null;
-  try { mktCtxV2 = calcMarketRegimeV2(v3BtcResult); } catch (_) {}
-
-  cryptoResults = v3Results
-    .map((r) => applyMarketRegimeV2(r, mktCtxV2))
-    .map((r) => applyHistoricalEdge(r))
-    .map((r) => applyConfidenceEngine(r))
-    .map((r) => applyMtf(r))
-    .map((r) => applyMomentumContinuation(r))
-    .map((r) => applyFakeoutProbability(r))
-    .map((r) => applyLiquiditySweep(r))
-    .map((r) => applyAdaptiveEdge(r))
-    .map((r) => applyRuleMemory(r))
-    .map((r) => applySymbolPersonality(r))
-    .map((r) => applyRegimeProfile(r))
-    .map((r) => applyScoreCalibration(r))
-    .map((r) => applyFakeoutDna(r))
-    .map((r) => applyPreMove(r))
-    .map((r) => applyMarketFatigue(r))
-    .map((r) => applyStateGraph(r))
-    .map((r) => applySetupDNA(r))
-    .map((r) => orchestrateScores(r))
-    .map((r) => applyConfidenceDecay(r))
-    .map((r) => applyWavePhase(r))
-    .map((r) => applyMicroMove(r))
-    .map((r) => ({ ...r, narrow_state_data: r.narrow_state_data || r.stateGraph || null }))
-    .map((r) => enrichLiveIndicators(r))
-    .map((r) => stripPrivateFields(r))
-    .map((r) => ({ ...r, marketGroup: getMarketGroup(r.symbol) || 'CRYPTO_MAJOR' }));
-
-  // Market personality (computed from aggregate of major crypto only)
-  try { computeAndSavePersonality(cryptoResults.filter(r => CRYPTO_MAJOR.includes(r.symbol)), 'crypto'); } catch (_) {}
-  cacheScanState('crypto', cryptoResults, cryptoStatus);
-
-  // Feature logging (respects FEATURE_LOGGING_ENABLED env flag)
-  logResults(cryptoResults.filter(r => CRYPTO_MAJOR.includes(r.symbol)), 'crypto');
-  logResults(cryptoResults.filter(r => CRYPTO_SECONDARY.includes(r.symbol)), 'crypto_secondary');
-
-  cryptoStatus.lastScan = new Date().toISOString();
-  cryptoStatus.scanning = false;
-
-  processScanResults(cryptoResults, {
-    group: 'crypto',
-    feedStatus: getCryptoFeedStatus(),
-  }).catch((err) => console.warn('[Notifier] crypto processing failed:', err.message));
-  notificationEngineV2.processStrongSignals(cryptoResults, {
-    group: 'crypto',
-    feedStatus: getCryptoFeedStatus(),
-  }).catch((err) => console.warn('[notification-v2] crypto processing failed:', err.message));
-
-  console.log(`[CryptoScanner] Scan complete at ${cryptoStatus.lastScan} – ${results.length} symbols (Engine v3)`);
 }
 
 function startCryptoScheduler() {
+  if (cryptoTimer) return cryptoTimer;
   console.log('[CryptoScanner] Starting 24/7 crypto scheduler, interval:', SCAN_INTERVAL_MS / 1000, 's');
   runCryptoScan();
   cryptoTimer = setInterval(runCryptoScan, SCAN_INTERVAL_MS);
+  return cryptoTimer;
 }
 
 function stopCryptoScheduler() {
   if (cryptoTimer) clearInterval(cryptoTimer);
+  cryptoTimer = null;
 }
 
 function getCryptoResults() {
@@ -385,4 +394,4 @@ function cacheScanState(group, results, status) {
   }, 300);
 }
 
-module.exports = { startCryptoScheduler, stopCryptoScheduler, getCryptoResults, getCryptoStatus, getCryptoFeedStatus, getLiveCandlesDebug };
+module.exports = { startCryptoScheduler, stopCryptoScheduler, getCryptoResults, getCryptoStatus, getCryptoFeedStatus, getLiveCandlesDebug, _internal: { runCryptoScan } };

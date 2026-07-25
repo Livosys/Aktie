@@ -1,6 +1,7 @@
 import React from 'react';
 import { useScan } from '../hooks.js';
 import SimpleStatusCard from '../components/tradingos/SimpleStatusCard.jsx';
+import { EMPTY_VALUE, fmtNumber, hasValue, numberOrNull } from '../utils/tradingFormatters.js';
 
 // Narrow State Lab — Narrow State-first overview, beginner-friendly.
 // Read-only. Consumes GET /api/supervisor/narrow-state. Never trades.
@@ -77,10 +78,29 @@ function Badge({ tone = 'blue', children }) {
 }
 
 function timeText(iso) {
-  if (!iso) return 'Saknas';
+  if (!iso) return EMPTY_VALUE;
   const date = new Date(iso);
-  if (Number.isNaN(date.getTime())) return 'Saknas';
+  if (Number.isNaN(date.getTime())) return EMPTY_VALUE;
   return new Intl.DateTimeFormat('sv-SE', { dateStyle: 'medium', timeStyle: 'short' }).format(date);
+}
+
+function displayCount(value) {
+  return hasValue(value) ? fmtNumber(value) : EMPTY_VALUE;
+}
+
+function displayText(value) {
+  return hasValue(value) ? String(value) : EMPTY_VALUE;
+}
+
+function displayPercent(value) {
+  const n = numberOrNull(value);
+  return n === null ? EMPTY_VALUE : `${fmtNumber(n, 2)}%`;
+}
+
+function boolLabel(value, trueText = 'Ja', falseText = 'Nej') {
+  if (value === true) return trueText;
+  if (value === false) return falseText;
+  return EMPTY_VALUE;
 }
 
 function schedulerRecommendationText(rec) {
@@ -136,6 +156,10 @@ export default function NarrowStateLabPage() {
   const scheduler = ns?.narrowAutopilotScheduler || null;
   const schedulerRec = schedulerRecommendationText(scheduler?.lastRecommendedTest);
   const schedulerDryRun = scheduler?.lastScheduledDryRun || null;
+  const liveTradingEnabled = scheduler?.live_trading_enabled ?? scheduler?.liveTradingEnabled;
+  const canPlaceOrders = scheduler?.can_place_orders ?? scheduler?.canPlaceOrders;
+  const actionsAllowed = scheduler?.actions_allowed ?? scheduler?.actionsAllowed;
+  const brokerEnabled = scheduler?.broker_enabled ?? scheduler?.brokerEnabled;
   // Narrow Performance Learning (measured from paper/replay/batch). May be null.
   const perf = ns?.performanceLearning || null;
   const CONF_LABELS = { none: 'Ingen', low: 'Låg', medium: 'Medium', high: 'Hög' };
@@ -156,9 +180,11 @@ export default function NarrowStateLabPage() {
 
       {/* Safety banner — always shows the locked state */}
       <div className="ns-safety-banner">
-        <strong>Tryggt läge: Paper only.</strong>
-        <span>Systemet simulerar och analyserar. Live trading, broker och riktiga order är avstängda.</span>
-        <small>live_trading_enabled=false · can_place_orders=false · actions_allowed=false · broker_enabled=false</small>
+        <strong>Safetyläge: {displayText(scheduler?.mode)}</strong>
+        <span>Visar endast safetyfält som backend skickar för Narrow State-schedulern.</span>
+        <small>
+          live_trading_enabled={boolLabel(liveTradingEnabled, 'true', 'false')} · can_place_orders={boolLabel(canPlaceOrders, 'true', 'false')} · actions_allowed={boolLabel(actionsAllowed, 'true', 'false')} · broker_enabled={boolLabel(brokerEnabled, 'true', 'false')}
+        </small>
       </div>
 
       <section className="ns-panel ns-beginner-guide">
@@ -181,14 +207,14 @@ export default function NarrowStateLabPage() {
           </Badge>
         </div>
         <div className="ns-autopilot-grid">
-          <div>
-            <span>Endast dry-run</span>
-            <strong>{scheduler?.dryRunOnly ? 'Ja, bara planering' : 'Kontrollera'}</strong>
-          </div>
-          <div>
-            <span>Execute</span>
-            <strong>{scheduler?.executionEnabled ? 'På' : 'Avstängt automatiskt'}</strong>
-          </div>
+	          <div>
+	            <span>Endast dry-run</span>
+	            <strong>{boolLabel(scheduler?.dryRunOnly, 'Ja, bara planering', 'Nej')}</strong>
+	          </div>
+	          <div>
+	            <span>Execute</span>
+	            <strong>{boolLabel(scheduler?.executionEnabled, 'På', 'Av')}</strong>
+	          </div>
           <div>
             <span>Senaste körning</span>
             <strong>{timeText(scheduler?.lastRunAt)}</strong>
@@ -197,14 +223,14 @@ export default function NarrowStateLabPage() {
             <span>Nästa körning</span>
             <strong>{timeText(scheduler?.nextRunAt)}</strong>
           </div>
-          <div>
-            <span>Cooldown</span>
-            <strong>{scheduler?.cooldownActive ? `Aktiv till ${timeText(scheduler.cooldownUntil)}` : 'Inte aktiv'}</strong>
-          </div>
-          <div>
-            <span>Safety</span>
-            <strong>{scheduler?.mode || 'paper_only'}</strong>
-          </div>
+	          <div>
+	            <span>Cooldown</span>
+	            <strong>{scheduler?.cooldownActive === true ? `Aktiv till ${timeText(scheduler.cooldownUntil)}` : scheduler?.cooldownActive === false ? 'Inte aktiv' : EMPTY_VALUE}</strong>
+	          </div>
+	          <div>
+	            <span>Safety</span>
+	            <strong>{displayText(scheduler?.mode)}</strong>
+	          </div>
         </div>
         <div className="ns-autopilot-note">
           <strong>Senaste rekommenderade test:</strong>{' '}
@@ -219,10 +245,10 @@ export default function NarrowStateLabPage() {
           <span><strong>Blocked reason</strong> = varför systemet väntar eller stoppar.</span>
         </div>
         <div className="ns-badge-row">
-          <Badge tone={schedulerDryRun?.dryRun ? 'green' : 'amber'}>dryRun={String(Boolean(schedulerDryRun?.dryRun))}</Badge>
-          <Badge tone={!schedulerDryRun?.executed ? 'green' : 'amber'}>executed={String(Boolean(schedulerDryRun?.executed))}</Badge>
-          <Badge tone={scheduler?.blockedReason ? 'amber' : 'green'}>blockedReason={scheduler?.blockedReason || 'Ingen'}</Badge>
-          <Badge tone="green">paper_only</Badge>
+          <Badge tone={schedulerDryRun?.dryRun === true ? 'green' : schedulerDryRun?.dryRun === false ? 'amber' : 'blue'}>dryRun={boolLabel(schedulerDryRun?.dryRun, 'true', 'false')}</Badge>
+          <Badge tone={schedulerDryRun?.executed === false ? 'green' : schedulerDryRun?.executed === true ? 'amber' : 'blue'}>executed={boolLabel(schedulerDryRun?.executed, 'true', 'false')}</Badge>
+          <Badge tone={scheduler?.blockedReason ? 'amber' : hasValue(scheduler?.blockedReason) ? 'green' : 'blue'}>blockedReason={displayText(scheduler?.blockedReason)}</Badge>
+          <Badge tone={scheduler?.mode === 'paper_only' ? 'green' : scheduler?.mode ? 'amber' : 'blue'}>{displayText(scheduler?.mode)}</Badge>
         </div>
       </section>
 
@@ -255,32 +281,32 @@ export default function NarrowStateLabPage() {
       <section className="tr-status-grid">
         <SimpleStatusCard
           icon="📉"
-          title="Narrow just nu"
-          summary={`Score ≥ ${ns?.minScore ?? 60} på ${ns?.timeframe ?? '2m'}`}
-          value={`${ns?.activeCount ?? 0} / ${ns?.scannedCount ?? 0}`}
-          tone="blue"
-        />
+	          title="Narrow just nu"
+	          summary={`Score ≥ ${displayCount(ns?.minScore)} på ${displayText(ns?.timeframe)}`}
+	          value={`${displayCount(ns?.activeCount)} / ${displayCount(ns?.scannedCount)}`}
+	          tone="blue"
+	        />
         <SimpleStatusCard
           icon="🧲"
-          title="Stark compression"
-          summary="Score ≥ 80"
-          value={ns?.strongCompressionCount ?? 0}
-          tone="green"
-        />
+	          title="Stark compression"
+	          summary="Score ≥ 80"
+	          value={displayCount(ns?.strongCompressionCount)}
+	          tone="green"
+	        />
         <SimpleStatusCard
           icon="🚀"
-          title="Nära breakout"
-          summary="Bevakas för utbrott"
-          value={breakoutWatch.length}
-          tone="green"
-        />
+	          title="Nära breakout"
+	          summary="Bevakas för utbrott"
+	          value={Array.isArray(ns?.breakoutWatch) ? fmtNumber(breakoutWatch.length) : EMPTY_VALUE}
+	          tone="green"
+	        />
         <SimpleStatusCard
           icon="⚠️"
-          title="Fakeout-risk"
-          summary="Falskt utbrott möjligt"
-          value={fakeoutRisk.length}
-          tone="amber"
-        />
+	          title="Fakeout-risk"
+	          summary="Falskt utbrott möjligt"
+	          value={Array.isArray(ns?.fakeoutRisk) ? fmtNumber(fakeoutRisk.length) : EMPTY_VALUE}
+	          tone="amber"
+	        />
       </section>
 
       {ns && topSymbols.length === 0 && breakoutWatch.length === 0 && fakeoutRisk.length === 0 ? (
@@ -420,13 +446,13 @@ export default function NarrowStateLabPage() {
         <div className="ns-learn-grid">
           <div>
             <h4>📊 Bästa narrow-strategi</h4>
-            {ns?.bestStrategy
-              ? <p>{ns.bestStrategy.label} — vinst {Math.round((ns.bestStrategy.win_rate || 0) * 100)}% ({ns.bestStrategy.closed} trades)</p>
-              : <p className="ns-empty">Ingen learning-data ännu. Systemet behöver fler säkra testresultat.</p>}
-            <h4>📉 Sämsta narrow-strategi</h4>
-            {ns?.worstStrategy
-              ? <p>{ns.worstStrategy.label} — vinst {Math.round((ns.worstStrategy.win_rate || 0) * 100)}% ({ns.worstStrategy.closed} trades)</p>
-              : <p className="ns-empty">Ingen learning-data ännu.</p>}
+	            {ns?.bestStrategy
+	              ? <p>{ns.bestStrategy.label} — vinst {displayPercent(ns.bestStrategy.win_rate)} ({displayCount(ns.bestStrategy.closed)} trades)</p>
+	              : <p className="ns-empty">Ingen learning-data ännu. Systemet behöver fler säkra testresultat.</p>}
+	            <h4>📉 Sämsta narrow-strategi</h4>
+	            {ns?.worstStrategy
+	              ? <p>{ns.worstStrategy.label} — vinst {displayPercent(ns.worstStrategy.win_rate)} ({displayCount(ns.worstStrategy.closed)} trades)</p>
+	              : <p className="ns-empty">Ingen learning-data ännu.</p>}
           </div>
           <div>
             <h4>📋 Nästa rekommenderade test</h4>

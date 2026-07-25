@@ -27,6 +27,12 @@ import {
   strategyId as pickStrategyId,
   toggleExpandedStrategyId,
 } from '../../lib/futuresPaperStrategyApproval.mjs';
+import {
+  resolveKnownStrategy,
+  strategyModelKey,
+  strategyDisplayName,
+} from '../../stores/strategyStore.js';
+import { numberOrNull } from '../../utils/tradingFormatters.js';
 
 // Futures Paper Strategy Approval — knappar + tabell (paper_only).
 //
@@ -65,6 +71,13 @@ async function fetchMutation(url, options, timeoutMs = FETCH_TIMEOUT_MS) {
   } finally {
     clearTimeout(timer);
   }
+}
+
+function displaySafetyValue(value) {
+  if (value === true) return 'true';
+  if (value === false) return 'false';
+  if (value === null || value === undefined || value === '') return '—';
+  return String(value);
 }
 
 async function parseResponseBody(res) {
@@ -131,9 +144,32 @@ function actionButtonStyle(tone, disabled) {
 }
 
 function fmtSek(value) {
-  const n = Number(value);
-  if (!Number.isFinite(n)) return '–';
+  const n = numberOrNull(value);
+  if (n === null) return '–';
   return `${n >= 0 ? '' : ''}${n.toLocaleString('sv-SE', { maximumFractionDigits: 2 })} kr`;
+}
+
+function fmtCount(value) {
+  const n = numberOrNull(value);
+  if (n === null) return '–';
+  return n.toLocaleString('sv-SE', { maximumFractionDigits: 0 });
+}
+
+function approvalStrategyModel(strategy = {}) {
+  const id = pickStrategyId(strategy);
+  return resolveKnownStrategy({ ...(strategy.catalog || {}), strategyId: id });
+}
+
+function approvalRowKey(strategy = {}, index = 0) {
+  const model = approvalStrategyModel(strategy);
+  return strategyModelKey(model, [
+    strategy.catalog?.displayName,
+    strategy.catalog?.strategyName,
+    strategy.catalog?.name,
+    strategy.catalog?.family,
+    strategy.catalog?.market,
+    `approval-row-${index}`,
+  ].filter(Boolean).join('|'));
 }
 
 function formatDetailValue(value) {
@@ -191,16 +227,17 @@ function ProgressCell({ strategy }) {
   const r = resultSummary(strategy);
   const current = r.progressCurrent;
   const target = r.progressTarget;
-  const pct = target > 0 ? Math.min(100, Math.round((current / target) * 100)) : 0;
+  const hasProgress = current != null && target != null;
+  const pct = hasProgress && target > 0 ? Math.min(100, Math.round((current / target) * 100)) : 0;
   return (
     <div style={{ minWidth: 120 }}>
       <div style={{ fontSize: 11, color: 'var(--muted,#6b7280)' }}>Aktuell omgång</div>
-      <div style={{ fontSize: 12, fontWeight: 700, marginBottom: 3 }}>{current}/{target}</div>
+      <div style={{ fontSize: 12, fontWeight: 700, marginBottom: 3 }}>{fmtCount(current)}/{fmtCount(target)}</div>
       <div style={{ height: 6, borderRadius: 999, background: 'var(--border, #e2e2e2)', overflow: 'hidden' }}>
         <div style={{ width: `${pct}%`, height: '100%', background: pct >= 100 ? 'var(--success, #1a7f37)' : 'var(--accent, #3b82f6)' }} />
       </div>
       <div style={{ fontSize: 11, color: 'var(--muted,#6b7280)', marginTop: 4 }}>
-        Historiskt totalt: {r.totalHistoricalClosedTrades} trades
+        Historiskt totalt: {fmtCount(r.totalHistoricalClosedTrades)} trades
       </div>
     </div>
   );
@@ -211,17 +248,17 @@ function ResultCell({ strategy }) {
   if (!r.hasData) {
     return <span style={{ color: 'var(--muted, #6b7280)' }}>Inga avslutade trades</span>;
   }
-  const net = Number(r.netPnlSek) || 0;
-  const netTone = net > 0 ? 'success' : net < 0 ? 'danger' : 'muted';
+  const net = numberOrNull(r.netPnlSek);
+  const netTone = net !== null && net > 0 ? 'success' : net !== null && net < 0 ? 'danger' : 'muted';
   const pf = r.profitFactor === null ? (r.profitFactorNote === 'no_losing_trades' ? 'inga förluster' : '–') : r.profitFactor;
   return (
     <div style={{ display: 'grid', gap: 2, minWidth: 180 }}>
       <div>
-        {r.closedTrades} avslut · <span style={{ color: TONES.success.color }}>{r.wins}V</span> / <span style={{ color: TONES.danger.color }}>{r.losses}F</span>
-        {r.breakevenTrades > 0 ? <span style={{ color: 'var(--muted,#6b7280)' }}> / {r.breakevenTrades}BE</span> : null}
+        {fmtCount(r.closedTrades)} avslut · <span style={{ color: TONES.success.color }}>{fmtCount(r.wins)}V</span> / <span style={{ color: TONES.danger.color }}>{fmtCount(r.losses)}F</span>
+        {r.breakevenTrades > 0 ? <span style={{ color: 'var(--muted,#6b7280)' }}> / {fmtCount(r.breakevenTrades)}BE</span> : null}
       </div>
       <div style={{ color: 'var(--muted, #6b7280)' }}>Win rate: {r.winRatePct === null ? '–' : `${r.winRatePct}%`}</div>
-      <div style={{ fontWeight: 700, color: TONES[netTone].color }}>Netto: {fmtSek(net)}</div>
+      <div style={{ fontWeight: 700, color: TONES[netTone].color }}>Netto: {fmtSek(r.netPnlSek)}</div>
       <div style={{ color: 'var(--muted, #6b7280)', fontSize: 12 }}>
         Snitt/trade: {r.avgNetPnlSek === null ? '–' : fmtSek(r.avgNetPnlSek)} · PF: {pf}
       </div>
@@ -246,10 +283,10 @@ function LeadersCard({ leaders }) {
             <div style={{ fontSize: 11, color: 'var(--muted,#6b7280)', textTransform: 'uppercase', letterSpacing: '0.04em' }}>{row.label}</div>
             {row.hasLeader ? (
               <>
-                <div style={{ fontWeight: 700, marginTop: 4 }}>{row.displayName}</div>
+                <div style={{ fontWeight: 700, marginTop: 4 }}>{strategyDisplayName(resolveKnownStrategy(row), '—')}</div>
                 <div style={{ fontSize: 13 }}>
                   {row.unit === 'kr' ? fmtSek(row.value) : `${row.value ?? '–'}${row.unit === '%' ? '%' : (row.unit === 'V' ? ' vinster' : '')}`}
-                  <span style={{ color: 'var(--muted,#6b7280)' }}> · {row.closedTrades ?? 0} trades</span>
+                  <span style={{ color: 'var(--muted,#6b7280)' }}> · {fmtCount(row.closedTrades)} trades</span>
                 </div>
               </>
             ) : (
@@ -343,9 +380,9 @@ export default function FuturesPaperStrategyApprovalPanel() {
         <strong>⚠︎ Paper-only.</strong> {SIM_WARNING}
         <div style={{ fontSize: 12, color: 'var(--muted, #6b7280)', marginTop: 4 }}>
           Knapparna ändrar endast Futures Paper approval-status. Ingen order, ingen broker, ingen live.
-          mode={safety.mode || 'paper_only'} · actions_allowed={String(safety.actions_allowed ?? false)} ·
-          can_place_orders={String(safety.can_place_orders ?? false)} · live_trading_enabled={String(safety.live_trading_enabled ?? false)} ·
-          broker_enabled={String(safety.broker_enabled ?? false)}
+          mode={displaySafetyValue(safety.mode)} · actions_allowed={displaySafetyValue(safety.actions_allowed)} ·
+          can_place_orders={displaySafetyValue(safety.can_place_orders)} · live_trading_enabled={displaySafetyValue(safety.live_trading_enabled)} ·
+          broker_enabled={displaySafetyValue(safety.broker_enabled)}
         </div>
       </div>
 
@@ -429,21 +466,23 @@ export default function FuturesPaperStrategyApprovalPanel() {
                 </tr>
               </thead>
               <tbody>
-                {visible.map((s) => {
-                  const id = pickStrategyId(s) || Math.random().toString(36);
+                {visible.map((s, index) => {
+                  const id = pickStrategyId(s);
+                  const rowKey = approvalRowKey(s, index);
+                  const strategy = approvalStrategyModel(s);
                   const dup = isDuplicate(s);
                   const actions = availableActions(s);
-                  const busy = busyId === id;
+                  const busy = id ? busyId === id : false;
                   const msg = rowMessage.id === id ? rowMessage : null;
                   const catalog = s.catalog || {};
-                  const expanded = expandedId === id;
+                  const expanded = expandedId === rowKey;
                   return (
-                    <React.Fragment key={id}>
+                    <React.Fragment key={rowKey}>
                       <tr>
                         <td style={td}>
                           <button
                             type="button"
-                            onClick={() => setExpandedId((current) => toggleExpandedStrategyId(current, id))}
+                            onClick={() => setExpandedId((current) => toggleExpandedStrategyId(current, rowKey))}
                             style={{ cursor: 'pointer', background: 'transparent', border: '1px solid var(--border,#ddd)', borderRadius: 8, padding: '4px 8px', fontSize: 12, fontWeight: 700, color: 'inherit', whiteSpace: 'nowrap' }}
                             aria-expanded={expanded}
                           >
@@ -451,10 +490,10 @@ export default function FuturesPaperStrategyApprovalPanel() {
                           </button>
                         </td>
                         <td style={{ ...td, fontWeight: 600 }}>
-                          {catalog.displayName || id}
-                          {catalog.family ? <div style={{ fontWeight: 400, fontSize: 11, color: 'var(--muted,#6b7280)' }}>{catalog.family}</div> : null}
+                          {strategyDisplayName(strategy, '—')}
+                          {strategy.strategyFamily ? <div style={{ fontWeight: 400, fontSize: 11, color: 'var(--muted,#6b7280)' }}>{strategy.strategyFamily}</div> : null}
                         </td>
-                        <td style={{ ...td, fontFamily: 'var(--mono, monospace)', fontSize: 12 }}>{id}</td>
+                        <td style={{ ...td, fontFamily: 'var(--mono, monospace)', fontSize: 12 }}>{id || '—'}</td>
                         <td style={td}>
                           <Badge tone={compatibilityTone(s)}>{compatibilityLabel(s)}</Badge>
                         </td>
@@ -478,7 +517,7 @@ export default function FuturesPaperStrategyApprovalPanel() {
                                   <button
                                     key={actionId}
                                     type="button"
-                                    disabled={busy || degraded}
+                                    disabled={busy || degraded || !id}
                                     onClick={() => runSessionMutation(s, actionId)}
                                     style={actionButtonStyle(meta.tone, busy || degraded)}
                                     title={degraded ? 'Blockerat i degraderat läge' : meta.label}

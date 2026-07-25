@@ -1,5 +1,10 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { CandlestickSeries, createChart, createSeriesMarkers } from 'lightweight-charts';
+import {
+  EMPTY_VALUE,
+  fmtMoney,
+  hasValue,
+} from '../utils/tradingFormatters.js';
 
 function fmtTime(value) {
   if (!value) return '–';
@@ -26,8 +31,14 @@ function normalizeSymbol(symbol) {
 }
 
 function normalizePrice(value) {
+  if (value === null || value === undefined || value === '' || typeof value === 'boolean') return null;
   const num = Number(value);
-  return Number.isFinite(num) && num > 0 ? num : null;
+  return Number.isFinite(num) ? num : null;
+}
+
+function formatPnl(value, currency) {
+  if (!hasValue(value)) return EMPTY_VALUE;
+  return fmtMoney(value, currency, 0);
 }
 
 function safeArray(value) {
@@ -41,7 +52,7 @@ function uniqueSymbols({ instruments = [], openPositions = [], closedTrades = []
     ...safeArray(closedTrades).map((row) => normalizeSymbol(row.symbol || row.root)),
   ].filter(Boolean);
   const deduped = Array.from(new Set(candidates));
-  return deduped.length ? deduped : ['MNQ', 'MES'];
+  return deduped;
 }
 
 function buildPreviewSeries({ symbol, openPositions = [], closedTrades = [] }) {
@@ -99,7 +110,7 @@ function buildPreviewSeries({ symbol, openPositions = [], closedTrades = [] }) {
     if (openedAt && position.strategyId) {
       events.push({
         time: openedAt + 1,
-        price: entryPrice || currentPrice,
+        price: entryPrice ?? currentPrice,
         kind: 'strategy',
         label: `Strategy: ${position.strategyId}`,
         side: position.side,
@@ -113,7 +124,8 @@ function buildPreviewSeries({ symbol, openPositions = [], closedTrades = [] }) {
     const closedAt = toUnixSeconds(trade.closedAt);
     const entryPrice = normalizePrice(trade.entryPrice);
     const exitPrice = normalizePrice(trade.exitPrice ?? trade.currentPrice);
-    const side = String(trade.side || '').toLowerCase() === 'short' ? 'short' : 'long';
+    const rawSide = String(trade.side || '').toLowerCase();
+    const side = rawSide === 'short' ? 'short' : rawSide === 'long' ? 'long' : null;
     if (openedAt && entryPrice) {
       events.push({
         time: openedAt,
@@ -159,7 +171,7 @@ function buildPreviewSeries({ symbol, openPositions = [], closedTrades = [] }) {
     if (openedAt && trade.strategyId) {
       events.push({
         time: openedAt + 1,
-        price: entryPrice || exitPrice,
+        price: entryPrice ?? exitPrice,
         kind: 'strategy',
         label: `Strategy: ${trade.strategyId}`,
         side,
@@ -181,50 +193,7 @@ function buildPreviewSeries({ symbol, openPositions = [], closedTrades = [] }) {
     };
   }
 
-  const candles = [];
-  let previousClose = sortedEvents[0].price;
-  let lastTime = sortedEvents[0].time - 60;
-  sortedEvents.forEach((event, index) => {
-    let time = event.time;
-    if (time <= lastTime) time = lastTime + 60;
-    const spread = Math.max(0.25, Math.abs(event.price) * 0.0004);
-    const open = Number.isFinite(previousClose) ? previousClose : event.price;
-    const close = event.price;
-    const high = Math.max(open, close) + spread;
-    const low = Math.min(open, close) - spread;
-    candles.push({
-      time,
-      open,
-      high,
-      low,
-      close,
-      volume: 1 + index,
-    });
-    previousClose = close;
-    lastTime = time;
-  });
-
-  const markers = [];
-  sortedEvents.forEach((event) => {
-    const position = event.side === 'short'
-      ? (event.kind === 'entry' ? 'aboveBar' : 'belowBar')
-      : (event.kind === 'entry' ? 'belowBar' : 'aboveBar');
-    const markerBase = {
-      time: event.time,
-      position,
-      color: event.kind === 'exit' ? '#ef4444' : event.kind === 'stop_loss' ? '#f59e0b' : event.kind === 'take_profit' ? '#22c55e' : event.kind === 'strategy' ? '#8b5cf6' : '#38bdf8',
-      text: event.label,
-    };
-    if (event.kind === 'entry') {
-      markers.push({ ...markerBase, shape: 'arrowUp', text: `${event.label} · ${event.tradeId || selected}` });
-    } else if (event.kind === 'exit') {
-      markers.push({ ...markerBase, shape: 'arrowDown', text: `${event.label} · ${event.tradeId || selected}` });
-    } else {
-      markers.push({ ...markerBase, shape: 'circle', text: `${event.label}` });
-    }
-  });
-
-  return { selected, candles, markers, mode: 'preview' };
+  return { selected, candles: [], markers: [], mode: 'events_only' };
 }
 
 function badgeStyle(tone = 'neutral') {
@@ -288,12 +257,12 @@ export default function FuturesPaperChart({
   instruments = [],
   openPositions = [],
   closedTrades = [],
-  accountCurrency = 'SEK',
+  accountCurrency = null,
   onClosePosition = null,
 }) {
   const [viewportWidth, setViewportWidth] = useState(() => (typeof window !== 'undefined' ? window.innerWidth : 1280));
   const symbols = useMemo(() => uniqueSymbols({ instruments, openPositions, closedTrades }), [instruments, openPositions, closedTrades]);
-  const [selectedSymbol, setSelectedSymbol] = useState(symbols[0] || 'MNQ');
+  const [selectedSymbol, setSelectedSymbol] = useState(symbols[0] || '');
   const [closeDrafts, setCloseDrafts] = useState({});
   const containerRef = useRef(null);
   const chartRef = useRef(null);
@@ -301,7 +270,7 @@ export default function FuturesPaperChart({
 
   useEffect(() => {
     if (!symbols.includes(selectedSymbol)) {
-      setSelectedSymbol(symbols[0] || 'MNQ');
+      setSelectedSymbol(symbols[0] || '');
     }
   }, [symbols, selectedSymbol]);
 
@@ -424,7 +393,7 @@ export default function FuturesPaperChart({
     }
   };
 
-  const currentTone = chartData.mode === 'preview' ? 'info' : 'warning';
+  const currentTone = chartData.mode === 'events_only' ? 'info' : 'warning';
 
   return (
     <section style={{
@@ -443,8 +412,8 @@ export default function FuturesPaperChart({
           </p>
         </div>
         <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
-          <Badge tone="success">MNQ / MES</Badge>
-          <Badge tone={currentTone}>{chartData.mode === 'preview' ? 'Preview-serie' : 'Ingen chartdata ännu'}</Badge>
+          <Badge tone="neutral">Symboler {symbols.length ? symbols.length : EMPTY_VALUE}</Badge>
+          <Badge tone={currentTone}>{chartData.mode === 'events_only' ? 'Backend saknar candles' : 'Ingen chartdata ännu'}</Badge>
           <button type="button" className="btn" onClick={centeredSelection} disabled={!chartData.candles.length}>Centrera chart</button>
         </div>
       </div>
@@ -494,7 +463,7 @@ export default function FuturesPaperChart({
               <div>
                 <div style={{ fontWeight: 800, fontSize: 16 }}>Ingen chartdata ännu</div>
                 <div style={{ color: 'var(--muted)', marginTop: 8, fontSize: 13, lineHeight: 1.5, maxWidth: 480 }}>
-                  När futures-simuleringen har öppna eller stängda trades för {selectedSymbol} visas en preview-serie med entry, exit, stop loss och take profit.
+                  Backend levererar inte en marknadsserie till denna panel. Öppna positioner och stängda trades visas i listorna utan syntetiska candles.
                 </div>
               </div>
             </div>
@@ -522,7 +491,7 @@ export default function FuturesPaperChart({
                 >
                   <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10, alignItems: 'flex-start' }}>
                     <div>
-                      <div style={{ fontWeight: 800 }}>{`${position.symbol || position.root} · ${position.side}`}</div>
+                      <div style={{ fontWeight: 800 }}>{`${position.symbol || position.root || EMPTY_VALUE} · ${position.side || EMPTY_VALUE}`}</div>
                       <div style={{ color: 'var(--muted)', fontSize: 12, marginTop: 4, lineHeight: 1.4 }}>
                         Entry {normalizePrice(position.entryPrice)?.toFixed(2) || '–'} · Current {normalizePrice(position.currentPrice)?.toFixed(2) || '–'}
                       </div>
@@ -532,7 +501,7 @@ export default function FuturesPaperChart({
                     </button>
                   </div>
                   <div style={{ color: 'var(--muted)', fontSize: 12, lineHeight: 1.45 }}>
-                    SL {normalizePrice(position.stopLoss)?.toFixed(2) || '–'} · TP {normalizePrice(position.takeProfit)?.toFixed(2) || '–'} · PnL {Number(position.unrealizedPnlSek || 0).toFixed(0)} {accountCurrency}
+                    SL {normalizePrice(position.stopLoss)?.toFixed(2) || '–'} · TP {normalizePrice(position.takeProfit)?.toFixed(2) || '–'} · PnL {formatPnl(position.unrealizedPnlSek, accountCurrency)}
                   </div>
                   <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1fr) auto', gap: 8, alignItems: 'end' }}>
                     <label style={{ display: 'grid', gap: 6 }}>
@@ -571,9 +540,9 @@ export default function FuturesPaperChart({
               {selectedClosedTrades.length ? selectedClosedTrades.slice(-4).reverse().map((trade) => (
                 <ListItem
                   key={trade.tradeId}
-                  title={`${trade.symbol || trade.root} · ${trade.side}`}
+                  title={`${trade.symbol || trade.root || EMPTY_VALUE} · ${trade.side || EMPTY_VALUE}`}
                   subtitle={`Entry ${normalizePrice(trade.entryPrice)?.toFixed(2) || '–'} · Exit ${normalizePrice(trade.exitPrice ?? trade.currentPrice)?.toFixed(2) || '–'}`}
-                  meta={`PnL ${Number(trade.realizedPnlSek || 0).toFixed(0)} ${accountCurrency} · ${fmtTime(trade.closedAt || trade.openedAt)}`}
+                  meta={`PnL ${formatPnl(trade.realizedPnlSek, accountCurrency)} · ${fmtTime(trade.closedAt || trade.openedAt)}`}
                   onView={() => setSelectedSymbol(normalizeSymbol(trade.symbol || trade.root))}
                   actionLabel="Visa trade"
                 />

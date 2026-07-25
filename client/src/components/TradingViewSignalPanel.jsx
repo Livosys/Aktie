@@ -1,4 +1,9 @@
 import React, { useEffect, useState } from 'react';
+import {
+  resolveStrategy,
+  strategyDisplayName,
+} from '../stores/strategyStore.js';
+import { EMPTY_VALUE, numberOrNull } from '../utils/tradingFormatters.js';
 import { normalizeSignalForChart } from '../utils/chartSignalUtils.js';
 import { getTheme } from './ThemeToggle.jsx';
 
@@ -14,18 +19,21 @@ const DIRECTION_SV = {
 };
 
 function tvInterval(timeframe) {
+  if (timeframe === null || timeframe === undefined || timeframe === '') return null;
   const tf = String(timeframe || '').toLowerCase();
   if (tf === '1m' || tf === '1') return '1';
   if (tf === '2m' || tf === '2') return '2';
   if (tf === '5m' || tf === '5') return '5';
   if (tf === '15m' || tf === '15') return '15';
-  return '5'; // default enligt spec
+  return null;
 }
 
 function embedUrl(tvSymbol, timeframe, theme) {
+  const interval = tvInterval(timeframe);
+  if (!tvSymbol || !interval) return null;
   const qs = new URLSearchParams({
     symbol: tvSymbol,
-    interval: tvInterval(timeframe),
+    interval,
     theme: theme === 'light' ? 'light' : 'dark',
     style: '1',
     timezone: 'Europe/Stockholm',
@@ -38,22 +46,23 @@ function embedUrl(tvSymbol, timeframe, theme) {
 }
 
 function priceText(price) {
-  if (price == null) return 'Saknas';
-  const dec = price > 100 ? 2 : price > 1 ? 3 : 5;
-  return Number(price).toFixed(dec);
+  const n = numberOrNull(price);
+  if (n === null) return EMPTY_VALUE;
+  const dec = n > 100 ? 2 : n > 1 ? 3 : 5;
+  return n.toFixed(dec);
 }
 
 function marketLabel(marketType) {
   if (marketType === 'crypto') return 'Krypto';
   if (marketType === 'stock') return 'Aktie';
-  return 'Okänd';
+  return EMPTY_VALUE;
 }
 
 function Row({ label, value }) {
   return (
     <div className="tvsp-row">
       <span className="tvsp-row-label">{label}</span>
-      <span className="tvsp-row-value">{value ?? 'Saknas'}</span>
+      <span className="tvsp-row-value">{value ?? EMPTY_VALUE}</span>
     </div>
   );
 }
@@ -77,15 +86,16 @@ export default function TradingViewSignalPanel({ signal, onClose }) {
   if (!signal) return null;
   // Acceptera både normaliserad och rå signal (idempotent).
   const sig = signal.tvSymbol ? signal : normalizeSignalForChart(signal);
-  const direction = DIRECTION_SV[sig.direction] || (sig.direction ? String(sig.direction) : 'Okänd');
+  const direction = DIRECTION_SV[sig.direction] || (sig.direction ? String(sig.direction) : EMPTY_VALUE);
+  const chartUrl = embedUrl(sig.tvSymbol, sig.timeframe, theme);
 
   return (
     <div className="tvsp-backdrop" role="dialog" aria-modal="true" onClick={onClose}>
       <div className="tvsp-panel" onClick={(e) => e.stopPropagation()}>
         <div className="tvsp-header">
           <div className="tvsp-title">
-            <span className="tvsp-title-main">Chart — {sig.symbol || 'okänd symbol'}</span>
-            <span className="tvsp-title-sub">{sig.tvSymbol} · {sig.timeframe}</span>
+            <span className="tvsp-title-main">Chart — {sig.symbol || EMPTY_VALUE}</span>
+            <span className="tvsp-title-sub">{sig.tvSymbol || EMPTY_VALUE} · {sig.timeframe || EMPTY_VALUE}</span>
           </div>
           <button className="tvsp-close" onClick={onClose} aria-label="Stäng chart">✕</button>
         </div>
@@ -93,13 +103,19 @@ export default function TradingViewSignalPanel({ signal, onClose }) {
         <div className="tvsp-body">
           {/* Chart */}
           <div className="tvsp-chart">
-            <iframe
-              key={`${sig.tvSymbol}-${theme}`}
-              title={`TradingView ${sig.tvSymbol}`}
-              src={embedUrl(sig.tvSymbol, sig.timeframe, theme)}
-              className="tvsp-iframe"
-              loading="lazy"
-            />
+            {chartUrl ? (
+              <iframe
+                key={`${sig.tvSymbol}-${sig.timeframe}-${theme}`}
+                title={`TradingView ${sig.tvSymbol}`}
+                src={chartUrl}
+                className="tvsp-iframe"
+                loading="lazy"
+              />
+            ) : (
+              <div className="tvsp-iframe" style={{ display: 'grid', placeItems: 'center', color: 'var(--muted)', background: 'var(--surface-2)' }}>
+                TradingView-data saknar symbol eller timeframe.
+              </div>
+            )}
             <div className="tvsp-chart-note">
               TradingView visar symbolen. Exakt signalpunkt visas i panelen.
             </div>
@@ -112,14 +128,14 @@ export default function TradingViewSignalPanel({ signal, onClose }) {
             <div className={`tvsp-marker ${sig.markerReady ? 'tvsp-marker-ok' : 'tvsp-marker-missing'}`}>
               {sig.markerReady
                 ? 'Exakt signalpunkt finns — tid + pris.'
-                : `Exakt signalpunkt saknas eftersom: ${sig.markerMissingReason}`}
+                : (sig.markerMissingReason ? `Exakt signalpunkt saknas eftersom: ${sig.markerMissingReason}` : 'Exakt signalpunkt saknas.')}
             </div>
 
             <Row label="Tid" value={sig.displayTime} />
             <Row label="Pris" value={priceText(sig.price)} />
-            <Row label="Strategi" value={sig.strategyName || sig.strategyId} />
+            <Row label="Strategi" value={strategyDisplayName(resolveStrategy(sig), '—')} />
             <Row label="Riktning" value={direction} />
-            <Row label="Score" value={sig.score != null ? sig.score : sig.confidence} />
+            <Row label="Score" value={sig.score ?? sig.confidence} />
             <Row label="Timeframe" value={sig.timeframe} />
             <Row label="Symbol" value={sig.symbol} />
             <Row label="TradingView-symbol" value={sig.tvSymbol} />
@@ -136,14 +152,16 @@ export default function TradingViewSignalPanel({ signal, onClose }) {
               </div>
             )}
 
-            <a
-              className="tvsp-external"
-              href={sig.externalTradingViewUrl}
-              target="_blank"
-              rel="noopener noreferrer"
-            >
-              Öppna på tradingview.com ↗
-            </a>
+            {sig.externalTradingViewUrl ? (
+              <a
+                className="tvsp-external"
+                href={sig.externalTradingViewUrl}
+                target="_blank"
+                rel="noopener noreferrer"
+              >
+                Öppna på tradingview.com ↗
+              </a>
+            ) : null}
           </div>
         </div>
       </div>

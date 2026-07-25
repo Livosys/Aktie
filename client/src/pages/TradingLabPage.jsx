@@ -1,4 +1,4 @@
-import React, { Suspense, lazy, useState, useEffect } from 'react';
+import React, { Suspense, lazy, useMemo, useState, useEffect } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
 import { AdvancedModeToggle, ConfigScopeBadge, PlatformEmptyState, PlatformSafetyBar, useAdvancedMode } from '../components/PlatformControls.jsx';
 import PaperCandidatePanel from '../components/PaperCandidatePanel.jsx';
@@ -9,7 +9,14 @@ import {
   DEFAULT_TRADING_LAB_TOGGLES as DEFAULT_TOGGLES,
   useUnifiedConfig,
 } from '../hooks/useUnifiedConfig.js';
+import {
+  resolveKnownStrategy,
+  strategyDisplayName,
+} from '../stores/strategyStore.js';
+import { createDecisionStore } from '../stores/decisionStore.js';
+import { createTradingEventStore } from '../stores/tradingEventStore.js';
 import { SignalAge, TradingViewLink } from '../shared.jsx';
+import { EMPTY_VALUE, fmtNumber as formatNumber, numberOrNull } from '../utils/tradingFormatters.js';
 
 const ReplayPage = lazy(() => import('./ReplayPage.jsx'));
 const ReviewChartPage = lazy(() => import('./ReviewChartPage.jsx'));
@@ -21,6 +28,29 @@ const LAB_SAFETY = Object.freeze({
   live_trading_enabled: false,
   broker_enabled: false,
 });
+
+function labStrategyModel(row = {}) {
+  return resolveKnownStrategy(row);
+}
+
+function labStrategyLabel(row = {}, fallback = '—') {
+  return strategyDisplayName(labStrategyModel(row), fallback);
+}
+
+function labInt(value, fallback = EMPTY_VALUE) {
+  const n = numberOrNull(value);
+  return n === null ? fallback : formatNumber(Math.round(n));
+}
+
+function labPercent(value, digits = 1, fallback = EMPTY_VALUE) {
+  const n = numberOrNull(value);
+  return n === null ? fallback : `${formatNumber(n, digits)}%`;
+}
+
+function labSignedPercent(value, digits = 3, fallback = EMPTY_VALUE) {
+  const n = numberOrNull(value);
+  return n === null ? fallback : `${n > 0 ? '+' : ''}${formatNumber(n, digits)}%`;
+}
 
 function LabPanelFallback() {
   return <div className="tl-tab-content">Laddar panel...</div>;
@@ -726,10 +756,11 @@ function useOptimizationSummary() {
 }
 
 function OptScoreBadge({ score }) {
-  const color = score >= 60 ? '#22c55e' : score >= 40 ? '#f59e0b' : '#ef4444';
+  const n = numberOrNull(score);
+  const color = n === null ? '#94a3b8' : n >= 60 ? '#22c55e' : n >= 40 ? '#f59e0b' : '#ef4444';
   return (
     <span className="opt-score-badge" style={{ background: `${color}18`, color, borderColor: `${color}50` }}>
-      {score}/100
+      {n === null ? EMPTY_VALUE : `${labInt(n)}/100`}
     </span>
   );
 }
@@ -744,9 +775,10 @@ function StatRow({ label, value, highlight }) {
 }
 
 function MiniBar({ pct, color }) {
+  const n = numberOrNull(pct);
   return (
     <div className="opt-minibar-track">
-      <div className="opt-minibar-fill" style={{ width: `${Math.max(0, Math.min(100, pct))}%`, background: color }} />
+      <div className="opt-minibar-fill" style={{ width: `${n === null ? 0 : Math.max(0, Math.min(100, n))}%`, background: color }} />
     </div>
   );
 }
@@ -755,6 +787,9 @@ function ConfigCard({ config, rank }) {
   const [open, setOpen] = React.useState(false);
   if (!config.stats) return null;
   const { winRatePct, timeoutRatePct, avgPnl, n } = config.stats;
+  const winRate = numberOrNull(winRatePct);
+  const timeoutRate = numberOrNull(timeoutRatePct);
+  const pnl = numberOrNull(avgPnl);
   const isTop = rank <= 2;
   return (
     <div className={`opt-config-card ${isTop ? 'opt-config-top' : ''}`}>
@@ -762,24 +797,24 @@ function ConfigCard({ config, rank }) {
         <div className="opt-config-rank">#{rank}</div>
         <div className="opt-config-info">
           <div className="opt-config-label">{config.label}</div>
-          <div className="opt-config-n">{n} trades</div>
+          <div className="opt-config-n">{labInt(n)} trades</div>
         </div>
         <OptScoreBadge score={config.score} />
       </div>
       <div className="opt-config-bars">
         <div className="opt-config-bar-row">
           <span>Win rate</span>
-          <MiniBar pct={winRatePct} color={winRatePct >= 50 ? '#22c55e' : winRatePct >= 35 ? '#f59e0b' : '#ef4444'} />
-          <span className="opt-bar-val">{winRatePct}%</span>
+          <MiniBar pct={winRate} color={winRate === null ? '#94a3b8' : winRate >= 50 ? '#22c55e' : winRate >= 35 ? '#f59e0b' : '#ef4444'} />
+          <span className="opt-bar-val">{labPercent(winRate)}</span>
         </div>
         <div className="opt-config-bar-row">
           <span>Timeout</span>
-          <MiniBar pct={timeoutRatePct} color={timeoutRatePct > 50 ? '#ef4444' : timeoutRatePct > 30 ? '#f59e0b' : '#22c55e'} />
-          <span className="opt-bar-val">{timeoutRatePct}%</span>
+          <MiniBar pct={timeoutRate} color={timeoutRate === null ? '#94a3b8' : timeoutRate > 50 ? '#ef4444' : timeoutRate > 30 ? '#f59e0b' : '#22c55e'} />
+          <span className="opt-bar-val">{labPercent(timeoutRate)}</span>
         </div>
       </div>
-      <div className={`opt-config-pnl ${avgPnl >= 0 ? 'opt-pnl-pos' : 'opt-pnl-neg'}`}>
-        {avgPnl >= 0 ? '+' : ''}{(avgPnl * 100).toFixed(3)}% snitt P/L
+      <div className={`opt-config-pnl ${pnl === null || pnl === 0 ? '' : pnl > 0 ? 'opt-pnl-pos' : 'opt-pnl-neg'}`}>
+        {labSignedPercent(pnl)} snitt P/L
       </div>
       <button className="opt-expand-btn" onClick={() => setOpen(v => !v)} type="button">
         {open ? '▲ Dölj' : '▼ Parametrar'}
@@ -798,20 +833,22 @@ function ConfigCard({ config, rank }) {
 function WeakConfigCard({ config }) {
   if (!config.stats) return null;
   const { winRatePct, timeoutRatePct, n } = config.stats;
+  const winRate = numberOrNull(winRatePct);
+  const timeoutRate = numberOrNull(timeoutRatePct);
   return (
     <div className="opt-weak-card">
       <div className="opt-weak-header">
         <span className="opt-weak-icon">⚠️</span>
         <div>
           <div className="opt-weak-label">{config.label}</div>
-          <div className="opt-weak-n">{n} trades</div>
+          <div className="opt-weak-n">{labInt(n)} trades</div>
         </div>
         <OptScoreBadge score={config.score} />
       </div>
       {config.warning && <div className="opt-weak-warning">{config.warning}</div>}
       <div className="opt-weak-stats">
-        <span>WR: {winRatePct}%</span>
-        <span>Timeout: {timeoutRatePct}%</span>
+        <span>WR: {labPercent(winRate)}</span>
+        <span>Timeout: {labPercent(timeoutRate)}</span>
       </div>
     </div>
   );
@@ -819,14 +856,17 @@ function WeakConfigCard({ config }) {
 
 function BucketBar({ items, scoreKey = 'score', labelKey = 'label', metricKey = 'stats', metricField = 'winRatePct' }) {
   if (!items?.length) return <div className="opt-empty">Ingen data</div>;
+  const scores = items.map((item) => numberOrNull(item?.[scoreKey])).filter((value) => value !== null);
+  const maxScore = scores.length ? Math.max(...scores) : null;
   return (
     <div className="opt-bucket-list">
       {items.map((item, i) => {
         const st = item[metricKey];
         if (!st) return null;
-        const val = st[metricField] ?? 0;
-        const color = val >= 50 ? '#22c55e' : val >= 35 ? '#f59e0b' : '#ef4444';
-        const isBest = i === 0 || (item.score === Math.max(...items.map(x => x.score || 0)));
+        const val = numberOrNull(st[metricField]);
+        const color = val === null ? '#94a3b8' : val >= 50 ? '#22c55e' : val >= 35 ? '#f59e0b' : '#ef4444';
+        const score = numberOrNull(item?.[scoreKey]);
+        const isBest = maxScore !== null && (i === 0 || score === maxScore);
         return (
           <div key={i} className={`opt-bucket-row ${isBest ? 'opt-bucket-best' : ''}`}>
             <div className="opt-bucket-label">{item[labelKey]}</div>
@@ -834,8 +874,8 @@ function BucketBar({ items, scoreKey = 'score', labelKey = 'label', metricKey = 
               <MiniBar pct={val} color={color} />
             </div>
             <div className="opt-bucket-vals">
-              <span style={{ color, fontWeight: 600 }}>{val}%</span>
-              <span className="opt-bucket-n">n={st.n}</span>
+              <span style={{ color, fontWeight: 600 }}>{labPercent(val)}</span>
+              <span className="opt-bucket-n">n={labInt(st.n)}</span>
               {isBest && <span className="opt-bucket-best-badge">✓ Bäst</span>}
             </div>
           </div>
@@ -1052,17 +1092,9 @@ function ApplyPanel({ summary, toggles, params, exits, onApplyParams, onApplyTog
             : summary?.topStrategyGrid?.bestOverall?.strategy_name
               ? summary.topStrategyGrid.bestOverall
               : null;
-    const strategyId =
-      bestStrategy?.strategy_id
-      || bestStrategy?.id
-      || bestStrategy?.strategyId
-      || null;
-    const strategyName =
-      bestStrategy?.strategy_name
-      || bestStrategy?.name
-      || bestStrategy?.label
-      || strategyId
-      || 'Okänd strategi';
+    const strategy = labStrategyModel(bestStrategy || {});
+    const strategyId = strategy.strategyId;
+    const strategyName = strategyDisplayName(strategy, '—');
     const sourceKind = summary?.strategyBatchTesting?.bestStrategy?.strategy_id
       ? 'batch'
       : summary?.daytradingStrategies?.bestStrategy?.strategy_id
@@ -1282,7 +1314,7 @@ function ApplyPanel({ summary, toggles, params, exits, onApplyParams, onApplyTog
             <div className="opt-paper-candidate-grid">
               <div>
                 <span>Strategy</span>
-                <strong>{latestPaperCandidate.strategyName || latestPaperCandidate.strategyId || '–'}</strong>
+                <strong>{labStrategyLabel(latestPaperCandidate)}</strong>
               </div>
               <div>
                 <span>Källa</span>
@@ -1307,7 +1339,7 @@ function ApplyPanel({ summary, toggles, params, exits, onApplyParams, onApplyTog
                 type="button"
                 disabled={!latestPaperCandidate.strategyId || latestPaperCandidate.allowlist?.status !== 'not_approved' || savingCandidate}
                 onClick={async () => {
-                  const strategyName = latestPaperCandidate.strategyName || latestPaperCandidate.strategyId || 'strategin';
+                  const strategyName = labStrategyLabel(latestPaperCandidate, 'strategin');
                   const ok = window.confirm('Detta godkänner endast låtsashandel. Inga riktiga order kan läggas.');
                   if (!ok) return;
                   try {
@@ -1608,7 +1640,8 @@ function AiOptimizationTab({ toggles, params, exits, onApplyParams, onApplyToggl
   const { tradeCount, overallStats, overallScore, topConfigs, weakConfigs,
           stopLoss, holdingTime, exits: exitsData, combinations, markets, confidence, recommendations, strategyBatchTesting } = data;
 
-  const hasData = tradeCount >= 5;
+  const tradeCountValue = numberOrNull(tradeCount);
+  const hasData = tradeCountValue !== null && tradeCountValue >= 5;
 
   return (
     <div className="opt-panel">
@@ -1617,7 +1650,7 @@ function AiOptimizationTab({ toggles, params, exits, onApplyParams, onApplyToggl
         <div className="opt-header-left">
           <div className="opt-title">🤖 Optimeringsagent</div>
           <div className="opt-subtitle">
-            Analyserar {tradeCount} historiska trades — rekommendering only, inga ändringar automatiskt
+            Analyserar {labInt(tradeCountValue)} historiska trades — rekommendering only, inga ändringar automatiskt
           </div>
         </div>
         <div className="opt-header-right">
@@ -1634,7 +1667,7 @@ function AiOptimizationTab({ toggles, params, exits, onApplyParams, onApplyToggl
 
       {!hasData && (
         <div className="opt-insufficient">
-          ⚠️ Begränsad data ({tradeCount} trades). Kör mer paper trading för bättre insikter.
+          ⚠️ Begränsad data ({labInt(tradeCountValue)} trades). Kör mer paper trading för bättre insikter.
         </div>
       )}
 
@@ -1659,25 +1692,25 @@ function AiOptimizationTab({ toggles, params, exits, onApplyParams, onApplyToggl
           {overallStats && (
             <div className="opt-overview-grid">
               <div className="opt-overview-card">
-                <div className="opt-ov-val" style={{ color: overallStats.winRatePct >= 50 ? '#22c55e' : '#f59e0b' }}>
-                  {overallStats.winRatePct}%
+                <div className="opt-ov-val" style={{ color: numberOrNull(overallStats.winRatePct) === null ? '#94a3b8' : numberOrNull(overallStats.winRatePct) >= 50 ? '#22c55e' : '#f59e0b' }}>
+                  {labPercent(overallStats.winRatePct)}
                 </div>
                 <div className="opt-ov-label">Total win rate</div>
               </div>
               <div className="opt-overview-card">
-                <div className="opt-ov-val" style={{ color: overallStats.timeoutRatePct > 40 ? '#ef4444' : '#22c55e' }}>
-                  {overallStats.timeoutRatePct}%
+                <div className="opt-ov-val" style={{ color: numberOrNull(overallStats.timeoutRatePct) === null ? '#94a3b8' : numberOrNull(overallStats.timeoutRatePct) > 40 ? '#ef4444' : '#22c55e' }}>
+                  {labPercent(overallStats.timeoutRatePct)}
                 </div>
                 <div className="opt-ov-label">Timeout-rate</div>
               </div>
               <div className="opt-overview-card">
-                <div className="opt-ov-val" style={{ color: overallStats.avgPnl >= 0 ? '#22c55e' : '#ef4444' }}>
-                  {overallStats.avgPnl >= 0 ? '+' : ''}{(overallStats.avgPnl * 100).toFixed(3)}%
+                <div className="opt-ov-val" style={{ color: numberOrNull(overallStats.avgPnl) === null ? '#94a3b8' : numberOrNull(overallStats.avgPnl) >= 0 ? '#22c55e' : '#ef4444' }}>
+                  {labSignedPercent(overallStats.avgPnl)}
                 </div>
                 <div className="opt-ov-label">Snitt P/L</div>
               </div>
               <div className="opt-overview-card">
-                <div className="opt-ov-val">{tradeCount}</div>
+                <div className="opt-ov-val">{labInt(tradeCountValue)}</div>
                 <div className="opt-ov-label">Trades analyserade</div>
               </div>
             </div>
@@ -1747,20 +1780,20 @@ function AiOptimizationTab({ toggles, params, exits, onApplyParams, onApplyToggl
           <div className="opt-exit-meta">
             <div className="opt-exit-stat">
               <span>Timeouts:</span>
-              <strong style={{ color: exitsData?.timeoutPct > 40 ? '#ef4444' : '#22c55e' }}>
-                {exitsData?.timeoutCount ?? 0} ({exitsData?.timeoutPct ?? 0}%)
+              <strong style={{ color: numberOrNull(exitsData?.timeoutPct) === null ? '#94a3b8' : numberOrNull(exitsData?.timeoutPct) > 40 ? '#ef4444' : '#22c55e' }}>
+                {labInt(exitsData?.timeoutCount)} ({labPercent(exitsData?.timeoutPct)})
               </strong>
             </div>
             {exitsData?.motorExitStats && (
               <div className="opt-exit-stat">
                 <span>Exitmotor:</span>
-                <strong>{exitsData.motorExitStats.winRatePct}% WR ({exitsData.motorExitStats.n} trades)</strong>
+                <strong>{labPercent(exitsData.motorExitStats.winRatePct)} WR ({labInt(exitsData.motorExitStats.n)} trades)</strong>
               </div>
             )}
             {exitsData?.manualExitStats && (
               <div className="opt-exit-stat">
                 <span>Manuell exit:</span>
-                <strong>{exitsData.manualExitStats.winRatePct}% WR ({exitsData.manualExitStats.n} trades)</strong>
+                <strong>{labPercent(exitsData.manualExitStats.winRatePct)} WR ({labInt(exitsData.manualExitStats.n)} trades)</strong>
               </div>
             )}
           </div>
@@ -1784,10 +1817,10 @@ function AiOptimizationTab({ toggles, params, exits, onApplyParams, onApplyToggl
                   </div>
                   {m.stats && (
                     <div className="opt-market-stats">
-                      <StatRow label="Win rate" value={`${m.stats.winRatePct}%`} highlight={m.stats.winRatePct >= 50} />
-                      <StatRow label="Timeout" value={`${m.stats.timeoutRatePct}%`} />
-                      <StatRow label="Trades" value={m.stats.n} />
-                      {m.avgHoldMin && <StatRow label="Snitt hålltid" value={`${m.avgHoldMin} min`} />}
+                      <StatRow label="Win rate" value={labPercent(m.stats.winRatePct)} highlight={numberOrNull(m.stats.winRatePct) !== null && numberOrNull(m.stats.winRatePct) >= 50} />
+                      <StatRow label="Timeout" value={labPercent(m.stats.timeoutRatePct)} />
+                      <StatRow label="Trades" value={labInt(m.stats.n)} />
+                      {m.avgHoldMin != null && <StatRow label="Snitt hålltid" value={`${formatNumber(m.avgHoldMin, 1)} min`} />}
                     </div>
                   )}
 
@@ -1809,7 +1842,7 @@ function AiOptimizationTab({ toggles, params, exits, onApplyParams, onApplyToggl
                     <span className="opt-combo-label">{c.label}</span>
                     <OptScoreBadge score={c.score} />
                   </div>
-                  {c.stats && <div className="opt-combo-wr">{c.stats.winRatePct}% WR · {c.stats.n} trades</div>}
+                  {c.stats && <div className="opt-combo-wr">{labPercent(c.stats.winRatePct)} WR · {labInt(c.stats.n)} trades</div>}
                 </div>
               ))}
             </div>
@@ -1825,7 +1858,7 @@ function AiOptimizationTab({ toggles, params, exits, onApplyParams, onApplyToggl
             <>
               <div className="opt-overview-grid">
                 <div className="opt-overview-card">
-                  <div className="opt-ov-val">{strategyBatchTesting.bestStrategy?.strategy_name || '–'}</div>
+                  <div className="opt-ov-val">{strategyBatchTesting.bestStrategy ? labStrategyLabel(strategyBatchTesting.bestStrategy) : '—'}</div>
                   <div className="opt-ov-label">Bästa strategi</div>
                 </div>
                 <div className="opt-overview-card">
@@ -1842,7 +1875,7 @@ function AiOptimizationTab({ toggles, params, exits, onApplyParams, onApplyToggl
                 </div>
               </div>
               <div className="opt-rec-note">
-                Batch {strategyBatchTesting.latestBatch.name} · {getBatchUiStatus(strategyBatchTesting.latestBatch).emoji} {getBatchUiStatus(strategyBatchTesting.latestBatch).label} · {strategyBatchTesting.latestBatch.progress?.completed || 0}/{strategyBatchTesting.latestBatch.progress?.total || 0}
+                Batch {strategyBatchTesting.latestBatch.name} · {getBatchUiStatus(strategyBatchTesting.latestBatch).emoji} {getBatchUiStatus(strategyBatchTesting.latestBatch).label} · {labInt(strategyBatchTesting.latestBatch.progress?.completed)}/{labInt(strategyBatchTesting.latestBatch.progress?.total)}
               </div>
               <RecommendationsList recs={strategyBatchTesting.recommendations} />
               {strategyBatchTesting.pauseCandidates?.length > 0 && (
@@ -1852,12 +1885,12 @@ function AiOptimizationTab({ toggles, params, exits, onApplyParams, onApplyToggl
                     {strategyBatchTesting.pauseCandidates.slice(0, 6).map((s, i) => (
                       <div key={`${s.strategy_id}-${i}`} className="opt-market-card">
                         <div className="opt-market-header">
-                          <span className="opt-market-name">{s.strategy_name || s.strategy_id}</span>
-                          <OptScoreBadge score={s.score || 0} />
+                          <span className="opt-market-name">{labStrategyLabel(s)}</span>
+                          <OptScoreBadge score={s.score} />
                         </div>
                         <div className="opt-market-stats">
-                          <StatRow label="Win rate" value={`${s.win_rate || 0}%`} />
-                          <StatRow label="Trades" value={s.trades || 0} />
+                          <StatRow label="Win rate" value={labPercent(s.win_rate)} />
+                          <StatRow label="Trades" value={labInt(s.trades)} />
                         </div>
                       </div>
                     ))}
@@ -2154,10 +2187,11 @@ function isResearchCryptoMajor(symbol) {
 }
 
 function isCryptoStrategy(strategy = {}) {
-  const id = String(strategy.id || strategy.strategy_id || '').toLowerCase();
-  const name = String(strategy.name || strategy.strategy_name || '').toLowerCase();
+  const model = labStrategyModel(strategy);
+  const id = String(model.strategyId || strategy.id || strategy.strategy_id || '').toLowerCase();
+  const family = String(model.strategyFamily || '').toLowerCase();
   const market = String(strategy.market_group || strategy.market || strategy.category || strategy.type || '').toLowerCase();
-  return id.includes('crypto') || name.includes('crypto') || market === 'crypto';
+  return id.includes('crypto') || family.includes('crypto') || market === 'crypto';
 }
 
 function isLabArchivedMarket(market) {
@@ -2379,10 +2413,11 @@ function StrategyMiniSlider({ label, value, min, max, step, format, onChange }) 
   );
 }
 
-function StrategyCard({ strategy, performance, settings, onSettingsChange, onTest }) {
+function LabStrategyCard({ strategy, performance, settings, onSettingsChange, onTest }) {
   const [open, setOpen] = React.useState(false);
   const [testing, setTesting] = React.useState(false);
   const [lastResult, setLastResult] = React.useState(null);
+  const strategyModel = labStrategyModel(strategy);
   const perf = performance?.[strategy.id];
   const badge = perf?.performance_badge;
   const statusKey = catalogStatusKey(strategy);
@@ -2410,7 +2445,7 @@ function StrategyCard({ strategy, performance, settings, onSettingsChange, onTes
       <div className="strat-card-header">
         <div className="strat-info">
           <div className="strat-title-row">
-            <div className="strat-label">{strategy.name}</div>
+            <div className="strat-label">{strategyDisplayName(strategyModel, '—')}</div>
             <span className={`badge ${catalogStatusTone(statusKey)}`}>{statusLabel}</span>
             {strategy.is_new && <span className="strat-new-badge">Ny strategi</span>}
           </div>
@@ -2565,7 +2600,7 @@ function StrategiesTab() {
       </div>
       <div className="strat-list">
         {strategies.map(strategy => (
-          <StrategyCard
+          <LabStrategyCard
             key={strategy.id}
             strategy={strategy}
             performance={performance}
@@ -2651,9 +2686,9 @@ function getBatchUiStatus(batch) {
     return { key: 'none', emoji: '', label: 'Ingen batch', tone: 'none', sentence: 'Skapa och kör en batch för att börja.', busy: false };
   }
   const status = String(batch.status || '').toLowerCase();
-  const total = Number(batch.progress?.total || 0);
-  const completed = Number(batch.progress?.completed || 0);
-  const done = total > 0 && completed >= total;
+  const total = numberOrNull(batch.progress?.total);
+  const completed = numberOrNull(batch.progress?.completed);
+  const done = total !== null && completed !== null && total > 0 && completed >= total;
   const hasError = !!batch.error || status === 'failed' || status === 'error';
 
   if (hasError) {
@@ -2697,23 +2732,23 @@ function isBatchBusy(batch) {
   const status = String(batch?.status || '').toLowerCase();
   if (['thinking', 'preparing', 'planning', 'queued'].includes(status)) return true;
   if (status === 'running') {
-    const total = Number(batch?.progress?.total || 0);
-    const completed = Number(batch?.progress?.completed || 0);
-    return !(total > 0 && completed >= total);
+    const total = numberOrNull(batch?.progress?.total);
+    const completed = numberOrNull(batch?.progress?.completed);
+    return !(total !== null && completed !== null && total > 0 && completed >= total);
   }
   return false;
 }
 
 function batchDecision(row) {
-  const trades = Number(row?.trades || 0);
-  const score = Number(row?.score || 0);
-  const winRate = Number(row?.win_rate || 0);
-  const avgPnl = Number(row?.avg_pnl || 0);
+  const trades = numberOrNull(row?.trades);
+  const score = numberOrNull(row?.score);
+  const winRate = numberOrNull(row?.win_rate);
+  const avgPnl = numberOrNull(row?.avg_pnl);
   const quality = String(row?.sample_quality || '');
-  if (score >= 60 && winRate >= 50 && avgPnl > 0 && !['low', 'needs_more_data'].includes(quality)) {
+  if (score !== null && winRate !== null && avgPnl !== null && score >= 60 && winRate >= 50 && avgPnl > 0 && !['low', 'needs_more_data'].includes(quality)) {
     return { label: '✅ Testa vidare', tone: 'go' };
   }
-  if (trades < 20 || quality === 'low' || quality === 'needs_more_data') {
+  if (trades === null || trades < 20 || quality === 'low' || quality === 'needs_more_data') {
     return { label: '⚠️ Behöver mer data', tone: 'more' };
   }
   return { label: '❌ Undvik', tone: 'avoid' };
@@ -2841,7 +2876,7 @@ function AlpacaDataSyncPanel() {
                   <span>{dataSourceForSymbol(row.market_group, row.symbol)}</span>
                   <span>{row.first_date || '–'}</span>
                   <span>{row.latest_date || '–'}</span>
-                  <span>{row.candles_2m_count ?? row.total_candle_count ?? 0}</span>
+                  <span>{row.candles_2m_count ?? row.total_candle_count ?? EMPTY_VALUE}</span>
                   <span>{tfs}</span>
                   <span>{row.status_sv || '–'}</span>
                 </div>
@@ -3145,13 +3180,18 @@ function BatchTestTab() {
   const bestResult = compare?.recommended_config?.strategy_id ? compare.recommended_config : compare?.best_overall?.[0];
   const bestDecision = batchDecision(bestResult);
   const pipelineSteps = batchPipelineSteps({ form, comboCount, batchBlocked, activeBatch, compare });
-  const completedTests = compare?.total_results ?? progress.completed ?? 0;
+  const progressCompleted = numberOrNull(progress.completed);
+  const progressTotal = numberOrNull(progress.total);
+  const progressPct = numberOrNull(progress.pct);
+  const progressLabel = `${labInt(progressCompleted)}/${labInt(progressTotal)}`;
+  const progressComplete = progressCompleted !== null && progressTotal !== null && progressTotal > 0 && progressCompleted >= progressTotal;
+  const completedTests = numberOrNull(compare?.total_results) ?? progressCompleted;
   const uiStatus = getBatchUiStatus(activeBatch);
   const busyBatch = [activeBatch, ...batches].find((b) => b && isBatchBusy(b));
   const anyBatchBusy = !!busyBatch;
   const autoBatchName = buildAutoBatchName(form, comboCount);
   const summarySentence = bestResult
-    ? `${bestResult.strategy_name || bestResult.strategy_id} på ${bestResult.symbol || 'vald symbol'} gav bäst resultat i denna batch.`
+    ? `${labStrategyLabel(bestResult)} på ${bestResult.symbol || 'vald symbol'} gav bäst resultat i denna batch.`
     : activeBatch?.id
       ? 'Batchen har ännu ingen tydlig vinnare. Kör klart testerna eller uppdatera resultat.'
       : 'Skapa och kör en batch för att få en tydlig slutsats.';
@@ -3175,7 +3215,7 @@ function BatchTestTab() {
         <div className="batch-active-sentence">{uiStatus.sentence}</div>
         <div className="batch-active-meta">
           <div><span>Status</span><strong>{uiStatus.emoji} {uiStatus.label}</strong></div>
-          <div><span>Progress</span><strong>{progress.completed ?? 0}/{progress.total ?? 0}</strong></div>
+          <div><span>Progress</span><strong>{progressLabel}</strong></div>
           <div><span>Senast uppdaterad</span><strong>{fmtBatchTime(activeBatch?.updated_at)}</strong></div>
         </div>
         {anyBatchBusy && (
@@ -3188,8 +3228,8 @@ function BatchTestTab() {
             <strong>🔴 Vad gick fel?</strong>
             <p>{activeBatch?.error || 'Okänt fel under körningen.'}</p>
             <p className="batch-active-error-meta">
-              Påverkad körning: {progress.completed ?? 0}/{progress.total ?? 0} tester hann köras.
-              {' '}Resultatet är {(progress.completed || 0) >= (progress.total || 0) && progress.total ? 'troligen användbart men kontrollera' : 'ofullständigt och ska inte användas som slutsats'}.
+              Påverkad körning: {progressLabel} tester hann köras.
+              {' '}Resultatet är {progressComplete ? 'troligen användbart men kontrollera' : 'ofullständigt eller saknar komplett progress från backend och ska inte användas som slutsats'}.
             </p>
             <p className="batch-active-error-meta">Rekommenderad åtgärd: kontrollera data för valda symboler/timeframes och kör om batchen.</p>
           </div>
@@ -3212,7 +3252,7 @@ function BatchTestTab() {
           <div className="batch-winner-box">
             <div className="batch-winner-trophy">🏆 Bäst i denna batch</div>
             <div className="batch-winner-title">
-              {bestResult.strategy_name || bestResult.strategy_id}
+              {labStrategyLabel(bestResult)}
               {bestResult.symbol && <span className="batch-winner-on"> på {bestResult.symbol}</span>}
             </div>
             {(bestResult.timeframe || batchSetupLabel(bestResult) !== '–') && (
@@ -3244,7 +3284,7 @@ function BatchTestTab() {
         )}
 
         <div className="batch-summary-grid">
-          <div><span>Bästa strategi</span><strong>{bestResult?.strategy_name || bestResult?.strategy_id || '–'}</strong></div>
+          <div><span>Bästa strategi</span><strong>{bestResult ? labStrategyLabel(bestResult) : '—'}</strong></div>
           <div><span>Bästa symbol</span><strong>{bestResult?.symbol || '–'}</strong></div>
           <div><span>Bästa timeframe</span><strong>{bestResult?.timeframe || '–'}</strong></div>
           <div><span>Bästa setup</span><strong style={{fontSize:'11px'}}>{batchSetupLabel(bestResult)}</strong></div>
@@ -3539,8 +3579,8 @@ function BatchTestTab() {
       <div className={`lab-batch-status-grid${comboCount > 500 ? ' batch-too-large' : ''}`}>
         <div><strong>{comboCount}</strong><span>Kombinationer</span></div>
         <div><strong>{uiStatus.emoji} {uiStatus.label}</strong><span>Status</span></div>
-        <div><strong>{progress.completed ?? 0}/{progress.total ?? 0}</strong><span>Progress</span></div>
-        <div><strong>{progress.pct ?? 0}%</strong><span>Klart %</span></div>
+        <div><strong>{progressLabel}</strong><span>Progress</span></div>
+        <div><strong>{labPercent(progressPct, 0)}</strong><span>Klart %</span></div>
         <div><strong>{fmtBatchTime(activeBatch?.batch_started_at || activeBatch?.started_at)}</strong><span>Starttid</span></div>
         <div><strong>{fmtBatchTime(activeBatch?.batch_completed_at || activeBatch?.completed_at)}</strong><span>Sluttid</span></div>
         <div><strong>{fmtBatchTime(activeBatch?.updated_at)}</strong><span>Senast uppdaterad</span></div>
@@ -3561,7 +3601,7 @@ function BatchTestTab() {
       </div>
 
       <div className="batch-progress-track">
-        <div style={{ width: `${Math.max(0, Math.min(100, progress.pct || 0))}%` }} />
+        <div style={{ width: `${progressPct === null ? 0 : Math.max(0, Math.min(100, progressPct))}%` }} />
       </div>
 
       {activeBatch && (
@@ -3573,11 +3613,11 @@ function BatchTestTab() {
             <div><span>Klar</span><strong>{fmtBatchTime(activeBatch.batch_completed_at || activeBatch.completed_at)}</strong></div>
             <div><span>Duration</span><strong>{batchDurationLabel(activeBatch)}</strong></div>
 	          </div>
-	          <div className="batch-audit-list">
-	            {auditTimeline.length > 0 ? auditTimeline.map(event => {
-              const meta = batchAuditMeta(event);
-              const eventProgress = event.details?.progress ? `${event.details.progress.completed || 0}/${event.details.progress.total || 0}` : '–';
-              return (
+		          <div className="batch-audit-list">
+		            {auditTimeline.length > 0 ? auditTimeline.map(event => {
+	              const meta = batchAuditMeta(event);
+	              const eventProgress = event.details?.progress ? `${labInt(event.details.progress.completed)}/${labInt(event.details.progress.total)}` : '–';
+	              return (
 	              <div key={event.event_id || `${event.timestamp}-${event.type}`} className="batch-audit-row lab-batch-audit-row">
 	                <span className="lab-batch-audit-icon">{meta.icon}</span>
 	                <span>{fmtBatchTime(event.timestamp)}</span>
@@ -3602,7 +3642,7 @@ function BatchTestTab() {
 	            <button key={b.id} type="button" className={`${activeBatch?.id === b.id ? 'active' : ''} batch-history-${bUi.tone}`} onClick={() => { setActiveBatch(b); setCompare(null); setAuditTimeline([]); }}>
 	              {activeBatch?.id === b.id && <span className="batch-history-selected">✓ Vald</span>}
 	              <strong>{b.name}</strong>
-	              <span>{bUi.emoji} {bUi.label} · {b.progress?.completed || 0}/{b.progress?.total || 0}</span>
+		              <span>{bUi.emoji} {bUi.label} · {labInt(b.progress?.completed)}/{labInt(b.progress?.total)}</span>
 	            </button>
 	            );
 	          })}
@@ -3611,9 +3651,9 @@ function BatchTestTab() {
 
 	      {compare?.best_overall?.length > 0 && (
 	        <div className="batch-results batch-result-table">
-	          <div className="batch-selected-banner">
-	            <div>Du tittar på resultat från: <strong>{activeBatch?.name || '–'}</strong></div>
-	            <div>Status: <strong>{uiStatus.emoji} {uiStatus.label}</strong> · Progress: <strong>{progress.completed ?? 0}/{progress.total ?? 0}</strong></div>
+		          <div className="batch-selected-banner">
+		            <div>Du tittar på resultat från: <strong>{activeBatch?.name || '–'}</strong></div>
+		            <div>Status: <strong>{uiStatus.emoji} {uiStatus.label}</strong> · Progress: <strong>{progressLabel}</strong></div>
 	            <div className="batch-selected-note">Detta resultat gäller endast den här batchen.</div>
 	            {(uiStatus.tone === 'partial' || uiStatus.key === 'stopped' || uiStatus.key === 'paused') && (
 	              <div className="batch-selected-warn">⚠️ Batchen är inte färdigkörd. Resultatet är bara en tidig indikation och ska inte användas som slutsats.</div>
@@ -3637,7 +3677,7 @@ function BatchTestTab() {
 	            <div key={`${r.strategy_id}-${r.symbol}-${i}`} className={`batch-result-row${i === 0 ? ' batch-result-row-winner' : ''}`}>
 	              <strong>#{i + 1}</strong>
 	              <span className="batch-result-score">{fmtBatchMetric(r.score)}</span>
-	              <span>{r.strategy_name || r.strategy_id}</span>
+	              <span>{labStrategyLabel(r)}</span>
 	              <span className="batch-result-sym">{r.symbol}{r.symbol && <TradingViewLink symbol={r.symbol} marketType={r.marketType} label="TV" size="sm" />}</span>
 	              <span className="batch-result-setup">{batchSetupLabel(r)}</span>
 	              <span>{r.timeframe || '–'}</span>
@@ -3976,7 +4016,7 @@ function nullableNumber(...values) {
 }
 
 function signalStrategyLabel(signal = {}) {
-  return signal.strategyName || signal.strategy_name || signal.strategy_id || signal.setupId || signal.signalFamily || signal.signal || 'Strategi saknas';
+  return labStrategyLabel(signal, signal.setupId || signal.signalFamily || signal.signal || 'Strategi saknas');
 }
 
 function signalOptionLabel(signal = {}, index = 0) {
@@ -4190,7 +4230,7 @@ function AgentDebateTab() {
             </div>
             <div>
               <span>Strategi</span>
-              <strong>{displaySignalValue(selectedContext?.strategy_name || result.signal?.signal_family)}</strong>
+              <strong>{displaySignalValue(labStrategyLabel(selectedContext || result.signal || {}, result.signal?.signal_family || 'Strategi saknas'))}</strong>
             </div>
             <div>
               <span>Timeframe</span>
@@ -4335,6 +4375,10 @@ export default function TradingLabPage() {
   const protToggles   = TOGGLE_META.filter(m => m.group === 'protection');
 
   const activeSignalCount = TOGGLE_META.filter(m => toggles[m.key]).length;
+  const tradingEventStore = useMemo(() => createTradingEventStore({}), []);
+  const tradingEventCount = tradingEventStore.getAllEvents().length;
+  const decisionStore = useMemo(() => createDecisionStore({ eventStore: tradingEventStore }), [tradingEventStore]);
+  const decisionCount = decisionStore.getDecisions().length;
 
   return (
     <DashboardShell
@@ -4345,7 +4389,7 @@ export default function TradingLabPage() {
       activeTab={primaryTab}
       onTab={changePrimaryTab}
     >
-    <div className="tl-page">
+    <div className="tl-page" data-trading-event-count={tradingEventCount} data-decision-count={decisionCount}>
       {/* Lab controls */}
       <div className="tl-page-header">
         <div className="tl-page-title-row">

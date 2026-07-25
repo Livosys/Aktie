@@ -42,6 +42,7 @@ function startBatchAutopilotScheduler() {
     console.log('[BatchAutopilotScheduler] Disabled (ENABLE_BATCH_AUTOPILOT=false)');
     return null;
   }
+  if (startupTimer || intervalTimer) return startupTimer || intervalTimer;
   const intervalMs = cfg.intervalMinutes * 60 * 1000;
   console.log(`[BatchAutopilotScheduler] Starting dry-run/plan scheduler; interval=${cfg.intervalMinutes}min maxPerDay=${cfg.maxPerDay} dryRunOnly=${cfg.dryRunOnly}`);
   startupTimer = setTimeout(() => {

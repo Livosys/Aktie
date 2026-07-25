@@ -83,15 +83,29 @@ function friendlyError(err) {
 }
 
 function formatNumber(value, fallback = '–') {
+  if (value === null || value === undefined || value === '' || typeof value === 'boolean') return fallback;
   const n = Number(value);
   if (!Number.isFinite(n)) return fallback;
   return new Intl.NumberFormat('sv-SE', { maximumFractionDigits: 2 }).format(n);
 }
 
 function formatPercent(value) {
+  if (value === null || value === undefined || value === '' || typeof value === 'boolean') return '–';
   const n = Number(value);
   if (!Number.isFinite(n)) return '–';
   return `${formatNumber(n)}%`;
+}
+
+function formatBool(value) {
+  if (value === true) return 'true';
+  if (value === false) return 'false';
+  return '–';
+}
+
+function falseIsSafeTone(value) {
+  if (value === false) return 'success';
+  if (value === true) return 'danger';
+  return 'neutral';
 }
 
 function Badge({ children, tone = 'neutral' }) {
@@ -398,7 +412,7 @@ function JsonBlock({ value }) {
       fontSize: 12,
     }}
     >
-      {JSON.stringify(value || {}, null, 2)}
+      {JSON.stringify(value ?? null, null, 2)}
     </pre>
   );
 }
@@ -454,7 +468,7 @@ function VersionComparisonSection({ versions, testRuns, baselineVersionId, compa
     ['Profit factor', (run) => formatNumber(run?.metrics?.profitFactor)],
     ['Net PnL', (run) => formatNumber(run?.metrics?.netPnl)],
     ['Max drawdown', (run) => formatNumber(run?.metrics?.maxDrawdown)],
-    ['Long/Short', (run) => (run ? `${formatNumber(run.metrics?.longTrades)}/${formatNumber(run.metrics?.shortTrades)}` : '–')],
+    ['Long/Short', (run) => (run && (run.metrics?.longTrades != null || run.metrics?.shortTrades != null) ? `${formatNumber(run.metrics?.longTrades)}/${formatNumber(run.metrics?.shortTrades)}` : '–')],
     ['Datakvalitet', (run) => (run?.metrics?.dataQualityWarnings || []).join(', ') || (run ? 'Inga varningar' : '–')],
   ];
   return (
@@ -749,11 +763,11 @@ function PineResearchPage() {
         {tab === 'overview' ? (
           <>
             <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', marginBottom: 18 }}>
-              <Stat label="Strategier AI undersöker" value={formatNumber(summary.candidates || 0)} />
-              <Stat label="Pine-versioner" value={formatNumber(summary.versions || 0)} />
-              <Stat label="Testkörningar" value={formatNumber(summary.testRuns || 0)} detail={`${formatNumber(summary.runningTests || 0)} körs`} />
-              <Stat label="AI-utvärderingar" value={formatNumber(summary.evaluations || 0)} />
-              <Stat label="TradingView-valideringar" value={formatNumber(summary.validations || 0)} />
+              <Stat label="Strategier AI undersöker" value={formatNumber(summary.candidates)} />
+              <Stat label="Pine-versioner" value={formatNumber(summary.versions)} />
+              <Stat label="Testkörningar" value={formatNumber(summary.testRuns)} detail={`${formatNumber(summary.runningTests)} körs`} />
+              <Stat label="AI-utvärderingar" value={formatNumber(summary.evaluations)} />
+              <Stat label="TradingView-valideringar" value={formatNumber(summary.validations)} />
             </div>
             <Section
               title="Researchläge"
@@ -778,11 +792,11 @@ function PineResearchPage() {
             </Section>
             <Section title="Safety">
               <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-                <Badge tone={safety.mode === 'paper_only' ? 'success' : 'danger'}>mode={safety.mode || 'paper_only'}</Badge>
-                <Badge tone={safety.actions_allowed === false ? 'success' : 'danger'}>actions_allowed=false</Badge>
-                <Badge tone={safety.can_place_orders === false ? 'success' : 'danger'}>can_place_orders=false</Badge>
-                <Badge tone={safety.live_trading_enabled === false ? 'success' : 'danger'}>live_trading_enabled=false</Badge>
-                <Badge tone={safety.broker_enabled === false ? 'success' : 'danger'}>broker_enabled=false</Badge>
+                <Badge tone={safety.mode === 'paper_only' ? 'success' : safety.mode ? 'danger' : 'neutral'}>mode={safety.mode || '–'}</Badge>
+                <Badge tone={falseIsSafeTone(safety.actions_allowed)}>actions_allowed={formatBool(safety.actions_allowed)}</Badge>
+                <Badge tone={falseIsSafeTone(safety.can_place_orders)}>can_place_orders={formatBool(safety.can_place_orders)}</Badge>
+                <Badge tone={falseIsSafeTone(safety.live_trading_enabled)}>live_trading_enabled={formatBool(safety.live_trading_enabled)}</Badge>
+                <Badge tone={falseIsSafeTone(safety.broker_enabled)}>broker_enabled={formatBool(safety.broker_enabled)}</Badge>
               </div>
             </Section>
           </>
@@ -1010,7 +1024,7 @@ function PineResearchPage() {
                   { key: 'profitFactor', label: 'PF', render: (row) => formatNumber(row.metrics?.profitFactor) },
                   { key: 'netPnl', label: 'Net PnL', render: (row) => formatNumber(row.metrics?.netPnl) },
                   { key: 'drawdown', label: 'DD', render: (row) => formatNumber(row.metrics?.maxDrawdown) },
-                  { key: 'longShort', label: 'Long/Short', render: (row) => (Number.isFinite(Number(row.metrics?.longTrades)) ? `${formatNumber(row.metrics?.longTrades)}/${formatNumber(row.metrics?.shortTrades)}` : '–') },
+                  { key: 'longShort', label: 'Long/Short', render: (row) => (row.metrics?.longTrades != null || row.metrics?.shortTrades != null ? `${formatNumber(row.metrics?.longTrades)}/${formatNumber(row.metrics?.shortTrades)}` : '–') },
                   { key: 'dataQuality', label: 'Datakvalitet', render: (row) => <InlineList items={row.metrics?.dataQualityWarnings} empty="–" /> },
                   { key: 'blockedReason', label: 'Blockerad av' },
                 ]}
@@ -1044,7 +1058,7 @@ function PineResearchPage() {
                 { key: 'verdict', label: 'Verdict', render: (row) => <Badge tone={toneForStatus(row.verdict)}>{row.verdict}</Badge> },
                 { key: 'score', label: 'Score', render: (row) => formatNumber(row.score) },
                 { key: 'nextAction', label: 'Nästa action', render: (row) => <Badge>{row.nextAction}</Badge> },
-                { key: 'confidence', label: 'Confidence', render: (row) => formatPercent(Number(row.confidence) * 100) },
+                { key: 'confidence', label: 'Confidence', render: (row) => formatPercent(row.confidence) },
                 { key: 'provider', label: 'Provider', render: (row) => `${row.modelProvider}/${row.modelName}` },
                 { key: 'basis', label: 'Underlag', render: (row) => evaluationBasis(row) },
                 { key: 'strengths', label: 'Styrkor', render: (row) => <InlineList items={row.strengths} empty="Inga dokumenterade styrkor." /> },

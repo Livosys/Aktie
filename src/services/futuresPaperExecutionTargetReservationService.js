@@ -19,6 +19,21 @@ const SAFETY = Object.freeze({
 const VALID_TARGETS = Object.freeze(['ibkr_paper']);
 const DEFAULT_DIR = path.resolve(__dirname, '../../data/futures-paper/execution-target-reservations');
 
+// Reservations are a candidate-level, write-once dedup lock. The candidate they
+// guard is pruned by the scanner at ~120s, and no runtime path ever reads an old
+// reservation back for a decision (dedup/idempotency live in the scanner queue
+// and the persistent intent store). Left alone the per-tick files accumulate
+// without bound under 24/7 operation, so we opportunistically garbage-collect
+// files older than a generous TTL — far beyond any live candidate or in-flight
+// order window. Env-overridable; floored well above the candidate lifetime.
+function reservationTtlMs() {
+  const minutes = Number(process.env.FUTURES_RESERVATION_TTL_MINUTES);
+  const safe = Number.isFinite(minutes) && minutes > 0 ? minutes : 120;
+  return Math.max(5, safe) * 60 * 1000; // never below 5 min
+}
+// Throttle the readdir so the sweep never runs on the hot path more than needed.
+const SWEEP_THROTTLE_MS = 5 * 60 * 1000;
+
 function nowIso(now = new Date()) {
   return new Date(now).toISOString();
 }
@@ -55,9 +70,49 @@ function writeJsonAtomic(file, value) {
 
 function createFuturesPaperExecutionTargetReservationService(options = {}) {
   const dir = options.dir || DEFAULT_DIR;
+  let lastSweepAtMs = 0;
 
   function ensureDir() {
     fs.mkdirSync(dir, { recursive: true });
+  }
+
+  // Remove reservation files whose most recent timestamp is older than maxAgeMs.
+  // Pure garbage collection: it only ever deletes files that no runtime path can
+  // still reference. Fully guarded — a failure here must never affect a reserve.
+  function sweepStaleReservations({ maxAgeMs = reservationTtlMs(), now = new Date() } = {}) {
+    let removed = 0;
+    let scanned = 0;
+    const cutoff = new Date(now).getTime() - maxAgeMs;
+    let names;
+    try {
+      names = fs.readdirSync(dir);
+    } catch (_) {
+      return { ok: true, removed: 0, scanned: 0 };
+    }
+    for (const name of names) {
+      if (!name.endsWith('.json')) continue;
+      scanned += 1;
+      const file = path.join(dir, name);
+      const record = readJson(file);
+      // Corrupt/unreadable files are safe to drop only if old on disk.
+      const stampIso = record ? (record.updatedAt || record.reservedAt) : null;
+      let stampMs = stampIso ? Date.parse(stampIso) : NaN;
+      if (!Number.isFinite(stampMs)) {
+        try { stampMs = fs.statSync(file).mtimeMs; } catch (_) { continue; }
+      }
+      if (stampMs < cutoff) {
+        try { fs.unlinkSync(file); removed += 1; } catch (_) { /* concurrent removal — ignore */ }
+      }
+    }
+    return { ok: true, removed, scanned };
+  }
+
+  // Throttled, non-fatal opportunistic sweep for the reserve hot path.
+  function maybeSweep(now = new Date()) {
+    const t = new Date(now).getTime();
+    if (t - lastSweepAtMs < SWEEP_THROTTLE_MS) return;
+    lastSweepAtMs = t;
+    try { sweepStaleReservations({ now }); } catch (_) { /* never block a reservation */ }
   }
 
   function fileFor(candidateId) {
@@ -94,6 +149,7 @@ function createFuturesPaperExecutionTargetReservationService(options = {}) {
       return { ok: false, reserved: false, blocker: 'invalid_execution_target', candidateId: id, executionTarget: target || null, ...SAFETY };
     }
     ensureDir();
+    maybeSweep(now); // opportunistic, throttled, non-fatal GC of stale reservations
     const file = fileFor(id);
     const record = {
       candidateId: id,
@@ -178,6 +234,7 @@ function createFuturesPaperExecutionTargetReservationService(options = {}) {
     updateReservation,
     getReservation,
     listReservations,
+    sweepStaleReservations,
     resetForTests,
   };
 }

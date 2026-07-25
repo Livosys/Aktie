@@ -42,6 +42,7 @@ function startReplayAutopilotScheduler() {
     console.log('[ReplayAutopilotScheduler] Disabled (ENABLE_REPLAY_AUTOPILOT=false)');
     return null;
   }
+  if (startupTimer || intervalTimer) return startupTimer || intervalTimer;
   const intervalMs = cfg.intervalMinutes * 60 * 1000;
   console.log(`[ReplayAutopilotScheduler] Starting dry-run/plan scheduler; interval=${cfg.intervalMinutes}min maxPerDay=${cfg.maxPerDay} dryRunOnly=${cfg.dryRunOnly}`);
   startupTimer = setTimeout(() => {

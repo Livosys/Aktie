@@ -6,9 +6,35 @@ import { AdvancedModeToggle, ConfigScopeBadge, PlatformEmptyState, PlatformSafet
 import { DashboardShell } from '../components/dashboard/DashboardKit.jsx';
 import TradeReplayPanel from '../components/TradeReplayPanel.jsx';
 import { useUnifiedConfig } from '../hooks/useUnifiedConfig.js';
+import { EMPTY_VALUE, fmtNumber, hasValue, numberOrNull } from '../utils/tradingFormatters.js';
 
 const REFRESH_MS = 15_000;
 const FETCH_TIMEOUT_MS = 6_000;
+
+function displayCount(value) {
+  return hasValue(value) ? fmtNumber(value) : EMPTY_VALUE;
+}
+
+function displaySignedPercent(value, digits = 2) {
+  const n = numberOrNull(value);
+  if (n == null) return EMPTY_VALUE;
+  return `${n > 0 ? '+' : ''}${fmtNumber(n, digits)}%`;
+}
+
+function signedClass(value, positiveClass, negativeClass) {
+  const n = numberOrNull(value);
+  if (n == null || n === 0) return '';
+  return n > 0 ? positiveClass : negativeClass;
+}
+
+function compareNumberDesc(left, right) {
+  const a = numberOrNull(left);
+  const b = numberOrNull(right);
+  if (a === null && b === null) return 0;
+  if (a === null) return 1;
+  if (b === null) return -1;
+  return b - a;
+}
 
 async function fetchJsonWithTimeout(url, { timeoutMs = FETCH_TIMEOUT_MS, signal } = {}) {
   const controller = new AbortController();
@@ -67,23 +93,38 @@ const STRATEGY_LABELS_FE = {
 
 // ── Signal Pulse Score 0-100 ──────────────────────────────────────────────────
 function computePulseScore(r, learningSummary, regimeSummary, adaptiveMode) {
-  if (!r) return 0;
-  const base = r.tradeScore ?? 0;
+  if (!r) return null;
+  const base = numberOrNull(r.tradeScore);
   const ls = learningSummary || {};
   const symStats = ls.bySymbol?.[r.symbol];
   const symWR = symStats?.winRate != null ? Math.round(symStats.winRate * 100) : null;
+  const relVol = numberOrNull(r.relVol20);
+  const aiConfidence = numberOrNull(r.aiAnalysis?.confidence);
+  const agentScore = numberOrNull(r.agentScore);
+  const priorityAdjustment = numberOrNull(r.strategy_performance?.priority_adjustment);
+  const fakeoutProbability = numberOrNull(r.fakeoutProbability);
+  const hasScoreInput = base !== null
+    || hasValue(r.state)
+    || relVol !== null
+    || symWR !== null
+    || aiConfidence !== null
+    || agentScore !== null
+    || priorityAdjustment !== null
+    || hasValue(r.marketRegime)
+    || fakeoutProbability !== null
+    || isAvoidSignal(r);
+  if (!hasScoreInput) return null;
 
-  let score = base * 0.7;
+  let score = base !== null ? base * 0.7 : 0;
 
   // Narrow state bonus
   if (r.state === 'HIGH_QUALITY_NARROW') score += 12;
   else if (r.state === 'MEDIUM_NARROW') score += 6;
 
   // Volume bonus
-  const rv = r.relVol20 ?? 0;
-  if (rv >= 2) score += 8;
-  else if (rv >= 1.5) score += 5;
-  else if (rv >= 1) score += 2;
+  if (relVol !== null && relVol >= 2) score += 8;
+  else if (relVol !== null && relVol >= 1.5) score += 5;
+  else if (relVol !== null && relVol >= 1) score += 2;
 
   // History bonus
   if (symWR !== null) {
@@ -93,14 +134,14 @@ function computePulseScore(r, learningSummary, regimeSummary, adaptiveMode) {
   }
 
   // AI/agent boost
-  if (r.aiAnalysis?.confidence >= 0.7 || r.agentScore >= 70) score += 5;
-  if (r.strategy_performance?.priority_adjustment) score += Number(r.strategy_performance.priority_adjustment) || 0;
+  if ((aiConfidence !== null && aiConfidence >= 0.7) || (agentScore !== null && agentScore >= 70)) score += 5;
+  if (priorityAdjustment !== null) score += priorityAdjustment;
 
   // Penalties
   if (['CHOPPY', 'HIGH_VOLATILITY', 'PANIC'].includes(r.marketRegime)) score -= 10;
-  if ((r.relVol20 ?? 1) < 0.7) score -= 5;
+  if (relVol !== null && relVol < 0.7) score -= 5;
   if (isAvoidSignal(r)) score -= 30;
-  if (r.fakeoutProbability >= 70) score -= 10;
+  if (fakeoutProbability !== null && fakeoutProbability >= 70) score -= 10;
 
   // Adaptive regime bonus (when adaptive mode enabled)
   if (adaptiveMode && regimeSummary?.strategyWeights?.weights) {
@@ -366,9 +407,9 @@ function AuditActivityPanel({ summary }) {
       <div className="sp-work-status">
         <strong>Systemet jobbar</strong>
         <span>Senaste scan: {secondsLabel(summary?.last_scan_seconds_ago)}</span>
-        <span>Kandidater senaste 15 min: {summary?.candidates_last_15m ?? 0}</span>
-        <span>Trades senaste 15 min: {summary?.trades_last_15m ?? 0}</span>
-        <span>Batchar idag: {summary?.batches_today ?? 0}</span>
+        <span>Kandidater senaste 15 min: {displayCount(summary?.candidates_last_15m)}</span>
+        <span>Trades senaste 15 min: {displayCount(summary?.trades_last_15m)}</span>
+        <span>Batchar idag: {displayCount(summary?.batches_today)}</span>
         <span>Senaste trade-tid: {summary?.latest_trade_at ? fmtAuditTime(summary.latest_trade_at) : '–'}</span>
       </div>
 
@@ -559,10 +600,11 @@ function getRegimeFitBadge(signal, regimeSummary) {
 
 // ── Pulse Score Gauge ─────────────────────────────────────────────────────────
 function PulseGauge({ score }) {
-  const color = score >= 70 ? '#22c55e' : score >= 50 ? '#f59e0b' : score >= 30 ? '#3b82f6' : '#94a3b8';
+  const n = numberOrNull(score);
+  const color = n == null ? '#94a3b8' : n >= 70 ? '#22c55e' : n >= 50 ? '#f59e0b' : n >= 30 ? '#3b82f6' : '#94a3b8';
   const r2 = 36, cx = 50, cy = 50;
   const circ = 2 * Math.PI * r2;
-  const pct = score / 100;
+  const pct = n == null ? 0 : n / 100;
   const dash = circ * pct;
   return (
     <div className="sp-gauge-wrap">
@@ -580,7 +622,7 @@ function PulseGauge({ score }) {
         />
       </svg>
       <div className="sp-gauge-inner">
-        <div className="sp-gauge-score" style={{ color }}>{score}</div>
+        <div className="sp-gauge-score" style={{ color }}>{n == null ? EMPTY_VALUE : n}</div>
         <div className="sp-gauge-label">poäng</div>
       </div>
     </div>
@@ -733,7 +775,7 @@ function SignalRow({ rank, signal, score, ls, regimeSummary, coverage }) {
           </div>
         )}
       </div>
-      <div className="sp-row-score">{signal._priorityScore ?? score}</div>
+      <div className="sp-row-score">{displayCount(signal._priorityScore ?? score)}</div>
     </div>
   );
 }
@@ -758,21 +800,22 @@ function MiniSetupCard({ setup }) {
   const isGood = setup.category === 'top';
   const isBad  = setup.category === 'poor' || setup.category === 'pause';
   const borderColor = isGood ? 'rgba(34,197,94,0.3)' : isBad ? 'rgba(239,68,68,0.3)' : 'rgba(255,255,255,0.07)';
+  const pnlClass = signedClass(setup.avg_pnl_pct, 'sp-pnl-pos', 'sp-pnl-neg');
 
   return (
     <div className="sp-setup-card" style={{ borderColor }}>
       <div className="sp-setup-header">
         <div className="sp-setup-label">{setup.label}</div>
-        <div className={`sp-setup-pnl ${(setup.avg_pnl_pct ?? 0) >= 0 ? 'sp-pnl-pos' : 'sp-pnl-neg'}`}>
-          {(setup.avg_pnl_pct ?? 0) >= 0 ? '+' : ''}{(setup.avg_pnl_pct ?? 0).toFixed(2)}%
+        <div className={`sp-setup-pnl ${pnlClass}`}>
+          {displaySignedPercent(setup.avg_pnl_pct)}
         </div>
       </div>
       <WinBar wr={setup.win_rate} />
       <div className="sp-setup-meta">
-        <span>{setup.total_trades} trades</span>
-        <span className="sp-setup-wins">{setup.wins}v</span>
-        <span className="sp-setup-losses">{setup.losses}f</span>
-        <span className="sp-setup-ties">{setup.ties ?? 0}t</span>
+        <span>{displayCount(setup.total_trades)} trades</span>
+        <span className="sp-setup-wins">{displayCount(setup.wins)}v</span>
+        <span className="sp-setup-losses">{displayCount(setup.losses)}f</span>
+        <span className="sp-setup-ties">{displayCount(setup.ties)}t</span>
       </div>
     </div>
   );
@@ -867,7 +910,9 @@ function PaperRuntimeSection({ runtimeState }) {
   const loading = runtimeState?.loading;
   const error = runtimeState?.error;
   const summary = runtime?.summary || {};
-  const shownTradeRecords = summary.returnedCount ?? 0;
+  const runtimeAvailable = !!runtime && typeof runtime === 'object';
+  const shownTradeRecords = runtimeAvailable ? numberOrNull(summary.returnedCount) : null;
+  const limitRecords = runtimeAvailable ? numberOrNull(summary.limit) : null;
 
   return (
     <div className="sp-paper-runtime">
@@ -892,13 +937,15 @@ function PaperRuntimeSection({ runtimeState }) {
         ) : (
           <>
             <div className="sp-work-status">
-              <strong>Paper trading: {summary.openCount ?? 0} open, {summary.closedCount ?? 0} closed, {summary.blockedCount ?? 0} blocked</strong>
+              <strong>
+                Paper trading: {runtimeAvailable ? displayCount(summary.openCount) : 'Waiting for runtime...'} open, {runtimeAvailable ? displayCount(summary.closedCount) : 'Waiting for runtime...'} closed, {runtimeAvailable ? displayCount(summary.blockedCount) : 'Waiting for runtime...'} blocked
+              </strong>
               <span>Senaste event: {summary.latestEventAt ? fmtAuditTime(summary.latestEventAt) : '–'}</span>
-              <span>Visar {shownTradeRecords}/{summary.limit ?? 50} records på papersidan</span>
+              <span>Visar {displayCount(shownTradeRecords)}/{displayCount(limitRecords)} records på papersidan</span>
             </div>
-            {shownTradeRecords < (summary.limit ?? 50) && (
+            {shownTradeRecords !== null && limitRecords !== null && shownTradeRecords < limitRecords && (
               <div className="sp-activity-empty">
-                Systemet har inte skapat 50 paper records ännu. Full status finns på <Link to="/paper-trading">Paper Trading</Link>.
+                Systemet har inte skapat {displayCount(limitRecords)} paper records ännu. Full status finns på <Link to="/paper-trading">Paper Trading</Link>.
               </div>
             )}
             {(error || runtime?.status === 'degraded') && (
@@ -1012,13 +1059,15 @@ function QuickInsights({ regimeSummary, topSetups, poorSetups }) {
 function MarketSnapshot({ regimeSummary, signals }) {
   const groups = ['nasdaq', 'crypto', 'etf', 'index'].map(group => {
     const rows = signals.filter(s => s._marketGroup === group || (group === 'etf' && s._marketGroup === 'leveraged_etf'));
-    const avg = rows.length ? Math.round(rows.reduce((sum, r) => sum + (r._pulseScore || 0), 0) / rows.length) : 0;
+    const scores = rows.map((row) => numberOrNull(row._pulseScore)).filter((value) => value !== null);
+    const avg = scores.length ? Math.round(scores.reduce((sum, value) => sum + value, 0) / scores.length) : null;
     const bull = rows.filter(r => r.momentumBias === 'bullish' || r.signal?.startsWith('LONG')).length;
     const bear = rows.filter(r => r.momentumBias === 'bearish' || r.signal?.startsWith('SHORT')).length;
     return { group, avg, bull, bear, count: rows.length };
   });
-  const strongest = [...groups].sort((a, b) => b.avg - a.avg)[0];
-  const weakest = [...groups].sort((a, b) => a.avg - b.avg)[0];
+  const rankedGroups = groups.filter((group) => group.avg !== null);
+  const strongest = rankedGroups.length ? [...rankedGroups].sort((a, b) => b.avg - a.avg)[0] : null;
+  const weakest = rankedGroups.length ? [...rankedGroups].sort((a, b) => a.avg - b.avg)[0] : null;
 
   return (
     <div className="sp-market-grid">
@@ -1030,17 +1079,17 @@ function MarketSnapshot({ regimeSummary, signals }) {
       <div className="sp-market-card">
         <span>Starkast</span>
         <strong>{MG_LABELS[strongest?.group] || '–'}</strong>
-        <small>{strongest?.avg || 0} puls</small>
+        <small>{displayCount(strongest?.avg)} puls</small>
       </div>
       <div className="sp-market-card">
         <span>Svagast</span>
         <strong>{MG_LABELS[weakest?.group] || '–'}</strong>
-        <small>{weakest?.avg || 0} puls</small>
+        <small>{displayCount(weakest?.avg)} puls</small>
       </div>
       {groups.map(g => (
         <div key={g.group} className="sp-heat-cell">
           <span>{MG_LABELS[g.group] || g.group}</span>
-          <strong>{g.avg}</strong>
+          <strong>{displayCount(g.avg)}</strong>
           <small>{g.bull} bullish · {g.bear} bearish</small>
         </div>
       ))}
@@ -1081,7 +1130,7 @@ function ReasonList({ item }) {
 function PriorityCard({ item, rank, tone = 'focus', timeline, lastUpdate }) {
   if (!item) return null;
   const ctx = item.marketContext || {};
-  const score = item.priorityScore ?? 0;
+  const score = numberOrNull(item.priorityScore);
   const tl = tlFor(timeline, item.symbol);
   const lu = item.lastUpdate || lastUpdate;
   return (
@@ -1097,7 +1146,7 @@ function PriorityCard({ item, rank, tone = 'focus', timeline, lastUpdate }) {
           </div>
         </div>
         <div className="sp-priority-score">
-          <strong>{score}</strong>
+          <strong>{displayCount(score)}</strong>
           <span>Priority Score</span>
         </div>
       </div>
@@ -1214,10 +1263,10 @@ function pickCryptoCandidate(cryptoResp) {
   if (!rows.length) return { best: null, hasStrong: false, count: 0 };
   const triggered = rows
     .filter(r => CRYPTO_TRIGGERED.test(String(r.signal || '')))
-    .sort((a, b) => (b.tradeScore ?? 0) - (a.tradeScore ?? 0));
-  const byScore = [...rows].sort((a, b) => (b.tradeScore ?? 0) - (a.tradeScore ?? 0));
+    .sort((a, b) => compareNumberDesc(a.tradeScore, b.tradeScore));
+  const byScore = [...rows].sort((a, b) => compareNumberDesc(a.tradeScore, b.tradeScore));
   const strong = triggered.find(r =>
-    (r.tradeScore ?? 0) >= 60 && r.scoreLabel !== 'Avoid' && r.daytradeStatus !== 'Undvik'
+    numberOrNull(r.tradeScore) !== null && numberOrNull(r.tradeScore) >= 60 && r.scoreLabel !== 'Avoid' && r.daytradeStatus !== 'Undvik'
   ) || null;
   return { best: strong || triggered[0] || byScore[0] || null, hasStrong: !!strong, count: rows.length };
 }
@@ -1467,13 +1516,13 @@ export default function SignalpulsPage() {
       ...(setupData.topSetups || []),
       ...(setupData.poorSetups || []),
       ...(setupData.neutralSetups || []),
-    ].sort((a, b) => (b.win_rate ?? 0) - (a.win_rate ?? 0));
+    ].sort((a, b) => compareNumberDesc(a.win_rate, b.win_rate));
   }, [setupData]);
 
   const topSetups   = useMemo(() => allSetups.filter(s => s.category === 'top').slice(0, 6), [allSetups]);
   const poorSetups  = useMemo(() => allSetups.filter(s => s.category === 'poor' || s.category === 'pause').slice(0, 4), [allSetups]);
 
-  const bestScore = bestSignal?._pulseScore ?? 0;
+  const bestScore = bestSignal?._pulseScore ?? null;
 
   return (
     <DashboardShell>

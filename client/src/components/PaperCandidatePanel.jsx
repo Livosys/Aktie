@@ -1,4 +1,9 @@
 import React, { useEffect, useMemo, useState } from 'react';
+import {
+  resolveStrategy,
+  strategyDisplayName,
+} from '../stores/strategyStore.js';
+import { EMPTY_VALUE, fmtNumber, numberOrNull } from '../utils/tradingFormatters.js';
 
 const FETCH_TIMEOUT_MS = 6500;
 const UNUSABLE_HIDDEN_STORAGE_KEY = 'paper-candidate-panel-hide-unusable-v1';
@@ -10,12 +15,26 @@ function safeString(value, fallback = '') {
 }
 
 function safeNumber(value, fallback = null) {
-  const n = Number(value);
-  return Number.isFinite(n) ? n : fallback;
+  const n = numberOrNull(value);
+  return n === null ? fallback : n;
+}
+
+function boolLabel(value) {
+  if (value === true) return 'Ja';
+  if (value === false) return 'Nej';
+  return EMPTY_VALUE;
 }
 
 function safeArray(value) {
   return Array.isArray(value) ? value.filter(Boolean) : [];
+}
+
+function candidateStrategyModel(candidate = {}) {
+  return resolveStrategy(candidate);
+}
+
+function candidateStrategyLabel(candidate = {}, fallback = '—') {
+  return strategyDisplayName(candidateStrategyModel(candidate), fallback);
 }
 
 async function fetchJsonWithTimeout(url, { timeoutMs = FETCH_TIMEOUT_MS, signal } = {}) {
@@ -88,15 +107,16 @@ const DECISION_LABELS = {
 };
 
 function sourceLabel(source) {
-  const raw = safeString(source, 'unknown').toLowerCase();
+  const raw = safeString(source, EMPTY_VALUE).toLowerCase();
+  if (raw === EMPTY_VALUE) return EMPTY_VALUE;
   if (raw.includes('ai_agent')) return 'AI-agent';
   if (raw.includes('replay')) return 'Replay';
   if (raw.includes('batch')) return 'Batch';
-  return raw || 'Okänd';
+  return raw || EMPTY_VALUE;
 }
 
 function statusTone(status) {
-  const key = safeString(status, 'unknown');
+  const key = safeString(status, EMPTY_VALUE);
   if (key === 'approved') return 'good';
   if (key === 'not_approved') return 'warn';
   if (key === 'max_nått' || key === 'nekad') return 'bad';
@@ -118,25 +138,29 @@ function hasHardBlockers(candidate) {
 }
 
 function isReplaySource(source) {
-  return safeString(source, 'unknown').toLowerCase().includes('replay');
+  return safeString(source, EMPTY_VALUE).toLowerCase().includes('replay');
 }
 
 function isLowConfidenceCandidate(candidate) {
-  const raw = safeString(candidate?.recommendation?.confidence || candidate?.confidence, '').toLowerCase();
+  const raw = safeString(candidate?.recommendation?.confidence ?? candidate?.confidence, '').toLowerCase();
   if (raw === 'low' || raw === 'låg' || raw === 'weak') return true;
-  const score = Number(candidate?.recommendation?.confidence || candidate?.confidence);
-  return Number.isFinite(score) && score < 50;
+  const score = numberOrNull(candidate?.recommendation?.confidence ?? candidate?.confidence);
+  return score !== null && score < 50;
 }
 
 function getCandidateUiState(candidate) {
-  const strategyId = safeString(candidate?.strategyId);
+  const strategyId = safeString(candidateStrategyModel(candidate).strategyId);
   const decision = safeString(candidate?.recommendation?.decision || candidate?.decision).toLowerCase();
-  const runtimeReady = candidate?.runtimeReady === true;
-  const paperRunnable = candidate?.paperRunnable === true;
+  const runtimeReadyState = candidate?.runtimeReady;
+  const paperRunnableState = candidate?.paperRunnable;
+  const runtimeReady = runtimeReadyState === true;
+  const paperRunnable = paperRunnableState === true;
+  const runtimeMissing = runtimeReadyState !== true && runtimeReadyState !== false;
+  const paperRunnableMissing = paperRunnableState !== true && paperRunnableState !== false;
   const alreadyApproved = candidate?.alreadyApproved === true || normalizeStatus(candidate) === 'approved';
   const blocked = hasHardBlockers(candidate);
   const hasRejectDecision = decision === 'reject';
-  const canCreatePaperCandidate = !!strategyId && !hasRejectDecision && !blocked && runtimeReady !== false && paperRunnable !== false;
+  const canCreatePaperCandidate = !!strategyId && !hasRejectDecision && !blocked && runtimeReady && paperRunnable;
   let uiStatus = 'neutral';
   let uiLabel = 'Kandidat';
   let uiTone = 'neutral';
@@ -153,16 +177,21 @@ function getCandidateUiState(candidate) {
     uiLabel = 'Rekommenderas ej';
     uiTone = 'danger';
     reason = 'Kandidaten är markerad som Reject och ska inte visas som redo för paper-test.';
-  } else if (!runtimeReady) {
+  } else if (runtimeReadyState === false) {
     uiStatus = 'runtime_not_ready';
     uiLabel = 'Runtime ej redo';
     uiTone = 'danger';
     reason = 'Kandidaten saknar runtime-ready koppling eller har runtime-blockers.';
-  } else if (!paperRunnable) {
+  } else if (paperRunnableState === false) {
     uiStatus = 'not_paper_runnable';
     uiLabel = 'Ej redo för paper-test';
     uiTone = 'warning';
     reason = 'Kandidaten är inte paper-runnable ännu.';
+  } else if (runtimeMissing || paperRunnableMissing) {
+    uiStatus = 'waiting_runtime';
+    uiLabel = 'Väntar på runtime';
+    uiTone = 'neutral';
+    reason = 'Runtime- eller paper-runnable-status saknas i backendsvaret.';
   } else if (blocked) {
     uiStatus = 'blocked';
     uiLabel = 'Blockerad';
@@ -200,10 +229,10 @@ function getCandidateUiState(candidate) {
 function getCandidateGroupKey(candidate) {
   const source = safeString(candidate?.source, 'unknown');
   const decision = safeString(candidate?.recommendation?.decision || candidate?.decision, 'unknown').toLowerCase();
-  const strategyId = safeString(candidate?.strategyId);
+  const strategyId = safeString(candidateStrategyModel(candidate).strategyId);
   const recommendationId = safeString(candidate?.recommendationId);
   const candidateId = safeString(candidate?.candidateId);
-  const displayName = safeString(candidate?.displayName || candidate?.strategyName);
+  const displayName = safeString(candidateStrategyLabel(candidate, ''));
   const normalizedTitle = displayName.toLowerCase().replace(/\s+/g, ' ').trim();
   if (strategyId) return `${source}:${strategyId}:${decision || 'unknown'}`;
   if (recommendationId) return `${source}:${recommendationId}:${decision || 'unknown'}`;
@@ -245,10 +274,11 @@ function normalizeStatus(candidate) {
 
 function candidateKey(candidate) {
   if (!candidate) return null;
+  const strategyId = candidateStrategyModel(candidate).strategyId;
   return candidate.candidateId
     || candidate.recommendationId
     || (candidate.sourceRunId && candidate.variantId && `${candidate.sourceRunId}:${candidate.variantId}`)
-    || (candidate.strategyId && `${candidate.source || 'source'}:${candidate.strategyId}`)
+    || (strategyId && `${candidate.source || 'source'}:${strategyId}`)
     || candidate.id
     || null;
 }
@@ -258,15 +288,15 @@ function mergeCandidate(base, patch) {
   merged.metrics = { ...(base?.metrics || {}), ...(patch?.metrics || {}) };
   merged.recommendation = { ...(base?.recommendation || {}), ...(patch?.recommendation || {}) };
   merged.allowlistSnapshot = patch?.allowlistSnapshot || base?.allowlistSnapshot || null;
-  merged.blockers = patch?.blockers || base?.blockers || [];
-  merged.runtimeReady = patch?.runtimeReady ?? base?.runtimeReady ?? false;
-  merged.scannerConnected = patch?.scannerConnected ?? base?.scannerConnected ?? false;
-  merged.paperRunnable = patch?.paperRunnable ?? base?.paperRunnable ?? false;
-  merged.alreadyApproved = patch?.alreadyApproved ?? base?.alreadyApproved ?? false;
-  merged.allowlistStatus = patch?.allowlistStatus || base?.allowlistStatus || 'unknown';
-  merged.nextAction = patch?.nextAction || base?.nextAction || '–';
+  merged.blockers = Array.isArray(patch?.blockers) ? patch.blockers : Array.isArray(base?.blockers) ? base.blockers : null;
+  merged.runtimeReady = patch?.runtimeReady ?? base?.runtimeReady ?? null;
+  merged.scannerConnected = patch?.scannerConnected ?? base?.scannerConnected ?? null;
+  merged.paperRunnable = patch?.paperRunnable ?? base?.paperRunnable ?? null;
+  merged.alreadyApproved = patch?.alreadyApproved ?? base?.alreadyApproved ?? null;
+  merged.allowlistStatus = patch?.allowlistStatus || base?.allowlistStatus || null;
+  merged.nextAction = patch?.nextAction || base?.nextAction || null;
   merged.allowlistReason = patch?.allowlistReason || base?.allowlistReason || '';
-  merged.saved = patch?.saved ?? base?.saved ?? false;
+  merged.saved = patch?.saved ?? base?.saved ?? null;
   return merged;
 }
 
@@ -346,7 +376,7 @@ function getCandidatePresentationBucket(candidate, ui = getCandidateUiState(cand
     ui.strategyId
     && !ui.alreadyApproved
     && !ui.blocked
-    && (ui.uiStatus === 'blocked' || ui.uiStatus === 'runtime_not_ready' || ui.uiStatus === 'not_paper_runnable')
+    && (ui.uiStatus === 'blocked' || ui.uiStatus === 'runtime_not_ready' || ui.uiStatus === 'not_paper_runnable' || ui.uiStatus === 'waiting_runtime')
   ) {
     return 'blocked_fixable';
   }
@@ -357,7 +387,7 @@ function getCandidatePresentationBucket(candidate, ui = getCandidateUiState(cand
   ) {
     return 'unusable';
   }
-  if (ui.uiStatus === 'blocked' || ui.uiStatus === 'runtime_not_ready' || ui.uiStatus === 'not_paper_runnable') {
+  if (ui.uiStatus === 'blocked' || ui.uiStatus === 'runtime_not_ready' || ui.uiStatus === 'not_paper_runnable' || ui.uiStatus === 'waiting_runtime') {
     return 'blocked_fixable';
   }
   return 'candidate_ready_for_review';
@@ -494,13 +524,13 @@ function candidateCardClass(candidate, bucket = null) {
 
 function metricClass(value, kind = 'neutral') {
   if (kind === 'pnl') {
-    const n = Number(value);
-    if (!Number.isFinite(n) || n === 0) return 'metric-neutral';
+    const n = numberOrNull(value);
+    if (n === null || n === 0) return 'metric-neutral';
     return n > 0 ? 'metric-positive' : 'metric-negative';
   }
   if (kind === 'confidence') {
-    const n = Number(value);
-    if (!Number.isFinite(n)) return 'metric-neutral';
+    const n = numberOrNull(value);
+    if (n === null) return 'metric-neutral';
     if (n < 50) return 'metric-low-confidence';
     if (n < 70) return 'metric-warning';
     return 'metric-positive';
@@ -509,10 +539,10 @@ function metricClass(value, kind = 'neutral') {
 }
 
 function confidenceTone(candidate) {
-  const raw = safeString(candidate?.recommendation?.confidence || candidate?.confidence, '').toLowerCase();
-  const score = Number(candidate?.recommendation?.confidence || candidate?.confidence);
+  const raw = safeString(candidate?.recommendation?.confidence ?? candidate?.confidence, '').toLowerCase();
+  const score = numberOrNull(candidate?.recommendation?.confidence ?? candidate?.confidence);
   if (raw === 'low' || raw === 'låg' || raw === 'weak') return 'badge-low-confidence';
-  if (Number.isFinite(score) && score < 50) return 'badge-low-confidence';
+  if (score !== null && score < 50) return 'badge-low-confidence';
   if (raw === 'medium' || raw === 'medel') return 'badge-warning';
   if (raw === 'high' || raw === 'hög') return 'badge-approved';
   return 'badge-neutral';
@@ -629,10 +659,11 @@ export default function PaperCandidatePanel({ mode = 'lab' }) {
   }
 
   async function approveCandidate(candidate) {
-    if (!candidate?.strategyId) return;
+    const strategy = candidateStrategyModel(candidate);
+    if (!strategy.strategyId) return;
     const ok = window.confirm('Detta godkänner endast låtsashandel. Inga riktiga order kan läggas.');
     if (!ok) return;
-    setBusyKey(`approve:${candidate.strategyId}`);
+    setBusyKey(`approve:${strategy.strategyId}`);
     setMessage('');
     setError('');
     try {
@@ -640,13 +671,13 @@ export default function PaperCandidatePanel({ mode = 'lab' }) {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          strategyId: candidate.strategyId,
-          reason: `manual_ui_from_${mode}:${candidate.displayName || candidate.strategyId}`,
+          strategyId: strategy.strategyId,
+          reason: `manual_ui_from_${mode}:${strategyDisplayName(strategy, strategy.strategyId)}`,
         }),
       });
       const json = await res.json().catch(() => null);
       if (!res.ok || !json?.ok) throw new Error(json?.error || 'Kunde inte lägga till i paper allowlist.');
-      setMessage(`Lades till i paper allowlist: ${candidate.displayName || candidate.strategyId}.`);
+      setMessage(`Lades till i paper allowlist: ${strategyDisplayName(strategy, strategy.strategyId)}.`);
       await reloadAll();
     } catch (err) {
       setError(err?.message || 'Kunde inte lägga till i paper allowlist.');
@@ -715,8 +746,9 @@ export default function PaperCandidatePanel({ mode = 'lab' }) {
                 {presentation.main.map((entry) => {
                   const candidate = entry.candidate;
                   const ui = entry.ui;
+                  const strategy = candidateStrategyModel(candidate);
                   const approved = ui.uiStatus === 'approved_ready';
-                  const confidenceText = candidate.recommendation?.confidence || candidate.confidence || '–';
+                  const confidenceText = candidate.recommendation?.confidence ?? candidate.confidence ?? EMPTY_VALUE;
                   const statusText = approved
                     ? 'Redo'
                     : ui.uiStatus === 'candidate_ready_for_review'
@@ -726,7 +758,9 @@ export default function PaperCandidatePanel({ mode = 'lab' }) {
                         : 'Ej användbar';
                   const nextStep = approved
                     ? 'Redo för paper-test · Redan godkänd'
-                    : 'Behöver godkännas · Lägg till paper allowlist';
+                    : ui.uiStatus === 'waiting_runtime'
+                      ? 'Väntar på runtime-data'
+                      : 'Behöver godkännas · Lägg till paper allowlist';
                   const key = candidateKey(candidate);
                   const open = !!expandedUnusableKeys[key];
 
@@ -734,8 +768,8 @@ export default function PaperCandidatePanel({ mode = 'lab' }) {
                     <React.Fragment key={key}>
                       <tr>
                         <td style={{ padding: '10px 12px', borderBottom: '1px solid var(--border)' }}>
-                          <div style={{ fontWeight: 800, color: 'var(--text)' }}>{candidate.displayName || candidate.strategyName || candidate.strategyId || 'Okänd kandidat'}</div>
-                          <div style={{ color: 'var(--muted)', fontSize: 12 }}>{candidate.strategyId || '–'}</div>
+                          <div style={{ fontWeight: 800, color: 'var(--text)' }}>{strategyDisplayName(strategy, '—')}</div>
+                          <div style={{ color: 'var(--muted)', fontSize: 12 }}>{strategy.strategyId || '—'}</div>
                         </td>
                         <td style={{ padding: '10px 12px', borderBottom: '1px solid var(--border)', color: 'var(--text)' }}>{candidate.symbol || '–'}</td>
                         <td style={{ padding: '10px 12px', borderBottom: '1px solid var(--border)' }}>
@@ -760,9 +794,9 @@ export default function PaperCandidatePanel({ mode = 'lab' }) {
                         <tr>
                           <td colSpan={7} style={{ padding: '0 12px 12px 12px', borderBottom: '1px solid var(--border)' }}>
                             <div style={{ marginTop: 10, padding: 12, borderRadius: 12, border: '1px solid var(--border)', background: 'var(--surface-2)', color: 'var(--text)', fontSize: 12, lineHeight: 1.6 }}>
-                              <div>strategyId: {candidate.strategyId || '–'} · runtime ready: {ui.runtimeReady ? 'Ja' : 'Nej'} · paper runnable: {ui.paperRunnable ? 'Ja' : 'Nej'}</div>
+                              <div>strategyId: {strategy.strategyId || '—'} · runtime ready: {boolLabel(candidate.runtimeReady)} · paper runnable: {boolLabel(candidate.paperRunnable)}</div>
                               <div>Score: {candidate.metrics?.score ?? '–'} · Win rate: {candidate.metrics?.winRate != null ? `${candidate.metrics.winRate}%` : '–'} · PnL: {candidate.metrics?.totalPnlPct != null ? `${candidate.metrics.totalPnlPct}%` : '–'}</div>
-                              <div>Blockers: {candidate.blockers?.length || 0} · Källa: {sourceLabel(candidate.source)} · Next action: {candidate.nextAction || '–'}</div>
+                              <div>Blockers: {Array.isArray(candidate.blockers) ? fmtNumber(candidate.blockers.length) : EMPTY_VALUE} · Källa: {sourceLabel(candidate.source)} · Next action: {candidate.nextAction || EMPTY_VALUE}</div>
                               <div style={{ marginTop: 6, color: 'var(--muted)' }}>{candidate.explanation || candidate.recommendation?.reason || '–'}</div>
                             </div>
                           </td>
@@ -816,6 +850,7 @@ export default function PaperCandidatePanel({ mode = 'lab' }) {
             {presentation.unusable.length > 0 ? presentation.unusable.map((entry) => {
               const candidate = entry.candidate;
               const ui = entry.ui;
+              const strategy = candidateStrategyModel(candidate);
               const key = candidateKey(candidate);
               const open = !!expandedUnusableKeys[key];
               return (
@@ -823,10 +858,10 @@ export default function PaperCandidatePanel({ mode = 'lab' }) {
                   <div className="paper-unusable-row-head" style={{ display: 'flex', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap', alignItems: 'flex-start' }}>
                     <div>
                       <div className="paper-unusable-row-title" style={{ fontWeight: 800, color: 'var(--text)' }}>
-                        {candidate.displayName || candidate.strategyName || candidate.strategyId || 'Okänd kandidat'}
+                        {strategyDisplayName(strategy, '—')}
                       </div>
                       <div className="paper-unusable-row-meta" style={{ color: 'var(--muted)', fontSize: 12, lineHeight: 1.5 }}>
-                        Source: {sourceLabel(candidate.source)} · Decision: {DECISION_LABELS[candidate.recommendation?.decision] || candidate.recommendation?.decision || '–'} · Next action: {candidate.nextAction || '–'}
+                        Source: {sourceLabel(candidate.source)} · Decision: {DECISION_LABELS[candidate.recommendation?.decision] || candidate.recommendation?.decision || EMPTY_VALUE} · Next action: {candidate.nextAction || EMPTY_VALUE}
                       </div>
                     </div>
                     <div className={`badge ${ui.uiTone === 'danger' ? 'badge-reject' : ui.uiTone === 'warning' ? 'badge-warning' : 'badge-neutral'}`} style={badgeStyle(ui.uiTone === 'danger' ? 'bad' : ui.uiTone === 'warning' ? 'warn' : 'neutral')}>
@@ -835,8 +870,8 @@ export default function PaperCandidatePanel({ mode = 'lab' }) {
                   </div>
 
                   <div className="paper-unusable-row-pills" style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginTop: 10 }}>
-                    <span className="badge badge-muted" style={badgeStyle('muted')}>StrategyId: {candidate.strategyId || '–'}</span>
-                    <span className={`badge ${confidenceTone(candidate)}`} style={badgeStyle(candidate.recommendation?.confidence != null && Number(candidate.recommendation?.confidence) >= 70 ? 'good' : candidate.recommendation?.confidence != null && Number(candidate.recommendation?.confidence) < 50 ? 'bad' : 'warn')}>Confidence {candidate.recommendation?.confidence || candidate.confidence || '–'}</span>
+                    <span className="badge badge-muted" style={badgeStyle('muted')}>StrategyId: {strategy.strategyId || '—'}</span>
+                    <span className={`badge ${confidenceTone(candidate)}`} style={badgeStyle(numberOrNull(candidate.recommendation?.confidence) !== null && numberOrNull(candidate.recommendation?.confidence) >= 70 ? 'good' : numberOrNull(candidate.recommendation?.confidence) !== null && numberOrNull(candidate.recommendation?.confidence) < 50 ? 'bad' : 'warn')}>Confidence {candidate.recommendation?.confidence ?? candidate.confidence ?? '–'}</span>
                     <span className="badge badge-muted" style={badgeStyle('muted')}>Score {candidate.metrics?.score ?? '–'}</span>
                   </div>
 
@@ -854,7 +889,7 @@ export default function PaperCandidatePanel({ mode = 'lab' }) {
                     <div className="paper-unusable-row-details" style={{ marginTop: 10, color: 'var(--text)', fontSize: 12, lineHeight: 1.6 }}>
                       <div>{candidate.explanation || candidate.recommendation?.reason || 'Replay-resultatet saknar tillräcklig metadata för paper-test.'}</div>
                       <div>{ui.reason || 'Kan inte bli paper-test ännu.'}</div>
-                      <div>Runtime: {ui.runtimeReady ? 'Redo' : 'Ej redo'} · Paper runnable: {ui.paperRunnable ? 'Ja' : 'Nej'} · Blockers: {candidate.blockers?.length || 0}</div>
+	                      <div>Runtime: {boolLabel(candidate.runtimeReady)} · Paper runnable: {boolLabel(candidate.paperRunnable)} · Blockers: {Array.isArray(candidate.blockers) ? fmtNumber(candidate.blockers.length) : EMPTY_VALUE}</div>
                     </div>
                   ) : null}
                 </div>

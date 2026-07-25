@@ -1,5 +1,15 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { apiFetch } from '../../lib/apiClient.js';
+import {
+  resolveKnownStrategy,
+  strategyDisplayName,
+} from '../../stores/strategyStore.js';
+import {
+  EMPTY_VALUE,
+  fmtNumber as formatNumber,
+  hasValue,
+  numberOrNull,
+} from '../../utils/tradingFormatters.js';
 
 const REFRESH_MS = 15000;
 const FETCH_TIMEOUT_MS = 6500;
@@ -15,9 +25,9 @@ async function fetchJson(url, options = {}) {
 }
 
 function fmtTime(value) {
-  if (!value) return '-';
+  if (!value) return '—';
   const date = new Date(value);
-  if (!Number.isFinite(date.getTime())) return '-';
+  if (!Number.isFinite(date.getTime())) return '—';
   return date.toLocaleString('sv-SE', {
     month: '2-digit',
     day: '2-digit',
@@ -27,9 +37,18 @@ function fmtTime(value) {
 }
 
 function fmtNumber(value, digits = 2) {
-  const n = Number(value);
-  if (!Number.isFinite(n)) return '-';
+  const n = numberOrNull(value);
+  if (n === null) return EMPTY_VALUE;
   return n.toFixed(digits);
+}
+
+function displayNumber(value, digits = 0) {
+  return hasValue(value) ? formatNumber(value, digits) : EMPTY_VALUE;
+}
+
+function displaySummaryNumber(source, key, waiting = false) {
+  if (!source || !Object.prototype.hasOwnProperty.call(source, key)) return waiting ? 'Waiting for runtime...' : EMPTY_VALUE;
+  return displayNumber(source[key]);
 }
 
 function toneFor(value) {
@@ -143,34 +162,34 @@ function reasonLabel(code) {
     invalid_session: 'Blockerad: session stängd',
     entry_contract_missing: 'Blockerad: contract saknas',
   };
-  return labels[code] || code || '-';
+  return labels[code] || code || '—';
 }
 
 function paperBlockedText(row) {
-  return row.paperBlockedReason || row.runtimeBlockedReason || (Array.isArray(row.missingComponents) ? row.missingComponents[0] : null) || '-';
+  return row.paperBlockedReason || row.runtimeBlockedReason || (Array.isArray(row.missingComponents) ? row.missingComponents[0] : null) || '—';
 }
 
 function latestCandidateText(row) {
   const latest = row.latestCandidate;
-  if (!latest) return '-';
+  if (!latest) return '—';
   return [latest.symbol, latest.signalSubtype, fmtTime(latest.at)].filter(Boolean).join(' · ');
 }
 
 function latestTradeText(row) {
   const trade = row.latestPaperTrade;
-  if (!trade) return '-';
+  if (!trade) return '—';
   return [trade.symbol, trade.result, fmtTime(trade.entryTime)].filter(Boolean).join(' · ');
 }
 
 function entryContractText(row) {
   const contract = row.entryContract;
-  if (!contract) return 'Missing';
-  const maxAge = Number(contract.maxSignalAgeMs);
-  const maxAgeText = Number.isFinite(maxAge) ? `${Math.round(maxAge / 1000)}s` : '-';
+  if (!contract) return EMPTY_VALUE;
+  const maxAge = numberOrNull(contract.maxSignalAgeMs);
+  const maxAgeText = Number.isFinite(maxAge) ? `${Math.round(maxAge / 1000)}s` : '—';
   return [
-    `Subtype: ${(contract.allowedSubtypes || []).join(', ') || '-'}`,
-    `Status: ${(contract.allowedStatuses || []).join(', ') || '-'}`,
-    `Conf: ${(contract.requiredConfirmations || []).join(', ') || '-'}`,
+    `Subtype: ${(contract.allowedSubtypes || []).join(', ') || '—'}`,
+    `Status: ${(contract.allowedStatuses || []).join(', ') || '—'}`,
+    `Conf: ${(contract.requiredConfirmations || []).join(', ') || '—'}`,
     `Age: ${maxAgeText}`,
   ].join(' | ');
 }
@@ -179,21 +198,21 @@ function entryQualityText(row) {
   const outcomes = row.outcomeCounts || {};
   const latestBlock = row.latestEntryContractBlock?.reasonCode || row.commonEntryContractBlocker?.reasonCode || null;
   return [
-    `C ${row.entryContractCandidateCount ?? 0}`,
-    `P ${row.entryContractPassCount ?? 0}`,
-    `B ${row.entryContractBlockCount ?? 0}`,
-    `T ${row.paperTradeCount ?? 0}`,
-    `W/L/TO ${outcomes.WIN ?? 0}/${outcomes.LOSS ?? 0}/${outcomes.TIMEOUT ?? 0}`,
-    `TO ${row.timeoutRate == null ? '-' : `${fmtNumber(row.timeoutRate, 1)}%`}`,
-    `MFE ${row.avgMfe == null ? '-' : fmtNumber(row.avgMfe, 4)}`,
-    `MAE ${row.avgMae == null ? '-' : fmtNumber(row.avgMae, 4)}`,
+    `C ${displayNumber(row.entryContractCandidateCount)}`,
+    `P ${displayNumber(row.entryContractPassCount)}`,
+    `B ${displayNumber(row.entryContractBlockCount)}`,
+    `T ${displayNumber(row.paperTradeCount)}`,
+    `W/L/TO ${displayNumber(outcomes.WIN)}/${displayNumber(outcomes.LOSS)}/${displayNumber(outcomes.TIMEOUT)}`,
+    `TO ${row.timeoutRate == null ? '—' : `${fmtNumber(row.timeoutRate, 1)}%`}`,
+    `MFE ${row.avgMfe == null ? '—' : fmtNumber(row.avgMfe, 4)}`,
+    `MAE ${row.avgMae == null ? '—' : fmtNumber(row.avgMae, 4)}`,
     latestBlock ? reasonLabel(latestBlock) : null,
   ].filter(Boolean).join(' | ');
 }
 
 function listText(value) {
-  if (Array.isArray(value)) return value.length ? value.join(', ') : '-';
-  if (value === null || value === undefined || value === '') return '-';
+  if (Array.isArray(value)) return value.length ? value.join(', ') : '—';
+  if (value === null || value === undefined || value === '') return '—';
   if (typeof value === 'object') return JSON.stringify(value);
   return String(value);
 }
@@ -207,7 +226,7 @@ function DetailItem({ label, value }) {
   );
 }
 
-function StrategyDetails({ row }) {
+function StrategyDetails({ row, strategy }) {
   const contract = row.entryContract || {};
   const outcomes = row.outcomeCounts || {};
   const latestBlock = row.latestEntryContractBlock?.reasonCode || row.commonEntryContractBlocker?.reasonCode || null;
@@ -220,8 +239,16 @@ function StrategyDetails({ row }) {
       background: 'var(--surface-2)',
     }}>
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(170px, 1fr))', gap: 12 }}>
-        <DetailItem label="Family" value={row.family} />
-        <DetailItem label="Strategy ID" value={row.strategyId} />
+        <DetailItem label="Family" value={strategy.strategyFamily} />
+        <DetailItem label="Strategy ID" value={strategy.strategyId} />
+        <DetailItem label="Signal" value={strategy.signal} />
+        <DetailItem label="Runtime state" value={strategy.runtimeState} />
+        <DetailItem label="Approval state" value={strategy.approvalState} />
+        <DetailItem label="Risk state" value={strategy.riskState} />
+        <DetailItem label="Entry reason" value={strategy.entryReason} />
+        <DetailItem label="Exit reason" value={strategy.exitReason} />
+        <DetailItem label="Market regime" value={strategy.marketRegime} />
+        <DetailItem label="Blocked" value={strategy.blocked == null ? null : (strategy.blocked ? 'Ja' : 'Nej')} />
         <DetailItem label="Producer" value={row.producerStatus} />
         <DetailItem label="Mapping" value={row.mappingStatus} />
         <DetailItem label="Runtime connector" value={row.runtimeConnectorStatus} />
@@ -229,14 +256,14 @@ function StrategyDetails({ row }) {
         <DetailItem label="Allowed subtypes" value={contract.allowedSubtypes} />
         <DetailItem label="Allowed statuses" value={contract.allowedStatuses} />
         <DetailItem label="Required confirmations" value={contract.requiredConfirmations} />
-        <DetailItem label="Max signal age" value={contract.maxSignalAgeMs ? `${Math.round(Number(contract.maxSignalAgeMs) / 1000)}s` : '-'} />
+        <DetailItem label="Max signal age" value={numberOrNull(contract.maxSignalAgeMs) === null ? '—' : `${Math.round(numberOrNull(contract.maxSignalAgeMs) / 1000)}s`} />
         <DetailItem label="Senaste signal" value={latestCandidateText(row)} />
         <DetailItem label="Senaste trade" value={latestTradeText(row)} />
-        <DetailItem label="Candidates/pass/block" value={`${row.entryContractCandidateCount ?? 0}/${row.entryContractPassCount ?? 0}/${row.entryContractBlockCount ?? 0}`} />
-        <DetailItem label="W/L/TIMEOUT" value={`${outcomes.WIN ?? 0}/${outcomes.LOSS ?? 0}/${outcomes.TIMEOUT ?? 0}`} />
-        <DetailItem label="MFE/MAE" value={`${row.avgMfe == null ? '-' : fmtNumber(row.avgMfe, 4)} / ${row.avgMae == null ? '-' : fmtNumber(row.avgMae, 4)}`} />
-        <DetailItem label="Timeout-rate" value={row.timeoutRate == null ? '-' : `${fmtNumber(row.timeoutRate, 1)}%`} />
-        <DetailItem label="Legacy approval" value={row.legacyApprovalStatus ? `${row.legacyApprovalStatus}${row.legacySelectedInFamily ? ' · selected' : ''}` : '-'} />
+        <DetailItem label="Candidates/pass/block" value={`${displayNumber(row.entryContractCandidateCount)}/${displayNumber(row.entryContractPassCount)}/${displayNumber(row.entryContractBlockCount)}`} />
+        <DetailItem label="W/L/TIMEOUT" value={`${displayNumber(outcomes.WIN)}/${displayNumber(outcomes.LOSS)}/${displayNumber(outcomes.TIMEOUT)}`} />
+        <DetailItem label="MFE/MAE" value={`${row.avgMfe == null ? '—' : fmtNumber(row.avgMfe, 4)} / ${row.avgMae == null ? '—' : fmtNumber(row.avgMae, 4)}`} />
+        <DetailItem label="Timeout-rate" value={row.timeoutRate == null ? '—' : `${fmtNumber(row.timeoutRate, 1)}%`} />
+        <DetailItem label="Legacy approval" value={row.legacyApprovalStatus ? `${row.legacyApprovalStatus}${row.legacySelectedInFamily ? ' · selected' : ''}` : '—'} />
         <DetailItem label="Warnings" value={row.warnings} />
         <DetailItem label="Missing components" value={row.missingComponents} />
         <DetailItem label="Entry quality" value={entryQualityText(row)} />
@@ -366,15 +393,15 @@ export default function PaperStrategyListPanel({ refreshKey = 0, onRefresh }) {
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: 10 }}>
         <div style={{ border: '1px solid var(--border)', borderRadius: 8, padding: 12, background: 'var(--surface)' }}>
           <div style={{ color: 'var(--muted)', fontSize: 11, fontWeight: 800 }}>Totalt</div>
-          <div style={{ fontSize: 24, fontWeight: 900 }}>{summary.total ?? strategies.length}</div>
+          <div style={{ fontSize: 24, fontWeight: 900 }}>{displaySummaryNumber(summary, 'total', state.loading && !state.data)}</div>
         </div>
         <div style={{ border: '1px solid var(--border)', borderRadius: 8, padding: 12, background: 'var(--surface)' }}>
           <div style={{ color: 'var(--muted)', fontSize: 11, fontWeight: 800 }}>Aktiva</div>
-          <div style={{ fontSize: 24, fontWeight: 900 }}>{summary.enabled ?? 0}</div>
+          <div style={{ fontSize: 24, fontWeight: 900 }}>{displaySummaryNumber(summary, 'enabled', state.loading && !state.data)}</div>
         </div>
         <div style={{ border: '1px solid var(--border)', borderRadius: 8, padding: 12, background: 'var(--surface)' }}>
           <div style={{ color: 'var(--muted)', fontSize: 11, fontWeight: 800 }}>Redo</div>
-          <div style={{ fontSize: 24, fontWeight: 900 }}>{summary.ready ?? summary.paperReady ?? 0}</div>
+          <div style={{ fontSize: 24, fontWeight: 900 }}>{hasValue(summary.ready) ? displayNumber(summary.ready) : displaySummaryNumber(summary, 'paperReady', state.loading && !state.data)}</div>
         </div>
         <div style={{ border: '1px solid var(--border)', borderRadius: 8, padding: 12, background: 'var(--surface)' }}>
           <div style={{ color: 'var(--muted)', fontSize: 11, fontWeight: 800 }}>Runtime gate</div>
@@ -382,11 +409,11 @@ export default function PaperStrategyListPanel({ refreshKey = 0, onRefresh }) {
         </div>
         <div style={{ border: '1px solid var(--border)', borderRadius: 8, padding: 12, background: 'var(--surface)' }}>
           <div style={{ color: 'var(--muted)', fontSize: 11, fontWeight: 800 }}>Entry contracts</div>
-          <div style={{ fontSize: 18, fontWeight: 900 }}>{summary.entryContractsReady ?? 0}/{summary.total ?? strategies.length}</div>
+          <div style={{ fontSize: 18, fontWeight: 900 }}>{displaySummaryNumber(summary, 'entryContractsReady', state.loading && !state.data)}/{displaySummaryNumber(summary, 'total', state.loading && !state.data)}</div>
         </div>
         <div style={{ border: '1px solid var(--border)', borderRadius: 8, padding: 12, background: 'var(--surface)' }}>
           <div style={{ color: 'var(--muted)', fontSize: 11, fontWeight: 800 }}>Contract blocks</div>
-          <div style={{ fontSize: 18, fontWeight: 900 }}>{summary.entryContractBlock ?? 0}</div>
+          <div style={{ fontSize: 18, fontWeight: 900 }}>{displaySummaryNumber(summary, 'entryContractBlock', state.loading && !state.data)}</div>
         </div>
       </div>
 
@@ -482,11 +509,13 @@ export default function PaperStrategyListPanel({ refreshKey = 0, onRefresh }) {
           </div>
 
           {visibleRows.map((row) => {
+            const strategy = resolveKnownStrategy(row);
+            const strategyId = strategy.strategyId || row.strategyId;
             const busy = busyId === row.strategyId;
             const badges = rowBadges(row);
             const expanded = expandedId === row.strategyId;
             return (
-              <div key={row.strategyId} style={{ border: '1px solid var(--border)', borderRadius: 8, overflow: 'hidden', background: 'var(--surface)' }}>
+              <div key={strategyId || row.strategyId} style={{ border: '1px solid var(--border)', borderRadius: 8, overflow: 'hidden', background: 'var(--surface)' }}>
                 <div style={{
                   display: 'grid',
                   gap: 10,
@@ -494,8 +523,8 @@ export default function PaperStrategyListPanel({ refreshKey = 0, onRefresh }) {
                   padding: 12,
                 }} className="paper-strategy-main-grid">
                   <div style={{ minWidth: 0 }}>
-                    <div style={{ fontWeight: 900, overflowWrap: 'anywhere' }}>{row.displayName || row.strategyId}</div>
-                    <div style={{ color: 'var(--muted)', fontSize: 11, fontFamily: 'var(--mono, monospace)', marginTop: 3, overflowWrap: 'anywhere' }}>{row.strategyId}</div>
+                    <div style={{ fontWeight: 900, overflowWrap: 'anywhere' }}>{strategyDisplayName(strategy, '—')}</div>
+                    <div style={{ color: 'var(--muted)', fontSize: 11, fontFamily: 'var(--mono, monospace)', marginTop: 3, overflowWrap: 'anywhere' }}>{strategyId || '—'}</div>
                     <div style={{ display: 'flex', flexWrap: 'wrap', gap: 5, marginTop: 8 }}>
                       {badges.slice(0, 4).map(([label, tone]) => <span key={label} style={badgeStyle(tone)}>{label}</span>)}
                     </div>
@@ -507,11 +536,11 @@ export default function PaperStrategyListPanel({ refreshKey = 0, onRefresh }) {
                       {expanded ? 'Dölj detaljer' : 'Visa detaljer'}
                     </button>
                   </div>
-                  <div><span style={badgeStyle(row.direction === 'short' ? 'danger' : row.direction === 'long' ? 'good' : 'neutral')}>{row.direction || '-'}</span></div>
-                  <div><span style={badgeStyle(toneFor(row.technicalReadiness))}>{row.technicalReadiness || '-'}</span></div>
+                  <div><span style={badgeStyle(row.direction === 'short' ? 'danger' : row.direction === 'long' ? 'good' : 'neutral')}>{row.direction || '—'}</span></div>
+                  <div><span style={badgeStyle(toneFor(row.technicalReadiness))}>{strategy.runtimeState || row.technicalReadiness || '—'}</span></div>
                   <div><span style={badgeStyle(row.enabledForPaper ? 'good' : 'neutral')}>{row.enabledForPaper ? 'Ja' : 'Nej'}</span></div>
                   <div style={{ minWidth: 0 }}>
-                    <span style={badgeStyle(row.entryContractReady ? 'good' : 'warn')}>{row.entryContractStatus || '-'}</span>
+                    <span style={badgeStyle(row.entryContractReady ? 'good' : 'warn')}>{row.entryContractStatus || '—'}</span>
                     <div style={{ color: 'var(--muted)', fontSize: 11, marginTop: 6, lineHeight: 1.4, overflowWrap: 'anywhere' }}>
                       {row.entryContractReady ? 'Klar' : 'Saknas'}
                     </div>
@@ -535,7 +564,7 @@ export default function PaperStrategyListPanel({ refreshKey = 0, onRefresh }) {
                     </button>
                   </div>
                 </div>
-                {expanded ? <StrategyDetails row={row} /> : null}
+                {expanded ? <StrategyDetails row={row} strategy={strategy} /> : null}
               </div>
             );
           })}

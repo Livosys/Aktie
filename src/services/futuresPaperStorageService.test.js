@@ -122,6 +122,8 @@ try {
   assert.equal(second.readPositions().open[0].tradeId, 't-2');
   assert.equal(second.readJsonl(second.files.events).length, 0);
   assert.equal(second.readTrades().length, 0);
+  assert.deepEqual(fs.readdirSync(firstRoot).filter((name) => name.endsWith('.tmp')), []);
+  assert.deepEqual(fs.readdirSync(secondRoot).filter((name) => name.endsWith('.tmp')), []);
 } finally {
   restoreEnv();
   for (const dir of tempDirs) {

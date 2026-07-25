@@ -64,6 +64,7 @@ const marketUniverse                            = require('../services/marketUni
 const learningConnector                         = require('../services/learningConnectorService');
 const learningEngine                            = require('../services/daytradingLearningEngineService');
 const strategyTradeControl                      = require('../services/strategyTradeControlService');
+const { writeFileAtomic, writeJsonAtomic }      = require('../services/filePersistenceService');
 
 // ── Paths ─────────────────────────────────────────────────────────────────────
 
@@ -140,7 +141,7 @@ function loadState() {
 
 function saveState(state) {
   ensureDir();
-  fs.writeFileSync(STATE_FILE, JSON.stringify(state, null, 2), 'utf8');
+  writeJsonAtomic(STATE_FILE, state, { trailingNewline: false });
   cachePaperState(state, 'saveState');
 }
 
@@ -697,7 +698,7 @@ function appendEvent(input) {
   }
   const rows = loadJsonl(EVENTS_FILE);
   if (rows.length > MAX_EVENT_ROWS) {
-    fs.writeFileSync(EVENTS_FILE, rows.slice(-MAX_EVENT_ROWS).map(e => JSON.stringify(e)).join('\n') + '\n', 'utf8');
+    writeFileAtomic(EVENTS_FILE, rows.slice(-MAX_EVENT_ROWS).map(e => JSON.stringify(e)).join('\n') + '\n', 'utf8');
   }
   recentEvents = [event, ...recentEvents].slice(0, MEMORY_EVENTS);
   void redisService.addStream('paper:recent-decisions', event, 200);

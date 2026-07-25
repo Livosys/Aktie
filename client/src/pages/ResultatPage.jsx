@@ -3,6 +3,7 @@ import { Link, useSearchParams } from 'react-router-dom';
 import { PlatformEmptyState, PlatformSafetyBar } from '../components/PlatformControls.jsx';
 import TradeReplayPanel from '../components/TradeReplayPanel.jsx';
 import { useUnifiedConfig } from '../hooks/useUnifiedConfig.js';
+import { EMPTY_VALUE, fmtNumber as formatNumber, hasValue, numberOrNull } from '../utils/tradingFormatters.js';
 
 const VISIBLE_TABS = [
   { key: 'overview', label: 'Översikt', icon: '📊' },
@@ -25,6 +26,38 @@ function fmtPct(v) {
   return `${n > 0 ? '+' : ''}${n.toFixed(2)}%`;
 }
 
+function displayNumber(value, digits = 0) {
+  return hasValue(value) ? formatNumber(value, digits) : EMPTY_VALUE;
+}
+
+function displayRatio(left, right) {
+  return `${displayNumber(left)}/${displayNumber(right)}`;
+}
+
+function displayPercent(value, { signed = false, digits = 2, empty = EMPTY_VALUE } = {}) {
+  if (value === '') return empty;
+  const n = numberOrNull(value);
+  if (n == null) return empty;
+  return `${signed && n > 0 ? '+' : ''}${formatNumber(n, digits)}%`;
+}
+
+function ratioToPercent(value) {
+  const n = numberOrNull(value);
+  return n == null ? null : n * 100;
+}
+
+function signedTone(value, positive = 'res-pnl-pos', negative = 'res-pnl-neg') {
+  const n = numberOrNull(value);
+  if (n == null || n === 0) return '';
+  return n > 0 ? positive : negative;
+}
+
+function metricToneForPct(value, good = 55, warn = 45) {
+  const n = numberOrNull(value);
+  if (n == null) return 'yellow';
+  return n >= good ? 'green' : n >= warn ? 'yellow' : 'red';
+}
+
 function safeText(value, fallback = 'För lite data') {
   if (value === null || value === undefined || value === '') return fallback;
   if (typeof value === 'number' && !Number.isFinite(value)) return fallback;
@@ -35,6 +68,12 @@ function safeText(value, fallback = 'För lite data') {
 function safeNumber(value, fallback = '–') {
   const n = Number(value);
   return Number.isFinite(n) ? n : fallback;
+}
+
+function displayBoolean(value) {
+  if (value === true) return 'true';
+  if (value === false) return 'false';
+  return EMPTY_VALUE;
 }
 
 function fmtActivityTime(ts) {
@@ -49,9 +88,19 @@ function fmtInt(v) {
   return Number.isFinite(n) ? n.toLocaleString('sv-SE') : '–';
 }
 
+function compareNumbersDesc(a, b) {
+  const an = numberOrNull(a);
+  const bn = numberOrNull(b);
+  if (an == null && bn == null) return 0;
+  if (an == null) return 1;
+  if (bn == null) return -1;
+  return bn - an;
+}
+
 function fmtBytes(bytes) {
   const n = Number(bytes);
-  if (!Number.isFinite(n) || n <= 0) return '0 B';
+  if (!Number.isFinite(n) || n < 0) return EMPTY_VALUE;
+  if (n === 0) return '0 B';
   const units = ['B', 'KB', 'MB', 'GB', 'TB'];
   let value = n;
   let idx = 0;
@@ -217,8 +266,8 @@ function DailySystemReport() {
           title="Datahämtning"
           rows={[
             { label: 'Senaste körning', value: fmtActivityTime(data.last_run_at) },
-            { label: 'Symboler hämtade', value: `${safeNumber(dataFetch.symbols_loaded, 0)}/${safeNumber(dataFetch.symbols_requested, 0)}` },
-            { label: 'Candles hämtade', value: safeNumber(dataFetch.candles_loaded, 0) },
+            { label: 'Symboler hämtade', value: displayRatio(dataFetch.symbols_loaded, dataFetch.symbols_requested) },
+            { label: 'Candles hämtade', value: displayNumber(dataFetch.candles_loaded) },
             { label: 'Dataproblem', value: (dataFetch.warnings || []).slice(0, 2).join(' · ') || 'Inga dataproblem' },
           ]}
           conclusion={dataFetch.conclusion_sv || (dataFetch.status === 'missing' ? 'Ingen prisdata' : 'För lite data')}
@@ -227,10 +276,10 @@ function DailySystemReport() {
           title="Auto Replay"
           rows={[
             { label: 'Senaste replay', value: replay.session_id || 'Ingen replay körd' },
-            { label: 'Händelser', value: safeNumber(replay.events_total, 0) },
-            { label: 'Simulerade trades', value: safeNumber(replay.trades_total, 0) },
-            { label: 'P/L', value: replay.pnl === '' ? 'För lite data' : fmtPct(replay.pnl) },
-            { label: 'Win rate', value: replay.win_rate === '' ? 'För lite data' : `${safeNumber(replay.win_rate, 0)}%` },
+            { label: 'Händelser', value: displayNumber(replay.events_total) },
+            { label: 'Simulerade trades', value: displayNumber(replay.trades_total) },
+            { label: 'P/L', value: displayPercent(replay.pnl, { signed: true, empty: 'För lite data' }) },
+            { label: 'Win rate', value: displayPercent(replay.win_rate, { digits: 0, empty: 'För lite data' }) },
           ]}
           conclusion={replay.conclusion_sv || 'Ingen replay körd'}
         />
@@ -238,20 +287,20 @@ function DailySystemReport() {
           title="Auto Batch-test"
           rows={[
             { label: 'Senaste batch', value: batch.batch_id || 'Ingen batch körd' },
-            { label: 'Kombinationer', value: `${safeNumber(batch.completed_total, 0)}/${safeNumber(batch.combinations_total, 0)}` },
+            { label: 'Kombinationer', value: displayRatio(batch.completed_total, batch.combinations_total) },
             { label: 'Bästa strategi', value: batch.best_strategy || 'Ingen batch körd' },
             { label: 'Bästa symbol', value: batch.best_symbol || 'För lite data' },
-            { label: 'Score', value: safeNumber(batch.best_score, 0) },
+            { label: 'Score', value: displayNumber(batch.best_score) },
           ]}
           conclusion={batch.conclusion_sv || 'Ingen batch körd'}
         />
         <DailyReportCard
           title="Paper Trading"
           rows={[
-            { label: 'Låtsastrades idag', value: safeNumber(paper.trades_today, 0) },
-            { label: 'Total win rate', value: paper.win_rate === '' ? 'Inga låtsastrades ännu' : `${safeNumber(paper.win_rate, 0)}%` },
-            { label: 'Snitt P/L', value: paper.avg_pnl === '' ? 'Inga låtsastrades ännu' : fmtPct(paper.avg_pnl) },
-            { label: 'Öppna positioner', value: safeNumber(paper.open_positions, 0) },
+            { label: 'Låtsastrades idag', value: displayNumber(paper.trades_today) },
+            { label: 'Total win rate', value: displayPercent(paper.win_rate, { digits: 0, empty: 'Inga låtsastrades ännu' }) },
+            { label: 'Snitt P/L', value: displayPercent(paper.avg_pnl, { signed: true, empty: 'Inga låtsastrades ännu' }) },
+            { label: 'Öppna positioner', value: displayNumber(paper.open_positions) },
           ]}
           conclusion={paper.conclusion_sv || 'Inga låtsastrades ännu'}
         />
@@ -268,9 +317,9 @@ function DailySystemReport() {
           title="Safety"
           rows={[
             { label: 'Inga riktiga orders', value: 'Ja' },
-            { label: 'actions_allowed', value: String(safety.actions_allowed === true ? true : false) },
-            { label: 'can_place_orders', value: String(safety.can_place_orders === true ? true : false) },
-            { label: 'live_trading_enabled', value: String(safety.live_trading_enabled === true ? true : false) },
+            { label: 'actions_allowed', value: displayBoolean(safety.actions_allowed) },
+            { label: 'can_place_orders', value: displayBoolean(safety.can_place_orders) },
+            { label: 'live_trading_enabled', value: displayBoolean(safety.live_trading_enabled) },
           ]}
           conclusion="All automation är test, replay, batch, paper och analys only."
         />
@@ -283,8 +332,8 @@ function DailySystemReport() {
             <div key={run.run_id} className="res-activity-row">
               <span>{fmtActivityTime(run.completed_at || run.started_at)}</span>
               <strong>{run.pipeline_status}</strong>
-              <span>{run.data_fetch?.symbols_loaded ?? 0} symboler · {run.replay?.events_total ?? 0} replay-events</span>
-              <em>{run.error_count ?? 0} fel</em>
+              <span>{displayNumber(run.data_fetch?.symbols_loaded)} symboler · {displayNumber(run.replay?.events_total)} replay-events</span>
+              <em>{displayNumber(run.error_count)} fel</em>
             </div>
           ))}
         </div>
@@ -312,12 +361,13 @@ function OversiktTab() {
     });
   }, []);
 
-  const topSetups = perf?.topSetups?.length ?? 0;
-  const poorSetups = perf?.poorSetups?.length ?? 0;
-  const overallWR = ls?.overallWinRate != null ? Math.round(ls.overallWinRate * 100) : null;
-  const totalSignals = ls?.totalSignals ?? 0;
-  const paperTrades = paper?.totalTrades ?? 0;
-  const paperWR = paper?.winRate != null ? Math.round(paper.winRate * 100) : null;
+  const topSetups = perf?.topSetups ? perf.topSetups.length : EMPTY_VALUE;
+  const poorSetups = perf?.poorSetups ? perf.poorSetups.length : EMPTY_VALUE;
+  const learningSummary = ls?.summary || ls || {};
+  const overallWR = ratioToPercent(learningSummary.overallWinRate);
+  const totalSignals = learningSummary.totalSignals ?? null;
+  const paperTrades = paper?.totalTrades ?? null;
+  const paperWR = numberOrNull(paper?.winRate);
   const paperPnl = paper?.totalPnlPct ?? null;
 
   return (
@@ -325,11 +375,11 @@ function OversiktTab() {
       <DailySystemReport />
       <h2 className="res-section-h2">Systemöversikt</h2>
       <div className="res-metrics-row">
-        <MetricCard icon="📊" value={overallWR != null ? `${overallWR}%` : '–'} label="Total träffsäkerhet" sub={`${totalSignals} signaler totalt`} color={overallWR >= 55 ? 'green' : overallWR >= 45 ? 'yellow' : 'red'} />
+        <MetricCard icon="📊" value={overallWR != null ? displayPercent(overallWR, { digits: 0 }) : '–'} label="Total träffsäkerhet" sub={`${displayNumber(totalSignals)} signaler totalt`} color={metricToneForPct(overallWR)} />
         <MetricCard icon="🎯" value={topSetups} label="Bra mönster" sub="Historiskt lönsamma" color="green" />
         <MetricCard icon="⚠️" value={poorSetups} label="Svaga mönster" sub="Undvik just nu" color="red" />
-        <MetricCard icon="🧪" value={paperTrades} label="Låtsastrades" sub="Paper trading totalt" color="blue" />
-        {paperWR != null && <MetricCard icon="💰" value={`${paperWR}%`} label="Paper träffsäkerhet" sub={paperPnl != null ? fmtPct(paperPnl) + ' snitt P/L' : ''} color={paperWR >= 55 ? 'green' : 'yellow'} />}
+        <MetricCard icon="🧪" value={displayNumber(paperTrades)} label="Låtsastrades" sub="Paper trading totalt" color="blue" />
+        {paperWR != null && <MetricCard icon="💰" value={displayPercent(paperWR, { digits: 0 })} label="Paper träffsäkerhet" sub={paperPnl != null ? displayPercent(paperPnl, { signed: true }) + ' snitt P/L' : ''} color={paperWR >= 55 ? 'green' : 'yellow'} />}
       </div>
 
       <div className="res-quick-links">
@@ -355,7 +405,7 @@ function SetupsTab() {
     ...(data.topSetups || []),
     ...(data.poorSetups || []),
     ...(data.neutralSetups || []),
-  ].sort((a, b) => (b.win_rate ?? 0) - (a.win_rate ?? 0));
+  ].sort((a, b) => compareNumbersDesc(a.win_rate, b.win_rate));
 
   if (!allSetups.length) return <div className="res-empty">Inga mönster ännu. Kör historisk analys för att fylla på.</div>;
 
@@ -374,18 +424,18 @@ function SetupsTab() {
                 <div className={`res-setup-badge res-badge-${s.category}`}>{s.label_sv || s.category}</div>
               </div>
               <div className="res-setup-pnl">
-                <div className={`res-pnl-big ${(s.avg_pnl_pct ?? 0) >= 0 ? 'res-pnl-pos' : 'res-pnl-neg'}`}>
-                  {fmtPct(s.avg_pnl_pct)}
+                <div className={`res-pnl-big ${signedTone(s.avg_pnl_pct)}`}>
+                  {displayPercent(s.avg_pnl_pct, { signed: true })}
                 </div>
                 <div className="res-pnl-label">snitt P/L</div>
               </div>
             </div>
             <WinBar wr={s.win_rate} />
             <div className="res-setup-meta">
-              <span>{s.total_trades} trades</span>
-              <span className="res-wins">{s.wins} vinn</span>
-              <span className="res-losses">{s.losses} förlust</span>
-              <span className="res-ties">{s.ties ?? 0} timeout</span>
+              <span>{displayNumber(s.total_trades)} trades</span>
+              <span className="res-wins">{displayNumber(s.wins)} vinn</span>
+              <span className="res-losses">{displayNumber(s.losses)} förlust</span>
+              <span className="res-ties">{displayNumber(s.ties)} timeout</span>
               {s.best_symbol && <span className="res-sym">Bäst: {s.best_symbol}</span>}
             </div>
           </div>
@@ -426,7 +476,7 @@ function AiTab() {
             <MetricCard value={status.symbolsAnalyzed ?? '–'} label="Symboler analyserade" />
             {status.avgConfidence != null && (
               <MetricCard
-                value={`${Math.round(status.avgConfidence * 100)}%`}
+                value={displayPercent(ratioToPercent(status.avgConfidence), { digits: 0 })}
                 label="Snitt AI-styrka"
                 color={status.avgConfidence >= 0.7 ? 'green' : 'yellow'}
               />
@@ -494,9 +544,9 @@ function ReplayTab() {
                 </span>
               </div>
               <div className="res-replay-meta">
-                {run.totalSignals != null && <span>{run.totalSignals} signaler</span>}
-                {run.winRate != null && <span className="res-wins">{Math.round(run.winRate * 100)}% träffsäkerhet</span>}
-                {run.avgPnl != null && <span className={run.avgPnl >= 0 ? 'res-wins' : 'res-losses'}>{fmtPct(run.avgPnl)}</span>}
+                {run.totalSignals != null && <span>{displayNumber(run.totalSignals)} signaler</span>}
+                {run.winRate != null && <span className="res-wins">{displayPercent(ratioToPercent(run.winRate), { digits: 0 })} träffsäkerhet</span>}
+                {run.avgPnl != null && <span className={signedTone(run.avgPnl, 'res-wins', 'res-losses')}>{displayPercent(run.avgPnl, { signed: true })}</span>}
               </div>
             </div>
           ))}
@@ -535,24 +585,24 @@ function PaperTab() {
 
       {data && (
         <div className="res-metrics-row">
-          <MetricCard value={data.totalTrades ?? '–'} label="Trades totalt" />
+          <MetricCard value={displayNumber(data.totalTrades)} label="Trades totalt" />
           {data.winRate != null && (
             <MetricCard
-              value={`${Math.round(data.winRate * 100)}%`}
+              value={displayPercent(data.winRate, { digits: 0 })}
               label="Träffsäkerhet"
-              color={data.winRate >= 0.55 ? 'green' : 'yellow'}
+              color={numberOrNull(data.winRate) >= 55 ? 'green' : 'yellow'}
             />
           )}
           {data.totalPnlPct != null && (
             <MetricCard
-              value={fmtPct(data.totalPnlPct)}
+              value={displayPercent(data.totalPnlPct, { signed: true })}
               label="Total P/L"
               color={data.totalPnlPct >= 0 ? 'green' : 'red'}
             />
           )}
           {data.avgPnlPct != null && (
             <MetricCard
-              value={fmtPct(data.avgPnlPct)}
+              value={displayPercent(data.avgPnlPct, { signed: true })}
               label="Snitt P/L"
               color={data.avgPnlPct >= 0 ? 'green' : 'red'}
             />
@@ -570,7 +620,7 @@ function PaperTab() {
                 <span className={`res-trade-type ${['LONG', 'UP', 'BUY'].includes(t.direction || t.type) ? 'res-long' : 'res-short'}`}>
                   {t.direction || t.type || '–'}
                 </span>
-                <span className={`res-trade-pnl ${(t.pnlPct ?? t.pnl ?? 0) >= 0 ? 'res-pnl-pos' : 'res-pnl-neg'}`}>
+                <span className={`res-trade-pnl ${signedTone(t.pnlPct ?? t.pnl)}`}>
                   {fmtPct(t.pnlPct ?? t.pnl)}
                 </span>
                 <span className="res-trade-date">
@@ -687,12 +737,13 @@ function LarningTab() {
   if (loading) return <div className="res-loading">Laddar inlärningsdata...</div>;
   if (!ls) return <div className="res-empty">Ingen inlärningsdata tillgänglig. Kör historisk analys.</div>;
 
-  const bySymbol = Object.entries(ls.bySymbol || {})
+  const learningSummary = ls.summary || ls;
+  const bySymbol = Object.entries(learningSummary.bySymbol || {})
     .filter(([, v]) => v.samples >= 3)
-    .sort(([, a], [, b]) => (b.winRate ?? 0) - (a.winRate ?? 0))
+    .sort(([, a], [, b]) => compareNumbersDesc(a.winRate, b.winRate))
     .slice(0, 20);
 
-  const overallWR = ls.overallWinRate != null ? Math.round(ls.overallWinRate * 100) : null;
+  const overallWR = ratioToPercent(learningSummary.overallWinRate);
 
   return (
     <div className="res-tab-content">
@@ -702,14 +753,14 @@ function LarningTab() {
         {overallWR != null && (
           <MetricCard
             icon="📊"
-            value={`${overallWR}%`}
+            value={displayPercent(overallWR, { digits: 0 })}
             label="Total träffsäkerhet"
-            sub={`${ls.totalSignals ?? 0} signaler`}
+            sub={`${displayNumber(learningSummary.totalSignals)} signaler`}
             color={overallWR >= 55 ? 'green' : overallWR >= 45 ? 'yellow' : 'red'}
           />
         )}
-        {ls.worstSymbols?.length > 0 && (
-          <MetricCard icon="⚠️" value={ls.worstSymbols.length} label="Svaga symboler" sub="Undvik" color="red" />
+        {learningSummary.worstSymbols?.length > 0 && (
+          <MetricCard icon="⚠️" value={learningSummary.worstSymbols.length} label="Svaga symboler" sub="Undvik" color="red" />
         )}
       </div>
 
@@ -720,7 +771,7 @@ function LarningTab() {
             {bySymbol.map(([sym, stats]) => (
               <div key={sym} className="res-learn-row">
                 <span className="res-learn-sym">{sym}</span>
-                <WinBar wr={stats.winRate != null ? Math.round(stats.winRate * 100) : null} />
+                <WinBar wr={ratioToPercent(stats.winRate)} />
                 <span className="res-learn-count">{stats.samples} st</span>
               </div>
             ))}
@@ -728,11 +779,11 @@ function LarningTab() {
         </>
       )}
 
-      {ls.worstSymbols?.length > 0 && (
+      {learningSummary.worstSymbols?.length > 0 && (
         <>
           <div className="res-subsection-title res-poor-label">Undvik dessa symboler just nu</div>
           <div className="res-worst-chips">
-            {ls.worstSymbols.map(s => (
+            {learningSummary.worstSymbols.map(s => (
               <span key={s.key || s} className="res-worst-chip">{s.key || s}</span>
             ))}
           </div>
@@ -796,18 +847,18 @@ function StrategyPerfRow({ strategy, tone }) {
           <div className={`res-setup-badge res-badge-${badge?.tone || 'neutral'}`}>{badge?.label || 'Ingen badge'}</div>
         </div>
         <div className="res-setup-pnl">
-          <div className={`res-pnl-big ${(strategy.avg_pnl ?? 0) >= 0 ? 'res-pnl-pos' : 'res-pnl-neg'}`}>
-            {fmtPct(strategy.avg_pnl)}
+          <div className={`res-pnl-big ${signedTone(strategy.avg_pnl)}`}>
+            {displayPercent(strategy.avg_pnl, { signed: true })}
           </div>
           <div className="res-pnl-label">snitt P/L</div>
         </div>
       </div>
       <WinBar wr={strategy.win_rate} />
       <div className="res-setup-meta">
-        <span>{strategy.trades} trades</span>
-        <span className="res-wins">{strategy.wins} vinn</span>
-        <span className="res-losses">{strategy.losses} förlust</span>
-        <span className="res-ties">{strategy.timeouts} timeout</span>
+        <span>{displayNumber(strategy.trades)} trades</span>
+        <span className="res-wins">{displayNumber(strategy.wins)} vinn</span>
+        <span className="res-losses">{displayNumber(strategy.losses)} förlust</span>
+        <span className="res-ties">{displayNumber(strategy.timeouts)} timeout</span>
         {strategy.best_market && <span>Bästa marknad: {strategy.best_market.market_group}</span>}
         {strategy.best_params && <span>Bäst: {strategy.best_params.label}</span>}
       </div>
@@ -919,6 +970,9 @@ function DataCenterTab() {
   const coverageRows = coverageSymbols.slice(0, 28);
   const weakMarkets = coverageMarkets.filter((m) => m.missing_count > 0 || m.weak_count > 0).slice(0, 6);
   const activeJobs = backfillJobs.filter((job) => ['created', 'running', 'paused'].includes(job.status)).slice(0, 8);
+  const coverageScore = numberOrNull(coverageStatus?.total_coverage_score);
+  const coverageScoreTone = coverageScore == null ? 'yellow' : coverageScore >= 70 ? 'green' : coverageScore >= 35 ? 'yellow' : 'red';
+  const missingSymbols = numberOrNull(coverageStatus?.symbols_missing_data);
 
   async function postCoverage(url, body) {
     setCoverageMessage('');
@@ -990,13 +1044,13 @@ function DataCenterTab() {
             <h2 className="res-section-h2">Data Coverage</h2>
             <p className="res-section-sub">Visar om symboler är redo för replay, batch-test och AI-inlärning.</p>
           </div>
-          <DataTone tone={(coverageStatus?.total_coverage_score || 0) >= 70 ? 'green' : (coverageStatus?.total_coverage_score || 0) >= 35 ? 'yellow' : 'red'} label={`${fmtInt(coverageStatus?.total_coverage_score)} / 100`} />
+          <DataTone tone={coverageScoreTone} label={`${fmtInt(coverageScore)} / 100`} />
         </div>
         <div className="dc-card-grid">
-          <DataCenterCard label="Coverage score" value={`${fmtInt(coverageStatus?.total_coverage_score)} / 100`} sub="Total datatäckning" tone={(coverageStatus?.total_coverage_score || 0) >= 70 ? 'green' : 'yellow'} />
+          <DataCenterCard label="Coverage score" value={`${fmtInt(coverageScore)} / 100`} sub="Total datatäckning" tone={coverageScoreTone} />
           <DataCenterCard label="Redo för replay" value={fmtInt(coverageStatus?.symbols_ready_for_replay)} sub="Symboler" tone="green" />
           <DataCenterCard label="Redo för batch-test" value={fmtInt(coverageStatus?.symbols_ready_for_batch)} sub="Symboler" tone="green" />
-          <DataCenterCard label="Saknar data" value={fmtInt(coverageStatus?.symbols_missing_data)} sub="Symboler" tone={(coverageStatus?.symbols_missing_data || 0) > 0 ? 'red' : 'green'} />
+          <DataCenterCard label="Saknar data" value={fmtInt(missingSymbols)} sub="Symboler" tone={missingSymbols == null ? 'yellow' : missingSymbols > 0 ? 'red' : 'green'} />
         </div>
         {weakMarkets.length > 0 && (
           <>
@@ -1195,8 +1249,8 @@ function DataCenterTab() {
         <div>
           <div className="res-subsection-title">Redis usage</div>
           <div className="dc-info-box">
-            <strong>{redis.mode || 'fallback'}</strong>
-            <span>Status: {redis.clientStatus || 'unknown'}</span>
+            <strong>{redis.mode || EMPTY_VALUE}</strong>
+            <span>Status: {redis.clientStatus || EMPTY_VALUE}</span>
             <span>Keys: {fmtInt(redis.dbsize ?? redis.memoryFallbackKeys)}</span>
             <span>Memory: {redis.used_memory_human || fmtBytes(redis.used_memory_bytes)}</span>
           </div>

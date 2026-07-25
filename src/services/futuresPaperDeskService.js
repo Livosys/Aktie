@@ -14,6 +14,7 @@ const ibPaperAccountSummaryService = require('./ibPaperAccountSummaryService');
 const futuresDataPipelineStatusService = require('./futuresDataPipelineStatusService');
 const ibPaperExecutionOrchestratorService = require('./ibPaperExecutionOrchestratorService');
 const internalSimulationRetirement = require('./futuresInternalSimulationRetirementService');
+const futuresPaperStrategyPerformanceService = require('./futuresPaperStrategyPerformanceService');
 
 const SAFETY = Object.freeze({
   mode: 'paper_only',
@@ -71,6 +72,42 @@ function safeString(value) {
   if (value === null || value === undefined) return null;
   const text = String(value).trim();
   return text.length ? text : null;
+}
+
+function numberOrNull(value) {
+  if (value === null || value === undefined || value === '') return null;
+  const n = Number(value);
+  return Number.isFinite(n) ? n : null;
+}
+
+function sumNumbersOrNull(values = [], { requireAll = false } = {}) {
+  let total = 0;
+  let seen = false;
+  for (const value of values) {
+    const n = numberOrNull(value);
+    if (n === null) {
+      if (requireAll) return null;
+      continue;
+    }
+    total += n;
+    seen = true;
+  }
+  return seen ? round(total, 2) : null;
+}
+
+function latestTimestampOrNull(values = []) {
+  let latest = null;
+  let latestMs = null;
+  for (const value of values) {
+    if (!value) continue;
+    const ms = Date.parse(value);
+    if (!Number.isFinite(ms)) continue;
+    if (latestMs === null || ms > latestMs) {
+      latestMs = ms;
+      latest = value;
+    }
+  }
+  return latest;
 }
 
 function toMap(rows = [], keyOf) {
@@ -518,6 +555,229 @@ function normalizeBrokerOrder(row = {}) {
   };
 }
 
+function buildCanonicalAccountAndMargin(ibAccount) {
+  const ibAccountView = ibAccount?.ok === true ? ibAccount.account : null;
+  const blocker = ibAccount?.ok === true
+    ? null
+    : (ibAccount?.blocker || ibAccount?.error || 'ibkr_paper_account_unavailable');
+  const updatedAt = ibAccount?.generatedAt || null;
+  const margin = {
+    initMarginReq: ibAccountView?.initMarginReq ?? null,
+    maintMarginReq: ibAccountView?.maintMarginReq ?? null,
+    cushion: ibAccountView?.cushion ?? null,
+    fullInitMarginReq: null,
+    fullMaintMarginReq: null,
+    excessLiquidity: null,
+    updatedAt,
+    source: 'ibkr_paper',
+  };
+  const account = {
+    source: 'ibkr_paper',
+    status: ibAccount?.status || null,
+    accountIdMasked: ibAccountView?.accountIdMasked || null,
+    currency: ibAccountView?.currency || null,
+    cash: ibAccountView?.totalCashValue ?? null,
+    totalCashValue: ibAccountView?.totalCashValue ?? null,
+    netLiquidation: ibAccountView?.netLiquidation ?? null,
+    availableFunds: ibAccountView?.availableFunds ?? null,
+    buyingPower: ibAccountView?.buyingPower ?? null,
+    realizedPnl: ibAccountView?.realizedPnl ?? null,
+    unrealizedPnl: ibAccountView?.unrealizedPnl ?? null,
+    dailyPnl: ibAccountView?.dailyPnl ?? null,
+    updatedAt,
+    stale: ibAccount?.stale === true,
+    degraded: ibAccount?.ok !== true,
+    blocker,
+    unavailableReason: blocker,
+    classification: ibAccountView?.classification || null,
+    accountType: ibAccountView?.accountType || null,
+    ...margin,
+  };
+  return { account, margin };
+}
+
+function buildCanonicalBrokerRuntime({
+  brokerReconciliation = {},
+  brokerPositions = [],
+  brokerOrders = [],
+  brokerExecutions = [],
+  brokerCommissions = [],
+} = {}) {
+  const updatedAt = brokerReconciliation?.generatedAt || null;
+  const discrepancies = safeArray(brokerReconciliation?.discrepancies);
+  const orderStatuses = safeArray(brokerReconciliation?.orderStatuses);
+  const counts = {
+    positions: brokerReconciliation?.counts?.positions ?? brokerPositions.length,
+    openOrders: brokerReconciliation?.counts?.openOrders ?? brokerOrders.length,
+    executions: brokerReconciliation?.counts?.executions ?? brokerExecutions.length,
+    fills: brokerExecutions.length,
+    commissions: brokerCommissions.length,
+    orderStatuses: brokerReconciliation?.counts?.orderStatuses ?? orderStatuses.length,
+    discrepancies: discrepancies.length,
+  };
+  const broker = {
+    status: brokerReconciliation?.status || null,
+    degraded: brokerReconciliation?.degraded === true,
+    newEntriesAllowed: brokerReconciliation?.newEntriesAllowed === true,
+    blockedReason: brokerReconciliation?.blockedReason || null,
+    counts,
+    updatedAt,
+    source: 'ibkr_paper',
+    reconciliation: brokerReconciliation || null,
+  };
+  const orders = {
+    open: safeArray(brokerOrders),
+    completed: [],
+    statuses: orderStatuses,
+    totalOpen: brokerOrders.length,
+    totalCompleted: 0,
+    updatedAt,
+    source: 'ibkr_paper',
+  };
+  const executions = {
+    items: safeArray(brokerExecutions),
+    count: brokerExecutions.length,
+    updatedAt,
+    source: 'ibkr_paper',
+  };
+  const commissions = {
+    items: safeArray(brokerCommissions),
+    count: brokerCommissions.length,
+    updatedAt,
+    source: 'ibkr_paper',
+  };
+  return { broker, orders, executions, commissions };
+}
+
+function buildCanonicalPortfolio({
+  account = {},
+  positions = {},
+  orders = {},
+  executions = {},
+} = {}) {
+  const executionItems = safeArray(executions?.items);
+  const realizedPnl = numberOrNull(account?.realizedPnl);
+  const unrealizedPnl = numberOrNull(account?.unrealizedPnl);
+  return {
+    portfolioValue: numberOrNull(account?.netLiquidation),
+    marketValue: null,
+    openExposure: null,
+    openRisk: null,
+    portfolioPnl: sumNumbersOrNull([realizedPnl, unrealizedPnl], { requireAll: true }),
+    dailyPnl: numberOrNull(account?.dailyPnl),
+    realizedPnl,
+    unrealizedPnl,
+    commission: sumNumbersOrNull(executionItems.map((row) => row?.commission)),
+    currency: account?.currency || null,
+    updatedAt: latestTimestampOrNull([
+      account?.updatedAt,
+      positions?.updatedAt,
+      orders?.updatedAt,
+      executions?.updatedAt,
+    ]),
+    source: 'ibkr_paper',
+  };
+}
+
+function buildPerformanceVerificationByStrategy(executions = []) {
+  const byStrategy = new Map();
+  for (const row of safeArray(executions)) {
+    const strategyId = safeString(row?.strategyId || row?.orderRef);
+    if (!strategyId) continue;
+    if (!byStrategy.has(strategyId)) {
+      byStrategy.set(strategyId, {
+        executionCount: 0,
+        missingRealizedPnl: false,
+        missingCommission: false,
+      });
+    }
+    const verification = byStrategy.get(strategyId);
+    verification.executionCount += 1;
+    if (numberOrNull(row?.realizedResult ?? row?.realizedPnlSek ?? row?.realizedPnl) === null) {
+      verification.missingRealizedPnl = true;
+    }
+    if (numberOrNull(row?.commission) === null) {
+      verification.missingCommission = true;
+    }
+  }
+  return byStrategy;
+}
+
+function normalizeCanonicalPerformanceStrategy(row = {}, verification = null) {
+  const tradeCount = numberOrNull(row.closedTrades ?? row.tradeCount);
+  const wins = numberOrNull(row.wins);
+  const losses = numberOrNull(row.losses);
+  const minTradesForRatios = numberOrNull(futuresPaperStrategyPerformanceService.MIN_TRADES_FOR_RATE_LEADERS) ?? 1;
+  const hasEnoughTradesForRatios = tradeCount !== null && tradeCount >= minTradesForRatios;
+  const hasVerifiedRealizedPnl = verification?.executionCount > 0 && verification.missingRealizedPnl !== true;
+  const hasVerifiedCommission = verification?.executionCount > 0 && verification.missingCommission !== true;
+  return {
+    strategyId: row.strategyId || null,
+    displayName: row.displayName || row.strategyName || row.strategyId || null,
+    tradeCount,
+    winRate: hasVerifiedRealizedPnl && hasEnoughTradesForRatios ? numberOrNull(row.winRatePct ?? row.winRate) : null,
+    profitFactor: hasVerifiedRealizedPnl && hasEnoughTradesForRatios ? numberOrNull(row.profitFactor) : null,
+    expectancy: hasVerifiedRealizedPnl && hasEnoughTradesForRatios ? numberOrNull(row.avgNetPnlSek ?? row.expectancy) : null,
+    averageWin: null,
+    averageLoss: null,
+    largestWin: hasVerifiedRealizedPnl && wins !== null && wins > 0 ? numberOrNull(row.bestTradeSek ?? row.largestWin) : null,
+    largestLoss: hasVerifiedRealizedPnl && losses !== null && losses > 0 ? numberOrNull(row.worstTradeSek ?? row.largestLoss) : null,
+    drawdown: null,
+    netPnl: hasVerifiedRealizedPnl ? numberOrNull(row.netPnlSek ?? row.netPnl) : null,
+    grossPnl: hasVerifiedRealizedPnl ? numberOrNull(row.grossPnlSek ?? row.grossPnl) : null,
+    commission: hasVerifiedCommission ? numberOrNull(row.feesSek ?? row.commission) : null,
+  };
+}
+
+function buildCanonicalPerformance({
+  account = {},
+  positions = {},
+  orders = {},
+  executions = {},
+  portfolio = {},
+} = {}) {
+  const executionItems = safeArray(executions?.items);
+  const verificationByStrategy = buildPerformanceVerificationByStrategy(executionItems);
+  const strategyStats = futuresPaperStrategyPerformanceService.buildStrategyStats({
+    executions: executionItems,
+  });
+  const strategy = safeArray(strategyStats).map((row) => (
+    normalizeCanonicalPerformanceStrategy(row, verificationByStrategy.get(row?.strategyId))
+  ));
+  return {
+    context: {
+      performanceContext: 'ibkr_paper',
+      executionSource: 'ibkr_paper',
+      notRealMarketPerformance: false,
+      legacySimulationExcluded: true,
+      strategyCount: strategy.length,
+      minTradesForRateLeaders: futuresPaperStrategyPerformanceService.MIN_TRADES_FOR_RATE_LEADERS ?? null,
+      minTradesForRatios: futuresPaperStrategyPerformanceService.MIN_TRADES_FOR_RATE_LEADERS ?? null,
+    },
+    strategy,
+    portfolio: {
+      portfolioValue: numberOrNull(portfolio?.portfolioValue),
+      marketValue: numberOrNull(portfolio?.marketValue),
+      openExposure: numberOrNull(portfolio?.openExposure),
+      openRisk: numberOrNull(portfolio?.openRisk),
+      portfolioPnl: numberOrNull(portfolio?.portfolioPnl),
+      dailyPnl: numberOrNull(portfolio?.dailyPnl),
+      realizedPnl: numberOrNull(portfolio?.realizedPnl),
+      unrealizedPnl: numberOrNull(portfolio?.unrealizedPnl),
+      commission: numberOrNull(portfolio?.commission),
+      currency: portfolio?.currency || account?.currency || null,
+    },
+    updatedAt: latestTimestampOrNull([
+      portfolio?.updatedAt,
+      executions?.updatedAt,
+      positions?.updatedAt,
+      orders?.updatedAt,
+      account?.updatedAt,
+    ]),
+    source: 'futuresPaperStrategyPerformanceService',
+  };
+}
+
 function buildFuturesPaperDeskRuntime(options = {}) {
   const now = options.now ? new Date(options.now) : new Date();
   const universe = options.universe || marketUniverseService.getUniverse();
@@ -559,6 +819,18 @@ function buildFuturesPaperDeskRuntime(options = {}) {
   const brokerOrders = safeArray(options.brokerOrders || brokerReconciliation.openOrders).map(normalizeBrokerOrder);
   const brokerExecutions = safeArray(options.brokerExecutions || brokerReconciliation.executions)
     .map((row) => normalizeBrokerExecution(row, commissionsByExecId));
+  const {
+    broker,
+    orders,
+    executions,
+    commissions,
+  } = buildCanonicalBrokerRuntime({
+    brokerReconciliation,
+    brokerPositions,
+    brokerOrders,
+    brokerExecutions,
+    brokerCommissions: brokerCommissionsRaw,
+  });
   const positions = {
     open: brokerPositions,
     closed: [],
@@ -595,23 +867,20 @@ function buildFuturesPaperDeskRuntime(options = {}) {
   const nextTransition = (() => {
     try { return futuresMarketHoursService.getNextSessionTransition(now); } catch (_) { return null; }
   })();
-  const ibAccountView = ibAccount?.ok === true ? ibAccount.account : null;
-  const activeAccount = {
-    source: 'ibkr_paper',
-    accountIdMasked: ibAccountView?.accountIdMasked || null,
-    currency: ibAccountView?.currency || null,
-    netLiquidation: ibAccountView?.netLiquidation ?? null,
-    totalCashValue: ibAccountView?.totalCashValue ?? null,
-    availableFunds: ibAccountView?.availableFunds ?? null,
-    buyingPower: ibAccountView?.buyingPower ?? null,
-    unrealizedPnl: ibAccountView?.unrealizedPnl ?? null,
-    realizedPnl: ibAccountView?.realizedPnl ?? null,
-    dailyPnl: ibAccountView?.dailyPnl ?? null,
-    updatedAt: ibAccount?.generatedAt || null,
-    stale: ibAccount?.stale === true,
-    degraded: ibAccount?.ok !== true,
-    unavailableReason: ibAccount?.ok === true ? null : (ibAccount?.blocker || ibAccount?.error || 'ibkr_paper_account_unavailable'),
-  };
+  const { account: activeAccount, margin } = buildCanonicalAccountAndMargin(ibAccount);
+  const portfolio = buildCanonicalPortfolio({
+    account: activeAccount,
+    positions,
+    orders,
+    executions,
+  });
+  const runtimePerformance = buildCanonicalPerformance({
+    account: activeAccount,
+    positions,
+    orders,
+    executions,
+    portfolio,
+  });
   const legacyClosedTrades = futuresPaperLedgerService.defaultFuturesPaperLedgerService.getRecentClosedTrades({
     limit: scannerRuntime?.engineConfig?.closedTradesLimit || 100,
   });
@@ -651,6 +920,13 @@ function buildFuturesPaperDeskRuntime(options = {}) {
     },
     market: session,
     account: activeAccount,
+    margin,
+    portfolio,
+    performance: runtimePerformance,
+    broker,
+    orders,
+    executions,
+    commissions,
     accountConfig: null,
     positions,
     openPositions,
@@ -678,6 +954,7 @@ function buildFuturesPaperDeskRuntime(options = {}) {
     autoSimulation: scannerRuntime?.autoSimulation || { enabled: false, intervalMs: null, timerActive: false, retired: true },
     candidateQueue: scannerRuntime?.candidateQueue || { connected: false, length: 0, candidates: [] },
     scanHistory: scannerRuntime?.scanHistory || [],
+    executionTargetModel: scannerRuntime?.executionTargetModel || null,
     strategyStatus: strategyStatus?.strategies || [],
     strategyStatusMeta: strategyStatus ? {
       totalStrategies: strategyStatus.totalStrategies,

@@ -6,6 +6,17 @@ import {
   ChartCard,
   DashboardShell,
 } from '../components/dashboard/DashboardKit.jsx';
+import {
+  AiDecisionCenter,
+  createDecisionStore,
+  createTradingEventStore,
+} from '../components/trading/index.js';
+import {
+  createStrategyStore,
+  resolveKnownStrategy,
+  strategyDisplayName,
+} from '../stores/strategyStore.js';
+import { EMPTY_VALUE, fmtNumber as formatNumber, numberOrNull } from '../utils/tradingFormatters.js';
 
 // ── AI Control Room ───────────────────────────────────────────────────────────
 // Read-only översikt över systemets AI-delar: vad de gör, vad de lärt sig och
@@ -80,6 +91,24 @@ function sourceData(sources, key) {
   return entry && entry.ok ? entry.data : null;
 }
 
+function aiStrategyModel(row = {}) {
+  return resolveKnownStrategy(row);
+}
+
+function aiStrategyLabel(row = {}, fallback = '—') {
+  return strategyDisplayName(aiStrategyModel(row), fallback);
+}
+
+function displayNumber(value, fallback = EMPTY_VALUE) {
+  const n = numberOrNull(value);
+  return n === null ? fallback : formatNumber(n);
+}
+
+function displayPercent(value, digits = 1, fallback = EMPTY_VALUE) {
+  const n = numberOrNull(value);
+  return n === null ? fallback : `${formatNumber(n, digits)}%`;
+}
+
 // ── Stilhjälpare (samma konventioner som Lab/Paper Trading) ──────────────────
 
 const sectionStyle = {
@@ -131,8 +160,9 @@ function SafetyRow({ sources }) {
       <span style={{ fontSize: 11, fontWeight: 800, textTransform: 'uppercase', letterSpacing: '0.05em', ...mutedStyle }}>Safety</span>
       {SAFETY_FLAGS.map((flag) => {
         const value = safety[flag.key];
-        const asExpected = value === flag.expect || (value == null && flag.key === 'mode');
-        const shown = flag.key === 'mode' ? String(value || 'paper_only') : String(value ?? flag.expect);
+        const hasFlag = value !== null && value !== undefined && value !== '';
+        const asExpected = hasFlag && value === flag.expect;
+        const shown = hasFlag ? String(value) : EMPTY_VALUE;
         return (
           <Pill key={flag.key} tone={asExpected ? 'ok' : 'bad'}>
             {flag.label}={shown}
@@ -168,12 +198,14 @@ function TechDetails({ label = 'Tekniska detaljer', data }) {
 }
 
 function MiniBar({ label, value, max, suffix = '' }) {
-  const pct = max > 0 ? Math.max(2, Math.min(100, Math.round((value / max) * 100))) : 0;
+  const n = numberOrNull(value);
+  const maxValue = numberOrNull(max);
+  const pct = n !== null && maxValue !== null && maxValue > 0 ? Math.max(2, Math.min(100, Math.round((n / maxValue) * 100))) : 0;
   return (
     <div style={{ marginBottom: 8 }}>
       <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 11.5, marginBottom: 3 }}>
         <span>{label}</span>
-        <span style={mutedStyle}>{value}{suffix}</span>
+        <span style={mutedStyle}>{n === null ? EMPTY_VALUE : displayNumber(n)}{n === null ? '' : suffix}</span>
       </div>
       <div style={{ height: 8, background: 'var(--surface-2)', borderRadius: 999, overflow: 'hidden', border: '1px solid var(--border)' }}>
         <div style={{ width: `${pct}%`, height: '100%', background: 'var(--accent)', borderRadius: 999 }} />
@@ -204,12 +236,14 @@ function statusTone(status) {
 function buildAgents(sources) {
   const supervisor = sourceData(sources, 'supervisor') || {};
   const np = sourceData(sources, 'narrowPerformance') || {};
-  const autopilot = sourceData(sources, 'narrowAutopilot') || {};
+  const autopilotSource = sourceData(sources, 'narrowAutopilot');
+  const autopilot = autopilotSource || {};
   const analyst = sourceData(sources, 'analyst') || {};
   const scheduler = autopilot.scheduler || {};
+  const hasSchedulerSnapshot = Boolean(autopilotSource && autopilot.scheduler && typeof autopilot.scheduler === 'object');
   const npSummary = np.summary || {};
 
-  const s = (obj, fallback = 'no_data') => obj?.status || fallback;
+  const s = (obj, fallback = 'unavailable') => obj?.status || fallback;
 
   return [
     {
@@ -230,7 +264,7 @@ function buildAgents(sources) {
       source: 'GET /api/learning/narrow-performance',
       status: s(npSummary),
       lastActivity: np.generatedAt ? fmtTime(np.generatedAt) : null,
-      lastOutput: npSummary.bestStrategy ? `Bäst just nu: ${npSummary.bestStrategy.name}` : null,
+      lastOutput: npSummary.bestStrategy ? `Bäst just nu: ${aiStrategyLabel(npSummary.bestStrategy)}` : null,
       benefit: 'Pekar ut vilken narrow-strategi som är mest lovande.',
       limitation: `Datakonfidens: ${npSummary.dataConfidence || 'okänd'} — paper-data saknas ännu i jämförelsen.`,
     },
@@ -239,7 +273,7 @@ function buildAgents(sources) {
       icon: '🧭',
       purpose: 'Planerar nästa narrow-test (symboler, band, tidsfönster) utifrån lärdomarna.',
       source: 'GET /api/autopilot/narrow/status',
-      status: scheduler.enabled ? (scheduler.dryRunOnly ? 'dry-run' : 'ok') : 'av',
+      status: hasSchedulerSnapshot ? (scheduler.enabled ? (scheduler.dryRunOnly ? 'dry-run' : 'ok') : 'av') : 'no_data',
       lastActivity: scheduler.lastRunAt ? fmtTime(scheduler.lastRunAt) : null,
       lastOutput: autopilot.autopilot?.recommendedNextTest?.title || 'Plan skapas var 6:e timme (dry-run).',
       benefit: 'Föreslår genomtänkta tester i stället för slumpvisa.',
@@ -346,6 +380,8 @@ function OverviewSection({ sources }) {
   const latestLearning = np.summary?.message || 'Ingen lärdom tillgänglig ännu.';
   const latestRec = np.recommendedNextTest?.title || autopilot.autopilot?.recommendedNextTest?.title || 'Ingen rekommendation ännu.';
   const scheduler = autopilot.scheduler || {};
+  const hasSchedulerSnapshot = Boolean(autopilot.scheduler && typeof autopilot.scheduler === 'object');
+  const pipelineValue = hasSchedulerSnapshot ? (scheduler.enabled ? 'Dry-run' : 'Paus') : EMPTY_VALUE;
 
   return (
     <>
@@ -353,14 +389,14 @@ function OverviewSection({ sources }) {
         <StatCard label="AI-delar" value={agents.length} note="beskrivna i systemet" />
         <StatCard label="Aktiva" value={active} tone="ok" note="levererar data nu" />
         <StatCard label="Degraded / no data" value={degraded} tone={degraded ? 'warn' : 'ok'} note="väntar på data eller endpoint" />
-        <StatCard label="Pipeline" value={scheduler.enabled ? 'Dry-run' : 'Paus'} tone={scheduler.enabled ? 'info' : 'warn'} note={scheduler.nextRunAt ? `nästa plan ${fmtTime(scheduler.nextRunAt)}` : 'ingen schemalagd plan'} />
+        <StatCard label="Pipeline" value={pipelineValue} tone={hasSchedulerSnapshot ? (scheduler.enabled ? 'info' : 'warn') : 'neutral'} note={hasSchedulerSnapshot ? (scheduler.nextRunAt ? `nästa plan ${fmtTime(scheduler.nextRunAt)}` : 'ingen schemalagd plan') : EMPTY_VALUE} />
       </div>
       <div style={sectionStyle}>
         <div style={{ fontWeight: 800, marginBottom: 6 }}>Senaste lärdom</div>
         <div style={{ fontSize: 13, lineHeight: 1.5 }}>{latestLearning}</div>
         {np.summary?.bestStrategy ? (
           <div style={{ fontSize: 12.5, marginTop: 6, ...mutedStyle }}>
-            Mest lovande strategi just nu: <strong style={{ color: 'var(--text)' }}>{np.summary.bestStrategy.name}</strong>{' '}
+            Mest lovande strategi just nu: <strong style={{ color: 'var(--text)' }}>{aiStrategyLabel(np.summary.bestStrategy)}</strong>{' '}
             ({np.summary.bestStrategy.trades} tester, {fmtPct(np.summary.bestStrategy.winRate)} vinst).
           </div>
         ) : null}
@@ -389,14 +425,17 @@ function OverviewSection({ sources }) {
 function LearningSection({ sources }) {
   const np = sourceData(sources, 'narrowPerformance') || {};
   const summary = np.summary || {};
-  const counts = summary.sourceCounts || {};
-  const maxCount = Math.max(counts.batch || 0, counts.replay || 0, counts.paper || 0, 1);
+  const counts = summary.sourceCounts || null;
+  const batchCount = numberOrNull(counts?.batch);
+  const replayCount = numberOrNull(counts?.replay);
+  const paperCount = numberOrNull(counts?.paper);
+  const maxCount = Math.max(batchCount ?? 0, replayCount ?? 0, paperCount ?? 0, 1);
   return (
     <>
       <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10, marginBottom: 16 }}>
-        <StatCard label="Jämförda tester" value={summary.totalTrades ?? '–'} note={`${summary.strategiesCompared ?? 0} strategier jämförda`} />
+        <StatCard label="Jämförda tester" value={displayNumber(summary.totalTrades)} note={`${displayNumber(summary.strategiesCompared)} strategier jämförda`} />
         <StatCard label="Datakonfidens" value={summary.dataConfidence || '–'} tone={summary.dataConfidence === 'high' ? 'ok' : 'warn'} />
-        <StatCard label="Status" value={summary.status || 'no_data'} tone={statusTone(summary.status)} />
+        <StatCard label="Status" value={summary.status || EMPTY_VALUE} tone={statusTone(summary.status)} />
       </div>
       <div style={sectionStyle}>
         <div style={{ fontWeight: 800, marginBottom: 10 }}>Vad systemet har lärt sig</div>
@@ -404,14 +443,14 @@ function LearningSection({ sources }) {
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(230px, 1fr))', gap: 10 }}>
             <div style={{ background: 'var(--surface-2)', border: '1px solid var(--border)', borderRadius: 10, padding: 12 }}>
               <Pill tone="ok">Bästa strategi</Pill>
-              <div style={{ fontWeight: 700, marginTop: 6 }}>{summary.bestStrategy.name}</div>
-              <div style={{ fontSize: 12, ...mutedStyle }}>{fmtPct(summary.bestStrategy.winRate)} vinst · {summary.bestStrategy.trades} tester · snitt {summary.bestStrategy.avgPnl}%</div>
+              <div style={{ fontWeight: 700, marginTop: 6 }}>{aiStrategyLabel(summary.bestStrategy)}</div>
+              <div style={{ fontSize: 12, ...mutedStyle }}>{displayPercent(summary.bestStrategy.winRate)} vinst · {displayNumber(summary.bestStrategy.trades)} tester · snitt {displayPercent(summary.bestStrategy.avgPnl)}</div>
             </div>
             {summary.worstStrategy ? (
               <div style={{ background: 'var(--surface-2)', border: '1px solid var(--border)', borderRadius: 10, padding: 12 }}>
                 <Pill tone="warn">Svagaste strategi</Pill>
-                <div style={{ fontWeight: 700, marginTop: 6 }}>{summary.worstStrategy.name}</div>
-                <div style={{ fontSize: 12, ...mutedStyle }}>{fmtPct(summary.worstStrategy.winRate)} vinst · {summary.worstStrategy.trades} tester</div>
+                <div style={{ fontWeight: 700, marginTop: 6 }}>{aiStrategyLabel(summary.worstStrategy)}</div>
+                <div style={{ fontSize: 12, ...mutedStyle }}>{displayPercent(summary.worstStrategy.winRate)} vinst · {displayNumber(summary.worstStrategy.trades)} tester</div>
               </div>
             ) : null}
             {summary.bestScoreBand ? (
@@ -426,7 +465,7 @@ function LearningSection({ sources }) {
                 <Pill tone="info">Starkaste bekräftelse</Pill>
                 <div style={{ fontWeight: 700, marginTop: 6 }}>{summary.strongestConfirmation.confirmation}</div>
                 <div style={{ fontSize: 12, ...mutedStyle }}>
-                  {fmtPct(summary.strongestConfirmation.withWinRate)} med · {fmtPct(summary.strongestConfirmation.withoutWinRate)} utan
+                  {displayPercent(summary.strongestConfirmation.withWinRate)} med · {displayPercent(summary.strongestConfirmation.withoutWinRate)} utan
                 </div>
               </div>
             ) : null}
@@ -438,10 +477,10 @@ function LearningSection({ sources }) {
       </div>
       <div style={sectionStyle}>
         <div style={{ fontWeight: 800, marginBottom: 10 }}>Varifrån kommer lärdomarna?</div>
-        <MiniBar label="Batch-tester" value={counts.batch || 0} max={maxCount} />
-        <MiniBar label="Replay-tester" value={counts.replay || 0} max={maxCount} />
-        <MiniBar label="Paper-observationer" value={counts.paper || 0} max={maxCount} />
-        {(counts.paper || 0) === 0 ? (
+        <MiniBar label="Batch-tester" value={batchCount} max={maxCount} />
+        <MiniBar label="Replay-tester" value={replayCount} max={maxCount} />
+        <MiniBar label="Paper-observationer" value={paperCount} max={maxCount} />
+        {paperCount === 0 ? (
           <div style={{ fontSize: 12, ...mutedStyle }}>Paper-data saknas ännu i jämförelsen — slutsatserna vilar på batch/replay.</div>
         ) : null}
         <TechDetails data={summary} />
@@ -510,7 +549,7 @@ function ImprovementsSection({ sources }) {
   }
   if (summary.bestStrategy) {
     improvements.push({
-      title: `Granska "${summary.bestStrategy.name}" för fortsatt paper-observation`,
+      title: `Granska "${aiStrategyLabel(summary.bestStrategy)}" för fortsatt paper-observation`,
       why: 'Bästa strategin i jämförelsen — nästa steg är manuell granskning av om den ska följas tätare i paper.',
       status: 'manual_review',
       evidence: `${summary.bestStrategy.trades} tester`,
@@ -544,12 +583,13 @@ function ImprovementsSection({ sources }) {
 function PipelineSection({ sources }) {
   const np = sourceData(sources, 'narrowPerformance') || {};
   const autopilot = sourceData(sources, 'narrowAutopilot') || {};
-  const counts = np.summary?.sourceCounts || {};
+  const hasAutopilotScheduler = Boolean(autopilot.scheduler && typeof autopilot.scheduler === 'object');
+  const counts = np.summary?.sourceCounts || null;
   const scheduler = autopilot.scheduler || {};
   const notes = {
-    batch: `${counts.batch || 0} batch-rader i learning-datat`,
-    replay: `${counts.replay || 0} replay-rader i learning-datat`,
-    paper: `${counts.paper || 0} paper-rader i learning-datat`,
+    batch: `${displayNumber(counts?.batch)} batch-rader i learning-datat`,
+    replay: `${displayNumber(counts?.replay)} replay-rader i learning-datat`,
+    paper: `${displayNumber(counts?.paper)} paper-rader i learning-datat`,
     recommendation: np.recommendedNextTest ? `Aktivt förslag: ${np.recommendedNextTest.title}` : 'Inget aktivt förslag',
     agents: scheduler.dryRunOnly ? 'Autopiloter i dry-run — planerar men exekverar inte' : null,
   };
@@ -590,15 +630,17 @@ function BatchReplaySection({ sources }) {
   const np = sourceData(sources, 'narrowPerformance') || {};
   const supervisor = sourceData(sources, 'supervisor') || {};
   const summary = np.summary || {};
-  const counts = summary.sourceCounts || {};
+  const counts = summary.sourceCounts || null;
+  const replayCount = numberOrNull(counts?.replay);
+  const paperCount = numberOrNull(counts?.paper);
   const rankings = Array.isArray(np.rankings) ? np.rankings.slice(0, 8) : [];
   return (
     <>
       <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10, marginBottom: 16 }}>
-        <StatCard label="Batch-rader" value={counts.batch ?? '–'} note="i learning-underlaget" />
-        <StatCard label="Replay-rader" value={counts.replay ?? '–'} tone={(counts.replay || 0) === 0 ? 'warn' : 'neutral'} note={(counts.replay || 0) === 0 ? 'behöver fler replay-verifieringar' : ''} />
-        <StatCard label="Paper-rader" value={counts.paper ?? '–'} tone={(counts.paper || 0) === 0 ? 'warn' : 'neutral'} note={(counts.paper || 0) === 0 ? 'paper-observation pågår' : ''} />
-        <StatCard label="Dubbletter rensade" value={summary.duplicateBatchRowsSkipped ?? 0} note="skippade batch-rader" />
+        <StatCard label="Batch-rader" value={displayNumber(counts?.batch)} note="i learning-underlaget" />
+        <StatCard label="Replay-rader" value={displayNumber(replayCount)} tone={replayCount === 0 ? 'warn' : 'neutral'} note={replayCount === 0 ? 'behöver fler replay-verifieringar' : ''} />
+        <StatCard label="Paper-rader" value={displayNumber(paperCount)} tone={paperCount === 0 ? 'warn' : 'neutral'} note={paperCount === 0 ? 'paper-observation pågår' : ''} />
+        <StatCard label="Dubbletter rensade" value={displayNumber(summary.duplicateBatchRowsSkipped)} note="skippade batch-rader" />
       </div>
       <div style={sectionStyle}>
         <div style={{ fontWeight: 800, marginBottom: 10 }}>Strategijämförelse (från batch/replay)</div>
@@ -615,7 +657,7 @@ function BatchReplaySection({ sources }) {
               <tbody>
                 {rankings.map((row) => (
                   <tr key={row.strategy_id || row.name}>
-                    <td style={{ padding: '8px 10px', borderBottom: '1px solid var(--border)', fontSize: 12.5, fontWeight: 600 }}>{row.name || row.strategy_id}</td>
+                    <td style={{ padding: '8px 10px', borderBottom: '1px solid var(--border)', fontSize: 12.5, fontWeight: 600 }}>{aiStrategyLabel(row)}</td>
                     <td style={{ padding: '8px 10px', borderBottom: '1px solid var(--border)', fontSize: 12.5 }}>{row.trades ?? '–'}</td>
                     <td style={{ padding: '8px 10px', borderBottom: '1px solid var(--border)', fontSize: 12.5 }}>{fmtPct(row.winRate)}</td>
                     <td style={{ padding: '8px 10px', borderBottom: '1px solid var(--border)', fontSize: 12.5 }}>{row.avgPnl ?? '–'}</td>
@@ -655,7 +697,7 @@ function RecommendationsSection({ sources }) {
         <div style={{ fontWeight: 800, marginBottom: 8 }}>Nästa rekommenderade test</div>
         {rec ? (
           <>
-            <div style={{ fontSize: 14, fontWeight: 700 }}>{rec.title || rec.strategy_id}</div>
+            <div style={{ fontSize: 14, fontWeight: 700 }}>{rec.title || aiStrategyLabel(rec, '—')}</div>
             <div style={{ fontSize: 12.5, lineHeight: 1.55, marginTop: 6 }}>{rec.reason || 'Ingen motivering angiven.'}</div>
             <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginTop: 10 }}>
               {rec.priority ? <Pill tone={rec.priority === 'high' ? 'warn' : 'neutral'}>prioritet: {rec.priority}</Pill> : null}
@@ -696,7 +738,9 @@ function RisksSection({ sources }) {
   const supervisor = sourceData(sources, 'supervisor') || {};
   const autopilot = sourceData(sources, 'narrowAutopilot') || {};
   const summary = np.summary || {};
-  const counts = summary.sourceCounts || {};
+  const counts = summary.sourceCounts || null;
+  const paperCount = numberOrNull(counts?.paper);
+  const replayCount = numberOrNull(counts?.replay);
   const scheduler = autopilot.scheduler || {};
 
   const degradedSources = Object.entries(sources)
@@ -709,13 +753,13 @@ function RisksSection({ sources }) {
   const risks = [
     {
       title: 'Paper-data saknas i learning-underlaget',
-      active: (counts.paper || 0) === 0,
+      active: paperCount === 0,
       tone: 'warn',
       desc: 'Slutsatserna bygger än så länge på batch/replay. Paper-observationer stärker eller försvagar dem över tid.',
     },
     {
       title: 'Replay-verifiering saknas',
-      active: (counts.replay || 0) === 0,
+      active: replayCount === 0,
       tone: 'warn',
       desc: 'Batch-fynd är inte replay-verifierade ännu — kör replay innan slutsatser väger tungt.',
     },
@@ -729,7 +773,7 @@ function RisksSection({ sources }) {
       title: 'Osäkra strategier',
       active: Boolean(summary.worstStrategy),
       tone: 'neutral',
-      desc: summary.worstStrategy ? `${summary.worstStrategy.name} är svagast i jämförelsen (${fmtPct(summary.worstStrategy.winRate)} vinst).` : '',
+      desc: summary.worstStrategy ? `${aiStrategyLabel(summary.worstStrategy)} är svagast i jämförelsen (${fmtPct(summary.worstStrategy.winRate)} vinst).` : '',
     },
     {
       title: 'Autopilot-cooldown',
@@ -777,6 +821,39 @@ export default function AiControlRoomPage() {
   const navigate = useNavigate();
   const activeId = SECTIONS.some((s) => s.id === section) ? section : 'oversikt';
   const { loading, sources } = useAiData();
+  const strategyStore = useMemo(() => {
+    const supervisor = sourceData(sources, 'supervisor') || {};
+    const allowlist = sourceData(sources, 'allowlist') || {};
+    const learning = sourceData(sources, 'narrowPerformance') || {};
+    return createStrategyStore({
+      runtimeSnapshot: supervisor,
+      strategyOverview: supervisor.strategyOverview || [],
+      strategyStatus: supervisor.strategyStatus || [],
+      strategyPulse: supervisor.strategyPulse || [],
+      strategies: [
+        ...(Array.isArray(allowlist.allowlist) ? allowlist.allowlist : []),
+        ...(Array.isArray(learning.summary?.strategies) ? learning.summary.strategies : []),
+        learning.summary?.bestStrategy,
+        learning.summary?.worstStrategy,
+      ].filter(Boolean),
+    });
+  }, [sources]);
+  const tradingEventStore = useMemo(() => {
+    const supervisor = sourceData(sources, 'supervisor') || {};
+    const narrowPerformance = sourceData(sources, 'narrowPerformance') || {};
+    const narrowAutopilot = sourceData(sources, 'narrowAutopilot') || {};
+    return createTradingEventStore({
+      supervisorSnapshot: supervisor,
+      aiSources: sources,
+      analyticsSnapshot: narrowPerformance,
+      automationPlan: narrowAutopilot,
+      strategyStore,
+    });
+  }, [sources, strategyStore]);
+  const decisionStore = useMemo(() => createDecisionStore({
+    eventStore: tradingEventStore,
+    aiSources: sources,
+  }), [sources, tradingEventStore]);
   const safetySource = ['allowlist', 'narrowAutopilot', 'narrowPerformance', 'supervisor']
     .map((key) => sourceData(sources, key))
     .find(Boolean) || {};
@@ -785,15 +862,18 @@ export default function AiControlRoomPage() {
     : safetySource;
   const agents = buildAgents(sources);
   const activeAgents = agents.filter((agent) => ['ok', 'ready', 'dry-run'].includes(String(agent.status).toLowerCase())).length;
-  const degradedAgents = agents.filter((agent) => ['degraded', 'no_data', 'empty', 'av'].includes(String(agent.status).toLowerCase())).length;
+  const degradedAgents = agents.filter((agent) => ['degraded', 'no_data', 'unavailable', 'empty', 'av'].includes(String(agent.status).toLowerCase())).length;
   const learning = sourceData(sources, 'narrowPerformance') || {};
-  const sourceCounts = learning.summary?.sourceCounts || {};
+  const sourceCounts = learning.summary?.sourceCounts || null;
+  const batchCount = numberOrNull(sourceCounts?.batch);
+  const replayCount = numberOrNull(sourceCounts?.replay);
+  const paperCount = numberOrNull(sourceCounts?.paper);
   const autopilot = sourceData(sources, 'narrowAutopilot') || {};
   const learningBars = learning.summary?.sourceCounts
     ? [
-        { label: 'Batch', value: Number(sourceCounts.batch || 0), tone: 'purple' },
-        { label: 'Replay', value: Number(sourceCounts.replay || 0), tone: 'warning' },
-        { label: 'Paper', value: Number(sourceCounts.paper || 0), tone: 'good' },
+        { label: 'Batch', value: batchCount, tone: 'purple' },
+        { label: 'Replay', value: replayCount, tone: 'warning' },
+        { label: 'Paper', value: paperCount, tone: 'good' },
       ]
     : [];
   const recommendedTest = learning.recommendedNextTest || autopilot.autopilot?.recommendedNextTest || null;
@@ -801,7 +881,7 @@ export default function AiControlRoomPage() {
   const aiActivity = [
     recommendedTest ? {
       id: 'recommended-test',
-      title: recommendedTest.title || recommendedTest.strategy_id || 'Rekommenderat test',
+      title: recommendedTest.title || aiStrategyLabel(recommendedTest, 'Rekommenderat test'),
       meta: recommendedTest.reason || 'Ingen motivering angiven.',
       time: recommendedTest.createdAt ? fmtTime(recommendedTest.createdAt) : null,
       tone: 'blue',
@@ -819,10 +899,10 @@ export default function AiControlRoomPage() {
   const kpis = [
     { label: 'AI-delar', value: agents.length, hint: `${activeAgents} aktiva`, tone: 'blue' },
     { label: 'Degraded / no data', value: degradedAgents, hint: 'Datakällor som behöver underlag', tone: degradedAgents ? 'warning' : 'good' },
-    { label: 'Batch-rader', value: sourceCounts.batch ?? '–', hint: 'Learning-underlag', tone: 'neutral' },
-    { label: 'Replay-rader', value: sourceCounts.replay ?? '–', hint: 'Learning-underlag', tone: (sourceCounts.replay || 0) > 0 ? 'good' : 'warning' },
-    { label: 'Paper-rader', value: sourceCounts.paper ?? '–', hint: 'Learning-underlag', tone: (sourceCounts.paper || 0) > 0 ? 'good' : 'warning' },
-    { label: 'Autopilot', value: autopilot.scheduler?.dryRunOnly ? 'Dry-run' : (autopilot.scheduler?.enabled ? 'Aktiv' : 'Paus'), hint: 'Planerar men auto-applicerar inte', tone: autopilot.scheduler?.dryRunOnly ? 'good' : 'warning' },
+    { label: 'Batch-rader', value: displayNumber(batchCount), hint: 'Learning-underlag', tone: 'neutral' },
+    { label: 'Replay-rader', value: displayNumber(replayCount), hint: 'Learning-underlag', tone: replayCount === null ? 'neutral' : replayCount > 0 ? 'good' : 'warning' },
+    { label: 'Paper-rader', value: displayNumber(paperCount), hint: 'Learning-underlag', tone: paperCount === null ? 'neutral' : paperCount > 0 ? 'good' : 'warning' },
+    { label: 'Autopilot', value: hasAutopilotScheduler ? (autopilot.scheduler?.dryRunOnly ? 'Dry-run' : (autopilot.scheduler?.enabled ? 'Aktiv' : 'Paus')) : EMPTY_VALUE, hint: hasAutopilotScheduler ? 'Planerar men auto-applicerar inte' : EMPTY_VALUE, tone: hasAutopilotScheduler ? (autopilot.scheduler?.dryRunOnly ? 'good' : 'warning') : 'neutral' },
   ];
 
   const body = useMemo(() => {
@@ -858,6 +938,15 @@ export default function AiControlRoomPage() {
             <ActivityList items={aiActivity} emptyText="Ingen AI-aktivitet finns ännu." />
           </ChartCard>
         </div>
+      ) : null}
+      {activeId === 'oversikt' ? (
+        <AiDecisionCenter
+          sources={sources}
+          strategyStore={strategyStore}
+          eventStore={tradingEventStore}
+          decisionStore={decisionStore}
+          waiting={loading}
+        />
       ) : null}
       {body}
     </DashboardShell>

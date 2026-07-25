@@ -214,90 +214,99 @@ async function runScan() {
   const results = [];
   let anyMarketWarning = false;
 
-  const activeWatchlist = WATCHLIST.filter((symbol) => marketUniverse.symbolEnabledFor(symbol, 'scanner', getMarketGroup(symbol)));
+  try {
+    const activeWatchlist = WATCHLIST.filter((symbol) => marketUniverse.symbolEnabledFor(symbol, 'scanner', getMarketGroup(symbol)));
 
-  for (const symbol of activeWatchlist) {
-    const result = await scanSymbol(symbol);
-    results.push(result);
-    if (result.note && result.note.includes('Market may be closed')) {
-      anyMarketWarning = true;
+    for (const symbol of activeWatchlist) {
+      const result = await scanSymbol(symbol);
+      results.push(result);
+      if (result.note && result.note.includes('Market may be closed')) {
+        anyMarketWarning = true;
+      }
+      // Small delay between requests to avoid rate limits
+      await delay(200);
     }
-    // Small delay between requests to avoid rate limits
-    await delay(200);
+
+    // Engine v3: use QQQ as market reference for all symbols
+    const qqqResult = results.find((r) => r.symbol === 'QQQ') || null;
+
+    // Market Regime V2: compute once from QQQ, apply to all
+    let mktCtxV2 = null;
+    try { mktCtxV2 = calcMarketRegimeV2(qqqResult); } catch (_) {}
+
+    latestResults = results
+      .map((r) => applyEngineV3(r, qqqResult))
+      .map((r) => applyMarketRegimeV2(r, mktCtxV2))
+      .map((r) => applyHistoricalEdge(r))
+      .map((r) => applyConfidenceEngine(r))
+      .map((r) => applyMtf(r))
+      .map((r) => applyMomentumContinuation(r))
+      .map((r) => applyFakeoutProbability(r))
+      .map((r) => applyLiquiditySweep(r))
+      .map((r) => applyAdaptiveEdge(r))
+      .map((r) => applyRuleMemory(r))
+      .map((r) => applySymbolPersonality(r))
+      .map((r) => applyRegimeProfile(r))
+      .map((r) => applyScoreCalibration(r))
+      .map((r) => applyFakeoutDna(r))
+      .map((r) => applyPreMove(r))
+      .map((r) => applyMarketFatigue(r))
+      .map((r) => applyStateGraph(r))
+      .map((r) => applySetupDNA(r))
+      .map((r) => orchestrateScores(r))
+      .map((r) => applyConfidenceDecay(r))
+      .map((r) => applyWavePhase(r))
+      .map((r) => applyMicroMove(r))
+      .map((r) => strategyRuntimeConnector.enrichSignalWithStrategy(r))
+      .map((r) => ({ ...r, narrow_state_data: r.narrow_state_data || r.stateGraph || null }))
+      .map((r) => enrichLiveIndicators(r))
+      .map((r) => stripPrivateFields(r))
+      .map((r) => ({ ...r, marketGroup: getMarketGroup(r.symbol) || 'UNKNOWN' }));
+
+    // Market personality (computed from aggregate of all results)
+    try { computeAndSavePersonality(latestResults, 'stocks'); } catch (_) {}
+    cacheScanState('stocks', latestResults, scanStatus);
+
+    // Market compass: derive risk-on/off from QQQ + SPY
+    try { computeAndSaveCompass(latestResults); } catch (_) {}
+
+    // Feature logging (respects FEATURE_LOGGING_ENABLED env flag)
+    logResults(latestResults.filter((r) => GROUPS.stocks.includes(r.symbol)), 'stocks');
+    logResults(latestResults.filter((r) => GROUPS.nasdaq.includes(r.symbol)), 'nasdaq');
+
+    scanStatus.lastScan = new Date().toISOString();
+    scanStatus.marketWarning = anyMarketWarning;
+    emitScannerEvents(latestResults, scanStatus);
+
+    processScanResults(latestResults.filter((r) => GROUPS.stocks.includes(r.symbol)), {
+      group: 'stocks',
+      feedStatus: getStockFeedStatus(),
+    }).catch((err) => console.warn('[Notifier] scan processing failed:', err.message));
+    notificationEngineV2.processStrongSignals(latestResults.filter((r) => GROUPS.stocks.includes(r.symbol)), {
+      group: 'stocks',
+      feedStatus: getStockFeedStatus(),
+    }).catch((err) => console.warn('[notification-v2] scan processing failed:', err.message));
+
+    console.log(`[Scanner] Scan complete at ${scanStatus.lastScan} – ${results.length} symbols (Engine v3, market-controls)`);
+  } catch (err) {
+    scanStatus.error = err && err.message ? err.message : String(err);
+    console.warn('[Scanner] Scan failed:', scanStatus.error);
+  } finally {
+    scanStatus.scanning = false;
   }
-
-  // Engine v3: use QQQ as market reference for all symbols
-  const qqqResult = results.find((r) => r.symbol === 'QQQ') || null;
-
-  // Market Regime V2: compute once from QQQ, apply to all
-  let mktCtxV2 = null;
-  try { mktCtxV2 = calcMarketRegimeV2(qqqResult); } catch (_) {}
-
-  latestResults = results
-    .map((r) => applyEngineV3(r, qqqResult))
-    .map((r) => applyMarketRegimeV2(r, mktCtxV2))
-    .map((r) => applyHistoricalEdge(r))
-    .map((r) => applyConfidenceEngine(r))
-    .map((r) => applyMtf(r))
-    .map((r) => applyMomentumContinuation(r))
-    .map((r) => applyFakeoutProbability(r))
-    .map((r) => applyLiquiditySweep(r))
-    .map((r) => applyAdaptiveEdge(r))
-    .map((r) => applyRuleMemory(r))
-    .map((r) => applySymbolPersonality(r))
-    .map((r) => applyRegimeProfile(r))
-    .map((r) => applyScoreCalibration(r))
-    .map((r) => applyFakeoutDna(r))
-    .map((r) => applyPreMove(r))
-    .map((r) => applyMarketFatigue(r))
-    .map((r) => applyStateGraph(r))
-    .map((r) => applySetupDNA(r))
-    .map((r) => orchestrateScores(r))
-    .map((r) => applyConfidenceDecay(r))
-    .map((r) => applyWavePhase(r))
-    .map((r) => applyMicroMove(r))
-    .map((r) => strategyRuntimeConnector.enrichSignalWithStrategy(r))
-    .map((r) => ({ ...r, narrow_state_data: r.narrow_state_data || r.stateGraph || null }))
-    .map((r) => enrichLiveIndicators(r))
-    .map((r) => stripPrivateFields(r))
-    .map((r) => ({ ...r, marketGroup: getMarketGroup(r.symbol) || 'UNKNOWN' }));
-
-  // Market personality (computed from aggregate of all results)
-  try { computeAndSavePersonality(latestResults, 'stocks'); } catch (_) {}
-  cacheScanState('stocks', latestResults, scanStatus);
-
-  // Market compass: derive risk-on/off from QQQ + SPY
-  try { computeAndSaveCompass(latestResults); } catch (_) {}
-
-  // Feature logging (respects FEATURE_LOGGING_ENABLED env flag)
-  logResults(latestResults.filter((r) => GROUPS.stocks.includes(r.symbol)), 'stocks');
-  logResults(latestResults.filter((r) => GROUPS.nasdaq.includes(r.symbol)), 'nasdaq');
-
-  scanStatus.lastScan = new Date().toISOString();
-  scanStatus.scanning = false;
-  scanStatus.marketWarning = anyMarketWarning;
-  emitScannerEvents(latestResults, scanStatus);
-
-  processScanResults(latestResults.filter((r) => GROUPS.stocks.includes(r.symbol)), {
-    group: 'stocks',
-    feedStatus: getStockFeedStatus(),
-  }).catch((err) => console.warn('[Notifier] scan processing failed:', err.message));
-  notificationEngineV2.processStrongSignals(latestResults.filter((r) => GROUPS.stocks.includes(r.symbol)), {
-    group: 'stocks',
-    feedStatus: getStockFeedStatus(),
-  }).catch((err) => console.warn('[notification-v2] scan processing failed:', err.message));
-
-  console.log(`[Scanner] Scan complete at ${scanStatus.lastScan} – ${results.length} symbols (Engine v3, market-controls)`);
 }
 
 function startScheduler() {
+  if (scanTimer) return scanTimer;
   console.log('[Scanner] Starting scheduler, interval:', SCAN_INTERVAL_MS / 1000, 's');
   runScan();
   scanTimer = setInterval(runScan, SCAN_INTERVAL_MS);
+  return scanTimer;
 }
 
 function stopScheduler() {
   if (scanTimer) clearInterval(scanTimer);
+  scanTimer = null;
 }
 
 function getLatestResults() {
@@ -516,4 +525,4 @@ function emitScannerEvents(results, status) {
   }
 }
 
-module.exports = { startScheduler, stopScheduler, getLatestResults, getScanStatus, getWatchlist, getGroups, getStockFeedStatus, getLiveCandlesDebug };
+module.exports = { startScheduler, stopScheduler, getLatestResults, getScanStatus, getWatchlist, getGroups, getStockFeedStatus, getLiveCandlesDebug, _internal: { runScan } };
