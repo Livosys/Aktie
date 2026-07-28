@@ -1143,6 +1143,25 @@ function createIbPaperExecutionAdapterService(options = {}) {
 	  }
 
   // Bygg exakt IB-orderpayload (§11) — ren funktion, skickar inget.
+  // ENDA källan för IB-kontraktet i utgående ordrar. Både buildOrderPlan och
+  // flattenOwnedPosition går genom den — en handbyggd variant i flatten skickade
+  // tidigare tomma symbol- och expiry-fält, och IB agerade då inte på ordern
+  // (varken fill, orderStatus eller felkod). Rör inte fälten var för sig här.
+  function buildIbContract(contract = {}) {
+    const root = String(contract.root || contract.symbol || '').toUpperCase();
+    const expiry = contract.expiry || contract.lastTradeDateOrContractMonth || undefined;
+    return {
+      conId: contract.conId,
+      exchange: contract.exchange || 'CME',
+      secType: SecType.FUT,
+      symbol: root || contract.root,
+      currency: contract.currency || 'USD',
+      localSymbol: contract.localSymbol || undefined,
+      expiry,
+      lastTradeDateOrContractMonth: expiry,
+    };
+  }
+
   function buildOrderPlan({
     executionId,
     contract, // {conId, localSymbol, expiry, exchange, currency, root}
@@ -1162,16 +1181,7 @@ function createIbPaperExecutionAdapterService(options = {}) {
     const normalizedLimitPrice = limitPrice != null ? roundPriceToTick(limitPrice, tickSize) : null;
     const normalizedStopLossPrice = roundPriceToTick(stopLossPrice, tickSize);
     const normalizedTakeProfitPrice = takeProfitPrice != null ? roundPriceToTick(takeProfitPrice, tickSize) : null;
-	    const ibContract = {
-	      conId: contract.conId,
-	      exchange: contract.exchange || 'CME',
-	      secType: SecType.FUT,
-	      symbol: root || contract.root,
-	      currency: contract.currency || 'USD',
-	      localSymbol: contract.localSymbol || undefined,
-	      expiry: contract.expiry || contract.lastTradeDateOrContractMonth || undefined,
-	      lastTradeDateOrContractMonth: contract.expiry || contract.lastTradeDateOrContractMonth || undefined,
-	    };
+	    const ibContract = buildIbContract(contract);
     const ocaGroup = `TOSP-${String(executionId).slice(-16)}`;
     const entry = {
       action,
@@ -1377,7 +1387,7 @@ function createIbPaperExecutionAdapterService(options = {}) {
 	  // placeOrder-väg. Avbryter först ägda skyddsben (OCA) så closen inte
 	  // slåss mot bracketen. Gate:ad EXAKT som submit/cancel (inert tills armad,
 	  // owned-only, paper-verifierad). Skapar INGEN entry, rör ej candidate/pipeline.
-	  async function flattenOwnedPosition({ root = null, reason = null, verifiedAccount = null, audit = {} } = {}) {
+	  async function flattenOwnedPosition({ root = null, reason = null, verifiedAccount = null, audit = {}, contract: resolvedContract = null } = {}) {
 	    const flags = flagsProvider();
 	    if (!flags.executionEnabled) return { ok: false, flattened: false, blocker: 'ibkr_paper_execution_disabled', ...EXECUTION_SAFETY };
 	    if (flags.shadowMode) return { ok: false, flattened: false, blocker: 'shadow_mode_active_no_flatten', ...EXECUTION_SAFETY };
@@ -1408,7 +1418,7 @@ function createIbPaperExecutionAdapterService(options = {}) {
 	    if (!Number.isInteger(qty) || qty < 1 || qty > maxFlattenQty) {
 	      return { ok: false, flattened: false, blocker: 'flatten_quantity_out_of_range', position: signed, maxFlattenQty, note: 'manual_flatten_required', ...EXECUTION_SAFETY };
 	    }
-	    const closeSide = signed > 0 ? 'SELL' : 'BUY';
+	    const closeSide = signed > 0 ? OrderAction.SELL : OrderAction.BUY;
 	    if (!pos.conId || !pos.localSymbol) return { ok: false, flattened: false, blocker: 'position_contract_incomplete', ...EXECUTION_SAFETY };
 
 	    // 1) Avbryt ägda skyddsben (OCA) för DENNA position så closen inte slåss mot bracketen.
@@ -1424,9 +1434,23 @@ function createIbPaperExecutionAdapterService(options = {}) {
 	    const execId = `emergency_flatten_${Date.now().toString(36)}${Math.floor(Math.random() * 1e4)}`;
 	    const orderRef = `${ORDER_REF_PREFIX}${execId}-flatten`;
 	    const idempotencyKey = `flatten:${pos.conId}:${execId}`;
-	    const contract = { conId: Number(pos.conId), secType: SecType.FUT, exchange: 'CME', currency: 'USD', localSymbol: pos.localSymbol };
+	    // Positionsraden är sanningen om VAD vi äger (conId/localSymbol/symbol).
+	    // Expiry finns bara i det upplösta kontraktet, och får bara lånas därifrån
+	    // när det beskriver samma kontrakt — annars vore det en annan kontraktsmånad.
+	    const sameContract = resolvedContract && Number(resolvedContract.conId) === Number(pos.conId);
+	    const contract = buildIbContract({
+	      conId: Number(pos.conId),
+	      localSymbol: pos.localSymbol,
+	      symbol: pos.symbol || normRoot,
+	      root: normRoot,
+	      exchange: sameContract ? resolvedContract.exchange : undefined,
+	      currency: sameContract ? resolvedContract.currency : undefined,
+	      expiry: sameContract
+	        ? (resolvedContract.expiry || resolvedContract.lastTradeDateOrContractMonth)
+	        : undefined,
+	    });
 	    const account = discovery.accountIdRawForSubmit;
-	    const closingOrder = { action: closeSide, orderType: 'MKT', totalQuantity: qty, account, orderRef, tif: 'DAY', transmit: true, outsideRth: true };
+	    const closingOrder = { action: closeSide, orderType: OrderType.MKT, totalQuantity: qty, account, orderRef, tif: TimeInForce.DAY, transmit: true, outsideRth: true };
 	    const orderId = nextOrderId;
 	    try {
 	      intentService.createIntent({ idempotencyKey, executionId: execId, intent: { executionId: execId, idempotencyKey, orderRef, root: normRoot, direction: closeSide === 'SELL' ? 'long' : 'short', executionTarget: 'ibkr_paper', kind: 'emergency_flatten', status: 'submit_started', paperAccountIdMasked: acctMasked, expectedOrderIds: [orderId], orderRefs: [orderRef] } });

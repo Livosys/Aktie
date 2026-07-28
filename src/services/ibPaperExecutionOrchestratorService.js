@@ -547,11 +547,16 @@ function createIbPaperExecutionOrchestratorService(options = {}) {
 	      const blocker = guardDecision.checks.find((check) => check.ok !== true)?.code || 'guard_not_passed';
 	      return { ok: false, flattened: false, blocker, guard: guardDecision, ...SAFETY };
 	    }
+	    // Samma kontraktsupplösning som buildShadowExecution använder för entries,
+	    // så att flatten-ordern bär symbol och expiry precis som en normal order.
+	    // Misslyckas den faller adaptern tillbaka på positionsradens conId.
+	    const flattenContract = await resolveContract(String(root).toUpperCase());
 	    const result = await adapter.flattenOwnedPosition({
 	      root: String(root).toUpperCase(),
 	      reason,
 	      verifiedAccount: adapterVerification,
 	      audit,
+	      contract: flattenContract.ok ? flattenContract.contract : null,
 	    });
 	    return { ...result, guard: guardDecision, ...SAFETY };
 	  }
