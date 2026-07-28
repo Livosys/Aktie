@@ -487,6 +487,9 @@ function getSignalPerformanceBadge(strategyId) {
 
 module.exports = {
   SAFETY,
+  // Ren funktion — exponeras så att futures paper kan återanvända samma
+  // drawdown-definition i stället för att implementera en egen.
+  maxDrawdownFromPnls,
   saveStrategyTestResult,
   saveSimulatedStrategyTest,
   getStrategyPerformance,

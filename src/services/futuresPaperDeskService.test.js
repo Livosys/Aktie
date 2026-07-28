@@ -114,6 +114,9 @@ const runtime = svc.buildFuturesPaperDeskRuntime({
       maintMarginReq: 5000,
       initMarginReq: 7500,
       cushion: 0.82,
+      fullInitMarginReq: 7600,
+      fullMaintMarginReq: 5100,
+      excessLiquidity: 88000,
     },
   },
   brokerReconciliation: {
@@ -208,6 +211,7 @@ for (const field of [
   'updatedAt',
   'stale',
   'degraded',
+  'degradedReason',
   'blocker',
 ]) {
   assert.ok(Object.prototype.hasOwnProperty.call(runtime.account, field), `runtime.account.${field} exists`);
@@ -230,6 +234,7 @@ assert.equal(runtime.account.unrealizedPnl, 12.5);
 assert.equal(runtime.account.realizedPnl, 7.25);
 assert.equal(runtime.account.dailyPnl, 19.75);
 assert.equal(runtime.account.updatedAt, '2026-07-06T10:00:00.000Z');
+assert.equal(runtime.account.degradedReason, null);
 assert.equal(runtime.account.blocker, null);
 assert.equal(runtime.account.unavailableReason, null);
 for (const field of [
@@ -248,9 +253,9 @@ assert.equal(runtime.margin.source, 'ibkr_paper');
 assert.equal(runtime.margin.initMarginReq, 7500);
 assert.equal(runtime.margin.maintMarginReq, 5000);
 assert.equal(runtime.margin.cushion, 0.82);
-assert.equal(runtime.margin.fullInitMarginReq, null);
-assert.equal(runtime.margin.fullMaintMarginReq, null);
-assert.equal(runtime.margin.excessLiquidity, null);
+assert.equal(runtime.margin.fullInitMarginReq, 7600);
+assert.equal(runtime.margin.fullMaintMarginReq, 5100);
+assert.equal(runtime.margin.excessLiquidity, 88000);
 assert.equal(runtime.margin.updatedAt, '2026-07-06T10:00:00.000Z');
 assert.equal(runtime.account.initMarginReq, runtime.margin.initMarginReq, 'account keeps margin alias');
 assert.equal(runtime.account.maintMarginReq, runtime.margin.maintMarginReq, 'account keeps margin alias');
@@ -511,6 +516,7 @@ assert.equal(blockedAccountRuntime.account.accountType, null);
 assert.equal(blockedAccountRuntime.account.updatedAt, TEST_NOW);
 assert.equal(blockedAccountRuntime.account.stale, false);
 assert.equal(blockedAccountRuntime.account.degraded, true);
+assert.equal(blockedAccountRuntime.account.degradedReason, null);
 assert.equal(blockedAccountRuntime.account.blocker, 'no_account_snapshot_yet');
 assert.equal(blockedAccountRuntime.account.unavailableReason, 'no_account_snapshot_yet');
 assert.equal(blockedAccountRuntime.margin.initMarginReq, null);
@@ -581,6 +587,65 @@ assert.equal(blockedAccountRuntime.performance.portfolio.commission, null);
 assert.equal(blockedAccountRuntime.performance.portfolio.currency, null);
 assert.equal(blockedAccountRuntime.performance.updatedAt, TEST_NOW);
 assert.equal(blockedAccountRuntime.performance.source, 'futuresPaperStrategyPerformanceService');
+
+const accountUpdatesPositionRuntime = svc.buildFuturesPaperDeskRuntime(minimalRuntimeOptions({
+  ibAccount: {
+    ok: true,
+    status: 'ok',
+    generatedAt: TEST_NOW,
+    account: {
+      accountIdMasked: 'DU***596',
+      classification: 'paper',
+      currency: 'SEK',
+      netLiquidation: 11063846.43,
+    },
+    portfolioPositions: [{
+      accountMasked: 'DU***596',
+      accountClassification: 'paper',
+      conId: 793356225,
+      symbol: 'MNQ',
+      localSymbol: 'MNQU6',
+      secType: 'FUT',
+      position: 1,
+      marketPrice: 28608.1503906,
+      marketValue: 57216.3,
+      avgCost: 57247.11,
+      unrealizedPnl: -30.81,
+      realizedPnl: -344.94,
+      source: 'ibkr_paper_account_updates',
+    }],
+  },
+}));
+assert.equal(accountUpdatesPositionRuntime.positions.totalOpen, 1);
+assert.equal(accountUpdatesPositionRuntime.positions.source, 'ibkr_paper_account_updates');
+assert.equal(accountUpdatesPositionRuntime.openPositions.length, 1);
+assert.equal(accountUpdatesPositionRuntime.brokerPositions.length, 1);
+assert.equal(accountUpdatesPositionRuntime.openPositions[0].localSymbol, 'MNQU6');
+assert.equal(accountUpdatesPositionRuntime.openPositions[0].quantity, 1);
+assert.equal(accountUpdatesPositionRuntime.openPositions[0].signedQuantity, 1);
+
+const staleAccountRuntime = svc.buildFuturesPaperDeskRuntime(minimalRuntimeOptions({
+  ibAccount: {
+    ok: true,
+    status: 'ok',
+    stale: true,
+    degraded: true,
+    degradedReason: 'live_fetch_timeout_returning_cache',
+    generatedAt: TEST_NOW,
+    account: {
+      accountIdMasked: 'DU***596',
+      classification: 'paper',
+      currency: 'SEK',
+      netLiquidation: 11057906.32,
+    },
+  },
+}));
+assert.equal(staleAccountRuntime.account.status, 'ok');
+assert.equal(staleAccountRuntime.account.accountIdMasked, 'DU***596');
+assert.equal(staleAccountRuntime.account.stale, true);
+assert.equal(staleAccountRuntime.account.degraded, true);
+assert.equal(staleAccountRuntime.account.degradedReason, 'live_fetch_timeout_returning_cache');
+assert.equal(staleAccountRuntime.account.blocker, null);
 
 const portfolioAggregationRuntime = svc.buildFuturesPaperDeskRuntime(minimalRuntimeOptions({
   ibAccount: {
@@ -670,11 +735,14 @@ assert.equal(mixedPerformance.tradeCount, 5);
 assert.equal(mixedPerformance.winRate, 60);
 assert.equal(mixedPerformance.profitFactor, 3);
 assert.equal(mixedPerformance.expectancy, 30);
-assert.equal(mixedPerformance.averageWin, null);
-assert.equal(mixedPerformance.averageLoss, null);
+// (125 + 75 + 25) / 3 vinnare
+assert.equal(mixedPerformance.averageWin, 75);
+// (-25 + -50) / 2 förlorare
+assert.equal(mixedPerformance.averageLoss, -37.5);
 assert.equal(mixedPerformance.largestWin, 125);
 assert.equal(mixedPerformance.largestLoss, -50);
-assert.equal(mixedPerformance.drawdown, null);
+// equity 125 → 100 → 175 → 125 → 150, peak 175 ⇒ största fall 50
+assert.equal(mixedPerformance.drawdown, 50);
 assert.equal(mixedPerformance.netPnl, 150);
 assert.equal(mixedPerformance.grossPnl, 150);
 assert.equal(mixedPerformance.commission, 12.5);
@@ -738,31 +806,20 @@ const missingRealizedPnlRuntime = buildPerformanceContractRuntime({
   execId: 'exec-missing-realized-pnl',
   commissions: [{ execId: 'exec-missing-realized-pnl', commission: 1.25, currency: 'USD' }],
 });
-const missingRealizedPnlPerformance = missingRealizedPnlRuntime.performance.strategy[0];
-assert.equal(missingRealizedPnlPerformance.strategyId, 'trend_continuation');
-assert.equal(missingRealizedPnlPerformance.winRate, null);
-assert.equal(missingRealizedPnlPerformance.profitFactor, null);
-assert.equal(missingRealizedPnlPerformance.expectancy, null);
-assert.equal(missingRealizedPnlPerformance.largestWin, null);
-assert.equal(missingRealizedPnlPerformance.largestLoss, null);
-assert.equal(missingRealizedPnlPerformance.netPnl, null);
-assert.equal(missingRealizedPnlPerformance.grossPnl, null);
-assert.equal(missingRealizedPnlPerformance.commission, 1.25);
+assert.equal(missingRealizedPnlRuntime.executions.count, 1);
+assert.equal(missingRealizedPnlRuntime.closedTrades.length, 0);
+assert.equal(missingRealizedPnlRuntime.recentClosedTrades.length, 0);
+assert.equal(missingRealizedPnlRuntime.performance.strategy.length, 0);
+assert.equal(missingRealizedPnlRuntime.portfolio.commission, 1.25);
 
 const missingCommissionAndRealizedPnlRuntime = buildPerformanceContractRuntime({
   execId: 'exec-missing-commission-and-realized-pnl',
   commissions: [],
 });
-const missingCommissionAndRealizedPnlPerformance = missingCommissionAndRealizedPnlRuntime.performance.strategy[0];
-assert.equal(missingCommissionAndRealizedPnlPerformance.strategyId, 'trend_continuation');
-assert.equal(missingCommissionAndRealizedPnlPerformance.winRate, null);
-assert.equal(missingCommissionAndRealizedPnlPerformance.profitFactor, null);
-assert.equal(missingCommissionAndRealizedPnlPerformance.expectancy, null);
-assert.equal(missingCommissionAndRealizedPnlPerformance.largestWin, null);
-assert.equal(missingCommissionAndRealizedPnlPerformance.largestLoss, null);
-assert.equal(missingCommissionAndRealizedPnlPerformance.netPnl, null);
-assert.equal(missingCommissionAndRealizedPnlPerformance.grossPnl, null);
-assert.equal(missingCommissionAndRealizedPnlPerformance.commission, null);
+assert.equal(missingCommissionAndRealizedPnlRuntime.executions.count, 1);
+assert.equal(missingCommissionAndRealizedPnlRuntime.closedTrades.length, 0);
+assert.equal(missingCommissionAndRealizedPnlRuntime.recentClosedTrades.length, 0);
+assert.equal(missingCommissionAndRealizedPnlRuntime.performance.strategy.length, 0);
 
 const originalGetCachedSummary = accountSummaryModule.defaultIbPaperAccountSummaryService.getCachedSummary;
 const originalGetSummary = accountSummaryModule.defaultIbPaperAccountSummaryService.getSummary;

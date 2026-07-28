@@ -16,6 +16,7 @@ const ibPaperExecutionOrchestratorService = require('./ibPaperExecutionOrchestra
 const internalSimulationRetirement = require('./futuresInternalSimulationRetirementService');
 const strategyIdNormalizer = require('./strategyIdNormalizerService');
 const catalogService = require('./daytradingStrategyCatalogService');
+const strategyPerformanceService = require('./strategyPerformanceService');
 
 const SAFETY = Object.freeze({
   mode: 'paper_only',
@@ -91,6 +92,9 @@ function emptyStats(id) {
     feesSek: 0,
     netPnlSek: 0,
     avgNetPnlSek: null,
+    avgWinSek: null,
+    avgLossSek: null,
+    maxDrawdownSek: null,
     bestTradeSek: null,
     worstTradeSek: null,
     profitFactor: null,
@@ -102,6 +106,11 @@ function emptyStats(id) {
     pnlCalculationSources: { broker_fill: 0, stored_net: 0, derived_with_current_commission: 0 },
     pnlProvenance: 'none',
   };
+}
+
+function isClosedBrokerExecution(row = {}) {
+  const realized = row.realizedResult ?? row.realizedPnlSek ?? row.realizedPnl ?? row.realizedPNL;
+  return Number.isFinite(Number(realized));
 }
 
 // Ren aggregering av normaliserade trades (testbar utan ledger).
@@ -143,6 +152,8 @@ function aggregateTrades(trades = []) {
 
     s.__winSum = (s.__winSum || 0) + (net > 0 ? net : 0);
     s.__lossSum = (s.__lossSum || 0) + (net < 0 ? net : 0);
+    // Sekvensen behövs för drawdown (equity-kurva i tradeordning).
+    (s.__pnls = s.__pnls || []).push(net);
   }
 
   const out = [];
@@ -150,6 +161,16 @@ function aggregateTrades(trades = []) {
     // Win rate: wins / closedTrades (breakeven ingår i totalen, ej i wins/losses).
     s.winRatePct = s.closedTrades > 0 ? round((s.wins / s.closedTrades) * 100, 1) : null;
     s.avgNetPnlSek = s.closedTrades > 0 ? round(s.netPnlSek / s.closedTrades) : null;
+
+    // Average win/loss: summorna beräknas redan ovan — de exponeras nu i stället
+    // för att kastas bort. Genomsnitten avser endast vinnande respektive
+    // förlorande trades (breakeven ingår i ingendera).
+    s.avgWinSek = s.wins > 0 ? round((s.__winSum || 0) / s.wins) : null;
+    s.avgLossSek = s.losses > 0 ? round((s.__lossSum || 0) / s.losses) : null;
+    // Drawdown via samma definition som strategyPerformanceService använder.
+    s.maxDrawdownSek = (s.__pnls && s.__pnls.length)
+      ? round(strategyPerformanceService.maxDrawdownFromPnls(s.__pnls))
+      : null;
 
     const lossAbs = Math.abs(s.__lossSum || 0);
     if (lossAbs === 0) {
@@ -169,6 +190,7 @@ function aggregateTrades(trades = []) {
 
     delete s.__winSum;
     delete s.__lossSum;
+    delete s.__pnls;
     out.push(s);
   }
   out.sort((a, b) => a.strategyId.localeCompare(b.strategyId));
@@ -199,13 +221,46 @@ function buildLegacyStrategyStats() {
   return aggregateTrades(normalized);
 }
 
-function buildStrategyStats({ executions = [] } = {}) {
-  const normalized = (Array.isArray(executions) ? executions : [])
-    .filter((row) => row && (row.strategyId || row.orderRef))
+// IBKR:s reqExecutions returnerar bara innevarande handelsdag, och broker-
+// executions persisteras inte. Stängda trades från tidigare dagar finns däremot
+// kvar i intent-loggen med brokerns egen realiserade PnL (filledRealizedPNL).
+// Utan den här källan nollställs all historik vid dygnsskiftet.
+function closedIntentRows(intents = []) {
+  const rows = [];
+  for (const intent of (Array.isArray(intents) ? intents : [])) {
+    if (!intent || intent.status !== 'filled') continue;
+    const realized = Number(
+      intent.filledRealizedPNL ?? intent.filledRealizedPnl ?? intent.realizedPNL,
+    );
+    // Endast broker-verifierad realiserad PnL räknas — samma krav som
+    // isClosedBrokerExecution ställer på live-executions. Härledda värden undviks.
+    if (!Number.isFinite(realized)) continue;
+    const fees = (Number(intent.entryCommission) || 0) + (Number(intent.filledCommission) || 0);
+    rows.push({
+      execId: intent.filledExecId || null,
+      strategyId: intent.strategyId || intent.orderRef || null,
+      realizedResult: realized,
+      commission: fees,
+    });
+  }
+  return rows;
+}
+
+function buildStrategyStats({ executions = [], intents = [] } = {}) {
+  const closedExecutions = (Array.isArray(executions) ? executions : [])
+    .filter((row) => row && (row.strategyId || row.orderRef) && isClosedBrokerExecution(row));
+  // Live-executionen vinner när samma fill finns i båda källorna, så en trade
+  // som stängdes idag inte räknas två gånger.
+  const seenExecIds = new Set(closedExecutions.map((row) => row.execId).filter(Boolean));
+  const historical = closedIntentRows(intents)
+    .filter((row) => !(row.execId && seenExecIds.has(row.execId)));
+
+  const normalized = [...closedExecutions, ...historical]
+    .filter((row) => row.strategyId || row.orderRef)
     .map((row) => ({
       strategyId: row.strategyId || row.orderRef,
-      netPnlSek: row.realizedResult ?? row.realizedPnlSek ?? 0,
-      grossPnlSek: row.realizedResult ?? row.realizedPnlSek ?? 0,
+      netPnlSek: row.realizedResult ?? row.realizedPnlSek ?? row.realizedPnl ?? row.realizedPNL,
+      grossPnlSek: row.realizedResult ?? row.realizedPnlSek ?? row.realizedPnl ?? row.realizedPNL,
       feesSek: row.commission ?? 0,
       dataSource: 'ibkr_paper',
       executionSource: 'ibkr_paper',
@@ -284,8 +339,15 @@ module.exports = {
   SAFETY,
   MIN_TRADES_FOR_RATE_LEADERS,
   aggregateTrades,
+  // Kanonisk nollstatistik — används även för strategier som bara har en öppen
+  // position, så att antal/summor blir 0 i stället för okända.
+  emptyStats,
+  // Persisterad stängningshistorik ur intent-loggen — används även för
+  // verifieringen i deskens performance-normalisering.
+  closedIntentRows,
   buildStrategyStats,
   buildLegacyStrategyStats,
+  isClosedBrokerExecution,
   readBrokerExecutions,
   buildLeaders,
   pickLeader,
