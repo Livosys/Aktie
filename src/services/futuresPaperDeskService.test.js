@@ -1156,4 +1156,46 @@ assert.equal(svc.sessionAllowedForStrategy('europe', { requiresMarketOpen: false
 assert.equal(svc.sessionAllowedForStrategy('overnight', null), true);
 assert.equal(svc.sessionAllowedForStrategy('us_rth', { requiresMarketOpen: true, allowedSessions: [] }), true);
 
+// Regression: approval-grinden måste läsa de fält paperEnabledStrategiesService
+// faktiskt publicerar. Den emitterar approval-tillståndet som legacyApprovalStatus
+// (inte approved/approvalStatus). Läses bara `approved` blir den alltid undefined
+// och VARJE i övrigt körklar strategi rapporteras som APPROVAL_BLOCKED — vilket
+// i sin tur nollar canTradeNow för hela desken.
+{
+  const readyRow = {
+    strategyId: 'ema_pullback_continuation',
+    producerStatus: 'ok',
+    readiness: 'READY_FOR_PAPER',
+    paperEligibility: 'READY',
+    runtimeConnectorStatus: 'active',
+    entryContractStatus: 'ready',
+    legacyApprovalStatus: 'approved',
+    legacySelectedInFamily: true,
+  };
+  assert.equal(
+    svc.normalizePaperExecutionStatus(readyRow, { sessionOpen: true, sessionAllowed: true }),
+    'READY_WAITING_FOR_SIGNAL',
+    'godkänd strategi med legacyApprovalStatus får inte rapporteras som APPROVAL_BLOCKED',
+  );
+
+  // Grinden får inte bli tandlös: ej godkänd, pausad och användardeaktiverad
+  // ska fortfarande blockeras.
+  assert.equal(
+    svc.normalizePaperExecutionStatus({ ...readyRow, legacyApprovalStatus: 'not_approved' }, { sessionOpen: true, sessionAllowed: true }),
+    'APPROVAL_BLOCKED',
+  );
+  assert.equal(
+    svc.normalizePaperExecutionStatus({ ...readyRow, legacyApprovalStatus: 'paused' }, { sessionOpen: true, sessionAllowed: true }),
+    'APPROVAL_BLOCKED',
+  );
+  assert.equal(
+    svc.normalizePaperExecutionStatus({ ...readyRow, paperEligibility: 'DISABLED_BY_USER' }, { sessionOpen: true, sessionAllowed: true }),
+    'APPROVAL_BLOCKED',
+  );
+  assert.equal(
+    svc.normalizePaperExecutionStatus({ ...readyRow, legacyApprovalStatus: null }, { sessionOpen: true, sessionAllowed: true }),
+    'APPROVAL_BLOCKED',
+  );
+}
+
 console.log('futuresPaperDeskService.test.js passed');

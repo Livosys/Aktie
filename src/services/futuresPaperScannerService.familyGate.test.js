@@ -80,6 +80,14 @@ const scanner = createFuturesPaperScannerService({
   priceFeedService: priceFeed,
   signalProviderService: signalProvider,
   signalAdapterService: signalAdapter,
+  // Detta test verifierar family-gaten, inte entry contracts. Stubben ger alla
+  // strategier i scenariot ett kontrakt så att antagningsgrinden inte skymmer
+  // det som faktiskt testas — och gör testet oberoende av prod-.env, som annars
+  // läcker in via dotenv i @stoqey/ib.
+  entryContractService: {
+    entryContractsEnabled: () => true,
+    getEntryContract: (strategyId) => ({ strategyId, version: 'paper_entry_contract_test' }),
+  },
   strategyRegistryService: {
     canExecuteStrategy: (strategyId) => ({
       allowed: ['vwap_volume_breakout_long', 'vwap_failed_breakout_short', 'ema_breakdown'].includes(strategyId),

@@ -43,6 +43,25 @@ function resetRegistry() {
 
 resetRegistry();
 
+// Entry contracts injiceras explicit. Utan stub läser scannern den riktiga
+// tjänsten, som i sin tur läser PAPER_ENTRY_CONTRACTS_ENABLED ur process.env —
+// och @stoqey/ib drar in dotenv vid import, så testet skulle tyst ärva prod-.env
+// och bli miljöberoende. Stubben håller testet hermetiskt.
+let entryContractIds = new Set();
+
+function resetEntryContracts() {
+  entryContractIds = new Set(['trend_continuation', 'mnq_globex_momentum_v1']);
+}
+
+resetEntryContracts();
+
+const entryContractService = {
+  entryContractsEnabled: () => true,
+  getEntryContract: (strategyId) => (entryContractIds.has(strategyId)
+    ? { strategyId, version: 'paper_entry_contract_test' }
+    : null),
+};
+
 const priceFeed = {
   tickQuotes: () => ({
     ok: true,
@@ -163,6 +182,7 @@ const scanner = createFuturesPaperScannerService({
   signalProviderService: signalProvider,
   signalAdapterService: signalAdapter,
   executionTargetReservationService: executionTargetReservations,
+  entryContractService,
   strategyRegistryService: {
     canExecuteStrategy: (strategyId) => {
       const entry = registryEntries.get(strategyId);
@@ -246,6 +266,7 @@ function resetScenario() {
   providerSignals = [mnqCanonicalSignal()];
   signalProviderRuns = 0;
   resetRegistry();
+  resetEntryContracts();
 }
 
 function seedClosedRealTrade(strategyId, openedAt, closedAt) {
@@ -661,6 +682,56 @@ assert.equal(noPerfScan.ok, true);
 const noPerfStatus = scanner.getStrategyStatus({ now: '2026-07-06T11:31:00.000Z' }).strategies
   .find((item) => item.strategyId === 'narrow_breakout');
 assert.equal(noPerfStatus.blockReason, 'no_strategy_performance_data');
+
+// Entry contract-grinden i antagningen: kön har en plats per rot och orchestratorn
+// läser alltid köns första kandidat. En strategi utan entry contract kan aldrig
+// passera orchestratorns kontraktsgrind, så den får inte ta platsen från en
+// kontrakterad strategi.
+const contractGateSignal = {
+  signalId: 'sig-no-contract-1',
+  strategyId: 'trend_continuation',
+  strategyName: 'Trend Continuation',
+  symbol: 'QQQ',
+  market: 'stocks',
+  direction: 'long',
+  confidence: 0.82,
+  entry: 500,
+  stopLoss: 497.5,
+  takeProfit: 505,
+  riskReward: 2,
+  timeframe: '2m',
+  source: 'scanner',
+  signalSource: 'scanner',
+  dataSource: 'real_market_data',
+  approved: true,
+  strategyLogicVersion: 'test-v1',
+  createdAt: signalTimestamp,
+};
+
+resetScenario();
+providerSignals = [];
+signals = [contractGateSignal];
+entryContractIds.delete('trend_continuation');
+const noContractScan = scanner.runScannerOnce({ now });
+assert.equal(noContractScan.ok, true);
+assert.equal(noContractScan.candidates.length, 0);
+assert.equal(scanner.getCandidates().totalCandidates, 0);
+assert.equal(
+  noContractScan.scan.skippedStrategies.some((row) => row.strategyId === 'trend_continuation'
+    && row.reason === 'entry_contract_missing'),
+  true,
+);
+
+// Samma signal med kontrakt på plats ska däremot köas — grinden får inte blockera brett.
+resetScenario();
+providerSignals = [];
+signals = [contractGateSignal];
+const withContractScan = scanner.runScannerOnce({ now });
+assert.equal(withContractScan.ok, true);
+assert.equal(withContractScan.candidates.length, 1);
+assert.equal(withContractScan.candidates[0].strategyId, 'trend_continuation');
+
+resetScenario();
 
 assert.equal(scanner.assertPaperOnly({ live_trading_enabled: true }), 'live_trading_is_not_allowed');
 assert.equal(scanner.assertPaperOnly({ broker_enabled: true }), 'broker_is_not_allowed');

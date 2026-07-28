@@ -73,6 +73,57 @@ function safeNumber(value) {
   return Number.isFinite(n) ? n : null;
 }
 
+function plainObject(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  return { ...value };
+}
+
+function safeBool(value) {
+  return value == null ? null : value === true;
+}
+
+// Entry contracts (paperStrategyEntryContractService) kräver samma bekräftelse-
+// evidens som aktie-paper-vägen redan får från decisionMonitor: 2m-bekräftelse,
+// EMA-/VWAP-kontext, volym och extension. Utan dessa fält blockeras varje
+// canonical strategi på futures-desken med missing_*_confirmation, trots att
+// signalen uppströms bär evidensen. Adaptern ska förmedla den oförändrad —
+// aldrig hitta på den. Saknas ett fält i källsignalen förblir det utelämnat,
+// så kontraktet blockerar ärligt i stället för att passera på gissningar.
+function entryConfirmationEvidence(signal = {}) {
+  const evidence = {};
+  const setIfPresent = (key, value) => {
+    if (value !== null && value !== undefined) evidence[key] = value;
+  };
+
+  setIfPresent('twoMinuteConfirmed', safeBool(signal.twoMinuteConfirmed));
+  setIfPresent('twoMinuteConfirmation', plainObject(signal.twoMinuteConfirmation));
+  setIfPresent('candleConfirmation', plainObject(signal.candleConfirmation));
+  setIfPresent('confirmation', plainObject(signal.confirmation));
+  setIfPresent('producerEntryReadiness', plainObject(signal.producerEntryReadiness));
+
+  setIfPresent('volumeContext', plainObject(signal.volumeContext));
+  setIfPresent('volumeState', safeString(signal.volumeState || signal.volumeContext?.state));
+  setIfPresent('rvol', safeNumber(signal.rvol ?? signal.relVol20 ?? signal.volumeContext?.rvol));
+
+  setIfPresent('emaContext', plainObject(signal.emaContext));
+  setIfPresent('trendIntact', safeBool(signal.trendIntact));
+  setIfPresent('emaPullbackConfirmed', safeBool(signal.emaPullbackConfirmed));
+  setIfPresent('emaReclaimConfirmed', safeBool(signal.emaReclaimConfirmed));
+  setIfPresent('pullbackReclaimConfirmed', safeBool(signal.pullbackReclaimConfirmed));
+
+  setIfPresent('vwapContext', plainObject(signal.vwapContext));
+  setIfPresent('vwapReclaimConfirmed', safeBool(signal.vwapReclaimConfirmed));
+  setIfPresent('closeAboveVwap', safeBool(signal.closeAboveVwap));
+
+  // Late/extended-evidens gör kontraktet striktare, inte mildare — den ska med
+  // så att lateEntryPolicy/extendedMovePolicy kan göra sitt jobb.
+  setIfPresent('extensionLevel', safeString(signal.extensionLevel));
+  setIfPresent('extensionMeta', plainObject(signal.extensionMeta));
+  setIfPresent('lateMove', safeBool(signal.lateMove));
+
+  return evidence;
+}
+
 function stableCandidateId(signal, futuresSymbol, now = new Date()) {
   const seed = JSON.stringify({
     signalId: signal.signalId || signal.signal_id || signal.id || null,
@@ -423,6 +474,7 @@ function createFuturesTradingOsSignalAdapterService(options = {}) {
         closedCandleConfirmed: signal.closedCandleConfirmed === true || signal.latestCandleClosed === true,
         latestCandleClosed: signal.latestCandleClosed === true || signal.closedCandleConfirmed === true,
         candleTimestamp: safeString(signal.candleTimestamp || signal.barTimestamp) || null,
+        ...entryConfirmationEvidence(signal),
         paperOnly: true,
         executionGate: 'strategy_registry_execution_allowlist',
         registryGatePending: true,

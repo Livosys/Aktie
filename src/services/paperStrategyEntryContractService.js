@@ -220,6 +220,41 @@ function sessionOf(candidate = {}, marketContext = {}) {
   );
 }
 
+// Kontrakten är skrivna med aktie-vokabulär för sessioner. En futures-kandidat
+// bär CME-sessionen ('globex' + sessionId 'us_rth'), så en ren strängjämförelse
+// blockerar varje kontrakt med requiresMarketOpen. Samma översättning används
+// redan i futuresPaperDeskService (CONTRACT_SESSIONS_US_RTH) — den hör hemma
+// här också, annars kan desken och kontraktet aldrig ge samma svar.
+const SESSION_ALWAYS_OPEN = Object.freeze(['24_7', 'crypto_24_7']);
+const SESSION_US_RTH_EQUIVALENTS = Object.freeze(['regular', 'rth', 'nyse', 'nasdaq', 'us_stocks']);
+
+function observedSessionTokens(candidate = {}, marketContext = {}) {
+  return [...new Set([
+    candidate.session,
+    candidate.sessionId,
+    candidate.marketSession,
+    candidate.market_session,
+    candidate.sessionMetadata?.session,
+    candidate.sessionMetadata?.sessionId,
+    marketContext.session,
+    marketContext.sessionId,
+    marketContext.marketSession,
+  ].map((value) => lower(value)).filter(Boolean))];
+}
+
+function sessionAllowedByContract(contract, candidate = {}, marketContext = {}) {
+  const allowed = arr(contract.allowedSessions).map((value) => lower(value));
+  if (!allowed.length) return true;
+  const observed = observedSessionTokens(candidate, marketContext);
+  if (!observed.length) return true;
+  if (observed.some((token) => allowed.includes(token))) return true;
+  if (allowed.some((value) => SESSION_ALWAYS_OPEN.includes(value))) return true;
+  // CME:s us_rth är samma handelsfönster som aktiekontraktens RTH-vokabulär.
+  const isUsRth = observed.includes('us_rth') || candidate.isRth === true;
+  if (isUsRth && allowed.some((value) => SESSION_US_RTH_EQUIVALENTS.includes(value))) return true;
+  return false;
+}
+
 function directionTokens(candidate = {}) {
   return [
     candidate.nextMoveBias,
@@ -650,8 +685,12 @@ function evaluatePaperEntryContract({ strategyId, candidate = {}, now = new Date
   if (candidate.marketClosed === true || upper(candidate.dataFreshness || '') === 'MARKET_CLOSED') {
     return block(decision, REASON_CODES.INVALID_SESSION, 'session', { marketClosed: true, dataFreshness: candidate.dataFreshness || null });
   }
-  if (contract.requiresMarketOpen && session && !contract.allowedSessions.includes(session)) {
-    return block(decision, REASON_CODES.INVALID_SESSION, 'session', { observedSession: session, allowedSessions: contract.allowedSessions });
+  if (contract.requiresMarketOpen && !sessionAllowedByContract(contract, candidate, marketContext)) {
+    return block(decision, REASON_CODES.INVALID_SESSION, 'session', {
+      observedSession: session,
+      observedSessions: observedSessionTokens(candidate, marketContext),
+      allowedSessions: contract.allowedSessions,
+    });
   }
   pass(decision, 'session', { observedSession: session || null, observedMarketType: marketType });
 

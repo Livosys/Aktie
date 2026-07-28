@@ -23,6 +23,7 @@ const futuresTradingOsSignalAdapterService = require('./futuresTradingOsSignalAd
 const futuresCanonicalSignalProviderService = require('./futuresCanonicalSignalProviderService');
 const strategyTradeControl = require('./strategyTradeControlService');
 const strategyRegistryService = require('./strategyRegistryService');
+const paperStrategyEntryContractService = require('./paperStrategyEntryContractService');
 const executionTargetReservationModule = require('./futuresPaperExecutionTargetReservationService');
 const { buildFuturesSessionMetadata } = require('./futuresMarketHoursService');
 const internalSimulationRetirement = require('./futuresInternalSimulationRetirementService');
@@ -123,6 +124,7 @@ function createFuturesPaperScannerService(options = {}) {
     || futuresCanonicalSignalProviderService.defaultFuturesCanonicalSignalProviderService;
   const signalAdapter = options.signalAdapterService || futuresTradingOsSignalAdapterService.defaultFuturesTradingOsSignalAdapterService;
   const strategyRegistry = options.strategyRegistryService || strategyRegistryService;
+  const entryContracts = options.entryContractService || paperStrategyEntryContractService;
   const executionTargetReservations = options.executionTargetReservationService
     || executionTargetReservationModule.createFuturesPaperExecutionTargetReservationService({
       dir: path.join(storage.rootDir, 'execution-target-reservations'),
@@ -623,6 +625,18 @@ function createFuturesPaperScannerService(options = {}) {
           reason: executionAllowlist.blockedReason || 'strategy_not_in_execution_allowlist',
           registryStatus: executionAllowlist.status || null,
           registryEnabled: executionAllowlist.enabled ?? null,
+        });
+        continue;
+      }
+      // Kön har bara en plats per rot (busySymbols nedan) och orchestratorn läser
+      // alltid köns första kandidat. En strategi utan entry contract kan aldrig
+      // passera orchestratorns kontraktsgrind, så om den får ta platsen svälts
+      // varje kontrakterad strategi ut. Avvisa den före reservationen i stället.
+      if (entryContracts.entryContractsEnabled() && !entryContracts.getEntryContract(strategyId)) {
+        skippedStrategies.push({
+          strategyId,
+          signalId: candidate.signalId || null,
+          reason: 'entry_contract_missing',
         });
         continue;
       }

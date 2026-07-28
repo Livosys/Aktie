@@ -208,9 +208,15 @@ function normalizePaperExecutionStatus(row = {}, {
   if (row.runtimeConnectorStatus && row.runtimeConnectorStatus !== 'active') return 'DATA_BLOCKED';
   if (row.entryContractStatus === 'missing') return 'ENTRY_CONTRACT_BLOCKED';
   // DISABLED_BY_USER = ej godkänd/aktiverad för paper — approval-spärr, inte "ej tillämplig".
+  // Raderna kommer från paperEnabledStrategiesService.buildPaperStrategyList, som
+  // publicerar approval-tillståndet under legacy*-namn. Läses bara `approved`
+  // blir den alltid undefined och VARJE i övrigt körklar strategi felrapporteras
+  // som APPROVAL_BLOCKED (vilket i sin tur nollar canTradeNow för hela desken).
+  const approvalStatus = String(row.approvalStatus || row.legacyApprovalStatus || '').toLowerCase();
+  const approved = row.approved === true || approvalStatus === 'approved';
   if (row.paperEligibility === 'DISABLED_BY_USER'
-    || row.approved !== true
-    || ['paused', 'removed', 'not_approved'].includes(String(row.approvalStatus || '').toLowerCase())) {
+    || !approved
+    || ['paused', 'removed', 'not_approved'].includes(approvalStatus)) {
     return 'APPROVAL_BLOCKED';
   }
   if (!sessionOpen || !sessionAllowed) return 'SESSION_CLOSED';
@@ -324,9 +330,9 @@ function buildCanonicalStrategyOverview({
       paperStatus,
       canTradeNow,
       paperBlockedReason: paperRow.paperBlockedReason || null,
-      approvalStatus: paperRow.approvalStatus || null,
-      approved: paperRow.approved === true,
-      selectedInFamily: paperRow.selectedInFamily === true,
+      approvalStatus: paperRow.approvalStatus || paperRow.legacyApprovalStatus || null,
+      approved: paperRow.approved === true || paperRow.legacyApprovalStatus === 'approved',
+      selectedInFamily: paperRow.selectedInFamily === true || paperRow.legacySelectedInFamily === true,
       entryContractStatus: paperRow.entryContractStatus || null,
       entryContractReady: paperRow.entryContractReady === true,
       entryContractVersion: paperRow.entryContractVersion || null,
