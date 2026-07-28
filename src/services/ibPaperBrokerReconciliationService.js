@@ -14,6 +14,8 @@ const SAFETY = Object.freeze({
   source: 'ib_paper_broker_reconciliation',
 });
 
+const STALE_ENTRY_FILL_GRACE_MS = 24 * 60 * 60 * 1000;
+
 function nowIso(now = new Date()) {
   return new Date(now).toISOString();
 }
@@ -28,6 +30,43 @@ function executionIdFromOrderRef(ref) {
   return text.replace(/^TOS-PAPER-/, '').split('-')[0] || null;
 }
 
+function upperText(value) {
+  return String(value || '').trim().toUpperCase();
+}
+
+function intentDirectionSign(intent = {}) {
+  const raw = upperText(intent.side || intent.action || intent.direction || intent.intent?.direction || intent.intent?.side);
+  if (raw === 'BUY' || raw === 'BOT' || raw === 'LONG') return 1;
+  if (raw === 'SELL' || raw === 'SLD' || raw === 'SHORT') return -1;
+  return null;
+}
+
+function positionDirectionSign(position = {}) {
+  const quantity = Number(position.position ?? position.signedQuantity ?? position.quantity);
+  if (quantity > 0) return 1;
+  if (quantity < 0) return -1;
+  return null;
+}
+
+function positionMatchesIntentExposure(position = {}, intent = {}) {
+  const intentConId = upperText(intent.conId || intent.intent?.conId || intent.contract?.conId);
+  const positionConId = upperText(position.conId || position.contract?.conId);
+  const intentLocalSymbol = upperText(intent.localSymbol || intent.intent?.localSymbol || intent.contract?.localSymbol);
+  const positionLocalSymbol = upperText(position.localSymbol || position.contract?.localSymbol);
+  const intentRoot = upperText(intent.root || intent.intent?.root || intent.symbol || intent.contract?.symbol);
+  const positionRoot = upperText(position.root || position.symbol || position.contract?.symbol);
+  const contractMatches = Boolean(
+    (intentConId && positionConId && intentConId === positionConId)
+    || (intentLocalSymbol && positionLocalSymbol && intentLocalSymbol === positionLocalSymbol)
+    || (intentRoot && positionRoot && intentRoot === positionRoot)
+  );
+  if (!contractMatches) return false;
+  const expectedSign = intentDirectionSign(intent);
+  const positionSign = positionDirectionSign(position);
+  if (expectedSign === null || positionSign === null) return true;
+  return expectedSign === positionSign;
+}
+
 function buildLocalIndex(intents = []) {
   const byExecutionId = new Map();
   const byOrderRef = new Map();
@@ -38,9 +77,50 @@ function buildLocalIndex(intents = []) {
   return { byExecutionId, byOrderRef };
 }
 
-function compareSnapshots({ intents = [], openOrders = [], executions = [], positions = [], orderStatuses = [] } = {}) {
+// Vilka executionId:n en position bevisligen tillhör, härlett ur brokerns egna
+// skyddsordrar på samma kontrakt (deras orderRef bär executionId:t).
+// Tom mängd = positionen går inte att tillskriva någon execution.
+function positionAttributedExecutionIds(position = {}, openOrders = []) {
+  const ids = new Set();
+  const positionConId = upperText(position.conId || position.contract?.conId);
+  const positionLocalSymbol = upperText(position.localSymbol || position.contract?.localSymbol);
+  for (const order of openOrders) {
+    const orderConId = upperText(order.contract?.conId ?? order.conId);
+    const orderLocalSymbol = upperText(order.contract?.localSymbol || order.localSymbol);
+    const sameContract = Boolean(
+      (positionConId && orderConId && positionConId === orderConId)
+      || (positionLocalSymbol && orderLocalSymbol && positionLocalSymbol === orderLocalSymbol),
+    );
+    if (!sameContract) continue;
+    const executionId = executionIdFromOrderRef(orderRefOf(order));
+    if (executionId) ids.add(String(executionId));
+  }
+  return ids;
+}
+
+function isOldEntryFillWithoutBrokerExposure(intent = {}, { nowMs, nonFlatPositions = [], openOrders = [] } = {}) {
+  if (!intent.entryFilledAt) return false;
+  const stillExposed = nonFlatPositions.some((position) => {
+    if (!positionMatchesIntentExposure(position, intent)) return false;
+    // positionMatchesIntentExposure jämför bara kontrakt + riktning. En position
+    // som bevisligen ägs av en ANNAN execution är inte den här intentens
+    // exponering, och ska inte hålla kvar den som oreconcilierad. Kan positionen
+    // inte tillskrivas någon execution behålls det konservativa beteendet.
+    const owners = positionAttributedExecutionIds(position, openOrders);
+    if (owners.size > 0 && intent.executionId && !owners.has(String(intent.executionId))) return false;
+    return true;
+  });
+  if (stillExposed) return false;
+  const updatedMs = Date.parse(intent.updatedAt || intent.entryFilledAt);
+  if (!Number.isFinite(updatedMs) || !Number.isFinite(nowMs)) return false;
+  return nowMs - updatedMs >= STALE_ENTRY_FILL_GRACE_MS;
+}
+
+function compareSnapshots({ intents = [], openOrders = [], executions = [], positions = [], orderStatuses = [], now = new Date() } = {}) {
   const local = buildLocalIndex(intents);
   const discrepancies = [];
+  const nowMs = Date.parse(now);
+  const nonFlatPositions = positions.filter((row) => Number(row.position || 0) !== 0);
   const terminalStatusByOrderId = new Map(
     orderStatuses
       .map((row) => [Number(row.orderId), String(row.status || row.ibStatus || '').toLowerCase()])
@@ -58,18 +138,18 @@ function compareSnapshots({ intents = [], openOrders = [], executions = [], posi
     }
   }
 
-	  for (const intent of intents) {
-	    if (!['submit_started', 'submitted', 'acknowledged', 'partially_filled', 'reconciliation_required', 'unknown'].includes(intent.status)) continue;
-	    const hasBrokerRef = (intent.orderRef && brokerRefs.has(intent.orderRef))
-	      || [...brokerRefs].some((ref) => executionIdFromOrderRef(ref) === intent.executionId);
-	    if (!hasBrokerRef && intent.status === 'submit_started') {
-	      discrepancies.push({ type: 'unknown_submit_state', executionId: intent.executionId, status: intent.status });
-	    } else if (!hasBrokerRef) {
-	      discrepancies.push({ type: 'internal_order_missing_at_ib', executionId: intent.executionId, status: intent.status });
-	    }
-	  }
+  for (const intent of intents) {
+    if (!['submit_started', 'submitted', 'acknowledged', 'partially_filled', 'reconciliation_required', 'unknown'].includes(intent.status)) continue;
+    const hasBrokerRef = (intent.orderRef && brokerRefs.has(intent.orderRef))
+      || [...brokerRefs].some((ref) => executionIdFromOrderRef(ref) === intent.executionId);
+    if (!hasBrokerRef && isOldEntryFillWithoutBrokerExposure(intent, { nowMs, nonFlatPositions, openOrders })) continue;
+    if (!hasBrokerRef && intent.status === 'submit_started') {
+      discrepancies.push({ type: 'unknown_submit_state', executionId: intent.executionId, status: intent.status });
+    } else if (!hasBrokerRef) {
+      discrepancies.push({ type: 'internal_order_missing_at_ib', executionId: intent.executionId, status: intent.status });
+    }
+  }
 
-  const nonFlatPositions = positions.filter((row) => Number(row.position || 0) !== 0);
   const activeStops = openOrders.filter((row) => {
     const orderType = String(row.order?.orderType || row.orderType || '').toUpperCase();
     const status = String(row.status || row.state || '').toLowerCase();
