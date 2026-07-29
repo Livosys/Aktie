@@ -221,12 +221,22 @@ function createIbPaperBrokerReconciliationService(options = {}) {
       return snapshot;
     }
 
-    const openOrdersResult = await adapter.getOpenPaperOrders();
-    const positionsResult = await adapter.getPaperPositions();
-    const executionsResult = await adapter.getPaperExecutions();
-    const accountSummaryResult = typeof adapter.refreshAccountSummary === 'function'
-      ? await adapter.refreshAccountSummary()
-      : (typeof adapter.getAccountSummary === 'function' ? adapter.getAccountSummary() : { ok: false, blocker: 'account_summary_unavailable' });
+    const brokerReadResults = await Promise.allSettled([
+      adapter.getOpenPaperOrders(),
+      adapter.getPaperPositions(),
+      adapter.getPaperExecutions(),
+      typeof adapter.refreshAccountSummary === 'function'
+        ? adapter.refreshAccountSummary()
+        : (typeof adapter.getAccountSummary === 'function' ? adapter.getAccountSummary() : { ok: false, blocker: 'account_summary_unavailable' }),
+    ]);
+    const rejectedBrokerRead = brokerReadResults.find((result) => result.status === 'rejected');
+    if (rejectedBrokerRead) throw rejectedBrokerRead.reason;
+    const [
+      openOrdersResult,
+      positionsResult,
+      executionsResult,
+      accountSummaryResult,
+    ] = brokerReadResults.map((result) => result.value);
 	    const openOrders = openOrdersResult.orders || [];
 	    const executions = executionsResult.executions || [];
 	    const positions = positionsResult.positions || [];
