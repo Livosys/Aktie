@@ -300,7 +300,7 @@ function createIbFuturesDataAdapterService(options = {}) {
   }
 
   function resubscribeQuotes() {
-    for (const root of [...quoteState.keys()]) {
+    for (const root of config.roots) {
       subscribeQuote(root).catch(() => {});
     }
   }
