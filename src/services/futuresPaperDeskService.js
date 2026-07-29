@@ -1128,9 +1128,10 @@ function buildFuturesPaperDeskRuntime(options = {}) {
     portfolio,
     intents: safeArray(brokerReconciliation.intents),
   });
-  const legacyClosedTrades = futuresPaperLedgerService.defaultFuturesPaperLedgerService.getRecentClosedTrades({
-    limit: scannerRuntime?.engineConfig?.closedTradesLimit || 100,
-  });
+  const legacyClosedTrades = options.legacyClosedTrades
+    || futuresPaperLedgerService.defaultFuturesPaperLedgerService.getRecentClosedTrades({
+      limit: scannerRuntime?.engineConfig?.closedTradesLimit || 100,
+    });
   const legacyInternalSimulation = {
     ...internalSimulationRetirement.buildReadOnlyLegacyMetadata(),
     archive: true,

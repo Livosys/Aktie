@@ -1,5 +1,7 @@
 'use strict';
 const express = require('express');
+const path = require('path');
+const { fork } = require('child_process');
 const router  = express.Router();
 const {
   getLatestResults,
@@ -3572,28 +3574,103 @@ router.post('/paper-trading/strategies/:strategyId/pause', handlePaperStrategyMu
 router.post('/paper-trading/strategies/:strategyId/resume', handlePaperStrategyMutation('resume'));
 router.post('/paper-trading/strategies/:strategyId/remove', handlePaperStrategyMutation('remove'));
 
-// Desk-runtimen är dyr att bygga (~8s tunga synkrona fil-läsningar över
+// Desk-runtimen är dyr att bygga (~13s tunga synkrona fil-läsningar över
 // ledger/scanner/strategilistor). Utan cache timeoutar UI:t (7s). Fix:
 // TTL-cache med stale-while-revalidate — svara direkt med senaste snapshot
-// (märkt cached/stale) och bygg om högst en gång per TTL.
+// (märkt cached/stale) och bygg om högst en gång per TTL, i en barnprocess.
 const FUTURES_RUNTIME_CACHE_TTL_MS = 60 * 1000;
 let futuresRuntimeCache = { payload: null, atMs: 0 };
 let futuresRuntimeRebuilding = false;
+let futuresRuntimeRebuildStartedAtMs = 0;
+let futuresRuntimeRefreshPromise = null;
 
-function buildFuturesRuntimeCached() {
-  const payload = futuresPaperDeskService.buildFuturesPaperDeskRuntime({});
+function buildFuturesRuntimeCached(inputs = {}) {
+  const payload = futuresPaperDeskService.buildFuturesPaperDeskRuntime(inputs);
   futuresRuntimeCache = { payload, atMs: Date.now() };
   return payload;
 }
 
+// De tunga delarna av bygget är tre rent filbaserade läsningar (~13s totalt);
+// resten kostar ~46ms. Läsningarna görs i en barnprocess så event-loopen aldrig
+// fryser, medan payloaden fortfarande sätts ihop här — broker-, quote- och
+// kontotillståndet är in-memory och finns bara i den här processen.
+const FUTURES_RUNTIME_WORKER_FILE = path.join(__dirname, '../services/buildFuturesRuntimeInputsWorker.js');
+const FUTURES_RUNTIME_WORKER_TIMEOUT_MS = 60 * 1000;
+
+function buildFuturesRuntimeInputsIsolated() {
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    const child = fork(FUTURES_RUNTIME_WORKER_FILE, [], {
+      cwd: path.join(__dirname, '../..'),
+      env: { ...process.env, FUTURES_RUNTIME_INPUTS_WORKER: '1' },
+      stdio: ['ignore', 'ignore', 'ignore', 'ipc'],
+    });
+    const done = (err, payload) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      child.removeAllListeners();
+      if (err) {
+        try { child.kill('SIGKILL'); } catch (_) { /* ignore */ }
+        reject(err);
+        return;
+      }
+      resolve(payload);
+    };
+    const timer = setTimeout(() => done(new Error('futures_runtime_worker_timeout')), FUTURES_RUNTIME_WORKER_TIMEOUT_MS);
+    child.on('message', (msg) => {
+      if (!msg || msg.type !== 'futures_runtime_inputs') return;
+      if (msg.ok) done(null, msg.payload);
+      else done(new Error(msg.error || 'futures_runtime_worker_failed'));
+    });
+    child.on('error', (err) => done(err));
+    child.on('exit', (code, signal) => {
+      if (!settled) done(new Error(`futures_runtime_worker_exit_${signal || code}`));
+    });
+  });
+}
+
+// Hämtar fil-inputs i barnprocessen och sätter ihop payloaden här. Ett anrop åt
+// gången; samtidiga anropare delar samma promise.
+function refreshFuturesRuntimeCache() {
+  if (futuresRuntimeRefreshPromise) return futuresRuntimeRefreshPromise;
+  futuresRuntimeRefreshPromise = buildFuturesRuntimeInputsIsolated()
+    .then((inputs) => buildFuturesRuntimeCached(inputs))
+    .finally(() => { futuresRuntimeRefreshPromise = null; });
+  return futuresRuntimeRefreshPromise;
+}
+
+function futuresRuntimeHasActiveSimulatedFallback(payload = {}) {
+  if (!payload || typeof payload !== 'object') return false;
+  if (payload.dataFeed?.source === 'simulated_fallback') return true;
+  const perSymbolSources = payload.dataFeed?.perSymbolSources || {};
+  if (Object.values(perSymbolSources).some((source) => source === 'simulated_fallback')) return true;
+  const quotes = Array.isArray(payload.quotes) ? payload.quotes : [];
+  return quotes.some((quote) => quote?.source === 'simulated_fallback');
+}
+
+// Bakgrundsombyggnad: en åt gången och högst en gång per TTL enligt
+// cache-designen. Själva filarbetet ligger i barnprocessen, så den här vägen
+// blockerar inte event-loopen.
+function scheduleFuturesRuntimeRebuild() {
+  if (futuresRuntimeRebuilding) return;
+  if (Date.now() - futuresRuntimeRebuildStartedAtMs < FUTURES_RUNTIME_CACHE_TTL_MS) return;
+  futuresRuntimeRebuilding = true;
+  futuresRuntimeRebuildStartedAtMs = Date.now();
+  refreshFuturesRuntimeCache()
+    .catch(() => null) // behåll gamla snapshotten; nytt försök nästa TTL
+    .finally(() => { futuresRuntimeRebuilding = false; });
+}
+
 // Värm cachen strax efter serverstart så första UI-anropet aldrig träffar
-// en kall ~8s-byggnad. unref så timern inte håller processen vid liv.
+// en kall byggnad. unref så timern inte håller processen vid liv.
 const futuresRuntimeWarmupTimer = setTimeout(() => {
-  try { buildFuturesRuntimeCached(); } catch (_) { /* warmup är best effort */ }
+  futuresRuntimeRebuildStartedAtMs = Date.now();
+  refreshFuturesRuntimeCache().catch(() => null); // warmup är best effort
 }, 5000);
 if (futuresRuntimeWarmupTimer.unref) futuresRuntimeWarmupTimer.unref();
 
-router.get('/futures-paper/runtime', (req, res) => {
+router.get('/futures-paper/runtime', async (req, res) => {
   try {
     // Specialparametrar (test/probe) går förbi cachen med oförändrad semantik.
     if (req.query.startingBalance != null || req.query.now != null) {
@@ -3604,22 +3681,30 @@ router.get('/futures-paper/runtime', (req, res) => {
     }
     const age = Date.now() - futuresRuntimeCache.atMs;
     if (futuresRuntimeCache.payload && age < FUTURES_RUNTIME_CACHE_TTL_MS) {
+      // En snapshot med simulated_fallback svarar också direkt från cachen.
+      // Den riktiga feeden hämtas in av bakgrundsbyggnaden — aldrig av en
+      // synkron ombyggnad i request-vägen (blockerade event-loopen ~15s).
+      if (futuresRuntimeHasActiveSimulatedFallback(futuresRuntimeCache.payload)) {
+        scheduleFuturesRuntimeRebuild();
+      }
       return res.json({ ...futuresRuntimeCache.payload, cached: true, cacheAgeMs: age });
     }
     if (futuresRuntimeCache.payload) {
-      // Svara direkt med senaste snapshot och bygg om i bakgrunden
-      // (setImmediate så svaret hinner ut innan den tunga bygget börjar).
+      // Svara direkt med senaste snapshot och bygg om i bakgrunden.
       res.json({ ...futuresRuntimeCache.payload, cached: true, stale: true, cacheAgeMs: age });
-      if (!futuresRuntimeRebuilding) {
-        futuresRuntimeRebuilding = true;
-        setImmediate(() => {
-          try { buildFuturesRuntimeCached(); } catch (_) { /* behåll gamla snapshotten */ }
-          futuresRuntimeRebuilding = false;
-        });
-      }
+      scheduleFuturesRuntimeRebuild();
       return undefined;
     }
-    return res.json(buildFuturesRuntimeCached());
+    // Kall cache (bara vid uppstart innan warmup hunnit klart). Vänta på
+    // barnprocessen i stället för att bygga synkront här — annars fryser
+    // event-loopen ~13s för alla andra anrop samtidigt. Faller tillbaka på ett
+    // inline-bygge först om workern inte går att köra alls.
+    futuresRuntimeRebuildStartedAtMs = Date.now();
+    try {
+      return res.json(await refreshFuturesRuntimeCache());
+    } catch (_) {
+      return res.json(buildFuturesRuntimeCached());
+    }
   } catch (err) {
     return res.status(500).json({ ok: false, error: err.message, ...futuresPaperDeskService.SAFETY });
   }
