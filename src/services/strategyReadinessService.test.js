@@ -173,7 +173,7 @@ assert.ok(vwapShort.warnings.includes('short_only_strategy'));
   const contractRows = contractGated.strategies;
   const contractById = new Map(contractRows.map((r) => [r.strategyId, r]));
   assert.equal(contractGated.sources.entryContracts.enabled, true);
-  assert.equal(contractGated.sources.entryContracts.ready, 5);
+  assert.equal(contractGated.sources.entryContracts.ready, 7);
   // Fortfarande exakt tre paper-körbara strategier: narrow_fakeout_reversal_v1 har
   // fått ett kontrakt (väg A) men är inte påslagen i den manuella listan och äger
   // inte familjevalet i narrow_state, så den ska INTE vara READY_FOR_PAPER.
@@ -181,15 +181,43 @@ assert.ok(vwapShort.warnings.includes('short_only_strategy'));
     contractRows.filter((r) => r.readiness === svc.READINESS.READY_FOR_PAPER).map((r) => r.strategyId).sort(),
     ['ema_pullback_continuation', 'narrow_state_expansion_long', 'vwap_volume_breakout_long'],
   );
-  // narrow_fakeout_reversal_v1 är medvetet BORTA ur den här listan — den har numera
-  // ett kontrakt. Invarianten "saknar kontrakt ⇒ NEEDS_ENTRY_CONTRACT" prövas kvar
-  // med de två som fortfarande saknar kontrakt.
+  // Invarianten "saknar kontrakt ⇒ NEEDS_ENTRY_CONTRACT" har inte längre något
+  // konkret subjekt i katalogen: alla sex strategier med producent+mapping har nu
+  // kontrakt. Den prövas därför universellt kvantifierad i stället, så att den
+  // åter-armar sig själv automatiskt så snart en ny producentklar strategi
+  // tillkommer utan kontrakt.
+  // Undantag: INTENTIONALLY_DISABLED har företräde före kontraktsgrinden
+  // (trend_continuation är medvetet avstängd och ska inte rapporteras som att den
+  // bara saknar ett kontrakt).
+  for (const row of contractRows) {
+    if (row.producerStatus === 'ok'
+      && ['ok', 'partial_shadowed'].includes(row.mappingStatus)
+      && row.runtimeConnectorStatus === 'active'
+      && row.entryContractReady === false
+      && row.technicalReadiness !== svc.READINESS.INTENTIONALLY_DISABLED) {
+      assert.equal(row.technicalReadiness, svc.READINESS.NEEDS_ENTRY_CONTRACT,
+        `${row.strategyId}: producentklar utan kontrakt måste blockeras av contract-kravet`);
+      assert.ok(row.missingComponents.includes('entry_contract'),
+        `${row.strategyId}: entry_contract finns i missingComponents`);
+      assert.notEqual(row.readiness, svc.READINESS.READY_FOR_PAPER,
+        `${row.strategyId}: får inte vara READY_FOR_PAPER utan kontrakt`);
+    }
+  }
+
+  // narrow_breakout och vwap_failed_breakout_short har nu kontrakt (väg A) och är
+  // därmed inte längre contract-blockerade. Ingen av dem når READY_FOR_PAPER: båda
+  // är short-only i praktiken och avstängda i den manuella listan, och
+  // narrow_breakout äger inte heller familjevalet i narrow_state.
   for (const id of ['narrow_breakout', 'vwap_failed_breakout_short']) {
     const row = contractById.get(id);
-    assert.equal(row.entryContractReady, false, `${id}: saknar entry contract`);
-    assert.equal(row.technicalReadiness, svc.READINESS.NEEDS_ENTRY_CONTRACT, `${id}: blockas av contract-krav`);
-    assert.ok(row.missingComponents.includes('entry_contract'), `${id}: entry_contract finns i missingComponents`);
-    assert.notEqual(row.readiness, svc.READINESS.READY_FOR_PAPER, `${id}: får inte vara READY_FOR_PAPER`);
+    assert.equal(row.entryContractReady, true, `${id}: har entry contract`);
+    assert.ok(!row.missingComponents.includes('entry_contract'),
+      `${id}: entry_contract är inte längre en saknad komponent`);
+    assert.notEqual(row.technicalReadiness, svc.READINESS.NEEDS_ENTRY_CONTRACT,
+      `${id}: contract-kravet blockerar inte längre`);
+    assert.notEqual(row.readiness, svc.READINESS.READY_FOR_PAPER,
+      `${id}: short-only + avstängd => aldrig paper-körbar`);
+    assert.deepEqual(row.effectiveDirections, ['short'], `${id}: short-only i praktiken`);
   }
   process.env.PAPER_MANUAL_STRATEGY_LIST_ENABLED = 'false';
   process.env.PAPER_ENTRY_CONTRACTS_ENABLED = 'false';

@@ -152,24 +152,27 @@ function main() {
   safety(projection);
   for (const row of projection.strategies) safety(row);
 
-  // Subjektet här måste vara en strategi UTAN entry contract. Det var tidigare
-  // narrow_fakeout_reversal_v1, men den har numera ett kontrakt (väg A, generiska
-  // confirmations), så invarianten prövas i stället med narrow_breakout — som
-  // fortfarande saknar kontrakt.
+  // Subjektet här måste vara en strategi UTAN entry contract, och den måste ha
+  // producent+mapping i ordning — annars fångas den av en tidigare grind och får
+  // en annan blocked-reason. Subjektet har flyttats två gånger i takt med att
+  // kontrakt tillkommit: narrow_fakeout_reversal_v1 → narrow_breakout →
+  // trend_continuation. Den senare har producent (REGULAR_PULLBACK) och mapping
+  // ok men inget kontrakt, och är medvetet paper-blockad, så den förblir ett
+  // stabilt subjekt.
   process.env.PAPER_ENTRY_CONTRACTS_ENABLED = 'true';
-  svc.enableStrategy('narrow_breakout', {
+  svc.enableStrategy('trend_continuation', {
     source: 'test',
     now: '2026-07-11T17:30:00.000Z',
   });
   const contractGatedProjection = svc.buildPaperStrategyList({ fresh: true });
-  const narrowBreakoutRow = contractGatedProjection.strategies.find((row) => row.strategyId === 'narrow_breakout');
+  const missingContractRow = contractGatedProjection.strategies.find((row) => row.strategyId === 'trend_continuation');
   assert.equal(contractGatedProjection.entryContractsEnabled, true);
   assert.equal(contractGatedProjection.summary.enabled, 4);
   assert.equal(contractGatedProjection.summary.ready, 3, 'missing-contract strategy får inte öka paper-ready count');
-  assert.equal(narrowBreakoutRow.entryContractReady, false);
-  assert.equal(narrowBreakoutRow.paperEligibility, 'BLOCKED');
-  assert.equal(narrowBreakoutRow.paperBlockedReason, 'paper_strategy_enabled_but_entry_contract_missing');
-  svc.disableStrategy('narrow_breakout', {
+  assert.equal(missingContractRow.entryContractReady, false);
+  assert.equal(missingContractRow.paperEligibility, 'BLOCKED');
+  assert.equal(missingContractRow.paperBlockedReason, 'paper_strategy_enabled_but_entry_contract_missing');
+  svc.disableStrategy('trend_continuation', {
     source: 'test',
     now: '2026-07-11T17:31:00.000Z',
   });

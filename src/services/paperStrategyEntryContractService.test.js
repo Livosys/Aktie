@@ -69,7 +69,7 @@ function assertBlock(strategyId, candidate, reasonCode, message) {
 function main() {
   assert.equal(catalog.getCatalog().strategies.length, 33, 'catalog still has 33 canonical strategies');
   assert.equal(svc.entryContractsEnabled(), false, 'code default/flag false keeps rollout off');
-  assert.equal(svc.listEntryContracts().length, 5, 'three TradingOS strategies, native MNQ, plus narrow_fakeout_reversal_v1 have entry contracts');
+  assert.equal(svc.listEntryContracts().length, 7, 'three TradingOS strategies, native MNQ, narrow_fakeout_reversal_v1, narrow_breakout och vwap_failed_breakout_short har entry contracts');
 
   assert.deepEqual(svc.getEntryContract('narrow_state_expansion_long').allowedSubtypes, ['NARROW_BULL_ENTRY']);
   // narrow_fakeout_reversal_v1 kör på generiska confirmations (väg A): motorn har
@@ -81,11 +81,31 @@ function main() {
   assert.deepEqual(svc.getEntryContract('ema_pullback_continuation').allowedSubtypes, ['EMA_PULLBACK_UP']);
   assert.deepEqual(svc.getEntryContract('vwap_volume_breakout_long').allowedSubtypes, ['VWAP_RECLAIM_UP']);
   assert.deepEqual(svc.getEntryContract('mnq_globex_momentum_v1').allowedSubtypes, ['GLOBEX_MOMENTUM']);
-  assert.equal(svc.getEntryContract('narrow_breakout'), null, 'non-active strategy has no contract');
+  // narrow_breakout: paritet med syskonet i familjen — samma generiska par, men
+  // two_minute_confirmation är riktningsmedveten så bear-entryn grindas i sin
+  // egen riktning. Båda subtyperna tillåts; se kontraktets kommentar.
+  assert.deepEqual(svc.getEntryContract('narrow_breakout').allowedSubtypes,
+    ['NARROW_BULL_ENTRY', 'NARROW_BEAR_ENTRY']);
+  assert.deepEqual(svc.getEntryContract('narrow_breakout').requiredConfirmations,
+    ['two_minute_confirmation', 'closed_candle_confirmation']);
+  // vwap_failed_breakout_short: vwap_reclaim_confirmation är MEDVETET utesluten.
+  // hasVwapReclaimConfirmation() är long-biased och alltid falsk när priset
+  // ligger under VWAP, vilket varje VWAP_REJECTION_DOWN gör — kravet skulle
+  // blockera 100% av signalerna. Invarianten nedan låser fast det.
+  assert.deepEqual(svc.getEntryContract('vwap_failed_breakout_short').allowedSubtypes,
+    ['VWAP_REJECTION_DOWN']);
+  assert.ok(!svc.getEntryContract('vwap_failed_breakout_short').requiredConfirmations
+    .includes('vwap_reclaim_confirmation'),
+    'long-biased reclaim-token får aldrig krävas i short-kontraktet');
+  assert.equal(svc.getEntryContract('vwap_failed_breakout_short').confirmationGrade, 'generic');
+
+  // Invarianten "påslagen strategi utan kontrakt failar stängt" prövas med
+  // ema_breakdown, som saknar producent och därför aldrig får ett kontrakt.
+  assert.equal(svc.getEntryContract('ema_breakdown'), null, 'producer-less strategy has no contract');
 
   assertBlock(
-    'narrow_breakout',
-    base({ strategyId: 'narrow_breakout' }),
+    'ema_breakdown',
+    base({ strategyId: 'ema_breakdown' }),
     svc.REASON_CODES.CONTRACT_MISSING,
     'enabled strategy without contract fails closed',
   );
@@ -105,6 +125,52 @@ function main() {
     svc.REASON_CODES.WATCH_ONLY,
     'observation text is a defensive fallback block',
   );
+
+  // narrow_breakout — bear-entryn är den subtyp mappningen faktiskt routar hit.
+  const bearReady = base({ signalSubtype: 'NARROW_BEAR_ENTRY', nextMoveBias: 'DOWN' });
+  assertPass('narrow_breakout', bearReady, 'confirmed narrow bear can pass');
+  assertPass('narrow_breakout', base(), 'bull entry ligger också i kontraktet');
+  assertBlock('narrow_breakout', { ...bearReady, twoMinuteConfirmed: false }, svc.REASON_CODES.MISSING_TWO_MINUTE);
+  assertBlock('narrow_breakout', { ...bearReady, closedCandle: false }, svc.REASON_CODES.MISSING_CLOSED_CANDLE);
+  assertBlock('narrow_breakout', { ...bearReady, status: 'watch' }, svc.REASON_CODES.WATCH_ONLY);
+  assertBlock('narrow_breakout', { ...bearReady, signalSubtype: 'NARROW_WAIT' }, svc.REASON_CODES.INVALID_SUBTYPE);
+  assertBlock('narrow_breakout', { ...bearReady, extensionLevel: 'mild' }, svc.REASON_CODES.LATE_EXTENDED_ENTRY);
+  // two_minute_confirmation är riktningsmedveten: bias DOWN kräver bearish 2m.
+  assertBlock('narrow_breakout',
+    { ...bearReady, twoMinuteConfirmed: undefined, tf2m: 'bullish' },
+    svc.REASON_CODES.MISSING_TWO_MINUTE,
+    'bearish setup får inte bekräftas av bullish 2m');
+  assertPass('narrow_breakout',
+    { ...bearReady, twoMinuteConfirmed: undefined, tf2m: 'bearish' },
+    'bearish 2m bekräftar bear-entryn');
+
+  // vwap_failed_breakout_short — passerar med priset UNDER VWAP, vilket är hela
+  // poängen med att utesluta det long-biased reclaim-tokenet.
+  const vwapShortReady = base({
+    symbol: 'AAPL',
+    marketType: 'stocks',
+    session: 'regular',
+    marketOpen: true,
+    nextMoveBias: 'DOWN',
+    signalSubtype: 'VWAP_REJECTION_DOWN',
+    vwap: 190.5,
+    priceVsVwap: 'below',
+    vwapDistancePct: -0.12,
+  });
+  assertPass('vwap_failed_breakout_short', vwapShortReady, 'vwap rejection passerar med pris under VWAP');
+  assertBlock('vwap_failed_breakout_short', { ...vwapShortReady, twoMinuteConfirmed: false }, svc.REASON_CODES.MISSING_TWO_MINUTE);
+  assertBlock('vwap_failed_breakout_short', { ...vwapShortReady, closedCandle: false }, svc.REASON_CODES.MISSING_CLOSED_CANDLE);
+  assertBlock('vwap_failed_breakout_short', { ...vwapShortReady, volumeState: 'normal' }, svc.REASON_CODES.MISSING_VOLUME);
+  assertBlock('vwap_failed_breakout_short', { ...vwapShortReady, status: 'watch' }, svc.REASON_CODES.WATCH_ONLY);
+  assertBlock('vwap_failed_breakout_short', { ...vwapShortReady, signalSubtype: 'VWAP_RECLAIM_UP' }, svc.REASON_CODES.INVALID_SUBTYPE);
+  assertBlock('vwap_failed_breakout_short', { ...vwapShortReady, nextMoveBias: 'UP' }, svc.REASON_CODES.INVALID_DIRECTION);
+  assertBlock('vwap_failed_breakout_short', { ...vwapShortReady, signalTimestamp: '2026-07-11T17:50:00.000Z' }, svc.REASON_CODES.STALE_SIGNAL);
+  // Motprovet som motiverar uteslutningen: long-syskonet KRÄVER reclaim-tokenet
+  // och blockerar därför exakt samma VWAP-relation som varje short har.
+  assertBlock('vwap_volume_breakout_long',
+    { ...vwapShortReady, nextMoveBias: 'UP', signalSubtype: 'VWAP_RECLAIM_UP' },
+    svc.REASON_CODES.MISSING_VWAP_RECLAIM,
+    'reclaim-tokenet är falskt under VWAP — därför uteslutet ur short-kontraktet');
 
   const emaReady = base({
     signalSubtype: 'EMA_PULLBACK_UP',
@@ -194,10 +260,11 @@ function main() {
 
   const response = svc.buildEntryContractsResponse({ now: NOW, windowHours: 1 });
   assert.equal(response.summary.totalStrategies, 33);
-  // 4 av katalogens 33 har kontrakt (mnq_globex_momentum_v1 är native futures och
-  // ingår inte i katalogen): de tre Trading OS-strategierna + narrow_fakeout_reversal_v1.
-  assert.equal(response.summary.ready, 4);
-  assert.equal(response.summary.missing, 29);
+  // 6 av katalogens 33 har kontrakt (mnq_globex_momentum_v1 är native futures och
+  // ingår inte i katalogen): de tre Trading OS-strategierna, narrow_fakeout_reversal_v1
+  // samt narrow_breakout och vwap_failed_breakout_short.
+  assert.equal(response.summary.ready, 6);
+  assert.equal(response.summary.missing, 27);
   assert.equal(response.summary.contractBlock, 1);
   assert.equal(response.entryContractsEnabled, true);
   safety(response);

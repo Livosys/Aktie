@@ -194,8 +194,9 @@ async function main() {
     assert.equal(list.status, 200);
     assert.equal(list.body.summary.total, 33);
     assert.equal(list.body.summary.enabled, 3);
-    // 4 katalogstrategier har kontrakt sedan narrow_fakeout_reversal_v1 fick ett.
-    assert.equal(list.body.summary.entryContractsReady, 4);
+    // 6 katalogstrategier har kontrakt sedan narrow_breakout och
+    // vwap_failed_breakout_short fick sina (väg A, generiska confirmations).
+    assert.equal(list.body.summary.entryContractsReady, 6);
     assert.equal(list.body.runtimeGateMode, 'legacy');
     assert.equal(list.body.manualListControlsRuntime, false);
     assert.equal(list.body.entryContractsEnabled, true);
@@ -213,10 +214,10 @@ async function main() {
     const contracts = await get(baseUrl, '/api/paper-trading/entry-contracts', authHeaders);
     assert.equal(contracts.status, 200);
     assert.equal(contracts.body.summary.totalStrategies, 33);
-    // 4 av katalogens 33 har kontrakt sedan narrow_fakeout_reversal_v1 fick ett
-    // (väg A, generiska confirmations).
-    assert.equal(contracts.body.summary.ready, 4);
-    assert.equal(contracts.body.summary.missing, 29);
+    // 6 av katalogens 33 har kontrakt sedan narrow_breakout och
+    // vwap_failed_breakout_short fick sina (väg A, generiska confirmations).
+    assert.equal(contracts.body.summary.ready, 6);
+    assert.equal(contracts.body.summary.missing, 27);
     assert.equal(contracts.body.entryContractsEnabled, true);
     safety(contracts.body);
 

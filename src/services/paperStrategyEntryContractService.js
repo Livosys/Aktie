@@ -109,6 +109,73 @@ const CONTRACTS = Object.freeze({
     extendedMovePolicy: 'block',
     volumePolicy: 'normal_or_strong',
   }),
+  // Samma generiska par som narrow_state_expansion_long använder för sin
+  // bull-entry, här för hela familjen. Det är PARITET med syskonet, inte en
+  // svagare grind: two_minute_confirmation är riktningsmedveten (bias DOWN
+  // kräver bearish 2m), så bear-entryn grindas i sin egen riktning.
+  //
+  // allowedSubtypes har BÅDA subtyperna trots att NARROW_BULL_ENTRY i dag
+  // routas till narrow_state_expansion_long. Shadowingen är en följd av det
+  // mutbara familjevalet, inte en egenskap hos strategin — att låsa kontraktet
+  // till bear skulle tysta bull-entryn om familjevalet någonsin flyttas hit.
+  narrow_breakout: Object.freeze({
+    strategyId: 'narrow_breakout',
+    version: PAPER_ENTRY_CONTRACT_VERSION,
+    status: 'ready',
+    allowedSubtypes: Object.freeze(['NARROW_BULL_ENTRY', 'NARROW_BEAR_ENTRY']),
+    allowedDirections: Object.freeze(['LONG', 'UP', 'SHORT', 'DOWN']),
+    allowedStatuses: Object.freeze(['active', 'confirmed', 'entry', 'entry_ready', 'ready']),
+    blockedStatuses: Object.freeze(['watch', 'caution', 'wait', 'avoid', 'no_trade']),
+    requiredConfirmations: Object.freeze(['two_minute_confirmation', 'closed_candle_confirmation']),
+    requiresFreshData: true,
+    maxSignalAgeMs: 180000,
+    requiresClosedCandle: true,
+    requiresMarketOpen: false,
+    allowedSessions: Object.freeze(['24_7', 'crypto_24_7', 'regular', 'rth', 'nyse', 'nasdaq', 'us_stocks']),
+    lateEntryPolicy: 'block',
+    extendedMovePolicy: 'block',
+    volumePolicy: 'normal_or_strong',
+  }),
+  // READY_FOR_PAPER (Generisk confirmation) — INTE fullt färdig.
+  //
+  // KRITISKT: vwap_reclaim_confirmation får INTE krävas här. Syskonkontraktet
+  // vwap_volume_breakout_long kräver den, men hasVwapReclaimConfirmation() är
+  // hårdkodat long-biased — den svarar sant bara när priset stänger ÖVER VWAP
+  // (closeAboveVwap / priceVsVwap 'above' / vwapDistancePct >= 0). På en
+  // VWAP_REJECTION_DOWN ligger priset under VWAP, så tokenet skulle alltid vara
+  // falskt och kontraktet blockera VARJE signal med
+  // missing_vwap_reclaim_confirmation — värre än inget kontrakt, eftersom det
+  // ser färdigt ut men aldrig släpper igenom en trade.
+  //
+  // Motorn saknar helt ett token som verifierar strategins egen tes (utbrott
+  // ÖVER VWAP som faller tillbaka under). Grinden nedan är därför generisk:
+  // riktningsmedveten 2m-bekräftelse + stängd candle + volym.
+  //
+  // FRAMTIDA FÖRBÄTTRING (väg B, medvetet EJ implementerad): en riktningsmedveten
+  // hasVwapRejectionConfirmation() i motorn. Det är ny affärslogik och ska ha en
+  // egen verifieringsrunda.
+  vwap_failed_breakout_short: Object.freeze({
+    strategyId: 'vwap_failed_breakout_short',
+    version: PAPER_ENTRY_CONTRACT_VERSION,
+    status: 'ready',
+    confirmationGrade: 'generic',
+    confirmationGradeNote: 'READY_FOR_PAPER (Generisk confirmation) — motorn har ingen riktningsmedveten VWAP-avvisningsbekräftelse; vwap_reclaim_confirmation är long-biased och skulle blockera allt.',
+    allowedSubtypes: Object.freeze(['VWAP_REJECTION_DOWN']),
+    allowedDirections: Object.freeze(['SHORT', 'DOWN']),
+    allowedStatuses: Object.freeze(['active', 'confirmed', 'entry', 'entry_ready', 'ready']),
+    blockedStatuses: Object.freeze(['watch', 'caution', 'wait', 'avoid', 'no_trade']),
+    requiredConfirmations: Object.freeze(['two_minute_confirmation', 'closed_candle_confirmation', 'volume_confirmation']),
+    requiresFreshData: true,
+    maxSignalAgeMs: 180000,
+    requiresClosedCandle: true,
+    requiresMarketOpen: true,
+    allowedSessions: Object.freeze(['regular', 'rth', 'nyse', 'nasdaq', 'us_stocks']),
+    lateEntryPolicy: 'block',
+    extendedMovePolicy: 'block',
+    volumePolicy: 'strong_or_confirmed',
+    requiresVwapContext: true,
+    marketType: 'stocks',
+  }),
   ema_pullback_continuation: Object.freeze({
     strategyId: 'ema_pullback_continuation',
     version: PAPER_ENTRY_CONTRACT_VERSION,
