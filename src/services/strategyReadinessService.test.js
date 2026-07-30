@@ -103,20 +103,38 @@ assert.ok(trendCont.warnings.includes('intentional_paper_block'));
 assert.ok(!trendCont.warnings.includes('selected_strategy_blocks_family'),
   'trend_continuation blockerar inte längre familjen efter D2-alignmenten');
 
-// 9. Short-only-strategi får korrekt research/paper-skillnad. Efter FAS D1 är
-// vwap_failed_breakout_short policy-pausad i approval-storen: paper blockerad,
-// research/replay fortsatt tillåten, klassad som medvetet avstängd.
+// 9. Short-only-strategi får korrekt research/paper-skillnad.
+// long_only_policy_d1-pausen på vwap_failed_breakout_short HÄVDES 2026-07-30 på
+// uttryckligt användarbeslut, så approvalStatus är nu 'approved'. Paper är ändå
+// blockerad — men av familjevalet i vwap_family (vwap_volume_breakout_long
+// behåller det och handlar live) och av LONG_ONLY, inte längre av en policypaus.
+// Det viktiga invariantet är oförändrat: en short-only-strategi får ALDRIG bli
+// READY_FOR_PAPER så länge LONG_ONLY gäller.
 const vwapShort = byId.get('vwap_failed_breakout_short');
 assert.ok(vwapShort, 'vwap_failed_breakout_short finns');
 assert.equal(vwapShort.direction, 'short');
 assert.equal(vwapShort.replayEligibility, 'READY', 'research/replay fortsatt tillåten');
-assert.equal(vwapShort.paperEligibility, 'BLOCKED', 'paper blockerad efter D1-pausen');
-assert.equal(vwapShort.approvalStatus, 'paused');
-assert.equal(vwapShort.readiness, svc.READINESS.INTENTIONALLY_DISABLED);
+assert.equal(vwapShort.paperEligibility, 'BLOCKED', 'paper fortsatt blockerad');
+assert.equal(vwapShort.approvalStatus, 'approved', 'D1-pausen är hävd');
+// 'READY' är technicalReadiness-värdet och finns inte som nyckel i READINESS-enumet.
+assert.equal(vwapShort.technicalReadiness, 'READY',
+  'tekniskt komplett sedan entry contract + hävd paus');
+assert.equal(vwapShort.familySelectionMismatch, true,
+  'vwap_family-valet ligger kvar hos long-strategin som handlar live');
 assert.notEqual(vwapShort.readiness, svc.READINESS.READY_FOR_PAPER,
   'short-only får inte visas som READY_FOR_PAPER under LONG_ONLY');
+assert.ok(vwapShort.warnings.includes('short_only_strategy'));
 assert.ok(!vwapShort.warnings.includes('approval_mismatch'),
-  'policy-paus är ett beslut, inte en approval-mismatch');
+  'familjevalet är ett beslut, inte en approval-mismatch');
+
+// Hävningen får INTE ha slagit ut long-strategin ur vwap_family. resume() tar
+// över familjevalet som sidoeffekt, så den återställdes uttryckligen; den här
+// assertionen fångar en framtida regression där det glöms.
+const vwapLongGuard = byId.get('vwap_volume_breakout_long');
+assert.equal(vwapLongGuard.selectedInFamily, true,
+  'vwap_volume_breakout_long måste behålla vwap_family-valet');
+assert.equal(vwapLongGuard.readiness, svc.READINESS.READY_FOR_PAPER,
+  'long-strategin får inte tappa paper-körbarheten av hävningen');
 
 // 10. UNKNOWN/NO_TRADE räknas aldrig som producerad strategi-signal.
 for (const row of rows) {
