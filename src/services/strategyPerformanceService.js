@@ -249,38 +249,83 @@ function defaultSymbols(marketGroup) {
   return ['AAPL', 'NVDA', 'TSLA', 'QQQ'];
 }
 
+// Audit-eventen för ett testresultat, delade av enkel- och bulkvägen nedan så att
+// de aldrig kan glida ifrån varandra.
+function strategyTestAuditEvents(result) {
+  return [
+    {
+      type: 'STRATEGY_TEST_CREATED',
+      source: 'strategy_tests',
+      symbol: result.symbols?.[0] || null,
+      strategy_id: result.strategy_id,
+      timestamp: result.test_created_at,
+      message: `${result.strategy_name} test skapad`,
+      details: { test_id: result.id, symbols: result.symbols, mode: result.mode },
+    },
+    {
+      type: 'STRATEGY_TEST_COMPLETED',
+      source: 'strategy_tests',
+      symbol: result.symbols?.[0] || null,
+      strategy_id: result.strategy_id,
+      timestamp: result.test_completed_at,
+      message: `${result.strategy_name} testad${result.best_symbol ? ` på ${result.best_symbol}` : ''}`,
+      details: {
+        test_id: result.id,
+        symbols: result.symbols,
+        trades: result.trades,
+        win_rate: result.win_rate,
+        avg_pnl: result.avg_pnl,
+        duration_seconds: result.duration_seconds,
+        duration_label: result.duration_label,
+      },
+    },
+  ];
+}
+
 function saveStrategyTestResult(input = {}) {
   const result = normalizeResult(input);
   const results = readResults();
   results.push(result);
   writeResults(results.slice(-1000));
-  auditTrail.logAuditEvent({
-    type: 'STRATEGY_TEST_CREATED',
-    source: 'strategy_tests',
-    symbol: result.symbols?.[0] || null,
-    strategy_id: result.strategy_id,
-    timestamp: result.test_created_at,
-    message: `${result.strategy_name} test skapad`,
-    details: { test_id: result.id, symbols: result.symbols, mode: result.mode },
-  });
-  auditTrail.logAuditEvent({
-    type: 'STRATEGY_TEST_COMPLETED',
-    source: 'strategy_tests',
-    symbol: result.symbols?.[0] || null,
-    strategy_id: result.strategy_id,
-    timestamp: result.test_completed_at,
-    message: `${result.strategy_name} testad${result.best_symbol ? ` på ${result.best_symbol}` : ''}`,
-    details: {
-      test_id: result.id,
-      symbols: result.symbols,
-      trades: result.trades,
-      win_rate: result.win_rate,
-      avg_pnl: result.avg_pnl,
-      duration_seconds: result.duration_seconds,
-      duration_label: result.duration_label,
-    },
-  });
+  for (const event of strategyTestAuditEvents(result)) auditTrail.logAuditEvent(event);
   return { ok: true, result, ...SAFETY };
+}
+
+// Bulk-variant för svep som sparar många simulerade tester på en gång (dagens
+// batch kör upp till 486 kombinationer). Den sekventiella vägen gör läs-modifiera-
+// skriv av HELA resultatfilen OCH hela eventfilen per kombination — tre fulla
+// fil-cykler × 486 = O(N²) synkron IO som frös event-loopen ~59s vid midnatt.
+// Här görs en läsning och en skrivning per fil för hela svepet.
+//
+// Sluttillståndet är identiskt med N sekventiella anrop: slice(-1000) tillämpas
+// en gång över hela mängden, precis som varje enskilt anrop skulle ha gjort.
+function saveSimulatedStrategyTests(inputs = []) {
+  const list = (Array.isArray(inputs) ? inputs : [inputs]).filter(Boolean);
+  if (!list.length) return { ok: true, results: [], ...SAFETY };
+
+  // deterministicTestResult kastar på okänt strategy_id. Sekventiellt hade de
+  // dittills lyckade resultaten redan persisterats innan felet kastades vidare —
+  // därför persisteras det som lyckats även här innan felet får fortsätta, så
+  // bulk-vägen är semantiskt likvärdig och inte "allt eller inget".
+  const results = [];
+  let failure = null;
+  for (const input of list) {
+    try {
+      results.push(normalizeResult(deterministicTestResult(input)));
+    } catch (err) {
+      failure = err;
+      break;
+    }
+  }
+
+  if (results.length) {
+    const stored = readResults();
+    stored.push(...results);
+    writeResults(stored.slice(-1000));
+    auditTrail.logAuditEvents(results.flatMap((result) => strategyTestAuditEvents(result)));
+  }
+  if (failure) throw failure;
+  return { ok: true, results, ...SAFETY };
 }
 
 function saveSimulatedStrategyTest(input = {}) {
@@ -492,6 +537,7 @@ module.exports = {
   maxDrawdownFromPnls,
   saveStrategyTestResult,
   saveSimulatedStrategyTest,
+  saveSimulatedStrategyTests,
   getStrategyPerformance,
   getTopStrategies,
   getWorstStrategies,

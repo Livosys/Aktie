@@ -336,7 +336,13 @@ async function runAutoBatchTests(ctx, dataFetch) {
   const combinationsTotal = strategies.length * symbols.length * BATCH_TIMEFRAMES.length * STOP_LOSSES.length * TAKE_PROFITS.length * HOLDING_TIMES.length * CONFIDENCE.length * VOLUME_REQUIREMENTS.length;
   const topResults = [];
   let completed = 0;
-  batchLoop:
+  // Kombinationerna samlas först och sparas i ETT svep. Tidigare anropades
+  // saveSimulatedStrategyTest per kombination, och varje anrop gjorde
+  // läs-modifiera-skriv av hela resultatfilen plus två fulla eventfil-cykler —
+  // 486 × 3 fulla fil-cykler = O(N²) synkron IO som frös event-loopen ~59s vid
+  // midnatt (uppmätt 2026-07-30 00:01:03–00:02:02).
+  const combinations = [];
+  comboLoop:
   for (const strategyId of strategies) {
     for (const symbol of symbols) {
       for (const timeframe of BATCH_TIMEFRAMES) {
@@ -345,7 +351,7 @@ async function runAutoBatchTests(ctx, dataFetch) {
             for (const holdingTime of HOLDING_TIMES) {
               for (const confidence of CONFIDENCE) {
                 for (const volume of VOLUME_REQUIREMENTS) {
-                  const saved = strategyPerformance.saveSimulatedStrategyTest({
+                  combinations.push({
                     strategy_id: strategyId,
                     symbols: [symbol],
                     market_group: isCrypto(symbol) ? 'crypto' : 'stocks',
@@ -361,25 +367,7 @@ async function runAutoBatchTests(ctx, dataFetch) {
                     can_place_orders: false,
                     live_trading_enabled: false,
                   });
-                  completed += 1;
-                  const result = saved.result || {};
-                  const row = {
-                    strategy_id: result.strategy_id,
-                    strategy_name: result.strategy_name,
-                    symbol,
-                    timeframe,
-                    stop_loss: stopLoss,
-                    take_profit: takeProfit,
-                    holding_time: holdingTime,
-                    confidence_threshold: confidence,
-                    volume_requirement: volume,
-                    trades: result.trades || 0,
-                    win_rate: result.win_rate || 0,
-                    avg_pnl: result.avg_pnl || 0,
-                    score: scoreBatchRow(result),
-                  };
-                  topResults.push(row);
-                  if (completed >= MAX_DAILY_BATCH_RUNS) break batchLoop;
+                  if (combinations.length >= MAX_DAILY_BATCH_RUNS) break comboLoop;
                 }
               }
             }
@@ -387,6 +375,29 @@ async function runAutoBatchTests(ctx, dataFetch) {
         }
       }
     }
+  }
+
+  const saved = strategyPerformance.saveSimulatedStrategyTests(combinations);
+  const savedResults = saved.results || [];
+  completed = savedResults.length;
+  for (let i = 0; i < savedResults.length; i += 1) {
+    const result = savedResults[i];
+    const combo = combinations[i];
+    topResults.push({
+      strategy_id: result.strategy_id,
+      strategy_name: result.strategy_name,
+      symbol: combo.symbols[0],
+      timeframe: combo.timeframe,
+      stop_loss: combo.sl,
+      take_profit: combo.tp,
+      holding_time: combo.holding_time,
+      confidence_threshold: combo.confidence_threshold,
+      volume_requirement: combo.volume_requirement,
+      trades: result.trades || 0,
+      win_rate: result.win_rate || 0,
+      avg_pnl: result.avg_pnl || 0,
+      score: scoreBatchRow(result),
+    });
   }
   topResults.sort((a, b) => b.score - a.score);
   const weakResults = [...topResults].sort((a, b) => a.score - b.score).slice(0, 10);

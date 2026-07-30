@@ -155,6 +155,27 @@ function logAuditEvent(event) {
   }
 }
 
+// Bulk-variant för anropare som skriver många event i samma svep (t.ex. dagens
+// batch-svep, 486 kombinationer × 2 event). logAuditEvent gör läs-modifiera-skriv
+// av HELA eventfilen per anrop, vilket blir O(N²) synkron fil-IO och fryser
+// event-loopen. Här görs en läsning och en skrivning för hela svepet.
+//
+// Sluttillståndet är identiskt med N sekventiella logAuditEvent-anrop: cleanEvents
+// är åldersfilter + slice(-MAX_EVENTS) och tillämpas en gång över hela mängden.
+function logAuditEvents(events = []) {
+  try {
+    const incoming = (Array.isArray(events) ? events : [events])
+      .filter(Boolean)
+      .map((event) => normalizeEvent(event));
+    if (!incoming.length) return { ok: true, written: 0, events: [], ...SAFETY };
+    const rows = cleanEvents([...readEvents(), ...incoming]);
+    writeEvents(rows);
+    return { ok: true, written: incoming.length, events: incoming, ...SAFETY };
+  } catch (err) {
+    return { ok: false, error: err.message, ...SAFETY };
+  }
+}
+
 function filteredEvents(filters = {}) {
   const limit = Math.max(1, Math.min(500, Number(filters.limit || filters.n || 100) || 100));
   const type = filters.type ? String(filters.type).toUpperCase() : null;
@@ -353,6 +374,7 @@ module.exports = {
   SAFETY,
   TYPE_LABELS,
   logAuditEvent,
+  logAuditEvents,
   getRecentAuditEvents,
   getTradeAuditEvents,
   getCandidateAuditEvents,
