@@ -1,8 +1,16 @@
 'use strict';
 
-const { getLatestResults, getStockFeedStatus } = require('../scanner/scheduler');
-const { getCryptoResults } = require('../scanner/cryptoScheduler');
+const {
+  getLatestResults,
+  getStockFeedStatus,
+  getLiveCandlesDebug: getStockLiveCandlesDebug,
+} = require('../scanner/scheduler');
+const {
+  getCryptoResults,
+  getLiveCandlesDebug: getCryptoLiveCandlesDebug,
+} = require('../scanner/cryptoScheduler');
 const { buildDecisionMonitor } = require('../scanner/decisionMonitor');
+const decisionMonitorProducerContext = require('./decisionMonitorProducerContextService');
 const futuresMnqGlobexMomentumProducerService = require('./futuresMnqGlobexMomentumProducerService');
 
 const SAFETY = Object.freeze({
@@ -30,10 +38,25 @@ function safeString(value) {
   return text || null;
 }
 
+// Måste bygga monitorn med SAMMA indata som paperTradingAgent. Utan
+// liveCandleDebugBySymbol ser latestClosedCandleMeta() noll candles för varje
+// symbol och sätter closedCandleConfirmed=false / source='missing_live_candle'.
+// Varje entry contract kräver closed_candle_confirmation, så futures-vägen
+// blockerades på 100% av kandidaterna oavsett marknadsläge.
 function defaultSignalReader() {
+  const stockResults = decisionMonitorProducerContext.addDaytradeSignals(getLatestResults() || []);
+  const cryptoResults = decisionMonitorProducerContext.addDaytradeSignals(getCryptoResults() || []);
+  const liveCandleDebugBySymbol = decisionMonitorProducerContext.buildLiveCandleDebugMap([
+    ...stockResults.map((row) => ({ ...row, _market: 'stock' })),
+    ...cryptoResults.map((row) => ({ ...row, _market: 'crypto' })),
+  ], {
+    stockReader: getStockLiveCandlesDebug,
+    cryptoReader: getCryptoLiveCandlesDebug,
+  });
   const dm = buildDecisionMonitor({
-    stockResults: getLatestResults() || [],
-    cryptoResults: getCryptoResults() || [],
+    stockResults,
+    cryptoResults,
+    liveCandleDebugBySymbol,
     stockFeedStatus: typeof getStockFeedStatus === 'function' ? getStockFeedStatus() : null,
   });
   return safeArray(dm?.candidates);
