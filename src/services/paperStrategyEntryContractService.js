@@ -75,6 +75,40 @@ const CONTRACTS = Object.freeze({
     extendedMovePolicy: 'block',
     volumePolicy: 'normal_or_strong',
   }),
+  // READY_FOR_PAPER (Generisk confirmation) — INTE fullt färdig.
+  // Motorn har fem confirmation-tokens och ingen av dem verifierar själva
+  // fakeout-strukturen (utbrott som förkastas). Det här kontraktet använder
+  // därför samma generiska par som narrow_state_expansion_long, vilket ger en
+  // SVAGARE grind än de övriga kontrakten: en bekräftad NARROW_FAKEOUT-kandidat
+  // släpps igenom utan att utbrottsförkastandet kontrolleras.
+  //
+  // FRAMTIDA FÖRBÄTTRING (väg B, medvetet EJ implementerad): lägg till
+  // hasFakeoutReversalConfirmation() i motorn och kräv den här. Det är ny
+  // affärslogik och ska ha en egen verifieringsrunda.
+  //
+  // confirmationGrade/confirmationGradeNote läses inte av någon kodväg — de
+  // följer med via clone() ut i API-payloaden så att grindens styrka är synlig
+  // där kontraktet visas.
+  narrow_fakeout_reversal_v1: Object.freeze({
+    strategyId: 'narrow_fakeout_reversal_v1',
+    version: PAPER_ENTRY_CONTRACT_VERSION,
+    status: 'ready',
+    confirmationGrade: 'generic',
+    confirmationGradeNote: 'READY_FOR_PAPER (Generisk confirmation) — ingen fakeout-specifik bekräftelse finns i motorn.',
+    allowedSubtypes: Object.freeze(['NARROW_FAKEOUT']),
+    allowedDirections: Object.freeze(['LONG', 'UP', 'SHORT', 'DOWN']),
+    allowedStatuses: Object.freeze(['active', 'confirmed', 'entry', 'entry_ready', 'ready']),
+    blockedStatuses: Object.freeze(['watch', 'caution', 'wait', 'avoid', 'no_trade']),
+    requiredConfirmations: Object.freeze(['two_minute_confirmation', 'closed_candle_confirmation']),
+    requiresFreshData: true,
+    maxSignalAgeMs: 180000,
+    requiresClosedCandle: true,
+    requiresMarketOpen: false,
+    allowedSessions: Object.freeze(['24_7', 'crypto_24_7', 'regular', 'rth', 'nyse', 'nasdaq', 'us_stocks']),
+    lateEntryPolicy: 'block',
+    extendedMovePolicy: 'block',
+    volumePolicy: 'normal_or_strong',
+  }),
   ema_pullback_continuation: Object.freeze({
     strategyId: 'ema_pullback_continuation',
     version: PAPER_ENTRY_CONTRACT_VERSION,

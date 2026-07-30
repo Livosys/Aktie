@@ -152,20 +152,24 @@ function main() {
   safety(projection);
   for (const row of projection.strategies) safety(row);
 
+  // Subjektet här måste vara en strategi UTAN entry contract. Det var tidigare
+  // narrow_fakeout_reversal_v1, men den har numera ett kontrakt (väg A, generiska
+  // confirmations), så invarianten prövas i stället med narrow_breakout — som
+  // fortfarande saknar kontrakt.
   process.env.PAPER_ENTRY_CONTRACTS_ENABLED = 'true';
-  svc.enableStrategy('narrow_fakeout_reversal_v1', {
+  svc.enableStrategy('narrow_breakout', {
     source: 'test',
     now: '2026-07-11T17:30:00.000Z',
   });
   const contractGatedProjection = svc.buildPaperStrategyList({ fresh: true });
-  const narrowFakeoutRow = contractGatedProjection.strategies.find((row) => row.strategyId === 'narrow_fakeout_reversal_v1');
+  const narrowBreakoutRow = contractGatedProjection.strategies.find((row) => row.strategyId === 'narrow_breakout');
   assert.equal(contractGatedProjection.entryContractsEnabled, true);
   assert.equal(contractGatedProjection.summary.enabled, 4);
   assert.equal(contractGatedProjection.summary.ready, 3, 'missing-contract strategy får inte öka paper-ready count');
-  assert.equal(narrowFakeoutRow.entryContractReady, false);
-  assert.equal(narrowFakeoutRow.paperEligibility, 'BLOCKED');
-  assert.equal(narrowFakeoutRow.paperBlockedReason, 'paper_strategy_enabled_but_entry_contract_missing');
-  svc.disableStrategy('narrow_fakeout_reversal_v1', {
+  assert.equal(narrowBreakoutRow.entryContractReady, false);
+  assert.equal(narrowBreakoutRow.paperEligibility, 'BLOCKED');
+  assert.equal(narrowBreakoutRow.paperBlockedReason, 'paper_strategy_enabled_but_entry_contract_missing');
+  svc.disableStrategy('narrow_breakout', {
     source: 'test',
     now: '2026-07-11T17:31:00.000Z',
   });

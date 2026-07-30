@@ -69,9 +69,15 @@ function assertBlock(strategyId, candidate, reasonCode, message) {
 function main() {
   assert.equal(catalog.getCatalog().strategies.length, 33, 'catalog still has 33 canonical strategies');
   assert.equal(svc.entryContractsEnabled(), false, 'code default/flag false keeps rollout off');
-  assert.equal(svc.listEntryContracts().length, 4, 'three TradingOS strategies plus native MNQ have entry contracts');
+  assert.equal(svc.listEntryContracts().length, 5, 'three TradingOS strategies, native MNQ, plus narrow_fakeout_reversal_v1 have entry contracts');
 
   assert.deepEqual(svc.getEntryContract('narrow_state_expansion_long').allowedSubtypes, ['NARROW_BULL_ENTRY']);
+  // narrow_fakeout_reversal_v1 kör på generiska confirmations (väg A): motorn har
+  // ingen fakeout-specifik bekräftelse, och kontraktet ska säga det öppet.
+  assert.deepEqual(svc.getEntryContract('narrow_fakeout_reversal_v1').allowedSubtypes, ['NARROW_FAKEOUT']);
+  assert.deepEqual(svc.getEntryContract('narrow_fakeout_reversal_v1').requiredConfirmations,
+    ['two_minute_confirmation', 'closed_candle_confirmation']);
+  assert.equal(svc.getEntryContract('narrow_fakeout_reversal_v1').confirmationGrade, 'generic');
   assert.deepEqual(svc.getEntryContract('ema_pullback_continuation').allowedSubtypes, ['EMA_PULLBACK_UP']);
   assert.deepEqual(svc.getEntryContract('vwap_volume_breakout_long').allowedSubtypes, ['VWAP_RECLAIM_UP']);
   assert.deepEqual(svc.getEntryContract('mnq_globex_momentum_v1').allowedSubtypes, ['GLOBEX_MOMENTUM']);
@@ -188,8 +194,10 @@ function main() {
 
   const response = svc.buildEntryContractsResponse({ now: NOW, windowHours: 1 });
   assert.equal(response.summary.totalStrategies, 33);
-  assert.equal(response.summary.ready, 3);
-  assert.equal(response.summary.missing, 30);
+  // 4 av katalogens 33 har kontrakt (mnq_globex_momentum_v1 är native futures och
+  // ingår inte i katalogen): de tre Trading OS-strategierna + narrow_fakeout_reversal_v1.
+  assert.equal(response.summary.ready, 4);
+  assert.equal(response.summary.missing, 29);
   assert.equal(response.summary.contractBlock, 1);
   assert.equal(response.entryContractsEnabled, true);
   safety(response);
