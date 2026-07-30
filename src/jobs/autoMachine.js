@@ -17,6 +17,7 @@
 
 const fs   = require('fs');
 const path = require('path');
+const { fork } = require('child_process');
 
 const { fetchAlpacaBars, isEnabled: alpacaEnabled, hasCredentials } = require('../data/alpacaDataService');
 const { fetchBinanceKlines }  = require('../data/binanceDataService');
@@ -38,7 +39,12 @@ const { buildMomentumBacktest }     = require('../history/momentumBacktestAnalyz
 const { buildMicroMoveAnalysis }    = require('../history/microMoveAnalyzer');
 const { invalidateCache }           = require('../scanner/historicalEdge');
 
-const STATUS_PATH = path.resolve(__dirname, '../../data/system/auto-machine-status.json');
+// Env-överstyrbar enligt samma mönster som PAPER_ENTRY_CONTRACT_*_FILE m.fl.,
+// så tester kan pröva felvägarna utan att skriva i prods statusfil.
+const STATUS_PATH = path.resolve(
+  process.env.AUTO_MACHINE_STATUS_FILE
+    || path.resolve(__dirname, '../../data/system/auto-machine-status.json'),
+);
 
 const CRYPTO_SYMBOLS = new Set(['BTCUSDT', 'ETHUSDT', 'SOLUSDT', 'BNBUSDT', 'XRPUSDT', 'ADAUSDT']);
 
@@ -135,7 +141,7 @@ async function backfillSymbol(symbol, start, end) {
  * @param {string[]} opts.groups        - ['stocks','crypto'] or subset
  * @returns {Promise<object>} run result
  */
-async function runAutoMachine({ lookbackDays, groups }) {
+async function runAutoMachineInProcess({ lookbackDays, groups }) {
   if (_running) {
     return { ok: false, error: 'Already running — duplicate run rejected' };
   }
@@ -398,7 +404,126 @@ async function runAutoMachine({ lookbackDays, groups }) {
   return result;
 }
 
+// ── Isolering i barnprocess ───────────────────────────────────────────────────
+//
+// Hela pipelinen är synkron filbearbetning. Mätt i drift 2026-07-30T20:38:32Z
+// blockerade den event-loopen i 22,6s — hela körningen, inte bara ett steg.
+// (Den tidigare siffran 12,7s var en delmätning: soakens 60s-kadens startade
+// proben 5s in i en 18,2s-körning och fångade bara svansen.) Att optimera enskilda
+// steg räcker inte; steg 5a gick 11,0s -> 6,6s och totalen blev ändå värre när
+// datamängden växte. Därför körs hela pipelinen i en barnprocess.
+//
+// Föräldern behåller två saker som INTE kan delegeras:
+//   1. _running — isRunning() läses av schemaläggaren och systemHealth i den
+//      här processen. Barnets egen _running dör med barnet.
+//   2. invalidateCache() på historicalEdge — den är modul-lokal state
+//      (_cacheBuiltAt = 0). Barnet skulle invalidera sin egen kopia och avsluta,
+//      och förälderns cache låg kvar upp till TTL:n på 15 min med data från före
+//      körningen. Samma fälla som buildFuturesRuntimeInputsWorker dokumenterar.
+//
+// Övriga motorer (ruleMemory, symbolPersonality, scoreCalibration, regimeProfile,
+// fakeoutDna, selfHealingRule) cachar med TTL och läser om från fil — de plockar
+// upp barnets nya filer av sig själva och behöver ingen signal.
+//
+// Statusfilen skrivs av barnet; getStatus() läser den från disk, så parentens
+// vy blir korrekt utan extra hantering.
+
+// Env-överstyrbar av samma skäl som statusfilen: tester ska kunna pröva
+// dispatcherns kontrakt mot en stubbe, utan att starta den riktiga pipelinen
+// och skriva i datakatalogen.
+const AUTO_MACHINE_WORKER_FILE = path.resolve(
+  process.env.AUTO_MACHINE_WORKER_FILE
+    || path.resolve(__dirname, './runAutoMachineWorker.js'),
+);
+const AUTO_MACHINE_WORKER_TIMEOUT_MS = parseInt(
+  process.env.AUTO_MACHINE_WORKER_TIMEOUT_MS || String(15 * 60 * 1000), 10,
+);
+
+function isWorkerProcess() {
+  return String(process.env.AUTO_MACHINE_WORKER || '') === '1';
+}
+
+function runAutoMachineIsolated({ lookbackDays, groups }) {
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    const child = fork(AUTO_MACHINE_WORKER_FILE, [], {
+      cwd: path.resolve(__dirname, '../..'),
+      env: { ...process.env, AUTO_MACHINE_WORKER: '1' },
+      stdio: ['ignore', 'inherit', 'inherit', 'ipc'],
+    });
+    const done = (err, payload) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      child.removeAllListeners();
+      if (err) {
+        try { child.kill('SIGKILL'); } catch (_) { /* ignore */ }
+        reject(err);
+        return;
+      }
+      resolve(payload);
+    };
+    const timer = setTimeout(
+      () => done(new Error('auto_machine_worker_timeout')),
+      AUTO_MACHINE_WORKER_TIMEOUT_MS,
+    );
+    child.on('message', (msg) => {
+      if (!msg || msg.type !== 'auto_machine_result') return;
+      if (msg.ok) done(null, msg.payload);
+      else done(new Error(msg.error || 'auto_machine_worker_failed'));
+    });
+    child.on('error', (err) => done(err));
+    child.on('exit', (code, signal) => {
+      if (!settled) done(new Error(`auto_machine_worker_exit_${signal || code}`));
+    });
+    child.send({ type: 'auto_machine_run', lookbackDays, groups });
+  });
+}
+
+/**
+ * Kör pipelinen. I serverprocessen delegeras allt arbete till en barnprocess;
+ * i barnet (AUTO_MACHINE_WORKER=1) körs den riktiga implementationen.
+ *
+ * Ingen tyst fallback till in-process vid fel: det skulle återinföra exakt den
+ * frysning isoleringen finns för. Ett misslyckande rapporteras ärligt och
+ * skrivs till statusfilen, och nästa tick försöker igen.
+ */
+async function runAutoMachine({ lookbackDays, groups }) {
+  if (isWorkerProcess()) {
+    return runAutoMachineInProcess({ lookbackDays, groups });
+  }
+  if (_running) {
+    return { ok: false, error: 'Already running — duplicate run rejected' };
+  }
+  _running = true;
+  const startedAt = new Date().toISOString();
+  try {
+    const result = await runAutoMachineIsolated({ lookbackDays, groups });
+    // Endast förälderns egen in-memory-cache; barnets invalidering dog med det.
+    try {
+      invalidateCache();
+    } catch (err) {
+      console.warn('[AutoMachine] parent cache invalidation failed:', err.message);
+    }
+    return result;
+  } catch (err) {
+    const message = err && err.message ? err.message : String(err);
+    console.error('[AutoMachine] worker failed:', message);
+    const finishedAt = new Date().toISOString();
+    const failed = {
+      ok: false, startedAt, finishedAt, lookbackDays, groups, steps: {}, error: message,
+    };
+    // Barnet hinner inte alltid skriva statusfilen (timeout/krasch), så
+    // föräldern skriver ett ärligt sluttillstånd i stället för att lämna
+    // running:true kvar för alltid.
+    writeStatus({ running: false, startedAt, finishedAt, lastResult: failed, error: message });
+    return failed;
+  } finally {
+    _running = false;
+  }
+}
+
 function isRunning()  { return _running; }
 function getStatus()  { return readStatus(); }
 
-module.exports = { runAutoMachine, isRunning, getStatus };
+module.exports = { runAutoMachine, runAutoMachineInProcess, isRunning, getStatus };
