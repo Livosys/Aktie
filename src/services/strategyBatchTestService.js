@@ -640,8 +640,10 @@ function normalizeBatchResult(batchId, combo, saved) {
   return row;
 }
 
-function runOneCombination(batchId, combo) {
-  const saved = strategyPerformance.saveSimulatedStrategyTest({
+// Input-objektet för en kombination, utbrutet så att beräkning och persistering
+// kan separeras i slice-runnern utan att fältuppsättningen dupliceras.
+function combinationTestInput(batchId, combo) {
+  return {
     batch_id: batchId,
     strategy_id: combo.strategy_id,
     symbols: [combo.symbol],
@@ -661,8 +663,7 @@ function runOneCombination(batchId, combo) {
     actions_allowed: false,
     can_place_orders: false,
     live_trading_enabled: false,
-  });
-  return normalizeBatchResult(batchId, combo, saved);
+  };
 }
 
 function runBatchTest(batchId) {
@@ -786,15 +787,24 @@ function processRunner(batchId) {
   const started = Date.now();
   const results = loadResults(batchId);
   let failed = batch.progress?.failed || 0;
+  // Beräkning separerad från persistering: tidigare gjorde varje kombination
+  // läs-modifiera-skriv av hela den delade resultatfilen plus två fulla
+  // eventfil-cykler, vilket åt upp slicens 1500ms i fil-IO i stället för
+  // beräkning. Raden byggs fortfarande direkt efter sin egen beräkning, så
+  // run_created_at/run_started_at och ordningen är oförändrade.
+  const computedResults = [];
   while (runner.index < runner.grid.length && Date.now() - started < LIMITS.timeoutPerRunMs) {
     try {
       const combo = runner.grid[runner.index];
-      results.push(runOneCombination(batchId, combo));
+      const result = strategyPerformance.simulateStrategyTestResult(combinationTestInput(batchId, combo));
+      computedResults.push(result);
+      results.push(normalizeBatchResult(batchId, combo, result));
     } catch (_) {
       failed += 1;
     }
     runner.index += 1;
   }
+  strategyPerformance.persistStrategyTestResults(computedResults);
   saveResults(batchId, results);
   batch.progress = {
     total: runner.grid.length,

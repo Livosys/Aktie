@@ -299,6 +299,26 @@ function saveStrategyTestResult(input = {}) {
 //
 // Sluttillståndet är identiskt med N sekventiella anrop: slice(-1000) tillämpas
 // en gång över hela mängden, precis som varje enskilt anrop skulle ha gjort.
+// Ren beräkning, ingen IO. Låter anropare som behöver egen felhantering per
+// kombination (t.ex. Lab-batchens slice-runner, som räknar failed och fortsätter)
+// separera beräkning från persistering.
+function simulateStrategyTestResult(input = {}) {
+  return normalizeResult(deterministicTestResult(input));
+}
+
+// En läsning och en skrivning per fil för hela mängden. Sluttillståndet är
+// identiskt med N sekventiella saveStrategyTestResult-anrop eftersom slice(-1000)
+// och cleanEvents tillämpas en gång över hela mängden.
+function persistStrategyTestResults(results = []) {
+  const list = (Array.isArray(results) ? results : [results]).filter(Boolean);
+  if (!list.length) return { ok: true, results: [], ...SAFETY };
+  const stored = readResults();
+  stored.push(...list);
+  writeResults(stored.slice(-1000));
+  auditTrail.logAuditEvents(list.flatMap((result) => strategyTestAuditEvents(result)));
+  return { ok: true, results: list, ...SAFETY };
+}
+
 function saveSimulatedStrategyTests(inputs = []) {
   const list = (Array.isArray(inputs) ? inputs : [inputs]).filter(Boolean);
   if (!list.length) return { ok: true, results: [], ...SAFETY };
@@ -311,19 +331,14 @@ function saveSimulatedStrategyTests(inputs = []) {
   let failure = null;
   for (const input of list) {
     try {
-      results.push(normalizeResult(deterministicTestResult(input)));
+      results.push(simulateStrategyTestResult(input));
     } catch (err) {
       failure = err;
       break;
     }
   }
 
-  if (results.length) {
-    const stored = readResults();
-    stored.push(...results);
-    writeResults(stored.slice(-1000));
-    auditTrail.logAuditEvents(results.flatMap((result) => strategyTestAuditEvents(result)));
-  }
+  persistStrategyTestResults(results);
   if (failure) throw failure;
   return { ok: true, results, ...SAFETY };
 }
@@ -538,6 +553,8 @@ module.exports = {
   saveStrategyTestResult,
   saveSimulatedStrategyTest,
   saveSimulatedStrategyTests,
+  simulateStrategyTestResult,
+  persistStrategyTestResults,
   getStrategyPerformance,
   getTopStrategies,
   getWorstStrategies,
