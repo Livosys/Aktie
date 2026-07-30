@@ -107,31 +107,52 @@ function findCandleIndex(cacheEntry, ts) {
   return bestDiff <= 5 * 60 * 1000 ? bestIdx : undefined;
 }
 
+// Keys are integer epoch ms and only stringified once per bucket — toISOString()
+// per candle dominated this function. Flooring stays hour-relative, exactly as
+// setUTCMinutes() did, so it holds for periods that don't divide 60.
 function aggregateCandles(candles, periodMinutes) {
+  const periodMs = periodMinutes * 60 * 1000;
   const buckets = new Map();
   for (const c of candles || []) {
     const ts = c.t || c.ts;
     if (!ts) continue;
-    const d = new Date(ts);
-    const min = d.getUTCMinutes();
-    d.setUTCMinutes(min - (min % periodMinutes), 0, 0);
-    const key = d.toISOString();
-    if (!buckets.has(key)) buckets.set(key, []);
-    buckets.get(key).push(c);
+    const t = Date.parse(ts);
+    const hourStart = Math.floor(t / 3600000) * 3600000;
+    const key = hourStart + Math.floor((t - hourStart) / periodMs) * periodMs;
+    let bars = buckets.get(key);
+    if (!bars) { bars = []; buckets.set(key, bars); }
+    bars.push(c);
   }
 
   return [...buckets.entries()]
-    .sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0)
+    .sort(([a], [b]) => a - b)
     .map(([key, bars]) => {
       const first = bars[0];
       const last  = bars[bars.length - 1];
+      // Hand-rolled min/max: the spread form allocated an array per bucket.
+      // hiNaN/loNaN keep Math.max's NaN propagation for missing values.
+      let hi = -Infinity;
+      let lo = Infinity;
+      let hiNaN = false;
+      let loNaN = false;
+      let vol = 0;
+      for (const b of bars) {
+        const h = Number(b.h);
+        const l = Number(b.l);
+        if (Number.isNaN(h)) hiNaN = true;
+        else if (h > hi) hi = h;
+        if (Number.isNaN(l)) loNaN = true;
+        else if (l < lo) lo = l;
+        vol += (b.v || 0);
+      }
+      const iso = new Date(key).toISOString();
       return {
-        t: key, ts: key,
+        t: iso, ts: iso,
         o: first.o,
-        h: Math.max(...bars.map((b) => b.h)),
-        l: Math.min(...bars.map((b) => b.l)),
+        h: hiNaN ? NaN : hi,
+        l: loNaN ? NaN : lo,
         c: last.c,
-        v: bars.reduce((s, b) => s + (b.v || 0), 0),
+        v: vol,
       };
     });
 }
