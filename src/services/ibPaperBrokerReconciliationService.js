@@ -48,19 +48,25 @@ function positionDirectionSign(position = {}) {
   return null;
 }
 
-function positionMatchesIntentExposure(position = {}, intent = {}) {
+// Enbart kontraktsidentitet, utan riktning. En flatten ska jämföras så här:
+// dess `direction` beskriver positionen den STÄNGDE, inte orderns sida, så en
+// riktningsjämförelse skulle kunna släppa igenom en position som vänt.
+function positionMatchesIntentContract(position = {}, intent = {}) {
   const intentConId = upperText(intent.conId || intent.intent?.conId || intent.contract?.conId);
   const positionConId = upperText(position.conId || position.contract?.conId);
   const intentLocalSymbol = upperText(intent.localSymbol || intent.intent?.localSymbol || intent.contract?.localSymbol);
   const positionLocalSymbol = upperText(position.localSymbol || position.contract?.localSymbol);
   const intentRoot = upperText(intent.root || intent.intent?.root || intent.symbol || intent.contract?.symbol);
   const positionRoot = upperText(position.root || position.symbol || position.contract?.symbol);
-  const contractMatches = Boolean(
+  return Boolean(
     (intentConId && positionConId && intentConId === positionConId)
     || (intentLocalSymbol && positionLocalSymbol && intentLocalSymbol === positionLocalSymbol)
     || (intentRoot && positionRoot && intentRoot === positionRoot)
   );
-  if (!contractMatches) return false;
+}
+
+function positionMatchesIntentExposure(position = {}, intent = {}) {
+  if (!positionMatchesIntentContract(position, intent)) return false;
   const expectedSign = intentDirectionSign(intent);
   const positionSign = positionDirectionSign(position);
   if (expectedSign === null || positionSign === null) return true;
@@ -116,6 +122,52 @@ function isOldEntryFillWithoutBrokerExposure(intent = {}, { nowMs, nonFlatPositi
   return nowMs - updatedMs >= STALE_ENTRY_FILL_GRACE_MS;
 }
 
+// En emergency flatten STÄNGER en position och har därför aldrig någon
+// entry-fill — isOldEntryFillWithoutBrokerExposure() faller redan på sin första
+// rad och kan strukturellt aldrig omfatta den. Fyllningsvägen kände tidigare
+// inte igen '-flatten'-benet, så en flatten som faktiskt fylldes blev kvar på
+// 'submitted' för alltid och degraderade reconciliation permanent — vilket
+// blockerade varje ny entry. Adaptern sätter numera terminalstatus, men redan
+// fastnade poster måste kunna läka.
+//
+// Beviset för att en flatten gjorde sitt jobb är att kontraktet den riktades mot
+// är platt. Finns exponering kvar på kontraktet flaggas den fortfarande — då kan
+// vi inte veta att stängningen gick igenom, och konservativt beteende gäller.
+// OBS: intent-tjänsten normaliserar bort `kind` och `orderRef` när posten skapas
+// — de finns bara på anropets payload, aldrig på den lagrade posten. Identifiera
+// därför flatten via fält som bevisligen överlever: executionId ('emergency_
+// flatten_<id>') och idempotencyKey ('flatten:<conId>:<execId>'). `kind` behålls
+// först i kedjan för anropare som skickar posten in-memory.
+const FLATTEN_EXECUTION_ID_PREFIX = 'emergency_flatten_';
+const FLATTEN_IDEMPOTENCY_PREFIX = 'flatten:';
+
+function isEmergencyFlattenIntent(intent = {}) {
+  if (upperText(intent.kind) === 'EMERGENCY_FLATTEN') return true;
+  if (String(intent.executionId || '').startsWith(FLATTEN_EXECUTION_ID_PREFIX)) return true;
+  return String(intent.idempotencyKey || '').startsWith(FLATTEN_IDEMPOTENCY_PREFIX);
+}
+
+// Den lagrade posten har conId: null, men idempotencyKey bär kontraktet.
+function flattenTargetConId(intent = {}) {
+  const key = String(intent.idempotencyKey || '');
+  if (!key.startsWith(FLATTEN_IDEMPOTENCY_PREFIX)) return null;
+  return upperText(key.split(':')[1]) || null;
+}
+
+function isOldFlattenWithoutBrokerExposure(intent = {}, { nowMs, nonFlatPositions = [] } = {}) {
+  if (!isEmergencyFlattenIntent(intent)) return false;
+  const targetConId = flattenTargetConId(intent);
+  const stillExposed = nonFlatPositions.some((position) => {
+    if (positionMatchesIntentContract(position, intent)) return true;
+    if (!targetConId) return false;
+    return upperText(position.conId || position.contract?.conId) === targetConId;
+  });
+  if (stillExposed) return false;
+  const updatedMs = Date.parse(intent.updatedAt || intent.submittedAt || intent.createdAt);
+  if (!Number.isFinite(updatedMs) || !Number.isFinite(nowMs)) return false;
+  return nowMs - updatedMs >= STALE_ENTRY_FILL_GRACE_MS;
+}
+
 function compareSnapshots({ intents = [], openOrders = [], executions = [], positions = [], orderStatuses = [], now = new Date() } = {}) {
   const local = buildLocalIndex(intents);
   const discrepancies = [];
@@ -143,6 +195,7 @@ function compareSnapshots({ intents = [], openOrders = [], executions = [], posi
     const hasBrokerRef = (intent.orderRef && brokerRefs.has(intent.orderRef))
       || [...brokerRefs].some((ref) => executionIdFromOrderRef(ref) === intent.executionId);
     if (!hasBrokerRef && isOldEntryFillWithoutBrokerExposure(intent, { nowMs, nonFlatPositions, openOrders })) continue;
+    if (!hasBrokerRef && isOldFlattenWithoutBrokerExposure(intent, { nowMs, nonFlatPositions })) continue;
     if (!hasBrokerRef && intent.status === 'submit_started') {
       discrepancies.push({ type: 'unknown_submit_state', executionId: intent.executionId, status: intent.status });
     } else if (!hasBrokerRef) {
