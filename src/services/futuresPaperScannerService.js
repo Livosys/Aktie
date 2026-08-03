@@ -73,6 +73,10 @@ function candidateAgeMs(candidate = {}, now = new Date()) {
   return Math.max(0, current - parsed);
 }
 
+function countSkipReason(rows, skipReason) {
+  return (Array.isArray(rows) ? rows : []).filter((row) => row?.skipReason === skipReason).length;
+}
+
 function pruneStaleQueuedCandidates(queue = [], { now = new Date(), maxAgeMs = 120000 } = {}) {
   const keep = [];
   const pruned = [];
@@ -792,6 +796,13 @@ function createFuturesPaperScannerService(options = {}) {
       signalsSkippedNoMapping: signalsSkippedNoMapping.length,
       signalsSkippedNoRisk: signalsSkippedNoRisk.length,
       signalsSkippedOther: signalsSkippedOther.length,
+      // Uppdelning INUTI signalsSkippedOther, inte ett komplement till den.
+      // Fältet ovan behåller exakt sin gamla betydelse — allt som varken saknar
+      // mapping eller risk — så befintliga konsumenter är opåverkade. De två
+      // nedan namnger de vanligaste orsakerna i den hinken. Summan är alltså
+      // <= signalsSkippedOther; resten är no_futures_entry_price.
+      signalsSkippedNoDirection: countSkipReason(signalsSkippedOther, 'missing_signal_direction'),
+      signalsSkippedDirectionVetoed: countSkipReason(signalsSkippedOther, 'direction_vetoed_by_bias'),
       signalProviderResults: signalInputResult?.providerResults || {},
       canonicalPipelineCandidates: canonicalPipelineCandidates.length,
       skippedSignalDetails: {

@@ -818,4 +818,75 @@ assert.equal(staleScan2.scan.staleQueuedCandidatesPruned, 1);
 
 resetScenario();
 
+// Skip-räknarna för riktning ska synas i scan-posten, alltså i det som
+// persisteras till scan-history och skickas vidare av /futures-paper/runtime
+// och /futures-paper/scan-history. Reader-signaler (decisionMonitor) bär
+// nextMoveBias men aldrig direction/side, så det är biaset som avgör utfallet.
+function readerShapedSignal(signalToken, nextMoveBias) {
+  return {
+    signalId: `sig-reader-${signalToken}-${nextMoveBias}`,
+    strategyId: 'trend_continuation',
+    strategyName: 'Trend Continuation',
+    symbol: 'QQQ',
+    market: 'stocks',
+    signal: signalToken,
+    nextMoveBias,
+    confidence: 0.7,
+    entry: 500,
+    stopLoss: 497.5,
+    takeProfit: 505,
+    riskReward: 2,
+    timeframe: '2m',
+    dataSource: 'real_market_data',
+    createdAt: signalTimestamp,
+    timestamp: signalTimestamp,
+  };
+}
+
+resetScenario();
+providerSignals = [];
+signals = [
+  readerShapedSignal('LONG_TRIGGERED', 'UNCERTAIN'),  // riktning fanns -> veto
+  readerShapedSignal('SHORT_WATCH', 'UNCERTAIN'),     // riktning fanns -> veto
+  readerShapedSignal('WAIT', 'UNCERTAIN'),            // ingen riktning alls
+];
+const directionScan = scanner.runScannerOnce({ now: '2026-07-06T11:40:00.000Z' }).scan;
+
+assert.equal(directionScan.signalsSkippedDirectionVetoed, 2);
+assert.equal(directionScan.signalsSkippedNoDirection, 1);
+assert.equal(directionScan.signalsSkippedOther, 3);
+
+// De befintliga räknarna behåller sin betydelse och sina värden.
+assert.equal(directionScan.signalsSkippedNoMapping, 0);
+assert.equal(directionScan.signalsSkippedNoRisk, 0);
+assert.equal(directionScan.signalsMappedToFutures, 0);
+assert.equal(directionScan.candidatesCreated, 0);
+
+// De två nya är en UPPDELNING av signalsSkippedOther, inte ett tillägg. I den
+// här scenariot går summan jämnt ut, men relationen som alltid håller är <= :
+// resten av hinken är no_futures_entry_price (och framtida orsakskoder).
+assert.equal(
+  directionScan.signalsSkippedNoDirection + directionScan.signalsSkippedDirectionVetoed,
+  directionScan.signalsSkippedOther,
+);
+assert.ok(
+  directionScan.signalsSkippedNoDirection + directionScan.signalsSkippedDirectionVetoed
+    <= directionScan.signalsSkippedOther,
+);
+
+// Räknarna finns även när ingen signal faller på riktning — annars kan en
+// dashboard inte skilja "noll" från "fältet saknas".
+resetScenario();
+const baselineScan = scanner.runScannerOnce({ now: '2026-07-06T11:41:00.000Z' }).scan;
+assert.equal(baselineScan.signalsSkippedDirectionVetoed, 0);
+assert.equal(baselineScan.signalsSkippedNoDirection, 0);
+
+// Och de överlever vägen ut till scan-history, som är det API:erna läser.
+const historyEntry = scanner.getScanHistory().scans[0];
+assert.ok(Object.prototype.hasOwnProperty.call(historyEntry, 'signalsSkippedDirectionVetoed'));
+assert.ok(Object.prototype.hasOwnProperty.call(historyEntry, 'signalsSkippedNoDirection'));
+
+resetScenario();
+
 console.log('futuresPaperScannerService.test.js passed');
+
