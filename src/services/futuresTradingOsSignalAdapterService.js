@@ -589,6 +589,11 @@ function createFuturesTradingOsSignalAdapterService(options = {}) {
         signalsSkippedNoRisk: skipped.filter((row) => row.skipReason === 'missing_trading_os_risk').length,
         signalsSkippedNoDirection: skipped.filter((row) => row.skipReason === 'missing_signal_direction').length,
         signalsSkippedDirectionVetoed: skipped.filter((row) => row.skipReason === 'direction_vetoed_by_bias').length,
+        // Femte och sista orsaken. adaptSignal skippar bara på dessa fem, så
+        // räknarna summerar exakt till skipped.length — samma uppdelning som
+        // scannern persisterar i scan-posten, där de tre sista tillsammans
+        // utgör signalsSkippedOther. Testet asserterar båda summorna.
+        signalsSkippedNoEntryPrice: skipped.filter((row) => row.skipReason === 'no_futures_entry_price').length,
       },
       ...SAFETY,
     };

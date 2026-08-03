@@ -357,4 +357,57 @@ assert.equal(mixed.stats.signalsSkippedDirectionVetoed, 2);
 assert.equal(mixed.stats.signalsSkippedNoDirection, 1);
 assert.equal(mixed.candidates.length, 0);
 
+// (7) Adapterns stats beskriver samma uppdelning som scannern persisterar.
+// adaptSignal skippar bara på fem orsaker, så de fem räknarna ska summera
+// exakt till skipped.length. Slår en ny orsakskod till utan räknare faller det
+// ut här i stället för som en tyst lucka i telemetrin.
+const allFiveReasons = createFuturesTradingOsSignalAdapterService({ signalReader: () => [] })
+  .getFuturesCandidates({
+    now,
+    // MNQ-quote finns men INTE MES — SPY mappar till MES och faller därför på pris.
+    quotes: [{ root: 'MNQ', symbol: 'MNQ', price: 20000, source: 'real_market_data' }],
+    signalInputs: [
+      { ...signal, signalId: 'r1', symbol: 'XYZ' },                            // no_safe_futures_mapping
+      readerSignal({ signal: 'LONG_TRIGGERED', nextMoveBias: 'UNCERTAIN' }),   // direction_vetoed_by_bias
+      readerSignal({ signal: 'WAIT', nextMoveBias: 'UNCERTAIN' }),             // missing_signal_direction
+      { ...signal, signalId: 'r4', symbol: 'SPY', entry: undefined, entryPrice: undefined, price: undefined, referencePrice: undefined },
+      { ...signal, signalId: 'r5', symbol: 'NDX', stopLoss: undefined, takeProfit: undefined, stopLossPct: undefined, targetPct: undefined },
+    ],
+  });
+
+assert.equal(allFiveReasons.stats.signalsSkippedNoMapping, 1);
+assert.equal(allFiveReasons.stats.signalsSkippedDirectionVetoed, 1);
+assert.equal(allFiveReasons.stats.signalsSkippedNoDirection, 1);
+assert.equal(allFiveReasons.stats.signalsSkippedNoEntryPrice, 1);
+assert.equal(allFiveReasons.stats.signalsSkippedNoRisk, 1);
+
+// Summan sluts: varje skippad signal har exakt en räknare.
+const skipCounters = [
+  'signalsSkippedNoMapping',
+  'signalsSkippedNoRisk',
+  'signalsSkippedNoDirection',
+  'signalsSkippedDirectionVetoed',
+  'signalsSkippedNoEntryPrice',
+];
+assert.equal(
+  skipCounters.reduce((sum, key) => sum + allFiveReasons.stats[key], 0),
+  allFiveReasons.skipped.length,
+);
+
+// Och adapterns tre "other"-orsaker är exakt de scannern lägger i
+// signalsSkippedOther — samma uppdelning, två ytor.
+const otherReasons = new Set(['missing_signal_direction', 'direction_vetoed_by_bias', 'no_futures_entry_price']);
+assert.equal(
+  allFiveReasons.skipped.filter((row) => otherReasons.has(row.skipReason)).length,
+  allFiveReasons.stats.signalsSkippedNoDirection
+    + allFiveReasons.stats.signalsSkippedDirectionVetoed
+    + allFiveReasons.stats.signalsSkippedNoEntryPrice,
+);
+
+// Befintliga fält oförändrade.
+assert.equal(allFiveReasons.stats.signalInputsRead, 5);
+assert.equal(allFiveReasons.stats.readerSignalsRead, 0);
+assert.equal(allFiveReasons.stats.signalsMappedToFutures, 0);
+assert.equal(allFiveReasons.candidates.length, 0);
+
 console.log('futuresTradingOsSignalAdapterService.test.js passed');
