@@ -162,6 +162,24 @@ function normalizeDirection(signal = {}) {
   return null;
 }
 
+// Ren observability — påverkar INTE om signalen släpps igenom.
+//
+// normalizeDirection kortsluter på nextMoveBias, som decisionMonitor alltid
+// sätter (decisionMonitor.js:1380). Är biaset UNCERTAIN/NEUTRAL faller
+// riktningen bort redan där, och signal-token längre ned i kedjan
+// (LONG_TRIGGERED etc.) hinner aldrig läsas. Utan den här uppdelningen
+// rapporteras båda fallen som missing_signal_direction, trots att det ena är
+// "strategin gav ingen riktning" och det andra "2m-konfluensen lade veto".
+//
+// Vi kör samma normalizeDirection igen, men bara på signal-token — så delas
+// token-vokabulären ovan och kan aldrig glida isär från den.
+function hasDirectionalSignalToken(signal = {}) {
+  return normalizeDirection({
+    signal: signal.signal,
+    raw_signal: signal.raw_signal,
+  }) != null;
+}
+
 function normalizeConfidence(signal = {}) {
   const value = safeNumber(signal.confidence ?? signal.confidenceScore ?? signal.score ?? signal.priorityScore ?? signal.tradeScore);
   if (value == null) return null;
@@ -419,7 +437,13 @@ function createFuturesTradingOsSignalAdapterService(options = {}) {
     }
 
     const direction = normalizeDirection(signal);
-    if (!direction) return { ok: false, skipReason: 'missing_signal_direction', mapping, signal, signalTimestamp, signalSessionMetadata };
+    if (!direction) {
+      // Samma grind som förut — bara en ärligare etikett på varför.
+      const skipReason = hasDirectionalSignalToken(signal)
+        ? 'direction_vetoed_by_bias'
+        : 'missing_signal_direction';
+      return { ok: false, skipReason, mapping, signal, signalTimestamp, signalSessionMetadata };
+    }
 
     const quote = quoteFor(context.quotes, mapping.futuresSymbol);
     const entry = resolveEntry(signal, mapping, quote);
@@ -564,6 +588,7 @@ function createFuturesTradingOsSignalAdapterService(options = {}) {
         signalsSkippedNoMapping: skipped.filter((row) => row.skipReason === 'no_safe_futures_mapping').length,
         signalsSkippedNoRisk: skipped.filter((row) => row.skipReason === 'missing_trading_os_risk').length,
         signalsSkippedNoDirection: skipped.filter((row) => row.skipReason === 'missing_signal_direction').length,
+        signalsSkippedDirectionVetoed: skipped.filter((row) => row.skipReason === 'direction_vetoed_by_bias').length,
       },
       ...SAFETY,
     };

@@ -274,4 +274,87 @@ assert.equal(boundary.candidates[0].exchangeLocalTime, '08:30');
 assert.equal(boundary.candidates[0].sessionId, 'us_rth');
 assert.equal(boundary.candidates[0].isRth, true);
 
+// (6) skipReason skiljer "ingen riktning" från "riktning vetad av biaset".
+// Rent observability: samma signaler släpps igenom, samma stoppas — bara
+// etiketten på de stoppade blir ärlig. Reader-signaler (decisionMonitor) bär
+// nextMoveBias men aldrig direction/side, så biaset avgör alltid utfallet.
+function readerSignal({ signal: signalToken, nextMoveBias }) {
+  const row = twoMinuteSignal({
+    signalId: `sig-bias-${signalToken}-${nextMoveBias}`,
+    closedCandleConfirmed: true,
+    latestCandleClosed: true,
+    candleClosedAt: CANDLE_CLOSE_2M,
+    signalTimestamp: CANDLE_CLOSE_2M,
+  });
+  delete row.direction; // decisionMonitor sätter aldrig fältet
+  return { ...row, signal: signalToken, nextMoveBias };
+}
+
+// 6a: ingen riktning någonstans → strategin gav faktiskt ingenting.
+const noDirection = adaptOne(readerSignal({ signal: 'NO_SIGNAL', nextMoveBias: 'UNCERTAIN' }));
+assert.equal(noDirection.candidates.length, 0);
+assert.equal(noDirection.skipped[0].skipReason, 'missing_signal_direction');
+
+// 6b: LONG_TRIGGERED + UP → enighet, kandidat med long.
+const longAgree = adaptOne(readerSignal({ signal: 'LONG_TRIGGERED', nextMoveBias: 'UP' }));
+assert.equal(longAgree.candidates.length, 1);
+assert.equal(longAgree.candidates[0].direction, 'long');
+
+// 6c: LONG_TRIGGERED + UNCERTAIN → riktning fanns, konfluensen lade veto.
+const longVetoed = adaptOne(readerSignal({ signal: 'LONG_TRIGGERED', nextMoveBias: 'UNCERTAIN' }));
+assert.equal(longVetoed.candidates.length, 0);
+assert.equal(longVetoed.skipped[0].skipReason, 'direction_vetoed_by_bias');
+
+// 6d: SHORT_TRIGGERED + DOWN → enighet, kandidat med short.
+const shortAgree = adaptOne(readerSignal({ signal: 'SHORT_TRIGGERED', nextMoveBias: 'DOWN' }));
+assert.equal(shortAgree.candidates.length, 1);
+assert.equal(shortAgree.candidates[0].direction, 'short');
+
+// 6e: SHORT_TRIGGERED + UNCERTAIN → veto.
+const shortVetoed = adaptOne(readerSignal({ signal: 'SHORT_TRIGGERED', nextMoveBias: 'UNCERTAIN' }));
+assert.equal(shortVetoed.candidates.length, 0);
+assert.equal(shortVetoed.skipped[0].skipReason, 'direction_vetoed_by_bias');
+
+// 6f: WAIT → ingen riktning att veta mot.
+const waiting = adaptOne(readerSignal({ signal: 'WAIT', nextMoveBias: 'UNCERTAIN' }));
+assert.equal(waiting.candidates.length, 0);
+assert.equal(waiting.skipped[0].skipReason, 'missing_signal_direction');
+
+// 6g: NEUTRAL-bias beter sig som UNCERTAIN — även den är ett veto.
+const neutralVetoed = adaptOne(readerSignal({ signal: 'LONG_WATCH', nextMoveBias: 'NEUTRAL' }));
+assert.equal(neutralVetoed.candidates.length, 0);
+assert.equal(neutralVetoed.skipped[0].skipReason, 'direction_vetoed_by_bias');
+
+// 6h + 6i: KARAKTÄRISERING av oförändrat beteende. När signal-token och bias
+// pekar åt VAR SITT håll vinner biaset redan idag, och kandidaten skapas i
+// biasets riktning — den vägen får inte bli ett veto, för då hade
+// handelsbeteendet ändrats (91 träffar i inspelad data 07-30..08-03).
+const longVsDown = adaptOne(readerSignal({ signal: 'LONG_TRIGGERED', nextMoveBias: 'DOWN' }));
+assert.equal(longVsDown.candidates.length, 1);
+assert.equal(longVsDown.candidates[0].direction, 'short');
+assert.equal(longVsDown.skipped.length, 0);
+
+const shortVsUp = adaptOne(readerSignal({ signal: 'SHORT_TRIGGERED', nextMoveBias: 'UP' }));
+assert.equal(shortVsUp.candidates.length, 1);
+assert.equal(shortVsUp.candidates[0].direction, 'long');
+assert.equal(shortVsUp.skipped.length, 0);
+
+// 6j: native-producenten sätter direction och når aldrig biaset — oförändrad.
+assert.equal(native.candidates.length, 1);
+
+// 6k: statistiken räknar de två orsakerna var för sig.
+const mixed = createFuturesTradingOsSignalAdapterService({ signalReader: () => [] })
+  .getFuturesCandidates({
+    now,
+    quotes: [{ root: 'MNQ', symbol: 'MNQ', price: 20000, source: 'real_market_data' }],
+    signalInputs: [
+      readerSignal({ signal: 'LONG_TRIGGERED', nextMoveBias: 'UNCERTAIN' }),
+      readerSignal({ signal: 'SHORT_WATCH', nextMoveBias: 'UNCERTAIN' }),
+      readerSignal({ signal: 'WAIT', nextMoveBias: 'UNCERTAIN' }),
+    ],
+  });
+assert.equal(mixed.stats.signalsSkippedDirectionVetoed, 2);
+assert.equal(mixed.stats.signalsSkippedNoDirection, 1);
+assert.equal(mixed.candidates.length, 0);
+
 console.log('futuresTradingOsSignalAdapterService.test.js passed');
