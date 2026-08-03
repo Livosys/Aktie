@@ -796,13 +796,18 @@ function createFuturesPaperScannerService(options = {}) {
       signalsSkippedNoMapping: signalsSkippedNoMapping.length,
       signalsSkippedNoRisk: signalsSkippedNoRisk.length,
       signalsSkippedOther: signalsSkippedOther.length,
-      // Uppdelning INUTI signalsSkippedOther, inte ett komplement till den.
-      // Fältet ovan behåller exakt sin gamla betydelse — allt som varken saknar
-      // mapping eller risk — så befintliga konsumenter är opåverkade. De två
-      // nedan namnger de vanligaste orsakerna i den hinken. Summan är alltså
-      // <= signalsSkippedOther; resten är no_futures_entry_price.
+      // Fullständig uppdelning INUTI signalsSkippedOther, inte ett komplement
+      // till den. Fältet ovan behåller exakt sin gamla betydelse — allt som
+      // varken saknar mapping eller risk — så befintliga konsumenter är
+      // opåverkade. adaptSignal kan bara skippa på fyra orsaker, och två av dem
+      // (no_safe_futures_mapping, missing_trading_os_risk) har egna hinkar, så
+      // de tre nedan täcker other-hinken exakt:
+      //   signalsSkippedOther === NoDirection + DirectionVetoed + NoEntryPrice
+      // Testet asserterar likheten, så en ny orsakskod i adaptern faller ut som
+      // ett rött test i stället för som en tyst lucka i telemetrin.
       signalsSkippedNoDirection: countSkipReason(signalsSkippedOther, 'missing_signal_direction'),
       signalsSkippedDirectionVetoed: countSkipReason(signalsSkippedOther, 'direction_vetoed_by_bias'),
+      signalsSkippedNoEntryPrice: countSkipReason(signalsSkippedOther, 'no_futures_entry_price'),
       signalProviderResults: signalInputResult?.providerResults || {},
       canonicalPipelineCandidates: canonicalPipelineCandidates.length,
       skippedSignalDetails: {

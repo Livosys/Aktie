@@ -862,17 +862,20 @@ assert.equal(directionScan.signalsSkippedNoRisk, 0);
 assert.equal(directionScan.signalsMappedToFutures, 0);
 assert.equal(directionScan.candidatesCreated, 0);
 
-// De två nya är en UPPDELNING av signalsSkippedOther, inte ett tillägg. I den
-// här scenariot går summan jämnt ut, men relationen som alltid håller är <= :
-// resten av hinken är no_futures_entry_price (och framtida orsakskoder).
-assert.equal(
-  directionScan.signalsSkippedNoDirection + directionScan.signalsSkippedDirectionVetoed,
-  directionScan.signalsSkippedOther,
-);
-assert.ok(
-  directionScan.signalsSkippedNoDirection + directionScan.signalsSkippedDirectionVetoed
-    <= directionScan.signalsSkippedOther,
-);
+assert.equal(directionScan.signalsSkippedNoEntryPrice, 0);
+
+// De tre nya är en FULLSTÄNDIG uppdelning av signalsSkippedOther, inte ett
+// tillägg till den. adaptSignal kan bara skippa på fyra orsaker, och två har
+// egna hinkar, så summan ska gå jämnt ut — alltid, inte bara här.
+function assertOtherBucketCloses(scan) {
+  assert.equal(
+    scan.signalsSkippedNoDirection
+      + scan.signalsSkippedDirectionVetoed
+      + scan.signalsSkippedNoEntryPrice,
+    scan.signalsSkippedOther,
+  );
+}
+assertOtherBucketCloses(directionScan);
 
 // Räknarna finns även när ingen signal faller på riktning — annars kan en
 // dashboard inte skilja "noll" från "fältet saknas".
@@ -880,13 +883,68 @@ resetScenario();
 const baselineScan = scanner.runScannerOnce({ now: '2026-07-06T11:41:00.000Z' }).scan;
 assert.equal(baselineScan.signalsSkippedDirectionVetoed, 0);
 assert.equal(baselineScan.signalsSkippedNoDirection, 0);
+assert.equal(baselineScan.signalsSkippedNoEntryPrice, 0);
+assertOtherBucketCloses(baselineScan);
 
 // Och de överlever vägen ut till scan-history, som är det API:erna läser.
 const historyEntry = scanner.getScanHistory().scans[0];
 assert.ok(Object.prototype.hasOwnProperty.call(historyEntry, 'signalsSkippedDirectionVetoed'));
 assert.ok(Object.prototype.hasOwnProperty.call(historyEntry, 'signalsSkippedNoDirection'));
+assert.ok(Object.prototype.hasOwnProperty.call(historyEntry, 'signalsSkippedNoEntryPrice'));
+
+// no_futures_entry_price kräver att MNQ-quoten saknas. Egen scanner med egen
+// storage så att den delade stubben och det delade tillståndet lämnas orörda.
+const noQuoteRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'futures-paper-noquote-'));
+const noQuoteStorage = createFuturesPaperStorageService({ rootDir: noQuoteRoot });
+const noQuoteAccount = createFuturesPaperAccountService({
+  storageService: noQuoteStorage,
+  allowInternalSimulationForTests: true,
+});
+const noQuoteLedger = createFuturesPaperLedgerService({
+  storageService: noQuoteStorage,
+  accountService: noQuoteAccount,
+  allowInternalSimulationForTests: true,
+});
+const noQuoteInputs = [
+  readerShapedSignal('LONG_TRIGGERED', 'UP'),      // riktning ok -> faller på pris
+  readerShapedSignal('WAIT', 'UNCERTAIN'),         // ingen riktning
+  readerShapedSignal('SHORT_TRIGGERED', 'UNCERTAIN'), // veto
+];
+const noQuoteScanner = createFuturesPaperScannerService({
+  storageService: noQuoteStorage,
+  ledgerService: noQuoteLedger,
+  allowInternalSimulationForTests: true,
+  priceFeedService: {
+    tickQuotes: () => ({
+      ok: true,
+      feed: { source: 'real_market_data', simulated: false, fallback: false },
+      quotes: [],
+    }),
+  },
+  signalProviderService: {
+    getCanonicalSignals: () => ({
+      ok: true,
+      signalInputs: noQuoteInputs,
+      signals: noQuoteInputs,
+      providerResults: {},
+      stats: {
+        signalInputsRead: noQuoteInputs.length,
+        readerSignalsRead: noQuoteInputs.length,
+        providerSignalsRead: 0,
+        providersEvaluated: 0,
+      },
+    }),
+  },
+  entryContractService,
+  strategyRegistryService: { canExecuteStrategy: () => ({ allowed: true }) },
+});
+const noQuoteScan = noQuoteScanner.runScannerOnce({ now: '2026-07-06T11:42:00.000Z' }).scan;
+assert.equal(noQuoteScan.signalsSkippedNoEntryPrice, 1);
+assert.equal(noQuoteScan.signalsSkippedNoDirection, 1);
+assert.equal(noQuoteScan.signalsSkippedDirectionVetoed, 1);
+assert.equal(noQuoteScan.signalsSkippedOther, 3);
+assertOtherBucketCloses(noQuoteScan);
 
 resetScenario();
 
 console.log('futuresPaperScannerService.test.js passed');
-
