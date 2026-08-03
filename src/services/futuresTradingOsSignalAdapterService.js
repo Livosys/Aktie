@@ -176,8 +176,13 @@ function signalIdOf(signal = {}) {
     || null;
 }
 
+// signalTimestamp först: decisionMonitor har redan löst "stängning om bekräftad,
+// annars öppning" (decisionMonitor.js:1328-1330). Läser vi i stället timestamp
+// får vi candle-ÖPPNING, vilket för 2m förbrukar hela maxAgeMs-budgeten (120000)
+// innan candlen ens stängt — se futuresPaperScannerService.js:76.
 function signalTimestampOf(signal = {}) {
-  return safeString(signal.createdAt)
+  return safeString(signal.signalTimestamp)
+    || safeString(signal.createdAt)
     || safeString(signal.timestamp)
     || safeString(signal.detected_at)
     || safeString(signal.lastUpdate)

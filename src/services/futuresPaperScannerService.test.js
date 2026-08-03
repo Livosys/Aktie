@@ -739,4 +739,83 @@ assert.equal(scanner.assertPaperOnly({ actions_allowed: true }), 'real_actions_a
 assert.equal(scanner.assertPaperOnly({ can_place_orders: true }), 'real_orders_are_not_allowed');
 assert.equal(scanner.assertPaperOnly({ mode: 'live' }), 'mode_must_be_paper_only');
 
+// ── (6) Färskhetsgrinden end-to-end för en 2m-kandidat ──────────────────────
+// Åldern ska mätas från candle-STÄNGNING. Med öppningssemantik är en 2m-candle
+// redan exakt candidateMaxAgeMs (120000) gammal i den sekund den stänger, och
+// varje kandidat prunas därför oavsett hur snabb pipelinen är.
+// Tidsintervallen nedan är de i produktion observerade (48 s efter stängning).
+const FRESH_OPEN = '2026-07-06T12:44:00.000Z';
+const FRESH_CLOSE = '2026-07-06T12:46:00.000Z';
+const FRESH_SCAN_1 = '2026-07-06T12:46:48.000Z';   // stängning + 48 s
+const FRESH_SCAN_2 = '2026-07-06T12:47:48.000Z';   // stängning + 108 s
+
+// Kontrollräkning som dokumenterar varför testet finns:
+assert.equal(Date.parse(FRESH_CLOSE) - Date.parse(FRESH_OPEN), 120000);
+assert.ok(Date.parse(FRESH_SCAN_2) - Date.parse(FRESH_OPEN) > 120000, 'öppningssemantik skulle prunas');
+assert.ok(Date.parse(FRESH_SCAN_2) - Date.parse(FRESH_CLOSE) <= 120000, 'stängningssemantik ska överleva');
+
+const freshSignal = {
+  signalId: 'sig-2m-freshness-e2e',
+  strategyId: 'trend_continuation',
+  strategyName: 'Trend Continuation',
+  signalSubtype: 'EMA_PULLBACK_UP',
+  symbol: 'QQQ',
+  market: 'stocks',
+  direction: 'long',
+  confidence: 0.78,
+  entry: 500,
+  stopLoss: 497.5,
+  takeProfit: 505,
+  riskReward: 2,
+  timeframe: '2m',
+  source: 'scanner',
+  signalSource: 'scanner',
+  dataSource: 'real_market_data',
+  strategyLogicVersion: 'test-v1',
+  closedCandleConfirmed: true,
+  latestCandleClosed: true,
+  timestamp: FRESH_OPEN,
+  candleTimestamp: FRESH_OPEN,
+  candleClosedAt: FRESH_CLOSE,
+  signalTimestamp: FRESH_CLOSE,
+};
+
+resetScenario();
+providerSignals = [];
+signals = [freshSignal];
+
+const freshScan1 = scanner.runScannerOnce({ now: FRESH_SCAN_1 });
+assert.equal(freshScan1.ok, true);
+assert.equal(freshScan1.candidates.length, 1);
+assert.equal(freshScan1.candidates[0].strategyId, 'trend_continuation');
+assert.equal(freshScan1.candidates[0].signalTimestamp, FRESH_CLOSE);
+assert.equal(freshScan1.candidates[0].candleTimestamp, FRESH_OPEN);
+
+// Nästa scan kör pruneStaleQueuedCandidates mot kön. Kandidaten ska överleva.
+const freshScan2 = scanner.runScannerOnce({ now: FRESH_SCAN_2 });
+assert.equal(freshScan2.ok, true);
+assert.equal(freshScan2.scan.staleQueuedCandidatesPruned, 0);
+assert.equal(scanner.getCandidates().totalCandidates, 1);
+assert.equal(scanner.getCandidates().candidates[0].signalTimestamp, FRESH_CLOSE);
+
+// Och motprovet: samma signal utan bekräftad stängning behåller öppningen och
+// prunas precis som före ändringen.
+resetScenario();
+providerSignals = [];
+signals = [{
+  ...freshSignal,
+  signalId: 'sig-2m-freshness-unconfirmed',
+  closedCandleConfirmed: false,
+  latestCandleClosed: false,
+  candleClosedAt: null,
+  signalTimestamp: FRESH_OPEN,
+}];
+const staleScan1 = scanner.runScannerOnce({ now: FRESH_SCAN_1 });
+assert.equal(staleScan1.candidates.length, 1);
+assert.equal(staleScan1.candidates[0].signalTimestamp, FRESH_OPEN);
+const staleScan2 = scanner.runScannerOnce({ now: FRESH_SCAN_2 });
+assert.equal(staleScan2.scan.staleQueuedCandidatesPruned, 1);
+
+resetScenario();
+
 console.log('futuresPaperScannerService.test.js passed');

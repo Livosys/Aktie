@@ -235,4 +235,42 @@ const base = {
   assert(result.blockers.includes('maintenance_break'));
 }
 
+// ── (7) Färskhetsgrinden släpper igenom en 2m-kandidat mätt från stängning ──
+// 48114 ms är den ålder en verklig 2m-kandidat hade i produktion 2026-08-03
+// när åldern räknas från candle-stängning i stället för candle-öppning
+// (observerad: öppning 13:30:00Z, stängning 13:32:00Z, sedd 13:32:48Z).
+// Före ändringen såg guarden 168114 ms och blockerade med stale_signal.
+{
+  const result = guard.evaluatePaperExecutionGuard({
+    ...base,
+    intent: { ...base.intent, ageMs: 48114, maxSubmitAgeMs: 120000 },
+  });
+  assert.equal(result.allowed, true, '2m-kandidat mätt från stängning ska passera');
+  assert.equal(result.blockers.includes('stale_signal'), false);
+  const freshCheck = result.checks.find((c) => c.code === 'candidate_fresh');
+  assert.equal(freshCheck.ok, true);
+  assert.equal(freshCheck.ageMs, 48114);
+  assert.equal(freshCheck.maxSubmitAgeMs, 120000);
+}
+
+// Motprovet: samma kandidat mätt från candle-öppning (48114 + 120000) ska
+// fortfarande blockeras. Gränsen är oförändrad — bara referenspunkten flyttas.
+{
+  const result = guard.evaluatePaperExecutionGuard({
+    ...base,
+    intent: { ...base.intent, ageMs: 168114, maxSubmitAgeMs: 120000 },
+  });
+  assert.equal(result.allowed, false);
+  assert(result.blockers.includes('stale_signal'));
+}
+
+// Gränsfallet: exakt maxSubmitAgeMs ska passera (checken använder <=).
+{
+  const result = guard.evaluatePaperExecutionGuard({
+    ...base,
+    intent: { ...base.intent, ageMs: 120000, maxSubmitAgeMs: 120000 },
+  });
+  assert.equal(result.blockers.includes('stale_signal'), false);
+}
+
 console.log('ibPaperExecutionGuardService.test.js passed');

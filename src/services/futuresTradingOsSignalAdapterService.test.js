@@ -144,4 +144,134 @@ const noRisk = noRiskAdapter.getFuturesCandidates({ now, quotes: [{ root: 'MNQ',
 assert.equal(noRisk.candidates.length, 0);
 assert.equal(noRisk.stats.signalsSkippedNoRisk, 1);
 
+// ── Färskhetssemantik: candle-stängning, inte candle-öppning ────────────────
+// decisionMonitor.js:1328-1330 löser redan "stängning om bekräftad, annars
+// öppning" och lägger resultatet på signal.signalTimestamp. Adaptern måste läsa
+// det fältet — annars mäts åldern från candle-öppning, vilket för 2m förbrukar
+// hela maxAgeMs-budgeten (120000) redan innan candlen stängt.
+
+const CANDLE_OPEN_2M = '2026-07-06T12:44:00.000Z';
+const CANDLE_CLOSE_2M = '2026-07-06T12:46:00.000Z';
+
+function twoMinuteSignal(overrides = {}) {
+  return {
+    signalId: 'sig-2m-freshness',
+    strategyId: 'ema_pullback_continuation',
+    strategyName: 'EMA Pullback Continuation',
+    signalSubtype: 'EMA_PULLBACK_UP',
+    symbol: 'QQQ',
+    market: 'stocks',
+    direction: 'long',
+    confidence: 0.74,
+    entry: 500,
+    stopLoss: 497.5,
+    takeProfit: 505,
+    riskReward: 2,
+    timeframe: '2m',
+    source: 'scanner',
+    signalSource: 'scanner',
+    dataSource: 'real_market_data',
+    timestamp: CANDLE_OPEN_2M,
+    candleTimestamp: CANDLE_OPEN_2M,
+    ...overrides,
+  };
+}
+
+function adaptOne(signalInput, quoteNow = now) {
+  const svc = createFuturesTradingOsSignalAdapterService({ signalReader: () => [signalInput] });
+  return svc.getFuturesCandidates({
+    now: quoteNow,
+    quotes: [{ root: 'MNQ', symbol: 'MNQ', price: 20000, tickSize: 0.25, source: 'real_market_data', fallback: false }],
+  });
+}
+
+// (1) 2m med bekräftat stängd candle → åldern ska räknas från STÄNGNING.
+const confirmed2m = adaptOne(twoMinuteSignal({
+  closedCandleConfirmed: true,
+  latestCandleClosed: true,
+  candleClosedAt: CANDLE_CLOSE_2M,
+  signalTimestamp: CANDLE_CLOSE_2M,
+}));
+assert.equal(confirmed2m.candidates.length, 1);
+assert.equal(confirmed2m.candidates[0].signalTimestamp, CANDLE_CLOSE_2M);
+assert.equal(confirmed2m.candidates[0].createdAt, CANDLE_CLOSE_2M);
+assert.equal(confirmed2m.candidates[0].closedCandleConfirmed, true);
+// candleTimestamp ska fortfarande bära öppningen (spårbarhet till råcandlen).
+assert.equal(confirmed2m.candidates[0].candleTimestamp, CANDLE_OPEN_2M);
+// Kärnan: exakt en candle-längd yngre än före ändringen.
+assert.equal(
+  Date.parse(confirmed2m.candidates[0].signalTimestamp) - Date.parse(CANDLE_OPEN_2M),
+  120000,
+);
+
+// (2) 2m utan bekräftad stängning → decisionMonitor sätter signalTimestamp lika
+// med öppningen, och beteendet ska degradera till exakt som tidigare.
+const unconfirmed2m = adaptOne(twoMinuteSignal({
+  closedCandleConfirmed: false,
+  latestCandleClosed: false,
+  candleClosedAt: null,
+  signalTimestamp: CANDLE_OPEN_2M,
+}));
+assert.equal(unconfirmed2m.candidates.length, 1);
+assert.equal(unconfirmed2m.candidates[0].signalTimestamp, CANDLE_OPEN_2M);
+assert.equal(unconfirmed2m.candidates[0].createdAt, CANDLE_OPEN_2M);
+
+// (3) Native-form (1m) saknar signalTimestamp helt → genomfallet till createdAt
+// måste vara oförändrat. Regressionslås för mnq_globex_momentum_v1.
+const nativeShaped = adaptOne({
+  signalId: 'mnq-native-freshness',
+  strategyId: 'mnq_globex_momentum_v1',
+  signalSubtype: 'GLOBEX_MOMENTUM',
+  symbol: 'MNQ',
+  market: 'futures',
+  marketType: 'futures',
+  direction: 'long',
+  confidence: 0.72,
+  entry: 20000,
+  stopLossPct: 0.3,
+  takeProfitPct: 0.6,
+  riskReward: 2,
+  timeframe: '1m',
+  signalStatus: 'ready',
+  dataSource: 'real_market_data',
+  closedCandleConfirmed: true,
+  latestCandleClosed: true,
+  candleTimestamp: signalTimestamp,
+  createdAt: signalTimestamp,
+  timestamp: signalTimestamp,
+});
+assert.equal(nativeShaped.candidates.length, 1);
+assert.equal(nativeShaped.candidates[0].signalTimestamp, signalTimestamp);
+assert.equal(nativeShaped.candidates[0].createdAt, signalTimestamp);
+assert.equal(Object.prototype.hasOwnProperty.call(nativeShaped.candidates[0], 'signalTimestamp'), true);
+
+// (4) candidateId får inte flytta sig när signalTimestamp tillkommer.
+// stableCandidateId (adapter:127-136) har en egen uppslagskedja och ska inte
+// påverkas — annars bryts dedup och idempotensnycklar.
+const idWithout = adaptOne(twoMinuteSignal({ createdAt: CANDLE_OPEN_2M })).candidates[0].candidateId;
+const idWith = adaptOne(twoMinuteSignal({
+  createdAt: CANDLE_OPEN_2M,
+  closedCandleConfirmed: true,
+  candleClosedAt: CANDLE_CLOSE_2M,
+  signalTimestamp: CANDLE_CLOSE_2M,
+})).candidates[0].candidateId;
+assert.equal(idWith, idWithout);
+
+// (5) Sessionsgräns: candle som öppnar i premarket och stänger i RTH.
+// 12:44Z = 07:44 CT (premarket), 13:30Z = 08:30 CT (RTH-öppning).
+// Med stängningssemantik klassas signalen i den session den är handlingsbar i.
+const boundary = adaptOne(twoMinuteSignal({
+  timestamp: '2026-07-06T13:28:00.000Z',
+  candleTimestamp: '2026-07-06T13:28:00.000Z',
+  closedCandleConfirmed: true,
+  latestCandleClosed: true,
+  candleClosedAt: '2026-07-06T13:30:00.000Z',
+  signalTimestamp: '2026-07-06T13:30:00.000Z',
+}));
+assert.equal(boundary.candidates.length, 1);
+assert.equal(boundary.candidates[0].signalTimestamp, '2026-07-06T13:30:00.000Z');
+assert.equal(boundary.candidates[0].exchangeLocalTime, '08:30');
+assert.equal(boundary.candidates[0].sessionId, 'us_rth');
+assert.equal(boundary.candidates[0].isRth, true);
+
 console.log('futuresTradingOsSignalAdapterService.test.js passed');
