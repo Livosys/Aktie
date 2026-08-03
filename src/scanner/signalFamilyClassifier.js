@@ -324,11 +324,35 @@ function classifyVwapReclaimRejection(sig, direction) {
   const attempt = evaluateVwapReclaimRejection(sig, direction);
   if (!attempt.matched) return null;
 
+  const subtype = direction === 'UP' ? 'VWAP_RECLAIM_UP' : 'VWAP_REJECTION_DOWN';
+
+  // Samma metadata-upplösning som EMA-grenen (:266) och NARROW-grenen (:402).
+  // Utan den returnerar grenen inget strategyId, decisionMonitor.js:1169-1175
+  // faller igenom till result.strategyId (null i råa scanner-rader), och
+  // futuresPaperScannerService.js:610 kastar kandidaten på missing_strategy_id.
+  // Följden var att vwap_volume_breakout_long aldrig kunde nå IBKR Paper trots
+  // registry-active, approval och entry contract.
+  //
+  // Crypto påverkas inte: runtime-mappen har medvetet ingen crypto-VWAP-post
+  // (FAS C mapping-fix), så resolveStrategyMetadata ger null där precis som förut.
+  const inferred = resolveStrategyMetadata(
+    {
+      ...sig,
+      signalFamily: 'VWAP_RECLAIM_REJECTION',
+      signalSubtype: subtype,
+      eventType: subtype,
+    },
+    { allowLegacyFallback: true },
+  );
+  const strategyId = inferred?.resolvedStrategyId || inferred?.strategyId || null;
+  const metadata = strategyMetadataFromExplicitMapping(strategyId, inferred?.resolvedStrategyName || inferred?.strategyName || null);
+
   return {
     signalFamily: 'VWAP_RECLAIM_REJECTION',
-    signalSubtype: direction === 'UP' ? 'VWAP_RECLAIM_UP' : 'VWAP_REJECTION_DOWN',
+    signalSubtype: subtype,
     direction,
     reasonSv: 'Priset testar dagens VWAP. Bevaka om nivån håller.',
+    ...metadata,
   };
 }
 
