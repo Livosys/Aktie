@@ -2,6 +2,33 @@
 
 Detta repo är **Trading OS**: en forsknings- och tradingplattform som forskar fram, testar och förbättrar strategier. Trading OS är hjärnan — alla strategier föds, testas och godkänns här. Paper Trading, Futures Paper och den framtida Mini Future-sidan är **konsumenter** av Trading OS-strategier, aldrig egna strategikällor.
 
+## Sessionsstart — gör alltid detta först
+
+Läs Second Brain i denna ordning innan något annat arbete påbörjas:
+
+1. `docs/ai-brain/README.md` — navigering och source-of-truth-princip
+2. `docs/ai-brain/CURRENT_STATE.md` — verifierat nuläge (tidsbundet)
+3. `docs/ai-brain/WORK_RULES.md` — arbets- och safetyregler
+4. `docs/ai-brain/NEXT_ACTION.md` — vad som faktiskt är godkänt just nu
+5. `docs/ai-brain/SESSION_HANDOFF.md` — vad föregående session gjorde
+6. `docs/ai-brain/PROJECT_MAP.md`, `OPEN_BLOCKERS.md`, `DECISIONS.md`, `REFERENCES.md` — vid behov
+
+Kör därefter read-only Git-preflight i repo-roten:
+
+```bash
+git branch --show-current
+git rev-parse --short HEAD
+git status --short
+```
+
+Kontrollera att branch, HEAD, dirty worktree och PM2-status stämmer med `CURRENT_STATE.md`. Statusen där är en ögonblicksbild — den får aldrig återanvändas som sanning utan ny verifiering.
+
+**Stoppa och rapportera** om projektmapp, branch, HEAD, runtime, dirty worktree eller safety-dokumentation avviker väsentligt från dokumenterat nuläge.
+
+Om `NEXT_ACTION.md` saknar explicit implementationstillstånd är **inget** implementationsarbete godkänt. Dokumenterad plan, roadmap eller rekommendation är aldrig i sig ett godkännande att ändra kod, stage:a, committa, pusha, bygga, deploya, starta om PM2 eller påverka trading.
+
+Second Brain-filer får skrivas endast med uttryckligt docs-uppdrag, och först efter `git status --short -- docs/ai-brain`. En annan agents dirty handoff får aldrig skrivas över.
+
 ## Kanoniskt flöde (rätt väg)
 
 ```
