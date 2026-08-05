@@ -11,7 +11,7 @@ const crypto = require('crypto');
 const ibPaperExecutionOrchestratorService = require('./ibPaperExecutionOrchestratorService');
 const futuresPaperScannerService = require('./futuresPaperScannerService');
 const strategyRegistryService = require('./strategyRegistryService');
-const paperStrategyEntryContractService = require('./paperStrategyEntryContractService');
+const canonicalExecutionRouter = require('./canonical/canonicalExecutionRouter');
 const ibPaperBrokerRiskService = require('./ibPaperBrokerRiskService');
 const ibPaperExecutionAdapterService = require('./ibPaperExecutionAdapterService');
 const futuresPaperQuoteSourceService = require('./futuresPaperQuoteSourceService');
@@ -453,7 +453,9 @@ function buildOrderPreviewCandidate(candidate = {}, context = {}) {
     ? registry.canExecuteStrategy(strategyId)
     : { allowed: false, blockedReason: 'strategy_registry_execution_allowlist_unavailable', strategyId };
   const session = futuresMarketHoursService.getCmeEquityIndexFuturesSessionState(now);
-  const entryContract = (context.entryContractService || paperStrategyEntryContractService).evaluatePaperEntryContract({
+  // Samma beslutsmotor som orchestratorn. Previewen får aldrig visa ett annat
+  // verdict än den väg som faktiskt submittar.
+  const entryContract = (context.executionRouterService || canonicalExecutionRouter).routeExecutionReadiness({
     strategyId,
     candidate: {
       ...candidate,

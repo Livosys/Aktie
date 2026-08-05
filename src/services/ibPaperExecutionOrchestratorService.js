@@ -12,7 +12,7 @@ const futuresMarketDataService = require('./futuresMarketDataService');
 const futuresPaperQuoteSourceService = require('./futuresPaperQuoteSourceService');
 const futuresPaperScannerService = require('./futuresPaperScannerService');
 const strategyRegistryService = require('./strategyRegistryService');
-const paperStrategyEntryContractService = require('./paperStrategyEntryContractService');
+const canonicalExecutionRouter = require('./canonical/canonicalExecutionRouter');
 const ibPaperAccountSummaryService = require('./ibPaperAccountSummaryService');
 const futuresMarketHoursService = require('./futuresMarketHoursService');
 const executionTargetReservationModule = require('./futuresPaperExecutionTargetReservationService');
@@ -164,7 +164,7 @@ function createIbPaperExecutionOrchestratorService(options = {}) {
 	  const scanner = options.scannerService || futuresPaperScannerService.defaultFuturesPaperScannerService;
 		  const accountSummaryService = options.accountSummaryService || ibPaperAccountSummaryService.defaultIbPaperAccountSummaryService;
 		  const strategyRegistry = options.strategyRegistryService || strategyRegistryService;
-	  const entryContractService = options.entryContractService || paperStrategyEntryContractService;
+	  const executionRouter = options.executionRouterService || canonicalExecutionRouter;
 	  const executionTargetReservations = options.executionTargetReservationService
 	    || executionTargetReservationModule.defaultFuturesPaperExecutionTargetReservationService;
   const reconciliation = options.reconciliationService
@@ -611,7 +611,10 @@ function createIbPaperExecutionOrchestratorService(options = {}) {
 		      ? strategyRegistry.canExecuteStrategy(candidate.strategyId)
 		      : { allowed: false, blockedReason: 'strategy_registry_execution_allowlist_unavailable', strategyId: candidate.strategyId, source: 'strategy_registry_execution_allowlist' };
 	    const session = futuresMarketHoursService.getCmeEquityIndexFuturesSessionState(now);
-	    const entryContract = entryContractService.evaluatePaperEntryContract({
+	    // Canonical Signal → Execution Readiness Engine → Entry Contract (policy).
+	    // Beslutet kommer från motorn; objektet behåller dagens fältnamn så att
+	    // guard, execution-adapter och API-svar är oförändrade.
+	    const entryContract = executionRouter.routeExecutionReadiness({
 	      strategyId: candidate.strategyId,
 	      candidate,
 	      now,

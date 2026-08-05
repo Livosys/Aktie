@@ -193,8 +193,8 @@ const service = orchestratorModule.createIbPaperExecutionOrchestratorService({
       blockedReason: strategyId === 'ema_pullback_continuation' ? null : 'strategy_not_in_execution_allowlist',
     }),
   },
-  entryContractService: {
-    evaluatePaperEntryContract: ({ strategyId }) => ({ allowed: strategyId === 'ema_pullback_continuation', entryContractVersion: 'server_test_contract' }),
+  executionRouterService: {
+    routeExecutionReadiness: ({ strategyId }) => ({ allowed: strategyId === 'ema_pullback_continuation', entryContractVersion: 'server_test_contract' }),
   },
   marketDataService: {
     isEnabled: () => true,
@@ -334,8 +334,8 @@ const service = orchestratorModule.createIbPaperExecutionOrchestratorService({
         blockedReason: strategyId === 'ema_pullback_continuation' ? null : 'strategy_not_in_execution_allowlist',
       }),
     },
-    entryContractService: {
-      evaluatePaperEntryContract: ({ strategyId }) => ({ allowed: strategyId === 'ema_pullback_continuation', entryContractVersion: 'server_test_contract' }),
+    executionRouterService: {
+      routeExecutionReadiness: ({ strategyId }) => ({ allowed: strategyId === 'ema_pullback_continuation', entryContractVersion: 'server_test_contract' }),
     },
     marketDataService: {
       isEnabled: () => true,

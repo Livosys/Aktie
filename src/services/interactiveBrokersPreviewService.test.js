@@ -50,9 +50,9 @@ function dependencies(overrides = {}) {
           : { allowed: false, strategyId, blockedReason: 'strategy_not_in_execution_allowlist', source: 'strategy_registry_execution_allowlist' };
       },
     },
-    entryContractService: {
-      evaluatePaperEntryContract() {
-        return { allowed: true, reasonCode: null, source: 'paperStrategyEntryContractService' };
+    executionRouterService: {
+      routeExecutionReadiness() {
+        return { allowed: true, reasonCode: null, decisionSource: 'execution_readiness_engine', source: 'canonical_execution_router' };
       },
     },
     brokerRiskService: {
