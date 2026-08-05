@@ -6,29 +6,37 @@ import { Link, useLocation } from 'react-router-dom';
 // Safety flags are displayed but never mutated here.
 
 const TOP_LINKS = [
-  { to: '/supervisor', label: 'Supervisor' },
-  { to: '/live', label: 'Live Trading' },
-  { to: '/paper-trading', label: 'Paper Trading' },
-  { to: '/futures-paper', label: 'Futures Paper' },
-  { to: '/interactive-brokers', label: 'Interactive Brokers' },
-  { to: '/ai', label: 'AI' },
+  { to: '/supervisor', label: 'Översikt', match: ['/supervisor', '/overview', '/oversikt'] },
+  { to: '/futures-paper', label: 'Futures', match: ['/futures-paper', '/paper-futures'], excludeTabs: ['positioner', 'ordrar'] },
+  { to: '/futures-paper?tab=positioner', label: 'Positioner', match: ['/futures-paper'], tab: 'positioner' },
+  { to: '/futures-paper?tab=ordrar', label: 'Execution', match: ['/futures-paper'], tab: 'ordrar' },
+  { to: '/insikter', label: 'Historik', match: ['/insikter', '/resultat', '/history', '/historik', '/data-center', '/datacenter'] },
   { to: '/system', label: 'System' },
-  { to: '/pinescript', label: 'PineScript' },
-  { to: '/lab?tab=batch', label: 'Batch Lab' },
-  { to: '/lab?tab=replay', label: 'Replay Lab' },
+  { to: '/lab', label: 'Labs', match: ['/lab', '/trading-lab', '/strategy-lab', '/strategilabb', '/replay', '/review-chart', '/machine', '/intelligence', '/intelligens', '/missed-breakouts', '/micro-move', '/wave', '/exit-engine', '/exit', '/pinescript', '/pine-script', '/ai', '/narrow', '/narrow-state'] },
 ];
+
+function isTopLinkActive(link, pathname, search, currentLocation) {
+  const tab = new URLSearchParams(search).get('tab');
+  if (link.tab) {
+    return (link.match || [link.to]).some((path) => pathname === path.split('?')[0]) && tab === link.tab;
+  }
+  if (link.to.includes('?') && currentLocation !== link.to) return false;
+  const matches = (link.match || [link.to]).map((path) => path.split('?')[0]);
+  const matched = matches.some((path) => pathname === path || pathname.startsWith(`${path}/`));
+  if (!matched) return false;
+  if (link.excludeTabs?.includes(tab)) return false;
+  return true;
+}
 
 export function DashboardTopNav() {
   const { pathname, search } = useLocation();
   const currentLocation = `${pathname}${search}`;
   return (
     <nav className="dash-topnav" aria-label="Dashboard">
-      <div className="dash-topnav-brand">Trading OS</div>
+      <div className="dash-topnav-brand">Mini Futures First</div>
       <div className="dash-topnav-links">
         {TOP_LINKS.map((link) => {
-          const active = link.to.includes('?')
-            ? currentLocation === link.to
-            : pathname === link.to || pathname.startsWith(`${link.to}/`);
+          const active = isTopLinkActive(link, pathname, search, currentLocation);
           return (
             <Link key={link.to} to={link.to} className={`dash-topnav-link${active ? ' is-active' : ''}`}>
               {link.label}

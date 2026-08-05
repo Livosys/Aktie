@@ -1,71 +1,33 @@
 import React from 'react';
 import { Link, useLocation } from 'react-router-dom';
-import { useAlerts } from '../alertContext.jsx';
 
 const NAV_GROUPS = [
-      {
-        id: 'marknad',
-        label: 'Marknad',
-        items: [
-          { path: '/live',       label: 'Live / Signaler', icon: '♥', match: ['/', '/live', '/signalpuls', '/scanner', '/signaler', '/aktier', '/krypto', '/nasdaq'], accent: 'blue' },
-        ],
-      },
-      {
-        id: 'paper',
-        label: 'Paper Trading',
-        items: [
-          { path: '/paper-trading', label: 'Paper Trading', icon: '🧾', match: ['/paper-trading'], accent: 'green' },
-          { path: '/futures-paper', label: 'Paper Futures', icon: '📈', match: ['/futures-paper', '/paper-futures'], accent: 'teal' },
-          { path: '/interactive-brokers', label: 'Interactive Brokers', icon: '🔌', match: ['/interactive-brokers'], accent: 'blue' },
-        ],
-      },
-      {
-        id: 'analys',
-        label: 'Analys',
-        items: [
-          { path: '/pinescript', label: 'PineScript', icon: '⌘', match: ['/pinescript', '/pine-script'], accent: 'teal' },
-        ],
-      },
-      {
-        id: 'ai',
-        label: 'AI',
-        items: [
-          { path: '/ai', label: 'AI Control Room', icon: '🧠', match: ['/ai'], accent: 'purple' },
-        ],
-      },
-
+  {
+    id: 'mini-futures',
+    label: 'Mini Futures',
+    items: [
+      { path: '/supervisor', label: 'Översikt', icon: 'O', match: ['/', '/supervisor', '/overview', '/oversikt'], accent: 'blue' },
+      { path: '/futures-paper', label: 'Futures', icon: 'F', match: ['/futures-paper', '/paper-futures'], excludeTabs: ['positioner', 'ordrar'], accent: 'teal' },
+      { path: '/futures-paper?tab=positioner', label: 'Positioner', icon: 'P', match: ['/futures-paper'], tab: 'positioner', accent: 'green' },
+      { path: '/futures-paper?tab=ordrar', label: 'Execution', icon: 'E', match: ['/futures-paper'], tab: 'ordrar', accent: 'orange' },
+    ],
+  },
+  {
+    id: 'system',
+    label: 'Operativt',
+    items: [
+      { path: '/insikter', label: 'Historik', icon: 'H', match: ['/insikter', '/resultat', '/history', '/historik', '/data-center', '/datacenter', '/setup-performance', '/setup-resultat'], accent: 'purple' },
+      { path: '/system', label: 'System', icon: 'S', match: ['/system', '/system-health', '/health', '/halsa', '/alerts', '/larm', '/sakerhet', '/risk', '/risk-engine', '/safety', '/execution-safety'], accent: 'blue' },
+    ],
+  },
+  {
+    id: 'labs',
+    label: 'Labs',
+    items: [
+      { path: '/lab', label: 'Labs', icon: 'L', match: ['/lab', '/trading-lab', '/strategy-lab', '/strategilabb', '/replay', '/review-chart', '/machine', '/intelligence', '/intelligens', '/missed-breakouts', '/micro-move', '/wave', '/exit-engine', '/exit', '/pinescript', '/pine-script', '/ai', '/narrow', '/narrow-state'], accent: 'teal' },
+    ],
+  },
 ];
-
-const ADMIN_ITEM = {
-  path: '/admin',
-  label: 'Admin',
-  icon: '⚙️',
-  match: [
-    '/admin',
-    '/supervisor',
-    '/oversikt',
-    '/lab',
-    '/trading-lab',
-    '/strategy-lab',
-    '/replay',
-    '/review-chart',
-    '/intelligence',
-    '/machine',
-    '/insikter',
-    '/resultat',
-    '/setup-performance',
-    '/historik',
-    '/system',
-    '/system-health',
-    '/alerts',
-    '/sakerhet',
-    '/risk',
-    '/risk-engine',
-    '/safety',
-    '/execution-safety',
-  ],
-  accent: 'purple',
-};
 
 const ACCENT_CLASS = {
   blue:   'sb-icon-blue',
@@ -75,17 +37,21 @@ const ACCENT_CLASS = {
   teal:   'sb-icon-teal',
 };
 
-function isActive(item, pathname) {
+function isActive(item, pathname, search) {
+  const tab = new URLSearchParams(search).get('tab');
+  if (item.tab) {
+    return (item.match || [item.path]).some((p) => pathname === p.split('?')[0]) && tab === item.tab;
+  }
   const matches = (item.match || [item.path]).map((p) => p.split('?')[0]);
-  if (item.path === '/live') return pathname === '/' || pathname === '/signalpuls' || pathname === '/live';
-  return matches.some((p) => pathname === p || pathname.startsWith(`${p}/`));
+  const matched = matches.some((p) => pathname === p || pathname.startsWith(`${p}/`));
+  if (!matched) return false;
+  if (item.excludeTabs?.includes(tab)) return false;
+  return true;
 }
 
 function NavItem({ item, onClose }) {
-  const { pathname } = useLocation();
-  const { heroToasts } = useAlerts();
-  const active = isActive(item, pathname);
-  const hasAlerts = item.path === '/alerts' && (heroToasts?.length ?? 0) > 0;
+  const { pathname, search } = useLocation();
+  const active = isActive(item, pathname, search);
   const iconCls = active ? `sb-icon ${ACCENT_CLASS[item.accent] || 'sb-icon-blue'} sb-icon-active` : `sb-icon ${ACCENT_CLASS[item.accent] || 'sb-icon-blue'}`;
 
   return (
@@ -96,7 +62,6 @@ function NavItem({ item, onClose }) {
     >
       <span className={iconCls}>{item.icon}</span>
       <span className="sb-link-label">{item.label}</span>
-      {hasAlerts && <span className="sb-alert-pip" />}
       {active && <span className="sb-active-bar" />}
     </Link>
   );
@@ -118,8 +83,8 @@ export default function Sidebar({ open, onClose }) {
         <Link to="/supervisor" className="sb-brand" onClick={onClose}>
           <img src="/evin.png" alt="" className="sb-brand-logo" />
           <div className="sb-brand-text">
-            <strong>Trading OS</strong>
-            <small>Översikt · test · läsning</small>
+            <strong>Mini Futures First</strong>
+            <small>MNQ · MES</small>
           </div>
         </Link>
 
@@ -145,11 +110,8 @@ export default function Sidebar({ open, onClose }) {
 
         {/* Footer */}
         <div className="sb-footer">
-          <div className="sb-admin-section" aria-label="Admin">
-            <NavItem item={ADMIN_ITEM} onClose={onClose} />
-          </div>
           <div className="sb-footer-meta">
-            <span>Trading OS</span>
+            <span>Mini Futures</span>
             <span>Inga affärer utförs</span>
           </div>
         </div>

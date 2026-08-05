@@ -1,4 +1,5 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import { DashboardShell, EmptyState } from '../components/dashboard/DashboardKit.jsx';
 import FuturesTechnicalInfoPanel from '../components/futures/FuturesTechnicalInfoPanel.jsx';
 import FuturesPaperStrategyApprovalPanel from '../components/futures/FuturesPaperStrategyApprovalPanel.jsx';
@@ -62,6 +63,12 @@ const TABS = [
   { id: 'teknik', label: 'Teknisk info' },
   { id: 'arkiv', label: 'Historiskt sim-arkiv' },
 ];
+
+const TAB_IDS = new Set(TABS.map((tab) => tab.id));
+
+function normalizeTabId(tabId) {
+  return TAB_IDS.has(tabId) ? tabId : 'oversikt';
+}
 
 async function fetchJsonWithTimeout(url, { timeoutMs = FETCH_TIMEOUT_MS, signal } = {}) {
   const controller = new AbortController();
@@ -142,7 +149,20 @@ function CompactTable({ rows, columns, emptyText = 'Inga data.' }) {
 }
 
 export default function FuturesPaperDeskPage() {
-  const [activeTab, setActiveTab] = useState('oversikt');
+  const [searchParams, setSearchParams] = useSearchParams();
+  const activeTab = normalizeTabId(searchParams.get('tab'));
+  const handleTabChange = useCallback((tabId) => {
+    const nextTab = normalizeTabId(tabId);
+    setSearchParams((current) => {
+      const next = new URLSearchParams(current);
+      if (nextTab === 'oversikt') {
+        next.delete('tab');
+      } else {
+        next.set('tab', nextTab);
+      }
+      return next;
+    });
+  }, [setSearchParams]);
   const [refreshToken, setRefreshToken] = useState(0);
   const runtime = useJson('/api/futures-paper/runtime', refreshToken);
   const execution = useJson('/api/futures-paper/ibkr-paper-execution/status?connect=false', refreshToken);
@@ -344,7 +364,7 @@ export default function FuturesPaperDeskPage() {
       safety={data}
       tabs={TABS}
       activeTab={activeTab}
-      onTab={setActiveTab}
+      onTab={handleTabChange}
       kpis={kpis}
     >
       <section style={{ ...sectionStyle({ marginBottom: 14, borderColor: 'rgba(59,130,246,0.35)', background: 'rgba(59,130,246,0.08)' }) }}>

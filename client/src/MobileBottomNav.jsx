@@ -5,23 +5,24 @@ export default function MobileBottomNav() {
   const { pathname, search } = useLocation();
   const [drawerOpen, setDrawerOpen] = useState(false);
   const currentLocation = `${pathname}${search}`;
+  const currentTab = new URLSearchParams(search).get('tab');
+  const onFuturesPage = pathname.startsWith('/futures-paper') || pathname.startsWith('/paper-futures');
 
   const tabs = [
-    { id: 'supervisor', label: 'Supervisor', active: pathname.startsWith('/supervisor'), to: '/supervisor' },
-    { id: 'paper-trading', label: 'Paper', active: pathname.startsWith('/paper-trading'), to: '/paper-trading' },
-    { id: 'futures-paper', label: 'Futures', active: pathname.startsWith('/futures-paper') || pathname.startsWith('/paper-futures'), to: '/futures-paper' },
-    { id: 'ai', label: 'AI', active: pathname.startsWith('/ai'), to: '/ai' },
+    { id: 'overview', label: 'Översikt', active: pathname === '/' || pathname.startsWith('/supervisor'), to: '/supervisor' },
+    { id: 'futures', label: 'Futures', active: onFuturesPage && !['positioner', 'ordrar'].includes(currentTab), to: '/futures-paper' },
+    { id: 'positions', label: 'Positioner', active: onFuturesPage && currentTab === 'positioner', to: '/futures-paper?tab=positioner' },
+    { id: 'execution', label: 'Execution', active: onFuturesPage && currentTab === 'ordrar', to: '/futures-paper?tab=ordrar' },
   ];
   const drawerLinks = [
-    { id: 'live', label: 'Live Trading', active: pathname.startsWith('/live'), to: '/live' },
-    { id: 'interactive-brokers', label: 'Interactive Brokers', active: pathname.startsWith('/interactive-brokers'), to: '/interactive-brokers' },
+    { id: 'history', label: 'Historik', active: pathname.startsWith('/insikter'), to: '/insikter' },
     { id: 'system', label: 'System', active: pathname.startsWith('/system'), to: '/system' },
+    { id: 'labs', label: 'Labs', active: pathname.startsWith('/lab') && !['/lab?tab=batch', '/lab?tab=replay'].includes(currentLocation), to: '/lab' },
     { id: 'pinescript', label: 'PineScript', active: pathname.startsWith('/pinescript') || pathname.startsWith('/pine-script'), to: '/pinescript' },
     { id: 'batch', label: 'Batch Lab', active: currentLocation === '/lab?tab=batch', to: '/lab?tab=batch' },
     { id: 'replay', label: 'Replay Lab', active: currentLocation === '/lab?tab=replay' || pathname.startsWith('/replay'), to: '/lab?tab=replay' },
-    { id: 'lab', label: 'Test Lab', active: pathname.startsWith('/lab') && !['/lab?tab=batch', '/lab?tab=replay'].includes(currentLocation), to: '/lab' },
-    { id: 'insikter', label: 'Insikter', active: pathname.startsWith('/insikter'), to: '/insikter' },
-    { id: 'daytrading', label: 'Daytrading', active: pathname.startsWith('/daytrading'), to: '/daytrading' },
+    { id: 'ai', label: 'AI Research', active: pathname.startsWith('/ai'), to: '/ai' },
+    { id: 'narrow', label: 'Narrow Lab', active: pathname.startsWith('/narrow'), to: '/narrow' },
   ];
   const drawerActive = drawerLinks.some((link) => link.active);
 
