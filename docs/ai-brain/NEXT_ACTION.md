@@ -1,19 +1,41 @@
 # Next Action
 
 Status:
-INGET IMPLEMENTATIONSARBETE ÄR GODKÄNT
+AKTUELLT HUVUDUPPDRAG ÄR MINI FUTURES HARNESS-TEST
 
 Mål:
-Granska de nya Second Brain-filerna och verifiera att de stämmer med Fas 0-rapporten.
+Skydda, observera och verifiera det tre dagar långa Mini Futures harness-testet för Trading OS egna strategier genom hela IBKR Paper-kedjan.
 
 Scope:
-Endast read-only granskning.
+Observation, verifiering och dokumentation av harness-testets resultat. Ingen generell PineScript-, TradingView- eller frontendombyggnad är godkänd.
+
+Huvudfrågor:
+
+1. Kommer färsk marknadsdata fram?
+2. Producerar egna strategier signaler och kandidater?
+3. Vilken gate blockerar varje stoppad kandidat?
+4. Passerar giltiga kandidater Entry Contract, Guard och Risk?
+5. Skickas paper-order till IBKR Paper?
+6. Registreras fills och brokerpositioner korrekt?
+7. Fungerar exits, PnL och reconciliation?
+8. Fungerar reconnect och omstart utan dubbelorder?
+9. Vilka strategier är tekniskt körbara efter testperioden?
 
 Tillåtna filer:
-`docs/ai-brain/*.md` får läsas men inte ändras utan nytt godkännande.
+Inga kodfiler är generellt godkända genom detta dokument. Varje implementation eller korrigering kräver ett separat uttryckligt uppdrag med exakt filscope.
 
 Förbjudet:
-Kod, runtime, Git-publicering, build, restart, deploy och tradingändringar.
+
+- PineScript-automation
+- TradingView-forwarding
+- generell frontendredesign
+- live trading
+- live broker
+- riskrelaxering
+- gate-bypass
+- godtycklig strategiaktivering
+- orelaterade Mini Futures-ändringar
+- commit, push, restart eller deploy utan separat godkännande
 
 Commit tillåten:
 NEJ
@@ -23,3 +45,5 @@ NEJ
 
 Restart tillåten:
 NEJ
+
+Dokumenterad nästa åtgärd är inte samma sak som godkänd implementation.
