@@ -134,3 +134,49 @@ Denna fil är mall och logg för framtida arbetspass. Uppdatera den endast med u
 - Commit: NEJ.
 - Push: NEJ.
 - Restart: NEJ.
+
+## 2026-08-05T08:35:45Z - Canonical Shadow Harness-korrigering
+
+- Datum och tid: 2026-08-05T08:35:45Z.
+- Agent: Codex.
+- Uppdrag: Korrigera Second Brain så att aktuellt huvudmål är Canonical Shadow Harness, inte ett IBKR Paper execution-test.
+- Grund/preflight: read-only `pwd`, `git branch --show-current`, `git rev-parse --short HEAD`, `git status --short`, `git status --short -- docs/ai-brain`, `git status --branch --short` och `git rev-list --left-right --count @{u}...HEAD`. Projektmapp `/var/www/nasdaq-scanner-prod`. Initial HEAD var `8763148` med ahead 66, behind 0 och `docs/ai-brain/` hade ingen befintlig diff före ändring. Vid efterföljande read-only verifiering hade lokal HEAD ändrats externt till `a44d8ae` med ahead 67, behind 0; ingen staging, checkout eller commit gjordes av denna agent.
+- Bakgrund: det tidigare Second Brain-huvudmålet var för execution-orienterat. Användarens tidigare felsökningssession klargjorde att det verkliga harnessmålet är att jämföra befintlig produktionslogik mot Canonical Execution Readiness Engine i shadow mode.
+- Filer lästa:
+  - `docs/ai-brain/CURRENT_STATE.md`
+  - `docs/ai-brain/NEXT_ACTION.md`
+  - `docs/ai-brain/SESSION_HANDOFF.md`
+  - `docs/ai-brain/DECISIONS.md`
+  - `docs/ai-brain/OPEN_BLOCKERS.md`
+  - `docs/ai-brain/PROJECT_MAP.md`
+- Filer skapade: inga.
+- Filer ändrade:
+  - `docs/ai-brain/CURRENT_STATE.md`
+  - `docs/ai-brain/NEXT_ACTION.md`
+  - `docs/ai-brain/SESSION_HANDOFF.md`
+  - `docs/ai-brain/DECISIONS.md`
+  - `docs/ai-brain/OPEN_BLOCKERS.md`
+  - `docs/ai-brain/PROJECT_MAP.md`
+- Huvudmålet korrigerades till Canonical Shadow Harness över 2-3 hela RTH-dagar med mål 0 beslutsskillnader och 0 reasonCode-skillnader.
+- IBKR Paper-status dokumenterades som ett separat operativt spår, inte som primär framgångsmätare för Canonical Shadow Harness.
+- PineScript, Batch, Replay, Dashboard och AI markerades som senare migration, inte aktiv implementation.
+- Användarrapporterad evidens markerades tydligt som ANVÄNDARRAPPORTERAD EVIDENS eftersom Git, tester och rapportfiler inte verifierades i detta docs-only-uppdrag.
+- Kod ändrad: NEJ.
+- Backend ändrad: NEJ.
+- Frontend ändrad: NEJ.
+- API ändrat: NEJ.
+- Runtime ändrad: NEJ.
+- Risk ändrad: NEJ.
+- Trading ändrad: NEJ.
+- Tester/builds: inga tester och inga builds kördes.
+- Git-status efter: sex tillåtna Second Brain-filer är modifierade och ostagade; index ska vara tomt eftersom ingen staging är godkänd.
+- Vad gjordes inte: ingen staging, commit, push, merge, rebase, stash, reset, checkout, branchbyte, build, deploy, PM2 restart, runtimeändring eller tradingändring.
+- Kvarvarande blockerare:
+  - 2-3 fulla RTH-dagar med Canonical Shadow Harness-evidens saknas fortfarande.
+  - Första framtida avvikande kandidat är ännu okänd.
+  - Dirty worktree innehåller kritiska Mini Futures-, IBKR Paper-, market data-, frontend-, backend-, execution- och teständringar.
+  - IBKR Paper reconciliation, account summary och `max_open_broker_positions` är separata operativa osäkerheter.
+- Rekommenderat nästa steg: samla en full RTH-session och kör `node scripts/shadowReadinessCompare.js --day YYYY-MM-DD` efter stängning.
+- Commit: NEJ.
+- Push: NEJ.
+- Restart: NEJ.

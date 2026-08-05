@@ -1,28 +1,79 @@
 # Project Map
 
-Denna karta sammanfattar verifierad projektstruktur från Fas 0 och Fas 2. Den ersätter inte kod, runtime, broker eller ledger som source of truth.
+Denna karta sammanfattar verifierad projektstruktur från Fas 0 och senare Second Brain-uppdateringar. Den ersätter inte kod, runtime, broker, ledger eller jämförelserapporter som source of truth.
 
-## Övergripande modell
+## Nuvarande produktion
+
+Aktuell produktion använder fortfarande befintlig produktionslogik för readiness- och executionbeslut.
 
 ```text
-Market Data
--> Signal Producers
--> Candidates
--> Strategy Registry
--> Entry Contracts
--> Guard
--> Risk
--> Execution Intent
--> IBKR Paper Adapter
--> Orders
--> Fills
--> Broker Positions
--> Reconciliation
--> Exit
--> Results
--> Learning
--> Supervisor
+TradingOS / Native producers
+-> befintlig produktionslogik
+-> Entry Contract
+-> Guard / Risk
+-> IBKR Paper
 ```
+
+Viktigt:
+
+- produktionen använder inte Canonical Engine som routingkälla
+- scheduler har inte migrerats
+- IBKR Paper-kedjan har inte migrerats
+- riskregler får inte ändras under evidensperioden
+- live trading får inte antas vara aktivt
+
+## Nuvarande shadow harness
+
+Aktuellt huvudmål är Canonical Shadow Harness.
+
+```text
+TradingOS / Native producers
+-> Canonical adapters
+-> Canonical Signal
+-> Canonical Execution Readiness Engine
+-> jämförelserapport
+```
+
+Shadow harness ska inte:
+
+- skicka order
+- ändra routing
+- påverka produktionsbeslut
+- ändra risk
+- ändra positioner
+
+Syftet är att under 2-3 hela RTH-dagar visa att Canonical Execution Readiness Engine ger exakt samma beslut och reasonCodes som befintlig produktionslogik för samma kandidater.
+
+Dagliga kriterier:
+
+- antal kandidater
+- antal identiska beslut
+- identitetsprocent
+- beslutsskillnader
+- reasonCode-skillnader
+- första avvikande kandidat
+- nya eller okända reasonCodes
+
+Målet är 0 beslutsskillnader och 0 reasonCode-skillnader över 2-3 oberoende hela RTH-dagar.
+
+## Framtida målarkitektur
+
+Den långsiktiga riktningen är:
+
+```text
+TradingOS
+Native Futures
+Pine
+Batch
+Replay
+-> Canonical Signal
+-> Execution Readiness Engine
+-> Entry Contract
+-> Guard / Risk
+-> executionmiljö
+```
+
+Migreringsordningen är ännu inte ett aktivt implementationsuppdrag. Routing, scheduler, IBKR execution, Batch, Replay, PineScript, Dashboard och AI får migreras först efter verifierad shadow-evidens och separata godkända uppdrag.
 
 ## Market Data
 
@@ -45,6 +96,7 @@ Kritiska datapunkter:
 - market hours/session
 - realtidskälla kontra fallback
 - delayed/simulated-markering
+- market context som används av både befintlig logik och Canonical adapters
 
 ## Strategy Layer
 
@@ -75,39 +127,7 @@ Readiness bör klassificeras per strategi:
 - paper execution readiness
 - performance evidence
 
-## Harness-test
-
-Det tre dagar långa Mini Futures harness-testet är aktuellt huvudmål.
-
-Syftet är att verifiera Trading OS egna strategier genom hela IBKR Paper-kedjan:
-
-```text
-marknadsdata
--> strategi
--> signal
--> kandidat
--> Entry Contract
--> Guard
--> Risk
--> execution intent
--> IBKR Paper-order
--> fill
--> brokerposition
--> reconciliation
--> exit
--> resultat
--> learning
-```
-
-Kriterier:
-
-- färsk marknadsdata når strategierna
-- egna strategier producerar giltiga signaler och kandidater
-- stoppade kandidater får tydliga `blockedReason`
-- giltiga kandidater passerar Entry Contract, Guard och Risk
-- säkra paper-order når IBKR Paper när alla krav är uppfyllda
-- fills, brokerpositioner, exits, PnL och reconciliation registreras korrekt
-- reconnect och restart skapar inte dubbla intents eller orders
+Under Canonical Shadow Harness är den primära frågan inte om alla strategier kan exekvera, utan om Canonical Engine och befintlig produktionslogik ger identiska beslut och reasonCodes för samma kandidater.
 
 ## Execution
 
@@ -128,16 +148,7 @@ Kritiska komponenter:
 - account summary: `src/services/ibPaperAccountSummaryService.js`
 - routes: `src/routes/api.js`
 
-Executionkedjan måste bevisa:
-
-- execution intent
-- broker order-ID
-- IBKR Paper-order
-- fill
-- brokerposition
-- reconciliation
-- exit
-- PnL
+IBKR Paper execution, account summary, fills, positions och reconciliation är viktiga operativa systemområden. De är inte huvudmåttet för Canonical Shadow Harness så länge Canonical Engine endast kör shadowjämförelse.
 
 ## Research
 
@@ -149,7 +160,7 @@ Research- och labbytor:
 - TradingView
 - analytics
 
-PineScript- och TradingView-automation är senare arbete. De är inte aktuell huvudprioritet och får inte störa Mini Futures harness-testet.
+PineScript- och TradingView-automation är senare arbete. Batch-/Replay-migration till Canonical Signal är också senare migration och inte aktuell huvudprioritet.
 
 ## AI och Learning
 
@@ -169,9 +180,11 @@ Målbilden innehåller cirka 8-9 specialiserade AI-roller:
 
 Antal och exakta namn är EJ VERIFIERAT tills AI-konfiguration och kod inventerats.
 
+AI och Supervisor får analysera och rekommendera, men de får inte själva godkänna routingbyte, migration, riskändring, live trading eller executionändring.
+
 ## Frontend
 
-Futures Paper Desk är kontrollrummet för harness-testet.
+Futures Paper Desk är kontrollrum för Mini Futures- och IBKR Paper-status.
 
 Flikar/ytor:
 
@@ -187,7 +200,7 @@ Flikar/ytor:
 - Godkännande
 - Teknisk info
 
-Frontend ska ses som kontrollrum, inte execution source of truth. Backend, broker och ledger är auktoritativa för orders, fills och positioner.
+Frontend ska ses som kontrollrum, inte execution source of truth. Backend, broker och ledger är auktoritativa för orders, fills och positioner. Canonical Shadow Harness-resultat ska verifieras mot jämförelserapporter och relevanta backendartefakter.
 
 ## Supervisor
 
@@ -199,4 +212,4 @@ Supervisor sammanfattar:
 - blockerare
 - nästa rekommendation
 
-Supervisor får inte behandlas som ett självständigt godkännande att ändra risk, gates, brokerläge, kod eller tradingstatus.
+Supervisor får inte behandlas som ett självständigt godkännande att ändra risk, gates, brokerläge, kod, routing eller tradingstatus.

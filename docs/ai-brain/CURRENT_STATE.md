@@ -1,21 +1,21 @@
 # Current State
 
-Senast verifierat: 2026-08-05T08:03:46Z via read-only Git-preflight under Fas 2. Bygger på godkänd Fas 0-inventering, Fas 1 Second Brain-kärna och senare docs-only synkronisering.
+Senast verifierat: 2026-08-05T08:35:45Z via read-only Git-preflight. Bygger på godkänd Fas 0-inventering, Fas 1 Second Brain-kärna, Fas 2 docs-only projektkarta, Canonical Shadow Harness-korrigering och senare docs-only synkronisering.
 
 Denna status är tidsbunden. Branch, HEAD, upstream, index, runtime, PM2-status och dirty worktree måste verifieras om vid varje ny session innan arbete fortsätter.
 
 ## Repo och runtime
 
-Verifierat 2026-08-05T08:03:46Z:
+Verifierat 2026-08-05T08:35:45Z:
 
 - Projektmapp: `/var/www/nasdaq-scanner-prod`
 - Git-root: `/var/www/nasdaq-scanner-prod`
 - Alternativ mapp `/var/www/nasdaq-scanner`: saknades vid Fas 0
 - Branch: `lab-batch-runnability-ui`
-- HEAD: `82338a1`
+- HEAD: `a44d8ae`
 - Upstream: `origin-disabled/lab-batch-runnability-ui`
-- Ahead/behind: `ahead 65`, `behind 0`
-- Index: tomt vid preflight
+- Ahead/behind: `ahead 67`, `behind 0`
+- Index: tomt efter senaste commit
 - PM2-process: `nasdaq-scanner`, enligt Fas 0 och senare read-only PM2-kontroll
 - PM2-status senast verifierad före Fas 2: `online`
 - Runtime working directory: `/var/www/nasdaq-scanner-prod`
@@ -26,6 +26,8 @@ Historisk referens:
 
 - Vid Fas 0 var HEAD `14a7265` med `ahead 64`, `behind 0`.
 - `82338a1 docs(ai-brain): add minimal multi-agent project context` är en lokal docs-only commit ovanpå `14a7265`.
+- `8763148 docs(ai-brain): document mini futures harness priority` är en lokal docs-only commit ovanpå `82338a1`.
+- `a44d8ae docs(claude): lägg till Second Brain-läsordning vid sessionsstart` är en lokal docs-only commit ovanpå `8763148`. Den lägger till läsordning och Git-preflight i `CLAUDE.md` så att varje ny session får dem automatiskt.
 - Git-publicering är fortsatt stoppad och upstream är `origin-disabled`.
 
 ## Dirty worktree
@@ -48,54 +50,91 @@ Untracked poster i repo-roten:
 
 Kopiera inte hela dirty fillistan mellan Second Brain-filer. Kör i stället ny Git-preflight när aktuell filnivå krävs.
 
-## Aktuellt huvudmål
+## Aktuellt huvudmål - Canonical Shadow Harness
 
-Trading OS befinner sig i ett tre dagar långt Mini Futures harness-test.
+Trading OS befinner sig i en 2-3 RTH-dagar lång evidensperiod för den nya Canonical Execution Readiness Engine.
 
-Målet är att verifiera att Trading OS egna strategier fungerar genom hela IBKR Paper-kedjan:
+Syftet är att jämföra:
 
 ```text
-marknadsdata
--> strategi
--> signal
--> kandidat
--> Entry Contract
--> Guard
--> Risk
--> execution intent
--> IBKR Paper-order
--> fill
--> brokerposition
--> reconciliation
--> exit
--> resultat
--> learning
+befintlig produktionslogik
+mot
+Canonical Execution Readiness Engine i shadow mode
 ```
 
-Testet ska visa att egna strategier:
+för samma kandidater.
 
-- producerar giltiga signaler och kandidater
-- passerar rätt Entry Contracts
-- stoppas med tydliga `blockedReason` när krav saknas
-- passerar Guard och Risk när alla krav är uppfyllda
-- kan skicka säkra paper-order till IBKR Paper
-- får korrekta fills
-- skapar korrekta brokerpositioner
-- reconcileras korrekt mot Trading OS
-- avslutas korrekt med stop, target eller annan godkänd exit
-- registrerar PnL och resultat
-- fortsätter säkert efter omstart
-- inte skapar dubbla order efter reconnect eller restart
+Varje dag ska följande verifieras:
 
-Mini Futures harness-testet är högsta prioritet.
+- antal kandidater
+- antal identiska beslut
+- identitetsprocent
+- beslutsskillnader
+- reasonCode-skillnader
+- första avvikande kandidat, om någon finns
+- nya eller okända reasonCodes
 
-PineScript- och TradingView-automation är en senare arbetsström. PineScript-arbetet får inte störa det pågående harness-testet.
+Mål:
+
+- 0 beslutsskillnader
+- 0 reasonCode-skillnader
+- stabilt resultat över 2-3 oberoende hela RTH-dagar
+
+Redan rapporterad evidens, markerad som ANVÄNDARRAPPORTERAD EVIDENS eftersom Git, tester och rapportfiler inte verifierades direkt under detta docs-only-uppdrag:
+
+- VWAP- och strategyId-fixen verifierad
+- Canonical Signal byggd
+- Canonical adapters byggda
+- Execution Readiness Engine byggd
+- 143 tester gröna
+- historisk shadowjämförelse: 2374/2374 identiska
+- live shadowjämförelse: 243/243 identiska
+- verifieringsfel kring marketContext upptäcktes och rättades
+- efter rättningen var jämförelsen fortsatt 100 %
+- refererad commit för detta läge: `66fb766`
+
+Tydliga begränsningar under evidensperioden:
+
+- produktionen använder fortfarande den gamla logiken
+- Canonical Engine kör endast shadowjämförelse
+- ingen routing har bytts
+- scheduler har inte migrerats
+- IBKR Paper-kedjan har inte migrerats
+- ingen live trading har aktiverats
+- ingen riskregel ska ändras
+- PineScript, Batch, Replay, Dashboard och AI ska migreras först senare
+- IBKR Paper execution och reconciliation är viktiga systemområden men inte huvudsyftet med detta harness-test
+
+## Daglig körning
+
+Planerad daglig kontroll:
+
+```bash
+node scripts/shadowReadinessCompare.js --day YYYY-MM-DD
+```
+
+Den ska normalt köras efter att hela RTH-sessionen är avslutad, så att hela dagens kandidater finns i jämförelseunderlaget.
+
+Om resultatet är 100 %:
+
+- gör ingen kodändring
+- samla nästa fulla RTH-dag
+
+Om en avvikelse finns:
+
+- undersök endast den första avvikande kandidaten
+- ändra inte flera orelaterade saker
+- refaktorera inte
+- optimera inte
+- migrera inte routing
 
 ## Verifierad systemmodell
 
 Trading OS är en lokal produktionskörd research-, strategi-, paper-execution- och learning-plattform.
 
-Futures Paper execution beskrivs som IBKR Paper enligt aktuell runtime-dokumentation och verifierad kod. Paper broker är inte live broker.
+Nuvarande produktion använder fortfarande befintlig produktionslogik för execution readiness-beslut. Canonical Execution Readiness Engine kör endast shadowjämförelse och får inte påverka routing, scheduler, risk, order, positioner eller brokerstatus under evidensperioden.
+
+Futures Paper execution beskrivs som IBKR Paper enligt aktuell runtime-dokumentation och verifierad kod. Paper broker är inte live broker. IBKR Paper execution och reconciliation är ett separat operativt spår, inte den primära framgångsmätaren för Canonical Shadow Harness.
 
 Intern futures-simulator är pensionerad enligt verifierad kod och får inte behandlas som aktiv utan ny evidens.
 
@@ -105,7 +144,7 @@ Faktisk IB Gateway-status: EJ VERIFIERAT under detta Fas 2 read-only docs-uppdra
 
 ## Frontendens aktuella roll
 
-Futures Paper Desk är kontrollrummet för harness-testet.
+Futures Paper Desk är kontrollrum för Mini Futures- och IBKR Paper-status, men inte source of truth för Canonical Shadow Harness-beslut.
 
 Den innehåller bland annat:
 
@@ -121,7 +160,7 @@ Den innehåller bland annat:
 - Godkännande
 - Teknisk info
 
-Frontendens viktigaste uppgift under harness-testet är att visa:
+Frontendens viktigaste uppgift för det operativa IBKR Paper-spåret är att visa:
 
 - execution target
 - datastatus
@@ -153,7 +192,7 @@ Observerade frontendtillstånd som ska verifieras mot kod och API innan de behan
 
 Orsaken till `degraded` reconciliation och tomma kontofält är EJ VERIFIERAT. Gissa inte om det är frontend-, API-, runtime- eller brokerproblem.
 
-Frontend är kontrollrum, inte execution source of truth. Backend, broker och ledger är auktoritativa för orders, fills och positioner.
+Frontend är kontrollrum, inte execution source of truth. Backend, broker och ledger är auktoritativa för orders, fills och positioner. Shadowjämförelser och reasonCode-identitet ska verifieras från jämförelserapporter och relevanta backendartefakter, inte från frontendens sammanfattningar.
 
 ## Dokumentkonflikter
 
@@ -171,6 +210,8 @@ Följande var inte verifierat i Fas 0 och är fortfarande inte verifierat under 
 
 - Faktisk IB Gateway-anslutning och faktiskt brokertillstånd.
 - Live trading aktiverat. Detta får inte antas.
+- De användarrapporterade Canonical Shadow Harness-siffrorna mot Git, tester och rapportfiler.
+- Fulla 2-3 oberoende RTH-dagar med 0 beslutsskillnader och 0 reasonCode-skillnader.
 - Orsaken till `degraded` reconciliation.
 - Orsaken till tomma eller streckade account- och kapitalfält.
 - Nginx/static serving direkt.

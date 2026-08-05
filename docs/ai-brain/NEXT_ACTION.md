@@ -1,40 +1,58 @@
 # Next Action
 
 Status:
-AKTUELLT HUVUDUPPDRAG ÄR MINI FUTURES HARNESS-TEST
+AKTUELLT HUVUDUPPDRAG ÄR CANONICAL SHADOW HARNESS
 
 Mål:
-Skydda, observera och verifiera det tre dagar långa Mini Futures harness-testet för Trading OS egna strategier genom hela IBKR Paper-kedjan.
+Samla 2-3 hela RTH-dagar av evidens som visar att Canonical Execution Readiness Engine ger exakt samma beslut och reasonCodes som den befintliga produktionslogiken.
 
-Scope:
-Observation, verifiering och dokumentation av harness-testets resultat. Ingen generell PineScript-, TradingView- eller frontendombyggnad är godkänd.
+Daglig procedur:
 
-Huvudfrågor:
+1. Låt systemet samla kandidater under hela RTH-sessionen.
+2. Gör inga kodändringar under sessionen.
+3. Kör efter RTH-stängning:
 
-1. Kommer färsk marknadsdata fram?
-2. Producerar egna strategier signaler och kandidater?
-3. Vilken gate blockerar varje stoppad kandidat?
-4. Passerar giltiga kandidater Entry Contract, Guard och Risk?
-5. Skickas paper-order till IBKR Paper?
-6. Registreras fills och brokerpositioner korrekt?
-7. Fungerar exits, PnL och reconciliation?
-8. Fungerar reconnect och omstart utan dubbelorder?
-9. Vilka strategier är tekniskt körbara efter testperioden?
+   ```bash
+   node scripts/shadowReadinessCompare.js --day YYYY-MM-DD
+   ```
 
-Tillåtna filer:
-Inga kodfiler är generellt godkända genom detta dokument. Varje implementation eller korrigering kräver ett separat uttryckligt uppdrag med exakt filscope.
+4. Granska:
+   - antal kandidater
+   - identical %
+   - beslutsskillnader
+   - reasonCode-skillnader
+   - nya reasonCodes
+   - första avvikande kandidat
+
+Beslutsregel:
+
+- Vid 100 % identitet: ändra ingenting och upprepa nästa handelsdag.
+- Vid avvikelse: enda tekniska uppgiften är att förklara den första avvikande kandidaten.
+- Ingen routing eller migration godkänns innan evidensperioden är klar och separat beslut har fattats.
+
+Tillåtna handlingar:
+
+- read-only observation
+- köra det befintliga shadowReadinessCompare-scriptet
+- läsa resultatrapporter
+- jämföra kandidater, beslut och reasonCodes
+- dokumentera evidens
 
 Förbjudet:
 
-- PineScript-automation
-- TradingView-forwarding
-- generell frontendredesign
-- live trading
-- live broker
-- riskrelaxering
-- gate-bypass
-- godtycklig strategiaktivering
-- orelaterade Mini Futures-ändringar
+- ändra Canonical Engine
+- ändra produktionslogik
+- byta routing
+- migrera scheduler
+- migrera IBKR execution
+- ändra Entry Contract
+- ändra Guard eller Risk
+- aktivera live trading
+- ändra order submission
+- PineScript-arbete
+- Batch-/Replay-migration
+- frontendredesign
+- orelaterad felsökning
 - commit, push, restart eller deploy utan separat godkännande
 
 Commit tillåten:
