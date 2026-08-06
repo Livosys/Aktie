@@ -34,10 +34,19 @@ const signal = {
 assert.deepEqual(mapSignalToFutures({ symbol: 'QQQ', market: 'stocks' }).futuresSymbol, 'MNQ');
 assert.deepEqual(mapSignalToFutures({ symbol: 'SPY', market: 'stocks' }).futuresSymbol, 'MES');
 assert.equal(mapSignalToFutures({ symbol: 'XYZ', market: 'stocks' }).mappingReason, 'no_safe_futures_mapping');
+// READY_FOR_PAPER-steget mappar INTE krypto till MNQ. Signalbeslutet — riktning,
+// subtyp, rvol, regim — beräknas på det underliggande instrumentet, och en stark
+// struktur i Ethereum säger ingenting om Nasdaq-100. Att strategin är redo för
+// paper gör den inte instrumentagnostisk. (Tidigare asserterade de här två
+// fallen motsatsen; beteendet är ändrat medvetet, inte råkat.)
 assert.equal(mapSignalToFutures(
   { symbol: 'ETHUSDT', market: 'crypto', strategyId: 'ema_pullback_continuation' },
   { readyForPaperStrategyIds: new Set(['ema_pullback_continuation']) },
-).futuresSymbol, 'MNQ');
+).futuresSymbol, null);
+assert.equal(mapSignalToFutures(
+  { symbol: 'ETHUSDT', market: 'crypto', strategyId: 'ema_pullback_continuation' },
+  { readyForPaperStrategyIds: new Set(['ema_pullback_continuation']) },
+).mappingReason, 'no_index_kinship_for_default_root');
 assert.equal(mapSignalToFutures(
   { symbol: 'ETHUSDT', market: 'crypto', strategyId: 'crypto_watch_only' },
   { readyForPaperStrategyIds: new Set(['ema_pullback_continuation']) },
@@ -45,7 +54,24 @@ assert.equal(mapSignalToFutures(
 assert.equal(mapSignalToFutures(
   { symbol: 'SOLUSDT', market: 'crypto', signalSubtype: 'VWAP_RECLAIM_UP' },
   { readyForPaperStrategies: [{ strategyId: 'vwap_volume_breakout_long', readiness: 'READY_FOR_PAPER', producedSubtypes: ['VWAP_RECLAIM_UP'] }] },
+).futuresSymbol, null);
+
+// Aktier och ETF:er är oberörda — de mappas på FAKTISKT släktskap i steg 3/4,
+// inte av READY_FOR_PAPER-steget.
+assert.equal(mapSignalToFutures(
+  { symbol: 'MSFT', market: 'stocks', strategyId: 'ema_pullback_continuation' },
+  { readyForPaperStrategyIds: new Set(['ema_pullback_continuation']) },
 ).futuresSymbol, 'MNQ');
+
+// Escape-hatchen består: anger signalen explicit exekveringskontrakt är
+// släktskapsfrågan redan besvarad av den som satte det.
+assert.equal(mapSignalToFutures({ symbol: 'BTCUSDT', market: 'crypto', executionSymbol: 'MNQ' }).futuresSymbol, 'MNQ');
+
+// Okänd marknad räknas aldrig som släktskap.
+assert.equal(mapSignalToFutures(
+  { symbol: 'WHATEVER', strategyId: 'ema_pullback_continuation' },
+  { readyForPaperStrategyIds: new Set(['ema_pullback_continuation']) },
+).futuresSymbol, null);
 assert.equal(mapSignalToFutures({ symbol: 'BTCUSDT', market: 'crypto', executionSymbol: 'MES' }).futuresSymbol, 'MES');
 assert.equal(mapSignalToFutures({ symbol: 'BTCUSDT', market: 'crypto', futuresInstrument: 'NQ' }).futuresSymbol, 'MNQ');
 
@@ -132,15 +158,39 @@ const readyFallback = readyFallbackAdapter.getFuturesCandidates({
     direction: 'long',
   }],
 });
+// En krypto-signal blir ingen futures-kandidat, hur redo strategin än är. Hela
+// kedjan nedströms — readiness, router, guard, order — bygger på att kandidatens
+// bevis gäller instrumentet den exekveras på.
 assert.equal(readyFallback.ok, true);
-assert.equal(readyFallback.stats.signalsMappedToFutures, 1);
-assert.equal(readyFallback.stats.signalsSkippedNoMapping, 0);
-assert.equal(readyFallback.candidates.length, 1);
-assert.equal(readyFallback.candidates[0].symbol, 'MNQ');
-assert.equal(readyFallback.candidates[0].futuresSymbol, 'MNQ');
-assert.equal(readyFallback.candidates[0].executionSymbol, 'MNQ');
-assert.equal(readyFallback.candidates[0].futuresInstrument, 'MNQ');
-assert.equal(readyFallback.candidates[0].mappingReason, 'ready_for_paper_default_micro_futures_root');
+assert.equal(readyFallback.stats.signalsMappedToFutures, 0);
+assert.equal(readyFallback.stats.signalsSkippedNoMapping, 1);
+assert.equal(readyFallback.candidates.length, 0);
+
+// Steg 5 har fortfarande ett syfte: aktier UTANFÖR de explicita Nasdaq-/S&P-
+// listorna mappas via READY_FOR_PAPER-vägen, eftersom marknaden är släkt.
+const readyEquity = readyFallbackAdapter.getFuturesCandidates({
+  now,
+  quotes: [{
+    root: 'MNQ', symbol: 'MNQ', price: 20000, previousPrice: 19999,
+    tickSize: 0.25, source: 'real_market_data', fallback: false,
+  }],
+  signalInputs: [{
+    ...signal,
+    signalId: 'sig-ema-equity-ready',
+    strategyId: 'ema_pullback_continuation',
+    strategyName: 'EMA Pullback Continuation',
+    symbol: 'ZZTOP',
+    market: 'stocks',
+    direction: 'long',
+  }],
+});
+assert.equal(readyEquity.stats.signalsMappedToFutures, 1);
+assert.equal(readyEquity.candidates.length, 1);
+assert.equal(readyEquity.candidates[0].symbol, 'MNQ');
+assert.equal(readyEquity.candidates[0].futuresSymbol, 'MNQ');
+assert.equal(readyEquity.candidates[0].executionSymbol, 'MNQ');
+assert.equal(readyEquity.candidates[0].futuresInstrument, 'MNQ');
+assert.equal(readyEquity.candidates[0].mappingReason, 'ready_for_paper_default_micro_futures_root');
 
 const subtypeResolvedAdapter = createFuturesTradingOsSignalAdapterService({
   signalReader: () => [],
@@ -166,12 +216,15 @@ const subtypeResolved = subtypeResolvedAdapter.getFuturesCandidates({
   ],
   signalInputs: [{
     ...signal,
-    signalId: 'sig-narrow-crypto-no-strategy-id',
+    signalId: 'sig-narrow-no-strategy-id',
     strategyId: undefined,
     strategyName: undefined,
     signalSubtype: 'NARROW_BULL_ENTRY',
-    symbol: 'SOLUSDT',
-    market: 'crypto',
+    // Aktie, inte krypto: det här testet handlar om att subtypen ska kunna lösa
+    // upp strategyId, inte om instrumentmappningen. Med en krypto-symbol hade
+    // släktskapsgrinden stoppat kandidaten innan upplösningen ens mättes.
+    symbol: 'ZZTOP',
+    market: 'stocks',
     direction: 'long',
   }],
 });

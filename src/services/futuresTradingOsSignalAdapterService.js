@@ -164,6 +164,25 @@ function normalizeMarket(signal = {}) {
     || null;
 }
 
+// Marknader där ett Nasdaq-mikroterminskontrakt är en försvarbar proxy för
+// signalens underliggande instrument. Medvetet en tillåtelselista, inte en
+// spärrlista: en ny marknadsklass ska behöva bevisa sitt släktskap, inte
+// slinka igenom för att ingen hann lägga till den.
+const INDEX_KINDRED_MARKETS = new Set([
+  'stocks',
+  'stock',
+  'equity',
+  'equities',
+  'index',
+  'indices',
+  'futures',
+]);
+
+function hasIndexKinship(signal = {}) {
+  const market = String(normalizeMarket(signal) || '').trim().toLowerCase();
+  return INDEX_KINDRED_MARKETS.has(market);
+}
+
 function normalizeDirection(signal = {}) {
   const raw = safeString(
     signal.direction
@@ -380,6 +399,29 @@ function mapSignalToFutures(signal = {}, options = {}) {
     };
   }
   if (resolveReadyForPaperStrategy(signal, options).strategyId) {
+    // Steg 3 och 4 ovan mappar på symbolens FAKTISKA släktskap med indexet —
+    // QQQ/MSFT/META är Nasdaq-100-innehav, så MNQ är en äkta proxy. Det här
+    // steget har ingen sådan koppling: det finns bara för att READY_FOR_PAPER-
+    // strategier ska kunna producera futures-kandidater alls, och mappade
+    // därför vad som helst till MNQ.
+    //
+    // I praktiken var det en krypto→MNQ-regel. Hela signalbeslutet — riktning,
+    // subtyp, rvol, regim — beräknas på BTCUSDT och exekveras sedan som MNQ med
+    // entry/stop/target omräknade mot MNQ:s pris. En stark struktur i Bitcoin
+    // säger ingenting om Nasdaq-100.
+    //
+    // Kravet är därför att signalen åtminstone kommer från en marknad där ett
+    // Nasdaq-mikroterminskontrakt är en försvarbar proxy. Okänd marknad räknas
+    // aldrig som släktskap: kan kopplingen inte visas mappar vi inte.
+    if (!hasIndexKinship(signal)) {
+      return {
+        originalSymbol,
+        originalMarket: normalizeMarket(signal) || market || null,
+        futuresSymbol: null,
+        mappingReason: 'no_index_kinship_for_default_root',
+        mappingConfidence: 0,
+      };
+    }
     return {
       originalSymbol,
       originalMarket: normalizeMarket(signal) || market || null,
@@ -539,6 +581,9 @@ function createFuturesTradingOsSignalAdapterService(options = {}) {
     const readyContext = readReadyForPaperContext();
     const mapping = mapSignalToFutures(signal, readyContext);
     if (!mapping.futuresSymbol) {
+      // skipReason är kategorin som nedströms konsumenter nycklar på; den exakta
+      // orsaken (t.ex. no_index_kinship_for_default_root) följer med i `mapping`
+      // i samma objekt, så detaljen går inte förlorad.
       return { ok: false, skipReason: 'no_safe_futures_mapping', mapping, signal, signalTimestamp, signalSessionMetadata };
     }
 
