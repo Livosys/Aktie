@@ -1245,4 +1245,52 @@ assert.equal(svc.sessionAllowedForStrategy('us_rth', { requiresMarketOpen: true,
   );
 }
 
+{
+  // Broker-ordrar ska bära samma strategiidentitet som broker-fills. Vitlistan
+  // utelämnade fälten helt, så attributionen uppströms ströks tyst igen.
+  const intentByExecutionId = new Map([
+    ['fxp_cebb174e813ef953', { executionId: 'fxp_cebb174e813ef953', strategyId: 'mnq_globex_momentum_v1', candidateId: 'futures_candidate_55c624a37cbb617e' }],
+  ]);
+
+  // Väg 1: raden är redan attribuerad uppströms av orchestratorn.
+  const attributed = svc.normalizeBrokerOrder({
+    orderId: 144,
+    strategyId: 'mnq_globex_momentum_v1',
+    candidateId: 'futures_candidate_55c624a37cbb617e',
+    executionId: 'fxp_cebb174e813ef953',
+    order: { orderRef: 'TOS-PAPER-fxp_cebb174e813ef953-stopLoss', orderType: 'STP' },
+    contract: { conId: 793356225, localSymbol: 'MNQU6' },
+  }, new Map());
+  assert.equal(attributed.strategyId, 'mnq_globex_momentum_v1');
+  assert.equal(attributed.candidateId, 'futures_candidate_55c624a37cbb617e');
+  assert.equal(attributed.executionId, 'fxp_cebb174e813ef953');
+
+  // Väg 2: rå broker-rad → identiteten härleds ur orderRef via intenten,
+  // exakt som normalizeBrokerExecution redan gör för fills.
+  const fromIntent = svc.normalizeBrokerOrder({
+    orderId: 143,
+    order: { orderRef: 'TOS-PAPER-fxp_cebb174e813ef953-takeProfit', orderType: 'LMT' },
+    contract: { conId: 793356225, localSymbol: 'MNQU6' },
+  }, intentByExecutionId);
+  assert.equal(fromIntent.strategyId, 'mnq_globex_momentum_v1');
+  assert.equal(fromIntent.executionId, 'fxp_cebb174e813ef953');
+  assert.equal(fromIntent.orderRef, 'TOS-PAPER-fxp_cebb174e813ef953-takeProfit');
+  assert.equal(fromIntent.orderType, 'LMT', 'befintliga fält får inte tappas');
+
+  // Okänd orderRef ska ge null, aldrig en gissning.
+  const unknown = svc.normalizeBrokerOrder({
+    orderId: 9,
+    order: { orderRef: 'TOS-PAPER-fxp_unknown-entry' },
+    contract: {},
+  }, intentByExecutionId);
+  assert.equal(unknown.strategyId, null);
+  assert.equal(unknown.candidateId, null);
+  assert.equal(unknown.executionId, null);
+
+  // Rad helt utan orderRef får inte krascha eller hitta på.
+  const bare = svc.normalizeBrokerOrder({ orderId: 1 }, intentByExecutionId);
+  assert.equal(bare.orderRef, null);
+  assert.equal(bare.strategyId, null);
+}
+
 console.log('futuresPaperDeskService.test.js passed');

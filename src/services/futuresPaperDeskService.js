@@ -811,12 +811,23 @@ function normalizeBrokerExecution(row = {}, commissionsByExecId = new Map(), int
   };
 }
 
-function normalizeBrokerOrder(row = {}) {
+// Symmetrisk med normalizeBrokerExecution: en broker-order ska bära samma
+// strategiidentitet som en broker-fill. Vitlistan här utelämnade strategyId,
+// candidateId och executionId helt, så attributionen som orchestratorn gör
+// uppströms ströks tyst igen och Futures Desk visade null där backend visste
+// svaret. Fälten läses i första hand från raden (redan attribuerad) och faller
+// annars tillbaka på intenten via orderRef — samma väg som fills använder.
+function normalizeBrokerOrder(row = {}, intentByExecutionId = new Map()) {
+  const orderRef = row.order?.orderRef || row.orderRef || null;
+  const strategyContext = strategyContextFromIntent(intentForOrderRef(intentByExecutionId, orderRef));
   return {
     id: row.orderId ?? row.order?.orderId ?? row.order?.permId ?? null,
     orderId: row.orderId ?? null,
     permId: row.order?.permId ?? row.permId ?? null,
-    orderRef: row.order?.orderRef || row.orderRef || null,
+    orderRef,
+    strategyId: row.strategyId || strategyContext.strategyId || null,
+    candidateId: row.candidateId || strategyContext.candidateId || null,
+    executionId: row.executionId || strategyContext.executionId || null,
     accountMasked: row.order?.accountMasked || row.accountMasked || null,
     conId: row.contract?.conId ?? null,
     localSymbol: row.contract?.localSymbol || null,
@@ -1142,7 +1153,8 @@ function buildFuturesPaperDeskRuntime(options = {}) {
   // Ordrarna normaliseras före positionerna: skyddsordrarna bär den orderRef som
   // kopplar en position till sin strategi och sina SL/TP-nivåer.
   const intentByExecutionId = buildIntentContext(brokerReconciliation);
-  const brokerOrders = safeArray(options.brokerOrders || brokerReconciliation.openOrders).map(normalizeBrokerOrder);
+  const brokerOrders = safeArray(options.brokerOrders || brokerReconciliation.openOrders)
+    .map((row) => normalizeBrokerOrder(row, intentByExecutionId));
   const protectiveByConId = buildProtectiveContextByConId(brokerOrders, intentByExecutionId);
   // Entrypriset för en öppen position finns i entry-fillen från IBKR. Positionens
   // avgCost är kostnadsbas inklusive multiplikator och är därför inte samma sak.
@@ -1379,6 +1391,7 @@ module.exports = {
   calcFuturesPnl,
   sessionAllowedForStrategy,
   normalizePaperExecutionStatus,
+  normalizeBrokerOrder,
   buildCanonicalStrategyOverview,
   buildFuturesPaperDeskRuntime,
 };

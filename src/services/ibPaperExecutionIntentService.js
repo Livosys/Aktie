@@ -42,6 +42,24 @@ const INTENT_STATUSES = Object.freeze([
   'unknown',
 ]);
 
+// Fälten som definierar postens identitet och härkomst. Dem får en statusändring
+// aldrig skriva om — `status` och `updatedAt` sätts explicit av updateStatus
+// själv, resten är postens fasta identitet. Allt ANNAT i `extra` är observationer
+// om samma intent och hör hemma på posten.
+const IMMUTABLE_INTENT_FIELDS = Object.freeze([
+  'idempotencyKey',
+  'executionId',
+  'createdAt',
+  'status',
+  'updatedAt',
+]);
+
+// Historiskt skyddade orderfält: en statusändring utan känd order ska inte nolla
+// en order vi redan känner. Skyddet behålls exakt som det var — `ibOrderId`/`permId`
+// mot null (0 är ett giltigt id), `orderRef` mot allt falsy.
+const NULL_GUARDED_INTENT_FIELDS = Object.freeze(['ibOrderId', 'permId']);
+const FALSY_GUARDED_INTENT_FIELDS = Object.freeze(['orderRef']);
+
 const DEFAULT_DIR = path.resolve(__dirname, '../../data/futures-paper/ibkr-execution');
 
 function nowIso(now = new Date()) {
@@ -169,56 +187,22 @@ function createIbPaperExecutionIntentService(options = {}) {
     if (!record) return { ok: false, error: 'intent_not_found' };
     record.status = status;
     record.updatedAt = nowIso();
-	    if (extra.ibOrderId != null) record.ibOrderId = extra.ibOrderId;
-	    if (extra.permId != null) record.permId = extra.permId;
-	    if (extra.orderRef) record.orderRef = extra.orderRef;
-	    for (const key of [
-	      'submitStartedAt',
-	      'expectedAccountMasked',
-	      'expectedOrderIds',
-	      'expectedBracketLegs',
-	      'contractFingerprint',
-	      'evidenceFingerprint',
-	      'side',
-	      'quantity',
-	      'parentOrderId',
-	      'orderRefs',
-	      'reconciliationRequired',
-	      'blocker',
-	      'ibErrorCode',
-	      'ibErrorMessage',
-	      'rejectedOrderId',
-	      'rejectedReason',
-	      'cancelledOrderId',
-	      'cancelReason',
-	      'protectiveOrderCancelledId',
-	      'protectiveOrderCancelReason',
-	      'entryFilledOrderId',
-	      'entryFilledAt',
-	      'entryFilledPrice',
-	      'entryAvgFillPrice',
-	      'entryLastFillPrice',
-	      'entryExecId',
-	      'entryExecutionTime',
-	      'entrySide',
-	      'entryQuantity',
-	      'entryCommission',
-	      'entryCommissionCurrency',
-	      'filledOrderId',
-	      'filledLeg',
-	      'filledAt',
-	      'filledPrice',
-	      'filledAvgPrice',
-	      'filledLastPrice',
-	      'filledExecId',
-	      'filledExecutionTime',
-	      'filledSide',
-	      'filledQuantity',
-	      'filledCommission',
-	      'filledCommissionCurrency',
-	      'filledRealizedPNL',
-	    ]) {
-	      if (Object.prototype.hasOwnProperty.call(extra, key)) record[key] = extra[key];
+	    // Här stod tidigare en vitlista på ~40 fältnamn, medan appendEvent nedan
+	    // spred hela `extra`. Asymmetrin var tyst och kostsam: ett nytt fält hamnade
+	    // i revisionsloggen men aldrig på posten, och den som lade till det fick
+	    // ingen signal alls. Det tappade bland annat `submittedAt`, `conId` (som
+	    // persistExecutionDetails fyller i när posten saknar kontrakt), `cancelOrderId`
+	    // (vitlistan stavade det `cancelledOrderId`) och självläkningens
+	    // `resolvedBy`/`resolvedAt`/`previousStatus`.
+	    //
+	    // Nu är de två vägarna symmetriska: allt utom identitet och härkomst skrivs
+	    // igenom, så ett nytt fält kan aldrig mer försvinna tyst på vägen till posten.
+	    for (const [key, value] of Object.entries(extra)) {
+	      if (IMMUTABLE_INTENT_FIELDS.includes(key)) continue;
+	      if (value === undefined) continue;
+	      if (value == null && NULL_GUARDED_INTENT_FIELDS.includes(key)) continue;
+	      if (!value && FALSY_GUARDED_INTENT_FIELDS.includes(key)) continue;
+	      record[key] = value;
 	    }
 	    index = idx;
     saveIndex();
