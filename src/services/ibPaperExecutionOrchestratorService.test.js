@@ -563,6 +563,61 @@ const service = orchestratorModule.createIbPaperExecutionOrchestratorService({
   assert.equal(noCandidate.status, 'READY_WAITING_FOR_SIGNAL');
   assert.equal(noCandidate.actualSubmit, false);
 
+  // Broker-attribution: IBKR-rader bär bara orderRef. buildExecutionStatus ska
+  // knyta dem till strategyId/candidateId via executionId — strategi-agnostiskt,
+  // additivt, och utan att gissa när ingen intent matchar.
+  {
+    const attributedReconciliation = {
+      reconcilePaperBroker: async () => attributedReconciliation.getCachedReconciliation(),
+      getCachedReconciliation: () => ({
+        ok: true,
+        status: 'ok',
+        degraded: false,
+        newEntriesAllowed: true,
+        counts: { openOrders: 1, executions: 2, positions: 0 },
+        discrepancies: [],
+        intents: [
+          { executionId: 'fxp_attr_1', strategyId: 'vwap_volume_breakout_long', candidateId: 'futures_candidate_attr_1' },
+          { executionId: 'fxp_attr_2', strategyId: 'narrow_state_expansion_long', candidateId: 'futures_candidate_attr_2' },
+        ],
+        openOrders: [{ orderId: 1, orderRef: 'TOS-PAPER-fxp_attr_2-entry' }],
+        executions: [
+          { execId: 'e1', orderRef: 'TOS-PAPER-fxp_attr_1-entry' },
+          { execId: 'e2', orderRef: 'TOS-PAPER-fxp_unknown-stopLoss' },
+          { execId: 'e3' },
+        ],
+        orderStatuses: [{ orderId: 1, orderRef: 'TOS-PAPER-fxp_attr_1-takeProfit' }],
+        positions: [],
+      }),
+    };
+    const attributedService = orchestratorModule.createIbPaperExecutionOrchestratorService({
+      adapter: fakeAdapter,
+      intentService: intentModule.createIbPaperExecutionIntentService({ dir: path.join(tmp, 'attr-intents') }),
+      reconciliationService: attributedReconciliation,
+      executionTargetReservationService: reservationModule.createFuturesPaperExecutionTargetReservationService({ dir: path.join(tmp, 'attr-reservations') }),
+      scannerService: { getCandidates: () => ({ candidates: [] }) },
+    });
+    const attributedStatus = await attributedService.buildExecutionStatus({ force: true });
+    const [e1, e2, e3] = attributedStatus.brokerExecutions;
+
+    assert.equal(e1.strategyId, 'vwap_volume_breakout_long');
+    assert.equal(e1.candidateId, 'futures_candidate_attr_1');
+    assert.equal(e1.executionId, 'fxp_attr_1');
+    assert.equal(e1.execId, 'e1', 'befintliga broker-fält får inte skrivas över');
+
+    // Okänd executionId och rad helt utan orderRef ska ge null, aldrig en gissning.
+    assert.equal(e2.strategyId, null);
+    assert.equal(e2.executionId, 'fxp_unknown');
+    assert.equal(e3.strategyId, null);
+    assert.equal(e3.executionId, null);
+
+    // Samma attribution gäller open orders och orderStatuses, inte bara fills.
+    assert.equal(attributedStatus.brokerOpenOrders[0].strategyId, 'narrow_state_expansion_long');
+    assert.equal(attributedStatus.brokerOrderStatuses[0].strategyId, 'vwap_volume_breakout_long');
+    assert.equal(attributedStatus.brokerFills[0].strategyId, 'vwap_volume_breakout_long');
+    assert.equal(attributedStatus.reconciliation.executions[0].strategyId, 'vwap_volume_breakout_long');
+  }
+
   const rawVwapCandidate = loadVwapCandidate();
   const normalizedVwapCandidate = orchestratorModule.normalizeCandidate(rawVwapCandidate);
   const vwapService = orchestratorModule.createIbPaperExecutionOrchestratorService({

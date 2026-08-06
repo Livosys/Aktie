@@ -139,6 +139,39 @@ function mergeRuntimeAccountSummary(primary, supplemental, {
   };
 }
 
+// IBKR känner inte till strategier. Broker-raderna (executions, open orders,
+// orderStatuses) bär bara orderRef — och orderRef bär vårt executionId. Det är
+// den enda bryggan tillbaka till intenten, som äger strategyId/candidateId.
+//
+// Attributionen görs här, vid den enda punkt där broker-raderna föds, så att
+// varje konsument (API, dashboard, analytics, historik) ser samma strategyId
+// som backend. Parsningen återanvänder reconciliation-tjänstens egen
+// executionIdFromOrderRef — ingen egen kopia av formatet.
+//
+// Helt additiv: befintliga fält rörs aldrig, och en rad utan matchande intent
+// får null i stället för att gissa. Ingen strategi-specifik logik.
+function attributeBrokerRows(rows, intents) {
+  if (!Array.isArray(rows) || !rows.length) return Array.isArray(rows) ? rows : [];
+  const byExecutionId = new Map();
+  for (const intent of Array.isArray(intents) ? intents : []) {
+    const executionId = intent?.executionId || intent?.intent?.executionId;
+    if (!executionId || byExecutionId.has(executionId)) continue;
+    byExecutionId.set(executionId, intent);
+  }
+  return rows.map((row) => {
+    const orderRef = reconciliationModule.orderRefOf(row);
+    const executionId = reconciliationModule.executionIdFromOrderRef(orderRef);
+    const intent = executionId ? byExecutionId.get(executionId) || null : null;
+    const inner = intent?.intent || {};
+    return {
+      ...row,
+      executionId: row.executionId || executionId || null,
+      strategyId: row.strategyId || intent?.strategyId || inner.strategyId || null,
+      candidateId: row.candidateId || intent?.candidateId || inner.candidateId || null,
+    };
+  });
+}
+
 function buildExecutionId(seed) {
   return `fxp_${crypto.createHash('sha256').update(String(seed || `${Date.now()}:${Math.random()}`)).digest('hex').slice(0, 16)}`;
 }
@@ -574,10 +607,11 @@ function createIbPaperExecutionOrchestratorService(options = {}) {
       ? await reconcileRuntime({ force: false })
       : reconciliation.getCachedReconciliation();
     const safety = configService.buildSafetyView();
-    const brokerOpenOrders = Array.isArray(rec.openOrders) ? rec.openOrders : [];
-    const brokerExecutions = Array.isArray(rec.executions) ? rec.executions : [];
+    const brokerIntents = Array.isArray(rec.intents) ? rec.intents : [];
+    const brokerOpenOrders = attributeBrokerRows(Array.isArray(rec.openOrders) ? rec.openOrders : [], brokerIntents);
+    const brokerExecutions = attributeBrokerRows(Array.isArray(rec.executions) ? rec.executions : [], brokerIntents);
     const brokerPositions = Array.isArray(rec.positions) ? rec.positions : [];
-    const brokerOrderStatuses = Array.isArray(rec.orderStatuses) ? rec.orderStatuses : [];
+    const brokerOrderStatuses = attributeBrokerRows(Array.isArray(rec.orderStatuses) ? rec.orderStatuses : [], brokerIntents);
     const brokerCommissions = typeof adapter.getCommissions === 'function' ? adapter.getCommissions() : [];
     const payload = {
       ok: true,
