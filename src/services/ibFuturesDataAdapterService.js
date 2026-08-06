@@ -101,7 +101,11 @@ function createIbFuturesDataAdapterService(options = {}) {
     reconnectMaxMs: Number(options.reconnectMaxMs || 5 * 60 * 1000),
     contractCacheTtlMs: Number(options.contractCacheTtlMs || 6 * 60 * 60 * 1000),
     marketDataType: Number(options.marketDataType || envInt('IB_FUTURES_MD_TYPE', 1)),
-    roots: Array.isArray(options.roots) && options.roots.length ? options.roots : DEFAULT_ROOTS.slice(),
+    // En explicit angiven lista respekteras som den är — även tom. Tidigare föll
+    // en tom array igenom till DEFAULT_ROOTS, så `roots: []` betydde i praktiken
+    // "alla fyra": start() prenumererade på MNQ/MES/NQ/ES och löste ett kontrakt
+    // per rot. Bara en utelämnad `roots` ska ge standarduppsättningen.
+    roots: Array.isArray(options.roots) ? options.roots.slice() : DEFAULT_ROOTS.slice(),
   };
   const ibFactory = options.ibFactory || ((cfg) => new IBApi({ host: cfg.host, port: cfg.port, clientId: cfg.clientId }));
 

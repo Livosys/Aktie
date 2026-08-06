@@ -187,8 +187,42 @@ assert.equal(adapterModule.classifyAccountId(''), 'unknown');
     dedupeAdapter.subscribeQuote('MNQ'),
   ]);
   assert.ok(results.every((r) => r.ok), 'alla samtidiga subscribe ska lyckas');
+  // Räknarna är per klient, inte per rot. Assertionen håller bara om start() inte
+  // prenumererat på några andra roots — därav roots: [] ovan, som numera betyder
+  // vad det ser ut att betyda. Innan dess föll tomma listan igenom till alla fyra
+  // default-roots, och MES/NQ/ES löste sina kontrakt på samma fake-klient. Om
+  // någon av dem hann före assertionen blev det 2 i stället för 1, vilket gjorde
+  // testet intermittent.
+  assert.equal(dedupeClients.length, 1, 'dedupe-adaptern ska bara ha skapat en klient');
   assert.equal(dedupeClients[0].mktDataCalls.length, 1, 'samtidiga subscribe → exakt en reqMktData');
   assert.equal(dedupeClients[0].contractDetailsCalls, 1, 'samtidiga subscribe → exakt en contractDetails');
+  // Config-semantiken som gjorde testet ovan intermittent: en explicit angiven
+  // roots-lista ska respekteras som den är, även tom. Faller den tomma listan
+  // tillbaka till DEFAULT_ROOTS prenumererar start() på fyra roots i smyg.
+  {
+    const emptyClients = [];
+    const emptyRootsAdapter = adapterModule.createIbFuturesDataAdapterService({
+      historicalPacingMs: 1,
+      roots: [],
+      ibFactory: () => { const c = makeFakeIb(); emptyClients.push(c); return c; },
+    });
+    assert.equal(await emptyRootsAdapter.start(), true);
+    await new Promise((r) => setTimeout(r, 50));
+    assert.equal(emptyClients[0].contractDetailsCalls, 0, 'roots: [] ska inte lösa några kontrakt vid start');
+    assert.equal(emptyClients[0].mktDataCalls.length, 0, 'roots: [] ska inte prenumerera vid start');
+    emptyRootsAdapter.stop();
+
+    const defaultClients = [];
+    const defaultRootsAdapter = adapterModule.createIbFuturesDataAdapterService({
+      historicalPacingMs: 1,
+      ibFactory: () => { const c = makeFakeIb(); defaultClients.push(c); return c; },
+    });
+    assert.equal(await defaultRootsAdapter.start(), true);
+    await waitFor(() => defaultClients[0].mktDataCalls.length === 4, 'utelämnad roots → default-uppsättningen');
+    assert.equal(defaultClients[0].contractDetailsCalls, 4);
+    defaultRootsAdapter.stop();
+  }
+
   rcAdapter.stop();
   dedupeAdapter.stop();
 
