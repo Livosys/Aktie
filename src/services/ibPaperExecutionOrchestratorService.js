@@ -27,6 +27,7 @@ const SAFETY = Object.freeze({
   live_account_orders_allowed: false,
   source: 'ib_paper_execution_orchestrator',
 });
+const DEFAULT_ACCOUNT_SUMMARY_REFRESH_TIMEOUT_MS = 8_000;
 
 function nowIso(now = new Date()) {
   return new Date(now).toISOString();
@@ -53,13 +54,23 @@ function sideFromCandidate(candidate = {}) {
   return null;
 }
 
-function candidateTimestamp(candidate = {}) {
-  return candidate.signalTimestamp
-    || candidate.timestamp
-    || candidate.createdAt
-    || candidate.candidateTimestamp
-    || null;
-}
+  function candidateTimestamp(candidate = {}) {
+    return candidate.signalTimestamp
+      || candidate.timestamp
+      || candidate.createdAt
+      || candidate.candidateTimestamp
+      || null;
+  }
+
+  function isSelectableQueueCandidate(candidate = {}) {
+    const status = safeUpper(candidate.status || 'READY_WAITING_FOR_SIGNAL');
+    return status === 'READY_WAITING_FOR_SIGNAL'
+      && !candidate.claimedAt
+      && !candidate.claimedBy
+      && !candidate.consumedAt
+      && !candidate.completedAt
+      && !candidate.expiredAt;
+  }
 
 function ageMsFromTimestamp(ts, now = new Date()) {
   const parsed = Date.parse(ts || '');
@@ -85,6 +96,49 @@ function withCacheAge(summary, now = new Date()) {
   };
 }
 
+const RUNTIME_ACCOUNT_FIELDS = Object.freeze([
+  'netLiquidation',
+  'totalCashValue',
+  'availableFunds',
+  'buyingPower',
+  'realizedPnl',
+  'unrealizedPnl',
+  'dailyPnl',
+  'maintMarginReq',
+  'initMarginReq',
+  'cushion',
+]);
+
+function mergeRuntimeAccountSummary(primary, supplemental, {
+  now = new Date(),
+  maxAgeMs = null,
+} = {}) {
+  const base = withCacheAge(primary, now);
+  const extra = withCacheAge(supplemental, now);
+  if (!base || base.ok !== true || !base.account) return extra || base;
+  if (!extra || extra.ok !== true || !extra.account) return base;
+  const baseAccountId = safeString(base.account.accountIdMasked);
+  const extraAccountId = safeString(extra.account.accountIdMasked);
+  if (baseAccountId && extraAccountId && baseAccountId !== extraAccountId) return base;
+  const extraAgeMs = safeNumber(extra.cacheAgeMs ?? extra.ageMs) ?? ageMsFromGeneratedAt(extra.generatedAt, now);
+  if (Number.isFinite(Number(maxAgeMs)) && extraAgeMs != null && extraAgeMs > Number(maxAgeMs)) return base;
+  const account = { ...base.account };
+  let enriched = false;
+  for (const field of RUNTIME_ACCOUNT_FIELDS) {
+    if (account[field] == null && extra.account[field] != null) {
+      account[field] = extra.account[field];
+      enriched = true;
+    }
+  }
+  if (!enriched) return base;
+  return {
+    ...base,
+    account,
+    supplementalAccountSummarySource: extra.snapshotSource || extra.source || extra.supplementalAccountSummarySource || null,
+    supplementalAccountSummaryGeneratedAt: extra.generatedAt || null,
+  };
+}
+
 function buildExecutionId(seed) {
   return `fxp_${crypto.createHash('sha256').update(String(seed || `${Date.now()}:${Math.random()}`)).digest('hex').slice(0, 16)}`;
 }
@@ -102,42 +156,159 @@ function normalizeCandidate(input = {}) {
     || candidate.patternSubtype
     || null;
   const signalStatus = candidate.signalStatus || candidate.signal_status || candidate.status || candidate.priority || null;
-  return {
-    candidateId: safeString(candidate.candidateId || candidate.id || candidate.eventId),
-    originalSignalId: safeString(candidate.originalSignalId || candidate.signalId),
-    status: signalStatus,
-    signalStatus,
-    signalSubtype,
-    signal_subtype: signalSubtype,
-    subtype: signalSubtype,
-    dataFreshness: candidate.dataFreshness || null,
-    market: candidate.market || null,
-    marketType: candidate.marketType || candidate.market || null,
-    sessionId: candidate.sessionId || candidate.sessionMetadata?.sessionId || null,
-    session: candidate.session || candidate.sessionMetadata?.session || null,
-    sessionMetadata: candidate.sessionMetadata || null,
-    closedCandleConfirmed: candidate.closedCandleConfirmed === true || candidate.hasClosedCandle === true,
-    latestCandleClosed: candidate.latestCandleClosed === true || candidate.closedCandleConfirmed === true || candidate.hasClosedCandle === true,
-    twoMinuteConfirmation: candidate.twoMinuteConfirmation === true,
-    emaPullbackConfirmation: candidate.emaPullbackConfirmation === true,
-    vwapReclaimConfirmation: candidate.vwapReclaimConfirmation === true,
-    volumeConfirmation: candidate.volumeConfirmation === true,
-    confidence: candidate.confidence ?? null,
-    nextMoveBias: candidate.nextMoveBias || candidate.next_move_bias || direction,
-    root,
-    symbol: root,
-    strategyId,
-    direction,
-    signalTimestamp,
-    candleTimestamp: candidate.candleTimestamp || candidate.barTimestamp || signalTimestamp,
-    timestamp: candidate.timestamp || signalTimestamp,
-    createdAt: candidate.createdAt || signalTimestamp,
-    quantity: 1,
-    orderType: safeUpper(candidate.orderType || candidate.entryOrderType || 'MKT'),
-    limitPrice: safeNumber(candidate.limitPrice ?? candidate.entryLimitPrice),
-    stopLossPrice: safeNumber(candidate.stopLossPrice ?? candidate.stopLoss ?? candidate.stop),
-    takeProfitPrice: safeNumber(candidate.takeProfitPrice ?? candidate.takeProfit ?? candidate.takeProfit1),
-  };
+  const normalized = { ...candidate };
+
+  if (!Object.prototype.hasOwnProperty.call(normalized, 'candidateId')) {
+    normalized.candidateId = safeString(candidate.candidateId || candidate.id || candidate.eventId);
+  }
+  if (!Object.prototype.hasOwnProperty.call(normalized, 'originalSignalId')) {
+    normalized.originalSignalId = safeString(candidate.originalSignalId || candidate.signalId);
+  }
+  if (!Object.prototype.hasOwnProperty.call(normalized, 'signalStatus') && signalStatus != null) {
+    normalized.signalStatus = signalStatus;
+  }
+  if (!Object.prototype.hasOwnProperty.call(normalized, 'signalSubtype') && signalSubtype != null) {
+    normalized.signalSubtype = signalSubtype;
+  }
+  if (!Object.prototype.hasOwnProperty.call(normalized, 'signal_subtype') && signalSubtype != null) {
+    normalized.signal_subtype = signalSubtype;
+  }
+  if (!Object.prototype.hasOwnProperty.call(normalized, 'subtype') && signalSubtype != null) {
+    normalized.subtype = signalSubtype;
+  }
+  if (!Object.prototype.hasOwnProperty.call(normalized, 'dataFreshness')) {
+    normalized.dataFreshness = candidate.dataFreshness || null;
+  }
+  if (!Object.prototype.hasOwnProperty.call(normalized, 'market')) {
+    normalized.market = candidate.market || null;
+  }
+  if (!Object.prototype.hasOwnProperty.call(normalized, 'marketType')) {
+    normalized.marketType = candidate.marketType || candidate.market || null;
+  }
+  if (!Object.prototype.hasOwnProperty.call(normalized, 'sessionId')) {
+    normalized.sessionId = candidate.sessionId || candidate.sessionMetadata?.sessionId || null;
+  }
+  if (!Object.prototype.hasOwnProperty.call(normalized, 'session')) {
+    normalized.session = candidate.session || candidate.sessionMetadata?.session || null;
+  }
+  if (!Object.prototype.hasOwnProperty.call(normalized, 'sessionMetadata')) {
+    normalized.sessionMetadata = candidate.sessionMetadata || null;
+  }
+  if (!Object.prototype.hasOwnProperty.call(normalized, 'closedCandleConfirmed')) {
+    const explicitClosedCandle = candidate.closedCandleConfirmed
+      ?? candidate.hasClosedCandle
+      ?? candidate.closedCandle
+      ?? candidate.confirmation?.closedCandle
+      ?? candidate.candleConfirmation?.closedCandle
+      ?? candidate.bar?.closed;
+    if (explicitClosedCandle !== undefined) {
+      normalized.closedCandleConfirmed = explicitClosedCandle;
+    }
+  }
+  if (!Object.prototype.hasOwnProperty.call(normalized, 'latestCandleClosed')) {
+    const explicitLatestCandleClosed = candidate.latestCandleClosed
+      ?? candidate.closedCandleConfirmed
+      ?? candidate.hasClosedCandle
+      ?? candidate.closedCandle
+      ?? candidate.confirmation?.closedCandle
+      ?? candidate.candleConfirmation?.closedCandle
+      ?? candidate.bar?.closed;
+    if (explicitLatestCandleClosed !== undefined) {
+      normalized.latestCandleClosed = explicitLatestCandleClosed;
+    }
+  }
+  if (!Object.prototype.hasOwnProperty.call(normalized, 'twoMinuteConfirmation')) {
+    const explicitTwoMinute = candidate.twoMinuteConfirmation
+      ?? candidate.twoMinuteConfirmed
+      ?? candidate.confirmation?.twoMinuteConfirmed
+      ?? candidate.confirmation?.twoMinuteConfirmation
+      ?? candidate.timeframeAgreement?.confirmed;
+    if (explicitTwoMinute !== undefined) {
+      normalized.twoMinuteConfirmation = explicitTwoMinute;
+    }
+  }
+  if (!Object.prototype.hasOwnProperty.call(normalized, 'emaPullbackConfirmation')) {
+    const explicitEmaPullback = candidate.emaPullbackConfirmation
+      ?? candidate.emaReclaimConfirmed
+      ?? candidate.pullbackReclaimConfirmed
+      ?? candidate.reclaimConfirmed
+      ?? candidate.confirmation?.emaPullbackConfirmed
+      ?? candidate.confirmation?.emaReclaimConfirmed
+      ?? candidate.confirmation?.pullbackReclaimConfirmed
+      ?? candidate.confirmation?.reclaimConfirmed;
+    if (explicitEmaPullback !== undefined) {
+      normalized.emaPullbackConfirmation = explicitEmaPullback;
+    }
+  }
+  if (!Object.prototype.hasOwnProperty.call(normalized, 'vwapReclaimConfirmation')) {
+    const explicitVwapReclaim = candidate.vwapReclaimConfirmation
+      ?? candidate.vwapReclaimConfirmed
+      ?? candidate.reclaimConfirmed
+      ?? candidate.confirmation?.vwapReclaimConfirmed
+      ?? candidate.confirmation?.reclaimConfirmed
+      ?? candidate.vwapContext?.reclaimConfirmed;
+    if (explicitVwapReclaim !== undefined) {
+      normalized.vwapReclaimConfirmation = explicitVwapReclaim;
+    }
+  }
+  if (!Object.prototype.hasOwnProperty.call(normalized, 'volumeConfirmation')) {
+    const explicitVolume = candidate.volumeConfirmation
+      ?? candidate.volumeConfirmed
+      ?? candidate.volumeExpansionConfirmed
+      ?? candidate.confirmation?.volumeConfirmed
+      ?? candidate.volumeContext?.confirmed
+      ?? candidate.volumeContext?.expansionConfirmed;
+    if (explicitVolume !== undefined) {
+      normalized.volumeConfirmation = explicitVolume;
+    }
+  }
+  if (!Object.prototype.hasOwnProperty.call(normalized, 'confidence')) {
+    normalized.confidence = candidate.confidence ?? null;
+  }
+  if (!Object.prototype.hasOwnProperty.call(normalized, 'nextMoveBias')) {
+    normalized.nextMoveBias = candidate.nextMoveBias || candidate.next_move_bias || direction;
+  }
+  if (!Object.prototype.hasOwnProperty.call(normalized, 'root') && root) {
+    normalized.root = root;
+  }
+  if (!Object.prototype.hasOwnProperty.call(normalized, 'symbol') && root) {
+    normalized.symbol = root;
+  }
+  if (!Object.prototype.hasOwnProperty.call(normalized, 'strategyId')) {
+    normalized.strategyId = strategyId;
+  }
+  if (!Object.prototype.hasOwnProperty.call(normalized, 'direction') && direction) {
+    normalized.direction = direction;
+  }
+  if (!Object.prototype.hasOwnProperty.call(normalized, 'signalTimestamp') && signalTimestamp) {
+    normalized.signalTimestamp = signalTimestamp;
+  }
+  if (!Object.prototype.hasOwnProperty.call(normalized, 'candleTimestamp')) {
+    normalized.candleTimestamp = candidate.candleTimestamp || candidate.barTimestamp || signalTimestamp;
+  }
+  if (!Object.prototype.hasOwnProperty.call(normalized, 'timestamp')) {
+    normalized.timestamp = candidate.timestamp || signalTimestamp;
+  }
+  if (!Object.prototype.hasOwnProperty.call(normalized, 'createdAt')) {
+    normalized.createdAt = candidate.createdAt || signalTimestamp;
+  }
+  if (!Object.prototype.hasOwnProperty.call(normalized, 'quantity')) {
+    normalized.quantity = 1;
+  }
+  if (!Object.prototype.hasOwnProperty.call(normalized, 'orderType')) {
+    normalized.orderType = safeUpper(candidate.orderType || candidate.entryOrderType || 'MKT');
+  }
+  if (!Object.prototype.hasOwnProperty.call(normalized, 'limitPrice')) {
+    normalized.limitPrice = safeNumber(candidate.limitPrice ?? candidate.entryLimitPrice);
+  }
+  if (!Object.prototype.hasOwnProperty.call(normalized, 'stopLossPrice')) {
+    normalized.stopLossPrice = safeNumber(candidate.stopLossPrice ?? candidate.stopLoss ?? candidate.stop);
+  }
+  if (!Object.prototype.hasOwnProperty.call(normalized, 'takeProfitPrice')) {
+    normalized.takeProfitPrice = safeNumber(candidate.takeProfitPrice ?? candidate.takeProfit ?? candidate.takeProfit1);
+  }
+
+  return normalized;
 }
 
 function sanitizeOrderPlan(orderPlan, accountMasked = null) {
@@ -170,20 +341,27 @@ function createIbPaperExecutionOrchestratorService(options = {}) {
   const reconciliation = options.reconciliationService
     || reconciliationModule.createIbPaperBrokerReconciliationService({ adapter, intentService });
   const statusCacheTtlMs = Number(options.statusCacheTtlMs || 1_000);
+  const accountSummaryRefreshTimeoutMs = Number.isFinite(Number(options.accountSummaryRefreshTimeoutMs))
+    ? Math.max(1, Number(options.accountSummaryRefreshTimeoutMs))
+    : DEFAULT_ACCOUNT_SUMMARY_REFRESH_TIMEOUT_MS;
   let statusCache = null;
   let statusInflight = null;
 
-	  function selectCandidate(candidateId = null) {
-	    const queue = scanner.getCandidates();
-	    const rows = Array.isArray(queue.candidates) ? queue.candidates : [];
-	    const requestedId = safeString(candidateId);
-	    const candidate = requestedId
-	      ? rows.find((row) => safeString(row.candidateId || row.id || row.eventId) === requestedId)
-	      : rows[0];
-	    return candidate
-	      ? { candidate: normalizeCandidate(candidate), source: 'futures_candidate_queue' }
-	      : { candidate: null, source: requestedId ? 'candidate_id_not_found' : 'none' };
-	  }
+  function selectCandidate(candidateId = null, candidateInput = null) {
+    if (candidateInput && typeof candidateInput === 'object') {
+      return { candidate: normalizeCandidate(candidateInput), source: 'claimed_candidate' };
+    }
+    const queue = scanner.getCandidates();
+    const rows = Array.isArray(queue.candidates) ? queue.candidates : [];
+    const selectableRows = rows.filter(isSelectableQueueCandidate);
+    const requestedId = safeString(candidateId);
+    const candidate = requestedId
+      ? selectableRows.find((row) => safeString(row.candidateId || row.id || row.eventId) === requestedId)
+      : selectableRows[0];
+    return candidate
+      ? { candidate: normalizeCandidate(candidate), source: 'futures_candidate_queue' }
+      : { candidate: null, source: requestedId ? 'candidate_id_not_found' : 'none' };
+  }
 
   async function resolveContract(root) {
     if (!root) return { ok: false, error: 'root_missing' };
@@ -202,28 +380,67 @@ function createIbPaperExecutionOrchestratorService(options = {}) {
   }
 
   function readRuntimeAccountSummary(now = new Date()) {
+    const limits = configService.getPilotLimits();
+    let adapterSummary = null;
     if (typeof adapter.getAccountSummary === 'function') {
       const summary = adapter.getAccountSummary();
-      if (summary && typeof summary === 'object') return withCacheAge(summary, now);
+      if (summary && typeof summary === 'object') adapterSummary = summary;
     }
+    let cachedSummary = null;
     if (typeof accountSummaryService.getCachedSummary === 'function') {
-      return withCacheAge(accountSummaryService.getCachedSummary(), now);
+      cachedSummary = accountSummaryService.getCachedSummary();
     }
-    return null;
+    return mergeRuntimeAccountSummary(adapterSummary, cachedSummary, {
+      now,
+      maxAgeMs: limits.maxAccountSummaryAgeMs,
+    });
   }
 
   async function readFreshRuntimeAccountSummary(adapterStatus = {}, now = new Date()) {
     let summary = readRuntimeAccountSummary(now);
     const limits = configService.getPilotLimits();
     const ageMs = safeNumber(summary?.cacheAgeMs);
-    const stale = !summary || summary.ok !== true || ageMs == null || ageMs > limits.maxAccountSummaryAgeMs;
+    const stale = !summary || summary.ok !== true || summary.stale === true || ageMs == null || ageMs > limits.maxAccountSummaryAgeMs;
     const ready = adapterStatus.ready === true || adapterStatus.connectionState === 'READY';
     if (stale && ready && typeof adapter.refreshAccountSummary === 'function') {
+      let timeoutHandle = null;
       try {
-        const refreshed = await adapter.refreshAccountSummary();
+        const timeoutResult = { ok: false, timeout: true, blocker: 'runtime_account_summary_refresh_timeout' };
+        const timeoutPromise = new Promise((resolve) => {
+          timeoutHandle = setTimeout(() => resolve(timeoutResult), accountSummaryRefreshTimeoutMs);
+          if (typeof timeoutHandle.unref === 'function') timeoutHandle.unref();
+        });
+        const refreshed = await Promise.race([adapter.refreshAccountSummary(), timeoutPromise]);
+        if (timeoutHandle) {
+          clearTimeout(timeoutHandle);
+          timeoutHandle = null;
+        }
+        if (refreshed?.timeout === true) {
+          summary = withCacheAge(summary, now);
+          if (summary && typeof summary === 'object') {
+            summary = {
+              ...summary,
+              stale: true,
+              degraded: true,
+              degradedReason: 'runtime_account_summary_refresh_timeout_returning_cache',
+            };
+          } else {
+            summary = buildBlockedAccountSummary('runtime_account_summary_refresh_timeout');
+          }
+          return summary;
+        }
         summary = withCacheAge(refreshed, now);
       } catch (_) {
+        if (timeoutHandle) clearTimeout(timeoutHandle);
         summary = withCacheAge(summary, now);
+        if (summary && typeof summary === 'object') {
+          summary = {
+            ...summary,
+            stale: true,
+            degraded: true,
+            degradedReason: 'runtime_account_summary_refresh_failed_returning_cache',
+          };
+        }
       }
     }
     return summary;
@@ -351,6 +568,7 @@ function createIbPaperExecutionOrchestratorService(options = {}) {
       const statusNow = new Date();
 	    const runtimeAccountSummary = await readFreshRuntimeAccountSummary(adapterStatus, statusNow);
     const accountSummary = runtimeAccountSummary || buildBlockedAccountSummary();
+    const accountOk = accountSummary?.ok === true;
     const verification = adapter.verifyPaperAccount(accountSummary?.account?.accountIdMasked || null);
     const rec = adapterStatus.ready === true || adapterStatus.connectionState === 'READY'
       ? await reconcileRuntime({ force: false })
@@ -396,8 +614,12 @@ function createIbPaperExecutionOrchestratorService(options = {}) {
       runtimeLifecycle: adapterStatus.runtimeLifecycle || runtimeReadiness.runtimeLifecycle || null,
       runtimeLifecycleState: adapterStatus.runtimeLifecycleState || runtimeReadiness.runtimeLifecycleState || null,
       account: {
-        ok: accountSummary?.ok === true,
+        ok: accountOk,
         blocker: accountSummary?.blocker || verification.blocker || null,
+        stale: accountSummary?.stale === true,
+        degraded: accountOk !== true || accountSummary?.degraded === true || accountSummary?.stale === true,
+        degradedReason: accountSummary?.degradedReason
+          || (accountOk !== true ? (accountSummary?.blocker || verification.blocker || 'account_summary_unavailable') : null),
         accountIdMasked: accountSummary?.account?.accountIdMasked || verification.accountIdMasked || null,
         classification: accountSummary?.account?.classification || verification.classification || null,
         currency: accountSummary?.account?.currency || null,
@@ -407,11 +629,12 @@ function createIbPaperExecutionOrchestratorService(options = {}) {
         buyingPower: accountSummary?.account?.buyingPower ?? null,
         realizedPnl: accountSummary?.account?.realizedPnl ?? null,
         unrealizedPnl: accountSummary?.account?.unrealizedPnl ?? null,
+        dailyPnl: accountSummary?.account?.dailyPnl ?? null,
         cacheAgeMs: accountSummary?.cacheAgeMs ?? ageMsFromGeneratedAt(accountSummary?.generatedAt, statusNow),
 	        generatedAt: accountSummary?.generatedAt || null,
 	      },
-	      paperAccountVerified: verification.ok === true && accountSummary?.ok === true,
-	      verifiedPaperAccount: verification.ok === true && accountSummary?.ok === true,
+	      paperAccountVerified: verification.ok === true && accountOk === true,
+	      verifiedPaperAccount: verification.ok === true && accountOk === true,
       liveAccountBlocked: verification.live_account_detected !== true,
       liveAccountDetected: verification.live_account_detected === true,
 	      orderSubmissionMode: flags.orderSubmissionMode,
@@ -561,9 +784,9 @@ function createIbPaperExecutionOrchestratorService(options = {}) {
 	    return { ...result, guard: guardDecision, ...SAFETY };
 	  }
 
-	  async function buildShadowExecution({ candidateId = null, now = new Date(), actualSubmit = false } = {}) {
-	    const flags = configService.getFlags();
-	    const selected = selectCandidate(candidateId);
+  async function buildShadowExecution({ candidateId = null, candidate = null, now = new Date(), actualSubmit = false } = {}) {
+    const flags = configService.getFlags();
+    const selected = selectCandidate(candidateId, candidate);
     if (!selected.candidate) {
       return {
         ok: true,
@@ -577,15 +800,15 @@ function createIbPaperExecutionOrchestratorService(options = {}) {
       };
     }
 
-    const candidate = selected.candidate;
+    const selectedCandidate = selected.candidate;
     const limits = configService.getPilotLimits();
-	    const signalTimestamp = candidate.signalTimestamp || null;
+	    const signalTimestamp = selectedCandidate.signalTimestamp || null;
 	    const ageMs = ageMsFromTimestamp(signalTimestamp, now);
     const status = await buildExecutionStatus();
-    const contractResult = await resolveContract(candidate.root);
-    const quote = quoteSource.getQuote(candidate.root, now);
+    const contractResult = await resolveContract(selectedCandidate.root);
+    const quote = quoteSource.getQuote(selectedCandidate.root, now);
     const contract = contractResult.ok ? contractResult.contract : {
-      root: candidate.root,
+      root: selectedCandidate.root,
       conId: quote?.conId || null,
       localSymbol: quote?.localSymbol || null,
       expiry: quote?.expiry || null,
@@ -596,28 +819,28 @@ function createIbPaperExecutionOrchestratorService(options = {}) {
     const adapterVerification = adapter.verifyPaperAccount(status.account.accountIdMasked || null);
     const accountMasked = status.account.accountIdMasked || adapterVerification.accountIdMasked || null;
     const idempotencyKey = intentService.buildIdempotencyKey({
-      strategyId: candidate.strategyId,
-      root: candidate.root,
+      strategyId: selectedCandidate.strategyId,
+      root: selectedCandidate.root,
       conId: contract.conId,
-      direction: candidate.direction,
-      candidateId: candidate.candidateId,
+      direction: selectedCandidate.direction,
+      candidateId: selectedCandidate.candidateId,
       signalTimestamp,
       accountIdMasked: accountMasked,
       environment: 'paper',
     });
-    const executionId = buildExecutionId(idempotencyKey || `${candidate.strategyId}:${candidate.candidateId}:${signalTimestamp}`);
+    const executionId = buildExecutionId(idempotencyKey || `${selectedCandidate.strategyId}:${selectedCandidate.candidateId}:${signalTimestamp}`);
     const duplicate = idempotencyKey ? intentService.getIntent(idempotencyKey) : null;
 		    const executionAllowlist = typeof strategyRegistry.canExecuteStrategy === 'function'
-		      ? strategyRegistry.canExecuteStrategy(candidate.strategyId)
-		      : { allowed: false, blockedReason: 'strategy_registry_execution_allowlist_unavailable', strategyId: candidate.strategyId, source: 'strategy_registry_execution_allowlist' };
-	    const session = futuresMarketHoursService.getCmeEquityIndexFuturesSessionState(now);
+		      ? strategyRegistry.canExecuteStrategy(selectedCandidate.strategyId)
+		      : { allowed: false, blockedReason: 'strategy_registry_execution_allowlist_unavailable', strategyId: selectedCandidate.strategyId, source: 'strategy_registry_execution_allowlist' };
+		    const session = futuresMarketHoursService.getCmeEquityIndexFuturesSessionState(now);
 	    // Canonical Signal → Execution Readiness Engine → Entry Contract (policy).
 	    // Beslutet kommer från motorn; objektet behåller dagens fältnamn så att
 	    // guard, execution-adapter och API-svar är oförändrade.
-	    const entryContract = executionRouter.routeExecutionReadiness({
-	      strategyId: candidate.strategyId,
-	      candidate,
-	      now,
+		    const entryContract = executionRouter.routeExecutionReadiness({
+		      strategyId: selectedCandidate.strategyId,
+		      candidate: selectedCandidate,
+		      now,
 	      marketContext: {
 	        marketType: 'futures',
 	        session: session.sessionId || null,
@@ -629,10 +852,10 @@ function createIbPaperExecutionOrchestratorService(options = {}) {
 	      ? status.reconciliation
 	      : reconciliation.getCachedReconciliation();
     const brokerRisk = brokerRiskService.evaluateBrokerRisk({
-      root: candidate.root,
-      quantity: candidate.quantity,
-      orderType: candidate.orderType,
-      stopLossPrice: candidate.stopLossPrice,
+      root: selectedCandidate.root,
+      quantity: selectedCandidate.quantity,
+      orderType: selectedCandidate.orderType,
+      stopLossPrice: selectedCandidate.stopLossPrice,
       quote,
       openOrders: rec.openOrders || [],
       positions: rec.positions || [],
@@ -655,12 +878,12 @@ function createIbPaperExecutionOrchestratorService(options = {}) {
       idempotencyKey,
       environment: 'paper',
       executionTarget: 'ibkr_paper',
-      strategyId: candidate.strategyId,
-      candidateId: candidate.candidateId || null,
-      root: candidate.root,
-      direction: candidate.direction,
-      quantity: candidate.quantity,
-      orderType: candidate.orderType,
+      strategyId: selectedCandidate.strategyId,
+      candidateId: selectedCandidate.candidateId || null,
+      root: selectedCandidate.root,
+      direction: selectedCandidate.direction,
+      quantity: selectedCandidate.quantity,
+      orderType: selectedCandidate.orderType,
       signalTimestamp,
       ageMs,
       maxSubmitAgeMs: limits.maxIntentAgeMs,
@@ -669,7 +892,7 @@ function createIbPaperExecutionOrchestratorService(options = {}) {
     };
 	    const guard = guardService.evaluatePaperExecutionGuard({
       intent,
-      candidate,
+      candidate: selectedCandidate,
       contract,
       quote,
       accountSummary: {
@@ -692,27 +915,27 @@ function createIbPaperExecutionOrchestratorService(options = {}) {
 	    const orderPlan = adapter.buildOrderPlan({
       executionId,
       contract,
-      side: candidate.direction,
-	      quantity: candidate.quantity,
-	      entryType: candidate.orderType,
-	      limitPrice: candidate.limitPrice,
-	      stopLossPrice: candidate.stopLossPrice,
-	      takeProfitPrice: candidate.takeProfitPrice,
+      side: selectedCandidate.direction,
+	      quantity: selectedCandidate.quantity,
+	      entryType: selectedCandidate.orderType,
+	      limitPrice: selectedCandidate.limitPrice,
+	      stopLossPrice: selectedCandidate.stopLossPrice,
+	      takeProfitPrice: selectedCandidate.takeProfitPrice,
 	      tif: 'GTC',
 	      outsideRth: true,
 	    });
 	    const reservation = guard.allowed && idempotencyKey
 	      ? executionTargetReservations.reserveExecutionTarget({
-	        candidateId: candidate.candidateId,
-	        executionTarget: 'ibkr_paper',
-	        strategyId: candidate.strategyId,
+        candidateId: selectedCandidate.candidateId,
+        executionTarget: 'ibkr_paper',
+        strategyId: selectedCandidate.strategyId,
 	        signalTimestamp,
 	        status: 'ibkr_paper_reserved',
 	        now,
 	        metadata: {
 	          executionId,
 	          idempotencyKey,
-	          root: candidate.root,
+          root: selectedCandidate.root,
 	          conId: contract.conId || null,
 	        },
 	      })
@@ -736,8 +959,8 @@ function createIbPaperExecutionOrchestratorService(options = {}) {
 	          conId: contract.conId,
 	          localSymbol: contract.localSymbol || null,
 	          signalTimestamp,
-	          orderType: candidate.orderType,
-	          quantity: candidate.quantity,
+		          orderType: selectedCandidate.orderType,
+		          quantity: selectedCandidate.quantity,
 	          executionTarget: 'ibkr_paper',
 	        },
 		      })
@@ -770,15 +993,15 @@ function createIbPaperExecutionOrchestratorService(options = {}) {
     const normalizedOrder = {
       internalExecutionId: executionId,
       idempotencyKey,
-      candidateId: candidate.candidateId || null,
-      strategyId: candidate.strategyId,
-      root: candidate.root,
+	      candidateId: selectedCandidate.candidateId || null,
+	      strategyId: selectedCandidate.strategyId,
+	      root: selectedCandidate.root,
       localSymbol: contract.localSymbol || null,
       conId: contract.conId || null,
       expiry: contract.expiry || null,
       accountMasked,
       action: orderPlan.entry.action,
-      quantity: candidate.quantity,
+	      quantity: selectedCandidate.quantity,
       orderType: orderPlan.entry.orderType,
       limitPrice: orderPlan.entry.lmtPrice ?? null,
       stopPrice: orderPlan.stopLoss.auxPrice ?? null,
@@ -794,8 +1017,8 @@ function createIbPaperExecutionOrchestratorService(options = {}) {
       source: selected.source,
       paperOnly: true,
       orderRef: adapter.buildOrderRef(executionId, 'entry'),
-	      executionTarget: 'ibkr_paper',
-		      wouldSubmit: finalGuard.allowed === true,
+		      executionTarget: 'ibkr_paper',
+			      wouldSubmit: finalGuard.allowed === true,
 		      actualSubmit: false,
 	    };
 
@@ -837,7 +1060,7 @@ function createIbPaperExecutionOrchestratorService(options = {}) {
 		      actualSubmit: submitResult?.submitted === true,
 		      blockedReason: finalGuard.blockedReason || null,
 		      blockers: finalGuard.blockers,
-      candidate,
+      candidate: selectedCandidate,
       contract,
 	      quote,
 	      accountMasked,

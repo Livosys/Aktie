@@ -549,6 +549,47 @@ function wait(ms) {
   assert.equal(service.getPaperOrderStatus(9000).status, 'submitted');
   fake.emit(EventName.orderStatus, 9000, 'Submitted', 0.5, 0.5, 23000.25, 777, 0, 23000.25);
   assert.equal(service.getPaperOrderStatus(9000).status, 'partially_filled');
+  fake.emit(EventName.orderStatus, 9000, 'Filled', 1, 0, 23000.25, 777, 0, 23000.25);
+  assert.equal(intentService.getIntent('idem-1').entryFilledOrderId, 9000);
+  assert.equal(intentService.getIntent('idem-1').entryFilledPrice, 23000.25);
+  assert.equal(intentService.getIntent('idem-1').entryAvgFillPrice, 23000.25);
+  assert.equal(intentService.getIntent('idem-1').entryLastFillPrice, 23000.25);
+  fake.emit(EventName.execDetails, 1, orderPlan.contract, {
+    execId: 'exec-entry-1',
+    orderId: 9000,
+    side: 'BOT',
+    shares: 1,
+    price: 23000.25,
+    orderRef: orderPlan.entry.orderRef,
+    time: '20260715 22:30:03',
+  });
+  assert.equal(intentService.getIntent('idem-1').entryExecId, 'exec-entry-1');
+  assert.equal(intentService.getIntent('idem-1').entrySide, 'BOT');
+  assert.equal(intentService.getIntent('idem-1').entryQuantity, 1);
+  fake.emit(EventName.commissionReport, { execId: 'exec-entry-1', commission: 1.22, currency: 'USD' });
+  assert.equal(intentService.getIntent('idem-1').entryCommission, 1.22);
+  assert.equal(intentService.getIntent('idem-1').entryCommissionCurrency, 'USD');
+  fake.emit(EventName.orderStatus, 9001, 'Filled', 1, 0, 23040, 778, 0, 23040);
+  assert.equal(intentService.getIntent('idem-1').status, 'filled');
+  assert.equal(intentService.getIntent('idem-1').filledLeg, 'takeProfit');
+  assert.equal(intentService.getIntent('idem-1').filledOrderId, 9001);
+  assert.equal(intentService.getIntent('idem-1').filledPrice, 23040);
+  fake.emit(EventName.execDetails, 2, orderPlan.contract, {
+    execId: 'exec-exit-1',
+    orderId: 9001,
+    side: 'SLD',
+    shares: 1,
+    price: 23040,
+    orderRef: orderPlan.takeProfit.orderRef,
+    time: '20260715 22:35:00',
+  });
+  assert.equal(intentService.getIntent('idem-1').filledExecId, 'exec-exit-1');
+  assert.equal(intentService.getIntent('idem-1').filledSide, 'SLD');
+  assert.equal(intentService.getIntent('idem-1').filledQuantity, 1);
+  fake.emit(EventName.commissionReport, { execId: 'exec-exit-1', commission: 1.22, currency: 'USD', realizedPNL: 79.5 });
+  assert.equal(intentService.getIntent('idem-1').filledCommission, 1.22);
+  assert.equal(intentService.getIntent('idem-1').filledCommissionCurrency, 'USD');
+  assert.equal(intentService.getIntent('idem-1').filledRealizedPNL, 79.5);
 
   const arbitraryCancel = await service.cancelPaperOrder({
     orderId: 9999,
@@ -632,6 +673,89 @@ function wait(ms) {
   });
   assert.equal(blockedCancel.ok, false);
   assert.equal(blockedCancel.blocker, 'shadow_mode_active_no_cancel');
+
+  // --- Nödstängningens '-flatten'-ben ---------------------------------------
+  // Regression: fyllningsvägen kände tidigare bara igen entry/takeProfit/stopLoss.
+  // En flatten som FYLLDES föll ur alla grenar och behöll status 'submitted' för
+  // alltid, vilket degraderade reconciliation permanent och blockerade varje ny
+  // entry. En flatten som AVBRÖTS terminaliserades däremot korrekt — det var just
+  // den asymmetrin som dolde felet.
+  // Speglar nödstängningens riktiga flöde: createIntent följt av updateStatus,
+  // vilket är vägen expectedOrderIds/orderRefs faktiskt hamnar på posten.
+  intentService.createIntent({
+    idempotencyKey: 'flatten:793356225:emergency_flatten_fill',
+    executionId: 'emergency_flatten_fill',
+    intent: {
+      executionId: 'emergency_flatten_fill',
+      idempotencyKey: 'flatten:793356225:emergency_flatten_fill',
+      orderRef: 'TOS-PAPER-emergency_flatten_fill-flatten',
+      root: 'MNQ',
+      direction: 'short',
+      executionTarget: 'ibkr_paper',
+      kind: 'emergency_flatten',
+      status: 'submit_started',
+      paperAccountIdMasked: 'DU***596',
+      expectedOrderIds: [9500],
+      orderRefs: ['TOS-PAPER-emergency_flatten_fill-flatten'],
+    },
+  });
+  intentService.updateStatus('flatten:793356225:emergency_flatten_fill', 'submitted', {
+    submittedAt: new Date().toISOString(),
+    expectedOrderIds: [9500],
+    orderRefs: ['TOS-PAPER-emergency_flatten_fill-flatten'],
+    side: 'BUY',
+    quantity: 1,
+  });
+  fake.emit(EventName.orderStatus, 9500, 'Filled', 1, 0, 28638.75, 900, 0, 28638.75);
+  const flattenFilled = intentService.getIntent('flatten:793356225:emergency_flatten_fill');
+  assert.equal(flattenFilled.status, 'filled');
+  assert.equal(flattenFilled.filledLeg, 'flatten');
+  assert.equal(flattenFilled.filledOrderId, 9500);
+  assert.equal(flattenFilled.filledPrice, 28638.75);
+
+  fake.emit(EventName.execDetails, 3, { conId: 793356225, localSymbol: 'MNQU6' }, {
+    execId: 'exec-flatten-1',
+    orderId: 9500,
+    side: 'SLD',
+    shares: 1,
+    price: 28638.75,
+    orderRef: 'TOS-PAPER-emergency_flatten_fill-flatten',
+    time: '20260731 09:11:15',
+  });
+  const flattenExec = intentService.getIntent('flatten:793356225:emergency_flatten_fill');
+  assert.equal(flattenExec.filledExecId, 'exec-flatten-1');
+  assert.equal(flattenExec.filledSide, 'SLD');
+  assert.equal(flattenExec.filledQuantity, 1);
+
+  // Avbrottsvägen ska vara oförändrad: den är ben-agnostisk och ska fortsatt ge
+  // 'cancelled' för en flatten, trots att legFromOrderRef nu returnerar 'flatten'.
+  intentService.createIntent({
+    idempotencyKey: 'flatten:793356225:emergency_flatten_cancel',
+    executionId: 'emergency_flatten_cancel',
+    intent: {
+      executionId: 'emergency_flatten_cancel',
+      idempotencyKey: 'flatten:793356225:emergency_flatten_cancel',
+      orderRef: 'TOS-PAPER-emergency_flatten_cancel-flatten',
+      root: 'MNQ',
+      direction: 'short',
+      executionTarget: 'ibkr_paper',
+      kind: 'emergency_flatten',
+      status: 'submit_started',
+      paperAccountIdMasked: 'DU***596',
+      expectedOrderIds: [9501],
+      orderRefs: ['TOS-PAPER-emergency_flatten_cancel-flatten'],
+    },
+  });
+  intentService.updateStatus('flatten:793356225:emergency_flatten_cancel', 'submitted', {
+    submittedAt: new Date().toISOString(),
+    expectedOrderIds: [9501],
+    orderRefs: ['TOS-PAPER-emergency_flatten_cancel-flatten'],
+    side: 'BUY',
+    quantity: 1,
+  });
+  fake.emit(EventName.error, new Error('Order Cancelled - reason:'), 202, 9501);
+  const flattenCancelled = intentService.getIntent('flatten:793356225:emergency_flatten_cancel');
+  assert.equal(flattenCancelled.status, 'cancelled');
 
   console.log('ibPaperExecutionAdapterService.test.js passed');
 })().catch((err) => {

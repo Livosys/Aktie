@@ -8,7 +8,8 @@ import {
 } from '../models/strategyViewModel.js';
 
 export function rootFromRow(row = {}) {
-  return String(row.root || row.symbol || row.localSymbol || row.contract?.symbol || '').trim().toUpperCase();
+  const source = row && typeof row === 'object' ? row : {};
+  return String(source.root || source.symbol || source.localSymbol || source.contract?.symbol || '').trim().toUpperCase();
 }
 
 export function orderSide(value) {

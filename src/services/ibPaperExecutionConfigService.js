@@ -92,6 +92,20 @@ function getPilotLimits() {
   };
 }
 
+// Weekend entry cutoff (fas 1). Blockerar NYA entries de sista minuterna före
+// CME:s veckostängning så att en färsk position inte tvingas bära helgens
+// ~49h gap-risk. Påverkar inte exits, TP/SL eller redan öppna positioner.
+//
+// AKTIVERAD som standard — till skillnad från execution-flaggorna, som är av
+// tills någon aktivt slår på handel. En riskgrind som defaultar av skyddar
+// ingenting. Sätt FUTURES_WEEKEND_ENTRY_CUTOFF_ENABLED=false för att stänga av.
+function getWeekendEntryCutoffConfig() {
+  return {
+    enabled: envBool('FUTURES_WEEKEND_ENTRY_CUTOFF_ENABLED', true),
+    cutoffMinutes: envInt('FUTURES_WEEKEND_ENTRY_CUTOFF_MINUTES', 90),
+  };
+}
+
 function getExecutionClientConfig() {
   return {
     dataClientId: envInt('IB_FUTURES_DATA_CLIENT_ID', 955),
@@ -181,6 +195,7 @@ module.exports = {
   KILL_SWITCH_FILE,
   getFlags,
   getPilotLimits,
+  getWeekendEntryCutoffConfig,
   getExecutionClientConfig,
   readKillSwitch,
   setPauseNewEntries,

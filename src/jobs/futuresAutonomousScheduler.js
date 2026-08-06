@@ -197,19 +197,45 @@ async function tick() {
     const scan = scanner.runScannerOnce({ now });
     const candidatesCreated = Number(scan?.scan?.candidatesCreated ?? scan?.candidatesCreated ?? 0);
 
+    // (4) CLAIM — fair scheduler lock so a candidate can be consumed once only.
+    const claim = scanner.claimCandidateForIbkrPaper({ now, claimedBy: 'futures_autonomous_scheduler' });
+    const claimedCandidate = claim?.candidate || null;
+
     // (5) CONSUMER — drives the existing approval/risk/guard/reservation/intent/adapter chain.
-    const result = await orchestrator.buildShadowExecution({ actualSubmit: true, now });
+    let result = null;
+    let executionError = null;
+    if (claimedCandidate) {
+      try {
+        result = await orchestrator.buildShadowExecution({ candidate: claimedCandidate, actualSubmit: true, now });
+      } catch (err) {
+        executionError = err;
+        result = { ok: false, status: 'ERROR', blockedReason: 'orchestrator_error', error: err && err.message ? err.message : String(err) };
+      } finally {
+        scanner.completeClaimedCandidate({
+          candidateId: claimedCandidate.candidateId || null,
+          candidate: claimedCandidate,
+          now,
+          completedBy: 'futures_autonomous_scheduler',
+          outcome: executionError ? 'error' : (result?.submitResult?.submitted === true ? 'submitted' : (result?.blockedReason || result?.status || 'completed')),
+          details: {
+            resultStatus: result?.status || null,
+            blockedReason: result?.blockedReason || null,
+            submitted: result?.submitResult?.submitted === true,
+          },
+        });
+      }
+    }
 
     // Interpret the consumer's own return values (no re-derivation of its logic).
     const blockedReason = result?.blockedReason || null;
     const submitted = result?.submitResult?.submitted === true;
 
-    if (!result?.candidate || blockedReason === 'no_strategy_candidate' || result?.status === 'READY_WAITING_FOR_SIGNAL') {
+    if (!claimedCandidate || blockedReason === 'no_strategy_candidate' || result?.status === 'READY_WAITING_FOR_SIGNAL') {
       logEvent('NO_CANDIDATE', { candidatesCreated });
     } else if (submitted) {
       logEvent('ORDER_SUBMITTED', {
-        strategyId: result?.candidate?.strategyId || null,
-        root: result?.candidate?.root || null,
+        strategyId: claimedCandidate?.strategyId || null,
+        root: claimedCandidate?.root || null,
         parentOrderId: result?.submitResult?.parentOrderId ?? null,
         orderRef: result?.normalizedOrder?.orderRef || null,
         idempotencyKey: result?.intent?.idempotencyKey || null,

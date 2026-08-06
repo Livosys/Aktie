@@ -2,6 +2,7 @@
 
 const configService = require('./ibPaperExecutionConfigService');
 const adapterModule = require('./ibFuturesDataAdapterService');
+const marketHoursService = require('./futuresMarketHoursService');
 
 const SAFETY = Object.freeze({
   mode: 'ibkr_paper',
@@ -121,6 +122,8 @@ function evaluatePaperExecutionGuard({
   const client = configService.getExecutionClientConfig();
   const limits = configService.getPilotLimits();
   const killSwitch = configService.readKillSwitch();
+  const weekendCutoff = configService.getWeekendEntryCutoffConfig();
+  const weekendWindow = marketHoursService.getWeekendEntryCutoffState(now, weekendCutoff);
   const checks = [];
   const root = normalizeRoot(intent.root || candidate.root || candidate.symbol || contract.root || quote?.root);
   const environment = String(intent.environment || 'paper').toLowerCase();
@@ -162,6 +165,14 @@ function evaluatePaperExecutionGuard({
 	  addCheck(checks, 'candidate_fresh', Number.isFinite(Number(intent.ageMs)) && Number.isFinite(Number(intent.maxSubmitAgeMs)) && intent.ageMs <= intent.maxSubmitAgeMs, 'stale_signal', { ageMs: intent.ageMs ?? null, maxSubmitAgeMs: intent.maxSubmitAgeMs ?? null });
   addCheck(checks, 'system_not_paused', killSwitch.pauseNewEntries !== true, 'pause_new_entries_active', { pauseReason: killSwitch.reason || null });
   addCheck(checks, 'session_allows_order', session?.isMarketOpen === true && session?.closedReason == null, session?.closedReason || 'session_blocked', { sessionId: session?.sessionId || null });
+  // Entry-sidan av helgskyddet: en position som öppnas strax före fredagens
+  // stängning kan inte stoppas ut på ~49h. Blockerar bara nya entries — exits,
+  // TP/SL och redan öppna positioner är orörda.
+  addCheck(checks, 'weekend_entry_cutoff_clear', !(weekendCutoff.enabled === true && weekendWindow.entryBlocked === true), 'weekend_entry_cutoff', {
+    weekendEntryCutoffEnabled: weekendCutoff.enabled === true,
+    cutoffMinutes: weekendWindow.cutoffMinutes,
+    minutesUntilWeeklyClose: weekendWindow.minutesUntilWeeklyClose,
+  });
   addCheck(checks, 'reconciliation_not_degraded', reconciliation?.degraded !== true, reconciliation?.blockedReason || 'reconciliation_degraded', { reconciliationStatus: reconciliation?.status || null });
   addCheck(checks, 'quote_not_simulated_or_delayed', quote?.simulated !== true && quote?.delayed !== true, 'quote_not_realtime_ibkr', { source: quote?.source || null });
 

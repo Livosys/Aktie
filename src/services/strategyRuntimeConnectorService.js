@@ -23,10 +23,6 @@ const CONTROL_CONFIG_FILE = path.resolve(__dirname, '../../data/config/daytradin
 const NARROW_STATE_GRAPH_DIR = path.resolve(__dirname, '../../data/signals/state-graph');
 const WINDOW_HOURS = 48;
 
-function allowEmaPaperTrades() {
-  return String(process.env.PAPER_ALLOW_EMA || 'false').toLowerCase() === 'true';
-}
-
 function nowMs() {
   return Date.now();
 }
@@ -224,8 +220,7 @@ function resolveStrategyMetadata(signal = {}, options = {}) {
 
   const runtimeStrategyId =
     exactRuntimeEntry?.strategy_id ||
-    strategyIdFromSignal(signal) ||
-    strategyIdFromKeywords(signal);
+    strategyIdFromSignal(signal);
   if (runtimeStrategyId) {
     metadata.resolvedStrategyId = runtimeStrategyId;
     metadata.resolvedStrategyName = catalog.getStrategyById(runtimeStrategyId)?.name || runtimeStrategyId;
@@ -235,7 +230,7 @@ function resolveStrategyMetadata(signal = {}, options = {}) {
     return metadata;
   }
 
-  if (allowLegacyFallback && isRealTradeCandidateSignal(signal)) {
+  if (allowLegacyFallback && !hasSpecificRuntimeSubtype(signal) && isRealTradeCandidateSignal(signal)) {
     const catalogStrategy = catalog.inferStrategyForSignal(signal);
     if (catalogStrategy?.id) {
       metadata.resolvedStrategyId = catalogStrategy.id;
@@ -408,144 +403,93 @@ function canCreateLabel(value) {
   return 'nej';
 }
 
-function runtimeEntry({
-  raw_signal,
-  strategy_id,
-  strategy_family,
-  runtime_status,
-  direction = 'UNKNOWN',
-  mapping_confidence = 'medium',
-  can_create_paper_trade = false,
-  market = 'all',
-  comment_sv,
-}) {
-  const meta = strategyMeta(strategy_id);
+function runtimeSignalsForStrategyRecord(strategy = {}) {
+  return Array.isArray(strategy.runtime_signals)
+    ? strategy.runtime_signals.filter((signal) => signal && signal.raw_signal)
+    : [];
+}
+
+function runtimeMapStatusFor(strategy = {}, signal = {}) {
+  if (signal.runtime_status) return signal.runtime_status;
+  if (strategy.active === false || DISABLED_RUNTIME_STRATEGY_IDS.has(strategy.id)) return 'disabled';
+  if (PARTIAL_RUNTIME_STRATEGY_IDS.has(strategy.id)) return 'partial';
+  return 'active';
+}
+
+function runtimeEntryFromMetadata(strategy = {}, signal = {}) {
+  const rawSignal = upper(signal.raw_signal || signal.signal_subtype);
+  if (!strategy.id || !rawSignal) return null;
+  const runtimeStatus = runtimeMapStatusFor(strategy, signal);
+  const canCreate = signal.can_create_paper_trade ?? (runtimeStatus === 'active');
+  const meta = strategyMeta(strategy.id);
   return {
-    raw_signal,
-    signal_subtype: raw_signal,
+    raw_signal: rawSignal,
+    signal_subtype: rawSignal,
+    signal_family: signal.signal_family || null,
     ...meta,
-    strategy_family,
-    runtime_status,
-    runtime_label: statusLabel(runtime_status),
-    direction,
-    mapping_confidence,
-    can_create_paper_trade,
-    can_create_paper_trade_label: canCreateLabel(can_create_paper_trade),
-    entry_rule_implemented: can_create_paper_trade === true || can_create_paper_trade === 'partial',
+    strategy_family: signal.signal_family || strategy.engines_used?.[0] || strategy.market_label || strategy.family || strategy.market_group || 'UNKNOWN',
+    runtime_status: runtimeStatus,
+    runtime_label: statusLabel(runtimeStatus),
+    direction: upper(signal.direction || strategy.direction || 'UNKNOWN'),
+    mapping_confidence: signal.mapping_confidence || 'medium',
+    can_create_paper_trade: canCreate,
+    can_create_paper_trade_label: canCreateLabel(canCreate),
+    entry_rule_implemented: canCreate === true || canCreate === 'partial',
     connected: true,
-    market,
+    market: String(signal.market || strategy.market_group || strategy.market || 'all').toLowerCase(),
     narrow_state_data: null,
-    comment_sv,
+    comment_sv: signal.comment_sv || null,
     ...SAFETY,
   };
 }
 
 function getRuntimeStrategyMap() {
-  const emaAllowed = allowEmaPaperTrades();
-  return [
-    runtimeEntry({
-      raw_signal: 'VWAP_RECLAIM_UP',
-      strategy_id: 'vwap_volume_breakout_long',
-      strategy_family: 'VWAP',
-      runtime_status: 'active',
-      direction: 'UP',
-      mapping_confidence: 'high',
-      can_create_paper_trade: true,
-      market: 'stocks',
-      comment_sv: 'Aktie/ETF-VWAP long är kopplad till paper-runtime.',
-    }),
-    runtimeEntry({
-      raw_signal: 'VWAP_REJECTION_DOWN',
-      strategy_id: 'vwap_failed_breakout_short',
-      strategy_family: 'VWAP',
-      runtime_status: 'active',
-      direction: 'DOWN',
-      mapping_confidence: 'high',
-      can_create_paper_trade: true,
-      market: 'stocks',
-      comment_sv: 'Aktie/ETF-VWAP short är kopplad till paper-runtime.',
-    }),
-    // OBS: crypto-VWAP har medvetet INGEN map-post längre (FAS C mapping-fix).
-    // De katalogkopplades tidigare till crypto_momentum_scalper trots att
-    // scalperns verifierade signal contract är REGULAR_PULLBACK + full crypto
-    // context — det gjorde scalpern till catch-all. Crypto-VWAP utan eget
-    // strategy contract blockeras nu i resolveStrategyMetadata med stabil
-    // blocked_reason_code i stället för att felattribueras.
-    runtimeEntry({
-      raw_signal: 'NARROW_WAIT',
-      strategy_id: 'narrow_breakout',
-      strategy_family: 'Narrow',
-      runtime_status: 'partial',
-      direction: 'UNKNOWN',
-      mapping_confidence: 'medium',
-      can_create_paper_trade: false,
-      comment_sv: 'NARROW_WAIT är vänteläge och ska inte skapa paper trade.',
-    }),
-    runtimeEntry({
-      raw_signal: 'NARROW_BULL_ENTRY',
-      strategy_id: 'narrow_state_expansion_long',
-      strategy_family: 'Narrow',
-      runtime_status: 'partial',
-      direction: 'UP',
-      mapping_confidence: 'medium',
-      can_create_paper_trade: 'partial',
-      comment_sv: 'Narrow kan skapa paper trade endast när befintlig signal tydligt är bull/bear entry.',
-    }),
-    runtimeEntry({
-      raw_signal: 'NARROW_BEAR_ENTRY',
-      strategy_id: 'narrow_breakout',
-      strategy_family: 'Narrow',
-      runtime_status: 'partial',
-      direction: 'DOWN',
-      mapping_confidence: 'medium',
-      can_create_paper_trade: 'partial',
-      comment_sv: 'Narrow kan skapa paper trade endast när befintlig signal tydligt är bull/bear entry.',
-    }),
-    runtimeEntry({
-      raw_signal: 'NARROW_FAKEOUT',
-      strategy_id: 'narrow_fakeout_reversal_v1',
-      strategy_family: 'Narrow',
-      runtime_status: 'active',
-      direction: 'UNKNOWN',
-      mapping_confidence: 'medium',
-      can_create_paper_trade: true,
-      comment_sv: 'Paper-only narrow fakeout reversal är kopplad till scanner/runtime för QQQ research.',
-    }),
-    runtimeEntry({
-      raw_signal: 'EMA_PULLBACK_UP',
-      strategy_id: 'ema_pullback_continuation',
-      strategy_family: 'EMA Pullback',
-      runtime_status: emaAllowed ? 'active' : 'paused',
-      direction: 'UP',
-      mapping_confidence: 'high',
-      can_create_paper_trade: emaAllowed,
-      comment_sv: emaAllowed
-        ? 'EMA är tillåten i paper-runtime eftersom PAPER_ALLOW_EMA=true.'
-        : 'EMA är pausad i paper test. Sätt PAPER_ALLOW_EMA=true om den ska tillåtas.',
-    }),
-    runtimeEntry({
-      raw_signal: 'EMA_PULLBACK_DOWN',
-      strategy_id: 'ema_pullback_continuation',
-      strategy_family: 'EMA Pullback',
-      runtime_status: emaAllowed ? 'active' : 'paused',
-      direction: 'DOWN',
-      mapping_confidence: 'high',
-      can_create_paper_trade: emaAllowed,
-      comment_sv: emaAllowed
-        ? 'EMA är tillåten i paper-runtime eftersom PAPER_ALLOW_EMA=true.'
-        : 'EMA är pausad i paper test. Sätt PAPER_ALLOW_EMA=true om den ska tillåtas.',
-    }),
-    runtimeEntry({
-      raw_signal: 'REGULAR_PULLBACK',
-      strategy_id: 'trend_continuation',
-      strategy_family: 'Pullback',
-      runtime_status: 'partial',
-      direction: 'UNKNOWN',
-      mapping_confidence: 'low',
-      can_create_paper_trade: false,
-      comment_sv: 'REGULAR_PULLBACK ses i scanner men stoppas ofta av Jaga inte/Vänta och är inte paper-entry.',
-    }),
-  ];
+  return (catalog.getCatalog().strategies || [])
+    .flatMap((strategy) => runtimeSignalsForStrategyRecord(strategy)
+      .filter((signal) => signal.routing_enabled !== false)
+      .map((signal) => runtimeEntryFromMetadata(strategy, signal)))
+    .filter(Boolean);
+}
+
+function explicitRuntimeSubtypeOf(signal = {}) {
+  return upper(
+    signal.signalSubtype ||
+    signal.signal_subtype ||
+    signal.eventType ||
+    signal.raw_signal ||
+    signal.raw_strategy ||
+    '',
+  );
+}
+
+function hasSpecificRuntimeSubtype(signal = {}) {
+  const subtype = explicitRuntimeSubtypeOf(signal);
+  return Boolean(subtype && !['UNKNOWN', 'NO_TRADE', 'WAIT', 'VÄNTA', 'MARKET_CLOSED'].includes(subtype));
+}
+
+function marketMatches(entryMarket, signalMarket) {
+  const entry = String(entryMarket || 'all').toLowerCase();
+  const signal = String(signalMarket || 'stocks').toLowerCase();
+  if (entry === 'all') return true;
+  if (entry === signal) return true;
+  if (entry === 'stocks') return signal !== 'crypto' && signal !== 'futures';
+  return false;
+}
+
+function directionMatches(entryDirection, signalDirection) {
+  const entry = upper(entryDirection || 'UNKNOWN');
+  const signal = upper(signalDirection || 'UNKNOWN');
+  if (entry === 'BOTH' || entry === 'UNKNOWN') return true;
+  if (signal === 'UNKNOWN') return entry === 'UNKNOWN' || entry === 'BOTH';
+  return entry === signal;
+}
+
+function chooseBestMapEntry(entries = [], direction = 'UNKNOWN') {
+  if (!entries.length) return null;
+  const signalDirection = upper(direction || 'UNKNOWN');
+  return entries.find((entry) => upper(entry.direction) === signalDirection)
+    || entries.find((entry) => ['UNKNOWN', 'BOTH'].includes(upper(entry.direction)))
+    || entries[0];
 }
 
 function findMapEntry(signal = {}) {
@@ -554,30 +498,24 @@ function findMapEntry(signal = {}) {
   const direction = directionOf(signal);
   const map = getRuntimeStrategyMap();
 
-  if ((raw === 'VWAP_RECLAIM_UP' || raw === 'VWAP_REJECTION_DOWN') && market === 'crypto') {
-    return map.find((entry) => entry.raw_signal === raw && entry.market === 'crypto');
-  }
-  if (raw === 'VWAP_RECLAIM_UP' || raw === 'VWAP_REJECTION_DOWN') {
-    return map.find((entry) => entry.raw_signal === raw && entry.market === 'stocks');
-  }
-  if (raw === 'NARROW_WAIT') return map.find((entry) => entry.raw_signal === 'NARROW_WAIT');
-  if (raw === 'NARROW_FAKEOUT') return map.find((entry) => entry.raw_signal === 'NARROW_FAKEOUT');
-  if (String(raw).includes('NARROW') || upper(signal.signalFamily).includes('NARROW')) {
-    if (direction === 'DOWN' || raw.includes('BEAR')) return map.find((entry) => entry.raw_signal === 'NARROW_BEAR_ENTRY');
-    if (direction === 'UP' || raw.includes('BULL')) return map.find((entry) => entry.raw_signal === 'NARROW_BULL_ENTRY');
-    return map.find((entry) => entry.raw_signal === 'NARROW_WAIT');
-  }
-  if (raw === 'EMA_PULLBACK_UP' || raw === 'EMA_PULLBACK_DOWN') {
-    return map.find((entry) => entry.raw_signal === raw);
-  }
-  if (raw === 'REGULAR_PULLBACK') return map.find((entry) => entry.raw_signal === 'REGULAR_PULLBACK');
-  return null;
+  const exact = map.filter((entry) => entry.raw_signal === raw && marketMatches(entry.market, market));
+  if (exact.length) return chooseBestMapEntry(exact, direction);
+
+  if (hasSpecificRuntimeSubtype(signal)) return null;
+
+  const family = upper(signal.signalFamily || signal.signal_family || '');
+  if (!family) return null;
+  return chooseBestMapEntry(
+    map.filter((entry) => upper(entry.signal_family) === family
+      && marketMatches(entry.market, market)
+      && directionMatches(entry.direction, direction)),
+    direction,
+  );
 }
 
 function nonPaperEntryOverrideFor(entry = null) {
   if (!entry || entry.can_create_paper_trade !== false) return null;
   const raw = upper(entry.raw_signal || entry.signal_subtype);
-  if (raw === 'EMA_PULLBACK_UP' || raw === 'EMA_PULLBACK_DOWN') return null;
   const code = raw === 'REGULAR_PULLBACK'
     ? 'setup_not_paper_entry'
     : `${raw.toLowerCase()}_not_paper_entry`;
@@ -938,67 +876,11 @@ function strategyRulesOf(strategy = {}) {
 }
 
 function runtimeRawSignalsForStrategy(strategyId) {
-  switch (strategyId) {
-    case 'vwap_momentum_long':
-    case 'vwap_volume_breakout_long':
-      return ['VWAP_RECLAIM_UP'];
-    case 'vwap_rejection_short':
-    case 'vwap_failed_breakout_short':
-      return ['VWAP_REJECTION_DOWN'];
-    case 'opening_range_breakout':
-      return ['OPENING_RANGE_BREAKOUT_UP', 'OPENING_RANGE_BREAKOUT_DOWN'];
-    case 'opening_range_fakeout':
-      return ['OPENING_RANGE_FAKEOUT_UP', 'OPENING_RANGE_FAKEOUT_DOWN'];
-    case 'opening_range_retest_long':
-      return ['OPENING_RANGE_RETEST_LONG'];
-    case 'ema_pullback_continuation':
-      return ['EMA_PULLBACK_UP', 'EMA_PULLBACK_DOWN'];
-    case 'ema_breakdown':
-      return ['EMA_BREAKDOWN_DOWN'];
-    case 'narrow_breakout':
-      return ['NARROW_BULL_ENTRY', 'NARROW_BEAR_ENTRY'];
-    case 'narrow_state_expansion_long':
-      return ['NARROW_BULL_ENTRY'];
-    case 'narrow_state_fakeout_reversal':
-    case 'narrow_fakeout_reversal_v1':
-      return ['NARROW_FAKEOUT'];
-    case 'volume_spike_momentum':
-      return ['VOLUME_SPIKE_MOMENTUM'];
-    case 'volume_spike_continuation':
-      return ['VOLUME_SPIKE_CONTINUATION'];
-    case 'pullback_to_vwap_long':
-      return ['VWAP_PULLBACK_LONG'];
-    case 'trend_exhaustion_short':
-      return ['TREND_EXHAUSTION_SHORT'];
-    case 'index_supported_momentum_long':
-      return ['INDEX_SUPPORTED_MOMENTUM_LONG'];
-    case 'mean_reversion_vwap':
-      return ['VWAP_MEAN_REVERSION'];
-    case 'trend_continuation':
-      return ['TREND_CONTINUATION_UP', 'TREND_CONTINUATION_DOWN'];
-    case 'support_bounce':
-      return ['SUPPORT_BOUNCE_LONG'];
-    case 'resistance_rejection':
-      return ['RESISTANCE_REJECTION_SHORT'];
-    case 'index_confirmed_long':
-      return ['INDEX_CONFIRMED_LONG'];
-    case 'index_confirmed_short':
-      return ['INDEX_CONFIRMED_SHORT'];
-    case 'crypto_momentum_scalper':
-      return ['CRYPTO_MOMENTUM_SCALPER'];
-    case 'low_volatility_breakout':
-      return ['LOW_VOLATILITY_BREAKOUT'];
-    case 'high_volatility_reversal':
-      return ['HIGH_VOLATILITY_REVERSAL'];
-    case 'gap_continuation':
-      return ['GAP_CONTINUATION_UP', 'GAP_CONTINUATION_DOWN'];
-    case 'gap_fade':
-      return ['GAP_FADE_UP', 'GAP_FADE_DOWN'];
-    case 'news_volatility_watch':
-      return ['NEWS_VOLATILITY_WATCH'];
-    default:
-      return [];
-  }
+  const strategy = catalog.getStrategyById(strategyId);
+  return [...new Set(runtimeSignalsForStrategyRecord(strategy)
+    .filter((signal) => signal.profile_signal !== false)
+    .map((signal) => upper(signal.raw_signal || signal.signal_subtype))
+    .filter(Boolean))];
 }
 
 function requiredDataForStrategy(strategy = {}) {
@@ -1200,77 +1082,6 @@ function strategyIdFromSignal(signal = {}) {
   const strategies = catalog.getCatalog().strategies || [];
   const byName = strategies.find((strategy) => String(strategy.name || '').toLowerCase() === rawStrategy.toLowerCase());
   return byName?.id || null;
-}
-
-function strategyIdFromKeywords(signal = {}) {
-  const rawSignal = upper(rawSignalOf(signal));
-  const signalSubtype = upper(signal.signalSubtype || signal.signal_subtype || '');
-  const signalFamily = upper(signal.signalFamily || '');
-  const eventType = upper(signal.eventType || '');
-  const direction = directionOf(signal);
-  const market = marketOf(signal);
-  const symbol = String(signal.symbol || '').toUpperCase();
-  const raw = (market === 'crypto' || symbol.endsWith('USDT'))
-    ? [rawSignal, signalSubtype, eventType].filter(Boolean).join(' ')
-    : [rawSignal, signalFamily, signalSubtype, eventType].filter(Boolean).join(' ');
-
-  if (raw.includes('VWAP')) {
-    if (market === 'crypto' || symbol.endsWith('USDT')) {
-      if (rawSignal === 'VWAP_REJECTION_DOWN' || signalSubtype === 'VWAP_REJECTION_DOWN') {
-        return 'vwap_failed_breakout_short';
-      }
-      if (rawSignal === 'VWAP_RECLAIM_UP' || signalSubtype === 'VWAP_RECLAIM_UP') {
-        return 'vwap_volume_breakout_long';
-      }
-      if (raw.includes('RECLAIM') || raw.includes('BREAKOUT') || raw.includes('MOMENTUM')) {
-        return 'vwap_volume_breakout_long';
-      }
-      if (raw.includes('REJECTION') || raw.includes('FAIL')) {
-        return 'vwap_failed_breakout_short';
-      }
-    }
-    if (raw.includes('MEAN_REVERSION') || raw.includes('REVERSION')) return 'mean_reversion_vwap';
-    if (raw.includes('PULLBACK')) return 'pullback_to_vwap_long';
-    if (raw.includes('REJECTION') || raw.includes('FAIL')) return 'vwap_rejection_short';
-    if (raw.includes('MOMENTUM') || raw.includes('BREAKOUT') || raw.includes('RECLAIM')) {
-      return direction === 'DOWN' ? 'vwap_rejection_short' : 'vwap_momentum_long';
-    }
-  }
-
-  if (market === 'crypto' || symbol.endsWith('USDT')) {
-    if (raw.includes('FAST_MOMENTUM')) return 'crypto_fast_momentum';
-    // FAS C: crypto_momentum_scalper endast vid uttrycklig contract-match —
-    // aldrig som generisk catch-all för omatchade crypto-signaler.
-    if (raw.includes('MOMENTUM_SCALPER') || raw.includes('CRYPTO_MOMENTUM')) return 'crypto_momentum_scalper';
-    return null;
-  }
-
-  if (raw.includes('VOLUME_SPIKE')) {
-    return raw.includes('CONTINUATION') ? 'volume_spike_continuation' : 'volume_spike_momentum';
-  }
-  if (raw.includes('EMA')) {
-    return raw.includes('BREAKDOWN') || direction === 'DOWN'
-      ? 'ema_breakdown'
-      : 'ema_pullback_continuation';
-  }
-  if (raw.includes('OPENING_RANGE')) {
-    if (raw.includes('RETEST')) return 'opening_range_retest_long';
-    if (raw.includes('FAKEOUT') || raw.includes('FAIL')) return 'opening_range_fakeout';
-    return 'opening_range_breakout';
-  }
-  if (raw.includes('INDEX')) {
-    if (raw.includes('SUPPORTED') || raw.includes('LONG') || direction === 'UP') return 'index_supported_momentum_long';
-    if (raw.includes('SHORT') || direction === 'DOWN') return 'index_confirmed_short';
-    return direction === 'UP' ? 'index_confirmed_long' : 'index_confirmed_short';
-  }
-  if (raw.includes('NEWS')) return 'news_volatility_watch';
-  if (raw.includes('GAP')) return raw.includes('FADE') || direction === 'DOWN' ? 'gap_fade' : 'gap_continuation';
-  if (raw.includes('SUPPORT')) return 'support_bounce';
-  if (raw.includes('RESISTANCE')) return 'resistance_rejection';
-  if (raw.includes('VOLATILITY')) return raw.includes('HIGH') || raw.includes('REVERSAL') ? 'high_volatility_reversal' : 'low_volatility_breakout';
-  if (raw.includes('TREND')) return raw.includes('EXHAUST') || raw.includes('WEAK') ? 'trend_exhaustion_short' : 'trend_continuation';
-  if (raw.includes('BREAKOUT')) return 'low_volatility_breakout';
-  return null;
 }
 
 function baseRuntimeForStrategy(strategyId, savedConfig = {}) {

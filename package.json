@@ -10,7 +10,8 @@
     "data:backfill": "node scripts/backfillAlpaca.js",
     "history:scan": "node scripts/runHistoricalScan.js",
     "history:analyze": "node scripts/analyzeSignalOutcomes.js",
-    "memory:backfill": "node scripts/backfillSignalMemory.js"
+    "memory:backfill": "node scripts/backfillSignalMemory.js",
+    "release:verify": "node scripts/verifyProductionRelease.js"
   },
   "dependencies": {
     "@stoqey/ib": "1.5.6",

@@ -154,6 +154,38 @@ function inferMarketRegimeTags(strategy = {}) {
   return [...tags];
 }
 
+function normalizeRuntimeSignal(entry = {}) {
+  const source = typeof entry === 'string' ? { raw_signal: entry } : (entry || {});
+  const raw = safeString(source.raw_signal || source.signal_subtype || source.signalSubtype || source.subtype);
+  if (!raw) return null;
+  const route = source.routing_enabled ?? source.routingEnabled ?? source.route_to_strategy;
+  const profile = source.profile_signal ?? source.profileSignal ?? source.include_in_profile;
+  const entryCapable = source.entry_capable ?? source.entryCapable;
+  return {
+    raw_signal: raw.toUpperCase(),
+    signal_subtype: raw.toUpperCase(),
+    signal_family: safeString(source.signal_family || source.signalFamily),
+    direction: (safeString(source.direction) || 'UNKNOWN').toUpperCase(),
+    market: safeString(source.market),
+    runtime_status: safeString(source.runtime_status || source.runtimeStatus),
+    mapping_confidence: (safeString(source.mapping_confidence || source.mappingConfidence) || 'medium').toLowerCase(),
+    can_create_paper_trade: source.can_create_paper_trade ?? source.canCreatePaperTrade ?? true,
+    routing_enabled: route == null ? true : route !== false,
+    profile_signal: profile == null ? true : profile !== false,
+    entry_capable: entryCapable == null ? true : entryCapable !== false,
+    comment_sv: safeString(source.comment_sv || source.commentSv),
+  };
+}
+
+function normalizeRuntimeSignals(value) {
+  if (!Array.isArray(value)) return [];
+  return value.map(normalizeRuntimeSignal).filter(Boolean);
+}
+
+function runtimeSignal(raw_signal, options = {}) {
+  return normalizeRuntimeSignal({ ...options, raw_signal });
+}
+
 function normalizeStrategyRecord(strategy = {}) {
   const source = normalizeSource(strategy.source, 'internal');
   const enabled = strategy.enabled !== false && strategy.active !== false;
@@ -194,6 +226,7 @@ function normalizeStrategyRecord(strategy = {}) {
     exitRules,
     allowedTimeframes,
     marketRegimeTags: inferMarketRegimeTags(strategy),
+    runtime_signals: normalizeRuntimeSignals(strategy.runtime_signals || strategy.runtimeSignals),
     supportsScanner: SCANNER_EMITTER_STRATEGY_IDS.has(strategy.id),
     supportsReplay: true,
     supportsBatch: true,
@@ -241,6 +274,7 @@ function strategy({
   optional_indicators,
   exit_rules,
   risk_notes,
+  runtime_signals,
 }) {
   const marketGroup = market_group || market || 'all';
   const stopLoss = default_stop_loss_pct ?? default_sl;
@@ -260,6 +294,7 @@ function strategy({
     optional_indicators: Array.isArray(optional_indicators) ? optional_indicators : [],
     exit_rules: Array.isArray(exit_rules) ? exit_rules : [],
     risk_notes: risk_notes || null,
+    runtime_signals: normalizeRuntimeSignals(runtime_signals),
     description_sv: description,
     simple_explanation_sv: simple_explanation_sv || description,
     engines_used: engines_used || [],
@@ -312,6 +347,7 @@ function cloneStrategyState(record = {}) {
     allowed_timeframes: safeArray(record.allowed_timeframes || record.allowedTimeframes),
     entry_rules: safeArray(record.entry_rules || record.entryRules),
     exit_rules: safeArray(record.exit_rules || record.exitRules),
+    runtime_signals: normalizeRuntimeSignals(record.runtime_signals || record.runtimeSignals),
     updated_at: record.updated_at || null,
     created_at: record.created_at || null,
     registry_managed: record.registry_managed === true,
@@ -346,6 +382,7 @@ function applyStrategyPatch(current = {}, patch = {}) {
   if (Object.prototype.hasOwnProperty.call(patch, 'allowed_timeframes')) next.allowed_timeframes = safeArray(patch.allowed_timeframes);
   if (Object.prototype.hasOwnProperty.call(patch, 'entry_rules')) next.entry_rules = safeArray(patch.entry_rules);
   if (Object.prototype.hasOwnProperty.call(patch, 'exit_rules')) next.exit_rules = safeArray(patch.exit_rules);
+  if (Object.prototype.hasOwnProperty.call(patch, 'runtime_signals')) next.runtime_signals = normalizeRuntimeSignals(patch.runtime_signals);
   if (Object.prototype.hasOwnProperty.call(patch, 'registry_managed')) next.registry_managed = patch.registry_managed === true;
   if (patch.created_at && !next.created_at) next.created_at = patch.created_at;
   if (patch.updated_at) next.updated_at = patch.updated_at;
@@ -397,6 +434,7 @@ function buildState() {
       allowedTimeframes: safeArray(strategyRow.allowed_timeframes),
       entryRules: safeArray(strategyRow.entry_rules),
       exitRules: safeArray(strategyRow.exit_rules),
+      runtime_signals: normalizeRuntimeSignals(strategyRow.runtime_signals || strategyRow.runtimeSignals),
     }))
     .sort((a, b) => String(a.name || a.id || '').localeCompare(String(b.name || b.id || '')));
 }
@@ -614,6 +652,13 @@ const STRATEGIES = Object.freeze([
     default_holding_time: 8,
     default_timeframes: ['1m', '2m', '5m'],
     direction: 'long',
+    runtime_signals: [
+      runtimeSignal('VWAP_RECLAIM_UP', {
+        signal_family: 'VWAP_RECLAIM_REJECTION',
+        direction: 'UP',
+        routing_enabled: false,
+      }),
+    ],
   }),
   strategy({
     id: 'vwap_rejection_short',
@@ -627,6 +672,13 @@ const STRATEGIES = Object.freeze([
     default_holding_time: 10,
     default_timeframes: ['1m', '2m', '5m'],
     direction: 'short',
+    runtime_signals: [
+      runtimeSignal('VWAP_REJECTION_DOWN', {
+        signal_family: 'VWAP_RECLAIM_REJECTION',
+        direction: 'DOWN',
+        routing_enabled: false,
+      }),
+    ],
   }),
   strategy({
     id: 'opening_range_breakout',
@@ -639,6 +691,10 @@ const STRATEGIES = Object.freeze([
     default_tp: 1.8,
     default_holding_time: 25,
     default_timeframes: ['1m', '5m', '15m'],
+    runtime_signals: [
+      runtimeSignal('OPENING_RANGE_BREAKOUT_UP', { signal_family: 'OPENING_RANGE', direction: 'UP', market: 'stocks' }),
+      runtimeSignal('OPENING_RANGE_BREAKOUT_DOWN', { signal_family: 'OPENING_RANGE', direction: 'DOWN', market: 'stocks' }),
+    ],
   }),
   strategy({
     id: 'opening_range_fakeout',
@@ -651,6 +707,10 @@ const STRATEGIES = Object.freeze([
     default_tp: 1.4,
     default_holding_time: 15,
     default_timeframes: ['1m', '5m', '15m'],
+    runtime_signals: [
+      runtimeSignal('OPENING_RANGE_FAKEOUT_UP', { signal_family: 'OPENING_RANGE', direction: 'UP', market: 'stocks' }),
+      runtimeSignal('OPENING_RANGE_FAKEOUT_DOWN', { signal_family: 'OPENING_RANGE', direction: 'DOWN', market: 'stocks' }),
+    ],
   }),
   strategy({
     id: 'ema_pullback_continuation',
@@ -663,6 +723,15 @@ const STRATEGIES = Object.freeze([
     default_tp: 1.7,
     default_holding_time: 18,
     default_timeframes: ['2m', '5m', '15m'],
+    direction: 'long',
+    runtime_signals: [
+      runtimeSignal('EMA_PULLBACK_UP', {
+        signal_family: 'EMA_TREND_PULLBACK',
+        direction: 'UP',
+        mapping_confidence: 'high',
+        comment_sv: 'EMA long är kopplad till paper-runtime via deklarativ strategimetadata.',
+      }),
+    ],
   }),
   strategy({
     id: 'ema_breakdown',
@@ -676,6 +745,12 @@ const STRATEGIES = Object.freeze([
     default_holding_time: 14,
     default_timeframes: ['2m', '5m', '15m'],
     direction: 'short',
+    runtime_signals: [
+      runtimeSignal('EMA_BREAKDOWN_DOWN', {
+        signal_family: 'EMA_BREAKDOWN',
+        direction: 'DOWN',
+      }),
+    ],
   }),
   strategy({
     id: 'narrow_breakout',
@@ -688,6 +763,29 @@ const STRATEGIES = Object.freeze([
     default_tp: 1.8,
     default_holding_time: 12,
     default_timeframes: ['1m', '2m', '5m'],
+    runtime_signals: [
+      runtimeSignal('NARROW_BULL_ENTRY', {
+        signal_family: 'NARROW_COMPRESSION',
+        direction: 'UP',
+        routing_enabled: false,
+      }),
+      runtimeSignal('NARROW_BEAR_ENTRY', {
+        signal_family: 'NARROW_COMPRESSION',
+        direction: 'DOWN',
+        runtime_status: 'partial',
+        can_create_paper_trade: 'partial',
+        comment_sv: 'Narrow kan skapa paper trade endast när befintlig signal tydligt är bull/bear entry.',
+      }),
+      runtimeSignal('NARROW_WAIT', {
+        signal_family: 'NARROW_COMPRESSION',
+        direction: 'UNKNOWN',
+        runtime_status: 'partial',
+        can_create_paper_trade: false,
+        entry_capable: false,
+        profile_signal: false,
+        comment_sv: 'NARROW_WAIT är vänteläge och ska inte skapa paper trade.',
+      }),
+    ],
   }),
   strategy({
     id: 'volume_spike_momentum',
@@ -700,6 +798,9 @@ const STRATEGIES = Object.freeze([
     default_tp: 1.6,
     default_holding_time: 7,
     default_timeframes: ['1m', '2m', '5m'],
+    runtime_signals: [
+      runtimeSignal('VOLUME_SPIKE_MOMENTUM', { signal_family: 'VOLUME_SPIKE', direction: 'UNKNOWN' }),
+    ],
   }),
   strategy({
     id: 'vwap_volume_breakout_long',
@@ -718,6 +819,17 @@ const STRATEGIES = Object.freeze([
     confidence_threshold: 65,
     default_timeframes: ['1m', '2m', '5m'],
     is_new: true,
+    runtime_signals: [
+      runtimeSignal('VWAP_RECLAIM_UP', {
+        signal_family: 'VWAP_RECLAIM_REJECTION',
+        direction: 'UP',
+        market: 'stocks',
+        runtime_status: 'active',
+        mapping_confidence: 'high',
+        can_create_paper_trade: true,
+        comment_sv: 'Aktie/ETF-VWAP long är kopplad till paper-runtime.',
+      }),
+    ],
   }),
   strategy({
     id: 'vwap_failed_breakout_short',
@@ -736,6 +848,17 @@ const STRATEGIES = Object.freeze([
     confidence_threshold: 65,
     default_timeframes: ['1m', '2m', '5m'],
     is_new: true,
+    runtime_signals: [
+      runtimeSignal('VWAP_REJECTION_DOWN', {
+        signal_family: 'VWAP_RECLAIM_REJECTION',
+        direction: 'DOWN',
+        market: 'stocks',
+        runtime_status: 'active',
+        mapping_confidence: 'high',
+        can_create_paper_trade: true,
+        comment_sv: 'Aktie/ETF-VWAP short är kopplad till paper-runtime.',
+      }),
+    ],
   }),
   strategy({
     id: 'narrow_state_expansion_long',
@@ -754,6 +877,15 @@ const STRATEGIES = Object.freeze([
     confidence_threshold: 68,
     default_timeframes: ['1m', '2m', '5m'],
     is_new: true,
+    runtime_signals: [
+      runtimeSignal('NARROW_BULL_ENTRY', {
+        signal_family: 'NARROW_COMPRESSION',
+        direction: 'UP',
+        runtime_status: 'partial',
+        can_create_paper_trade: 'partial',
+        comment_sv: 'Narrow kan skapa paper trade endast när befintlig signal tydligt är bull/bear entry.',
+      }),
+    ],
   }),
   strategy({
     id: 'narrow_state_fakeout_reversal',
@@ -772,6 +904,13 @@ const STRATEGIES = Object.freeze([
     confidence_threshold: 66,
     default_timeframes: ['1m', '2m', '5m'],
     is_new: true,
+    runtime_signals: [
+      runtimeSignal('NARROW_FAKEOUT', {
+        signal_family: 'NARROW_COMPRESSION',
+        direction: 'UNKNOWN',
+        routing_enabled: false,
+      }),
+    ],
   }),
   // ── Narrow State-first family (v2 research strategies) ──────────────────────
   strategy({
@@ -821,6 +960,14 @@ const STRATEGIES = Object.freeze([
     confidence_threshold: 66,
     default_timeframes: ['1m', '2m', '5m'],
     is_new: true,
+    runtime_signals: [
+      runtimeSignal('NARROW_FAKEOUT', {
+        signal_family: 'NARROW_COMPRESSION',
+        direction: 'UNKNOWN',
+        runtime_status: 'active',
+        comment_sv: 'Paper-only narrow fakeout reversal är kopplad till scanner/runtime för QQQ research.',
+      }),
+    ],
   }),
   strategy({
     id: 'narrow_vwap_mean_reversion_v1',
@@ -863,6 +1010,9 @@ const STRATEGIES = Object.freeze([
     confidence_threshold: 65,
     default_timeframes: ['1m', '2m', '5m'],
     is_new: true,
+    runtime_signals: [
+      runtimeSignal('VOLUME_SPIKE_CONTINUATION', { signal_family: 'VOLUME_SPIKE', direction: 'UNKNOWN' }),
+    ],
   }),
   strategy({
     id: 'pullback_to_vwap_long',
@@ -881,6 +1031,9 @@ const STRATEGIES = Object.freeze([
     confidence_threshold: 64,
     default_timeframes: ['2m', '5m', '15m'],
     is_new: true,
+    runtime_signals: [
+      runtimeSignal('VWAP_PULLBACK_LONG', { signal_family: 'VWAP_PULLBACK', direction: 'UP' }),
+    ],
   }),
   strategy({
     id: 'trend_exhaustion_short',
@@ -898,6 +1051,9 @@ const STRATEGIES = Object.freeze([
     confidence_threshold: 67,
     default_timeframes: ['1m', '2m', '5m'],
     is_new: true,
+    runtime_signals: [
+      runtimeSignal('TREND_EXHAUSTION_SHORT', { signal_family: 'TREND_EXHAUSTION', direction: 'DOWN' }),
+    ],
   }),
   strategy({
     id: 'index_supported_momentum_long',
@@ -916,6 +1072,9 @@ const STRATEGIES = Object.freeze([
     confidence_threshold: 66,
     default_timeframes: ['1m', '2m', '5m'],
     is_new: true,
+    runtime_signals: [
+      runtimeSignal('INDEX_SUPPORTED_MOMENTUM_LONG', { signal_family: 'INDEX_MOMENTUM', direction: 'UP', market: 'stocks' }),
+    ],
   }),
   strategy({
     id: 'crypto_fast_momentum',
@@ -952,6 +1111,9 @@ const STRATEGIES = Object.freeze([
     confidence_threshold: 67,
     default_timeframes: ['1m', '5m', '15m'],
     is_new: true,
+    runtime_signals: [
+      runtimeSignal('OPENING_RANGE_RETEST_LONG', { signal_family: 'OPENING_RANGE', direction: 'UP', market: 'stocks' }),
+    ],
   }),
   strategy({
     id: 'mean_reversion_vwap',
@@ -964,6 +1126,9 @@ const STRATEGIES = Object.freeze([
     default_tp: 1.3,
     default_holding_time: 16,
     default_timeframes: ['2m', '5m', '15m'],
+    runtime_signals: [
+      runtimeSignal('VWAP_MEAN_REVERSION', { signal_family: 'VWAP_MEAN_REVERSION', direction: 'UNKNOWN' }),
+    ],
   }),
   strategy({
     id: 'trend_continuation',
@@ -976,6 +1141,19 @@ const STRATEGIES = Object.freeze([
     default_tp: 1.8,
     default_holding_time: 22,
     default_timeframes: ['5m', '15m', '30m'],
+    runtime_signals: [
+      runtimeSignal('TREND_CONTINUATION_UP', { signal_family: 'TREND_CONTINUATION', direction: 'UP' }),
+      runtimeSignal('TREND_CONTINUATION_DOWN', { signal_family: 'TREND_CONTINUATION', direction: 'DOWN' }),
+      runtimeSignal('REGULAR_PULLBACK', {
+        signal_family: 'REGULAR_PULLBACK',
+        direction: 'UNKNOWN',
+        runtime_status: 'partial',
+        mapping_confidence: 'low',
+        can_create_paper_trade: false,
+        profile_signal: false,
+        comment_sv: 'REGULAR_PULLBACK ses i scanner men stoppas ofta av Jaga inte/Vänta och är inte paper-entry.',
+      }),
+    ],
   }),
   strategy({
     id: 'support_bounce',
@@ -988,6 +1166,9 @@ const STRATEGIES = Object.freeze([
     default_holding_time: 18,
     default_timeframes: ['2m', '5m', '15m'],
     direction: 'long',
+    runtime_signals: [
+      runtimeSignal('SUPPORT_BOUNCE_LONG', { signal_family: 'SUPPORT_RESISTANCE', direction: 'UP' }),
+    ],
   }),
   strategy({
     id: 'resistance_rejection',
@@ -1000,6 +1181,9 @@ const STRATEGIES = Object.freeze([
     default_holding_time: 18,
     default_timeframes: ['2m', '5m', '15m'],
     direction: 'short',
+    runtime_signals: [
+      runtimeSignal('RESISTANCE_REJECTION_SHORT', { signal_family: 'SUPPORT_RESISTANCE', direction: 'DOWN' }),
+    ],
   }),
   strategy({
     id: 'index_confirmed_long',
@@ -1013,6 +1197,9 @@ const STRATEGIES = Object.freeze([
     default_holding_time: 20,
     default_timeframes: ['2m', '5m', '15m'],
     direction: 'long',
+    runtime_signals: [
+      runtimeSignal('INDEX_CONFIRMED_LONG', { signal_family: 'INDEX_CONFIRMATION', direction: 'UP', market: 'stocks' }),
+    ],
   }),
   strategy({
     id: 'index_confirmed_short',
@@ -1026,6 +1213,9 @@ const STRATEGIES = Object.freeze([
     default_holding_time: 20,
     default_timeframes: ['2m', '5m', '15m'],
     direction: 'short',
+    runtime_signals: [
+      runtimeSignal('INDEX_CONFIRMED_SHORT', { signal_family: 'INDEX_CONFIRMATION', direction: 'DOWN', market: 'stocks' }),
+    ],
   }),
   strategy({
     id: 'crypto_momentum_scalper',
@@ -1038,6 +1228,13 @@ const STRATEGIES = Object.freeze([
     default_tp: 1.4,
     default_holding_time: 6,
     default_timeframes: ['1m', '2m', '5m'],
+    runtime_signals: [
+      runtimeSignal('CRYPTO_MOMENTUM_SCALPER', {
+        signal_family: 'CRYPTO_MOMENTUM',
+        direction: 'UNKNOWN',
+        market: 'crypto',
+      }),
+    ],
   }),
   strategy({
     id: 'low_volatility_breakout',
@@ -1050,6 +1247,9 @@ const STRATEGIES = Object.freeze([
     default_tp: 1.9,
     default_holding_time: 16,
     default_timeframes: ['2m', '5m', '15m'],
+    runtime_signals: [
+      runtimeSignal('LOW_VOLATILITY_BREAKOUT', { signal_family: 'VOLATILITY_BREAKOUT', direction: 'UNKNOWN' }),
+    ],
   }),
   strategy({
     id: 'high_volatility_reversal',
@@ -1061,6 +1261,9 @@ const STRATEGIES = Object.freeze([
     default_tp: 1.25,
     default_holding_time: 10,
     default_timeframes: ['1m', '2m', '5m'],
+    runtime_signals: [
+      runtimeSignal('HIGH_VOLATILITY_REVERSAL', { signal_family: 'VOLATILITY_REVERSAL', direction: 'UNKNOWN' }),
+    ],
   }),
   strategy({
     id: 'gap_continuation',
@@ -1073,6 +1276,10 @@ const STRATEGIES = Object.freeze([
     default_tp: 1.7,
     default_holding_time: 30,
     default_timeframes: ['5m', '15m', '30m'],
+    runtime_signals: [
+      runtimeSignal('GAP_CONTINUATION_UP', { signal_family: 'GAP', direction: 'UP', market: 'stocks' }),
+      runtimeSignal('GAP_CONTINUATION_DOWN', { signal_family: 'GAP', direction: 'DOWN', market: 'stocks' }),
+    ],
   }),
   strategy({
     id: 'gap_fade',
@@ -1085,6 +1292,10 @@ const STRATEGIES = Object.freeze([
     default_tp: 1.35,
     default_holding_time: 22,
     default_timeframes: ['2m', '5m', '15m'],
+    runtime_signals: [
+      runtimeSignal('GAP_FADE_UP', { signal_family: 'GAP', direction: 'UP', market: 'stocks' }),
+      runtimeSignal('GAP_FADE_DOWN', { signal_family: 'GAP', direction: 'DOWN', market: 'stocks' }),
+    ],
   }),
   strategy({
     id: 'news_volatility_watch',
@@ -1097,6 +1308,9 @@ const STRATEGIES = Object.freeze([
     default_holding_time: 8,
     default_timeframes: ['1m', '2m', '5m'],
     active: false,
+    runtime_signals: [
+      runtimeSignal('NEWS_VOLATILITY_WATCH', { signal_family: 'NEWS_VOLATILITY', direction: 'UNKNOWN' }),
+    ],
   }),
 ]);
 

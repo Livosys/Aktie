@@ -9,7 +9,8 @@ import {
 } from '../models/strategyViewModel.js';
 
 export function positionRoot(position = {}) {
-  return String(position.root || position.symbol || position.localSymbol || '').trim().toUpperCase();
+  const row = position && typeof position === 'object' ? position : {};
+  return String(row.root || row.symbol || row.localSymbol || '').trim().toUpperCase();
 }
 
 export function stablePositionKey(position = {}, index) {

@@ -148,6 +148,22 @@ function CompactTable({ rows, columns, emptyText = 'Inga data.' }) {
   );
 }
 
+function orderIdentityKeys(row = {}) {
+  return [
+    row.orderRef,
+    row.orderId,
+    row.ibOrderId,
+    row.permId,
+    row.executionId,
+  ].filter(hasValue).map(String);
+}
+
+function mergeOrderLifecycleRows(brokerOrders = [], orderIntents = []) {
+  const seen = new Set(brokerOrders.flatMap(orderIdentityKeys));
+  const historical = orderIntents.filter((row) => !orderIdentityKeys(row).some((key) => seen.has(key)));
+  return [...brokerOrders, ...historical];
+}
+
 export default function FuturesPaperDeskPage() {
   const [searchParams, setSearchParams] = useSearchParams();
   const activeTab = normalizeTabId(searchParams.get('tab'));
@@ -192,9 +208,15 @@ export default function FuturesPaperDeskPage() {
     : (Array.isArray(executionData.brokerOrderStatuses)
       ? executionData.brokerOrderStatuses
       : (Array.isArray(reconciliation.orderStatuses) ? reconciliation.orderStatuses : []));
+  const brokerOrderIntents = Array.isArray(reconciliation.intents) ? reconciliation.intents : [];
+  const orderLifecycleRows = useMemo(
+    () => mergeOrderLifecycleRows(brokerOrders, brokerOrderIntents),
+    [brokerOrders, brokerOrderIntents],
+  );
   const hasBrokerOrderStatusSnapshot = Array.isArray(data.brokerOrderStatuses)
     || Array.isArray(executionData.brokerOrderStatuses)
     || Array.isArray(reconciliation.orderStatuses);
+  const hasOrderLifecycleSnapshot = hasBrokerOrderSnapshot || Array.isArray(reconciliation.intents);
   const legacy = data.legacyInternalSimulation || {};
   const scanner = data.scanner || {};
   const candidateQueue = data.candidateQueue || {};
@@ -637,14 +659,14 @@ export default function FuturesPaperDeskPage() {
             summary="Orderkort kopplar broker mirror, orderstatusar, kandidater och reconciliation intents tillbaka till strategin när fälten redan finns i runtime-snapshoten."
           />
           <OrderTimeline
-            orders={brokerOrders}
+            orders={orderLifecycleRows}
             orderStatuses={brokerOrderStatuses}
             strategyStore={strategyStore}
             eventStore={tradingEventStore}
             decisionStore={decisionStore}
             reconciliation={reconciliation}
             snapshotAt={data.generatedAt || executionData.generatedAt}
-            waiting={waitingForRuntime && !hasBrokerOrderSnapshot && !hasBrokerOrderStatusSnapshot}
+            waiting={waitingForRuntime && !hasOrderLifecycleSnapshot && !hasBrokerOrderStatusSnapshot}
           />
           <div style={{ marginTop: 16 }}>
             <SectionHeader eyebrow="Broker mirror detail" title="Open broker orders" summary="Råa openOrder-fält från samma frontend-snapshot. Strategikontexten ovan använder endast befintliga order-, candidate- och intentfält." />

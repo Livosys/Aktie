@@ -391,8 +391,10 @@ function createFuturesPaperLedgerService(options = {}) {
   function readPositionsState() {
     if (internalSimulationEnabled) ensureFiles();
     const raw = storage.readPositions(createDefaultPositionsState());
-    const open = safeArray(raw?.open).map((position) => toPositionView(position, Number(accountSvc.getFuturesPaperAccount().account?.fxUsdSek || futuresPaperAccountService.DEFAULT_CONFIG.fxUsdSek)));
-    const closed = safeArray(raw?.closed).map((position) => toPositionView(position, Number(accountSvc.getFuturesPaperAccount().account?.fxUsdSek || futuresPaperAccountService.DEFAULT_CONFIG.fxUsdSek)));
+    const account = accountSvc.getFuturesPaperAccount();
+    const fxUsdSek = Number(account?.account?.fxUsdSek || futuresPaperAccountService.DEFAULT_CONFIG.fxUsdSek);
+    const open = safeArray(raw?.open).map((position) => toPositionView(position, fxUsdSek));
+    const closed = safeArray(raw?.closed).map((position) => toPositionView(position, fxUsdSek));
     return {
       open,
       closed,
@@ -507,14 +509,15 @@ function createFuturesPaperLedgerService(options = {}) {
   }
 
   function getFuturesPaperPositions() {
-    const bundle = getFuturesPaperLedger({ limit: 100 });
+    const now = new Date();
+    const positions = getPositionsSummary(readPositionsState());
     return {
       ok: true,
-      generatedAt: bundle.generatedAt,
-      positions: bundle.positions,
-      openPositions: bundle.openPositions,
-      closedPositions: bundle.closedTrades,
-      market: bundle.market,
+      generatedAt: nowIso(now),
+      positions,
+      openPositions: positions.open,
+      closedPositions: positions.closed,
+      market: getMarketHoursState(now),
       ...SAFETY,
       ...legacyMetadata(),
     };

@@ -54,6 +54,10 @@ function addSourceByStrategyId(map, key, row, slot = 'source') {
   });
 }
 
+function hasStrategyListSource(row = {}) {
+  return Boolean(row.source || row.overview || row.status || row.pulse || row.performance || row.candidate);
+}
+
 function executionIdFromOrderRef(ref) {
   const text = String(ref || '');
   if (!text.startsWith('TOS-PAPER-')) return null;
@@ -265,8 +269,11 @@ export const normalizeStrategy = normalizeStrategyFromMaps;
 
 export function buildStrategyMap(maps = {}) {
   const strategies = new Map();
+  const sourceIds = Array.from(maps.sourceByStrategyId.entries())
+    .filter(([, row]) => hasStrategyListSource(row))
+    .map(([id]) => id);
   const ids = new Set([
-    ...maps.sourceByStrategyId.keys(),
+    ...sourceIds,
     ...maps.overviewByStrategyId.keys(),
     ...maps.statusByStrategyId.keys(),
     ...maps.pulseByStrategyId.keys(),

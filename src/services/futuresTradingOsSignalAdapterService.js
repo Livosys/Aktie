@@ -4,6 +4,7 @@ const crypto = require('crypto');
 
 const { getRiskProfile } = require('../markets/marketProfiles');
 const { buildFuturesSessionMetadata } = require('./futuresMarketHoursService');
+const strategyReadinessService = require('./strategyReadinessService');
 
 const SAFETY = Object.freeze({
   mode: 'paper_only',
@@ -18,6 +19,13 @@ const SAFETY = Object.freeze({
 
 const SOURCE = 'trading_os_signal_adapter';
 const DEFAULT_TIMEFRAME = '2m';
+const MICRO_FUTURES_ROOTS = new Set(['MNQ', 'MES']);
+const FUTURES_ROOT_ALIASES = Object.freeze({
+  MNQ: 'MNQ',
+  NQ: 'MNQ',
+  MES: 'MES',
+  ES: 'MES',
+});
 
 const NASDAQ_SYMBOLS = new Set([
   'QQQ',
@@ -139,6 +147,15 @@ function normalizeSymbol(symbol) {
   return String(symbol || '').trim().toUpperCase().replace(/[^A-Z0-9& ]/g, '');
 }
 
+function normalizeFuturesRoot(value) {
+  const normalized = normalizeSymbol(value);
+  if (!normalized) return null;
+  const token = normalized.split(/\s+/).find((part) => FUTURES_ROOT_ALIASES[part])
+    || Object.keys(FUTURES_ROOT_ALIASES).find((root) => normalized === root || normalized.startsWith(root));
+  const mapped = FUTURES_ROOT_ALIASES[token] || null;
+  return MICRO_FUTURES_ROOTS.has(mapped) ? mapped : null;
+}
+
 function normalizeMarket(signal = {}) {
   return safeString(signal.market)
     || safeString(signal.marketType)
@@ -217,6 +234,69 @@ function strategyIdOf(signal = {}, approval = null) {
     || null;
 }
 
+function readyForPaperStrategyRows(options = {}) {
+  if (Array.isArray(options.readyForPaperStrategies)) return options.readyForPaperStrategies.filter(Boolean);
+  try {
+    const readiness = strategyReadinessService.getStrategyReadiness();
+    return (Array.isArray(readiness?.strategies) ? readiness.strategies : [])
+      .filter((row) => row?.readiness === 'READY_FOR_PAPER');
+  } catch (_) {
+    return [];
+  }
+}
+
+function readyForPaperStrategyIds(options = {}) {
+  if (options.readyForPaperStrategyIds instanceof Set) return options.readyForPaperStrategyIds;
+  if (Array.isArray(options.readyForPaperStrategyIds)) return new Set(options.readyForPaperStrategyIds.filter(Boolean).map(String));
+  return new Set(readyForPaperStrategyRows(options).map((row) => strategyIdOf(row)).filter(Boolean));
+}
+
+function signalSubtypeOf(signal = {}) {
+  return safeString(signal.signalSubtype)
+    || safeString(signal.signal_subtype)
+    || safeString(signal.setup)
+    || safeString(signal.eventType)
+    || null;
+}
+
+function resolveReadyForPaperStrategy(signal = {}, options = {}) {
+  const explicitId = strategyIdOf(signal);
+  const readyIds = readyForPaperStrategyIds(options);
+  if (explicitId && readyIds.has(explicitId)) {
+    return { strategyId: explicitId, row: readyForPaperStrategyRows(options).find((row) => strategyIdOf(row) === explicitId) || null };
+  }
+
+  const subtype = String(signalSubtypeOf(signal) || '').trim().toUpperCase();
+  if (!subtype) return { strategyId: null, row: null };
+
+  const matches = readyForPaperStrategyRows(options).filter((row) => (
+    Array.isArray(row?.producedSubtypes)
+    && row.producedSubtypes.map((value) => String(value || '').trim().toUpperCase()).includes(subtype)
+  ));
+  if (matches.length !== 1) return { strategyId: null, row: null };
+  const strategyId = strategyIdOf(matches[0]);
+  return strategyId ? { strategyId, row: matches[0] } : { strategyId: null, row: null };
+}
+
+function explicitFuturesRoot(signal = {}) {
+  return normalizeFuturesRoot(
+    signal.futuresSymbol
+      || signal.mappedFuturesSymbol
+      || signal.futuresInstrument
+      || signal.futures_instrument
+      || signal.executionSymbol
+      || signal.execution_symbol
+      || signal.executionRoot
+      || signal.execution_root
+      || signal.instrument
+      || signal.root
+      || signal.mapping?.futuresSymbol
+      || signal.mapping?.executionSymbol
+      || signal.execution?.symbol
+      || signal.execution?.root,
+  );
+}
+
 function strategyNameOf(signal = {}, approval = null) {
   return safeString(signal.strategyName)
     || safeString(signal.strategy_name)
@@ -244,7 +324,7 @@ function dataSourceOf(signal = {}, quote = null, usedFallbackPrice = false) {
   return 'real_market_data';
 }
 
-function mapSignalToFutures(signal = {}) {
+function mapSignalToFutures(signal = {}, options = {}) {
   const originalSymbol = normalizeSymbol(signal.originalSymbol || signal.symbol || signal.ticker);
   const market = String(normalizeMarket(signal) || '').toLowerCase();
   const text = [
@@ -261,21 +341,23 @@ function mapSignalToFutures(signal = {}) {
     signal.signalSubtype,
   ].filter(Boolean).join(' ').toUpperCase();
 
-  if (originalSymbol === 'MNQ' || originalSymbol.startsWith('MNQ')) {
+  const originalFuturesRoot = normalizeFuturesRoot(originalSymbol);
+  if (originalFuturesRoot) {
     return {
       originalSymbol,
       originalMarket: normalizeMarket(signal),
-      futuresSymbol: 'MNQ',
-      mappingReason: 'signal_is_mnq',
+      futuresSymbol: originalFuturesRoot,
+      mappingReason: originalFuturesRoot === 'MNQ' ? 'signal_is_mnq' : 'signal_is_mes',
       mappingConfidence: 1,
     };
   }
-  if (originalSymbol === 'MES' || originalSymbol.startsWith('MES')) {
+  const explicitRoot = explicitFuturesRoot(signal);
+  if (explicitRoot) {
     return {
       originalSymbol,
       originalMarket: normalizeMarket(signal),
-      futuresSymbol: 'MES',
-      mappingReason: 'signal_is_mes',
+      futuresSymbol: explicitRoot,
+      mappingReason: 'explicit_futures_execution_root',
       mappingConfidence: 1,
     };
   }
@@ -295,6 +377,15 @@ function mapSignalToFutures(signal = {}) {
       futuresSymbol: 'MES',
       mappingReason: SP500_SYMBOLS.has(originalSymbol) ? 'sp500_index_or_etf_proxy' : 'sp500_market_bias',
       mappingConfidence: 0.95,
+    };
+  }
+  if (resolveReadyForPaperStrategy(signal, options).strategyId) {
+    return {
+      originalSymbol,
+      originalMarket: normalizeMarket(signal) || market || null,
+      futuresSymbol: 'MNQ',
+      mappingReason: 'ready_for_paper_default_micro_futures_root',
+      mappingConfidence: 0.68,
     };
   }
   return {
@@ -426,12 +517,27 @@ function deriveRiskFromSignal(signal = {}, { entryPrice, direction, mapping }) {
 function createFuturesTradingOsSignalAdapterService(options = {}) {
   const readSignals = typeof options.signalReader === 'function' ? options.signalReader : () => [];
   const nowFn = typeof options.now === 'function' ? options.now : () => new Date();
+  const readReadyForPaperStrategyIds = typeof options.readyForPaperStrategyIdsReader === 'function'
+    ? options.readyForPaperStrategyIdsReader
+    : readyForPaperStrategyIds;
+  const readReadyForPaperStrategies = typeof options.readyForPaperStrategiesReader === 'function'
+    ? options.readyForPaperStrategiesReader
+    : readyForPaperStrategyRows;
+
+  function readReadyForPaperContext() {
+    const readyForPaperStrategies = readReadyForPaperStrategies();
+    return {
+      readyForPaperStrategies,
+      readyForPaperStrategyIds: readReadyForPaperStrategyIds({ readyForPaperStrategies }),
+    };
+  }
 
   function adaptSignal(signal = {}, context = {}) {
     const now = context.now ? new Date(context.now) : nowFn();
     const signalTimestamp = signalTimestampOf(signal);
     const signalSessionMetadata = buildFuturesSessionMetadata(signalTimestamp);
-    const mapping = mapSignalToFutures(signal);
+    const readyContext = readReadyForPaperContext();
+    const mapping = mapSignalToFutures(signal, readyContext);
     if (!mapping.futuresSymbol) {
       return { ok: false, skipReason: 'no_safe_futures_mapping', mapping, signal, signalTimestamp, signalSessionMetadata };
     }
@@ -465,8 +571,9 @@ function createFuturesTradingOsSignalAdapterService(options = {}) {
     const createdAt = signalTimestamp || nowIso(now);
     const sessionMetadata = buildFuturesSessionMetadata(createdAt);
     const originalSignalId = signalIdOf(signal);
-    const strategyId = strategyIdOf(signal);
-    const strategyName = strategyNameOf(signal);
+    const readyStrategy = resolveReadyForPaperStrategy(signal, readyContext);
+    const strategyId = strategyIdOf(signal) || readyStrategy.strategyId;
+    const strategyName = strategyNameOf(signal) || strategyNameOf(readyStrategy.row || {});
 
     return {
       ok: true,
@@ -479,6 +586,8 @@ function createFuturesTradingOsSignalAdapterService(options = {}) {
         symbol: mapping.futuresSymbol,
         futuresSymbol: mapping.futuresSymbol,
         mappedFuturesSymbol: mapping.futuresSymbol,
+        executionSymbol: mapping.futuresSymbol,
+        futuresInstrument: mapping.futuresSymbol,
         direction,
         confidence: normalizeConfidence(signal),
         signalStatus: safeString(signal.signalStatus || signal.status) || null,
@@ -497,6 +606,7 @@ function createFuturesTradingOsSignalAdapterService(options = {}) {
         signalSource: sourceOf(signal),
         market: safeString(signal.market) || null,
         marketType: safeString(signal.marketType || signal.market) || null,
+        marketRegime: safeString(signal.marketRegime || signal.market_regime || signal.marketRegimeV2) || null,
         dataSource,
         dataFreshness: safeString(signal.dataFreshness) || null,
         priceSource: entry.entrySource,
@@ -541,6 +651,7 @@ function createFuturesTradingOsSignalAdapterService(options = {}) {
           status: signal.status || null,
           signalFamily: signal.signalFamily || null,
           signalSubtype: signal.signalSubtype || null,
+          marketRegime: signal.marketRegime || signal.market_regime || signal.marketRegimeV2 || null,
           nextMoveBias: signal.nextMoveBias || null,
           dataFreshness: signal.dataFreshness || null,
           timestamp: signalTimestamp,

@@ -71,6 +71,8 @@ export const StrategyIntelligencePanel = React.memo(function StrategyIntelligenc
           field('Signal', strategy.signal, { fallback: UNAVAILABLE, tone: statusTone(strategy.signal), format: (value) => <StatusValue value={value} /> }),
           field('Market regime', strategy.marketRegime, { fallback: UNAVAILABLE }),
           field('Current candidate', strategy.currentCandidate, { fallback: UNAVAILABLE, tone: booleanTone(strategy.currentCandidate), format: booleanLabel }),
+          field('Entry ready', strategy.entryReady, { fallback: UNAVAILABLE, tone: booleanTone(strategy.entryReady), format: booleanLabel }),
+          field('Canonical verdict', strategy.canonicalVerdict, { fallback: UNAVAILABLE, tone: statusTone(strategy.canonicalVerdict), format: (value) => <StatusValue value={value} /> }),
           field('Blocked', strategy.blocked, { fallback: UNAVAILABLE, tone: strategy.blocked === true ? 'danger' : booleanTone(strategy.blocked), format: booleanLabel }),
         ],
       },
@@ -79,6 +81,7 @@ export const StrategyIntelligencePanel = React.memo(function StrategyIntelligenc
         rows: [
           field('Entry reason', strategy.entryReason, { fallback: UNAVAILABLE }),
           field('Exit reason', strategy.exitReason, { fallback: UNAVAILABLE }),
+          field('ReasonCode', strategy.reasonCode, { fallback: UNAVAILABLE, tone: strategy.reasonCode ? 'warning' : 'neutral' }),
           field('Blocked reason', strategy.blockedReason, { fallback: UNAVAILABLE, tone: strategy.blockedReason ? 'warning' : 'neutral' }),
           field('Risk source', strategy.riskSource, { fallback: UNAVAILABLE }),
           field('Risk / reward', strategy.riskReward, { fallback: UNAVAILABLE, format: (value) => hasValue(value) ? fmtNumber(value, 2) : UNAVAILABLE }),

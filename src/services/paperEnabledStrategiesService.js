@@ -427,10 +427,18 @@ function latestCandidateByStrategyId() {
         map.set(strategyId, {
           at,
           type: row.type || null,
+          candidateId: row.candidateId || row.candidate_id || null,
           symbol: row.symbol || null,
           signalSubtype: row.signalSubtype || row.setup || null,
+          signalFamily: row.signalFamily || row.signal_family || null,
+          marketRegime: row.marketRegime || row.market_regime || row.marketRegimeV2 || null,
+          entryReady: row.entryReady ?? row.producerEntryReadiness?.entryReady ?? null,
+          producerEntryReadiness: row.producerEntryReadiness || null,
+          canonicalVerdict: row.canonicalVerdict || row.readiness?.verdict || null,
+          reasonCode: row.reasonCode || row.readiness?.reasonCode || null,
           decision: row.decision || null,
           blockedReason: row.blockedReason || row.blockedReasonCode || null,
+          blockedReasonCode: row.blockedReasonCode || null,
         });
       }
     }

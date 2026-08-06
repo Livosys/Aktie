@@ -53,7 +53,7 @@ async function fetchJson(url, options = {}) {
         ...(options.headers || {}),
       },
       body: options.body ? JSON.stringify(options.body) : undefined,
-      credentials: options.credentials || 'omit',
+      credentials: options.credentials || 'include',
       signal: controller.signal,
     });
     const data = await parseResponseBody(res);

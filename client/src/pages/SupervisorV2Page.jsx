@@ -4378,6 +4378,10 @@ export default function SupervisorV2Page() {
   }
 
   const model = useMemo(() => buildDecisionModel(resources), [resources]);
+  const safety = model.safety || null;
+  const safetyActionsAllowed = safety?.actions_allowed;
+  const safetyCanPlaceOrders = safety?.can_place_orders;
+  const safetyLiveTradingEnabled = safety?.live_trading_enabled;
   const endpointRows = useMemo(() => buildEndpointRows(resources), [resources]);
   const technicalCards = useMemo(() => buildTechnicalCards(resources, model), [resources, model]);
   const optimization = unwrap(resources.optimization);
@@ -4509,7 +4513,7 @@ export default function SupervisorV2Page() {
     {
       icon: '🔒',
       title: 'Säkerhetsläge',
-      value: tradingMode,
+      value: model.tradingMode,
       summary: safety ? 'Backend safety-status mottagen.' : 'Ingen safety-status mottagen från backend.',
       detail: `actions_allowed=${onOffLabel(safetyActionsAllowed)} · live_trading_enabled=${onOffLabel(safetyLiveTradingEnabled)}`,
       tone: safetyLiveTradingEnabled === false && safetyActionsAllowed === false ? 'good' : safety ? 'warning' : 'muted',
@@ -4610,7 +4614,7 @@ export default function SupervisorV2Page() {
             <SafetyTag />
           </div>
           <div className="sup-pill-grid sup-v2-pill-grid" style={{ display: 'grid', gap: 12, gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))' }}>
-            <div className="sup-pill sup-pill-neutral"><span>Säkerhetsläge</span><strong>{tradingMode}</strong></div>
+            <div className="sup-pill sup-pill-neutral"><span>Säkerhetsläge</span><strong>{model.tradingMode}</strong></div>
             <div className="sup-pill sup-pill-neutral"><span>Alla strategier</span><strong>{formatInt(resultSummary.totalCount, 'Ingen data ännu')}</strong></div>
             <div className="sup-pill sup-pill-good"><span>Aktiva</span><strong>{formatInt(resultSummary.activeCount, 'Ingen data ännu')}</strong></div>
             <div className="sup-pill sup-pill-neutral"><span>Tekniskt paper-kopplade</span><strong>{formatInt(resultSummary.technicalPaperCount, 'Ingen data ännu')}</strong></div>
@@ -5438,7 +5442,7 @@ export default function SupervisorV2Page() {
               points: uniqueText([
                 `Senaste TradingView: ${strategyDescriptor(model.registrySummary.latestTradingView)}`,
                 model.registrySummary.latestBlockedReason ? `Senaste blockering: ${model.registrySummary.latestBlockedReason}` : 'Ingen blockering sparad ännu.',
-                `Safety: actions_allowed=${onOffLabel(safetyActionsAllowed)} · can_place_orders=${onOffLabel(safetyCanPlaceOrders)} · live_trading_enabled=${onOffLabel(safetyLiveTradingEnabled)} · mode=${tradingMode}`,
+                `Safety: actions_allowed=${onOffLabel(safetyActionsAllowed)} · can_place_orders=${onOffLabel(safetyCanPlaceOrders)} · live_trading_enabled=${onOffLabel(safetyLiveTradingEnabled)} · mode=${model.tradingMode}`,
               ]),
             }}
           />

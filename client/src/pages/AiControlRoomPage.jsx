@@ -869,6 +869,7 @@ export default function AiControlRoomPage() {
   const replayCount = numberOrNull(sourceCounts?.replay);
   const paperCount = numberOrNull(sourceCounts?.paper);
   const autopilot = sourceData(sources, 'narrowAutopilot') || {};
+  const hasAutopilotScheduler = Boolean(autopilot.scheduler && typeof autopilot.scheduler === 'object');
   const learningBars = learning.summary?.sourceCounts
     ? [
         { label: 'Batch', value: batchCount, tone: 'purple' },

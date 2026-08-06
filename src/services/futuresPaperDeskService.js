@@ -17,6 +17,7 @@ const internalSimulationRetirement = require('./futuresInternalSimulationRetirem
 const futuresPaperStrategyPerformanceService = require('./futuresPaperStrategyPerformanceService');
 const ibPaperBrokerReconciliationService = require('./ibPaperBrokerReconciliationService');
 const futuresPaperStorageService = require('./futuresPaperStorageService');
+const canonicalExecutionRouter = require('./canonical/canonicalExecutionRouter');
 
 const SAFETY = Object.freeze({
   mode: 'paper_only',
@@ -74,6 +75,22 @@ function safeString(value) {
   if (value === null || value === undefined) return null;
   const text = String(value).trim();
   return text.length ? text : null;
+}
+
+function firstPresent(...values) {
+  for (const value of values) {
+    if (value === null || value === undefined) continue;
+    if (typeof value === 'string' && !value.trim()) continue;
+    return value;
+  }
+  return null;
+}
+
+function firstBoolean(...values) {
+  for (const value of values) {
+    if (value === true || value === false) return value;
+  }
+  return null;
 }
 
 function numberOrNull(value) {
@@ -238,6 +255,52 @@ function summarizeStrategySignal(row = {}) {
   return null;
 }
 
+function candidateStrategyId(candidate = {}) {
+  return safeString(candidate.strategyId || candidate.strategy_id || candidate.resolvedStrategyId || candidate.canonicalStrategyId);
+}
+
+function evaluateCanonicalCandidateReadiness(candidate = null, { now = new Date(), session = null } = {}) {
+  if (!candidate) return null;
+  try {
+    const routed = canonicalExecutionRouter.routeExecutionReadiness({
+      strategyId: candidateStrategyId(candidate),
+      candidate,
+      now,
+      marketContext: {
+        marketType: 'futures',
+        session: session?.sessionId || null,
+        sessionId: session?.sessionId || null,
+        isMarketOpen: session?.isMarketOpen === true,
+      },
+    });
+    return {
+      allowed: routed.allowed === true,
+      verdict: routed.readiness?.verdict || null,
+      reasonCode: routed.readiness?.reasonCode || null,
+      legacyReasonCode: routed.reasonCode || null,
+      decisionSource: routed.decisionSource || null,
+      routerVersion: routed.routerVersion || null,
+      engineVersion: routed.readiness?.engineVersion || null,
+      policyId: routed.readiness?.policyId || null,
+      evidenceGaps: routed.readiness?.evidenceGaps || [],
+      producerType: routed.readiness?.producerType || null,
+      producerFallback: routed.readiness?.producerFallback === true,
+      entryContractVersion: routed.entryContractVersion || null,
+      canonicalSignal: routed.canonicalSignal || null,
+    };
+  } catch (err) {
+    return {
+      allowed: false,
+      verdict: 'ERROR',
+      reasonCode: 'canonical_readiness_error',
+      legacyReasonCode: 'canonical_readiness_error',
+      decisionSource: 'canonical_execution_router',
+      error: err && err.message ? err.message : String(err),
+      canonicalSignal: null,
+    };
+  }
+}
+
 function summarizeDiagnosticResult(row = {}) {
   const diag = row.entryContractDiagnostics || null;
   const blocker = row.latestEntryContractBlock || row.commonEntryContractBlocker || null;
@@ -248,18 +311,30 @@ function summarizeDiagnosticResult(row = {}) {
   return row.readiness || row.technicalReadiness || null;
 }
 
+function isSelectableQueueCandidate(candidate = {}) {
+  const status = String(candidate.status || 'READY_WAITING_FOR_SIGNAL').trim().toUpperCase();
+  return status === 'READY_WAITING_FOR_SIGNAL'
+    && !candidate.claimedAt
+    && !candidate.claimedBy
+    && !candidate.consumedAt
+    && !candidate.completedAt
+    && !candidate.expiredAt;
+}
+
 function buildCanonicalStrategyOverview({
   now,
   session,
   paperStrategies,
   openPositions,
   scannerStrategies,
+  candidateQueue,
 } = {}) {
   const catalogRows = safeArray(daytradingStrategyCatalogService.getCatalog().strategies);
   const paperRows = safeArray(paperStrategies?.strategies);
   const paperById = toMap(paperRows, (row) => safeString(row.strategyId));
   const scannerById = toMap(safeArray(scannerStrategies), (row) => safeString(row.strategyId));
   const openPositionsByStrategy = toMap(safeArray(openPositions), (row) => safeString(row.strategyId));
+  const queuedCandidateByStrategy = toMap(safeArray(candidateQueue).filter(isSelectableQueueCandidate), candidateStrategyId);
   const sessionLabel = session?.sessionLabel || session?.session || 'Globex';
   const sessionId = session?.sessionId || null;
   const sessionOpen = session?.isMarketOpen === true;
@@ -268,6 +343,7 @@ function buildCanonicalStrategyOverview({
     const paperRow = paperById.get(strategy.id) || {};
     const scannerRow = scannerById.get(strategy.id) || null;
     const openPosition = openPositionsByStrategy.get(strategy.id) || null;
+    const currentCandidateRow = queuedCandidateByStrategy.get(strategy.id) || null;
     const allowedSessions = safeArray(paperRow.entryContract?.allowedSessions);
     const instruments = inferOverviewInstruments(strategy);
     const applicable = instruments.length > 0;
@@ -297,6 +373,36 @@ function buildCanonicalStrategyOverview({
             || paperRow.commonEntryContractBlocker?.reasonCode
             || STATUS_FALLBACK_BLOCKER[paperStatus]
             || null)));
+    const displayedMainBlocker = canTradeNow || paperStatus === 'ACTIVE_PAPER' ? null : mainBlocker;
+    const latestCandidate = currentCandidateRow || paperRow.latestCandidate || null;
+    const canonicalReadiness = evaluateCanonicalCandidateReadiness(currentCandidateRow, { now, session });
+    const entryReady = currentCandidateRow
+      ? firstBoolean(
+        currentCandidateRow.producerEntryReadiness?.entryReady,
+        currentCandidateRow.entryReady,
+        canonicalReadiness?.allowed,
+      )
+      : false;
+    const reasonCode = firstPresent(
+      canonicalReadiness?.reasonCode,
+      canonicalReadiness?.legacyReasonCode,
+      latestCandidate?.reasonCode,
+      latestCandidate?.blockedReasonCode,
+      latestCandidate?.blockedReason,
+      paperRow.latestEntryContractBlock?.reasonCode,
+      paperRow.commonEntryContractBlocker?.reasonCode,
+      displayedMainBlocker,
+    );
+    const marketRegime = firstPresent(
+      currentCandidateRow?.marketRegime,
+      currentCandidateRow?.market_regime,
+      currentCandidateRow?.rawSignalSummary?.marketRegime,
+      latestCandidate?.marketRegime,
+      latestCandidate?.market_regime,
+      paperRow.marketRegime,
+      scannerRow?.marketRegime,
+      scannerRow?.market_regime,
+    );
 
     return {
       strategyId: strategy.id,
@@ -304,6 +410,9 @@ function buildCanonicalStrategyOverview({
       family: paperRow.family || strategy.family || null,
       strategyFamily: paperRow.family || strategy.family || null,
       market: paperRow.market || strategy.market_group || strategy.market || null,
+      status: paperStatus,
+      runtimeStatus: paperStatus,
+      runtimeState: paperStatus,
       instruments,
       instrument: instruments.length ? instruments.join(' / ') : null,
       compatibilityStatus: paperRow.technicalReadiness || paperRow.readiness || null,
@@ -315,8 +424,17 @@ function buildCanonicalStrategyOverview({
       sessionAllowed,
       marketOpen: marketOpenForStrategy,
       latestDiagnosticResult: summarizeDiagnosticResult(paperRow),
-      latestSignal: summarizeStrategySignal(paperRow),
-      latestCandidate: paperRow.latestCandidate || null,
+      latestSignal: summarizeStrategySignal({ ...paperRow, latestCandidate }),
+      latestCandidate,
+      currentCandidate: currentCandidateRow != null,
+      currentCandidateId: currentCandidateRow?.candidateId || null,
+      candidateId: currentCandidateRow?.candidateId || latestCandidate?.candidateId || null,
+      marketRegime,
+      entryReady,
+      canonicalVerdict: canonicalReadiness?.verdict || null,
+      reasonCode,
+      canonicalReadiness,
+      canonicalSignal: canonicalReadiness?.canonicalSignal || null,
       latestPaperTrade: paperRow.latestPaperTrade || null,
       openPaperPosition: openPosition ? {
         id: openPosition.id || openPosition.positionId || null,
@@ -324,11 +442,12 @@ function buildCanonicalStrategyOverview({
         direction: openPosition.direction || null,
         openedAt: openPosition.openedAt || openPosition.entryTime || null,
       } : null,
-      mainBlocker: canTradeNow || paperStatus === 'ACTIVE_PAPER' ? null : mainBlocker,
+      mainBlocker: displayedMainBlocker,
       readinessStatus: paperRow.readiness || paperRow.technicalReadiness || null,
       paperExecutionStatus: paperStatus,
       paperStatus,
       canTradeNow,
+      blocked: !(canTradeNow || paperStatus === 'ACTIVE_PAPER'),
       paperBlockedReason: paperRow.paperBlockedReason || null,
       approvalStatus: paperRow.approvalStatus || paperRow.legacyApprovalStatus || null,
       approved: paperRow.approved === true || paperRow.legacyApprovalStatus === 'approved',
@@ -1080,11 +1199,12 @@ function buildFuturesPaperDeskRuntime(options = {}) {
   const strategyOverview = options.strategyOverview
     || buildCanonicalStrategyOverview({
       now,
-      session,
-      paperStrategies,
-      openPositions: [],
-      scannerStrategies: strategyStatus?.strategies || [],
-    });
+	      session,
+	      paperStrategies,
+	      openPositions: [],
+	      scannerStrategies: strategyStatus?.strategies || [],
+	      candidateQueue: scannerRuntime?.candidateQueue?.candidates || [],
+	    });
 
   // Lätta, cache-baserade IB-summeringar (aldrig tunga IB-anrop härifrån).
   let ibDataLayer = { enabled: false, started: false, connected: false, source: 'disabled' };

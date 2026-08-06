@@ -406,6 +406,11 @@ function createIbPaperExecutionAdapterService(options = {}) {
 	    if (text.endsWith('-entry')) return 'entry';
 	    if (text.endsWith('-takeProfit')) return 'takeProfit';
 	    if (text.endsWith('-stopLoss')) return 'stopLoss';
+	    // Nödstängningen lägger sin order på ett fjärde ben ('-flatten'). Utan det
+	    // här fallet blev leg=null och fyllningsvägarna nedan kastade eventet tyst,
+	    // så en flatten som FAKTISKT fylldes fastnade på 'submitted' för alltid och
+	    // degraderade reconciliation permanent.
+	    if (text.endsWith('-flatten')) return 'flatten';
 	    return null;
 	  }
 
@@ -418,19 +423,69 @@ function createIbPaperExecutionAdapterService(options = {}) {
 	    return index >= 0 ? refs[index] || null : owned.orderRef || null;
 	  }
 
+	  function findOwnedIntentForExecId(execId) {
+	    const wanted = String(execId || '').trim();
+	    if (!wanted) return null;
+	    return intentService.listIntents({ limit: 500 }).find((intent) => (
+	      String(intent?.entryExecId || '') === wanted
+	      || String(intent?.filledExecId || '') === wanted
+	    )) || null;
+	  }
+
+	  function persistExecutionDetails(contract, execution) {
+	    const owned = findOwnedIntentForOrder({
+	      orderId: execution?.orderId,
+	      orderRef: execution?.orderRef,
+	    });
+	    if (!owned?.idempotencyKey) return null;
+	    const orderRef = execution?.orderRef || orderRefForOwnedOrder(execution?.orderId, owned);
+	    const leg = legFromOrderRef(orderRef);
+	    const price = numberOrNull(execution?.price);
+	    const quantity = numberOrNull(execution?.shares);
+	    const patch = { reconciliationRequired: false };
+	    if (leg === 'entry') {
+	      patch.entryExecId = execution?.execId || null;
+	      patch.entryExecutionTime = execution?.time || null;
+	      patch.entrySide = execution?.side || null;
+	      patch.entryQuantity = quantity;
+	      if (price !== null) patch.entryFilledPrice = price;
+	    } else if (leg === 'takeProfit' || leg === 'stopLoss' || leg === 'flatten') {
+	      // En flatten-fill ÄR en exit-fill: positionen stängs. Samma terminalstatus
+	      // som TP/SL, annars saknar intenten terminalstatus och flaggas för evigt.
+	      patch.filledLeg = leg;
+	      patch.filledExecId = execution?.execId || null;
+	      patch.filledExecutionTime = execution?.time || null;
+	      patch.filledSide = execution?.side || null;
+	      patch.filledQuantity = quantity;
+	      if (price !== null) patch.filledPrice = price;
+	    } else {
+	      return null;
+	    }
+	    if (contract?.conId != null && owned.conId == null) patch.conId = contract.conId;
+	    return intentService.updateStatus(
+	      owned.idempotencyKey,
+	      leg === 'entry' ? (owned.status || 'submitted') : 'filled',
+	      patch,
+	    );
+	  }
+
 	  function handleFilledOrderStatus({ orderId, avgFillPrice = null, lastFillPrice = null } = {}) {
 	    const owned = findOwnedIntentForOrder({ orderId });
 	    if (!owned?.idempotencyKey) return null;
 	    const orderRef = orderRefForOwnedOrder(orderId, owned);
 	    const leg = legFromOrderRef(orderRef);
-	    if (leg === 'takeProfit' || leg === 'stopLoss') {
-	      const price = Number(lastFillPrice) || Number(avgFillPrice) || null;
+	    const price = numberOrNull(lastFillPrice) ?? numberOrNull(avgFillPrice);
+	    // 'flatten' hör hit: nödstängningens fill är en exit-fill som ska ge
+	    // terminalstatus. Utan den föll den ur alla grenar och returnerade null.
+	    if (leg === 'takeProfit' || leg === 'stopLoss' || leg === 'flatten') {
 	      const result = intentService.updateStatus(owned.idempotencyKey, 'filled', {
 	        reconciliationRequired: false,
 	        filledOrderId: Number(orderId),
 	        filledLeg: leg,
 	        filledAt: nowIso(),
 	        filledPrice: price,
+	        filledAvgPrice: numberOrNull(avgFillPrice),
+	        filledLastPrice: numberOrNull(lastFillPrice),
 	      });
 	      logEvent('intent_exit_filled_by_ib', {
 	        executionId: owned.executionId || null,
@@ -445,10 +500,14 @@ function createIbPaperExecutionAdapterService(options = {}) {
 	        reconciliationRequired: false,
 	        entryFilledOrderId: Number(orderId),
 	        entryFilledAt: nowIso(),
+	        entryFilledPrice: price,
+	        entryAvgFillPrice: numberOrNull(avgFillPrice),
+	        entryLastFillPrice: numberOrNull(lastFillPrice),
 	      });
 	      logEvent('intent_entry_filled_by_ib', {
 	        executionId: owned.executionId || null,
 	        orderId: Number(orderId),
+	        price,
 	      });
 	      return result;
 	    }
@@ -717,7 +776,7 @@ function createIbPaperExecutionAdapterService(options = {}) {
       logEvent('order_status', { orderId: Number(orderId), ibStatus: status, status: normalized, filled: Number(filled) || 0, remaining: Number(remaining) || 0 });
     });
     client.on(EventName.execDetails, (reqId, contract, execution) => {
-      executions.push({
+      const row = {
         execId: execution?.execId ?? null,
         orderId: execution?.orderId ?? null,
         permId: execution?.permId ?? null,
@@ -730,8 +789,10 @@ function createIbPaperExecutionAdapterService(options = {}) {
         orderRef: execution?.orderRef ?? null,
         time: execution?.time ?? null,
         receivedAt: nowIso(),
-      });
+      };
+      executions.push(row);
       if (executions.length > 200) executions.shift();
+      persistExecutionDetails(contract, execution);
       logEvent('exec_details', { execId: execution?.execId ?? null, orderId: execution?.orderId ?? null, price: execution?.price ?? null });
       const entry = pending.get(reqId);
       if (entry) entry.rows.push(executions[executions.length - 1]);
@@ -745,14 +806,33 @@ function createIbPaperExecutionAdapterService(options = {}) {
       }
     });
     client.on(EventName.commissionReport, (report) => {
-      commissions.push({
+      const row = {
         execId: report?.execId ?? null,
         commission: report?.commission ?? null,
         currency: report?.currency ?? null,
         realizedPNL: (report?.realizedPNL != null && Math.abs(report.realizedPNL) < 1e300) ? report.realizedPNL : null,
         receivedAt: nowIso(),
-      });
+      };
+      commissions.push(row);
       if (commissions.length > 200) commissions.shift();
+      const owned = findOwnedIntentForExecId(row.execId);
+      if (owned?.idempotencyKey) {
+        const isExit = String(owned.filledExecId || '') === String(row.execId || '');
+        const isEntry = String(owned.entryExecId || '') === String(row.execId || '');
+        const patch = isExit
+          ? {
+              filledCommission: numberOrNull(row.commission),
+              filledCommissionCurrency: row.currency || null,
+              filledRealizedPNL: numberOrNull(row.realizedPNL),
+            }
+          : isEntry
+            ? {
+                entryCommission: numberOrNull(row.commission),
+                entryCommissionCurrency: row.currency || null,
+              }
+            : null;
+        if (patch) intentService.updateStatus(owned.idempotencyKey, owned.status || 'submitted', patch);
+      }
       logEvent('commission', { execId: report?.execId ?? null, commission: report?.commission ?? null });
     });
     client.on(EventName.position, (account, contract, pos, avgCost) => {

@@ -137,6 +137,7 @@ function createFuturesPaperScannerService(options = {}) {
   const configOverrides = options.config || {};
   const stateFile = path.join(storage.rootDir, 'scanner-state.json');
   const candidatesFile = path.join(storage.rootDir, 'candidates.json');
+  const archiveFile = path.join(storage.rootDir, 'candidate-archive.jsonl');
   const scanHistoryFile = path.join(storage.rootDir, 'scan-history.json');
   let autoTimer = null;
 
@@ -178,6 +179,13 @@ function createFuturesPaperScannerService(options = {}) {
     return {
       autoSimulationEnabled: false,
       autoIntervalMs: getEngineConfig().autoIntervalSeconds * 1000,
+      queueDispatch: {
+        lastClaimedStrategyId: null,
+        lastClaimedCandidateId: null,
+        lastClaimedAt: null,
+        lastCompletedCandidateId: null,
+        lastCompletedAt: null,
+      },
       lastScanAt: null,
       lastScanSummary: null,
       lastTickAt: null,
@@ -206,6 +214,15 @@ function createFuturesPaperScannerService(options = {}) {
     const raw = storageService.readJson(candidatesFile, null);
     const candidates = Array.isArray(raw?.candidates) ? raw.candidates.filter(Boolean) : [];
     return candidates.map((row) => {
+      const status = row.expiredAt
+        ? 'EXPIRED'
+        : (row.completedAt
+          ? 'COMPLETED'
+          : (row.consumedAt
+            ? 'CONSUMED'
+            : (row.claimedAt || row.claimedBy
+              ? 'CLAIMED'
+              : (row.status || 'READY_WAITING_FOR_SIGNAL'))));
       if (row.executionTarget === 'internal_simulation') {
         return {
           ...row,
@@ -214,7 +231,7 @@ function createFuturesPaperScannerService(options = {}) {
           executionSource: 'ibkr_paper',
           executionTargetStatus: 'legacy_candidate_retargeted_to_ibkr_paper_shadow',
           internalSimulationRetired: true,
-          status: 'READY_WAITING_FOR_SIGNAL',
+          status,
         };
       }
       return {
@@ -222,6 +239,7 @@ function createFuturesPaperScannerService(options = {}) {
         executionTarget: 'ibkr_paper',
         executionSource: 'ibkr_paper',
         internalSimulationRetired: true,
+        status,
       };
     });
   }
@@ -232,6 +250,230 @@ function createFuturesPaperScannerService(options = {}) {
       updatedAt: nowIso(),
     });
     return candidates.slice(0, MAX_QUEUE_LENGTH);
+  }
+
+  function appendArchive(record) {
+    storageService.appendJsonl(archiveFile, {
+      ...record,
+      archivedAt: record.archivedAt || nowIso(),
+    });
+  }
+
+  function candidateKey(candidate = {}) {
+    return String(candidate.candidateId || candidate.id || candidate.eventId || '').trim();
+  }
+
+  function isQueueCandidateActive(candidate = {}) {
+    const status = String(candidate.status || 'READY_WAITING_FOR_SIGNAL').trim().toUpperCase();
+    return status === 'READY_WAITING_FOR_SIGNAL'
+      && !candidate.claimedAt
+      && !candidate.claimedBy
+      && !candidate.consumedAt
+      && !candidate.completedAt
+      && !candidate.expiredAt;
+  }
+
+  function isQueueCandidateSelectable(candidate = {}) {
+    return isQueueCandidateActive(candidate);
+  }
+
+  function activeQueueCandidates(queue = []) {
+    return (Array.isArray(queue) ? queue : []).filter(isQueueCandidateSelectable);
+  }
+
+  function chooseFairCandidate(queue = [], queueDispatch = {}) {
+    const active = activeQueueCandidates(queue);
+    if (!active.length) return null;
+    const buckets = new Map();
+    const strategyOrder = [];
+    for (let i = 0; i < active.length; i += 1) {
+      const candidate = active[i];
+      const strategyId = String(candidate.strategyId || '').trim();
+      if (!strategyId) continue;
+      if (!buckets.has(strategyId)) {
+        buckets.set(strategyId, []);
+        strategyOrder.push(strategyId);
+      }
+      buckets.get(strategyId).push({ candidate, index: i });
+    }
+    if (!strategyOrder.length) return null;
+    const lastStrategyId = String(queueDispatch?.lastClaimedStrategyId || '').trim();
+    let startIndex = 0;
+    if (lastStrategyId) {
+      const existingIndex = strategyOrder.indexOf(lastStrategyId);
+      if (existingIndex >= 0) startIndex = (existingIndex + 1) % strategyOrder.length;
+    }
+    for (let offset = 0; offset < strategyOrder.length; offset += 1) {
+      const strategyId = strategyOrder[(startIndex + offset) % strategyOrder.length];
+      const rows = buckets.get(strategyId) || [];
+      if (!rows.length) continue;
+      rows.sort((a, b) => {
+        const aTs = Date.parse(a.candidate.signalTimestamp || a.candidate.timestamp || a.candidate.createdAt || '') || 0;
+        const bTs = Date.parse(b.candidate.signalTimestamp || b.candidate.timestamp || b.candidate.createdAt || '') || 0;
+        if (aTs !== bTs) return aTs - bTs;
+        return a.index - b.index;
+      });
+      return rows[0].candidate;
+    }
+    return active[0] || null;
+  }
+
+  function sameCandidate(left = {}, right = {}) {
+    const leftKey = candidateKey(left);
+    const rightKey = candidateKey(right);
+    if (leftKey && rightKey) return leftKey === rightKey;
+    return String(left.strategyId || '') === String(right.strategyId || '')
+      && String(left.symbol || left.futuresSymbol || '').toUpperCase() === String(right.symbol || right.futuresSymbol || '').toUpperCase()
+      && String(left.signalTimestamp || left.timestamp || left.createdAt || '') === String(right.signalTimestamp || right.timestamp || right.createdAt || '');
+  }
+
+  function archiveCandidates(candidates = [], { reason = 'completed', now = new Date() } = {}) {
+    for (const candidate of Array.isArray(candidates) ? candidates : []) {
+      appendArchive({
+        ...candidate,
+        archiveReason: reason,
+        archivedAt: nowIso(now),
+      });
+    }
+  }
+
+  function pruneAndArchiveQueue(queue = [], { now = new Date(), maxAgeMs = 120000 } = {}) {
+    const queuePrune = pruneStaleQueuedCandidates(queue, { now, maxAgeMs });
+    if (queuePrune.pruned.length > 0) {
+      const prunedKeys = new Set(queuePrune.pruned.map((row) => String(row.candidateId || row.signalId || row.strategyId || '').trim()));
+      const prunedRows = (Array.isArray(queue) ? queue : []).filter((row) => prunedKeys.has(String(row.candidateId || row.signalId || row.strategyId || '').trim()));
+      archiveCandidates(prunedRows.map((row) => ({
+        ...row,
+        expiredAt: nowIso(now),
+        status: 'EXPIRED',
+      })), { reason: 'ttl_prune', now });
+    }
+    return queuePrune;
+  }
+
+  function getQueueDispatchState() {
+    return readScannerState().queueDispatch || createDefaultScannerState().queueDispatch;
+  }
+
+  function updateQueueDispatchState(patch = {}) {
+    const current = getQueueDispatchState();
+    const next = {
+      ...current,
+      ...patch,
+    };
+    writeScannerState({ queueDispatch: next });
+    return next;
+  }
+
+  function claimCandidateForIbkrPaper({
+    candidateId = null,
+    now = new Date(),
+    claimedBy = 'futures_autonomous_scheduler',
+  } = {}) {
+    const config = getEngineConfig();
+    const rawQueue = readQueue();
+    const queuePrune = pruneAndArchiveQueue(rawQueue, { now, maxAgeMs: config.candidateMaxAgeMs });
+    const queue = queuePrune.queue;
+    const active = activeQueueCandidates(queue);
+    const requestedId = candidateId ? candidateKey({ candidateId }) : null;
+    const selected = requestedId
+      ? active.find((row) => candidateKey(row) === requestedId)
+      : chooseFairCandidate(active, getQueueDispatchState());
+    if (!selected) {
+      return {
+        ok: true,
+        claimed: false,
+        candidate: null,
+        queue,
+        activeQueue: active,
+        ...SAFETY,
+      };
+    }
+    const claimedAt = nowIso(now);
+    const claimedCandidate = {
+      ...selected,
+      claimedAt,
+      claimedBy,
+      consumedAt: claimedAt,
+      status: 'CLAIMED',
+    };
+    const nextQueue = queue.map((row) => (sameCandidate(row, selected) ? claimedCandidate : row));
+    writeQueue(nextQueue);
+    updateQueueDispatchState({
+      lastClaimedStrategyId: claimedCandidate.strategyId || null,
+      lastClaimedCandidateId: claimedCandidate.candidateId || null,
+      lastClaimedAt: claimedAt,
+    });
+    persistEvent('FUTURES_QUEUE_CANDIDATE_CLAIMED', {
+      candidateId: claimedCandidate.candidateId || null,
+      strategyId: claimedCandidate.strategyId || null,
+      claimedBy,
+      claimedAt,
+    }, now);
+    return {
+      ok: true,
+      claimed: true,
+      candidate: claimedCandidate,
+      queue: nextQueue,
+      activeQueue: activeQueueCandidates(nextQueue),
+      ...SAFETY,
+    };
+  }
+
+  function completeClaimedCandidate({
+    candidateId = null,
+    candidate = null,
+    now = new Date(),
+    completedBy = 'futures_autonomous_scheduler',
+    outcome = 'completed',
+    details = {},
+  } = {}) {
+    const key = candidateKey(candidate || { candidateId });
+    if (!key) {
+      return { ok: false, blocker: 'candidate_id_missing', ...SAFETY };
+    }
+    const rawQueue = readQueue();
+    const queue = rawQueue.slice();
+    const index = queue.findIndex((row) => candidateKey(row) === key);
+    const queueCandidate = index >= 0 ? queue[index] : candidate || null;
+    if (!queueCandidate) {
+      return { ok: false, blocker: 'candidate_not_found', candidateId: key, ...SAFETY };
+    }
+    const completedAt = nowIso(now);
+    const completedCandidate = {
+      ...queueCandidate,
+      ...details,
+      consumedAt: queueCandidate.consumedAt || completedAt,
+      completedAt,
+      completedBy,
+      status: 'COMPLETED',
+      archiveOutcome: outcome,
+    };
+    if (index >= 0) {
+      queue.splice(index, 1);
+      writeQueue(queue);
+    }
+    archiveCandidates([{
+      ...completedCandidate,
+      archivedAt: completedAt,
+    }], { reason: outcome, now });
+    updateQueueDispatchState({
+      lastCompletedCandidateId: completedCandidate.candidateId || null,
+      lastCompletedAt: completedAt,
+    });
+    persistEvent('FUTURES_QUEUE_CANDIDATE_COMPLETED', {
+      candidateId: completedCandidate.candidateId || null,
+      strategyId: completedCandidate.strategyId || null,
+      completedBy,
+      outcome,
+    }, now);
+    return {
+      ok: true,
+      completed: true,
+      candidate: completedCandidate,
+      queue,
+      ...SAFETY,
+    };
   }
 
   function readScanHistory() {
@@ -557,7 +799,7 @@ function createFuturesPaperScannerService(options = {}) {
     const { allowlistError } = getApprovedStrategySource();
     const positionsSummary = getActivePositionsSummary();
     const rawQueue = readQueue();
-    const queuePrune = pruneStaleQueuedCandidates(rawQueue, {
+    const queuePrune = pruneAndArchiveQueue(rawQueue, {
       now,
       maxAgeMs: config.candidateMaxAgeMs,
     });
@@ -942,6 +1184,28 @@ function createFuturesPaperScannerService(options = {}) {
   function getStrategyStatus({ now = new Date() } = {}) {
     const { strategies, allowlistError } = getApprovedStrategySource();
     const positionsSummary = getActivePositionsSummary();
+    try {
+      const registryRows = typeof strategyRegistry.getStatus === 'function'
+        ? strategyRegistry.getStatus().strategies || []
+        : [];
+      for (const row of registryRows) {
+        const strategyId = row.strategy_id || row.strategyId || row.id;
+        if (!strategyId || strategies.some((strategy) => strategy.strategyId === strategyId)) continue;
+        const execution = typeof strategyRegistry.canExecuteStrategy === 'function'
+          ? strategyRegistry.canExecuteStrategy(strategyId)
+          : { allowed: false };
+        if (execution.allowed !== true) continue;
+        strategies.push({
+          strategyId,
+          strategyName: row.strategy_name || row.name || strategyId,
+          approved: true,
+          source: execution.source || 'strategy_registry_execution_allowlist',
+          performance: null,
+          confidence: 0.5,
+          skipReason: null,
+        });
+      }
+    } catch (_) { /* status ska fortsätta visa paper allowlist även om registry läsning faller */ }
     const approvedIds = new Set(strategies.map((row) => row.strategyId));
 
     // Strategier som har trades i ledgern men inte (längre) är godkända.
@@ -1042,6 +1306,7 @@ function createFuturesPaperScannerService(options = {}) {
     const state = readScannerState();
     const sessionMetadata = buildFuturesSessionMetadata(nowIso(now));
     const queue = readQueue();
+    const activeQueue = activeQueueCandidates(queue);
     const reasons = [];
     reasons.push({ code: 'internal_futures_simulation_retired', message: 'Intern futures-simulering är avvecklad. Kandidater går endast till IBKR Paper shadow execution.' });
     if (state.autoSimulationEnabled) {
@@ -1050,11 +1315,11 @@ function createFuturesPaperScannerService(options = {}) {
     if (sessionMetadata?.isMarketOpen !== true) {
       reasons.push({ code: 'session_closed', message: 'Session stängd (Globex).' });
     }
-    if (queue.length === 0) {
+    if (activeQueue.length === 0) {
       reasons.push({ code: 'empty_candidate_queue', message: 'Candidate queue är tom — inväntar legitim signal för IBKR Paper shadow.' });
     }
     const lastScan = state.lastScanSummary || null;
-    if (queue.length === 0 && lastScan && Number(lastScan.canonicalPipelineCandidates || 0) === 0) {
+    if (activeQueue.length === 0 && lastScan && Number(lastScan.canonicalPipelineCandidates || 0) === 0) {
       reasons.push({ code: 'no_canonical_signal_candidate_available', message: 'Ingen godkänd canonical signal kunde adapteras till MNQ/MES i senaste scan.' });
     }
     return reasons;
@@ -1063,6 +1328,7 @@ function createFuturesPaperScannerService(options = {}) {
   function getScannerRuntime({ now = new Date() } = {}) {
     const state = readScannerState();
     const queue = readQueue();
+    const activeQueue = activeQueueCandidates(queue);
     const feed = priceFeed.getQuotes(now);
     return {
       ok: true,
@@ -1088,8 +1354,11 @@ function createFuturesPaperScannerService(options = {}) {
       candidateQueue: {
         connected: true,
         length: queue.length,
+        activeLength: activeQueue.length,
         candidates: queue,
+        activeCandidates: activeQueue,
       },
+      queueDispatch: state.queueDispatch || createDefaultScannerState().queueDispatch,
       scanHistory: readScanHistory(),
       dataFeed: feed.feed,
       quotes: feed.quotes,
@@ -1139,6 +1408,11 @@ function createFuturesPaperScannerService(options = {}) {
     getFamilyTradeStats,
     familyOfCandidate,
     pruneStaleQueuedCandidates,
+    isQueueCandidateActive,
+    activeQueueCandidates,
+    chooseFairCandidate,
+    claimCandidateForIbkrPaper,
+    completeClaimedCandidate,
     evaluateStrategyGate,
     runScannerOnce,
     getCandidates,

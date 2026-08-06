@@ -8,17 +8,12 @@ const paperEnabledStrategies = require('./paperEnabledStrategiesService');
 const paperStrategyEntryContracts = require('./paperStrategyEntryContractService');
 const strategyTradeControl = require('./strategyTradeControlService');
 const daytradingStrategyCatalog = require('./daytradingStrategyCatalogService');
+const strategyReadinessService = require('./strategyReadinessService');
 const { evaluateMarketGate } = require('../markets/marketGate');
 const paperAgent = require('../paperTrading/paperTradingAgent');
 
 const ROOT = path.resolve(__dirname, '../..');
 const STATE_FILE = path.join(ROOT, 'data/paper-trading/state.json');
-
-const ACTIVE_STRATEGY_IDS = Object.freeze([
-  'narrow_state_expansion_long',
-  'ema_pullback_continuation',
-  'vwap_volume_breakout_long',
-]);
 
 const SAFETY = Object.freeze({
   mode: 'paper_only',
@@ -74,7 +69,22 @@ function familyOf(row = {}, strategyId = null) {
   return paperAgent._internal.paperCandidateFamily(row, strategyId);
 }
 
-function summarizeRows(rows) {
+function getReadyForPaperStrategyIds(options = {}) {
+  if (Array.isArray(options.activeStrategyIds)) {
+    return options.activeStrategyIds.map(String).filter(Boolean);
+  }
+  try {
+    return arr(strategyReadinessService.getStrategyReadiness({ noCache: true }).strategies)
+      .filter((row) => row.readiness === 'READY_FOR_PAPER')
+      .map((row) => row.strategyId)
+      .filter(Boolean);
+  } catch (_) {
+    return [];
+  }
+}
+
+function summarizeRows(rows, activeStrategyIds = []) {
+  const activeSet = new Set(activeStrategyIds);
   const byStop = {};
   const byStrategyId = {};
   for (const row of rows) {
@@ -108,7 +118,7 @@ function summarizeRows(rows) {
   }
   return {
     totalCandidates: rows.length,
-    activeStrategyCandidates: rows.filter((row) => ACTIVE_STRATEGY_IDS.includes(row.strategyId)).length,
+    activeStrategyCandidates: rows.filter((row) => activeSet.has(row.strategyId)).length,
     producerReady: rows.filter((row) => row.producer?.entryReady).length,
     contractPass: rows.filter((row) => row.gates.entryContract?.status === 'pass').length,
     contractBlock: rows.filter((row) => row.gates.entryContract?.status === 'block').length,
@@ -121,6 +131,8 @@ function summarizeRows(rows) {
 function buildContractFlowValidation(options = {}) {
   const now = options.now || new Date();
   const candidates = arr(options.candidates);
+  const activeStrategyIds = getReadyForPaperStrategyIds(options);
+  const activeStrategySet = new Set(activeStrategyIds);
   const state = options.state || readState(options.stateFile);
   const familyRanks = paperAgent._internal.rankEntryEligibleFamilyCandidates(candidates, {
     manualStrategyGateMode: paperEnabledStrategies.manualListControlsRuntime(),
@@ -170,7 +182,7 @@ function buildContractFlowValidation(options = {}) {
         inferredStrategy = strategyRuntimeConnector.inferStrategyForSignal(candidate);
         resolvedStrategyId = strategyIdFromRuntimeStrategy(inferredStrategy);
         row.strategyId = resolvedStrategyId || null;
-        row.activeStrategy = ACTIVE_STRATEGY_IDS.includes(row.strategyId);
+        row.activeStrategy = activeStrategySet.has(row.strategyId);
         gates.canonicalMapping = resolvedStrategyId
           ? gate('pass', null, { strategyId: resolvedStrategyId, runtimeStatus: inferredStrategy.runtime_status || null })
           : gate('block', inferredStrategy?.blocked_reason_code || 'unknown_strategy_mapping');
@@ -292,7 +304,7 @@ function buildContractFlowValidation(options = {}) {
     gates.safety = stopAt ? gate('not_reached') : gate('not_evaluated_read_only', 'runtime_safety_gate_not_invoked_by_probe');
     row.stopAt = stopAt || 'paperCandidate';
     row.strategyId = row.strategyId || resolvedStrategyId || null;
-    row.activeStrategy = ACTIVE_STRATEGY_IDS.includes(row.strategyId);
+    row.activeStrategy = activeStrategySet.has(row.strategyId);
     return row;
   });
 
@@ -301,8 +313,8 @@ function buildContractFlowValidation(options = {}) {
     generatedAt: nowIso(now),
     source: 'paperContractFlowValidationService',
     candidates: rows,
-    summary: summarizeRows(rows),
-    activeStrategyIds: ACTIVE_STRATEGY_IDS,
+    summary: summarizeRows(rows, activeStrategyIds),
+    activeStrategyIds,
     safety: SAFETY,
     ...SAFETY,
   };
@@ -310,10 +322,10 @@ function buildContractFlowValidation(options = {}) {
 
 module.exports = {
   SAFETY,
-  ACTIVE_STRATEGY_IDS,
   buildContractFlowValidation,
   _internal: {
     readState,
+    getReadyForPaperStrategyIds,
     summarizeRows,
   },
 };

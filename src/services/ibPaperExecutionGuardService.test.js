@@ -235,6 +235,102 @@ const base = {
   assert(result.blockers.includes('maintenance_break'));
 }
 
+// ── Weekend entry cutoff (fas 1) ─────────────────────────────────────────────
+// CDT (UTC-5): CME:s veckostängning fredag 16:00 CT = 21:00 UTC.
+// Grinden är default-aktiverad med 90 minuters fönster och gäller ENBART entries.
+{
+  // Fredag 14:29 CT = 91 min före stängning → utanför fönstret, entry tillåts.
+  const result = guard.evaluatePaperExecutionGuard({
+    ...base,
+    now: new Date('2026-07-31T19:29:00.000Z'),
+    session: { isMarketOpen: true, closedReason: null, sessionId: 'us_rth' },
+  });
+  assert.equal(result.allowed, true);
+  assert.equal(result.blockers.includes('weekend_entry_cutoff'), false);
+  const check = result.checks.find((c) => c.code === 'weekend_entry_cutoff_clear');
+  assert.equal(check.ok, true);
+  assert.equal(check.minutesUntilWeeklyClose, 91);
+  assert.equal(check.cutoffMinutes, 90);
+}
+
+{
+  // Fredag 15:02 CT = 58 min före stängning — exakt tidpunkten då
+  // fxp_1d7d8c85a6922fd6 öppnades. Ska nu blockeras.
+  const result = guard.evaluatePaperExecutionGuard({
+    ...base,
+    now: new Date('2026-07-31T20:02:30.000Z'),
+    session: { isMarketOpen: true, closedReason: null, sessionId: 'us_rth' },
+  });
+  assert.equal(result.allowed, false);
+  assert(result.blockers.includes('weekend_entry_cutoff'));
+  const check = result.checks.find((c) => c.code === 'weekend_entry_cutoff_clear');
+  assert.equal(check.ok, false);
+  assert.equal(check.blocker, 'weekend_entry_cutoff');
+  assert.equal(check.minutesUntilWeeklyClose, 58);
+}
+
+{
+  // Exakt på gränsen: fredag 14:30 CT = 90 min → blockeras (inklusive gräns).
+  const result = guard.evaluatePaperExecutionGuard({
+    ...base,
+    now: new Date('2026-07-31T19:30:00.000Z'),
+    session: { isMarketOpen: true, closedReason: null, sessionId: 'us_rth' },
+  });
+  assert.equal(result.allowed, false);
+  assert(result.blockers.includes('weekend_entry_cutoff'));
+}
+
+{
+  // Övriga handelsdagar är opåverkade: torsdag 15:02 CT, samma klockslag.
+  const result = guard.evaluatePaperExecutionGuard({
+    ...base,
+    now: new Date('2026-07-30T20:02:30.000Z'),
+    session: { isMarketOpen: true, closedReason: null, sessionId: 'us_rth' },
+  });
+  assert.equal(result.allowed, true);
+  assert.equal(result.blockers.includes('weekend_entry_cutoff'), false);
+  const check = result.checks.find((c) => c.code === 'weekend_entry_cutoff_clear');
+  assert.equal(check.minutesUntilWeeklyClose, null);
+}
+
+{
+  // Söndagens återöppning 17:01 CT — entries släpps direkt.
+  const result = guard.evaluatePaperExecutionGuard({
+    ...base,
+    now: new Date('2026-08-02T22:01:30.000Z'),
+    session: { isMarketOpen: true, closedReason: null, sessionId: 'overnight' },
+  });
+  assert.equal(result.allowed, true);
+  assert.equal(result.blockers.includes('weekend_entry_cutoff'), false);
+}
+
+{
+  // Grinden går att stänga av via env utan att röra någon annan check.
+  process.env.FUTURES_WEEKEND_ENTRY_CUTOFF_ENABLED = 'false';
+  const result = guard.evaluatePaperExecutionGuard({
+    ...base,
+    now: new Date('2026-07-31T20:02:30.000Z'),
+    session: { isMarketOpen: true, closedReason: null, sessionId: 'us_rth' },
+  });
+  delete process.env.FUTURES_WEEKEND_ENTRY_CUTOFF_ENABLED;
+  assert.equal(result.allowed, true);
+  const check = result.checks.find((c) => c.code === 'weekend_entry_cutoff_clear');
+  assert.equal(check.ok, true);
+  assert.equal(check.weekendEntryCutoffEnabled, false);
+}
+
+{
+  // Fönstrets bredd styrs av env.
+  process.env.FUTURES_WEEKEND_ENTRY_CUTOFF_MINUTES = '30';
+  const result = guard.evaluatePaperExecutionGuard({
+    ...base,
+    now: new Date('2026-07-31T20:02:30.000Z'),
+    session: { isMarketOpen: true, closedReason: null, sessionId: 'us_rth' },
+  });
+  delete process.env.FUTURES_WEEKEND_ENTRY_CUTOFF_MINUTES;
+  assert.equal(result.allowed, true, '58 min kvar ligger utanför ett 30-minutersfönster');
+}
+
 // ── (7) Färskhetsgrinden släpper igenom en 2m-kandidat mätt från stängning ──
 // 48114 ms är den ålder en verklig 2m-kandidat hade i produktion 2026-08-03
 // när åldern räknas från candle-stängning i stället för candle-öppning

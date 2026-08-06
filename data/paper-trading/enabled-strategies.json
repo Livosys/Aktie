@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "updatedAt": "2026-07-11T17:37:10.555Z",
+  "updatedAt": "2026-07-29T23:39:02.304Z",
   "strategies": {
     "crypto_fast_momentum": {
       "enabled": false,
@@ -52,11 +52,11 @@
     },
     "high_volatility_reversal": {
       "enabled": false,
-      "enabledAt": null,
-      "enabledBy": null,
-      "disabledAt": "2026-07-11T17:17:47.018Z",
-      "disabledBy": "manual_initial_migration",
-      "note": "manual_initial_migration"
+      "enabledAt": "2026-07-29T18:22:24.478Z",
+      "enabledBy": "manual_api",
+      "disabledAt": "2026-07-29T23:39:02.248Z",
+      "disabledBy": "manual_api",
+      "note": "disabled: NEEDS_PRODUCER, no scanner emitter — cannot generate signals"
     },
     "index_confirmed_long": {
       "enabled": false,
@@ -196,11 +196,11 @@
     },
     "support_bounce": {
       "enabled": false,
-      "enabledAt": null,
-      "enabledBy": null,
-      "disabledAt": "2026-07-11T17:17:47.018Z",
-      "disabledBy": "manual_initial_migration",
-      "note": "manual_initial_migration"
+      "enabledAt": "2026-07-29T18:22:03.796Z",
+      "enabledBy": "manual_api",
+      "disabledAt": "2026-07-29T23:39:02.304Z",
+      "disabledBy": "manual_api",
+      "note": "disabled: NEEDS_PRODUCER, no scanner emitter — cannot generate signals"
     },
     "trend_continuation": {
       "enabled": false,
@@ -534,6 +534,32 @@
       "action": "disable",
       "source": "manual_api",
       "at": "2026-07-11T17:37:10.555Z"
+    },
+    {
+      "strategyId": "support_bounce",
+      "action": "enable",
+      "source": "manual_api",
+      "at": "2026-07-29T18:22:03.796Z"
+    },
+    {
+      "strategyId": "high_volatility_reversal",
+      "action": "enable",
+      "source": "manual_api",
+      "at": "2026-07-29T18:22:24.478Z"
+    },
+    {
+      "strategyId": "high_volatility_reversal",
+      "action": "disable",
+      "source": "manual_api",
+      "at": "2026-07-29T23:39:02.248Z",
+      "note": "disabled: NEEDS_PRODUCER, no scanner emitter — cannot generate signals"
+    },
+    {
+      "strategyId": "support_bounce",
+      "action": "disable",
+      "source": "manual_api",
+      "at": "2026-07-29T23:39:02.304Z",
+      "note": "disabled: NEEDS_PRODUCER, no scanner emitter — cannot generate signals"
     }
   ]
 }

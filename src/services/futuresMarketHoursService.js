@@ -215,6 +215,47 @@ function getNextSessionTransition(now = new Date()) {
   return null;
 }
 
+// Weekend entry cutoff — helgens gap-risk.
+//
+// CME stänger fredag 16:00 CT och öppnar söndag 17:00 CT: ~49h där en öppen
+// position inte kan stoppas ut. Skyddsbenen ligger kvar som GTC men exekverar
+// först i återöppningsgapet, godtyckligt långt från sin nivå. Övriga dygn är
+// pausen 1h (16:00-17:00 CT) och behöver ingen egen regel.
+//
+// Grinden är ENBART entry-sidan: den hindrar nya positioner från att öppnas så
+// nära veckostängningen att de tvingas bära helgen. Den rör inte exits, TP, SL,
+// orderlogik eller redan öppna positioner — det som är öppet förblir öppet och
+// stängs av sin bracket precis som förut.
+const DEFAULT_WEEKEND_ENTRY_CUTOFF_MINUTES = 90;
+
+// Ren funktion av (nu, cutoff). cutoffMinutes = 0 stänger av grinden, eftersom
+// minutesUntilWeeklyClose alltid är > 0 medan fredagssessionen fortfarande är öppen.
+function getWeekendEntryCutoffState(now = new Date(), options = {}) {
+  const raw = Number(options.cutoffMinutes);
+  const cutoffMinutes = Math.max(0, Math.min(
+    24 * 60,
+    Number.isFinite(raw) ? Math.trunc(raw) : DEFAULT_WEEKEND_ENTRY_CUTOFF_MINUTES,
+  ));
+  const local = chicagoParts(now);
+  const beforeWeeklyClose = local.day === 5 && local.minutes < FRIDAY_CLOSE_MINUTES;
+  const minutesUntilWeeklyClose = beforeWeeklyClose
+    ? FRIDAY_CLOSE_MINUTES - local.minutes
+    : null;
+  const entryBlocked = beforeWeeklyClose && minutesUntilWeeklyClose <= cutoffMinutes;
+
+  return {
+    cutoffMinutes,
+    minutesUntilWeeklyClose,
+    entryBlocked,
+    reason: entryBlocked ? 'weekend_entry_cutoff' : null,
+    exchangeTimezone: CME_EQUITY_INDEX_TIMEZONE,
+    exchangeLocalTime: local.exchangeLocalTime,
+    weeklyCloseLocalTime: '16:00',
+    weeklyReopenLocalTime: '17:00',
+    note: 'CME stänger fredag 16:00 CT och öppnar söndag 17:00 CT; däremellan kan en öppen position inte stoppas ut.',
+  };
+}
+
 function buildFuturesSessionMetadata(timestamp) {
   if (timestamp == null || timestamp === '') return null;
   const parsed = timestamp instanceof Date ? timestamp : new Date(timestamp);
@@ -241,9 +282,11 @@ module.exports = {
   SESSION_IDS,
   SESSION_LABELS,
   OPEN_SESSION_WINDOWS,
+  DEFAULT_WEEKEND_ENTRY_CUTOFF_MINUTES,
   getCmeEquityIndexFuturesSessionState,
   buildFuturesSessionMetadata,
   getNextSessionTransition,
+  getWeekendEntryCutoffState,
   _internal: {
     chicagoParts,
     classifyOpenSession,

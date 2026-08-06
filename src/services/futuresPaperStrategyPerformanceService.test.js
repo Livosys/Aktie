@@ -101,6 +101,7 @@ test('IBKR paper performance invariants hold', () => {
     executions: [
       { strategyId: 'trend_continuation', realizedResult: 125, commission: 2.5, execId: 'exec-1' },
       { strategyId: 'trend_continuation', realizedResult: -25, commission: 2.5, execId: 'exec-2' },
+      { strategyId: 'trend_continuation', realizedResult: null, commission: 2.5, execId: 'exec-open-entry' },
     ],
   });
   assert.strictEqual(out.performanceContext, 'ibkr_paper');
@@ -115,6 +116,17 @@ test('IBKR paper performance invariants hold', () => {
       assert.strictEqual(s.pnlProvenance, 'broker_fill');
     }
   }
+});
+
+test('open broker executions without realized PnL are not closed trades', () => {
+  const out = perf.getPerformance({
+    executions: [
+      { strategyId: 'trend_continuation', realizedResult: null, commission: 2.5, execId: 'exec-open-entry' },
+      { strategyId: 'trend_continuation', commission: 2.5, execId: 'exec-missing-realized-pnl' },
+    ],
+  });
+  assert.strictEqual(out.count, 0);
+  assert.deepStrictEqual(out.strategies, []);
 });
 
 // 20) Vanlig Paper Trading blandas inte in och legacy-ledgern är separat.

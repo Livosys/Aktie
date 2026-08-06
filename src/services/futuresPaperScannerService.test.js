@@ -184,6 +184,14 @@ const scanner = createFuturesPaperScannerService({
   executionTargetReservationService: executionTargetReservations,
   entryContractService,
   strategyRegistryService: {
+    getStatus: () => ({
+      strategies: [...registryEntries.entries()].map(([strategyId, entry]) => ({
+        strategy_id: strategyId,
+        strategy_name: strategyId,
+        status: entry.status,
+        enabled: entry.enabled,
+      })),
+    }),
     canExecuteStrategy: (strategyId) => {
       const entry = registryEntries.get(strategyId);
       if (!entry) {
@@ -411,6 +419,9 @@ assert.equal(scan.candidates[0].executionTarget, 'ibkr_paper');
 assert.equal(scan.candidates[0].executionSource, 'ibkr_paper');
 assert.equal(scan.candidates[0].internalSimulationRetired, true);
 assert.equal(scanner.getCandidates().totalCandidates, 1);
+const registryStatusRow = scanner.getStrategyStatus({ now }).strategies.find((item) => item.strategyId === 'mnq_globex_momentum_v1');
+assert.equal(registryStatusRow.approved, true);
+assert.equal(registryStatusRow.source, 'strategy_registry_execution_allowlist');
 
 providerSignals = [mnqCanonicalSignalAt('2026-07-06T12:50:00.000Z', 'short')];
 scan = scanner.runScannerOnce({ now: '2026-07-06T12:50:30.000Z' });
@@ -944,6 +955,55 @@ assert.equal(noQuoteScan.signalsSkippedNoDirection, 1);
 assert.equal(noQuoteScan.signalsSkippedDirectionVetoed, 1);
 assert.equal(noQuoteScan.signalsSkippedOther, 3);
 assertOtherBucketCloses(noQuoteScan);
+
+const fairnessBase = new Date('2026-07-06T11:50:00.000Z');
+const fairnessCandidates = [
+  { candidateId: 'cand-mnq', strategyId: 'mnq_globex_momentum_v1', symbol: 'MNQ', futuresSymbol: 'MNQ', signalTimestamp: '2026-07-06T11:50:00.000Z', timestamp: '2026-07-06T11:50:00.000Z', createdAt: '2026-07-06T11:50:00.000Z', status: 'READY_WAITING_FOR_SIGNAL' },
+  { candidateId: 'cand-ema', strategyId: 'ema_pullback_continuation', symbol: 'MNQ', futuresSymbol: 'MNQ', signalTimestamp: '2026-07-06T11:51:00.000Z', timestamp: '2026-07-06T11:51:00.000Z', createdAt: '2026-07-06T11:51:00.000Z', status: 'READY_WAITING_FOR_SIGNAL' },
+  { candidateId: 'cand-vwap', strategyId: 'vwap_volume_breakout_long', symbol: 'MNQ', futuresSymbol: 'MNQ', signalTimestamp: '2026-07-06T11:52:00.000Z', timestamp: '2026-07-06T11:52:00.000Z', createdAt: '2026-07-06T11:52:00.000Z', status: 'READY_WAITING_FOR_SIGNAL' },
+  { candidateId: 'cand-narrow', strategyId: 'narrow_state_expansion_long', symbol: 'MNQ', futuresSymbol: 'MNQ', signalTimestamp: '2026-07-06T11:53:00.000Z', timestamp: '2026-07-06T11:53:00.000Z', createdAt: '2026-07-06T11:53:00.000Z', status: 'READY_WAITING_FOR_SIGNAL' },
+];
+fs.writeFileSync(
+  path.join(rootDir, 'candidates.json'),
+  `${JSON.stringify({ candidates: fairnessCandidates, updatedAt: fairnessBase.toISOString() }, null, 2)}\n`,
+  'utf8',
+);
+scanner.resetScanner();
+fs.writeFileSync(path.join(rootDir, 'candidate-archive.jsonl'), '', 'utf8');
+fs.writeFileSync(
+  path.join(rootDir, 'candidates.json'),
+  `${JSON.stringify({ candidates: fairnessCandidates, updatedAt: fairnessBase.toISOString() }, null, 2)}\n`,
+  'utf8',
+);
+const claimedOrder = [];
+for (let i = 0; i < fairnessCandidates.length; i += 1) {
+  const claim = scanner.claimCandidateForIbkrPaper({
+    now: new Date(fairnessBase.getTime() + i * 1000),
+    claimedBy: 'scanner_fairness_test',
+  });
+  assert.equal(claim.claimed, true, `claim ${i} should succeed`);
+  assert.equal(claim.candidate.claimedBy, 'scanner_fairness_test');
+  assert.equal(claim.candidate.consumedAt != null, true);
+  claimedOrder.push(claim.candidate.strategyId);
+  const completed = scanner.completeClaimedCandidate({
+    candidate: claim.candidate,
+    now: new Date(fairnessBase.getTime() + i * 1000 + 1),
+    completedBy: 'scanner_fairness_test',
+  });
+  assert.equal(completed.completed, true, `complete ${i} should succeed`);
+  assert.equal(completed.candidate.completedAt != null, true);
+}
+assert.deepEqual(claimedOrder, [
+  'mnq_globex_momentum_v1',
+  'ema_pullback_continuation',
+  'vwap_volume_breakout_long',
+  'narrow_state_expansion_long',
+]);
+assert.equal(scanner.getCandidates().totalCandidates, 0);
+assert.equal(
+  fs.readFileSync(path.join(rootDir, 'candidate-archive.jsonl'), 'utf8').trim().split('\n').filter(Boolean).length,
+  4,
+);
 
 resetScenario();
 

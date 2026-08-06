@@ -28,7 +28,7 @@ const SAFETY = Object.freeze({
 });
 
 // Candle-universum = det vi paper-handlar (micro-kontrakten).
-// NQ/ES hålls som quote-/index-context utan candle-pipeline.
+// NQ/ES hålls som quote-/index-context utan exponerad candle-pipeline.
 const CANDLE_ROOTS = Object.freeze(['MNQ', 'MES']);
 const QUOTE_ROOTS = Object.freeze(['MNQ', 'MES', 'NQ', 'ES']);
 const SUPPORTED_TIMEFRAMES = Object.freeze(['1m', '2m', '5m']);
@@ -159,7 +159,7 @@ function createFuturesMarketDataService(options = {}) {
     } catch (_) { /* manifest är best effort */ }
   }
 
-  async function refreshRoot(root, { duration = '1800 S' } = {}) {
+  async function refreshRoot(root, { duration = '1800 S', persist = true } = {}) {
     const state = getCandleState(root);
     try {
       const result = await adapter.fetchHistoricalBars({ root, barSize: '1 min', duration });
@@ -172,7 +172,9 @@ function createFuturesMarketDataService(options = {}) {
       mergeBars(state, result.bars);
       state.lastRefreshOk = true;
       state.lastError = null;
-      persistBars(root, result.contract);
+      if (persist && CANDLE_ROOTS.includes(String(root || '').trim().toUpperCase())) {
+        persistBars(root, result.contract);
+      }
       return { ok: true, bars: result.bars.length };
     } catch (err) {
       state.lastRefreshAt = nowIso();
@@ -182,20 +184,21 @@ function createFuturesMarketDataService(options = {}) {
     }
   }
 
-  async function backfillRoot(root) {
+  async function backfillRoot(root, options = {}) {
     const state = getCandleState(root);
-    const result = await refreshRoot(root, { duration: `${Math.max(1, backfillDays)} D` });
+    const result = await refreshRoot(root, { duration: `${Math.max(1, backfillDays)} D`, ...options });
     if (result.ok) state.backfillDone = true;
     return result;
   }
 
   async function refreshAllOnce() {
     const results = {};
-    for (const root of CANDLE_ROOTS) {
+    for (const root of QUOTE_ROOTS) {
       const state = getCandleState(root);
+      const persist = CANDLE_ROOTS.includes(root);
       results[root] = state.backfillDone
-        ? await refreshRoot(root)
-        : await backfillRoot(root);
+        ? await refreshRoot(root, { persist })
+        : await backfillRoot(root, { persist });
     }
     return results;
   }
@@ -285,6 +288,53 @@ function createFuturesMarketDataService(options = {}) {
         contractValid: Boolean(raw.conId),
         volumeValid: raw.volume != null,
         reasons,
+      }),
+      safety: DATA_SAFETY,
+    };
+  }
+
+  function getLatestHistoricalQuote(root, { now = new Date() } = {}) {
+    const key = String(root || '').trim().toUpperCase();
+    if (!isEnabled() || !QUOTE_ROOTS.includes(key)) return null;
+    const state = getCandleState(key);
+    const latest = state.bars1m[state.bars1m.length - 1] || null;
+    if (!latest || latest.close == null || !latest.timestamp) return null;
+    const contractInfo = adapter.getQuote(key) || {};
+    const catalogMeta = futuresContractCatalog.getContract(key) || {};
+    const nowMs = new Date(now).getTime();
+    const tsMs = new Date(latest.timestamp).getTime();
+    const staleAgeMs = Number.isFinite(nowMs) && Number.isFinite(tsMs)
+      ? Math.max(0, nowMs - tsMs)
+      : null;
+    return {
+      instrument: key,
+      root: key,
+      symbol: key,
+      localSymbol: contractInfo.localSymbol || null,
+      conId: contractInfo.conId || null,
+      expiry: contractInfo.expiry || null,
+      exchange: contractInfo.exchange || 'CME',
+      currency: contractInfo.currency || 'USD',
+      last: latest.close,
+      bid: null,
+      ask: null,
+      close: latest.close,
+      spread: null,
+      volume: latest.volume ?? null,
+      tickSize: catalogMeta.tickSize ?? 0.25,
+      marketDataType: null,
+      marketDataTypeLabel: 'historical',
+      updatedAt: latest.timestamp,
+      staleAgeMs,
+      generatedAt: nowIso(now),
+      source: buildSourceMeta({ delayed: false }, 'historical'),
+      quality: buildQuality({
+        staleAgeMs,
+        timestampValid: true,
+        contractValid: Boolean(contractInfo.conId),
+        closedCandleValid: true,
+        volumeValid: latest.volume != null,
+        reasons: contractInfo.conId ? [] : ['contract_unresolved'],
       }),
       safety: DATA_SAFETY,
     };
@@ -419,7 +469,7 @@ function createFuturesMarketDataService(options = {}) {
     const adapterStatus = adapter.getStatus();
     const quotes = {};
     for (const root of QUOTE_ROOTS) {
-      const q = getQuote(root, now);
+      const q = getQuote(root, now) || getLatestHistoricalQuote(root, { now });
       quotes[root] = q ? {
         localSymbol: q.localSymbol,
         conId: q.conId,
@@ -523,6 +573,7 @@ function createFuturesMarketDataService(options = {}) {
     isStarted: () => started,
     refreshAllOnce,
     getQuote,
+    getLatestHistoricalQuote,
     isQuoteFresh,
     getCandles,
     getStatus,

@@ -171,6 +171,11 @@ assert.equal(disabledCandles.error, 'ib_futures_data_disabled');
   // Contract-metadata hämtas från adapterns lösta quote-kontrakt.
   assert.equal(c1m.candles[0].conId, 30700, 'contract-metadata ska följa datan');
   assert.equal(c1m.candles[0].localSymbol, 'MNQU6');
+  const latestHistoricalQuote = candleService.getLatestHistoricalQuote('MNQ', { now: nowDate });
+  assert.equal(latestHistoricalQuote.source.historical, true);
+  assert.equal(latestHistoricalQuote.source.simulated, false);
+  assert.equal(latestHistoricalQuote.last, bars[bars.length - 1].close);
+  assert.equal(latestHistoricalQuote.localSymbol, 'MNQU6');
 
   const c2m = candleService.getCandles('MNQ', { timeframe: '2m', limit: 100, now: nowDate });
   assert.equal(c2m.ok, true);

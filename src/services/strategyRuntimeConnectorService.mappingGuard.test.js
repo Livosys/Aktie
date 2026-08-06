@@ -79,10 +79,23 @@ for (const subtype of ['VWAP_RECLAIM_UP', 'VWAP_REJECTION_DOWN']) {
   assert.equal(fakeout.allowed, true);
 }
 
-// 9. Kända EMA-mappings oförändrade.
-for (const subtype of ['EMA_PULLBACK_UP', 'EMA_PULLBACK_DOWN']) {
-  const r = decide({ signalFamily: 'EMA_TREND_PULLBACK', signalSubtype: subtype, nextMoveBias: subtype.endsWith('UP') ? 'UP' : 'DOWN', symbol: 'AAPL', marketType: 'stocks' });
-  assert.equal(r.strategyId, 'ema_pullback_continuation', `${subtype} => ema_pullback_continuation`);
+// 9. EMA long är deklarerad på ema_pullback_continuation. EMA down saknar
+// deklarerad strategi-metadata och får därför inte falla tillbaka till long-
+// strategins kontrakt.
+{
+  const up = decide({ signalFamily: 'EMA_TREND_PULLBACK', signalSubtype: 'EMA_PULLBACK_UP', nextMoveBias: 'UP', symbol: 'AAPL', marketType: 'stocks' });
+  assert.equal(up.strategyId, 'ema_pullback_continuation', 'EMA_PULLBACK_UP => ema_pullback_continuation');
+  assert.equal(up.allowed, true);
+
+  const down = decide({ signalFamily: 'EMA_TREND_PULLBACK', signalSubtype: 'EMA_PULLBACK_DOWN', nextMoveBias: 'DOWN', symbol: 'AAPL', marketType: 'stocks' });
+  assert.equal(down.strategyId, null, 'EMA_PULLBACK_DOWN saknar deklarerad runtime-mapping');
+  assert.equal(down.allowed, false);
+  assert.equal(down.blockedReason, 'unknown_signal_mapping');
+  assert.equal(
+    conn.getRuntimeStrategyMap().some((entry) => entry.raw_signal === 'EMA_PULLBACK_DOWN'),
+    false,
+    'runtime-mappen får inte längre innehålla EMA_PULLBACK_DOWN',
+  );
 }
 
 // 10. Kända stock-VWAP-mappings oförändrade.
@@ -131,10 +144,12 @@ for (const subtype of ['EMA_PULLBACK_UP', 'EMA_PULLBACK_DOWN']) {
   assert.equal(scalper && scalper.id, 'crypto_momentum_scalper', 'uttrycklig contract-match fungerar i legacy-inferens');
 }
 
-// Runtime-mappen innehåller inga crypto-poster som pekar på scalpern.
+// Runtime-mappen innehåller ingen crypto-VWAP-post som pekar på scalpern.
 {
   const cryptoScalperEntries = conn.getRuntimeStrategyMap()
-    .filter((e) => e.market === 'crypto' && e.strategy_id === 'crypto_momentum_scalper');
+    .filter((e) => e.market === 'crypto'
+      && e.strategy_id === 'crypto_momentum_scalper'
+      && String(e.raw_signal || '').includes('VWAP'));
   assert.equal(cryptoScalperEntries.length, 0, 'inga crypto-VWAP→scalper-poster kvar i runtime-mappen');
 }
 
@@ -147,6 +162,19 @@ for (const subtype of ['EMA_PULLBACK_UP', 'EMA_PULLBACK_DOWN']) {
   assert.equal(d.can_place_orders, false);
   assert.equal(d.live_trading_enabled, false);
   assert.equal(d.live_enabled, false);
+}
+
+// Runtime-mappen är härledd ur katalogmetadata, inte en separat handskriven
+// strategi-tabell i connectorn.
+{
+  for (const entry of conn.getRuntimeStrategyMap()) {
+    const strategy = catalog.getStrategyById(entry.strategy_id);
+    assert.ok(strategy, `${entry.raw_signal}: strategi finns i katalogen`);
+    assert.ok(
+      (strategy.runtime_signals || []).some((signal) => signal.raw_signal === entry.raw_signal && signal.routing_enabled !== false),
+      `${entry.raw_signal}: runtime-map entry backas av strategy.runtime_signals`,
+    );
+  }
 }
 
 console.log('strategyRuntimeConnectorService.mappingGuard.test.js passed');

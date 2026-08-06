@@ -84,6 +84,11 @@ function classifyAccountId(accountId) {
   return 'live_or_unknown';
 }
 
+function numberOrNull(value) {
+  const num = Number(value);
+  return Number.isFinite(num) ? num : null;
+}
+
 function createIbFuturesDataAdapterService(options = {}) {
   const config = {
     host: options.host || process.env.IB_GATEWAY_HOST || '127.0.0.1',
@@ -529,6 +534,108 @@ function createIbFuturesDataAdapterService(options = {}) {
     });
   }
 
+  async function fetchAccountUpdatesSnapshot({ accountId = null, timeoutMs = 15000 } = {}) {
+    if (!(await ensureConnected())) return { ok: false, error: 'ib_not_connected', rows: [], portfolio: [] };
+    return pacedRequest(async () => {
+      const requestedAccount = String(accountId || '').trim().toUpperCase();
+      const selectedAccount = requestedAccount
+        || managedAccounts.find((id) => classifyAccountId(id) === 'paper')
+        || managedAccounts[0]
+        || '';
+      if (!selectedAccount) return { ok: false, error: 'no_accounts_visible', rows: [], portfolio: [] };
+      return new Promise((resolve) => {
+        const rows = [];
+        const portfolio = [];
+        const accountTimes = [];
+        let settled = false;
+        const accountKey = String(selectedAccount).trim().toUpperCase();
+        const matchesAccount = (value) => {
+          const raw = String(value || '').trim();
+          return !raw || raw.toUpperCase() === accountKey;
+        };
+        const cleanup = () => {
+          ib.off(EventName.updateAccountValue, onAccountValue);
+          ib.off(EventName.updatePortfolio, onPortfolio);
+          ib.off(EventName.updateAccountTime, onAccountTime);
+          ib.off(EventName.accountDownloadEnd, onDownloadEnd);
+          try { ib.reqAccountUpdates(false, selectedAccount); } catch (_) { /* ignore */ }
+        };
+        const finish = (result) => {
+          if (settled) return;
+          settled = true;
+          clearTimeout(timer);
+          cleanup();
+          resolve(result);
+        };
+        const onAccountValue = (key, value, currency, accountName) => {
+          if (!matchesAccount(accountName)) return;
+          rows.push({
+            account: accountName || selectedAccount,
+            tag: key,
+            value,
+            currency: currency || null,
+          });
+        };
+        const onPortfolio = (contract, position, marketPrice, marketValue, averageCost, unrealizedPNL, realizedPNL, accountName) => {
+          if (!matchesAccount(accountName)) return;
+          portfolio.push({
+            account: accountName || selectedAccount,
+            contract: contract ? {
+              conId: contract.conId ?? null,
+              localSymbol: contract.localSymbol || null,
+              secType: contract.secType || null,
+              symbol: contract.symbol || null,
+              currency: contract.currency || null,
+              exchange: contract.exchange || null,
+              lastTradeDateOrContractMonth: contract.lastTradeDateOrContractMonth || null,
+              multiplier: contract.multiplier || null,
+            } : null,
+            position: numberOrNull(position),
+            marketPrice: numberOrNull(marketPrice),
+            marketValue: numberOrNull(marketValue),
+            averageCost: numberOrNull(averageCost),
+            unrealizedPNL: numberOrNull(unrealizedPNL),
+            realizedPNL: numberOrNull(realizedPNL),
+          });
+        };
+        const onAccountTime = (timeStamp) => {
+          accountTimes.push(timeStamp);
+        };
+        const onDownloadEnd = (accountName) => {
+          if (!matchesAccount(accountName)) return;
+          finish({
+            ok: rows.length > 0 || portfolio.length > 0,
+            error: rows.length > 0 || portfolio.length > 0 ? null : 'account_updates_empty',
+            account: selectedAccount,
+            rows,
+            portfolio,
+            accountTime: accountTimes[accountTimes.length - 1] || null,
+          });
+        };
+        const timer = setTimeout(() => {
+          finish({
+            ok: false,
+            error: `timeout_after_${timeoutMs}ms`,
+            timedOut: true,
+            account: selectedAccount,
+            rows,
+            portfolio,
+            accountTime: accountTimes[accountTimes.length - 1] || null,
+          });
+        }, timeoutMs);
+        ib.on(EventName.updateAccountValue, onAccountValue);
+        ib.on(EventName.updatePortfolio, onPortfolio);
+        ib.on(EventName.updateAccountTime, onAccountTime);
+        ib.on(EventName.accountDownloadEnd, onDownloadEnd);
+        try {
+          ib.reqAccountUpdates(true, selectedAccount);
+        } catch (err) {
+          finish({ ok: false, error: err.message, rows: [], portfolio: [] });
+        }
+      });
+    });
+  }
+
   async function start() {
     stopRequested = false;
     if (started) return ensureConnected();
@@ -611,6 +718,7 @@ function createIbFuturesDataAdapterService(options = {}) {
     getQuote,
     fetchHistoricalBars,
     fetchAccountSummary,
+    fetchAccountUpdatesSnapshot,
     listManagedAccountsUnmasked,
     maskAccountId,
     classifyAccountId,

@@ -62,6 +62,8 @@ assert.equal(adapterModule.classifyAccountId(''), 'unknown');
   assert.equal(r2.ok, false);
   const r3 = await adapter.fetchAccountSummary();
   assert.equal(r3.ok, false);
+  const r4 = await adapter.fetchAccountUpdatesSnapshot();
+  assert.equal(r4.ok, false);
   assert.equal(adapter.isConnected(), false, 'requests får inte trigga anslutning utan start()');
 
   // ── 6. Connect-retry: misslyckad connect bokar backoff-reconnect ──────────
@@ -189,6 +191,55 @@ assert.equal(adapterModule.classifyAccountId(''), 'unknown');
   assert.equal(dedupeClients[0].contractDetailsCalls, 1, 'samtidiga subscribe → exakt en contractDetails');
   rcAdapter.stop();
   dedupeAdapter.stop();
+
+  // ── 8. AccountUpdates engångsläsning → accountvärden + portfolio, sedan cancel
+  const accountClients = [];
+  const accountAdapter = adapterModule.createIbFuturesDataAdapterService({
+    historicalPacingMs: 1,
+    roots: [],
+    ibFactory: () => {
+      const c = new EventEmitter();
+      c.accountUpdateCalls = [];
+      c.connect = () => {
+        c.emit(EventName.server, 193);
+        c.emit(EventName.managedAccounts, 'DUQ565596');
+        c.emit(EventName.nextValidId, 1);
+      };
+      c.disconnect = () => {};
+      c.reqMarketDataType = () => {};
+      c.reqAccountUpdates = (subscribe, acctCode) => {
+        c.accountUpdateCalls.push({ subscribe, acctCode });
+        if (!subscribe) return;
+        setImmediate(() => {
+          c.emit(EventName.updateAccountValue, 'AccountType', 'INDIVIDUAL', '', 'DUQ565596');
+          c.emit(EventName.updateAccountValue, 'NetLiquidation', '11063846.43', 'SEK', 'DUQ565596');
+          c.emit(EventName.updateAccountValue, 'TotalCashValue', '11051965.69', 'SEK', 'DUQ565596');
+          c.emit(EventName.updatePortfolio, {
+            conId: 793356225,
+            localSymbol: 'MNQU6',
+            secType: 'FUT',
+            symbol: 'MNQ',
+            currency: 'USD',
+            lastTradeDateOrContractMonth: '20260918',
+          }, 1, 28608.1503906, 57216.3, 57247.11, -30.81, -344.94, 'DUQ565596');
+          c.emit(EventName.accountDownloadEnd, 'DUQ565596');
+        });
+      };
+      accountClients.push(c);
+      return c;
+    },
+  });
+  assert.equal(await accountAdapter.start(), true);
+  const updates = await accountAdapter.fetchAccountUpdatesSnapshot({ accountId: 'DUQ565596', timeoutMs: 500 });
+  assert.equal(updates.ok, true);
+  assert.equal(updates.account, 'DUQ565596');
+  assert.equal(updates.rows.length, 3);
+  assert.equal(updates.rows.find((row) => row.tag === 'NetLiquidation').value, '11063846.43');
+  assert.equal(updates.portfolio.length, 1);
+  assert.equal(updates.portfolio[0].contract.localSymbol, 'MNQU6');
+  assert.equal(updates.portfolio[0].unrealizedPNL, -30.81);
+  assert.deepEqual(accountClients[0].accountUpdateCalls.map((call) => call.subscribe), [true, false]);
+  accountAdapter.stop();
 
   console.log('ibFuturesDataAdapterService.test.js OK');
 })().catch((err) => {

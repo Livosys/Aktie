@@ -1018,6 +1018,53 @@ assert.equal(readyTrend.canTradeNow, true);
 assert.equal(readyTrend.marketOpen, true);
 assert.equal(readyTrend.mainBlocker, null);
 
+// Aktuell kökandidat → Strategy Dashboard får canonical readiness och booleska
+// runtime-fält från samma canonical router som execution-vägen använder.
+const canonicalCandidateOverview = svc.buildCanonicalStrategyOverview({
+  now: '2026-07-06T15:00:00.000Z',
+  session: openRthSession,
+  paperStrategies: { strategies: [readyPaperRow('ema_pullback_continuation')] },
+  openPositions: [],
+  scannerStrategies: [],
+  candidateQueue: [{
+    candidateId: 'cand_canonical_ready',
+    signalId: 'sig_canonical_ready',
+    strategyId: 'ema_pullback_continuation',
+    strategyName: 'EMA Pullback Continuation',
+    symbol: 'MNQ',
+    futuresSymbol: 'MNQ',
+    direction: 'long',
+    signalSubtype: 'EMA_PULLBACK_UP',
+    signalFamily: 'ema_pullback',
+    signalStatus: 'ready',
+    marketType: 'futures',
+    marketRegime: 'TREND_DAY_UP',
+    signalTimestamp: '2026-07-06T15:00:00.000Z',
+    entryPrice: 20000,
+    stopLoss: 19990,
+    takeProfit: 20020,
+    dataFreshness: 'LIVE',
+    closedCandleConfirmed: true,
+    latestCandleClosed: true,
+    emaPullbackConfirmed: true,
+    emaContext: { hasContext: true, trendIntact: true },
+    trendIntact: true,
+    volumeState: 'strong',
+    rvol: 1.5,
+    extensionLevel: 'normal',
+    producerEntryReadiness: { entryReady: true },
+  }],
+}).strategies.find((row) => row.strategyId === 'ema_pullback_continuation');
+assert.equal(canonicalCandidateOverview.currentCandidate, true);
+assert.equal(canonicalCandidateOverview.currentCandidateId, 'cand_canonical_ready');
+assert.equal(canonicalCandidateOverview.entryReady, true);
+assert.equal(canonicalCandidateOverview.marketRegime, 'TREND_DAY_UP');
+assert.equal(canonicalCandidateOverview.latestSignal, 'EMA_PULLBACK_UP');
+assert.equal(canonicalCandidateOverview.canonicalVerdict, 'EXECUTABLE');
+assert.equal(canonicalCandidateOverview.reasonCode, null);
+assert.equal(canonicalCandidateOverview.canonicalReadiness.decisionSource, 'execution_readiness_engine');
+assert.equal(canonicalCandidateOverview.canonicalSignal.strategyId, 'ema_pullback_continuation');
+
 // ACTIVE_PAPER kräver faktisk öppen position — och gäller då även i underhållsfönster.
 const activeOverview = svc.buildCanonicalStrategyOverview({
   now: '2026-07-06T22:30:00.000Z',

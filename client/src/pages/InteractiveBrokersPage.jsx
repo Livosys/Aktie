@@ -1,4 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
+import { useAuth } from '../auth/AuthProvider.jsx';
 import { DashboardShell, EmptyState } from '../components/dashboard/DashboardKit.jsx';
 import {
   REQUIRED_FINAL_EXECUTION_COMMAND,
@@ -27,6 +28,7 @@ import {
   hasValue,
   numberOrNull,
 } from '../utils/tradingFormatters.js';
+import { apiFetch } from '../lib/apiClient.js';
 const manualPaperHelperAvailable = typeof buildManualPaperBracketSubmitState === 'function';
 
 // Interactive Brokers Paper — Phase 1 read-only preview page.
@@ -98,12 +100,25 @@ function displayBooleanField(source, key, available = true, waitingText = EMPTY_
   return EMPTY_VALUE;
 }
 
-async function fetchJsonWithTimeout(url, { timeoutMs = FETCH_TIMEOUT_MS, signal, ...fetchOptions } = {}) {
+async function fetchJsonWithTimeout(url, { timeoutMs = FETCH_TIMEOUT_MS, signal, csrfToken, ...fetchOptions } = {}) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   const onAbort = () => controller.abort();
   if (signal) signal.addEventListener('abort', onAbort, { once: true });
   try {
+    const method = String(fetchOptions.method || 'GET').toUpperCase();
+    if (!['GET', 'HEAD', 'OPTIONS'].includes(method)) {
+      const headers = new Headers(fetchOptions.headers || {});
+      if (csrfToken && !headers.has('X-CSRF-Token')) {
+        headers.set('X-CSRF-Token', csrfToken);
+      }
+      return await apiFetch(url, {
+        ...fetchOptions,
+        headers,
+        signal: controller.signal,
+        credentials: fetchOptions.credentials || 'include',
+      });
+    }
     const res = await fetch(url, {
       ...fetchOptions,
       signal: controller.signal,
@@ -642,6 +657,9 @@ function ManualApprovalCard({ manualApproval, selectedBlueprint, selectedBluepri
 }
 
 export default function InteractiveBrokersPage() {
+  const auth = useAuth();
+  const csrfToken = auth.csrfToken || null;
+  const csrfRequired = auth.authEnabled !== false;
   const [activeTab, setActiveTab] = useState('oversikt');
   const [state, setState] = useState({
     loading: true,
@@ -700,6 +718,7 @@ export default function InteractiveBrokersPage() {
   const lastIbPaperSnapshotRef = useRef(null);
 
   useEffect(() => {
+    if (csrfRequired && !csrfToken) return undefined;
     let alive = true;
     let controller = null;
 
@@ -724,6 +743,7 @@ export default function InteractiveBrokersPage() {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(SAFE_EXECUTION_PREVIEW_BODY),
+          csrfToken,
           signal: controller.signal,
         })],
       ];
@@ -805,7 +825,7 @@ export default function InteractiveBrokersPage() {
       if (controller) controller.abort();
       clearInterval(timer);
     };
-  }, []);
+  }, [csrfRequired, csrfToken]);
 
   const {
     loading,
@@ -1231,6 +1251,7 @@ export default function InteractiveBrokersPage() {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(SAFE_EXECUTION_PREVIEW_BODY),
+        csrfToken,
       });
       setPaperPreflightResult(previewPayload);
       setState((current) => ({
@@ -1263,6 +1284,7 @@ export default function InteractiveBrokersPage() {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(SAFE_EXECUTION_PREVIEW_BODY),
+        csrfToken,
       });
       setState((current) => ({
         ...current,

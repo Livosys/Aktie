@@ -19,6 +19,7 @@ const catalogService = require('./daytradingStrategyCatalogService');
 const strategyIdNormalizer = require('./strategyIdNormalizerService');
 const futuresPaperLedgerService = require('./futuresPaperLedgerService');
 const paperAllowlistService = require('./paperAllowlistService');
+const strategyRegistryService = require('./strategyRegistryService');
 
 const SAFETY = Object.freeze({
   mode: 'paper_only',
@@ -325,6 +326,43 @@ function getCatalogStrategy(id) {
   try { return catalogService.getStrategyById(id); } catch (err) { return null; }
 }
 
+function getRegistryStrategy(id) {
+  try {
+    return strategyRegistryService.getStrategy(id) || null;
+  } catch (err) {
+    return null;
+  }
+}
+
+function registryStrategiesById() {
+  try {
+    const status = strategyRegistryService.getStatus();
+    const map = new Map();
+    for (const row of (status.strategies || [])) {
+      const id = canonicalId(row.strategy_id || row.strategyId || row.id);
+      if (id) map.set(id, row);
+    }
+    return map;
+  } catch (err) {
+    return new Map();
+  }
+}
+
+function registryStrategyIds(registryMap = null) {
+  const map = registryMap || registryStrategiesById();
+  return [...map.keys()];
+}
+
+function registryFuturesRoots(strategy = {}) {
+  const tokens = new Set([
+    strategy.strategy_id,
+    strategy.strategyId,
+    strategy.strategy_name,
+    ...(Array.isArray(strategy.market_regime_tags) ? strategy.market_regime_tags : []),
+  ].join(' ').toUpperCase().split(/[^A-Z0-9]+/).filter(Boolean));
+  return ['MNQ', 'MES', 'NQ', 'ES'].filter((root) => tokens.has(root));
+}
+
 function symbolMappingFor(market) {
   const m = String(market || '').toLowerCase();
   if (m === 'crypto') return { status: 'unsupported', roots: [] };
@@ -332,12 +370,33 @@ function symbolMappingFor(market) {
   return { status: 'unknown', roots: [] };
 }
 
-function computeCompatibility(id, catalogStrategy, closedTs = null) {
+function computeCompatibility(id, catalogStrategy, closedTs = null, registryStrategyOverride = undefined) {
   const strategy = catalogStrategy || getCatalogStrategy(id);
+  const registryStrategy = registryStrategyOverride === undefined ? getRegistryStrategy(id) : registryStrategyOverride;
   const blockingReasons = [];
   let canonicalReplacementId = null;
 
   if (!strategy) {
+    if (registryStrategy) {
+      const roots = registryFuturesRoots(registryStrategy);
+      const active = registryStrategy.status === 'active' && registryStrategy.enabled !== false;
+      const hasEntryRules = Array.isArray(registryStrategy.entry_rules) && registryStrategy.entry_rules.length > 0;
+      const hasExitRules = Array.isArray(registryStrategy.exit_rules) && registryStrategy.exit_rules.length > 0;
+      if (!active) blockingReasons.push('strategy_registry_not_active');
+      if (!roots.length) blockingReasons.push('unverified_symbol_mapping');
+      if (!hasEntryRules || !hasExitRules) blockingReasons.push('no_risk_mapping');
+      return {
+        compatibility: active && roots.length && hasEntryRules && hasExitRules ? COMPAT.READY : COMPAT.NEEDS_MAPPING,
+        producerStatus: active ? 'verified' : 'missing',
+        producerEvidence: active ? 'strategy_registry_execution_allowlist' : null,
+        adapterStatus: roots.length ? 'supported' : 'unknown',
+        riskMappingStatus: hasEntryRules && hasExitRules ? 'supported' : 'missing',
+        symbolMappingStatus: roots.length ? 'supported' : 'unknown',
+        roots,
+        blockingReasons,
+        canonicalReplacementId: null,
+      };
+    }
     return {
       compatibility: COMPAT.UNSUPPORTED, producerStatus: 'unknown', producerEvidence: null,
       adapterStatus: 'unknown', riskMappingStatus: 'unknown', symbolMappingStatus: 'unknown',
@@ -385,23 +444,28 @@ function computeCompatibility(id, catalogStrategy, closedTs = null) {
 
 // ── Publik läsning ──────────────────────────────────────────────────────────
 
-function buildStrategyView(id, { store, closedTs, degraded }) {
+function buildStrategyView(id, { store, closedTs, degraded, registryMap = null }) {
   const catalogStrategy = getCatalogStrategy(id);
+  const registryStrategy = catalogStrategy ? null : (registryMap ? registryMap.get(id) || null : getRegistryStrategy(id));
   const entry = store.strategies[id] || null;
-  const compatibility = computeCompatibility(id, catalogStrategy, closedTs);
+  const compatibility = computeCompatibility(id, catalogStrategy, closedTs, registryStrategy);
+  const registryApproved = !entry
+    && registryStrategy
+    && registryStrategy.status === 'active'
+    && registryStrategy.enabled !== false;
   const currentTest = computeCurrentTest(id, entry, closedTs);
   return {
     strategyId: id,
-    displayName: (catalogStrategy && catalogStrategy.name) || id,
+    displayName: (catalogStrategy && catalogStrategy.name) || registryStrategy?.strategy_name || id,
     family: (catalogStrategy && catalogStrategy.family) || null,
     direction: (catalogStrategy && catalogStrategy.direction) || null,
-    market: (catalogStrategy && (catalogStrategy.market || catalogStrategy.market_group)) || null,
-    catalogStatus: (catalogStrategy && (catalogStrategy.status || catalogStrategy.catalog_status)) || 'unknown',
-    signalRules: (catalogStrategy && Array.isArray(catalogStrategy.signal_rules)) ? [...catalogStrategy.signal_rules] : [],
+    market: (catalogStrategy && (catalogStrategy.market || catalogStrategy.market_group)) || (registryStrategy ? 'futures' : null),
+    catalogStatus: (catalogStrategy && (catalogStrategy.status || catalogStrategy.catalog_status)) || registryStrategy?.status || 'unknown',
+    signalRules: (catalogStrategy && Array.isArray(catalogStrategy.signal_rules)) ? [...catalogStrategy.signal_rules] : (Array.isArray(registryStrategy?.entry_rules) ? [...registryStrategy.entry_rules] : []),
     approval: {
-      status: entry ? entry.status : null,
-      source: entry ? entry.source : null,
-      approvedAt: entry ? entry.approvedAt : null,
+      status: entry ? entry.status : (registryApproved ? STATUS.APPROVED : null),
+      source: entry ? entry.source : (registryApproved ? 'strategy_registry_execution_allowlist' : null),
+      approvedAt: entry ? entry.approvedAt : (registryApproved ? registryStrategy.updated_at || registryStrategy.created_at || null : null),
       pausedAt: entry ? entry.pausedAt : null,
       removedAt: entry ? entry.removedAt : null,
       degraded: Boolean(degraded),
@@ -425,16 +489,18 @@ function buildStrategyView(id, { store, closedTs, degraded }) {
 function listStrategies() {
   const { store, degraded } = loadStore();
   const closedTs = closedTimestampsByStrategy();
+  const registryMap = registryStrategiesById();
   const ids = new Set();
   try {
     const catalog = catalogService.getCatalog();
     for (const s of (catalog.strategies || [])) if (s && s.id) ids.add(s.id);
   } catch (err) { /* katalogfel → visa åtminstone store-poster */ }
+  for (const id of registryStrategyIds(registryMap)) ids.add(id);
   for (const id of Object.keys(store.strategies || {})) ids.add(id);
 
   const strategies = [];
   for (const id of ids) {
-    try { strategies.push(buildStrategyView(id, { store, closedTs, degraded })); }
+    try { strategies.push(buildStrategyView(id, { store, closedTs, degraded, registryMap })); }
     catch (err) { strategies.push({ strategyId: id, error: true, errorMessage: safeString(err && err.message) || 'strategy_view_failed', ...SAFETY }); }
   }
   return {
@@ -447,7 +513,7 @@ function getStrategy(rawId) {
   const id = canonicalId(rawId);
   if (!id) return null;
   const { store, degraded } = loadStore();
-  const known = getCatalogStrategy(id) || store.strategies[id];
+  const known = getCatalogStrategy(id) || store.strategies[id] || getRegistryStrategy(id);
   if (!known) return null;
   return buildStrategyView(id, { store, closedTs: closedTimestampsByStrategy(), degraded });
 }
@@ -476,10 +542,10 @@ function mutate(rawId, action, { source = 'api', now = new Date() } = {}) {
   const store = loaded.store;
   const existing = store.strategies[id] || null;
   const previousStatus = existing ? existing.status : null;
-  const closedTs = closedTimestampsByStrategy();
-  const baseline = (closedTs.get(id) || []).length;
 
   if (action === 'approve') {
+    const closedTs = closedTimestampsByStrategy();
+    const baseline = (closedTs.get(id) || []).length;
     if (!catalogStrategy) return { ok: false, code: 404, changed: false, reason: 'unknown_strategy_id', ...SAFETY };
     if (existing && existing.status === STATUS.APPROVED) {
       return { ok: true, code: 200, changed: false, strategyId: id, status: STATUS.APPROVED, reason: 'already_approved', ...SAFETY };

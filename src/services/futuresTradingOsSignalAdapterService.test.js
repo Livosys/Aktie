@@ -34,6 +34,20 @@ const signal = {
 assert.deepEqual(mapSignalToFutures({ symbol: 'QQQ', market: 'stocks' }).futuresSymbol, 'MNQ');
 assert.deepEqual(mapSignalToFutures({ symbol: 'SPY', market: 'stocks' }).futuresSymbol, 'MES');
 assert.equal(mapSignalToFutures({ symbol: 'XYZ', market: 'stocks' }).mappingReason, 'no_safe_futures_mapping');
+assert.equal(mapSignalToFutures(
+  { symbol: 'ETHUSDT', market: 'crypto', strategyId: 'ema_pullback_continuation' },
+  { readyForPaperStrategyIds: new Set(['ema_pullback_continuation']) },
+).futuresSymbol, 'MNQ');
+assert.equal(mapSignalToFutures(
+  { symbol: 'ETHUSDT', market: 'crypto', strategyId: 'crypto_watch_only' },
+  { readyForPaperStrategyIds: new Set(['ema_pullback_continuation']) },
+).mappingReason, 'no_safe_futures_mapping');
+assert.equal(mapSignalToFutures(
+  { symbol: 'SOLUSDT', market: 'crypto', signalSubtype: 'VWAP_RECLAIM_UP' },
+  { readyForPaperStrategies: [{ strategyId: 'vwap_volume_breakout_long', readiness: 'READY_FOR_PAPER', producedSubtypes: ['VWAP_RECLAIM_UP'] }] },
+).futuresSymbol, 'MNQ');
+assert.equal(mapSignalToFutures({ symbol: 'BTCUSDT', market: 'crypto', executionSymbol: 'MES' }).futuresSymbol, 'MES');
+assert.equal(mapSignalToFutures({ symbol: 'BTCUSDT', market: 'crypto', futuresInstrument: 'NQ' }).futuresSymbol, 'MNQ');
 
 const adapter = createFuturesTradingOsSignalAdapterService({
   signalReader: () => [signal],
@@ -90,6 +104,84 @@ assert.equal(candidate.exchangeLocalTime, '07:45');
 assert.equal(candidate.isRth, false);
 assert.equal(candidate.isMarketOpen, true);
 assert.equal(candidate.rawSignalSummary.sessionMetadata.sessionId, 'us_premarket');
+
+const readyFallbackAdapter = createFuturesTradingOsSignalAdapterService({
+  signalReader: () => [],
+  readyForPaperStrategyIdsReader: () => new Set(['ema_pullback_continuation']),
+});
+const readyFallback = readyFallbackAdapter.getFuturesCandidates({
+  now,
+  quotes: [
+    {
+      root: 'MNQ',
+      symbol: 'MNQ',
+      price: 20000,
+      previousPrice: 19999,
+      tickSize: 0.25,
+      source: 'real_market_data',
+      fallback: false,
+    },
+  ],
+  signalInputs: [{
+    ...signal,
+    signalId: 'sig-ema-crypto-ready',
+    strategyId: 'ema_pullback_continuation',
+    strategyName: 'EMA Pullback Continuation',
+    symbol: 'ETHUSDT',
+    market: 'crypto',
+    direction: 'long',
+  }],
+});
+assert.equal(readyFallback.ok, true);
+assert.equal(readyFallback.stats.signalsMappedToFutures, 1);
+assert.equal(readyFallback.stats.signalsSkippedNoMapping, 0);
+assert.equal(readyFallback.candidates.length, 1);
+assert.equal(readyFallback.candidates[0].symbol, 'MNQ');
+assert.equal(readyFallback.candidates[0].futuresSymbol, 'MNQ');
+assert.equal(readyFallback.candidates[0].executionSymbol, 'MNQ');
+assert.equal(readyFallback.candidates[0].futuresInstrument, 'MNQ');
+assert.equal(readyFallback.candidates[0].mappingReason, 'ready_for_paper_default_micro_futures_root');
+
+const subtypeResolvedAdapter = createFuturesTradingOsSignalAdapterService({
+  signalReader: () => [],
+  readyForPaperStrategiesReader: () => [{
+    strategyId: 'narrow_state_expansion_long',
+    strategyName: 'Narrow State Expansion Long',
+    readiness: 'READY_FOR_PAPER',
+    producedSubtypes: ['NARROW_BULL_ENTRY'],
+  }],
+});
+const subtypeResolved = subtypeResolvedAdapter.getFuturesCandidates({
+  now,
+  quotes: [
+    {
+      root: 'MNQ',
+      symbol: 'MNQ',
+      price: 20000,
+      previousPrice: 19999,
+      tickSize: 0.25,
+      source: 'real_market_data',
+      fallback: false,
+    },
+  ],
+  signalInputs: [{
+    ...signal,
+    signalId: 'sig-narrow-crypto-no-strategy-id',
+    strategyId: undefined,
+    strategyName: undefined,
+    signalSubtype: 'NARROW_BULL_ENTRY',
+    symbol: 'SOLUSDT',
+    market: 'crypto',
+    direction: 'long',
+  }],
+});
+assert.equal(subtypeResolved.ok, true);
+assert.equal(subtypeResolved.stats.signalsMappedToFutures, 1);
+assert.equal(subtypeResolved.stats.signalsSkippedNoMapping, 0);
+assert.equal(subtypeResolved.candidates.length, 1);
+assert.equal(subtypeResolved.candidates[0].strategyId, 'narrow_state_expansion_long');
+assert.equal(subtypeResolved.candidates[0].symbol, 'MNQ');
+assert.equal(subtypeResolved.candidates[0].mappingReason, 'ready_for_paper_default_micro_futures_root');
 
 const nativeAdapter = createFuturesTradingOsSignalAdapterService({
   signalReader: () => [],

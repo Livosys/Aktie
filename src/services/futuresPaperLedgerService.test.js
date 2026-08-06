@@ -267,4 +267,57 @@ assert.equal(legacyRead.entrySession, null);
 assert.equal(legacyRead.exitSession, null);
 assert.equal(legacyRead.sessionId, null);
 
+let directPositionAccountReads = 0;
+const directPositionSvc = createFuturesPaperLedgerService({
+  storageService: {
+    readPositions() {
+      return {
+        open: [
+          {
+            tradeId: 'open_fast_path',
+            root: 'MNQ',
+            symbol: 'MNQU6',
+            side: 'long',
+            contracts: 1,
+            entryPrice: 20000,
+            openedAt: '2026-07-06T11:00:00.000Z',
+            status: 'open',
+          },
+        ],
+        closed: [
+          {
+            tradeId: 'closed_fast_path',
+            root: 'MNQ',
+            symbol: 'MNQU6',
+            side: 'long',
+            contracts: 1,
+            entryPrice: 20000,
+            exitPrice: 20002,
+            openedAt: '2026-07-06T11:00:00.000Z',
+            closedAt: '2026-07-06T11:05:00.000Z',
+            status: 'closed',
+            realizedPnlUsd: 1.56,
+          },
+        ],
+        updatedAt: '2026-07-06T11:05:00.000Z',
+      };
+    },
+    readTrades() { throw new Error('getFuturesPaperPositions must not read trades'); },
+    readJsonl() { throw new Error('getFuturesPaperPositions must not read event logs'); },
+  },
+  accountService: {
+    getFuturesPaperAccount() {
+      directPositionAccountReads += 1;
+      return { account: { fxUsdSek: 10.5 } };
+    },
+  },
+});
+const directPositions = directPositionSvc.getFuturesPaperPositions();
+assert.equal(directPositions.ok, true);
+assert.equal(directPositions.positions.totalOpen, 1);
+assert.equal(directPositions.positions.totalClosed, 1);
+assert.equal(directPositions.openPositions[0].tradeId, 'open_fast_path');
+assert.equal(directPositions.closedPositions[0].tradeId, 'closed_fast_path');
+assert.equal(directPositionAccountReads, 1, 'positionsläsning ska hämta konto/fx en gång per snapshot');
+
 console.log('futuresPaperLedgerService.test.js passed');

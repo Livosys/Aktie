@@ -4,11 +4,12 @@ const assert = require('assert/strict');
 
 const { createFuturesPaperQuoteSourceService } = require('./futuresPaperQuoteSourceService');
 
-function fakeMarketData({ enabled = true, quotes = {}, candles = null, freshMs = 120000 } = {}) {
+function fakeMarketData({ enabled = true, quotes = {}, historicalQuotes = {}, candles = null, freshMs = 120000 } = {}) {
   return {
     QUOTE_FRESH_MS: freshMs,
     isEnabled: () => enabled,
     getQuote: (root) => quotes[root] || null,
+    getLatestHistoricalQuote: (root) => historicalQuotes[root] || null,
     getCandles: (root, opts) => candles ? candles(root, opts) : { ok: false, error: 'no_fixture', candles: [], openCandle: null },
   };
 }
@@ -32,6 +33,14 @@ const ibQuote = (root, { staleAgeMs = 1000, delayed = false } = {}) => ({
   marketDataType: delayed ? 3 : 1, marketDataTypeLabel: delayed ? 'delayed' : 'realtime',
   updatedAt: new Date(Date.now() - staleAgeMs).toISOString(), staleAgeMs,
   source: { provider: 'ibkr', delayed },
+});
+
+const historicalQuote = (root) => ({
+  instrument: root, root, localSymbol: `${root}U6`, conId: 42, expiry: '20260918',
+  exchange: 'CME', currency: 'USD', last: 29600, close: 29600, bid: null, ask: null,
+  volume: 123, tickSize: 0.25, marketDataTypeLabel: 'historical',
+  updatedAt: '2026-07-17T20:59:00.000Z', staleAgeMs: 24 * 60 * 60 * 1000,
+  source: { provider: 'ibkr', historical: true },
 });
 
 // En vardagstid när Globex är ÖPPEN (onsdag 14:00 UTC = 09:00 CT, US RTH).
@@ -85,7 +94,43 @@ assert.equal(staleClosedQuote.source, 'ibkr_realtime', 'stängd marknad → beh�
 assert.equal(staleClosedQuote.stale, true, 'ska vara tydligt märkt stale');
 assert.equal(staleClosedQuote.simulated, false);
 
-// ── 5. Blandad feed → mixed-label ────────────────────────────────────────────
+// ── 5. Ingen streaming under STÄNGD marknad → IB historical close, ej fallback
+const closedHistoricalService = createFuturesPaperQuoteSourceService({
+  marketDataService: fakeMarketData({
+    quotes: {},
+    historicalQuotes: {
+      MNQ: historicalQuote('MNQ'),
+      MES: historicalQuote('MES'),
+      NQ: historicalQuote('NQ'),
+      ES: historicalQuote('ES'),
+    },
+  }),
+  fallbackFeedService: fakeFallback(),
+});
+const closedHistoricalFeed = closedHistoricalService.getQuotes(CLOSED_NOW);
+assert.equal(closedHistoricalFeed.feed.source, 'ibkr_historical_close');
+assert.equal(closedHistoricalFeed.feed.fallback, false);
+assert.equal(closedHistoricalFeed.feed.simulated, false);
+for (const q of closedHistoricalFeed.quotes) {
+  assert.equal(q.source, 'ibkr_historical_close');
+  assert.equal(q.historical, true);
+  assert.equal(q.fallback, false);
+  assert.equal(q.simulated, false);
+}
+
+// ── 6. Ingen streaming under ÖPPEN marknad → fallback kvarstår ──────────────
+const openMissingStreamingService = createFuturesPaperQuoteSourceService({
+  marketDataService: fakeMarketData({
+    quotes: {},
+    historicalQuotes: { MNQ: historicalQuote('MNQ') },
+  }),
+  fallbackFeedService: fakeFallback(),
+});
+const openMissingStreamingQuote = openMissingStreamingService.getQuote('MNQ', OPEN_NOW);
+assert.equal(openMissingStreamingQuote.source, 'simulated_fallback');
+assert.equal(openMissingStreamingQuote.simulated, true);
+
+// ── 7. Blandad feed → mixed-label ────────────────────────────────────────────
 const mixedService = createFuturesPaperQuoteSourceService({
   marketDataService: fakeMarketData({ quotes: { MNQ: ibQuote('MNQ') } }),
   fallbackFeedService: fakeFallback(),
@@ -96,7 +141,7 @@ assert.equal(mixedFeed.feed.fallback, true);
 assert.equal(mixedFeed.feed.perSymbolSources.MNQ, 'ibkr_realtime');
 assert.equal(mixedFeed.feed.perSymbolSources.MES, 'simulated_fallback');
 
-// ── 6. IB avstängd → allt simulerad fallback (som idag) ──────────────────────
+// ── 8. IB avstängd → allt simulerad fallback (som idag) ──────────────────────
 const disabledService = createFuturesPaperQuoteSourceService({
   marketDataService: fakeMarketData({ enabled: false }),
   fallbackFeedService: fakeFallback(),
@@ -110,7 +155,7 @@ const disabledCandles = disabledService.getCandles('MNQ', { now: OPEN_NOW });
 assert.equal(disabledCandles.candles.length, 0);
 assert.ok(disabledCandles.warnings.includes('ib_futures_data_disabled'));
 
-// ── 7. Candles med IB → vidarebefordras med contract ─────────────────────────
+// ── 9. Candles med IB → vidarebefordras med contract ─────────────────────────
 const candleService = createFuturesPaperQuoteSourceService({
   marketDataService: fakeMarketData({
     quotes: {},

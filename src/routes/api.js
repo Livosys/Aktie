@@ -121,6 +121,7 @@ const futuresPaperDeskService = require('../services/futuresPaperDeskService');
 const futuresPaperAccountService = require('../services/futuresPaperAccountService');
 const futuresPaperLedgerService = require('../services/futuresPaperLedgerService');
 const futuresPaperScannerService = require('../services/futuresPaperScannerService');
+const futuresPaperExecutionOnboardingService = require('../services/futuresPaperExecutionOnboardingService');
 const futuresPaperPriceFeedService = require('../services/futuresPaperPriceFeedService');
 const futuresTechnicalInfoService = require('../services/futuresTechnicalInfoService');
 const futuresPaperStrategyApprovalService = require('../services/futuresPaperStrategyApprovalService');
@@ -158,6 +159,7 @@ const interactiveBrokersPaperOneShotArmService = require('../services/interactiv
 const interactiveBrokersPaperFinalGateStatusService = require('../services/interactiveBrokersPaperFinalGateStatusService');
 const interactiveBrokersPaperReadinessLoaderService = require('../services/interactiveBrokersPaperReadinessLoaderService');
 const interactiveBrokersPaperExecutionPreviewService = require('../services/interactiveBrokersPaperExecutionPreviewService');
+const interactiveBrokersDryRunScaffoldService = require('../services/interactiveBrokersDryRunScaffoldService');
 const interactiveBrokersGatewayHealthService = require('../services/interactiveBrokersGatewayHealthService');
 const ibPaperExecutionConfigService = require('../services/ibPaperExecutionConfigService');
 const ibPaperExecutionOrchestratorService = require('../services/ibPaperExecutionOrchestratorService');
@@ -3630,12 +3632,24 @@ function buildFuturesRuntimeInputsIsolated() {
   });
 }
 
+async function readFuturesRuntimeAccountSummary() {
+  const service = ibPaperAccountSummaryService.defaultIbPaperAccountSummaryService;
+  try {
+    return await service.getSummary();
+  } catch (_) {
+    try { return service.getCachedSummary(); } catch (err) { return null; }
+  }
+}
+
 // Hämtar fil-inputs i barnprocessen och sätter ihop payloaden här. Ett anrop åt
 // gången; samtidiga anropare delar samma promise.
 function refreshFuturesRuntimeCache() {
   if (futuresRuntimeRefreshPromise) return futuresRuntimeRefreshPromise;
-  futuresRuntimeRefreshPromise = buildFuturesRuntimeInputsIsolated()
-    .then((inputs) => buildFuturesRuntimeCached(inputs))
+  futuresRuntimeRefreshPromise = Promise.all([
+    buildFuturesRuntimeInputsIsolated(),
+    readFuturesRuntimeAccountSummary(),
+  ])
+    .then(([inputs, ibAccount]) => buildFuturesRuntimeCached({ ...inputs, ibAccount }))
     .finally(() => { futuresRuntimeRefreshPromise = null; });
   return futuresRuntimeRefreshPromise;
 }
@@ -3946,12 +3960,14 @@ router.get('/futures-paper/strategies/overview', (req, res) => {
     const session = futuresPaperDeskService.getFuturesSessionState(now);
     const paperStrategies = require('../services/paperEnabledStrategiesService').buildPaperStrategyList({});
     const strategyStatus = futuresPaperScannerService.defaultFuturesPaperScannerService.getStrategyStatus({ now });
+    const scannerRuntime = futuresPaperScannerService.defaultFuturesPaperScannerService.getScannerRuntime({ now });
     const overview = futuresPaperDeskService.buildCanonicalStrategyOverview({
       now,
       session,
       paperStrategies,
       openPositions: [],
       scannerStrategies: strategyStatus?.strategies || [],
+      candidateQueue: scannerRuntime?.candidateQueue?.candidates || [],
     });
     res.json({ ok: true, readOnly: true, ...overview, ...futuresPaperDeskService.SAFETY });
   } catch (err) {
@@ -4133,6 +4149,17 @@ router.get('/futures-paper/ibkr-paper-execution/status', async (req, res) => {
     res.json(await ibPaperExecutionOrchestratorService.defaultIbPaperExecutionOrchestratorService.buildExecutionStatus());
   } catch (err) {
     res.status(500).json({ ok: false, error: err.message, ...ibPaperExecutionOrchestratorService.SAFETY });
+  }
+});
+
+router.get('/futures-paper/ibkr-paper-execution/onboarding', async (req, res) => {
+  try {
+    res.json(await futuresPaperExecutionOnboardingService.buildExecutionOnboardingStatus({
+      now: req.query.now || undefined,
+      fresh: req.query.fresh === 'true',
+    }));
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message, ...futuresPaperExecutionOnboardingService.SAFETY });
   }
 });
 
@@ -5599,6 +5626,16 @@ const interactiveBrokersPreviewService = require('../services/interactiveBrokers
 router.get('/interactive-brokers/status', (req, res) => {
   try { res.json(interactiveBrokersPreviewService.getIbPaperStatus()); }
   catch (err) { res.status(500).json({ ok: false, error: err.message, safety: interactiveBrokersPreviewService.SAFETY }); }
+});
+
+router.get('/interactive-brokers/dry-run-scaffold', async (req, res) => {
+  try {
+    res.json(await interactiveBrokersDryRunScaffoldService.buildDryRunExecutionScaffold({
+      now: req.query.now || undefined,
+    }));
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message, safety: interactiveBrokersDryRunScaffoldService.SAFETY });
+  }
 });
 
 // Tekniskt kontrollrum för det read-only IB futures-datalagret: adapter,

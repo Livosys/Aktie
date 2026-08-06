@@ -236,16 +236,21 @@ test('history records transitions', () => {
   assert.ok(last.timestamp);
 });
 
-// 18) listStrategies visar alla 33, safety paper-only, inga secrets.
-test('listStrategies returns all catalog strategies, safety, no secrets', () => {
+// 18) listStrategies visar katalogen plus registry-strategier, safety paper-only, inga secrets.
+test('listStrategies returns catalog and registry strategies, safety, no secrets', () => {
   reset();
   const info = service.listStrategies();
-  assert.ok(info.count >= 33);
+  assert.ok(info.count >= 34);
   assert.strictEqual(info.mode, 'paper_only');
   assert.strictEqual(info.broker_enabled, false);
   const ready = info.strategies.find((s) => s.strategyId === 'narrow_breakout');
   assert.ok(Array.isArray(ready.signalRules), 'backend view exposes catalog signal rules');
   assert.ok(Array.isArray(ready.compatibility.allowedRoots), 'backend view exposes allowed roots');
+  const registryStrategy = info.strategies.find((s) => s.strategyId === 'mnq_globex_momentum_v1');
+  assert.ok(registryStrategy, 'backend view exposes scanner registry strategy');
+  assert.strictEqual(registryStrategy.approval.status, 'approved');
+  assert.strictEqual(registryStrategy.approval.source, 'strategy_registry_execution_allowlist');
+  assert.deepStrictEqual(registryStrategy.compatibility.roots, ['MNQ']);
   const json = JSON.stringify(info);
   for (const re of [/api[_-]?key/i, /secret/i, /password/i, /token/i, /credential/i, /bearer/i]) {
     assert.ok(!re.test(json), `sensitive term ${re}`);
@@ -266,6 +271,7 @@ test('READY list is backend-derived with producer evidence', () => {
     ['resistance_rejection', 'closed_trades'],
     ['trend_continuation', 'both'],
     ['vwap_failed_breakout_short', 'both'],
+    ['mnq_globex_momentum_v1', 'strategy_registry_execution_allowlist'],
     // Den här strategin har både scanner-emitter och historiska closed trades i ledgern.
     ['vwap_volume_breakout_long', 'both'],
   ]);

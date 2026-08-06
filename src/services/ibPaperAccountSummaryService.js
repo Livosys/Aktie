@@ -37,9 +37,14 @@ const NUMERIC_TAGS = new Set([
   'BuyingPower',
   'UnrealizedPnL',
   'RealizedPnL',
+  'DailyPnL',
   'MaintMarginReq',
   'InitMarginReq',
   'Cushion',
+  'ExcessLiquidity',
+  'FullInitMarginReq',
+  'FullMaintMarginReq',
+  'GrossPositionValue',
 ]);
 
 function envBool(name, fallback = false) {
@@ -99,20 +104,81 @@ function createIbPaperAccountSummaryService(options = {}) {
     };
   }
 
-  async function fetchSummary() {
-    if (!isEnabled()) return buildBlocked('ib_futures_data_disabled');
-    const result = await adapter.fetchAccountSummary();
-    if (!result.ok) {
-      return buildBlocked(result.error || 'account_summary_failed', { connected: adapter.isConnected() });
-    }
-    const selection = selectPaperAccount(result.rows);
+  function sumPortfolioField(portfolio = [], field) {
+    const values = portfolio
+      .map((row) => Number(row?.[field]))
+      .filter((value) => Number.isFinite(value));
+    if (!values.length) return null;
+    return values.reduce((sum, value) => sum + value, 0);
+  }
+
+  function ledgerCurrencyRank(currency, accountCurrency) {
+    const normalized = String(currency || '').trim().toUpperCase();
+    const preferred = String(accountCurrency || '').trim().toUpperCase();
+    if (normalized === 'BASE') return 0;
+    if (preferred && normalized === preferred) return 1;
+    if (!normalized) return 2;
+    return 3;
+  }
+
+  function pickLedgerValue(candidates = [], accountCurrency = null) {
+    const ranked = candidates
+      .map((candidate, index) => ({
+        value: Number(candidate?.value),
+        currency: candidate?.currency || null,
+        index,
+      }))
+      .filter((candidate) => Number.isFinite(candidate.value))
+      .sort((a, b) => (
+        ledgerCurrencyRank(a.currency, accountCurrency) - ledgerCurrencyRank(b.currency, accountCurrency)
+        || a.index - b.index
+      ));
+    return ranked.length ? ranked[0].value : null;
+  }
+
+  function sanitizePortfolioPositions(portfolio = []) {
+    return portfolio.map((row) => ({
+      accountMasked: adapterModule.maskAccountId(row?.account),
+      accountClassification: adapterModule.classifyAccountId(row?.account),
+      conId: row?.contract?.conId ?? null,
+      localSymbol: row?.contract?.localSymbol || null,
+      secType: row?.contract?.secType || null,
+      symbol: row?.contract?.symbol || null,
+      currency: row?.contract?.currency || null,
+      exchange: row?.contract?.exchange || null,
+      lastTradeDateOrContractMonth: row?.contract?.lastTradeDateOrContractMonth || null,
+      position: row?.position ?? null,
+      marketPrice: row?.marketPrice ?? null,
+      marketValue: row?.marketValue ?? null,
+      averageCost: row?.averageCost ?? null,
+      avgCost: row?.averageCost ?? null,
+      unrealizedPnl: row?.unrealizedPNL ?? null,
+      realizedPnl: row?.realizedPNL ?? null,
+      source: 'ibkr_paper_account_updates',
+    }));
+  }
+
+  function buildSummaryFromRows(rowsInput = [], {
+    snapshotSource = 'account_summary',
+    accountSummaryBlocker = null,
+    portfolio = [],
+  } = {}) {
+    const rawRows = Array.isArray(rowsInput) ? rowsInput : [];
+    const selection = selectPaperAccount(rawRows);
     if (!selection.ok) {
       return buildBlocked(selection.blocker, {
-        visibleAccounts: [...new Set(result.rows.map((r) => adapterModule.maskAccountId(r.account)))],
+        visibleAccounts: [...new Set(rawRows.map((r) => adapterModule.maskAccountId(r.account)))],
+        accountSummaryBlocker,
+        snapshotSource,
       });
     }
-    const rows = result.rows.filter((r) => String(r.account || '').trim() === selection.accountId);
+    const rows = rawRows.filter((r) => String(r.account || '').trim() === selection.accountId);
     const values = {};
+    const ledgerCandidates = {
+      RealizedPnL: [],
+      UnrealizedPnL: [],
+      DailyPnL: [],
+    };
     let currency = null;
     let accountType = null;
     for (const row of rows) {
@@ -122,9 +188,24 @@ function createIbPaperAccountSummaryService(options = {}) {
         values[row.tag] = Number.isFinite(num) ? num : null;
         if (row.currency && !currency && row.tag === 'NetLiquidation') currency = row.currency;
       }
+      if (row.tag === '$LEDGER-RealizedPnL') {
+        ledgerCandidates.RealizedPnL.push({ value: row.value, currency: row.currency });
+      }
+      if (row.tag === '$LEDGER-UnrealizedPnL') {
+        ledgerCandidates.UnrealizedPnL.push({ value: row.value, currency: row.currency });
+      }
+      if (row.tag === '$LEDGER-FuturesPNL') {
+        ledgerCandidates.DailyPnL.push({ value: row.value, currency: row.currency });
+      }
     }
+    if (values.RealizedPnL == null) values.RealizedPnL = pickLedgerValue(ledgerCandidates.RealizedPnL, currency);
+    if (values.UnrealizedPnL == null) values.UnrealizedPnL = pickLedgerValue(ledgerCandidates.UnrealizedPnL, currency);
+    if (values.DailyPnL == null) values.DailyPnL = pickLedgerValue(ledgerCandidates.DailyPnL, currency);
+    if (values.UnrealizedPnL == null) values.UnrealizedPnL = sumPortfolioField(portfolio, 'unrealizedPNL');
+    if (values.RealizedPnL == null) values.RealizedPnL = sumPortfolioField(portfolio, 'realizedPNL');
+    if (values.GrossPositionValue == null) values.GrossPositionValue = sumPortfolioField(portfolio, 'marketValue');
     if (values.NetLiquidation == null) {
-      return buildBlocked('net_liquidation_missing');
+      return buildBlocked('net_liquidation_missing', { accountSummaryBlocker, snapshotSource });
     }
     return {
       ok: true,
@@ -144,11 +225,104 @@ function createIbPaperAccountSummaryService(options = {}) {
         maintMarginReq: values.MaintMarginReq ?? null,
         initMarginReq: values.InitMarginReq ?? null,
         cushion: values.Cushion ?? null,
+        dailyPnl: values.DailyPnL ?? null,
+        excessLiquidity: values.ExcessLiquidity ?? null,
+        fullInitMarginReq: values.FullInitMarginReq ?? null,
+        fullMaintMarginReq: values.FullMaintMarginReq ?? null,
+        grossPositionValue: values.GrossPositionValue ?? null,
       },
       connected: adapter.isConnected(),
       generatedAt: nowIso(),
+      snapshotSource,
+      accountSummaryBlocker,
+      portfolioPositions: sanitizePortfolioPositions(portfolio),
       ...SAFETY,
     };
+  }
+
+  function needsAccountUpdateCompletion(summary) {
+    if (!summary?.ok || !summary.account) return false;
+    return ['unrealizedPnl', 'realizedPnl', 'dailyPnl'].some((field) => summary.account[field] == null);
+  }
+
+  function mergeAccountUpdateCompletion(summary, updates) {
+    if (!updates) return summary;
+    if (!updates.ok || !updates.account) {
+      return {
+        ...summary,
+        accountUpdatesBlocker: updates.accountUpdatesBlocker || updates.blocker || 'account_updates_snapshot_failed',
+      };
+    }
+    const account = { ...summary.account };
+    for (const field of [
+      'unrealizedPnl',
+      'realizedPnl',
+      'dailyPnl',
+      'grossPositionValue',
+      'excessLiquidity',
+      'fullInitMarginReq',
+      'fullMaintMarginReq',
+    ]) {
+      if (account[field] == null && updates.account[field] != null) account[field] = updates.account[field];
+    }
+    return {
+      ...summary,
+      account,
+      snapshotSource: 'account_summary_with_account_updates',
+      accountUpdatesBlocker: null,
+      accountUpdatesSnapshotSource: updates.snapshotSource || null,
+      portfolioPositions: Array.isArray(updates.portfolioPositions) && updates.portfolioPositions.length
+        ? updates.portfolioPositions
+        : summary.portfolioPositions,
+    };
+  }
+
+  async function fetchAccountUpdatesFallback(accountSummaryBlocker) {
+    if (typeof adapter.fetchAccountUpdatesSnapshot !== 'function') return null;
+    const result = await adapter.fetchAccountUpdatesSnapshot({ accountId: configuredAccount || null });
+    if (!result.ok) {
+      return buildBlocked(accountSummaryBlocker || 'account_summary_failed', {
+        accountSummaryBlocker,
+        accountUpdatesBlocker: result.error || 'account_updates_failed',
+        connected: adapter.isConnected(),
+        snapshotSource: 'account_summary_unavailable',
+      });
+    }
+    const fallback = buildSummaryFromRows(result.rows, {
+      snapshotSource: 'account_updates_fallback',
+      accountSummaryBlocker,
+      portfolio: result.portfolio || [],
+    });
+    if (fallback.ok) return fallback;
+    return buildBlocked(accountSummaryBlocker || fallback.blocker || 'account_summary_failed', {
+      accountSummaryBlocker,
+      accountUpdatesBlocker: fallback.blocker || 'account_updates_snapshot_failed',
+      connected: adapter.isConnected(),
+      snapshotSource: 'account_updates_fallback_failed',
+    });
+  }
+
+  async function fetchSummary() {
+    if (!isEnabled()) return buildBlocked('ib_futures_data_disabled');
+    const result = await adapter.fetchAccountSummary();
+    const accountSummaryBlocker = result.ok ? null : (result.error || 'account_summary_failed');
+    if (result.ok && Array.isArray(result.rows) && result.rows.length > 0) {
+      const summary = buildSummaryFromRows(result.rows, { snapshotSource: 'account_summary' });
+      if (summary.ok) {
+        if (!needsAccountUpdateCompletion(summary)) return summary;
+        const completion = await fetchAccountUpdatesFallback('pnl_fields_missing');
+        return mergeAccountUpdateCompletion(summary, completion);
+      }
+      if (!['no_accounts_visible', 'net_liquidation_missing'].includes(summary.blocker)) return summary;
+      const fallback = await fetchAccountUpdatesFallback(summary.blocker);
+      return fallback || summary;
+    }
+    const fallback = await fetchAccountUpdatesFallback(accountSummaryBlocker);
+    if (fallback) return fallback;
+    if (!result.ok) {
+      return buildBlocked(result.error || 'account_summary_failed', { connected: adapter.isConnected() });
+    }
+    return buildBlocked('account_summary_empty', { connected: adapter.isConnected() });
   }
 
   // Hämta med cache. UI-endpoints använder denna — aldrig direkta IB-anrop

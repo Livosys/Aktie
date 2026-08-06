@@ -28,7 +28,9 @@ const SAFETY = Object.freeze({
 
 const SOURCE_IB_REALTIME = 'ibkr_realtime';
 const SOURCE_IB_DELAYED = 'ibkr_delayed';
+const SOURCE_IB_HISTORICAL = 'ibkr_historical_close';
 const SOURCE_SIMULATED = 'simulated_fallback';
+const IB_SOURCES = new Set([SOURCE_IB_REALTIME, SOURCE_IB_DELAYED, SOURCE_IB_HISTORICAL]);
 
 function nowIso(now = new Date()) {
   return new Date(now).toISOString();
@@ -83,6 +85,42 @@ function createFuturesPaperQuoteSourceService(options = {}) {
     };
   }
 
+  function ibHistoricalQuoteView(root, now = new Date()) {
+    if (!marketData.isEnabled()) return null;
+    if (typeof marketData.getLatestHistoricalQuote !== 'function') return null;
+    const session = futuresMarketHours.getCmeEquityIndexFuturesSessionState(now);
+    if (session.isOpen) return null;
+    const quote = marketData.getLatestHistoricalQuote(root, { now });
+    if (!quote) return null;
+    const price = quote.close ?? quote.last;
+    if (price == null) return null;
+    return {
+      root,
+      symbol: root,
+      price,
+      previousPrice: quote.close ?? null,
+      bid: null,
+      ask: null,
+      spread: null,
+      volume: quote.volume ?? null,
+      tickSize: quote.tickSize ?? 0.25,
+      localSymbol: quote.localSymbol || null,
+      conId: quote.conId || null,
+      expiry: quote.expiry || null,
+      exchange: quote.exchange || 'CME',
+      currency: quote.currency || 'USD',
+      updatedAt: quote.updatedAt,
+      staleAgeMs: quote.staleAgeMs,
+      stale: true,
+      source: SOURCE_IB_HISTORICAL,
+      simulated: false,
+      fallback: false,
+      delayed: false,
+      historical: true,
+      note: 'Verifierad IB historical close under stängd CME-session.',
+    };
+  }
+
   function buildQuoteRows(now = new Date(), { tickSimulated = false } = {}) {
     // Fallback-quotes hämtas i ETT anrop (tick eller läs) och används endast
     // för de roots där IB-quoten saknas/är stale.
@@ -94,15 +132,17 @@ function createFuturesPaperQuoteSourceService(options = {}) {
       }
       return fallbackRows.get(root) || null;
     }
-    return roots.map((root) => ibQuoteView(root, now) || fallbackRow(root)).filter(Boolean);
+    return roots.map((root) => ibQuoteView(root, now) || ibHistoricalQuoteView(root, now) || fallbackRow(root)).filter(Boolean);
   }
 
   function summarizeFeed(rows) {
     const sources = new Set(rows.map((row) => row.source));
-    const allIb = rows.length > 0 && [...sources].every((s) => s === SOURCE_IB_REALTIME || s === SOURCE_IB_DELAYED);
-    const anyIb = [...sources].some((s) => s === SOURCE_IB_REALTIME || s === SOURCE_IB_DELAYED);
+    const allIb = rows.length > 0 && [...sources].every((s) => IB_SOURCES.has(s));
+    const anyIb = [...sources].some((s) => IB_SOURCES.has(s));
     let source;
-    if (allIb) source = sources.has(SOURCE_IB_DELAYED) ? SOURCE_IB_DELAYED : SOURCE_IB_REALTIME;
+    if (allIb) {
+      source = sources.size === 1 ? [...sources][0] : 'ibkr_market_data';
+    }
     else if (anyIb) source = 'mixed_ibkr_and_simulated';
     else source = SOURCE_SIMULATED;
     return {
@@ -112,7 +152,7 @@ function createFuturesPaperQuoteSourceService(options = {}) {
       provider: anyIb ? 'ibkr' : 'simulated',
       perSymbolSources: Object.fromEntries(rows.map((row) => [row.root, row.source])),
       description: allIb
-        ? 'Riktiga IB-quotes (CME) för MNQ/MES/NQ/ES via read-only IB-dataadapter.'
+        ? 'Riktig IB-marknadsdata (CME) för MNQ/MES/NQ/ES via read-only IB-dataadapter.'
         : (anyIb
           ? 'Blandad feed: IB-quotes där de är färska, simulerad fallback för övriga.'
           : 'Simulerad fallback-feed för MNQ/MES. Ingen riktig MNQ/MES-marknadsdata är inkopplad.'),
@@ -146,7 +186,7 @@ function createFuturesPaperQuoteSourceService(options = {}) {
   function getQuote(root, now = new Date()) {
     const key = String(root || '').trim().toUpperCase();
     if (!roots.includes(key)) return null;
-    return ibQuoteView(key, now) || fallback.getQuote(key, now);
+    return ibQuoteView(key, now) || ibHistoricalQuoteView(key, now) || fallback.getQuote(key, now);
   }
 
   // Producer-interface: riktiga IB-candles när datalagret är på.
@@ -183,6 +223,7 @@ function createFuturesPaperQuoteSourceService(options = {}) {
     SAFETY,
     SOURCE_IB_REALTIME,
     SOURCE_IB_DELAYED,
+    SOURCE_IB_HISTORICAL,
     SOURCE_SIMULATED,
     getQuotes,
     tickQuotes,
@@ -198,6 +239,7 @@ module.exports = {
   SAFETY,
   SOURCE_IB_REALTIME,
   SOURCE_IB_DELAYED,
+  SOURCE_IB_HISTORICAL,
   SOURCE_SIMULATED,
   createFuturesPaperQuoteSourceService,
   defaultFuturesPaperQuoteSourceService,
