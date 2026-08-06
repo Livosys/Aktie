@@ -16,6 +16,19 @@ const SAFETY = Object.freeze({
 
 const STALE_ENTRY_FILL_GRACE_MS = 24 * 60 * 60 * 1000;
 
+// Statusar där brokern förväntas ha något levande. Samma mängd styr BÅDE vad
+// compareSnapshots flaggar och vad självläkningen får röra — de får aldrig
+// glida isär, för då kan en intent antingen flaggas utan att kunna läkas eller
+// läkas utan att någonsin ha flaggats.
+const NON_TERMINAL_INTENT_STATUSES = Object.freeze([
+  'submit_started',
+  'submitted',
+  'acknowledged',
+  'partially_filled',
+  'reconciliation_required',
+  'unknown',
+]);
+
 function nowIso(now = new Date()) {
   return new Date(now).toISOString();
 }
@@ -168,6 +181,75 @@ function isOldFlattenWithoutBrokerExposure(intent = {}, { nowMs, nonFlatPosition
   return nowMs - updatedMs >= STALE_ENTRY_FILL_GRACE_MS;
 }
 
+// Har intenten kvar exponering som bevisligen är DESS egen?
+//
+// Generaliserar de två specialfallen ovan till en enda regel. Kontraktsmatchning
+// ensam räcker inte — den kan inte skilja "positionen den här intenten gäller"
+// från "en helt annan position på samma kontrakt", och eftersom MNQ är enda
+// roten som handlas matchar i praktiken allt. Attributionen ur skyddsordrarnas
+// orderRef avgör saken: en position som bevisligen ägs av en ANNAN execution är
+// inte den här intentens exponering.
+//
+// Går positionen inte att tillskriva någon execution vet vi ingenting — då
+// räknas den som exponering. Konservativt beteende är alltid default.
+function intentHasAttributableExposure(intent = {}, { nonFlatPositions = [], openOrders = [] } = {}) {
+  const targetConId = flattenTargetConId(intent);
+  return nonFlatPositions.some((position) => {
+    const sameContract = positionMatchesIntentContract(position, intent)
+      || Boolean(targetConId && upperText(position.conId || position.contract?.conId) === targetConId);
+    if (!sameContract) return false;
+    const owners = positionAttributedExecutionIds(position, openOrders);
+    if (owners.size === 0) return true;
+    if (!intent.executionId) return true;
+    return owners.has(String(intent.executionId));
+  });
+}
+
+// Reconciliation har hittills bara KUNNAT beskriva ett problem, aldrig avsluta
+// det: compareSnapshots är ren och reconcilePaperBroker läser intents utan att
+// någonsin skriva. Terminalstatus sätts uteslutande av adapterns event-vägar
+// (orderStatus, execDetails, IB-fel). Missas eventet — processen nere, benet
+// okänt, gateway borta — finns ingen väg tillbaka: IB:s reqExecutions svarar
+// bara med INNEVARANDE handelsdag, så beviset åldras ur brokerns svar och
+// intenten blir en permanent orphan som degraderar varje ny entry.
+//
+// Det här är den saknade vägen. Den är generell — ingen kännedom om strategi,
+// kind eller orderben — och vilar på fyra bevis som ALLA måste hålla:
+//   1. intenten är icke-terminal (exakt samma mängd compareSnapshots flaggar)
+//   2. ingen order- eller execution-ref hos brokern pekar på den
+//   3. den är äldre än brokerns bevisfönster (STALE_ENTRY_FILL_GRACE_MS)
+//   4. ingen kvarvarande exponering kan tillskrivas just den intenten
+//
+// Anroparen lägger till ett femte krav som inte kan uttryckas här: att
+// broker-läsningen faktiskt lyckades. Absence of evidence får bara räknas som
+// evidence of absence när svaret är komplett.
+function findResolvableStaleIntents({
+  intents = [],
+  openOrders = [],
+  executions = [],
+  positions = [],
+  now = new Date(),
+} = {}) {
+  const nowMs = Date.parse(now);
+  if (!Number.isFinite(nowMs)) return [];
+  const nonFlatPositions = positions.filter((row) => Number(row.position || 0) !== 0);
+  const brokerRefs = new Set([
+    ...openOrders.map(orderRefOf).filter(Boolean),
+    ...executions.map(orderRefOf).filter(Boolean),
+  ]);
+
+  return intents.filter((intent) => {
+    if (!NON_TERMINAL_INTENT_STATUSES.includes(intent.status)) return false;
+    const hasBrokerRef = (intent.orderRef && brokerRefs.has(intent.orderRef))
+      || [...brokerRefs].some((ref) => executionIdFromOrderRef(ref) === intent.executionId);
+    if (hasBrokerRef) return false;
+    const updatedMs = Date.parse(intent.updatedAt || intent.submittedAt || intent.entryFilledAt || intent.createdAt);
+    if (!Number.isFinite(updatedMs)) return false;
+    if (nowMs - updatedMs < STALE_ENTRY_FILL_GRACE_MS) return false;
+    return !intentHasAttributableExposure(intent, { nonFlatPositions, openOrders });
+  });
+}
+
 function compareSnapshots({ intents = [], openOrders = [], executions = [], positions = [], orderStatuses = [], now = new Date() } = {}) {
   const local = buildLocalIndex(intents);
   const discrepancies = [];
@@ -191,7 +273,7 @@ function compareSnapshots({ intents = [], openOrders = [], executions = [], posi
   }
 
   for (const intent of intents) {
-    if (!['submit_started', 'submitted', 'acknowledged', 'partially_filled', 'reconciliation_required', 'unknown'].includes(intent.status)) continue;
+    if (!NON_TERMINAL_INTENT_STATUSES.includes(intent.status)) continue;
     const hasBrokerRef = (intent.orderRef && brokerRefs.has(intent.orderRef))
       || [...brokerRefs].some((ref) => executionIdFromOrderRef(ref) === intent.executionId);
     if (!hasBrokerRef && isOldEntryFillWithoutBrokerExposure(intent, { nowMs, nonFlatPositions, openOrders })) continue;
@@ -294,12 +376,35 @@ function createIbPaperBrokerReconciliationService(options = {}) {
 	    const executions = executionsResult.executions || [];
 	    const positions = positionsResult.positions || [];
 	    const orderStatuses = adapter.getOrderStatuses ? adapter.getOrderStatuses() : [];
-	    const compared = compareSnapshots({ intents, openOrders, executions, positions, orderStatuses });
 	    const requestDiscrepancies = [];
 	    if (openOrdersResult.ok !== true || openOrdersResult.timedOut === true) requestDiscrepancies.push({ type: 'reconciliation_open_orders_timeout', blocker: openOrdersResult.blocker || openOrdersResult.error || 'reconciliation_open_orders_timeout' });
 	    if (executionsResult.ok !== true || executionsResult.timedOut === true) requestDiscrepancies.push({ type: 'reconciliation_executions_timeout', blocker: executionsResult.blocker || executionsResult.error || 'reconciliation_executions_timeout' });
 	    if (positionsResult.ok !== true || positionsResult.timedOut === true) requestDiscrepancies.push({ type: 'reconciliation_positions_timeout', blocker: positionsResult.blocker || positionsResult.error || 'reconciliation_positions_timeout' });
 	    if (accountSummaryResult.ok !== true || accountSummaryResult.timedOut === true) requestDiscrepancies.push({ type: 'reconciliation_account_summary_unavailable', blocker: accountSummaryResult.blocker || accountSummaryResult.error || 'reconciliation_account_summary_unavailable' });
+
+	    // Femte beviset (se findResolvableStaleIntents): läk ALDRIG på ett
+	    // ofullständigt broker-svar. Är någon läsning trasig eller avkortad
+	    // betyder frånvaro av en order ingenting — då är den enda säkra
+	    // slutsatsen att vi inte vet, och intenten ska stå kvar som avvikelse.
+	    const healed = [];
+	    if (requestDiscrepancies.length === 0 && typeof intentService.updateStatus === 'function') {
+	      for (const intent of findResolvableStaleIntents({ intents, openOrders, executions, positions })) {
+	        // 'expired', inte 'filled'/'cancelled': vi kan bevisa att ordern inte
+	        // längre lever hos brokern, men inte hur den slutade. Att gissa utfall
+	        // vore att hitta på handelshistorik.
+	        const result = intentService.updateStatus(intent.idempotencyKey, 'expired', {
+	          blocker: 'broker_evidence_window_elapsed',
+	          resolvedBy: 'reconciliation_self_heal',
+	          resolvedAt: nowIso(),
+	          previousStatus: intent.status,
+	        });
+	        if (result?.ok) healed.push({ executionId: intent.executionId, previousStatus: intent.status });
+	      }
+	    }
+	    // Läkta poster måste läsas om innan jämförelsen, annars flaggar
+	    // compareSnapshots dem en sista gång på en status som inte längre gäller.
+	    const effectiveIntents = healed.length ? intentService.listIntents({ limit: 250 }) : intents;
+	    const compared = compareSnapshots({ intents: effectiveIntents, openOrders, executions, positions, orderStatuses });
 	    const allDiscrepancies = [...requestDiscrepancies, ...compared.discrepancies];
 	    const degraded = allDiscrepancies.length > 0;
 	    const snapshot = {
@@ -309,7 +414,8 @@ function createIbPaperBrokerReconciliationService(options = {}) {
 	      newEntriesAllowed: degraded !== true,
 	      blockedReason: degraded ? (allDiscrepancies[0]?.type || allDiscrepancies[0]?.blocker || 'broker_reconciliation_degraded') : null,
       generatedAt: nowIso(),
-      intents,
+      intents: effectiveIntents,
+      healedIntents: healed,
       openOrders,
       executions,
       positions,
@@ -355,8 +461,12 @@ function createIbPaperBrokerReconciliationService(options = {}) {
 
 module.exports = {
   SAFETY,
+  NON_TERMINAL_INTENT_STATUSES,
+  STALE_ENTRY_FILL_GRACE_MS,
   orderRefOf,
   executionIdFromOrderRef,
+  intentHasAttributableExposure,
+  findResolvableStaleIntents,
   compareSnapshots,
   createIbPaperBrokerReconciliationService,
 };

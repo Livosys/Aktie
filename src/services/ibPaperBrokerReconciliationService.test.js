@@ -314,7 +314,258 @@ const recon = require('./ibPaperBrokerReconciliationService');
   assert(result.discrepancies.some((row) => row.type === 'internal_order_missing_at_ib'));
 }
 
+// ── Självläkning: findResolvableStaleIntents ────────────────────────────────
+// Bevisregeln är generell. Testerna nedan varierar ETT bevis i taget så att det
+// syns exakt vilket som bär.
+
+const NOW = '2026-08-06T17:15:00.000Z';
+const OLD = '2026-07-28T19:50:39.146Z';
+
+// Det historiska fallet: en flatten från 28 juli, ingen broker-ref kvar, och en
+// position på SAMMA kontrakt som bevisligen tillhör en annan execution.
+const historicalOrphan = {
+  executionId: 'emergency_flatten_ms52m5gk7175',
+  idempotencyKey: 'flatten:793356225:emergency_flatten_ms52m5gk7175',
+  status: 'submitted',
+  root: 'MNQ',
+  direction: 'short',
+  updatedAt: OLD,
+};
+const foreignPosition = { position: -1, conId: 793356225, localSymbol: 'MNQU6', symbol: 'MNQ' };
+const foreignProtectiveOrders = [
+  { orderRef: 'TOS-PAPER-fxp_cebb174e813ef953-stopLoss', contract: { conId: 793356225, localSymbol: 'MNQU6' }, orderType: 'STP', status: 'PreSubmitted' },
+  { orderRef: 'TOS-PAPER-fxp_cebb174e813ef953-takeProfit', contract: { conId: 793356225, localSymbol: 'MNQU6' }, orderType: 'LMT', status: 'Submitted' },
+];
+
+{
+  const resolvable = recon.findResolvableStaleIntents({
+    now: NOW,
+    intents: [historicalOrphan],
+    openOrders: foreignProtectiveOrders,
+    executions: [],
+    positions: [foreignPosition],
+  });
+  assert.equal(resolvable.length, 1);
+  assert.equal(resolvable[0].executionId, 'emergency_flatten_ms52m5gk7175');
+}
+
+{
+  // Ägs positionen av intenten SJÄLV är den fortfarande exponerad → aldrig läka.
+  const ownProtectiveOrders = foreignProtectiveOrders.map((order) => ({
+    ...order,
+    orderRef: order.orderRef.replace('fxp_cebb174e813ef953', 'emergency_flatten_ms52m5gk7175'),
+  }));
+  const resolvable = recon.findResolvableStaleIntents({
+    now: NOW,
+    intents: [historicalOrphan],
+    openOrders: ownProtectiveOrders,
+    executions: [],
+    positions: [foreignPosition],
+  });
+  assert.equal(resolvable.length, 0);
+}
+
+{
+  // Går positionen inte att tillskriva NÅGON execution vet vi ingenting.
+  // Konservativt beteende: den räknas som exponering och blockerar läkning.
+  const resolvable = recon.findResolvableStaleIntents({
+    now: NOW,
+    intents: [historicalOrphan],
+    openOrders: [],
+    executions: [],
+    positions: [foreignPosition],
+  });
+  assert.equal(resolvable.length, 0);
+}
+
+{
+  // Bevis 3: yngre än brokerns bevisfönster → kan legitimt vara på väg.
+  const fresh = { ...historicalOrphan, updatedAt: '2026-08-06T16:59:00.000Z' };
+  assert.equal(recon.findResolvableStaleIntents({
+    now: NOW, intents: [fresh], openOrders: [], executions: [], positions: [],
+  }).length, 0);
+}
+
+{
+  // Bevis 2: brokern känner fortfarande till ordern → rör den inte.
+  assert.equal(recon.findResolvableStaleIntents({
+    now: NOW,
+    intents: [historicalOrphan],
+    openOrders: [{ orderRef: 'TOS-PAPER-emergency_flatten_ms52m5gk7175-flatten', contract: {} }],
+    executions: [],
+    positions: [],
+  }).length, 0);
+
+  // Samma sak när beviset ligger i executions i stället för openOrders.
+  assert.equal(recon.findResolvableStaleIntents({
+    now: NOW,
+    intents: [historicalOrphan],
+    openOrders: [],
+    executions: [{ orderRef: 'TOS-PAPER-emergency_flatten_ms52m5gk7175-flatten' }],
+    positions: [],
+  }).length, 0);
+}
+
+{
+  // Bevis 1: redan terminal → utanför regelns mängd.
+  for (const status of ['filled', 'cancelled', 'rejected', 'expired']) {
+    assert.equal(recon.findResolvableStaleIntents({
+      now: NOW, intents: [{ ...historicalOrphan, status }], openOrders: [], executions: [], positions: [],
+    }).length, 0, `status ${status} ska aldrig läkas`);
+  }
+}
+
+{
+  // Generalitet: regeln känner inte till flatten, kind eller strategi. En vanlig
+  // entry-intent med samma bevisläge läks identiskt.
+  const plainEntry = {
+    executionId: 'fxp_plain_entry',
+    idempotencyKey: 'idem-plain-entry',
+    status: 'submitted',
+    root: 'MNQ',
+    updatedAt: OLD,
+    entryFilledAt: OLD,
+  };
+  const resolvable = recon.findResolvableStaleIntents({
+    now: NOW,
+    intents: [plainEntry],
+    openOrders: foreignProtectiveOrders,
+    executions: [],
+    positions: [foreignPosition],
+  });
+  assert.equal(resolvable.length, 1);
+  assert.equal(resolvable[0].executionId, 'fxp_plain_entry');
+}
+
 (async () => {
+  // ── FAS 5: läkningen ska ge en ren reconciliation utan manuell inblandning ──
+  {
+    // Ägaren till dagens position måste finnas lokalt, annars flaggas dess
+    // skyddsordrar som ib_order_missing_locally och testet mäter fel sak.
+    // Så ser produktionsläget ut: en öppen position ligger på 'submitted'.
+    const positionOwner = {
+      executionId: 'fxp_cebb174e813ef953',
+      idempotencyKey: 'idem-position-owner',
+      status: 'submitted',
+      root: 'MNQ',
+      updatedAt: OLD,
+      entryFilledAt: OLD,
+    };
+    const stored = [{ ...historicalOrphan }, positionOwner];
+    const writes = [];
+    const healingService = recon.createIbPaperBrokerReconciliationService({
+      adapter: {
+        getStatus: () => ({ connected: true, nextValidIdReady: true }),
+        getOpenPaperOrders: async () => ({ ok: true, orders: foreignProtectiveOrders }),
+        getPaperExecutions: async () => ({ ok: true, executions: [] }),
+        getPaperPositions: async () => ({ ok: true, positions: [foreignPosition] }),
+        getAccountSummary: async () => ({ ok: true }),
+        getOrderStatuses: () => [],
+      },
+      intentService: {
+        listIntents: () => stored.map((row) => ({ ...row })),
+        updateStatus: (key, status, extra) => {
+          const record = stored.find((row) => row.idempotencyKey === key);
+          if (!record) return { ok: false, error: 'intent_not_found' };
+          writes.push({ key, status, extra });
+          record.status = status;
+          return { ok: true, record };
+        },
+      },
+    });
+    process.env.IBKR_PAPER_EXECUTION_ENABLED = 'true';
+    const snapshot = await healingService.reconcilePaperBroker({ force: true });
+
+    assert.equal(writes.length, 1, 'exakt en läkning');
+    assert.equal(writes[0].status, 'expired', 'terminal utan att påstå ett utfall');
+    assert.equal(writes[0].extra.blocker, 'broker_evidence_window_elapsed');
+    assert.equal(writes[0].extra.previousStatus, 'submitted');
+    assert.equal(snapshot.status, 'ok');
+    assert.equal(snapshot.degraded, false);
+    assert.equal(snapshot.newEntriesAllowed, true);
+    assert.equal(snapshot.blockedReason, null);
+    assert.deepEqual(snapshot.discrepancies, []);
+    assert.equal(snapshot.healedIntents.length, 1);
+
+    // Idempotens: andra varvet har inget kvar att läka.
+    const second = await healingService.reconcilePaperBroker({ force: true });
+    assert.equal(writes.length, 1, 'läkningen får inte upprepas');
+    assert.equal(second.healedIntents.length, 0);
+    assert.equal(second.newEntriesAllowed, true);
+  }
+
+  // ── FAS 6: regression — läkningen får aldrig maskera en riktig blockerare ──
+  {
+    // Ofullständigt broker-svar: frånvaro bevisar ingenting → ingen läkning.
+    const stored = [{ ...historicalOrphan }];
+    const writes = [];
+    const degradedRead = recon.createIbPaperBrokerReconciliationService({
+      adapter: {
+        getStatus: () => ({ connected: true, nextValidIdReady: true }),
+        getOpenPaperOrders: async () => ({ ok: false, timedOut: true, orders: [] }),
+        getPaperExecutions: async () => ({ ok: true, executions: [] }),
+        getPaperPositions: async () => ({ ok: true, positions: [] }),
+        getAccountSummary: async () => ({ ok: true }),
+        getOrderStatuses: () => [],
+      },
+      intentService: {
+        listIntents: () => stored.map((row) => ({ ...row })),
+        updateStatus: (key, status, extra) => { writes.push({ key, status, extra }); return { ok: true }; },
+      },
+    });
+    const snapshot = await degradedRead.reconcilePaperBroker({ force: true });
+    assert.equal(writes.length, 0, 'aldrig läka på ett trasigt broker-svar');
+    assert.equal(snapshot.degraded, true);
+    assert.equal(snapshot.newEntriesAllowed, false);
+    assert.equal(stored[0].status, 'submitted', 'intenten ska stå orörd');
+  }
+
+  {
+    // En LEVANDE position med egna skyddsordrar ska fortfarande blockera när
+    // dess intent hänger — självläkningen får inte röra pågående exponering.
+    const liveIntent = {
+      executionId: 'fxp_cebb174e813ef953',
+      idempotencyKey: 'idem-live-position',
+      status: 'submitted',
+      root: 'MNQ',
+      updatedAt: OLD,
+      entryFilledAt: OLD,
+    };
+    const stored = [liveIntent];
+    const writes = [];
+    const liveService = recon.createIbPaperBrokerReconciliationService({
+      adapter: {
+        getStatus: () => ({ connected: true, nextValidIdReady: true }),
+        // Skyddsordrarna bär intentens EGET executionId → positionen är dess egen.
+        getOpenPaperOrders: async () => ({ ok: true, orders: foreignProtectiveOrders }),
+        getPaperExecutions: async () => ({ ok: true, executions: [] }),
+        getPaperPositions: async () => ({ ok: true, positions: [foreignPosition] }),
+        getAccountSummary: async () => ({ ok: true }),
+        getOrderStatuses: () => [],
+      },
+      intentService: {
+        listIntents: () => stored.map((row) => ({ ...row })),
+        updateStatus: (key, status, extra) => { writes.push({ key, status, extra }); return { ok: true }; },
+      },
+    });
+    await liveService.reconcilePaperBroker({ force: true });
+    assert.equal(writes.length, 0, 'en position med egna skyddsordrar får aldrig läkas bort');
+    assert.equal(stored[0].status, 'submitted');
+  }
+
+  {
+    // Oskyddad position: en riktig, allvarlig avvikelse som måste överleva.
+    const unprotected = recon.compareSnapshots({
+      now: NOW,
+      intents: [],
+      openOrders: [],
+      executions: [],
+      positions: [foreignPosition],
+      orderStatuses: [],
+    });
+    assert(unprotected.discrepancies.some((row) => row.type === 'unprotected_position'));
+  }
+
   const service = recon.createIbPaperBrokerReconciliationService({
     adapter: {
       getStatus: () => ({ connected: true, nextValidIdReady: true }),
