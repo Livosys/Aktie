@@ -17,7 +17,15 @@ function seed(service, key = 'idem-1') {
   service.createIntent({
     idempotencyKey: key,
     executionId: 'fxp_test_1',
-    intent: { root: 'MNQ', direction: 'short', strategyId: 'mnq_globex_momentum_v1' },
+    intent: {
+      lifecycleId: 'life-1',
+      candidateId: 'cand-1',
+      signalId: 'sig-1',
+      intentId: key,
+      root: 'MNQ',
+      direction: 'short',
+      strategyId: 'mnq_globex_momentum_v1',
+    },
   });
   return key;
 }
@@ -42,6 +50,10 @@ function seed(service, key = 'idem-1') {
 
   assert.equal(result.ok, true);
   const record = service.getIntent(key);
+  assert.equal(record.lifecycleId, 'life-1');
+  assert.equal(record.candidateId, 'cand-1');
+  assert.equal(record.signalId, 'sig-1');
+  assert.equal(record.intentId, key);
   assert.equal(record.status, 'expired');
   // Fält som den gamla vitlistan tappade.
   assert.equal(record.resolvedBy, 'reconciliation_self_heal');
@@ -56,6 +68,10 @@ function seed(service, key = 'idem-1') {
   // Posten och revisionsloggen ska nu säga samma sak.
   const events = service.listEvents({ limit: 10 });
   const statusChange = events.find((row) => row.type === 'status_change');
+  assert.equal(statusChange.lifecycleId, 'life-1');
+  assert.equal(statusChange.candidateId, 'cand-1');
+  assert.equal(statusChange.signalId, 'sig-1');
+  assert.equal(statusChange.intentId, key);
   assert.equal(statusChange.resolvedBy, record.resolvedBy);
   assert.equal(statusChange.previousStatus, record.previousStatus);
 }
@@ -67,6 +83,10 @@ function seed(service, key = 'idem-1') {
   const before = service.getIntent(key);
 
   service.updateStatus(key, 'filled', {
+    lifecycleId: 'kapad-life',
+    candidateId: 'kapad-candidate',
+    signalId: 'kapad-signal',
+    intentId: 'kapad-intent',
     idempotencyKey: 'kapad-nyckel',
     executionId: 'kapat-id',
     createdAt: '1999-01-01T00:00:00.000Z',
@@ -74,6 +94,10 @@ function seed(service, key = 'idem-1') {
   });
 
   const after = service.getIntent(key);
+  assert.equal(after.lifecycleId, before.lifecycleId);
+  assert.equal(after.candidateId, before.candidateId);
+  assert.equal(after.signalId, before.signalId);
+  assert.equal(after.intentId, before.intentId);
   assert.equal(after.idempotencyKey, before.idempotencyKey);
   assert.equal(after.executionId, before.executionId);
   assert.equal(after.createdAt, before.createdAt);

@@ -20,6 +20,7 @@ const reservationModule = require('./futuresPaperExecutionTargetReservationServi
   assert.equal(internalBlocked.blocker, 'internal_futures_simulation_disabled');
 
   const first = service.reserveExecutionTarget({
+    lifecycleId: 'life-race-1',
     candidateId: 'cand-race-1',
     executionTarget: 'ibkr_paper',
     strategyId: 'strategy_a',
@@ -27,6 +28,7 @@ const reservationModule = require('./futuresPaperExecutionTargetReservationServi
   });
   assert.equal(first.ok, true);
   assert.equal(first.reserved, true);
+  assert.equal(first.record.lifecycleId, 'life-race-1');
 
   const sameTarget = service.reserveExecutionTarget({
     candidateId: 'cand-race-1',
@@ -36,6 +38,16 @@ const reservationModule = require('./futuresPaperExecutionTargetReservationServi
   });
   assert.equal(sameTarget.ok, true);
   assert.equal(sameTarget.duplicate, true);
+  assert.equal(sameTarget.record.lifecycleId, 'life-race-1');
+
+  const missingLifecycle = service.reserveExecutionTarget({
+    candidateId: 'cand-no-lifecycle',
+    executionTarget: 'ibkr_paper',
+    strategyId: 'strategy_a',
+    signalTimestamp: '2026-07-15T22:29:30.000Z',
+  });
+  assert.equal(missingLifecycle.ok, true);
+  assert.equal(missingLifecycle.record.lifecycleId, null);
 
   const attempts = await Promise.all([
     Promise.resolve().then(() => service.reserveExecutionTarget({ candidateId: 'cand-race-2', executionTarget: 'internal_simulation' })),
@@ -79,6 +91,7 @@ const reservationModule = require('./futuresPaperExecutionTargetReservationServi
   );
   const gcReserve = gcSvc.reserveExecutionTarget({ candidateId: 'live-cand', executionTarget: 'ibkr_paper', now });
   assert.equal(gcReserve.reserved, true, 'reserve still succeeds while GC runs');
+  assert.equal(gcReserve.record.lifecycleId, null, 'reservation does not synthesize lifecycleId from candidateId');
   assert.equal(fs.existsSync(path.join(gcDir, 'ancient.json')), false, 'opportunistic GC removed the ancient file');
   assert.ok(gcSvc.getReservation('live-cand'), 'new reservation persisted');
 

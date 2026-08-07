@@ -14,6 +14,27 @@ const orchestratorModule = require('./ibPaperExecutionOrchestratorService');
 const canonicalRouter = require('./canonical/canonicalExecutionRouter');
 const intentModule = require('./ibPaperExecutionIntentService');
 const reservationModule = require('./futuresPaperExecutionTargetReservationService');
+const lifecycleIdentity = require('./futuresLifecycleIdentityService');
+
+assert.equal(typeof lifecycleIdentity.compact, 'function');
+assert.deepEqual(lifecycleIdentity.compact({
+  lifecycleId: ' life-export ',
+  candidateId: '',
+  executionId: null,
+}), { lifecycleId: 'life-export' });
+assert.deepEqual(lifecycleIdentity.identityFrom({ candidateId: 'cand-only' }), {
+  lifecycleId: null,
+  candidateId: 'cand-only',
+  signalId: null,
+  intentId: null,
+  executionId: null,
+  idempotencyKey: null,
+  tradeId: null,
+});
+assert.deepEqual(
+  lifecycleIdentity.mergeIdentity({ candidateId: 'cand-only' }, { executionId: 'exec-only' }),
+  { candidateId: 'cand-only', executionId: 'exec-only' },
+);
 
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'ib-paper-orchestrator-test-'));
 const intentService = intentModule.createIbPaperExecutionIntentService({ dir: path.join(tmp, 'intents') });
@@ -148,7 +169,9 @@ const fakeReconciliation = {
 };
 
 const serverCandidate = {
+  lifecycleId: 'life-cand-1',
   candidateId: 'cand-1',
+  signalId: 'sig-cand-1',
   strategyId: 'ema_pullback_continuation',
   root: 'MNQ',
   symbol: 'MNQ',
@@ -196,6 +219,7 @@ function assertLosslessSubset(source, target, label = 'candidate') {
 
 {
   const normalizedNative = orchestratorModule.normalizeCandidate({
+    lifecycleId: 'life-native-1',
     candidateId: 'native-1',
     strategyId: 'mnq_globex_momentum_v1',
     symbol: 'MNQ',
@@ -205,10 +229,21 @@ function assertLosslessSubset(source, target, label = 'candidate') {
     closedCandleConfirmed: true,
     signalTimestamp: '2026-07-15T22:29:30.000Z',
   });
+  assert.equal(normalizedNative.lifecycleId, 'life-native-1');
   assert.equal(normalizedNative.signalSubtype, 'GLOBEX_MOMENTUM');
   assert.equal(normalizedNative.signalStatus, 'ready');
   assert.equal(normalizedNative.subtype, 'GLOBEX_MOMENTUM');
   assert.equal(normalizedNative.latestCandleClosed, true);
+
+  const normalizedMissingLifecycle = orchestratorModule.normalizeCandidate({
+    candidateId: 'native-missing-life',
+    strategyId: 'mnq_globex_momentum_v1',
+    symbol: 'MNQ',
+    direction: 'long',
+    signalTimestamp: '2026-07-15T22:29:30.000Z',
+  });
+  assert.equal(normalizedMissingLifecycle.lifecycleId, null);
+  assert.equal(normalizedMissingLifecycle.candidateId, 'native-missing-life');
 }
 
 {
@@ -470,6 +505,11 @@ const service = orchestratorModule.createIbPaperExecutionOrchestratorService({
   assert.equal(first.actualSubmit, false);
   assert.equal(submitCalls, 0);
   assert.equal(first.normalizedOrder.root, 'MNQ');
+  assert.equal(first.lifecycleId, 'life-cand-1');
+  assert.equal(first.intent.lifecycleId, 'life-cand-1');
+  assert.equal(first.intent.signalId, 'sig-cand-1');
+  assert.equal(first.normalizedOrder.lifecycleId, 'life-cand-1');
+  assert.equal(first.normalizedOrder.executionId, first.normalizedOrder.internalExecutionId);
   assert.equal(first.normalizedOrder.quantity, 1);
   assert.equal(first.normalizedOrder.accountMasked, 'DU***596');
   assert.equal(first.normalizedOrder.executionTarget, 'ibkr_paper');
@@ -618,7 +658,10 @@ const service = orchestratorModule.createIbPaperExecutionOrchestratorService({
     assert.equal(attributedStatus.reconciliation.executions[0].strategyId, 'vwap_volume_breakout_long');
   }
 
-  const rawVwapCandidate = loadVwapCandidate();
+  const rawVwapCandidate = {
+    ...loadVwapCandidate(),
+    lifecycleId: 'life-vwap-historical-fixture',
+  };
   const normalizedVwapCandidate = orchestratorModule.normalizeCandidate(rawVwapCandidate);
   const vwapService = orchestratorModule.createIbPaperExecutionOrchestratorService({
     adapter: fakeAdapter,
@@ -702,6 +745,13 @@ const service = orchestratorModule.createIbPaperExecutionOrchestratorService({
   assert.equal(vwap.intentCreate.created, true);
   assert.equal(vwap.intent.strategyId, 'vwap_volume_breakout_long');
   assert.equal(vwap.intent.candidateId, 'futures_candidate_22e100f7d22ada70');
+  assert.equal(vwap.intent.lifecycleId, 'life-vwap-historical-fixture');
+  assert.equal(vwap.normalizedOrder.lifecycleId, 'life-vwap-historical-fixture');
+  assert.equal(vwap.orderPlan.lifecycleId, 'life-vwap-historical-fixture');
+  assert.equal(vwap.orderPlan.candidateId, 'futures_candidate_22e100f7d22ada70');
+  assert.equal(vwap.orderPlan.signalId, 'QQQ_2026-08-06T14:24:00.000Z');
+  assert.equal(vwap.orderPlan.executionId, vwap.normalizedOrder.executionId);
+  assert.equal(vwap.orderPlan.idempotencyKey, vwap.normalizedOrder.idempotencyKey);
 
   console.log('ibPaperExecutionOrchestratorService.test.js passed');
 })().catch((err) => {

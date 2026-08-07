@@ -151,6 +151,7 @@ function buildEvidence(input = {}) {
 function createCanonicalSignal(input = {}) {
   return {
     canonicalVersion: CANONICAL_SIGNAL_VERSION,
+    lifecycleId: textOrNull(input.lifecycleId),
     signalId: textOrNull(input.signalId),
     producerId: textOrNull(input.producerId),
     producerType: textOrNull(input.producerType),

@@ -11,6 +11,7 @@ const now = '2026-07-06T11:00:00.000Z';
 const signalTimestamp = '2026-07-06T12:45:00.000Z';
 const signal = {
   signalId: 'sig-qqq-long-1',
+  lifecycleId: 'life-sig-qqq-long-1',
   strategyId: 'trend_continuation',
   strategyName: 'Trend Continuation',
   symbol: 'QQQ',
@@ -79,19 +80,21 @@ const adapter = createFuturesTradingOsSignalAdapterService({
   signalReader: () => [signal],
 });
 
+const mnqQuotes = [
+  {
+    root: 'MNQ',
+    symbol: 'MNQ',
+    price: 20000,
+    previousPrice: 19999,
+    tickSize: 0.25,
+    source: 'real_market_data',
+    fallback: false,
+  },
+];
+
 const result = adapter.getFuturesCandidates({
   now,
-  quotes: [
-    {
-      root: 'MNQ',
-      symbol: 'MNQ',
-      price: 20000,
-      previousPrice: 19999,
-      tickSize: 0.25,
-      source: 'real_market_data',
-      fallback: false,
-    },
-  ],
+  quotes: mnqQuotes,
 });
 
 assert.equal(result.ok, true);
@@ -101,6 +104,8 @@ assert.equal(result.stats.signalsMappedToFutures, 1);
 assert.equal(result.candidates.length, 1);
 
 const candidate = result.candidates[0];
+assert.equal(candidate.lifecycleId, 'life-sig-qqq-long-1');
+assert.notEqual(candidate.lifecycleId, candidate.candidateId);
 assert.equal(candidate.tradeType, 'canonical_signal');
 assert.equal(candidate.signalId, 'sig-qqq-long-1');
 assert.equal(candidate.strategyId, 'trend_continuation');
@@ -130,6 +135,26 @@ assert.equal(candidate.exchangeLocalTime, '07:45');
 assert.equal(candidate.isRth, false);
 assert.equal(candidate.isMarketOpen, true);
 assert.equal(candidate.rawSignalSummary.sessionMetadata.sessionId, 'us_premarket');
+
+const missingLifecycle = adapter.getFuturesCandidates({
+  now,
+  quotes: mnqQuotes,
+  signalInputs: [{ ...signal, lifecycleId: undefined }],
+});
+assert.equal(missingLifecycle.candidates.length, 1);
+assert.equal(missingLifecycle.candidates[0].lifecycleId, null);
+assert.equal(missingLifecycle.candidates[0].candidateId, candidate.candidateId);
+assert.equal(missingLifecycle.candidates[0].signalId, candidate.signalId);
+
+const lifecycleOnlyChanged = adapter.getFuturesCandidates({
+  now,
+  quotes: mnqQuotes,
+  signalInputs: [{ ...signal, lifecycleId: 'life-sig-qqq-long-2' }],
+});
+assert.equal(lifecycleOnlyChanged.candidates.length, 1);
+assert.equal(lifecycleOnlyChanged.candidates[0].lifecycleId, 'life-sig-qqq-long-2');
+assert.equal(lifecycleOnlyChanged.candidates[0].candidateId, candidate.candidateId);
+assert.equal(lifecycleOnlyChanged.candidates[0].signalId, candidate.signalId);
 
 const readyFallbackAdapter = createFuturesTradingOsSignalAdapterService({
   signalReader: () => [],
@@ -191,6 +216,26 @@ assert.equal(readyEquity.candidates[0].futuresSymbol, 'MNQ');
 assert.equal(readyEquity.candidates[0].executionSymbol, 'MNQ');
 assert.equal(readyEquity.candidates[0].futuresInstrument, 'MNQ');
 assert.equal(readyEquity.candidates[0].mappingReason, 'ready_for_paper_default_micro_futures_root');
+
+const upstreamLifecycle = readyFallbackAdapter.getFuturesCandidates({
+  now,
+  quotes: [{
+    root: 'MNQ', symbol: 'MNQ', price: 20000, previousPrice: 19999,
+    tickSize: 0.25, source: 'real_market_data', fallback: false,
+  }],
+  signalInputs: [{
+    ...signal,
+    lifecycleId: 'life-upstream-1',
+    signalId: 'sig-ema-upstream-life',
+    strategyId: 'ema_pullback_continuation',
+    strategyName: 'EMA Pullback Continuation',
+    symbol: 'ZZTOP',
+    market: 'stocks',
+    direction: 'long',
+  }],
+});
+assert.equal(upstreamLifecycle.candidates.length, 1);
+assert.equal(upstreamLifecycle.candidates[0].lifecycleId, 'life-upstream-1');
 
 const subtypeResolvedAdapter = createFuturesTradingOsSignalAdapterService({
   signalReader: () => [],

@@ -27,6 +27,7 @@ const paperStrategyEntryContractService = require('./paperStrategyEntryContractS
 const executionTargetReservationModule = require('./futuresPaperExecutionTargetReservationService');
 const { buildFuturesSessionMetadata } = require('./futuresMarketHoursService');
 const internalSimulationRetirement = require('./futuresInternalSimulationRetirementService');
+const lifecycleIdentity = require('./futuresLifecycleIdentityService');
 
 const SAFETY = Object.freeze({
   mode: 'ibkr_paper',
@@ -83,9 +84,14 @@ function pruneStaleQueuedCandidates(queue = [], { now = new Date(), maxAgeMs = 1
   for (const candidate of Array.isArray(queue) ? queue : []) {
     const ageMs = candidateAgeMs(candidate, now);
     if (ageMs != null && ageMs > maxAgeMs) {
+      const identity = lifecycleIdentity.identityFrom(candidate);
       pruned.push({
-        candidateId: candidate.candidateId || null,
-        signalId: candidate.signalId || null,
+        lifecycleId: identity.lifecycleId || null,
+        candidateId: identity.candidateId || candidate.candidateId || null,
+        signalId: identity.signalId || candidate.signalId || null,
+        intentId: identity.intentId || null,
+        executionId: identity.executionId || null,
+        idempotencyKey: identity.idempotencyKey || null,
         strategyId: candidate.strategyId || null,
         symbol: candidate.symbol || candidate.futuresSymbol || null,
         signalTimestamp: candidate.signalTimestamp || candidate.timestamp || candidate.createdAt || null,
@@ -404,8 +410,14 @@ function createFuturesPaperScannerService(options = {}) {
       lastClaimedCandidateId: claimedCandidate.candidateId || null,
       lastClaimedAt: claimedAt,
     });
+    const claimedIdentity = lifecycleIdentity.identityFrom(claimedCandidate);
     persistEvent('FUTURES_QUEUE_CANDIDATE_CLAIMED', {
-      candidateId: claimedCandidate.candidateId || null,
+      lifecycleId: claimedIdentity.lifecycleId || null,
+      candidateId: claimedIdentity.candidateId || claimedCandidate.candidateId || null,
+      signalId: claimedIdentity.signalId || null,
+      intentId: claimedIdentity.intentId || null,
+      executionId: claimedIdentity.executionId || null,
+      idempotencyKey: claimedIdentity.idempotencyKey || null,
       strategyId: claimedCandidate.strategyId || null,
       claimedBy,
       claimedAt,
@@ -461,8 +473,14 @@ function createFuturesPaperScannerService(options = {}) {
       lastCompletedCandidateId: completedCandidate.candidateId || null,
       lastCompletedAt: completedAt,
     });
+    const completedIdentity = lifecycleIdentity.mergeIdentity(completedCandidate, details);
     persistEvent('FUTURES_QUEUE_CANDIDATE_COMPLETED', {
-      candidateId: completedCandidate.candidateId || null,
+      lifecycleId: completedIdentity.lifecycleId || null,
+      candidateId: completedIdentity.candidateId || completedCandidate.candidateId || null,
+      signalId: completedIdentity.signalId || null,
+      intentId: completedIdentity.intentId || null,
+      executionId: completedIdentity.executionId || null,
+      idempotencyKey: completedIdentity.idempotencyKey || null,
       strategyId: completedCandidate.strategyId || null,
       completedBy,
       outcome,
@@ -752,7 +770,9 @@ function createFuturesPaperScannerService(options = {}) {
       status: 'READY_WAITING_FOR_SIGNAL',
     };
     const reservation = executionTargetReservations.reserveExecutionTarget({
+      lifecycleId: nextCandidate.lifecycleId || null,
       candidateId: nextCandidate.candidateId,
+      signalId: nextCandidate.signalId || nextCandidate.originalSignalId || null,
       executionTarget: 'ibkr_paper',
       strategyId: nextCandidate.strategyId,
       signalTimestamp,
@@ -760,6 +780,8 @@ function createFuturesPaperScannerService(options = {}) {
       now,
       metadata: {
         symbol: nextCandidate.symbol || nextCandidate.futuresSymbol || null,
+        lifecycleId: nextCandidate.lifecycleId || null,
+        signalId: nextCandidate.signalId || nextCandidate.originalSignalId || null,
         source: nextCandidate.source || null,
         tradeType: nextCandidate.tradeType || null,
       },

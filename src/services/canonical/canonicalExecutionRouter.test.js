@@ -89,6 +89,35 @@ test('entryContractVersion är oförändrad konstant', () => {
   assert.strictEqual(decision.entryContractVersion, entryContracts.PAPER_ENTRY_CONTRACT_VERSION);
 });
 
+test('identity följer canonical-beslut och readiness-wrapper', () => {
+  const decision = router.routeExecutionReadiness({
+    strategyId: 'ema_pullback_continuation',
+    candidate: {
+      lifecycleId: 'life-router-1',
+      candidateId: 'cand-router-1',
+      signalId: 'sig-router-1',
+      strategyId: 'ema_pullback_continuation',
+      signalFamily: 'EMA_TREND_PULLBACK',
+      signalSubtype: 'EMA_PULLBACK_UP',
+      direction: 'long',
+      symbol: 'MNQ',
+      marketType: 'futures',
+      signalTimestamp: '2026-08-07T12:00:00.000Z',
+      source: 'trading_os_signal_adapter',
+      signalSource: 'trading_os',
+    },
+    now: new Date('2026-08-07T12:00:30.000Z'),
+    marketContext: FUTURES_CONTEXT,
+  });
+  assert.strictEqual(decision.lifecycleId, 'life-router-1');
+  assert.strictEqual(decision.candidateId, 'cand-router-1');
+  assert.strictEqual(decision.signalId, 'sig-router-1');
+  assert.strictEqual(decision.readiness.lifecycleId, 'life-router-1');
+  assert.strictEqual(decision.readiness.candidateId, 'cand-router-1');
+  assert.strictEqual(decision.readiness.signalId, 'sig-router-1');
+  assert.strictEqual(decision.canonicalSignal.lifecycleId, 'life-router-1');
+});
+
 test('allowed är alltid boolean och reasonCode null när den släpper igenom', () => {
   const allowedFixture = fixtures.find((f) => f.expectedOldAllowed === true);
   assert.ok(allowedFixture, 'fixture-uppsättningen saknar ett godkänt fall');

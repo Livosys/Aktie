@@ -5,6 +5,7 @@ const crypto = require('crypto');
 const { getRiskProfile } = require('../markets/marketProfiles');
 const { buildFuturesSessionMetadata } = require('./futuresMarketHoursService');
 const strategyReadinessService = require('./strategyReadinessService');
+const lifecycleIdentity = require('./futuresLifecycleIdentityService');
 
 const SAFETY = Object.freeze({
   mode: 'paper_only',
@@ -228,6 +229,15 @@ function signalIdOf(signal = {}) {
     || safeString(signal.signal_id)
     || safeString(signal.id)
     || null;
+}
+
+function lifecycleIdOf(signal = {}) {
+  return lifecycleIdentity.firstText(
+    signal.lifecycleId,
+    signal.lifecycle_id,
+    signal.metadata?.lifecycleId,
+    signal.metadata?.lifecycle_id,
+  );
 }
 
 // signalTimestamp först: decisionMonitor har redan löst "stängning om bekräftad,
@@ -619,11 +629,14 @@ function createFuturesTradingOsSignalAdapterService(options = {}) {
     const readyStrategy = resolveReadyForPaperStrategy(signal, readyContext);
     const strategyId = strategyIdOf(signal) || readyStrategy.strategyId;
     const strategyName = strategyNameOf(signal) || strategyNameOf(readyStrategy.row || {});
+    const candidateId = stableCandidateId(signal, mapping.futuresSymbol, now);
+    const lifecycleId = lifecycleIdOf(signal);
 
     return {
       ok: true,
       candidate: {
-        candidateId: stableCandidateId(signal, mapping.futuresSymbol, now),
+        lifecycleId,
+        candidateId,
         signalId: originalSignalId,
         originalSignalId,
         strategyId,
@@ -721,6 +734,7 @@ function createFuturesTradingOsSignalAdapterService(options = {}) {
       const result = adaptSignal(signal, { now, quotes });
       if (result.ok) candidates.push(result.candidate);
       else skipped.push({
+        lifecycleId: lifecycleIdOf(signal),
         signalId: signalIdOf(signal),
         symbol: signal?.symbol || signal?.originalSymbol || null,
         strategyId: signal?.strategyId || signal?.strategy_id || signal?.resolvedStrategyId || null,

@@ -4,6 +4,7 @@ const fs = require('fs');
 const path = require('path');
 
 const catalogService = require('./daytradingStrategyCatalogService');
+const lifecycleIdentity = require('./futuresLifecycleIdentityService');
 
 const SAFETY = Object.freeze({
   mode: 'paper_only',
@@ -660,9 +661,16 @@ function textLooksObservationOnly(candidate = {}) {
 }
 
 function baseDecision(contract, candidate, now, marketContext) {
+  const identity = lifecycleIdentity.identityFrom(candidate);
   return {
     allowed: false,
     strategyId: contract?.strategyId || safeString(strategyIdOf(candidate)),
+    lifecycleId: identity.lifecycleId || null,
+    candidateId: identity.candidateId || null,
+    signalId: identity.signalId || null,
+    intentId: identity.intentId || null,
+    executionId: identity.executionId || null,
+    idempotencyKey: identity.idempotencyKey || null,
     reason: null,
     reasonCode: null,
     entryContractVersion: PAPER_ENTRY_CONTRACT_VERSION,

@@ -19,6 +19,7 @@ const NOW = new Date('2026-08-04T18:14:22.000Z');
 // faktiskt bygger den (fältnamnen är tagna ur produktionens events.jsonl).
 function tradingOsCandidate(overrides = {}) {
   return {
+    lifecycleId: 'life_tos_1',
     candidateId: 'futures_candidate_test_tos',
     signalId: 'TSLA_2026-08-04T18:12:00.000Z',
     strategyId: 'ema_pullback_continuation',
@@ -95,6 +96,7 @@ console.log('canonicalSignalAdapters');
 
 test('TradingOS: symbol, marknad, riktning, strategyId, subtyp översätts', () => {
   const s = adapters.tradingOsCanonicalAdapter(tradingOsCandidate(), { now: NOW });
+  assert.strictEqual(s.lifecycleId, 'life_tos_1');
   assert.strictEqual(s.symbol, 'MNQ');
   assert.strictEqual(s.marketType, 'stocks');
   assert.strictEqual(s.direction, 'LONG');

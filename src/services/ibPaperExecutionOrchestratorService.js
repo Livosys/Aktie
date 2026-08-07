@@ -16,6 +16,7 @@ const canonicalExecutionRouter = require('./canonical/canonicalExecutionRouter')
 const ibPaperAccountSummaryService = require('./ibPaperAccountSummaryService');
 const futuresMarketHoursService = require('./futuresMarketHoursService');
 const executionTargetReservationModule = require('./futuresPaperExecutionTargetReservationService');
+const lifecycleIdentity = require('./futuresLifecycleIdentityService');
 
 const SAFETY = Object.freeze({
   mode: 'ibkr_paper',
@@ -163,11 +164,16 @@ function attributeBrokerRows(rows, intents) {
     const executionId = reconciliationModule.executionIdFromOrderRef(orderRef);
     const intent = executionId ? byExecutionId.get(executionId) || null : null;
     const inner = intent?.intent || {};
+    const identity = lifecycleIdentity.mergeIdentity(row, intent, inner);
     return {
       ...row,
+      lifecycleId: row.lifecycleId || identity.lifecycleId || null,
       executionId: row.executionId || executionId || null,
       strategyId: row.strategyId || intent?.strategyId || inner.strategyId || null,
       candidateId: row.candidateId || intent?.candidateId || inner.candidateId || null,
+      signalId: row.signalId || intent?.signalId || inner.signalId || null,
+      intentId: row.intentId || intent?.intentId || inner.intentId || intent?.idempotencyKey || inner.idempotencyKey || null,
+      idempotencyKey: row.idempotencyKey || intent?.idempotencyKey || inner.idempotencyKey || null,
     };
   });
 }
@@ -193,6 +199,12 @@ function normalizeCandidate(input = {}) {
 
   if (!Object.prototype.hasOwnProperty.call(normalized, 'candidateId')) {
     normalized.candidateId = safeString(candidate.candidateId || candidate.id || candidate.eventId);
+  }
+  if (!Object.prototype.hasOwnProperty.call(normalized, 'lifecycleId')) {
+    normalized.lifecycleId = lifecycleIdentity.identityFrom(normalized).lifecycleId;
+  }
+  if (!Object.prototype.hasOwnProperty.call(normalized, 'signalId')) {
+    normalized.signalId = safeString(candidate.signalId || candidate.originalSignalId);
   }
   if (!Object.prototype.hasOwnProperty.call(normalized, 'originalSignalId')) {
     normalized.originalSignalId = safeString(candidate.originalSignalId || candidate.signalId);
@@ -344,9 +356,11 @@ function normalizeCandidate(input = {}) {
   return normalized;
 }
 
-function sanitizeOrderPlan(orderPlan, accountMasked = null) {
+function sanitizeOrderPlan(orderPlan, accountMasked = null, identity = {}) {
   if (!orderPlan) return null;
+  const identityFields = lifecycleIdentity.compact(identity);
   return {
+    ...identityFields,
     environment: orderPlan.environment,
     contract: orderPlan.contract,
     entry: orderPlan.entry,
@@ -835,6 +849,7 @@ function createIbPaperExecutionOrchestratorService(options = {}) {
     }
 
     const selectedCandidate = selected.candidate;
+    const selectedIdentity = lifecycleIdentity.identityFrom(selectedCandidate);
     const limits = configService.getPilotLimits();
 	    const signalTimestamp = selectedCandidate.signalTimestamp || null;
 	    const ageMs = ageMsFromTimestamp(signalTimestamp, now);
@@ -863,6 +878,12 @@ function createIbPaperExecutionOrchestratorService(options = {}) {
       environment: 'paper',
     });
     const executionId = buildExecutionId(idempotencyKey || `${selectedCandidate.strategyId}:${selectedCandidate.candidateId}:${signalTimestamp}`);
+    const intentId = idempotencyKey || null;
+    const executionIdentity = lifecycleIdentity.mergeIdentity(selectedIdentity, {
+      executionId,
+      idempotencyKey,
+      intentId,
+    });
     const duplicate = idempotencyKey ? intentService.getIntent(idempotencyKey) : null;
 		    const executionAllowlist = typeof strategyRegistry.canExecuteStrategy === 'function'
 		      ? strategyRegistry.canExecuteStrategy(selectedCandidate.strategyId)
@@ -908,12 +929,15 @@ function createIbPaperExecutionOrchestratorService(options = {}) {
       now,
     });
     const intent = {
+      lifecycleId: executionIdentity.lifecycleId || null,
       executionId,
+      intentId,
       idempotencyKey,
       environment: 'paper',
       executionTarget: 'ibkr_paper',
       strategyId: selectedCandidate.strategyId,
       candidateId: selectedCandidate.candidateId || null,
+      signalId: selectedCandidate.signalId || selectedCandidate.originalSignalId || null,
       root: selectedCandidate.root,
       direction: selectedCandidate.direction,
       quantity: selectedCandidate.quantity,
@@ -960,14 +984,22 @@ function createIbPaperExecutionOrchestratorService(options = {}) {
 	    });
 	    const reservation = guard.allowed && idempotencyKey
 	      ? executionTargetReservations.reserveExecutionTarget({
+        lifecycleId: executionIdentity.lifecycleId || null,
         candidateId: selectedCandidate.candidateId,
+        signalId: intent.signalId || null,
+        intentId,
+        executionId,
+        idempotencyKey,
         executionTarget: 'ibkr_paper',
         strategyId: selectedCandidate.strategyId,
 	        signalTimestamp,
 	        status: 'ibkr_paper_reserved',
 	        now,
 	        metadata: {
+	          lifecycleId: executionIdentity.lifecycleId || null,
 	          executionId,
+	          signalId: intent.signalId || null,
+	          intentId,
 	          idempotencyKey,
           root: selectedCandidate.root,
 	          conId: contract.conId || null,
@@ -1025,8 +1057,12 @@ function createIbPaperExecutionOrchestratorService(options = {}) {
 	      })
 	      : null;
     const normalizedOrder = {
+      lifecycleId: executionIdentity.lifecycleId || null,
       internalExecutionId: executionId,
+      executionId,
+      intentId,
       idempotencyKey,
+      signalId: intent.signalId || null,
 	      candidateId: selectedCandidate.candidateId || null,
 	      strategyId: selectedCandidate.strategyId,
 	      root: selectedCandidate.root,
@@ -1095,6 +1131,9 @@ function createIbPaperExecutionOrchestratorService(options = {}) {
 		      blockedReason: finalGuard.blockedReason || null,
 		      blockers: finalGuard.blockers,
       candidate: selectedCandidate,
+      lifecycleId: executionIdentity.lifecycleId || null,
+      signalId: intent.signalId || null,
+      intentId,
       contract,
 	      quote,
 	      accountMasked,
@@ -1106,6 +1145,12 @@ function createIbPaperExecutionOrchestratorService(options = {}) {
       intent: intentCreate.record || intent,
 	      intentCreate,
 	      executionEvidence: executionEvidence ? {
+	        lifecycleId: executionIdentity.lifecycleId || null,
+	        candidateId: executionIdentity.candidateId || null,
+	        signalId: executionIdentity.signalId || null,
+	        intentId: executionIdentity.intentId || null,
+	        executionId,
+	        idempotencyKey,
 	        source: executionEvidence.source,
 	        evidenceVersion: executionEvidence.evidenceVersion,
 	        generatedAt: executionEvidence.generatedAt,
@@ -1113,7 +1158,7 @@ function createIbPaperExecutionOrchestratorService(options = {}) {
 	        fingerprint: executionEvidence.fingerprint,
 	      } : null,
       normalizedOrder,
-      orderPlan: sanitizeOrderPlan(orderPlan, accountMasked),
+      orderPlan: sanitizeOrderPlan(orderPlan, accountMasked, executionIdentity),
       submitResult,
       orderSubmissionMode: flags.orderSubmissionMode,
       ...SAFETY,

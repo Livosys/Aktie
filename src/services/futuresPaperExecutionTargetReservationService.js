@@ -126,7 +126,12 @@ function createFuturesPaperExecutionTargetReservationService(options = {}) {
   }
 
   function reserveExecutionTarget({
+    lifecycleId = null,
     candidateId,
+    signalId = null,
+    intentId = null,
+    executionId = null,
+    idempotencyKey = null,
     executionTarget,
     strategyId = null,
     signalTimestamp = null,
@@ -152,7 +157,12 @@ function createFuturesPaperExecutionTargetReservationService(options = {}) {
     maybeSweep(now); // opportunistic, throttled, non-fatal GC of stale reservations
     const file = fileFor(id);
     const record = {
+      lifecycleId: safeString(lifecycleId) || null,
       candidateId: id,
+      signalId: safeString(signalId) || null,
+      intentId: safeString(intentId) || null,
+      executionId: safeString(executionId) || null,
+      idempotencyKey: safeString(idempotencyKey) || null,
       executionTarget: target,
       strategyId: safeString(strategyId) || null,
       signalTimestamp: safeString(signalTimestamp) || null,

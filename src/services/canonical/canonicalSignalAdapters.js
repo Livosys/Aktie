@@ -12,6 +12,7 @@
 // Predikat som inte är exporterade speglas nedan med kommentar om källraden.
 
 const entryContracts = require('../paperStrategyEntryContractService');
+const lifecycleIdentity = require('../futuresLifecycleIdentityService');
 const { createCanonicalSignal } = require('./canonicalSignal');
 
 const H = entryContracts._internal;
@@ -173,7 +174,9 @@ function buildEvidenceFrom(candidate, { now, extensionMeasure, marketContext = {
 }
 
 function baseFrom(candidate, { producerId, producerType, extensionMeasure, now, marketContext = {} }) {
+  const identity = lifecycleIdentity.identityFrom(candidate);
   return createCanonicalSignal({
+    lifecycleId: identity.lifecycleId,
     signalId: candidate.signalId || candidate.originalSignalId,
     producerId,
     producerType,

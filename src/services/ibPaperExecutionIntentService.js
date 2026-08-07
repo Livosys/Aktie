@@ -12,6 +12,7 @@
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
+const lifecycleIdentity = require('./futuresLifecycleIdentityService');
 
 const EXECUTION_SAFETY = Object.freeze({
   mode: 'ibkr_paper',
@@ -47,6 +48,10 @@ const INTENT_STATUSES = Object.freeze([
 // själv, resten är postens fasta identitet. Allt ANNAT i `extra` är observationer
 // om samma intent och hör hemma på posten.
 const IMMUTABLE_INTENT_FIELDS = Object.freeze([
+  'lifecycleId',
+  'candidateId',
+  'signalId',
+  'intentId',
   'idempotencyKey',
   'executionId',
   'createdAt',
@@ -153,11 +158,14 @@ function createIbPaperExecutionIntentService(options = {}) {
 	    const record = {
       executionId: executionId || `exec_${Date.now()}_${crypto.randomBytes(4).toString('hex')}`,
       idempotencyKey,
+      intentId: intent?.intentId || idempotencyKey,
       status: 'intent_created',
       createdAt: nowIso(),
       updatedAt: nowIso(),
       strategyId: intent?.strategyId || null,
+      lifecycleId: lifecycleIdentity.identityFrom(intent || {}).lifecycleId,
       candidateId: intent?.candidateId || null,
+      signalId: intent?.signalId || intent?.originalSignalId || null,
       root: intent?.root || null,
       conId: intent?.conId || null,
       direction: intent?.direction || null,
@@ -206,7 +214,19 @@ function createIbPaperExecutionIntentService(options = {}) {
 	    }
 	    index = idx;
     saveIndex();
-    appendEvent({ type: 'status_change', idempotencyKey, executionId: record.executionId, status, ...extra, at: nowIso(), ...EXECUTION_SAFETY });
+    appendEvent({
+      type: 'status_change',
+      lifecycleId: record.lifecycleId || null,
+      candidateId: record.candidateId || null,
+      signalId: record.signalId || null,
+      intentId: record.intentId || null,
+      idempotencyKey,
+      executionId: record.executionId,
+      status,
+      ...extra,
+      at: nowIso(),
+      ...EXECUTION_SAFETY,
+    });
     return { ok: true, record };
   }
 

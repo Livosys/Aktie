@@ -71,7 +71,7 @@ test('createCanonicalSignal STRIPPAR förbjudna fält som skickas in', () => {
 test('signalen exponerar inget oväntat toppnivåfält', () => {
   const signal = createCanonicalSignal(validInput());
   const allowed = new Set([
-    'canonicalVersion', 'signalId', 'producerId', 'producerType', 'strategyId',
+    'canonicalVersion', 'lifecycleId', 'signalId', 'producerId', 'producerType', 'strategyId',
     'signalFamily', 'signalSubtype', 'direction', 'symbol', 'marketType',
     'signalTimestamp', 'entry', 'stopLoss', 'takeProfit', 'evidence', 'metadata',
     'mode', 'actions_allowed', 'can_place_orders', 'live_trading_enabled',

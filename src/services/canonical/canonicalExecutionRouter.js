@@ -37,6 +37,7 @@
 const adapters = require('./canonicalSignalAdapters');
 const engine = require('./executionReadinessEngine');
 const entryContracts = require('../paperStrategyEntryContractService');
+const lifecycleIdentity = require('../futuresLifecycleIdentityService');
 
 const SAFETY = Object.freeze({
   mode: 'paper_only',
@@ -123,11 +124,15 @@ function routeExecutionReadiness({
 
   const allowed = readiness.verdict === engine.VERDICTS.EXECUTABLE;
   const reasonCode = allowed ? null : legacyReasonFor(readiness.reasonCode);
+  const identity = lifecycleIdentity.mergeIdentity(candidate, signalForEngine);
 
   return {
     // ── Bakåtkompatibel yta (oförändrade värdemängder) ──────────────────────
     allowed,
     strategyId: resolvedStrategyId,
+    lifecycleId: identity.lifecycleId || null,
+    candidateId: identity.candidateId || null,
+    signalId: identity.signalId || null,
     reason: reasonCode,
     reasonCode,
     entryContractVersion: entryContracts.PAPER_ENTRY_CONTRACT_VERSION,
@@ -144,6 +149,9 @@ function routeExecutionReadiness({
       evidenceGaps: readiness.evidenceGaps || [],
       producerType: signalForEngine.producerType || null,
       producerFallback: fallback,
+      lifecycleId: identity.lifecycleId || null,
+      candidateId: identity.candidateId || null,
+      signalId: identity.signalId || null,
     },
     canonicalSignal: signalForEngine,
 

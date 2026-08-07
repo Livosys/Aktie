@@ -7,6 +7,7 @@ const futuresContractCatalog = require('./futuresContractCatalogService');
 const excursionService = require('./futuresPaperExcursionService');
 const futuresMarketHoursService = require('./futuresMarketHoursService');
 const internalSimulationRetirement = require('./futuresInternalSimulationRetirementService');
+const lifecycleIdentity = require('./futuresLifecycleIdentityService');
 
 const SAFETY = Object.freeze({
   mode: 'paper_only',
@@ -143,6 +144,7 @@ function calculatePnlUsd({ root, entryPrice, exitPrice, side, contracts }) {
 }
 
 function toPositionView(position, fxUsdSek = 0) {
+  const identity = lifecycleIdentity.identityFrom(position);
   const root = normalizeRoot(position.root, position.symbol);
   const strategyControlMetadata = normalizeStrategyControlMetadata(position);
   const pointValueUsd = getPointValueUsd(root) || 0;
@@ -180,7 +182,13 @@ function toPositionView(position, fxUsdSek = 0) {
   const grossPnlSek = round(grossPnlUsd * fxUsdSek, 2);
 
   return {
+    lifecycleId: identity.lifecycleId,
     tradeId: position.tradeId,
+    intentId: identity.intentId,
+    executionId: identity.executionId,
+    idempotencyKey: identity.idempotencyKey,
+    orderRef: position.orderRef || null,
+    brokerOrderId: position.brokerOrderId || position.ibOrderId || null,
     root,
     symbol: position.symbol || root,
     side: position.side,
@@ -588,8 +596,15 @@ function createFuturesPaperLedgerService(options = {}) {
     const entryFeeSek = round(entryFeeUsd * fxUsdSek, 2);
     const openedAt = nowIso(now);
     const entrySession = futuresMarketHoursService.buildFuturesSessionMetadata(openedAt);
+    const inputIdentity = lifecycleIdentity.identityFrom(input);
     const position = {
+      lifecycleId: inputIdentity.lifecycleId,
       tradeId: createTradeId(now),
+      intentId: inputIdentity.intentId,
+      executionId: inputIdentity.executionId,
+      idempotencyKey: inputIdentity.idempotencyKey,
+      orderRef: input.orderRef || null,
+      brokerOrderId: input.brokerOrderId || input.ibOrderId || null,
       root,
       symbol: symbol || root,
       side,
@@ -685,7 +700,15 @@ function createFuturesPaperLedgerService(options = {}) {
     persistAccountSnapshot(accountSnapshot);
 
     persistEvent('FUTURES_POSITION_OPENED', {
+      lifecycleId: position.lifecycleId || null,
       tradeId: position.tradeId,
+      candidateId: position.candidateId || null,
+      signalId: position.signalId || position.originalSignalId || null,
+      intentId: position.intentId || null,
+      executionId: position.executionId || null,
+      idempotencyKey: position.idempotencyKey || null,
+      orderRef: position.orderRef || null,
+      brokerOrderId: position.brokerOrderId || null,
       root,
       symbol: position.symbol,
       side,
@@ -853,7 +876,15 @@ function createFuturesPaperLedgerService(options = {}) {
     persistAccountSnapshot(accountSnapshot);
 
     persistEvent('FUTURES_POSITION_CLOSED', {
+      lifecycleId: closedPosition.lifecycleId || null,
       tradeId,
+      candidateId: closedPosition.candidateId || null,
+      signalId: closedPosition.signalId || closedPosition.originalSignalId || null,
+      intentId: closedPosition.intentId || null,
+      executionId: closedPosition.executionId || null,
+      idempotencyKey: closedPosition.idempotencyKey || null,
+      orderRef: closedPosition.orderRef || null,
+      brokerOrderId: closedPosition.brokerOrderId || null,
       root: closedPosition.root,
       symbol: closedPosition.symbol,
       side: closedPosition.side,
@@ -914,6 +945,7 @@ function createFuturesPaperLedgerService(options = {}) {
       .sort((a, b) => (Date.parse(b.closedAt || '') || 0) - (Date.parse(a.closedAt || '') || 0))
       .slice(0, capped)
       .map((row) => {
+        const identity = lifecycleIdentity.identityFrom(row);
         const openedMs = Date.parse(row.openedAt || '') || 0;
         const closedMs = Date.parse(row.closedAt || '') || 0;
         const durationMinutes = openedMs && closedMs ? round((closedMs - openedMs) / 60000, 1) : null;
@@ -928,7 +960,15 @@ function createFuturesPaperLedgerService(options = {}) {
         const grossPnlSek = ensureFiniteNumber(row.grossPnlSek) ?? 0;
         return {
           ...normalizeStrategyControlMetadata(row),
-          tradeId: row.tradeId,
+          lifecycleId: identity.lifecycleId || null,
+          tradeId: identity.tradeId || row.tradeId,
+          candidateId: identity.candidateId || null,
+          signalId: identity.signalId || null,
+          intentId: identity.intentId || null,
+          executionId: identity.executionId || null,
+          idempotencyKey: identity.idempotencyKey || null,
+          orderRef: row.orderRef || null,
+          brokerOrderId: row.brokerOrderId ?? null,
           symbol: row.symbol || row.root,
           strategyId: row.strategyId || null,
           strategyName: row.strategyName || null,
@@ -973,7 +1013,7 @@ function createFuturesPaperLedgerService(options = {}) {
           exchangeLocalTime: row.exchangeLocalTime || row.entrySession?.exchangeLocalTime || row.sessionMetadata?.exchangeLocalTime || null,
           isRth: row.isRth ?? row.entrySession?.isRth ?? row.sessionMetadata?.isRth ?? null,
           isMarketOpen: row.isMarketOpen ?? row.entrySession?.isMarketOpen ?? row.sessionMetadata?.isMarketOpen ?? null,
-          originalSignalId: row.originalSignalId || row.signalId || null,
+          originalSignalId: row.originalSignalId || row.signalId || identity.signalId || null,
           originalSymbol: row.originalSymbol || null,
           mappedFuturesSymbol: row.mappedFuturesSymbol || row.symbol || row.root,
           mappingReason: row.mappingReason || null,

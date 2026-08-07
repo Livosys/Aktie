@@ -3,6 +3,7 @@
 const configService = require('./ibPaperExecutionConfigService');
 const adapterModule = require('./ibFuturesDataAdapterService');
 const marketHoursService = require('./futuresMarketHoursService');
+const lifecycleIdentity = require('./futuresLifecycleIdentityService');
 
 const SAFETY = Object.freeze({
   mode: 'ibkr_paper',
@@ -177,9 +178,16 @@ function evaluatePaperExecutionGuard({
   addCheck(checks, 'quote_not_simulated_or_delayed', quote?.simulated !== true && quote?.delayed !== true, 'quote_not_realtime_ibkr', { source: quote?.source || null });
 
   const blockers = checks.filter((check) => check.ok !== true).map((check) => check.blocker || check.code);
+  const identity = lifecycleIdentity.mergeIdentity(intent, candidate);
   return {
     ok: true,
     allowed: blockers.length === 0,
+    lifecycleId: identity.lifecycleId || null,
+    candidateId: identity.candidateId || null,
+    signalId: identity.signalId || null,
+    intentId: identity.intentId || null,
+    executionId: identity.executionId || null,
+    idempotencyKey: identity.idempotencyKey || null,
     blockers,
     blockedReason: blockers[0] || null,
     checks,

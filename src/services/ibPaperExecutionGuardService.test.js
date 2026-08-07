@@ -9,6 +9,11 @@ process.env.IBKR_PAPER_ORDER_SUBMISSION_ENABLED = 'false';
 
 const base = {
   intent: {
+    lifecycleId: 'life-guard-1',
+    candidateId: 'cand-guard-1',
+    signalId: 'sig-guard-1',
+    intentId: 'intent-guard-1',
+    executionId: 'exec-guard-1',
     environment: 'paper',
     root: 'MNQ',
     direction: 'long',
@@ -50,6 +55,12 @@ const base = {
 {
   const result = guard.evaluatePaperExecutionGuard(base);
   assert.equal(result.allowed, true);
+  assert.equal(result.lifecycleId, 'life-guard-1');
+  assert.equal(result.candidateId, 'cand-guard-1');
+  assert.equal(result.signalId, 'sig-guard-1');
+  assert.equal(result.intentId, 'intent-guard-1');
+  assert.equal(result.executionId, 'exec-guard-1');
+  assert.equal(result.idempotencyKey, 'idem-1');
   assert.equal(result.verifiedPaperAccount, true);
   assert.equal(result.liveAccountBlocked, true);
 }

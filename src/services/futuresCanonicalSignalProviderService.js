@@ -1,5 +1,7 @@
 'use strict';
 
+const crypto = require('crypto');
+
 const {
   getLatestResults,
   getStockFeedStatus,
@@ -36,6 +38,34 @@ function safeString(value) {
   if (value == null) return null;
   const text = String(value).trim();
   return text || null;
+}
+
+function signalIdOf(signal = {}) {
+  return safeString(signal.signalId)
+    || safeString(signal.signal_id)
+    || null;
+}
+
+function lifecycleIdFromSignalId(signalId) {
+  const id = safeString(signalId);
+  if (!id) return null;
+  return `signal_lifecycle_${crypto.createHash('sha1').update(id).digest('hex').slice(0, 24)}`;
+}
+
+function lifecycleIdOf(signal = {}) {
+  return safeString(signal.lifecycleId)
+    || safeString(signal.lifecycle_id)
+    || safeString(signal.metadata?.lifecycleId)
+    || safeString(signal.metadata?.lifecycle_id)
+    || lifecycleIdFromSignalId(signalIdOf(signal));
+}
+
+function withLifecycleId(signal = {}) {
+  if (!signal || typeof signal !== 'object') return signal;
+  const lifecycleId = lifecycleIdOf(signal);
+  if (!lifecycleId) return signal;
+  if (signal.lifecycleId === lifecycleId) return signal;
+  return { ...signal, lifecycleId };
 }
 
 // Måste bygga monitorn med SAMMA indata som paperTradingAgent. Utan
@@ -111,6 +141,10 @@ function createFuturesCanonicalSignalProviderService(options = {}) {
           feed,
         });
         if (result?.ok === true && result.signal && typeof result.signal === 'object') {
+          result = {
+            ...result,
+            signal: withLifecycleId(result.signal),
+          };
           signals.push(result.signal);
         }
       } catch (err) {
@@ -124,7 +158,7 @@ function createFuturesCanonicalSignalProviderService(options = {}) {
   }
 
   function getCanonicalSignals({ now = new Date(), priceFeedService = null, feed = null } = {}) {
-    const readerSignals = safeArray(readSignals({ now, priceFeedService, feed }));
+    const readerSignals = safeArray(readSignals({ now, priceFeedService, feed })).map(withLifecycleId);
     const producerOutput = collectProducerSignals({ now, priceFeedService, feed });
     const signals = [
       ...readerSignals,

@@ -16,6 +16,7 @@ const ibPaperExecutionOrchestratorService = require('./ibPaperExecutionOrchestra
 const internalSimulationRetirement = require('./futuresInternalSimulationRetirementService');
 const futuresPaperStrategyPerformanceService = require('./futuresPaperStrategyPerformanceService');
 const ibPaperBrokerReconciliationService = require('./ibPaperBrokerReconciliationService');
+const lifecycleIdentity = require('./futuresLifecycleIdentityService');
 const futuresPaperStorageService = require('./futuresPaperStorageService');
 const canonicalExecutionRouter = require('./canonical/canonicalExecutionRouter');
 
@@ -652,10 +653,15 @@ function candidateSignalByCandidateId(now = Date.now()) {
 
 function strategyContextFromIntent(intent) {
   const inner = intent?.intent || {};
+  const identity = lifecycleIdentity.mergeIdentity(intent, inner);
   return {
+    lifecycleId: identity.lifecycleId || null,
     strategyId: intent?.strategyId || inner.strategyId || null,
-    candidateId: intent?.candidateId || inner.candidateId || null,
-    executionId: intent?.executionId || inner.executionId || null,
+    candidateId: identity.candidateId || null,
+    signalId: identity.signalId || null,
+    intentId: identity.intentId || intent?.idempotencyKey || inner.idempotencyKey || null,
+    executionId: identity.executionId || null,
+    idempotencyKey: identity.idempotencyKey || null,
     signalTimestamp: intent?.signalTimestamp || inner.signalTimestamp || null,
     intentDirection: intent?.direction || inner.direction || null,
     // entryReason skrivs inte av intent-tjänsten idag; fältet exponeras ändå så att
@@ -748,9 +754,13 @@ function normalizeBrokerPosition(row = {}, { reconciliationTimestamp = null, quo
     // Strategikontext och skyddsnivåer kommer från intent-loggen respektive de
     // öppna skyddsordrarna — båda redan hämtade av reconciliation.
     status: 'open',
+    lifecycleId: strategyContext.lifecycleId,
     strategyId: strategyContext.strategyId,
     candidateId: strategyContext.candidateId,
+    signalId: strategyContext.signalId,
+    intentId: strategyContext.intentId,
     executionId: strategyContext.executionId,
+    idempotencyKey: strategyContext.idempotencyKey,
     entryTime: strategyContext.signalTimestamp,
     entryPrice,
     exitTime: null,
@@ -790,9 +800,13 @@ function normalizeBrokerExecution(row = {}, commissionsByExecId = new Map(), int
     permId: row.permId ?? null,
     execId: row.execId ?? null,
     orderRef: row.orderRef || null,
+    lifecycleId: row.lifecycleId || strategyContext.lifecycleId || null,
     strategyId: row.strategyId || strategyContext.strategyId || null,
     candidateId: row.candidateId || strategyContext.candidateId || null,
+    signalId: row.signalId || strategyContext.signalId || null,
+    intentId: row.intentId || strategyContext.intentId || null,
     executionId: row.executionId || strategyContext.executionId || null,
+    idempotencyKey: row.idempotencyKey || strategyContext.idempotencyKey || null,
     exitReason,
     orderLeg: ref.endsWith('-entry') ? 'entry' : (exitReason || null),
     conId: row.conId ?? null,
@@ -825,9 +839,13 @@ function normalizeBrokerOrder(row = {}, intentByExecutionId = new Map()) {
     orderId: row.orderId ?? null,
     permId: row.order?.permId ?? row.permId ?? null,
     orderRef,
+    lifecycleId: row.lifecycleId || strategyContext.lifecycleId || null,
     strategyId: row.strategyId || strategyContext.strategyId || null,
     candidateId: row.candidateId || strategyContext.candidateId || null,
+    signalId: row.signalId || strategyContext.signalId || null,
+    intentId: row.intentId || strategyContext.intentId || null,
     executionId: row.executionId || strategyContext.executionId || null,
+    idempotencyKey: row.idempotencyKey || strategyContext.idempotencyKey || null,
     accountMasked: row.order?.accountMasked || row.accountMasked || null,
     conId: row.contract?.conId ?? null,
     localSymbol: row.contract?.localSymbol || null,

@@ -111,6 +111,20 @@ function main() {
   );
 
   assertPass('narrow_state_expansion_long', base(), 'confirmed narrow bull can pass');
+  const identityResult = assertPass('narrow_state_expansion_long', base({
+    lifecycleId: 'life-entry-1',
+    candidateId: 'cand-entry-1',
+    signalId: 'sig-entry-1',
+    intentId: 'intent-entry-1',
+    executionId: 'exec-entry-1',
+    idempotencyKey: 'idem-entry-1',
+  }), 'entry contract should keep identity');
+  assert.equal(identityResult.lifecycleId, 'life-entry-1');
+  assert.equal(identityResult.candidateId, 'cand-entry-1');
+  assert.equal(identityResult.signalId, 'sig-entry-1');
+  assert.equal(identityResult.intentId, 'intent-entry-1');
+  assert.equal(identityResult.executionId, 'exec-entry-1');
+  assert.equal(identityResult.idempotencyKey, 'idem-entry-1');
   assertBlock('narrow_state_expansion_long', base({ status: 'watch' }), svc.REASON_CODES.WATCH_ONLY);
   assertBlock('narrow_state_expansion_long', base({ status: 'caution', twoMinuteConfirmed: false }), svc.REASON_CODES.CAUTION_ONLY);
   assertBlock('narrow_state_expansion_long', base({ signalSubtype: 'NARROW_WAIT' }), svc.REASON_CODES.INVALID_SUBTYPE);

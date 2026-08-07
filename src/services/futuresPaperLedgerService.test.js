@@ -56,6 +56,14 @@ assert.equal(fs.existsSync(retiredStorage.files.accountState), false);
 
 const openMnq = ledgerSvc.openFuturesPaperPosition({
   now: '2026-07-06T11:00:00.000Z',
+  lifecycleId: 'life-mnq-1',
+  candidateId: 'cand-mnq-1',
+  signalId: 'sig-mnq-1',
+  intentId: 'idem-mnq-1',
+  executionId: 'fxp-mnq-1',
+  idempotencyKey: 'idem-mnq-1',
+  orderRef: 'TOS-PAPER-fxp-mnq-1-entry',
+  brokerOrderId: 9001,
   root: 'MNQ',
   symbol: 'MNQH26',
   side: 'long',
@@ -77,6 +85,14 @@ const openMnq = ledgerSvc.openFuturesPaperPosition({
 
 assert.equal(openMnq.ok, true);
 assert.equal(openMnq.position.root, 'MNQ');
+assert.equal(openMnq.position.lifecycleId, 'life-mnq-1');
+assert.equal(openMnq.position.candidateId, 'cand-mnq-1');
+assert.equal(openMnq.position.signalId, 'sig-mnq-1');
+assert.equal(openMnq.position.intentId, 'idem-mnq-1');
+assert.equal(openMnq.position.executionId, 'fxp-mnq-1');
+assert.equal(openMnq.position.idempotencyKey, 'idem-mnq-1');
+assert.equal(openMnq.position.orderRef, 'TOS-PAPER-fxp-mnq-1-entry');
+assert.equal(openMnq.position.brokerOrderId, 9001);
 assert.equal(openMnq.position.status, 'open');
 assert.equal(openMnq.position.unrealizedPnlUsd, 0);
 assert.equal(openMnq.position.strategyFamily, 'ema_trend_family');
@@ -128,6 +144,12 @@ const closeMnq = ledgerSvc.closeFuturesPaperPosition({
 
 assert.equal(closeMnq.ok, true);
 assert.equal(closeMnq.trade.status, 'closed');
+assert.equal(closeMnq.trade.lifecycleId, 'life-mnq-1');
+assert.equal(closeMnq.trade.candidateId, 'cand-mnq-1');
+assert.equal(closeMnq.trade.signalId, 'sig-mnq-1');
+assert.equal(closeMnq.trade.intentId, 'idem-mnq-1');
+assert.equal(closeMnq.trade.executionId, 'fxp-mnq-1');
+assert.equal(closeMnq.trade.idempotencyKey, 'idem-mnq-1');
 // Gross = 2 punkter * $2 = $4. Fees = $1.22 open + $1.22 close = $2.44. Net = $1.56.
 assert.equal(closeMnq.trade.grossPnlUsd, 4);
 assert.equal(closeMnq.trade.feesUsd, 2.44);
@@ -192,6 +214,27 @@ const events = storage.readJsonl(storage.files.events);
 assert.equal(events.length >= 4, true);
 assert.equal(events[0].type, 'FUTURES_POSITION_OPENED');
 assert.equal(events.at(-1).type, 'FUTURES_POSITION_CLOSED');
+const openedEvent = events.find((row) => row.type === 'FUTURES_POSITION_OPENED' && row.tradeId === openMnq.position.tradeId);
+const closedEvent = events.find((row) => row.type === 'FUTURES_POSITION_CLOSED' && row.tradeId === openMnq.position.tradeId);
+for (const row of [openedEvent, closedEvent]) {
+  assert.equal(row.lifecycleId, 'life-mnq-1');
+  assert.equal(row.candidateId, 'cand-mnq-1');
+  assert.equal(row.signalId, 'sig-mnq-1');
+  assert.equal(row.intentId, 'idem-mnq-1');
+  assert.equal(row.executionId, 'fxp-mnq-1');
+  assert.equal(row.idempotencyKey, 'idem-mnq-1');
+}
+
+const recentClosedMnq = ledgerSvc.getRecentClosedTrades({ limit: 10 }).trades
+  .find((row) => row.tradeId === openMnq.position.tradeId);
+assert.equal(recentClosedMnq.lifecycleId, 'life-mnq-1');
+assert.equal(recentClosedMnq.candidateId, 'cand-mnq-1');
+assert.equal(recentClosedMnq.signalId, 'sig-mnq-1');
+assert.equal(recentClosedMnq.intentId, 'idem-mnq-1');
+assert.equal(recentClosedMnq.executionId, 'fxp-mnq-1');
+assert.equal(recentClosedMnq.idempotencyKey, 'idem-mnq-1');
+assert.equal(recentClosedMnq.orderRef, 'TOS-PAPER-fxp-mnq-1-entry');
+assert.equal(recentClosedMnq.brokerOrderId, 9001);
 
 const invalidRoot = ledgerSvc.openFuturesPaperPosition({
   root: 'ETH',

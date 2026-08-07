@@ -24,6 +24,7 @@ const configService = require('./ibPaperExecutionConfigService');
 const adapterModule = require('./ibFuturesDataAdapterService');
 const guardService = require('./ibPaperExecutionGuardService');
 const intentServiceModule = require('./ibPaperExecutionIntentService');
+const lifecycleIdentity = require('./futuresLifecycleIdentityService');
 
 const ENVIRONMENT = 'paper'; // hårdkodat — ingen kodväg kan sätta 'live'
 
@@ -193,10 +194,13 @@ function buildEvidencePayload({
   return {
     evidenceVersion: EVIDENCE_VERSION,
     intent: {
+      lifecycleId: intentRecord?.lifecycleId || null,
       executionId: intentRecord?.executionId || null,
+      intentId: intentRecord?.intentId || intentRecord?.idempotencyKey || null,
       idempotencyKey: intentRecord?.idempotencyKey || null,
       strategyId: intentRecord?.strategyId || null,
       candidateId: intentRecord?.candidateId || null,
+      signalId: intentRecord?.signalId || null,
       root: intentRecord?.root || null,
 	      direction: intentRecord?.direction || null,
 	      executionTarget: intentRecord?.executionTarget || null,
@@ -703,12 +707,15 @@ function createIbPaperExecutionAdapterService(options = {}) {
 	    });
     client.on(EventName.openOrder, (orderId, contract, order, orderState) => {
       const normalizedOpenStatus = normalizeIbStatus(orderState?.status);
+      const owned = findOwnedIntentForOrder({ orderId: Number(orderId), orderRef: order?.orderRef });
+      const identity = lifecycleIdentity.mergeIdentity(owned, owned?.intent);
       if (TERMINAL_ORDER_STATUSES.has(normalizedOpenStatus)) {
         openOrders.delete(Number(orderId));
-        logEvent('open_order_terminal', { orderId: Number(orderId), status: orderState?.status ?? null, orderRef: order?.orderRef ?? null });
+        logEvent('open_order_terminal', { ...identity, orderId: Number(orderId), status: orderState?.status ?? null, orderRef: order?.orderRef ?? null });
         return;
       }
       openOrders.set(Number(orderId), {
+        ...identity,
         orderId: Number(orderId),
         contract: {
           conId: contract?.conId ?? null,
@@ -739,7 +746,7 @@ function createIbPaperExecutionAdapterService(options = {}) {
         state: orderState?.status ?? null,
         updatedAt: nowIso(),
       });
-      logEvent('open_order', { orderId: Number(orderId), status: orderState?.status ?? null, orderRef: order?.orderRef ?? null });
+      logEvent('open_order', { ...identity, orderId: Number(orderId), status: orderState?.status ?? null, orderRef: order?.orderRef ?? null });
     });
     client.on(EventName.openOrderEnd, () => {
       const entry = pending.get('openOrders');
@@ -752,7 +759,10 @@ function createIbPaperExecutionAdapterService(options = {}) {
     });
     client.on(EventName.orderStatus, (orderId, status, filled, remaining, avgFillPrice, permId, parentId, lastFillPrice) => {
       const normalized = normalizeIbStatus(status, filled, remaining);
+      const owned = findOwnedIntentForOrder({ orderId: Number(orderId) });
+      const identity = lifecycleIdentity.mergeIdentity(owned, owned?.intent);
       orderStatuses.set(Number(orderId), {
+        ...identity,
         orderId: Number(orderId),
         ibStatus: status,
         status: normalized,
@@ -773,10 +783,16 @@ function createIbPaperExecutionAdapterService(options = {}) {
       if (normalized === 'filled') {
         handleFilledOrderStatus({ orderId: Number(orderId), avgFillPrice, lastFillPrice });
       }
-      logEvent('order_status', { orderId: Number(orderId), ibStatus: status, status: normalized, filled: Number(filled) || 0, remaining: Number(remaining) || 0 });
+      logEvent('order_status', { ...identity, orderId: Number(orderId), ibStatus: status, status: normalized, filled: Number(filled) || 0, remaining: Number(remaining) || 0 });
     });
     client.on(EventName.execDetails, (reqId, contract, execution) => {
+      const owned = findOwnedIntentForOrder({
+        orderId: execution?.orderId,
+        orderRef: execution?.orderRef,
+      });
+      const identity = lifecycleIdentity.mergeIdentity(owned, owned?.intent);
       const row = {
+        ...identity,
         execId: execution?.execId ?? null,
         orderId: execution?.orderId ?? null,
         permId: execution?.permId ?? null,
@@ -793,7 +809,7 @@ function createIbPaperExecutionAdapterService(options = {}) {
       executions.push(row);
       if (executions.length > 200) executions.shift();
       persistExecutionDetails(contract, execution);
-      logEvent('exec_details', { execId: execution?.execId ?? null, orderId: execution?.orderId ?? null, price: execution?.price ?? null });
+      logEvent('exec_details', { ...identity, execId: execution?.execId ?? null, orderId: execution?.orderId ?? null, price: execution?.price ?? null });
       const entry = pending.get(reqId);
       if (entry) entry.rows.push(executions[executions.length - 1]);
     });
@@ -1364,6 +1380,7 @@ function createIbPaperExecutionAdapterService(options = {}) {
 	    if (submitInProgress) return refusal('submit_in_progress');
 
 	    const account = discovery.accountIdRawForSubmit;
+    const submitIdentity = lifecycleIdentity.mergeIdentity(intentRecord, intentRecord?.intent);
 	    const parentId = nextOrderId;
 	    let idCursor = nextOrderId;
 	    const legs = [
@@ -1400,10 +1417,10 @@ function createIbPaperExecutionAdapterService(options = {}) {
 	        idCursor += 1;
 	        ib.placeOrder(orderId, orderPlan.contract, leg.order);
         placed.push({ leg: leg.name, orderId, orderRef: leg.order.orderRef, transmit: leg.order.transmit });
-        logEvent('order_placed', { leg: leg.name, orderId, orderRef: leg.order.orderRef, transmit: leg.order.transmit, accountMasked: maskAccount(account) });
+        logEvent('order_placed', { ...submitIdentity, leg: leg.name, orderId, orderRef: leg.order.orderRef, transmit: leg.order.transmit, accountMasked: maskAccount(account) });
       }
 	      nextOrderId = idCursor;
-	      return { ok: true, submitted: true, parentOrderId: parentId, legs: placed, accountMasked: maskAccount(account), ...EXECUTION_SAFETY };
+	      return { ok: true, submitted: true, ...submitIdentity, parentOrderId: parentId, legs: placed, accountMasked: maskAccount(account), ...EXECUTION_SAFETY };
 	    } catch (err) {
 	      recordError(null, `submit_failed: ${err.message}`);
 	      intentService.updateStatus(intentRecord.idempotencyKey, 'reconciliation_required', {
