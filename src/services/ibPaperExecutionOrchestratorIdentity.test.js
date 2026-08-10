@@ -14,6 +14,9 @@ process.env.IB_GATEWAY_PORT = '4002';
 const orchestratorModule = require('./ibPaperExecutionOrchestratorService');
 const intentModule = require('./ibPaperExecutionIntentService');
 const reservationModule = require('./futuresPaperExecutionTargetReservationService');
+const configService = require('./ibPaperExecutionConfigService');
+
+configService.readKillSwitch = () => ({ pauseNewEntries: false, reason: null, updatedAt: null });
 
 function createAdapter(nowIso) {
   return {

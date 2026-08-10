@@ -467,11 +467,24 @@ function hasSpecificRuntimeSubtype(signal = {}) {
   return Boolean(subtype && !['UNKNOWN', 'NO_TRADE', 'WAIT', 'VÄNTA', 'MARKET_CLOSED'].includes(subtype));
 }
 
-function marketMatches(entryMarket, signalMarket) {
+const INDEX_KINSHIP_MARKETS = new Set(['stock', 'stocks', 'equity', 'equities', 'index', 'indices', 'etf', 'etfs', 'future', 'futures']);
+const MNQ_INDEX_FUTURES_SYMBOLS = new Set(['MNQ', 'NQ', 'NASDAQ', 'NASDAQ100', 'NAS100']);
+
+function marketMatches(entryMarket, signalMarket, signalObject = {}) {
   const entry = String(entryMarket || 'all').toLowerCase();
   const signal = String(signalMarket || 'stocks').toLowerCase();
   if (entry === 'all') return true;
   if (entry === signal) return true;
+  if (entry === 'index_kinship') {
+    return INDEX_KINSHIP_MARKETS.has(signal);
+  }
+  if (entry === 'mnq_index_kinship') {
+    if (!INDEX_KINSHIP_MARKETS.has(signal)) return false;
+    if (signal === 'future' || signal === 'futures') {
+      return MNQ_INDEX_FUTURES_SYMBOLS.has(upper(signalObject.symbol || signalObject.futuresSymbol || signalObject.rootSymbol));
+    }
+    return true;
+  }
   if (entry === 'stocks') return signal !== 'crypto' && signal !== 'futures';
   return false;
 }
@@ -498,7 +511,7 @@ function findMapEntry(signal = {}) {
   const direction = directionOf(signal);
   const map = getRuntimeStrategyMap();
 
-  const exact = map.filter((entry) => entry.raw_signal === raw && marketMatches(entry.market, market));
+  const exact = map.filter((entry) => entry.raw_signal === raw && marketMatches(entry.market, market, signal));
   if (exact.length) return chooseBestMapEntry(exact, direction);
 
   if (hasSpecificRuntimeSubtype(signal)) return null;
@@ -507,7 +520,7 @@ function findMapEntry(signal = {}) {
   if (!family) return null;
   return chooseBestMapEntry(
     map.filter((entry) => upper(entry.signal_family) === family
-      && marketMatches(entry.market, market)
+      && marketMatches(entry.market, market, signal)
       && directionMatches(entry.direction, direction)),
     direction,
   );

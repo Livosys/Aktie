@@ -116,4 +116,13 @@ const missingSignalId = missingSignalIdProvider.getCanonicalSignals({ now });
 assert.equal(missingSignalId.signalInputs.length, 1);
 assert.equal(Object.prototype.hasOwnProperty.call(missingSignalId.signalInputs[0], 'lifecycleId'), false);
 
+const defaultProvider = createFuturesCanonicalSignalProviderService({
+  signalReader: () => [],
+});
+const defaultResult = defaultProvider.getCanonicalSignals({ now });
+assert.equal(defaultResult.signalInputs.length, 0);
+assert.equal(defaultResult.stats.providerSignalsRead, 0);
+assert.equal(defaultResult.stats.providersEvaluated, 0);
+assert.deepEqual(defaultResult.providerResults, {});
+
 console.log('futuresCanonicalSignalProviderService.test.js passed');

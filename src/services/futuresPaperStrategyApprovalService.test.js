@@ -24,7 +24,7 @@ function reset() {
   service.__resetLastKnownGood();
 }
 
-// 1) Migration seedar unionen av dagens faktiska Futures-runtime (allowlist ∪ traded ∪ open).
+// 1) Migration seedar dagens aktiva Futures-runtime, filtrerad genom execution allowlist.
 test('migration seeds the runtime union as approved', () => {
   reset();
   const { migrated, store } = service.ensureMigrated();
@@ -32,11 +32,13 @@ test('migration seeds the runtime union as approved', () => {
   const union = service.computeMigrationUnion();
   const ids = Object.keys(store.strategies).sort();
   assert.deepStrictEqual(ids, [...union].sort());
-  // dagens tre extra (utanför allowlist-sex) måste ingå eftersom de har trades
-  for (const id of ['low_volatility_breakout', 'ema_breakdown', 'resistance_rejection']) {
+  for (const id of ['ema_pullback_continuation', 'vwap_volume_breakout_long', 'narrow_state_expansion_long']) {
     assert.ok(store.strategies[id], `${id} must be seeded`);
     assert.strictEqual(store.strategies[id].status, 'approved');
     assert.strictEqual(store.strategies[id].source, 'initial_migration_from_existing_futures_runtime');
+  }
+  for (const id of ['low_volatility_breakout', 'ema_breakdown', 'resistance_rejection', 'mnq_globex_momentum_v1']) {
+    assert.ok(!store.strategies[id], `${id} must not be reactivated by historical trades`);
   }
 });
 
@@ -60,10 +62,10 @@ test('migration does not make any strategy immediately completed', () => {
 test('fresh approve starts at 0/10', () => {
   reset();
   service.ensureMigrated();
-  service.remove('narrow_breakout');
-  const r = service.approve('narrow_breakout');
+  service.remove('vwap_volume_breakout_long');
+  const r = service.approve('vwap_volume_breakout_long');
   assert.strictEqual(r.ok, true);
-  const v = service.getStrategy('narrow_breakout');
+  const v = service.getStrategy('vwap_volume_breakout_long');
   assert.strictEqual(v.currentTest.currentTestClosedTrades, 0);
   assert.strictEqual(v.currentTest.currentTestTargetTrades, 10);
   assert.strictEqual(v.currentTest.currentTestStatus, 'in_progress');
@@ -73,7 +75,7 @@ test('fresh approve starts at 0/10', () => {
 test('old trades count only historically', () => {
   reset();
   service.ensureMigrated();
-  const v = service.getStrategy('narrow_breakout');
+  const v = service.getStrategy('ema_pullback_continuation');
   assert.ok(v.currentTest.totalHistoricalClosedTrades > 0);
   assert.strictEqual(v.currentTest.currentTestClosedTrades, 0);
 });
@@ -105,29 +107,29 @@ test('10 new closed after test start => completed, 11th blocked', () => {
   reset();
   service.ensureMigrated();
   // Fräsch approve → testRun.startedAt = nu. Injicera stängningar EFTER nu.
-  service.remove('narrow_breakout');
-  service.approve('narrow_breakout');
+  service.remove('vwap_volume_breakout_long');
+  service.approve('vwap_volume_breakout_long');
   const future = (i) => new Date(Date.now() + 60_000 + i * 1000).toISOString();
-  const eleven = new Map([['narrow_breakout', Array.from({ length: 11 }, (_, i) => future(i))]]);
-  const g = service.evaluateFuturesApprovalGate({ strategyId: 'narrow_breakout', closedTs: eleven });
+  const eleven = new Map([['vwap_volume_breakout_long', Array.from({ length: 11 }, (_, i) => future(i))]]);
+  const g = service.evaluateFuturesApprovalGate({ strategyId: 'vwap_volume_breakout_long', closedTs: eleven });
   assert.strictEqual(g.allowed, false);
   assert.strictEqual(g.blockedReason, 'futures_test_target_completed');
   assert.strictEqual(g.currentTest.currentTestClosedTrades, 10, 'display capped at target');
   // nio stängda efter start → in_progress, gaten släpper igenom
-  const nine = new Map([['narrow_breakout', Array.from({ length: 9 }, (_, i) => future(i))]]);
-  assert.strictEqual(service.evaluateFuturesApprovalGate({ strategyId: 'narrow_breakout', closedTs: nine }).allowed, true);
+  const nine = new Map([['vwap_volume_breakout_long', Array.from({ length: 9 }, (_, i) => future(i))]]);
+  assert.strictEqual(service.evaluateFuturesApprovalGate({ strategyId: 'vwap_volume_breakout_long', closedTs: nine }).allowed, true);
 });
 
 // 8) Mutationer idempotenta; resume endast från paused.
 test('mutations idempotent; resume only from paused', () => {
   reset();
   service.ensureMigrated();
-  assert.strictEqual(service.pause('trend_continuation').changed, true);
-  assert.strictEqual(service.pause('trend_continuation').changed, false);
-  assert.strictEqual(service.resume('trend_continuation').changed, true);
-  assert.strictEqual(service.resume('trend_continuation').changed, false);
-  service.remove('trend_continuation');
-  assert.strictEqual(service.resume('trend_continuation').code, 409);
+  assert.strictEqual(service.pause('ema_pullback_continuation').changed, true);
+  assert.strictEqual(service.pause('ema_pullback_continuation').changed, false);
+  assert.strictEqual(service.resume('ema_pullback_continuation').changed, true);
+  assert.strictEqual(service.resume('ema_pullback_continuation').changed, false);
+  service.remove('ema_pullback_continuation');
+  assert.strictEqual(service.resume('ema_pullback_continuation').code, 409);
 });
 
 // 9) Pausad/borttagen blockeras av gaten (skapar ingen ny trade).
@@ -135,10 +137,10 @@ test('paused/removed blocked by gate', () => {
   reset();
   service.ensureMigrated();
   const zero = new Map();
-  service.pause('narrow_breakout');
-  assert.strictEqual(service.evaluateFuturesApprovalGate({ strategyId: 'narrow_breakout', closedTs: zero }).blockedReason, 'futures_strategy_paused');
-  service.remove('trend_continuation');
-  assert.strictEqual(service.evaluateFuturesApprovalGate({ strategyId: 'trend_continuation', closedTs: zero }).blockedReason, 'futures_strategy_removed');
+  service.pause('vwap_volume_breakout_long');
+  assert.strictEqual(service.evaluateFuturesApprovalGate({ strategyId: 'vwap_volume_breakout_long', closedTs: zero }).blockedReason, 'futures_strategy_paused');
+  service.remove('ema_pullback_continuation');
+  assert.strictEqual(service.evaluateFuturesApprovalGate({ strategyId: 'ema_pullback_continuation', closedTs: zero }).blockedReason, 'futures_strategy_removed');
 });
 
 // 10) Duplicate Fakeout kan inte godkännas; gaten blockerar; crypto/paused avvisas.
@@ -157,16 +159,16 @@ test('duplicate/crypto/paused cannot be approved', () => {
 test('last-known-good on corrupt store after valid load', () => {
   reset();
   service.ensureMigrated();          // giltig store + LKG
-  service.remove('resistance_rejection');
-  service.getStrategy('narrow_breakout'); // säkerställ LKG uppdaterad
+  service.remove('vwap_volume_breakout_long');
+  service.getStrategy('ema_pullback_continuation'); // säkerställ LKG uppdaterad
   fs.writeFileSync(TMP_STORE, '{ this is corrupt json');
   const loaded = service.loadStore();
   assert.strictEqual(loaded.degraded, true);
   const zero = new Map();
   // approved fortsätter
-  assert.strictEqual(service.evaluateFuturesApprovalGate({ strategyId: 'narrow_breakout', closedTs: zero }).allowed, true);
+  assert.strictEqual(service.evaluateFuturesApprovalGate({ strategyId: 'ema_pullback_continuation', closedTs: zero }).allowed, true);
   // removed förblir removed
-  assert.strictEqual(service.evaluateFuturesApprovalGate({ strategyId: 'resistance_rejection', closedTs: zero }).blockedReason, 'futures_strategy_removed');
+  assert.strictEqual(service.evaluateFuturesApprovalGate({ strategyId: 'vwap_volume_breakout_long', closedTs: zero }).blockedReason, 'futures_strategy_removed');
 });
 
 // 12) Vid store-fel släpps okänd strategi INTE igenom; ingen allow-all.
@@ -189,7 +191,7 @@ test('no LKG + corrupt store uses migration seed (degraded)', () => {
   assert.strictEqual(loaded.degraded, true);
   // union-strategi finns i seed → approved → tillåts (om ej target klart)
   const zero = new Map();
-  const g = service.evaluateFuturesApprovalGate({ strategyId: 'narrow_breakout', closedTs: zero });
+  const g = service.evaluateFuturesApprovalGate({ strategyId: 'ema_pullback_continuation', closedTs: zero });
   assert.strictEqual(g.allowed, true);
   assert.strictEqual(g.degraded, true);
   // okänd → blockeras
@@ -201,7 +203,7 @@ test('mutation refused while degraded', () => {
   reset();
   service.ensureMigrated();
   fs.writeFileSync(TMP_STORE, '{bad');
-  const r = service.pause('narrow_breakout');
+  const r = service.pause('ema_pullback_continuation');
   assert.strictEqual(r.ok, false);
   assert.strictEqual(r.code, 503);
   assert.strictEqual(r.reason, 'futures_approval_state_degraded');
@@ -218,7 +220,7 @@ test('unknown strategy rejected', () => {
 test('atomic write leaves no corrupt file / no temp leftovers', () => {
   reset();
   service.ensureMigrated();
-  for (let i = 0; i < 20; i += 1) { service.pause('narrow_breakout'); service.resume('narrow_breakout'); }
+  for (let i = 0; i < 20; i += 1) { service.pause('ema_pullback_continuation'); service.resume('ema_pullback_continuation'); }
   JSON.parse(fs.readFileSync(TMP_STORE, 'utf8'));
   assert.strictEqual(fs.readdirSync(TMP_DIR).filter((f) => f.includes('.tmp')).length, 0);
 });
@@ -227,8 +229,8 @@ test('atomic write leaves no corrupt file / no temp leftovers', () => {
 test('history records transitions', () => {
   reset();
   service.ensureMigrated();
-  service.pause('narrow_breakout');
-  const raw = JSON.parse(fs.readFileSync(TMP_STORE, 'utf8')).strategies.narrow_breakout.history;
+  service.pause('ema_pullback_continuation');
+  const raw = JSON.parse(fs.readFileSync(TMP_STORE, 'utf8')).strategies.ema_pullback_continuation.history;
   const last = raw[raw.length - 1];
   assert.strictEqual(last.action, 'pause');
   assert.strictEqual(last.previousStatus, 'approved');
@@ -243,13 +245,13 @@ test('listStrategies returns catalog and registry strategies, safety, no secrets
   assert.ok(info.count >= 34);
   assert.strictEqual(info.mode, 'paper_only');
   assert.strictEqual(info.broker_enabled, false);
-  const ready = info.strategies.find((s) => s.strategyId === 'narrow_breakout');
+  const ready = info.strategies.find((s) => s.strategyId === 'ema_pullback_continuation');
   assert.ok(Array.isArray(ready.signalRules), 'backend view exposes catalog signal rules');
   assert.ok(Array.isArray(ready.compatibility.allowedRoots), 'backend view exposes allowed roots');
   const registryStrategy = info.strategies.find((s) => s.strategyId === 'mnq_globex_momentum_v1');
   assert.ok(registryStrategy, 'backend view exposes scanner registry strategy');
-  assert.strictEqual(registryStrategy.approval.status, 'approved');
-  assert.strictEqual(registryStrategy.approval.source, 'strategy_registry_execution_allowlist');
+  assert.strictEqual(registryStrategy.approval.status, null);
+  assert.strictEqual(registryStrategy.approval.source, null);
   assert.deepStrictEqual(registryStrategy.compatibility.roots, ['MNQ']);
   const json = JSON.stringify(info);
   for (const re of [/api[_-]?key/i, /secret/i, /password/i, /token/i, /credential/i, /bearer/i]) {
@@ -262,16 +264,8 @@ test('READY list is backend-derived with producer evidence', () => {
   reset();
   const info = service.listStrategies();
   const expected = new Map([
-    ['ema_breakdown', 'closed_trades'],
     ['ema_pullback_continuation', 'both'],
-    ['low_volatility_breakout', 'closed_trades'],
-    ['narrow_breakout', 'both'],
-    ['narrow_fakeout_reversal_v1', 'both'],
     ['narrow_state_expansion_long', 'both'],
-    ['resistance_rejection', 'closed_trades'],
-    ['trend_continuation', 'both'],
-    ['vwap_failed_breakout_short', 'both'],
-    ['mnq_globex_momentum_v1', 'strategy_registry_execution_allowlist'],
     // Den här strategin har både scanner-emitter och historiska closed trades i ledgern.
     ['vwap_volume_breakout_long', 'both'],
   ]);

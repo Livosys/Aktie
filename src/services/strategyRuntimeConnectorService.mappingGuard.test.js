@@ -66,11 +66,40 @@ for (const subtype of ['VWAP_RECLAIM_UP', 'VWAP_REJECTION_DOWN']) {
   assert.equal(r.allowed, false, 'entry fortsatt blockerad utan context');
 }
 
-// 8. Kända Narrow-mappings oförändrade.
+// 8. Futures-kopplade long-strategier får inte routas mot crypto-signaler.
 {
-  const bull = decide({ signalFamily: 'NARROW_COMPRESSION', signalSubtype: 'NARROW_BULL_ENTRY', nextMoveBias: 'UP', symbol: 'BTCUSDT', marketType: 'crypto' });
-  assert.equal(bull.strategyId, 'narrow_state_expansion_long');
-  assert.equal(bull.allowed, true);
+  for (const [symbol, signalFamily, signalSubtype] of [
+    ['ETHUSDT', 'EMA_TREND_PULLBACK', 'EMA_PULLBACK_UP'],
+    ['BTCUSDT', 'EMA_TREND_PULLBACK', 'EMA_PULLBACK_UP'],
+    ['SOLUSDT', 'EMA_TREND_PULLBACK', 'EMA_PULLBACK_UP'],
+    ['ETHUSDT', 'NARROW_COMPRESSION', 'NARROW_BULL_ENTRY'],
+    ['ETHUSDT', 'VWAP_RECLAIM_REJECTION', 'VWAP_RECLAIM_UP'],
+  ]) {
+    const r = decide({ signalFamily, signalSubtype, nextMoveBias: 'UP', symbol, marketType: 'crypto' });
+    assert.equal(r.strategyId, null, `${symbol} ${signalSubtype}: ingen futures-strategi`);
+    assert.equal(r.allowed, false);
+  }
+}
+
+// 9. Kända index/futures/stock-mappings oförändrade.
+{
+  for (const [symbol, marketType] of [['QQQ', 'stocks'], ['NDX', 'index'], ['MNQ', 'futures'], ['SPY', 'stocks'], ['MES', 'futures']]) {
+    const ema = decide({ signalFamily: 'EMA_TREND_PULLBACK', signalSubtype: 'EMA_PULLBACK_UP', nextMoveBias: 'UP', symbol, marketType });
+    assert.equal(ema.strategyId, 'ema_pullback_continuation', `${symbol} EMA_PULLBACK_UP => ema_pullback_continuation`);
+    assert.equal(ema.allowed, true);
+  }
+  const spyVwap = decide({ signalFamily: 'VWAP_RECLAIM_REJECTION', signalSubtype: 'VWAP_RECLAIM_UP', nextMoveBias: 'UP', symbol: 'SPY', marketType: 'stocks' });
+  assert.equal(spyVwap.strategyId, 'vwap_volume_breakout_long', 'SPY VWAP_RECLAIM_UP => vwap_volume_breakout_long');
+  assert.equal(spyVwap.allowed, true);
+
+  const mnqVwap = decide({ signalFamily: 'VWAP_RECLAIM_REJECTION', signalSubtype: 'VWAP_RECLAIM_UP', nextMoveBias: 'UP', symbol: 'MNQ', marketType: 'futures' });
+  assert.equal(mnqVwap.strategyId, 'vwap_volume_breakout_long', 'MNQ VWAP_RECLAIM_UP => vwap_volume_breakout_long');
+  assert.equal(mnqVwap.allowed, true);
+
+  const mesVwap = decide({ signalFamily: 'VWAP_RECLAIM_REJECTION', signalSubtype: 'VWAP_RECLAIM_UP', nextMoveBias: 'UP', symbol: 'MES', marketType: 'futures' });
+  assert.equal(mesVwap.strategyId, null, 'MES VWAP_RECLAIM_UP får ingen ny route');
+  assert.equal(mesVwap.allowed, false);
+
   const bear = decide({ signalFamily: 'NARROW_COMPRESSION', signalSubtype: 'NARROW_BEAR_ENTRY', nextMoveBias: 'DOWN', symbol: 'BTCUSDT', marketType: 'crypto' });
   assert.equal(bear.strategyId, 'narrow_breakout');
   assert.equal(bear.allowed, true);
@@ -79,7 +108,7 @@ for (const subtype of ['VWAP_RECLAIM_UP', 'VWAP_REJECTION_DOWN']) {
   assert.equal(fakeout.allowed, true);
 }
 
-// 9. EMA long är deklarerad på ema_pullback_continuation. EMA down saknar
+// 10. EMA long är deklarerad på ema_pullback_continuation. EMA down saknar
 // deklarerad strategi-metadata och får därför inte falla tillbaka till long-
 // strategins kontrakt.
 {
@@ -98,7 +127,7 @@ for (const subtype of ['VWAP_RECLAIM_UP', 'VWAP_REJECTION_DOWN']) {
   );
 }
 
-// 10. Kända stock-VWAP-mappings oförändrade.
+// 11. Kända stock-VWAP-mappings oförändrade.
 {
   const up = decide({ signalFamily: 'VWAP_RECLAIM_REJECTION', signalSubtype: 'VWAP_RECLAIM_UP', nextMoveBias: 'UP', symbol: 'AAPL', marketType: 'stocks' });
   assert.equal(up.strategyId, 'vwap_volume_breakout_long');
@@ -116,7 +145,7 @@ for (const subtype of ['VWAP_RECLAIM_UP', 'VWAP_REJECTION_DOWN']) {
   assert.equal(r.blockedReason, 'setup_not_paper_entry');
 }
 
-// 11. Ingen signal kan mappas till mer än en strategi — inferStrategyForSignal
+// 12. Ingen signal kan mappas till mer än en strategi — inferStrategyForSignal
 // är deterministisk och returnerar exakt ett strategy_id (eller null).
 {
   const sig = { signalFamily: 'NARROW_COMPRESSION', signalSubtype: 'NARROW_BEAR_ENTRY', nextMoveBias: 'DOWN', symbol: 'BTCUSDT', marketType: 'crypto' };
@@ -126,7 +155,7 @@ for (const subtype of ['VWAP_RECLAIM_UP', 'VWAP_REJECTION_DOWN']) {
   }
 }
 
-// 12. Paper Trading kan inte skapa trade från null/unknown mapping:
+// 13. Paper Trading kan inte skapa trade från null/unknown mapping:
 // canCreatePaperTradeForSignal är exakt den gate paper-agenten anropar
 // (paperTradingAgent runTick → RUNTIME_REJECTED-skip när allowed=false).
 {

@@ -22,15 +22,16 @@ function test(name, fn) {
   catch (err) { console.error(`  FAIL - ${name}\n         ${err && err.message}`); process.exitCode = 1; }
 }
 
-// A) Migration bevarar unionen av dagens Futures-runtime; alla passerar gaten
+// A) Migration bevarar dagens execution-allowlisted Futures-runtime; alla passerar gaten
 //    (ny testomgång startar 0/10 → inget target-block).
 test('runtime union migrates and passes approval gate', () => {
   approval.ensureMigrated();
   const union = approval.computeMigrationUnion();
-  // dagens tre extra måste ingå (de har verkliga futures-trades)
-  for (const id of ['low_volatility_breakout', 'ema_breakdown', 'resistance_rejection']) {
-    assert.ok(union.includes(id), `${id} must be in migration union`);
-  }
+  assert.deepStrictEqual(union, [
+    'ema_pullback_continuation',
+    'narrow_state_expansion_long',
+    'vwap_volume_breakout_long',
+  ]);
   // Live closedTs (default): kompatibilitet ser verkliga trades (READY), och
   // ny testomgång (startedAt = migrationstid) ger 0/10 → inget target-block.
   for (const id of union) {

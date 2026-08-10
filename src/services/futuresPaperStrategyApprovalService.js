@@ -44,12 +44,9 @@ const STORE_FILE = path.resolve(
 // är UNIONEN av allowlist + strategier med verkliga futures-trades (se
 // computeMigrationUnion) och speglar dagens faktiska Futures-runtime.
 const ALLOWLIST_FALLBACK_IDS = Object.freeze([
-  'narrow_breakout',
-  'trend_continuation',
-  'vwap_failed_breakout_short',
   'narrow_state_expansion_long',
   'ema_pullback_continuation',
-  'narrow_fakeout_reversal_v1',
+  'vwap_volume_breakout_long',
 ]);
 
 const MIGRATION_SOURCE = 'initial_migration_from_existing_futures_runtime';
@@ -150,8 +147,17 @@ function allowlistIds() {
   }
 }
 
+function canExecuteFromRegistry(id) {
+  try {
+    return strategyRegistryService.canExecuteStrategy(id).allowed === true;
+  } catch (err) {
+    return false;
+  }
+}
+
 // Union av strategier som FAKTISKT deltar i dagens Futures-runtime:
-// allowlist ∪ strategier med stängda futures-trades ∪ öppna positioner.
+// allowlist ∪ strategier med stängda futures-trades ∪ öppna positioner,
+// filtrerat genom execution allowlist så historik aldrig reaktiverar strategier.
 function computeMigrationUnion({ allowlist = null, tradedIds = null, openIds = null } = {}) {
   const set = new Set();
   for (const id of (allowlist || allowlistIds())) if (id) set.add(id);
@@ -159,7 +165,7 @@ function computeMigrationUnion({ allowlist = null, tradedIds = null, openIds = n
   for (const id of traded) if (id) set.add(id);
   const opens = openIds || [...openStrategyIds()];
   for (const id of opens) if (id) set.add(id);
-  return [...set].sort();
+  return [...set].filter(canExecuteFromRegistry).sort();
 }
 
 // ── Persistens (atomisk skrivning: tempfil → fsync → rename) ────────────────
@@ -366,7 +372,7 @@ function registryFuturesRoots(strategy = {}) {
 function symbolMappingFor(market) {
   const m = String(market || '').toLowerCase();
   if (m === 'crypto') return { status: 'unsupported', roots: [] };
-  if (m === 'stocks' || m === 'all') return { status: 'supported', roots: ['MNQ', 'MES'] };
+  if (m === 'stocks' || m === 'index' || m === 'all') return { status: 'supported', roots: ['MNQ', 'MES'] };
   return { status: 'unknown', roots: [] };
 }
 
@@ -406,6 +412,9 @@ function computeCompatibility(id, catalogStrategy, closedTs = null, registryStra
 
   const status = strategy.status || strategy.catalog_status;
   const isPaused = status === 'paused' || status === 'deprecated' || strategy.enabled === false;
+  const registryExecution = registryStrategy
+    ? strategyRegistryService.canExecuteStrategy(registryStrategy)
+    : null;
 
   const timestamps = closedTs || closedTimestampsByStrategy();
   const isScannerEmitter = strategy.supportsScanner === true;
@@ -427,8 +436,9 @@ function computeCompatibility(id, catalogStrategy, closedTs = null, registryStra
   if (isDuplicate) canonicalReplacementId = DUPLICATE_REPLACEMENTS[id];
 
   let compatibility;
-  if (isPaused) { compatibility = COMPAT.BLOCKED; blockingReasons.push('catalog_status_paused'); }
-  else if (isDuplicate) { compatibility = COMPAT.NEEDS_MAPPING; blockingReasons.push('duplicate_strategy'); }
+  if (isDuplicate) { compatibility = COMPAT.NEEDS_MAPPING; blockingReasons.push('duplicate_strategy'); }
+  else if (registryExecution && registryExecution.allowed !== true) { compatibility = COMPAT.BLOCKED; blockingReasons.push(registryExecution.blockedReason || 'strategy_not_in_execution_allowlist'); }
+  else if (isPaused) { compatibility = COMPAT.BLOCKED; blockingReasons.push('catalog_status_paused'); }
   else if (symbolMappingStatus === 'unsupported') { compatibility = COMPAT.UNSUPPORTED; blockingReasons.push('no_safe_futures_mapping'); }
   else if (symbolMappingStatus === 'unknown') { compatibility = COMPAT.NEEDS_MAPPING; blockingReasons.push('unverified_symbol_mapping'); }
   else if (producerStatus === 'missing') { compatibility = COMPAT.NEEDS_MAPPING; blockingReasons.push('no_verified_signal_producer'); }
@@ -446,13 +456,13 @@ function computeCompatibility(id, catalogStrategy, closedTs = null, registryStra
 
 function buildStrategyView(id, { store, closedTs, degraded, registryMap = null }) {
   const catalogStrategy = getCatalogStrategy(id);
-  const registryStrategy = catalogStrategy ? null : (registryMap ? registryMap.get(id) || null : getRegistryStrategy(id));
+  const registryStrategy = registryMap ? registryMap.get(id) || null : getRegistryStrategy(id);
   const entry = store.strategies[id] || null;
   const compatibility = computeCompatibility(id, catalogStrategy, closedTs, registryStrategy);
-  const registryApproved = !entry
-    && registryStrategy
-    && registryStrategy.status === 'active'
-    && registryStrategy.enabled !== false;
+  const registryExecution = registryStrategy
+    ? strategyRegistryService.canExecuteStrategy(registryStrategy)
+    : null;
+  const registryApproved = !entry && registryExecution?.allowed === true;
   const currentTest = computeCurrentTest(id, entry, closedTs);
   return {
     strategyId: id,
@@ -550,7 +560,7 @@ function mutate(rawId, action, { source = 'api', now = new Date() } = {}) {
     if (existing && existing.status === STATUS.APPROVED) {
       return { ok: true, code: 200, changed: false, strategyId: id, status: STATUS.APPROVED, reason: 'already_approved', ...SAFETY };
     }
-    const compat = computeCompatibility(id, catalogStrategy, closedTs);
+    const compat = computeCompatibility(id, catalogStrategy, closedTs, getRegistryStrategy(id));
     if (compat.compatibility !== COMPAT.READY) {
       return {
         ok: false, code: 422, changed: false, strategyId: id,

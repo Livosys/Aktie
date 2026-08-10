@@ -7,6 +7,7 @@ const path = require('path');
 
 const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ib-paper-one-shot-'));
 process.env.IB_PAPER_ONE_SHOT_DATA_DIR = tempDir;
+process.env.IB_PAPER_ONE_SHOT_ARM_DATA_DIR = path.join(tempDir, 'arm');
 process.env.IB_GATEWAY_HOST = '127.0.0.1';
 process.env.IB_GATEWAY_PORT = '4002';
 process.env.IB_PAPER_ONE_SHOT_ENABLED = 'false';
@@ -14,6 +15,7 @@ process.env.IB_PAPER_ONE_SHOT_ENABLED = 'false';
 const svc = require('./interactiveBrokersPaperOneShotExecutionService');
 const protectiveSvc = require('./interactiveBrokersPaperProtectiveOrderService');
 const bracketSvc = require('./interactiveBrokersPaperBracketSubmissionService');
+const armSvc = require('./interactiveBrokersPaperOneShotArmService');
 
 function readiness(overrides = {}) {
   return {
@@ -546,6 +548,15 @@ async function main() {
     };
   };
   try {
+    const armedShot6 = armStatusFor(readyBlueprintState, 'shot-6');
+    armSvc.saveState({
+      currentArm: armedShot6,
+      armsById: { [armedShot6.armId]: armedShot6 },
+      idempotencyKeys: {},
+      usedBlueprintIds: {},
+      history: [],
+      lastSyncAt: now.toISOString(),
+    });
     const blockedBracketPlan = await svc.buildPaperOneShotExecution({
       now,
       truth: readyTruth,
@@ -554,7 +565,7 @@ async function main() {
       readiness: readinessState,
       preflight: readyPreflight,
       protectivePlan: { ...readyProtectivePlan, protectiveExecutionReady: true, blockedReason: null },
-      armStatus: armStatusFor(readyBlueprintState, 'shot-6'),
+      armStatus: armedShot6,
       blueprintId: readyBlueprintState.blueprintId,
       idempotencyKey: 'shot-6',
       nextValidId: 101,

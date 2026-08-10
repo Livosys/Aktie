@@ -2,10 +2,13 @@
 
 const assert = require('assert');
 const guard = require('./ibPaperExecutionGuardService');
+const configService = require('./ibPaperExecutionConfigService');
 
 process.env.IBKR_PAPER_EXECUTION_ENABLED = 'true';
 process.env.IBKR_PAPER_EXECUTION_SHADOW_MODE = 'true';
 process.env.IBKR_PAPER_ORDER_SUBMISSION_ENABLED = 'false';
+
+configService.readKillSwitch = () => ({ pauseNewEntries: false, reason: null, updatedAt: null });
 
 const base = {
   intent: {

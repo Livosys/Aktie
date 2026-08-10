@@ -71,11 +71,12 @@ function assertSafety(result, label) {
 	  assert.equal(active.status, 'active', 'internal active status');
 	  assert.equal(active.enabled, true, 'internal active enabled');
 	  assert.equal(active.source, 'internal', 'internal active source');
-	  assert.equal(active.performance_summary.trades, 18, 'internal active learning summary');
-	  assert.deepEqual(active.allowed_timeframes, ['5m'], 'internal active timeframes');
-	  const activeExecution = registry.canExecuteStrategy('INTERNAL_ACTIVE');
-	  assert.equal(activeExecution.allowed, true, 'internal active can execute');
-	  assert.equal(activeExecution.source, 'strategy_registry_execution_allowlist', 'internal active execution source');
+		  assert.equal(active.performance_summary.trades, 18, 'internal active learning summary');
+		  assert.deepEqual(active.allowed_timeframes, ['5m'], 'internal active timeframes');
+		  const activeExecution = registry.canExecuteStrategy('INTERNAL_ACTIVE');
+		  assert.equal(activeExecution.allowed, false, 'internal active needs explicit execution allowlist');
+		  assert.equal(activeExecution.blockedReason, 'strategy_not_in_execution_allowlist', 'internal active execution block reason');
+		  assert.equal(activeExecution.source, 'strategy_registry_execution_allowlist', 'internal active execution source');
 
   const paused = registry.getStrategy('INTERNAL_PAUSED');
   assert.equal(paused.status, 'paused', 'internal paused status');
@@ -166,9 +167,17 @@ function assertSafety(result, label) {
   });
   const mnq = seeded.getStrategy('mnq_globex_momentum_v1');
   assert.ok(mnq, 'seeded MNQ Globex strategy exists');
-  assert.equal(mnq.status, 'active', 'seeded MNQ Globex status');
-  assert.equal(mnq.enabled, true, 'seeded MNQ Globex enabled');
-  assert.equal(seeded.canExecuteStrategy('mnq_globex_momentum_v1').allowed, true, 'seeded MNQ Globex can execute');
+  assert.equal(mnq.status, 'deprecated', 'seeded MNQ Globex status');
+  assert.equal(mnq.enabled, false, 'seeded MNQ Globex enabled');
+  assert.equal(seeded.canExecuteStrategy('mnq_globex_momentum_v1').allowed, false, 'seeded MNQ Globex cannot execute');
+  for (const strategyId of ['ema_pullback_continuation', 'vwap_volume_breakout_long', 'narrow_state_expansion_long']) {
+    const execution = seeded.canExecuteStrategy(strategyId);
+    assert.equal(execution.allowed, true, `${strategyId} can execute`);
+    assert.equal(execution.status, 'active', `${strategyId} active`);
+  }
+  const narrowBreakout = seeded.canExecuteStrategy('narrow_breakout');
+  assert.equal(narrowBreakout.allowed, false, 'narrow_breakout is outside the FAS36 futures set');
+  assert.equal(narrowBreakout.blockedReason, 'strategy_disabled_in_registry', 'narrow_breakout disabled reason');
   assert.equal(seeded.SEED_FILE.endsWith('src/config/strategyRegistrySeed.json'), true, 'seed file is versioned config');
 }
 

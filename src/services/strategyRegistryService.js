@@ -454,10 +454,13 @@ function createStrategyRegistryService(options = {}) {
     }
     const status = normalizeStatus(strategy.status, 'paper_only');
     const enabled = strategy.enabled !== false;
-    const allowed = enabled && status === 'active';
+    const registryManaged = strategy.registry_managed === true;
+    const allowed = registryManaged && enabled && status === 'active';
     const blockedReason = allowed
       ? null
-      : (enabled ? 'strategy_not_active_in_registry' : 'strategy_disabled_in_registry');
+      : (!registryManaged
+        ? 'strategy_not_in_execution_allowlist'
+        : (enabled ? 'strategy_not_active_in_registry' : 'strategy_disabled_in_registry'));
     return {
       allowed,
       blockedReason,
@@ -466,6 +469,7 @@ function createStrategyRegistryService(options = {}) {
       strategyId: strategy.strategy_id || null,
       status,
       enabled,
+      registryManaged,
       source: 'strategy_registry_execution_allowlist',
       executionAllowlist: true,
       ...SAFETY,

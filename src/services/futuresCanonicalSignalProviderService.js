@@ -13,7 +13,6 @@ const {
 } = require('../scanner/cryptoScheduler');
 const { buildDecisionMonitor } = require('../scanner/decisionMonitor');
 const decisionMonitorProducerContext = require('./decisionMonitorProducerContextService');
-const futuresMnqGlobexMomentumProducerService = require('./futuresMnqGlobexMomentumProducerService');
 
 const SAFETY = Object.freeze({
   mode: 'paper_only',
@@ -122,7 +121,7 @@ function createFuturesCanonicalSignalProviderService(options = {}) {
   const readSignals = typeof options.signalReader === 'function' ? options.signalReader : defaultSignalReader;
   const producers = Array.isArray(options.signalProducers)
     ? options.signalProducers.filter(Boolean)
-    : [futuresMnqGlobexMomentumProducerService.defaultFuturesMnqGlobexMomentumProducerService];
+    : [];
 
   function collectProducerSignals({ now = new Date(), priceFeedService = null, feed = null } = {}) {
     const signals = [];
