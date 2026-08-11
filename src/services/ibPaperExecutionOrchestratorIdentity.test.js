@@ -236,4 +236,13 @@ test('buildShadowExecution propagates lifecycle identity through guard, evidence
   assert.equal(result.executionEvidence.signalId, 'sig-orch-1');
   assert.equal(result.executionEvidence.executionId, result.normalizedOrder.executionId);
   assert.equal(result.executionEvidence.idempotencyKey, result.normalizedOrder.idempotencyKey);
+
+  // FAS 36: tradeId präglas av orchestratorn (canonical owner) och ska bäras
+  // oförändrad av varje nedströmsobjekt. Härledningen är deterministisk ur
+  // executionId — ett omkört exekveringsförsök måste ge samma trade-rot.
+  const expectedTradeId = `futures_trade_${result.normalizedOrder.executionId.replace(/^fxp_/, '')}`;
+  assert.equal(result.intent.tradeId, expectedTradeId);
+  assert.equal(result.guard.tradeId, expectedTradeId);
+  assert.equal(result.orderPlan.tradeId, expectedTradeId);
+  assert.equal(result.executionEvidence.tradeId, expectedTradeId);
 });

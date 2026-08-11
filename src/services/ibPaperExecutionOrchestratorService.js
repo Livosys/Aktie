@@ -173,6 +173,7 @@ function attributeBrokerRows(rows, intents) {
       candidateId: row.candidateId || intent?.candidateId || inner.candidateId || null,
       signalId: row.signalId || intent?.signalId || inner.signalId || null,
       intentId: row.intentId || intent?.intentId || inner.intentId || intent?.idempotencyKey || inner.idempotencyKey || null,
+      tradeId: row.tradeId || identity.tradeId || null,
       idempotencyKey: row.idempotencyKey || intent?.idempotencyKey || inner.idempotencyKey || null,
     };
   });
@@ -180,6 +181,21 @@ function attributeBrokerRows(rows, intents) {
 
 function buildExecutionId(seed) {
   return `fxp_${crypto.createHash('sha256').update(String(seed || `${Date.now()}:${Math.random()}`)).digest('hex').slice(0, 16)}`;
+}
+
+// Canonical owner för tradeId. Det här är systemets ENDA mint-plats — alla andra
+// komponenter (guard, adapter, intent, reconciliation, desk) läser och propagerar
+// via lifecycleIdentity.mergeIdentity, som redan bär fältet.
+//
+// Härledningen är deterministisk ur executionId i stället för slumpad, av samma
+// skäl som executionId självt härleds ur idempotencyKey: ett exekveringsförsök som
+// körs om efter omstart eller reconnect måste få tillbaka exakt samma tradeId.
+// En slumpad eller tidsstämplad generator skulle skapa en ny trade-rot per försök
+// och bryta joinen mellan fill, trade och ledger.
+function buildTradeId(executionId) {
+  const seed = safeString(executionId);
+  if (!seed) return null;
+  return `futures_trade_${seed.replace(/^fxp_/, '')}`;
 }
 
 function normalizeCandidate(input = {}) {
@@ -879,10 +895,12 @@ function createIbPaperExecutionOrchestratorService(options = {}) {
     });
     const executionId = buildExecutionId(idempotencyKey || `${selectedCandidate.strategyId}:${selectedCandidate.candidateId}:${signalTimestamp}`);
     const intentId = idempotencyKey || null;
+    const tradeId = buildTradeId(executionId);
     const executionIdentity = lifecycleIdentity.mergeIdentity(selectedIdentity, {
       executionId,
       idempotencyKey,
       intentId,
+      tradeId,
     });
     const duplicate = idempotencyKey ? intentService.getIntent(idempotencyKey) : null;
 		    const executionAllowlist = typeof strategyRegistry.canExecuteStrategy === 'function'
@@ -932,6 +950,7 @@ function createIbPaperExecutionOrchestratorService(options = {}) {
       lifecycleId: executionIdentity.lifecycleId || null,
       executionId,
       intentId,
+      tradeId,
       idempotencyKey,
       environment: 'paper',
       executionTarget: 'ibkr_paper',
@@ -1150,6 +1169,7 @@ function createIbPaperExecutionOrchestratorService(options = {}) {
 	        signalId: executionIdentity.signalId || null,
 	        intentId: executionIdentity.intentId || null,
 	        executionId,
+	        tradeId,
 	        idempotencyKey,
 	        source: executionEvidence.source,
 	        evidenceVersion: executionEvidence.evidenceVersion,

@@ -155,6 +155,7 @@ function createIbPaperExecutionIntentService(options = {}) {
     if (idx[idempotencyKey]) {
       return { created: false, duplicate: true, existing: idx[idempotencyKey] };
     }
+	    const intentIdentity = lifecycleIdentity.identityFrom(intent || {});
 	    const record = {
       executionId: executionId || `exec_${Date.now()}_${crypto.randomBytes(4).toString('hex')}`,
       idempotencyKey,
@@ -163,7 +164,10 @@ function createIbPaperExecutionIntentService(options = {}) {
       createdAt: nowIso(),
       updatedAt: nowIso(),
       strategyId: intent?.strategyId || null,
-      lifecycleId: lifecycleIdentity.identityFrom(intent || {}).lifecycleId,
+      lifecycleId: intentIdentity.lifecycleId,
+      // Posten är det reconciliation och Futures Desk läser (listIntents), inte den
+      // inre intent-payloaden. tradeId måste därför ligga på själva posten.
+      tradeId: intentIdentity.tradeId,
       candidateId: intent?.candidateId || null,
       signalId: intent?.signalId || intent?.originalSignalId || null,
       root: intent?.root || null,

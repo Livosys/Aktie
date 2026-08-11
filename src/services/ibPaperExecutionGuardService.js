@@ -187,6 +187,7 @@ function evaluatePaperExecutionGuard({
     signalId: identity.signalId || null,
     intentId: identity.intentId || null,
     executionId: identity.executionId || null,
+    tradeId: identity.tradeId || null,
     idempotencyKey: identity.idempotencyKey || null,
     blockers,
     blockedReason: blockers[0] || null,
