@@ -24,6 +24,21 @@ const {
   evaluateNativeFuturesEmaPullbackContinuationStrategy,
 } = require('../nativeFuturesEmaPullbackContinuationStrategyService');
 const {
+  evaluateNativeFuturesVwapVolumeBreakoutStrategy,
+} = require('../nativeFuturesVwapVolumeBreakoutStrategyService');
+const {
+  evaluateNativeFuturesVwapFailedBreakoutShortStrategy,
+} = require('../nativeFuturesVwapFailedBreakoutShortStrategyService');
+const {
+  evaluateNativeFuturesTrendContinuationStrategy,
+} = require('../nativeFuturesTrendContinuationStrategyService');
+const {
+  evaluateNativeFuturesNarrowBreakoutShortStrategy,
+} = require('../nativeFuturesNarrowBreakoutShortStrategyService');
+const {
+  evaluateNativeFuturesNarrowFakeoutReversalStrategy,
+} = require('../nativeFuturesNarrowFakeoutReversalStrategyService');
+const {
   adaptNativeFuturesStrategyDecision,
 } = require('./nativeFuturesCanonicalAdapter');
 const {
@@ -48,6 +63,11 @@ const NATIVE_STRATEGY_EVALUATORS = Object.freeze([
   evaluateNativeFuturesMomentumStrategy,
   evaluateNativeFuturesNarrowStateExpansionStrategy,
   evaluateNativeFuturesEmaPullbackContinuationStrategy,
+  evaluateNativeFuturesVwapVolumeBreakoutStrategy,
+  evaluateNativeFuturesVwapFailedBreakoutShortStrategy,
+  evaluateNativeFuturesTrendContinuationStrategy,
+  evaluateNativeFuturesNarrowBreakoutShortStrategy,
+  evaluateNativeFuturesNarrowFakeoutReversalStrategy,
 ]);
 
 function nowIso(now = new Date()) {
