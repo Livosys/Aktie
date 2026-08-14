@@ -19,6 +19,7 @@ const SAFETY = Object.freeze({
 });
 
 const SOURCE = 'trading_os_signal_adapter';
+const NATIVE_FUTURES_CANDIDATE_SOURCE = 'native_futures_candidate_adapter';
 const DEFAULT_TIMEFRAME = '2m';
 const MICRO_FUTURES_ROOTS = new Set(['MNQ', 'MES']);
 const FUTURES_ROOT_ALIASES = Object.freeze({
@@ -165,6 +166,19 @@ function normalizeMarket(signal = {}) {
     || null;
 }
 
+function isNativeFuturesSignal(signal = {}) {
+  const source = safeString(signal.signalSource) || safeString(signal.source);
+  const market = String(normalizeMarket(signal) || '').toLowerCase();
+  const provider = String(safeString(signal.provider) || '').toLowerCase();
+  const exchange = normalizeSymbol(signal.exchange || signal.contract?.exchange);
+  const root = normalizeFuturesRoot(signal.symbol || signal.root || signal.contract?.root || signal.contract?.symbol);
+  return source === 'native_futures'
+    && market === 'futures'
+    && Boolean(root)
+    && (!provider || provider === 'ibkr')
+    && (!exchange || exchange === 'CME');
+}
+
 // Marknader där ett Nasdaq-mikroterminskontrakt är en försvarbar proxy för
 // signalens underliggande instrument. Medvetet en tillåtelselista, inte en
 // spärrlista: en ny marknadsklass ska behöva bevisa sitt släktskap, inte
@@ -188,8 +202,8 @@ function normalizeDirection(signal = {}) {
   const raw = safeString(
     signal.direction
       || signal.side
-      || signal.nextMoveBias
-      || signal.bias
+      || signal.entrySide
+      || signal.action
       || signal.signal
       || signal.raw_signal,
   );
@@ -197,24 +211,6 @@ function normalizeDirection(signal = {}) {
   if (['LONG', 'BUY', 'UP', 'BULL', 'BULLISH', 'LONG_TRIGGERED', 'LONG_WATCH'].includes(value)) return 'long';
   if (['SHORT', 'SELL', 'DOWN', 'BEAR', 'BEARISH', 'SHORT_TRIGGERED', 'SHORT_WATCH'].includes(value)) return 'short';
   return null;
-}
-
-// Ren observability — påverkar INTE om signalen släpps igenom.
-//
-// normalizeDirection kortsluter på nextMoveBias, som decisionMonitor alltid
-// sätter (decisionMonitor.js:1380). Är biaset UNCERTAIN/NEUTRAL faller
-// riktningen bort redan där, och signal-token längre ned i kedjan
-// (LONG_TRIGGERED etc.) hinner aldrig läsas. Utan den här uppdelningen
-// rapporteras båda fallen som missing_signal_direction, trots att det ena är
-// "strategin gav ingen riktning" och det andra "2m-konfluensen lade veto".
-//
-// Vi kör samma normalizeDirection igen, men bara på signal-token — så delas
-// token-vokabulären ovan och kan aldrig glida isär från den.
-function hasDirectionalSignalToken(signal = {}) {
-  return normalizeDirection({
-    signal: signal.signal,
-    raw_signal: signal.raw_signal,
-  }) != null;
 }
 
 function normalizeConfidence(signal = {}) {
@@ -371,6 +367,13 @@ function mapSignalToFutures(signal = {}, options = {}) {
   ].filter(Boolean).join(' ').toUpperCase();
 
   const originalFuturesRoot = normalizeFuturesRoot(originalSymbol);
+  if (isNativeFuturesSignal(signal) && originalFuturesRoot) {
+    return {
+      futuresSymbol: originalFuturesRoot,
+      mappingConfidence: 1,
+      nativeFutures: true,
+    };
+  }
   if (originalFuturesRoot) {
     return {
       originalSymbol,
@@ -519,25 +522,33 @@ function deriveRiskFromSignal(signal = {}, { entryPrice, direction, mapping }) {
   let targetPct = null;
   let source = null;
 
-  if (isAlreadyFutures && rawStop != null && rawTake != null) {
-    stopLoss = rawStop;
-    takeProfit = rawTake;
+  if (isAlreadyFutures && (rawStop != null || rawTake != null)) {
+    if (rawStop != null) stopLoss = rawStop;
+    if (rawTake != null) takeProfit = rawTake;
     source = 'signal_absolute_levels';
-  } else if (signalEntry && rawStop != null && rawTake != null) {
-    stopPct = pctDistance(signalEntry, rawStop, direction, 'stop');
-    targetPct = pctDistance(signalEntry, rawTake, direction, 'target');
-    stopLoss = priceFromPct(entryPrice, stopPct, direction, 'stop');
-    takeProfit = priceFromPct(entryPrice, targetPct, direction, 'target');
+  } else if (signalEntry && (rawStop != null || rawTake != null)) {
+    if (rawStop != null) {
+      stopPct = pctDistance(signalEntry, rawStop, direction, 'stop');
+      stopLoss = priceFromPct(entryPrice, stopPct, direction, 'stop');
+    }
+    if (rawTake != null) {
+      targetPct = pctDistance(signalEntry, rawTake, direction, 'target');
+      takeProfit = priceFromPct(entryPrice, targetPct, direction, 'target');
+    }
     source = 'signal_risk_percent_mapped_to_futures';
-  } else if (stopPctInput != null && targetPctInput != null) {
-    stopPct = stopPctInput;
-    targetPct = targetPctInput;
-    stopLoss = priceFromPct(entryPrice, stopPct, direction, 'stop');
-    takeProfit = priceFromPct(entryPrice, targetPct, direction, 'target');
+  } else if (stopPctInput != null || targetPctInput != null) {
+    if (stopPctInput != null) {
+      stopPct = stopPctInput;
+      stopLoss = priceFromPct(entryPrice, stopPct, direction, 'stop');
+    }
+    if (targetPctInput != null) {
+      targetPct = targetPctInput;
+      takeProfit = priceFromPct(entryPrice, targetPct, direction, 'target');
+    }
     source = 'signal_risk_percent';
   }
 
-  if ((!stopLoss || !takeProfit) && signal.symbol) {
+  if (stopLoss == null && takeProfit == null && signal.symbol) {
     const profile = getRiskProfile(signal.symbol);
     if (profile?.stopPct != null && profile?.targetPct != null) {
       stopPct = profile.stopPct;
@@ -557,8 +568,8 @@ function deriveRiskFromSignal(signal = {}, { entryPrice, direction, mapping }) {
   const riskReward = risk > 0 && reward > 0 ? round(reward / risk, 3) : safeNumber(signal.riskReward ?? signal.risk_reward);
 
   return {
-    stopLoss: round(stopLoss, 2),
-    takeProfit: round(takeProfit, 2),
+    stopLoss: stopLoss == null ? null : round(stopLoss, 2),
+    takeProfit: takeProfit == null ? null : round(takeProfit, 2),
     riskReward,
     riskSource: source,
     stopPct: stopPct == null ? null : round(stopPct, 4),
@@ -599,11 +610,7 @@ function createFuturesTradingOsSignalAdapterService(options = {}) {
 
     const direction = normalizeDirection(signal);
     if (!direction) {
-      // Samma grind som förut — bara en ärligare etikett på varför.
-      const skipReason = hasDirectionalSignalToken(signal)
-        ? 'direction_vetoed_by_bias'
-        : 'missing_signal_direction';
-      return { ok: false, skipReason, mapping, signal, signalTimestamp, signalSessionMetadata };
+      return { ok: false, skipReason: 'missing_signal_direction', mapping, signal, signalTimestamp, signalSessionMetadata };
     }
 
     const quote = quoteFor(context.quotes, mapping.futuresSymbol);
@@ -617,7 +624,7 @@ function createFuturesTradingOsSignalAdapterService(options = {}) {
       direction,
       mapping,
     });
-    if (!risk.stopLoss || !risk.takeProfit || !risk.riskReward) {
+    if (!risk.stopLoss) {
       return { ok: false, skipReason: 'missing_trading_os_risk', mapping, signal, signalTimestamp, signalSessionMetadata };
     }
 
@@ -631,6 +638,22 @@ function createFuturesTradingOsSignalAdapterService(options = {}) {
     const strategyName = strategyNameOf(signal) || strategyNameOf(readyStrategy.row || {});
     const candidateId = stableCandidateId(signal, mapping.futuresSymbol, now);
     const lifecycleId = lifecycleIdOf(signal);
+    const nativeFuturesSignal = mapping.nativeFutures === true || isNativeFuturesSignal(signal);
+    const candidateSource = nativeFuturesSignal ? NATIVE_FUTURES_CANDIDATE_SOURCE : SOURCE;
+    const legacyMappingFields = nativeFuturesSignal ? {} : {
+      mappedFuturesSymbol: mapping.futuresSymbol,
+      originalSymbol: mapping.originalSymbol,
+      originalMarket: mapping.originalMarket,
+      mappingReason: mapping.mappingReason,
+      mappingConfidence: mapping.mappingConfidence,
+      mapping: {
+        originalSymbol: mapping.originalSymbol,
+        originalMarket: mapping.originalMarket,
+        futuresSymbol: mapping.futuresSymbol,
+        mappingReason: mapping.mappingReason,
+        mappingConfidence: mapping.mappingConfidence,
+      },
+    };
 
     return {
       ok: true,
@@ -643,7 +666,6 @@ function createFuturesTradingOsSignalAdapterService(options = {}) {
         strategyName,
         symbol: mapping.futuresSymbol,
         futuresSymbol: mapping.futuresSymbol,
-        mappedFuturesSymbol: mapping.futuresSymbol,
         executionSymbol: mapping.futuresSymbol,
         futuresInstrument: mapping.futuresSymbol,
         direction,
@@ -660,10 +682,13 @@ function createFuturesTradingOsSignalAdapterService(options = {}) {
         takeProfitPct: risk.targetPct,
         riskSource: risk.riskSource,
         timeframe: safeString(signal.timeframe) || DEFAULT_TIMEFRAME,
-        source: SOURCE,
+        source: candidateSource,
         signalSource: sourceOf(signal),
-        market: safeString(signal.market) || null,
-        marketType: safeString(signal.marketType || signal.market) || null,
+        market: nativeFuturesSignal ? 'futures' : (safeString(signal.market) || null),
+        marketType: nativeFuturesSignal ? 'futures' : (safeString(signal.marketType || signal.market) || null),
+        provider: nativeFuturesSignal ? (safeString(signal.provider) || null) : undefined,
+        exchange: nativeFuturesSignal ? (safeString(signal.exchange || signal.contract?.exchange) || null) : undefined,
+        contract: nativeFuturesSignal && signal.contract && typeof signal.contract === 'object' ? { ...signal.contract } : undefined,
         marketRegime: safeString(signal.marketRegime || signal.market_regime || signal.marketRegimeV2) || null,
         dataSource,
         dataFreshness: safeString(signal.dataFreshness) || null,
@@ -673,8 +698,8 @@ function createFuturesTradingOsSignalAdapterService(options = {}) {
         candleTimestamp: safeString(signal.candleTimestamp || signal.barTimestamp) || null,
         ...entryConfirmationEvidence(signal),
         paperOnly: true,
-        executionGate: 'strategy_registry_execution_allowlist',
-        registryGatePending: true,
+        executionGate: 'production_execution_law_v2',
+        registryGatePending: false,
         signalTimestamp,
         signalSessionMetadata,
         sessionMetadata,
@@ -693,18 +718,8 @@ function createFuturesTradingOsSignalAdapterService(options = {}) {
         strategyLogicVersion: safeString(signal.strategyLogicVersion)
           || safeString(signal.strategy_logic_version)
           || safeString(signal.paperRulesVersion)
-          || 'trading_os_runtime_current',
-        originalSymbol: mapping.originalSymbol,
-        originalMarket: mapping.originalMarket,
-        mappingReason: mapping.mappingReason,
-        mappingConfidence: mapping.mappingConfidence,
-        mapping: {
-          originalSymbol: mapping.originalSymbol,
-          originalMarket: mapping.originalMarket,
-          futuresSymbol: mapping.futuresSymbol,
-          mappingReason: mapping.mappingReason,
-          mappingConfidence: mapping.mappingConfidence,
-        },
+          || (nativeFuturesSignal ? 'native_futures_runtime_current' : 'trading_os_runtime_current'),
+        ...legacyMappingFields,
         rawSignalSummary: {
           status: signal.status || null,
           signalFamily: signal.signalFamily || null,
@@ -719,6 +734,7 @@ function createFuturesTradingOsSignalAdapterService(options = {}) {
         timestamp: createdAt,
         status: 'queued',
         ...SAFETY,
+        source: candidateSource,
       },
     };
   }
@@ -758,7 +774,7 @@ function createFuturesTradingOsSignalAdapterService(options = {}) {
         signalsSkippedNoMapping: skipped.filter((row) => row.skipReason === 'no_safe_futures_mapping').length,
         signalsSkippedNoRisk: skipped.filter((row) => row.skipReason === 'missing_trading_os_risk').length,
         signalsSkippedNoDirection: skipped.filter((row) => row.skipReason === 'missing_signal_direction').length,
-        signalsSkippedDirectionVetoed: skipped.filter((row) => row.skipReason === 'direction_vetoed_by_bias').length,
+        signalsSkippedDirectionVetoed: 0,
         // Femte och sista orsaken. adaptSignal skippar bara på dessa fem, så
         // räknarna summerar exakt till skipped.length — samma uppdelning som
         // scannern persisterar i scan-posten, där de tre sista tillsammans
@@ -783,6 +799,7 @@ const defaultFuturesTradingOsSignalAdapterService = createFuturesTradingOsSignal
 module.exports = {
   SAFETY,
   SOURCE,
+  NATIVE_FUTURES_CANDIDATE_SOURCE,
   mapSignalToFutures,
   normalizeDirection,
   createFuturesTradingOsSignalAdapterService,

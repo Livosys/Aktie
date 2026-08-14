@@ -122,8 +122,8 @@ assert.equal(candidate.excludedFromStats, false);
 assert.equal(candidate.dataSource, 'real_market_data');
 assert.equal(candidate.mappingReason, 'nasdaq_100_or_large_cap_proxy');
 assert.equal(candidate.strategyLogicVersion, 'test-v1');
-assert.equal(candidate.executionGate, 'strategy_registry_execution_allowlist');
-assert.equal(candidate.registryGatePending, true);
+assert.equal(candidate.executionGate, 'production_execution_law_v2');
+assert.equal(candidate.registryGatePending, false);
 assert.equal(Object.prototype.hasOwnProperty.call(candidate, 'approvalReason'), false);
 assert.equal(candidate.createdAt, signalTimestamp);
 assert.equal(candidate.timestamp, signalTimestamp);
@@ -327,6 +327,101 @@ assert.equal(native.candidates[0].stopLoss, 19940);
 assert.equal(native.candidates[0].takeProfit, 20120);
 assert.equal(native.candidates[0].tradeType, 'canonical_signal');
 
+const productionNativeAdapter = createFuturesTradingOsSignalAdapterService({
+  signalReader: () => [],
+});
+const productionNative = productionNativeAdapter.getFuturesCandidates({
+  now,
+  quotes: [{ root: 'MNQ', price: 20000, source: 'real_market_data', fallback: false }],
+  signalInputs: [{
+    signalId: 'mnq-native-production-signal-1',
+    strategyId: 'native_futures_momentum_v1',
+    strategyName: 'Native Futures Momentum',
+    signalFamily: 'native_futures_momentum',
+    signalSubtype: 'NATIVE_FUTURES_MOMENTUM',
+    symbol: 'MNQ',
+    market: 'futures',
+    marketType: 'futures',
+    provider: 'ibkr',
+    exchange: 'CME',
+    contract: {
+      root: 'MNQ',
+      symbol: 'MNQ',
+      localSymbol: 'MNQU6',
+      conId: 793356225,
+      secType: 'FUT',
+      exchange: 'CME',
+      currency: 'USD',
+      expiry: '20260918',
+      lastTradeDateOrContractMonth: '20260918',
+    },
+    direction: 'long',
+    confidence: 0.72,
+    entry: 20000,
+    stopLoss: 19940,
+    takeProfit: 20120,
+    riskReward: 2,
+    timeframe: '2m',
+    signalStatus: 'ready',
+    signalSource: 'native_futures',
+    dataSource: 'real_market_data',
+    dataFreshness: 'LIVE',
+    closedCandleConfirmed: true,
+    latestCandleClosed: true,
+    createdAt: signalTimestamp,
+  }],
+});
+assert.equal(productionNative.ok, true);
+assert.equal(productionNative.candidates.length, 1);
+const productionNativeCandidate = productionNative.candidates[0];
+assert.equal(productionNativeCandidate.source, 'native_futures_candidate_adapter');
+assert.equal(productionNativeCandidate.signalSource, 'native_futures');
+assert.equal(productionNativeCandidate.marketType, 'futures');
+assert.equal(productionNativeCandidate.provider, 'ibkr');
+assert.equal(productionNativeCandidate.exchange, 'CME');
+assert.equal(productionNativeCandidate.symbol, 'MNQ');
+assert.equal(Object.prototype.hasOwnProperty.call(productionNativeCandidate, 'originalSymbol'), false);
+assert.equal(Object.prototype.hasOwnProperty.call(productionNativeCandidate, 'originalMarket'), false);
+assert.equal(Object.prototype.hasOwnProperty.call(productionNativeCandidate, 'mappingReason'), false);
+assert.equal(Object.prototype.hasOwnProperty.call(productionNativeCandidate, 'mapping'), false);
+assert.equal(JSON.stringify(productionNativeCandidate).includes('trading_os'), false);
+
+const nativeStopOnly = nativeAdapter.getFuturesCandidates({
+  now,
+  quotes: [{ root: 'MNQ', price: 20000, source: 'real_market_data', fallback: false }],
+  signalInputs: [{
+    signalId: 'mnq-native-stop-only-1',
+    strategyId: 'mnq_globex_momentum_v1',
+    strategyName: 'MNQ Globex Momentum',
+    signalFamily: 'futures_globex_momentum',
+    signalSubtype: 'GLOBEX_MOMENTUM',
+    symbol: 'MNQ',
+    market: 'futures',
+    marketType: 'futures',
+    direction: 'long',
+    confidence: 0.72,
+    entry: 20000,
+    stopLossPct: 0.3,
+    timeframe: '1m',
+    signalStatus: 'ready',
+    source: 'futures_native_mnq_candles',
+    signalSource: 'futures_native_mnq_candles',
+    dataSource: 'real_market_data',
+    dataFreshness: 'LIVE',
+    closedCandleConfirmed: true,
+    latestCandleClosed: true,
+    createdAt: signalTimestamp,
+  }],
+});
+assert.equal(nativeStopOnly.ok, true);
+assert.equal(nativeStopOnly.stats.signalsMappedToFutures, 1);
+assert.equal(nativeStopOnly.stats.signalsSkippedNoRisk, 0);
+assert.equal(nativeStopOnly.candidates.length, 1);
+assert.equal(nativeStopOnly.candidates[0].stopLoss, 19940);
+assert.equal(nativeStopOnly.candidates[0].takeProfit, null);
+assert.equal(nativeStopOnly.candidates[0].riskReward, null);
+assert.equal(nativeStopOnly.candidates[0].riskSource, 'signal_risk_percent');
+
 const noRiskAdapter = createFuturesTradingOsSignalAdapterService({
   signalReader: () => [{ ...signal, stopLoss: undefined, takeProfit: undefined, stopLossPct: undefined, targetPct: undefined, symbol: 'NDX' }],
 });
@@ -464,10 +559,7 @@ assert.equal(boundary.candidates[0].exchangeLocalTime, '08:30');
 assert.equal(boundary.candidates[0].sessionId, 'us_rth');
 assert.equal(boundary.candidates[0].isRth, true);
 
-// (6) skipReason skiljer "ingen riktning" från "riktning vetad av biaset".
-// Rent observability: samma signaler släpps igenom, samma stoppas — bara
-// etiketten på de stoppade blir ärlig. Reader-signaler (decisionMonitor) bär
-// nextMoveBias men aldrig direction/side, så biaset avgör alltid utfallet.
+// (6) nextMoveBias/bias får inte vetoa eller skriva över en explicit riktning.
 function readerSignal({ signal: signalToken, nextMoveBias }) {
   const row = twoMinuteSignal({
     signalId: `sig-bias-${signalToken}-${nextMoveBias}`,
@@ -490,43 +582,43 @@ const longAgree = adaptOne(readerSignal({ signal: 'LONG_TRIGGERED', nextMoveBias
 assert.equal(longAgree.candidates.length, 1);
 assert.equal(longAgree.candidates[0].direction, 'long');
 
-// 6c: LONG_TRIGGERED + UNCERTAIN → riktning fanns, konfluensen lade veto.
+// 6c: LONG_TRIGGERED + UNCERTAIN → token är riktning; bias får inte vetoa.
 const longVetoed = adaptOne(readerSignal({ signal: 'LONG_TRIGGERED', nextMoveBias: 'UNCERTAIN' }));
-assert.equal(longVetoed.candidates.length, 0);
-assert.equal(longVetoed.skipped[0].skipReason, 'direction_vetoed_by_bias');
+assert.equal(longVetoed.candidates.length, 1);
+assert.equal(longVetoed.candidates[0].direction, 'long');
+assert.equal(longVetoed.skipped.length, 0);
 
 // 6d: SHORT_TRIGGERED + DOWN → enighet, kandidat med short.
 const shortAgree = adaptOne(readerSignal({ signal: 'SHORT_TRIGGERED', nextMoveBias: 'DOWN' }));
 assert.equal(shortAgree.candidates.length, 1);
 assert.equal(shortAgree.candidates[0].direction, 'short');
 
-// 6e: SHORT_TRIGGERED + UNCERTAIN → veto.
+// 6e: SHORT_TRIGGERED + UNCERTAIN → token är riktning; bias får inte vetoa.
 const shortVetoed = adaptOne(readerSignal({ signal: 'SHORT_TRIGGERED', nextMoveBias: 'UNCERTAIN' }));
-assert.equal(shortVetoed.candidates.length, 0);
-assert.equal(shortVetoed.skipped[0].skipReason, 'direction_vetoed_by_bias');
+assert.equal(shortVetoed.candidates.length, 1);
+assert.equal(shortVetoed.candidates[0].direction, 'short');
+assert.equal(shortVetoed.skipped.length, 0);
 
 // 6f: WAIT → ingen riktning att veta mot.
 const waiting = adaptOne(readerSignal({ signal: 'WAIT', nextMoveBias: 'UNCERTAIN' }));
 assert.equal(waiting.candidates.length, 0);
 assert.equal(waiting.skipped[0].skipReason, 'missing_signal_direction');
 
-// 6g: NEUTRAL-bias beter sig som UNCERTAIN — även den är ett veto.
+// 6g: NEUTRAL-bias är inte en production-gate.
 const neutralVetoed = adaptOne(readerSignal({ signal: 'LONG_WATCH', nextMoveBias: 'NEUTRAL' }));
-assert.equal(neutralVetoed.candidates.length, 0);
-assert.equal(neutralVetoed.skipped[0].skipReason, 'direction_vetoed_by_bias');
+assert.equal(neutralVetoed.candidates.length, 1);
+assert.equal(neutralVetoed.candidates[0].direction, 'long');
+assert.equal(neutralVetoed.skipped.length, 0);
 
-// 6h + 6i: KARAKTÄRISERING av oförändrat beteende. När signal-token och bias
-// pekar åt VAR SITT håll vinner biaset redan idag, och kandidaten skapas i
-// biasets riktning — den vägen får inte bli ett veto, för då hade
-// handelsbeteendet ändrats (91 träffar i inspelad data 07-30..08-03).
+// 6h + 6i: när signal-token och bias pekar åt olika håll vinner signal-token.
 const longVsDown = adaptOne(readerSignal({ signal: 'LONG_TRIGGERED', nextMoveBias: 'DOWN' }));
 assert.equal(longVsDown.candidates.length, 1);
-assert.equal(longVsDown.candidates[0].direction, 'short');
+assert.equal(longVsDown.candidates[0].direction, 'long');
 assert.equal(longVsDown.skipped.length, 0);
 
 const shortVsUp = adaptOne(readerSignal({ signal: 'SHORT_TRIGGERED', nextMoveBias: 'UP' }));
 assert.equal(shortVsUp.candidates.length, 1);
-assert.equal(shortVsUp.candidates[0].direction, 'long');
+assert.equal(shortVsUp.candidates[0].direction, 'short');
 assert.equal(shortVsUp.skipped.length, 0);
 
 // 6j: native-producenten sätter direction och når aldrig biaset — oförändrad.
@@ -543,9 +635,9 @@ const mixed = createFuturesTradingOsSignalAdapterService({ signalReader: () => [
       readerSignal({ signal: 'WAIT', nextMoveBias: 'UNCERTAIN' }),
     ],
   });
-assert.equal(mixed.stats.signalsSkippedDirectionVetoed, 2);
+assert.equal(mixed.stats.signalsSkippedDirectionVetoed, 0);
 assert.equal(mixed.stats.signalsSkippedNoDirection, 1);
-assert.equal(mixed.candidates.length, 0);
+assert.equal(mixed.candidates.length, 2);
 
 // (7) Adapterns stats beskriver samma uppdelning som scannern persisterar.
 // adaptSignal skippar bara på fem orsaker, så de fem räknarna ska summera
@@ -558,7 +650,7 @@ const allFiveReasons = createFuturesTradingOsSignalAdapterService({ signalReader
     quotes: [{ root: 'MNQ', symbol: 'MNQ', price: 20000, source: 'real_market_data' }],
     signalInputs: [
       { ...signal, signalId: 'r1', symbol: 'XYZ' },                            // no_safe_futures_mapping
-      readerSignal({ signal: 'LONG_TRIGGERED', nextMoveBias: 'UNCERTAIN' }),   // direction_vetoed_by_bias
+      readerSignal({ signal: 'LONG_TRIGGERED', nextMoveBias: 'UNCERTAIN' }),   // candidate; bias ignored
       readerSignal({ signal: 'WAIT', nextMoveBias: 'UNCERTAIN' }),             // missing_signal_direction
       { ...signal, signalId: 'r4', symbol: 'SPY', entry: undefined, entryPrice: undefined, price: undefined, referencePrice: undefined },
       { ...signal, signalId: 'r5', symbol: 'NDX', stopLoss: undefined, takeProfit: undefined, stopLossPct: undefined, targetPct: undefined },
@@ -566,7 +658,7 @@ const allFiveReasons = createFuturesTradingOsSignalAdapterService({ signalReader
   });
 
 assert.equal(allFiveReasons.stats.signalsSkippedNoMapping, 1);
-assert.equal(allFiveReasons.stats.signalsSkippedDirectionVetoed, 1);
+assert.equal(allFiveReasons.stats.signalsSkippedDirectionVetoed, 0);
 assert.equal(allFiveReasons.stats.signalsSkippedNoDirection, 1);
 assert.equal(allFiveReasons.stats.signalsSkippedNoEntryPrice, 1);
 assert.equal(allFiveReasons.stats.signalsSkippedNoRisk, 1);
@@ -597,7 +689,7 @@ assert.equal(
 // Befintliga fält oförändrade.
 assert.equal(allFiveReasons.stats.signalInputsRead, 5);
 assert.equal(allFiveReasons.stats.readerSignalsRead, 0);
-assert.equal(allFiveReasons.stats.signalsMappedToFutures, 0);
-assert.equal(allFiveReasons.candidates.length, 0);
+assert.equal(allFiveReasons.stats.signalsMappedToFutures, 1);
+assert.equal(allFiveReasons.candidates.length, 1);
 
 console.log('futuresTradingOsSignalAdapterService.test.js passed');
