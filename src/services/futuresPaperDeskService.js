@@ -1177,6 +1177,13 @@ function buildFuturesPaperDeskRuntime(options = {}) {
   // Entrypriset för en öppen position finns i entry-fillen från IBKR. Positionens
   // avgCost är kostnadsbas inklusive multiplikator och är därför inte samma sak.
   const rawBrokerExecutions = safeArray(options.brokerExecutions || brokerReconciliation.executions);
+  // reqExecutions returnerar HELA handelsdagen, och varje trade på samma kontrakt
+  // delar conId. Entryfillen får därför bara komma från positionens EGEN execution —
+  // den som de öppna skyddsordrarna redan pekat ut. Utan känd execution vinner den
+  // senaste entryfillen, aldrig dagens första.
+  const boundExecutionIdByConId = new Map(
+    [...protectiveByConId.entries()].map(([key, value]) => [key, value.executionId || null]),
+  );
   for (const row of rawBrokerExecutions) {
     const ref = String(row?.orderRef || '');
     if (!ref.endsWith('-entry') || row?.conId == null) continue;
@@ -1185,13 +1192,14 @@ function buildFuturesPaperDeskRuntime(options = {}) {
       protectiveByConId.set(key, { stopLoss: null, takeProfit: null, executionId: null, intent: null });
     }
     const entry = protectiveByConId.get(key);
-    if (entry.entryPrice == null) entry.entryPrice = row.price ?? null;
-    if (!entry.intent) {
-      const intent = intentForOrderRef(intentByExecutionId, ref);
-      if (intent) {
-        entry.intent = intent;
-        entry.executionId = ibPaperBrokerReconciliationService.executionIdFromOrderRef(ref);
-      }
+    const rowExecutionId = ibPaperBrokerReconciliationService.executionIdFromOrderRef(ref);
+    const boundExecutionId = boundExecutionIdByConId.get(key) || null;
+    if (boundExecutionId && rowExecutionId !== boundExecutionId) continue;
+    if (row.price != null) entry.entryPrice = row.price;
+    const intent = intentForOrderRef(intentByExecutionId, ref);
+    if (intent && (!entry.intent || !boundExecutionId)) {
+      entry.intent = intent;
+      entry.executionId = rowExecutionId;
     }
   }
   const brokerPositions = safeArray(options.brokerPositions || brokerReconciliation.positions)
