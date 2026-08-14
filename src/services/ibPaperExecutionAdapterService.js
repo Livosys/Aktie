@@ -1438,12 +1438,23 @@ function createIbPaperExecutionAdapterService(options = {}) {
 	  function findOwnedIntentForOrder({ orderId, idempotencyKey = null, orderRef = null } = {}) {
 	    const wantedId = Number(orderId);
 	    const intents = idempotencyKey ? [intentService.getIntent(idempotencyKey)].filter(Boolean) : intentService.listIntents({ limit: 500 });
-	    return intents.find((intent) => {
-	      const ids = Array.isArray(intent.expectedOrderIds) ? intent.expectedOrderIds.map(Number) : [];
+	    // orderRef bär executionId och är unik per intent. orderId är det INTE: IBKR
+	    // nollställer nextValidId vid gateway-omstart, så samma id ligger på flera
+	    // historiska intents. Matchas ref och id i samma villkor vinner den intent som
+	    // råkar sorteras först — t.ex. en gammal intent som just rörts av självläkningen
+	    // — och fillen skrivs på fel trade. Ref är därför bevis, id bara fallback.
+	    const orderRefText = orderRef == null ? null : String(orderRef);
+	    const matchesOrderRef = (intent) => {
+	      if (!orderRefText) return false;
 	      const refs = Array.isArray(intent.orderRefs) ? intent.orderRefs.map(String) : [intent.orderRef].filter(Boolean).map(String);
-	      return (Number.isFinite(wantedId) && ids.includes(wantedId))
-	        || (orderRef && refs.includes(String(orderRef)));
-	    }) || null;
+	      return refs.includes(orderRefText);
+	    };
+	    const matchesOrderId = (intent) => {
+	      if (!Number.isFinite(wantedId)) return false;
+	      const ids = Array.isArray(intent.expectedOrderIds) ? intent.expectedOrderIds.map(Number) : [];
+	      return ids.includes(wantedId);
+	    };
+	    return intents.find(matchesOrderRef) || intents.find(matchesOrderId) || null;
 	  }
 
 		  async function cancelPaperOrder({ orderId, idempotencyKey = null, orderRef = null, verifiedAccount = null, reason = null, audit = {} } = {}) {
