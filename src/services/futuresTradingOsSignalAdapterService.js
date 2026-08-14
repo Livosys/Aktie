@@ -19,6 +19,7 @@ const SAFETY = Object.freeze({
 });
 
 const SOURCE = 'trading_os_signal_adapter';
+const NATIVE_FUTURES_CANDIDATE_SOURCE = 'native_futures_candidate_adapter';
 const DEFAULT_TIMEFRAME = '2m';
 const MICRO_FUTURES_ROOTS = new Set(['MNQ', 'MES']);
 const FUTURES_ROOT_ALIASES = Object.freeze({
@@ -163,6 +164,19 @@ function normalizeMarket(signal = {}) {
     || safeString(signal.market_group)
     || safeString(signal.marketGroup)
     || null;
+}
+
+function isNativeFuturesSignal(signal = {}) {
+  const source = safeString(signal.signalSource) || safeString(signal.source);
+  const market = String(normalizeMarket(signal) || '').toLowerCase();
+  const provider = String(safeString(signal.provider) || '').toLowerCase();
+  const exchange = normalizeSymbol(signal.exchange || signal.contract?.exchange);
+  const root = normalizeFuturesRoot(signal.symbol || signal.root || signal.contract?.root || signal.contract?.symbol);
+  return source === 'native_futures'
+    && market === 'futures'
+    && Boolean(root)
+    && (!provider || provider === 'ibkr')
+    && (!exchange || exchange === 'CME');
 }
 
 // Marknader där ett Nasdaq-mikroterminskontrakt är en försvarbar proxy för
@@ -371,6 +385,13 @@ function mapSignalToFutures(signal = {}, options = {}) {
   ].filter(Boolean).join(' ').toUpperCase();
 
   const originalFuturesRoot = normalizeFuturesRoot(originalSymbol);
+  if (isNativeFuturesSignal(signal) && originalFuturesRoot) {
+    return {
+      futuresSymbol: originalFuturesRoot,
+      mappingConfidence: 1,
+      nativeFutures: true,
+    };
+  }
   if (originalFuturesRoot) {
     return {
       originalSymbol,
@@ -631,6 +652,24 @@ function createFuturesTradingOsSignalAdapterService(options = {}) {
     const strategyName = strategyNameOf(signal) || strategyNameOf(readyStrategy.row || {});
     const candidateId = stableCandidateId(signal, mapping.futuresSymbol, now);
     const lifecycleId = lifecycleIdOf(signal);
+    const nativeFuturesSignal = mapping.nativeFutures === true || isNativeFuturesSignal(signal);
+    const candidateSource = nativeFuturesSignal ? NATIVE_FUTURES_CANDIDATE_SOURCE : SOURCE;
+    // Native-signaler har ingen ursprungssymbol att mappa från — fälten utelämnas
+    // helt i stället för att fyllas med kontraktets eget rotnamn.
+    const legacyMappingFields = nativeFuturesSignal ? {} : {
+      mappedFuturesSymbol: mapping.futuresSymbol,
+      originalSymbol: mapping.originalSymbol,
+      originalMarket: mapping.originalMarket,
+      mappingReason: mapping.mappingReason,
+      mappingConfidence: mapping.mappingConfidence,
+      mapping: {
+        originalSymbol: mapping.originalSymbol,
+        originalMarket: mapping.originalMarket,
+        futuresSymbol: mapping.futuresSymbol,
+        mappingReason: mapping.mappingReason,
+        mappingConfidence: mapping.mappingConfidence,
+      },
+    };
 
     return {
       ok: true,
@@ -643,7 +682,6 @@ function createFuturesTradingOsSignalAdapterService(options = {}) {
         strategyName,
         symbol: mapping.futuresSymbol,
         futuresSymbol: mapping.futuresSymbol,
-        mappedFuturesSymbol: mapping.futuresSymbol,
         executionSymbol: mapping.futuresSymbol,
         futuresInstrument: mapping.futuresSymbol,
         direction,
@@ -660,10 +698,13 @@ function createFuturesTradingOsSignalAdapterService(options = {}) {
         takeProfitPct: risk.targetPct,
         riskSource: risk.riskSource,
         timeframe: safeString(signal.timeframe) || DEFAULT_TIMEFRAME,
-        source: SOURCE,
+        source: candidateSource,
         signalSource: sourceOf(signal),
-        market: safeString(signal.market) || null,
-        marketType: safeString(signal.marketType || signal.market) || null,
+        market: nativeFuturesSignal ? 'futures' : (safeString(signal.market) || null),
+        marketType: nativeFuturesSignal ? 'futures' : (safeString(signal.marketType || signal.market) || null),
+        provider: nativeFuturesSignal ? (safeString(signal.provider) || null) : undefined,
+        exchange: nativeFuturesSignal ? (safeString(signal.exchange || signal.contract?.exchange) || null) : undefined,
+        contract: nativeFuturesSignal && signal.contract && typeof signal.contract === 'object' ? { ...signal.contract } : undefined,
         marketRegime: safeString(signal.marketRegime || signal.market_regime || signal.marketRegimeV2) || null,
         dataSource,
         dataFreshness: safeString(signal.dataFreshness) || null,
@@ -693,18 +734,8 @@ function createFuturesTradingOsSignalAdapterService(options = {}) {
         strategyLogicVersion: safeString(signal.strategyLogicVersion)
           || safeString(signal.strategy_logic_version)
           || safeString(signal.paperRulesVersion)
-          || 'trading_os_runtime_current',
-        originalSymbol: mapping.originalSymbol,
-        originalMarket: mapping.originalMarket,
-        mappingReason: mapping.mappingReason,
-        mappingConfidence: mapping.mappingConfidence,
-        mapping: {
-          originalSymbol: mapping.originalSymbol,
-          originalMarket: mapping.originalMarket,
-          futuresSymbol: mapping.futuresSymbol,
-          mappingReason: mapping.mappingReason,
-          mappingConfidence: mapping.mappingConfidence,
-        },
+          || (nativeFuturesSignal ? 'native_futures_runtime_current' : 'trading_os_runtime_current'),
+        ...legacyMappingFields,
         rawSignalSummary: {
           status: signal.status || null,
           signalFamily: signal.signalFamily || null,
@@ -719,6 +750,7 @@ function createFuturesTradingOsSignalAdapterService(options = {}) {
         timestamp: createdAt,
         status: 'queued',
         ...SAFETY,
+        source: candidateSource,
       },
     };
   }
@@ -783,6 +815,7 @@ const defaultFuturesTradingOsSignalAdapterService = createFuturesTradingOsSignal
 module.exports = {
   SAFETY,
   SOURCE,
+  NATIVE_FUTURES_CANDIDATE_SOURCE,
   mapSignalToFutures,
   normalizeDirection,
   createFuturesTradingOsSignalAdapterService,

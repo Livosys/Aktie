@@ -327,6 +327,67 @@ assert.equal(native.candidates[0].stopLoss, 19940);
 assert.equal(native.candidates[0].takeProfit, 20120);
 assert.equal(native.candidates[0].tradeType, 'canonical_signal');
 
+// Native Futures-vägen (signalSource 'native_futures'): ingen cross-market-mappning,
+// egen candidate-source och kontraktet med. Legacy-vägen ovan är oförändrad.
+const productionNativeAdapter = createFuturesTradingOsSignalAdapterService({
+  signalReader: () => [],
+});
+const productionNative = productionNativeAdapter.getFuturesCandidates({
+  now,
+  quotes: [{ root: 'MNQ', price: 20000, source: 'real_market_data', fallback: false }],
+  signalInputs: [{
+    signalId: 'mnq-native-production-signal-1',
+    strategyId: 'native_futures_momentum_v1',
+    strategyName: 'Native Futures Momentum',
+    signalFamily: 'native_futures_momentum',
+    signalSubtype: 'NATIVE_FUTURES_MOMENTUM',
+    symbol: 'MNQ',
+    market: 'futures',
+    marketType: 'futures',
+    provider: 'ibkr',
+    exchange: 'CME',
+    contract: {
+      root: 'MNQ',
+      symbol: 'MNQ',
+      localSymbol: 'MNQU6',
+      conId: 793356225,
+      secType: 'FUT',
+      exchange: 'CME',
+      currency: 'USD',
+      expiry: '20260918',
+      lastTradeDateOrContractMonth: '20260918',
+    },
+    direction: 'long',
+    confidence: 0.72,
+    entry: 20000,
+    stopLoss: 19940,
+    takeProfit: 20120,
+    riskReward: 2,
+    timeframe: '2m',
+    signalStatus: 'ready',
+    signalSource: 'native_futures',
+    dataSource: 'real_market_data',
+    dataFreshness: 'LIVE',
+    closedCandleConfirmed: true,
+    latestCandleClosed: true,
+    createdAt: signalTimestamp,
+  }],
+});
+assert.equal(productionNative.ok, true);
+assert.equal(productionNative.candidates.length, 1);
+const productionNativeCandidate = productionNative.candidates[0];
+assert.equal(productionNativeCandidate.source, 'native_futures_candidate_adapter');
+assert.equal(productionNativeCandidate.signalSource, 'native_futures');
+assert.equal(productionNativeCandidate.marketType, 'futures');
+assert.equal(productionNativeCandidate.provider, 'ibkr');
+assert.equal(productionNativeCandidate.exchange, 'CME');
+assert.equal(productionNativeCandidate.symbol, 'MNQ');
+assert.equal(Object.prototype.hasOwnProperty.call(productionNativeCandidate, 'originalSymbol'), false);
+assert.equal(Object.prototype.hasOwnProperty.call(productionNativeCandidate, 'originalMarket'), false);
+assert.equal(Object.prototype.hasOwnProperty.call(productionNativeCandidate, 'mappingReason'), false);
+assert.equal(Object.prototype.hasOwnProperty.call(productionNativeCandidate, 'mapping'), false);
+assert.equal(JSON.stringify(productionNativeCandidate).includes('trading_os'), false);
+
 const noRiskAdapter = createFuturesTradingOsSignalAdapterService({
   signalReader: () => [{ ...signal, stopLoss: undefined, takeProfit: undefined, stopLossPct: undefined, targetPct: undefined, symbol: 'NDX' }],
 });

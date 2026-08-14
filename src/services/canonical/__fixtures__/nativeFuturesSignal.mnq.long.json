@@ -1,0 +1,36 @@
+{
+  "contractVersion": "native-futures-signal-contract-v1",
+  "signalId": "mnq_native_fixture:2026-08-13T12:34:00.000Z:LONG",
+  "signalSource": "native_futures",
+  "provider": "ibkr",
+  "exchange": "CME",
+  "marketType": "futures",
+  "symbol": "MNQ",
+  "root": "MNQ",
+  "contract": {
+    "root": "MNQ",
+    "symbol": "MNQ",
+    "localSymbol": "MNQU6",
+    "conId": 793356225,
+    "secType": "FUT",
+    "exchange": "CME",
+    "currency": "USD",
+    "expiry": "20260918",
+    "lastTradeDateOrContractMonth": "20260918"
+  },
+  "timeframe": "2m",
+  "signalTimestamp": "2026-08-13T12:34:00.000Z",
+  "strategyId": "mnq_native_fixture_strategy_v1",
+  "strategy": {
+    "id": "mnq_native_fixture_strategy_v1",
+    "name": "MNQ Native Fixture Strategy",
+    "version": "phase2-fixture-v1"
+  },
+  "direction": "LONG",
+  "entryPrice": 29880.25,
+  "stopLoss": 29855.25,
+  "takeProfit": 29930.25,
+  "riskReward": 2,
+  "confidence": 0.72,
+  "generatedAt": "2026-08-13T12:34:01.000Z"
+}

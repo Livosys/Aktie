@@ -2,18 +2,11 @@
 
 const crypto = require('crypto');
 
-const {
-  getLatestResults,
-  getStockFeedStatus,
-  getLiveCandlesDebug: getStockLiveCandlesDebug,
-} = require('../scanner/scheduler');
-const {
-  getCryptoResults,
-  getLiveCandlesDebug: getCryptoLiveCandlesDebug,
-} = require('../scanner/cryptoScheduler');
-const { buildDecisionMonitor } = require('../scanner/decisionMonitor');
-const decisionMonitorProducerContext = require('./decisionMonitorProducerContextService');
 const futuresMnqGlobexMomentumProducerService = require('./futuresMnqGlobexMomentumProducerService');
+const decisionMonitorProducerContext = require('./decisionMonitorProducerContextService');
+const {
+  defaultNativeFuturesSignalProvider,
+} = require('./canonical/nativeFuturesSignalProvider');
 
 const SAFETY = Object.freeze({
   mode: 'paper_only',
@@ -25,6 +18,8 @@ const SAFETY = Object.freeze({
   live_enabled: false,
   source: 'futures_canonical_signal_provider',
 });
+
+let legacyReaderDeps = null;
 
 function nowIso(now = new Date()) {
   return new Date(now).toISOString();
@@ -68,12 +63,47 @@ function withLifecycleId(signal = {}) {
   return { ...signal, lifecycleId };
 }
 
+function envFlagEnabled(value) {
+  if (value === true) return true;
+  const raw = String(value || '').trim().toLowerCase();
+  return raw === 'true' || raw === '1' || raw === 'yes' || raw === 'on';
+}
+
+function isNativeProviderEnabled(env = process.env) {
+  return envFlagEnabled(env.FUTURES_NATIVE_PROVIDER_ENABLED);
+}
+
+function getLegacyReaderDeps() {
+  if (!legacyReaderDeps) {
+    const stockScheduler = require('../scanner/scheduler');
+    const cryptoScheduler = require('../scanner/cryptoScheduler');
+    const { buildDecisionMonitor } = require('../scanner/decisionMonitor');
+    legacyReaderDeps = {
+      getLatestResults: stockScheduler.getLatestResults,
+      getStockFeedStatus: stockScheduler.getStockFeedStatus,
+      getStockLiveCandlesDebug: stockScheduler.getLiveCandlesDebug,
+      getCryptoResults: cryptoScheduler.getCryptoResults,
+      getCryptoLiveCandlesDebug: cryptoScheduler.getLiveCandlesDebug,
+      buildDecisionMonitor,
+    };
+  }
+  return legacyReaderDeps;
+}
+
 // Måste bygga monitorn med SAMMA indata som paperTradingAgent. Utan
 // liveCandleDebugBySymbol ser latestClosedCandleMeta() noll candles för varje
 // symbol och sätter closedCandleConfirmed=false / source='missing_live_candle'.
 // Varje entry contract kräver closed_candle_confirmation, så futures-vägen
 // blockerades på 100% av kandidaterna oavsett marknadsläge.
 function defaultSignalReader() {
+  const {
+    getLatestResults,
+    getStockFeedStatus,
+    getStockLiveCandlesDebug,
+    getCryptoResults,
+    getCryptoLiveCandlesDebug,
+    buildDecisionMonitor,
+  } = getLegacyReaderDeps();
   const stockResults = decisionMonitorProducerContext.addDaytradeSignals(getLatestResults() || []);
   const cryptoResults = decisionMonitorProducerContext.addDaytradeSignals(getCryptoResults() || []);
   const liveCandleDebugBySymbol = decisionMonitorProducerContext.buildLiveCandleDebugMap([
@@ -118,11 +148,47 @@ function summarizeProducerResult({ producer, result, error = null, index = 0 }) 
   };
 }
 
+function latestNativeSignalTimestamp(signals = []) {
+  return safeArray(signals)
+    .map((signal) => (
+      safeString(signal.signalTimestamp)
+      || safeString(signal.createdAt)
+      || safeString(signal.timestamp)
+      || safeString(signal.generatedAt)
+    ))
+    .filter(Boolean)
+    .sort()
+    .pop() || null;
+}
+
+function nativeProviderResultSummary(result = {}, signals = []) {
+  const ok = result?.ok !== false;
+  const rejected = safeArray(result?.rejected);
+  const signalCount = signals.length;
+  return {
+    providerId: 'native_futures_signal_provider',
+    ok,
+    signals: signalCount,
+    noSignal: ok && signalCount === 0 ? 1 : 0,
+    blocked: ok !== true,
+    blockedReason: ok ? null : 'native_futures_provider_rejected',
+    signalState: signalCount > 0 ? 'signal' : (ok ? 'no_signal' : 'blocked'),
+    direction: null,
+    dataQuality: 'native_futures',
+    latestSignalTimestamp: latestNativeSignalTimestamp(signals),
+    rejectedSignals: rejected.length,
+    result,
+    ...SAFETY,
+  };
+}
+
 function createFuturesCanonicalSignalProviderService(options = {}) {
   const readSignals = typeof options.signalReader === 'function' ? options.signalReader : defaultSignalReader;
   const producers = Array.isArray(options.signalProducers)
     ? options.signalProducers.filter(Boolean)
     : [futuresMnqGlobexMomentumProducerService.defaultFuturesMnqGlobexMomentumProducerService];
+  const env = options.env || process.env;
+  const nativeSignalProvider = options.nativeSignalProviderService || defaultNativeFuturesSignalProvider;
 
   function collectProducerSignals({ now = new Date(), priceFeedService = null, feed = null } = {}) {
     const signals = [];
@@ -158,6 +224,36 @@ function createFuturesCanonicalSignalProviderService(options = {}) {
   }
 
   function getCanonicalSignals({ now = new Date(), priceFeedService = null, feed = null } = {}) {
+    if (isNativeProviderEnabled(env)) {
+      const generatedAt = nowIso(now);
+      const nativeResult = typeof nativeSignalProvider.collectNativeFuturesSignals === 'function'
+        ? nativeSignalProvider.collectNativeFuturesSignals({ now, priceFeedService, feed })
+        : {
+          ok: true,
+          signals: typeof nativeSignalProvider.getNativeFuturesSignals === 'function'
+            ? nativeSignalProvider.getNativeFuturesSignals({ now, priceFeedService, feed })
+            : [],
+          rejected: [],
+        };
+      const nativeSignals = safeArray(nativeResult?.signals).map(withLifecycleId);
+      return {
+        ok: nativeResult?.ok !== false,
+        generatedAt,
+        signalInputs: nativeSignals,
+        signals: nativeSignals,
+        providerResults: {
+          native_futures_signal_provider: nativeProviderResultSummary(nativeResult, nativeSignals),
+        },
+        stats: {
+          signalInputsRead: nativeSignals.length,
+          readerSignalsRead: 0,
+          providerSignalsRead: nativeSignals.length,
+          providersEvaluated: 1,
+        },
+        ...SAFETY,
+      };
+    }
+
     const readerSignals = safeArray(readSignals({ now, priceFeedService, feed })).map(withLifecycleId);
     const producerOutput = collectProducerSignals({ now, priceFeedService, feed });
     const signals = [
@@ -193,4 +289,10 @@ module.exports = {
   SAFETY,
   createFuturesCanonicalSignalProviderService,
   defaultFuturesCanonicalSignalProviderService,
+  _internal: {
+    envFlagEnabled,
+    isNativeProviderEnabled,
+    latestNativeSignalTimestamp,
+    nativeProviderResultSummary,
+  },
 };
