@@ -4,6 +4,7 @@ const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 const internalSimulationRetirement = require('./futuresInternalSimulationRetirementService');
+const ibPaperExecutionConfigService = require('./ibPaperExecutionConfigService');
 
 const SAFETY = Object.freeze({
   mode: 'paper_only',
@@ -16,7 +17,7 @@ const SAFETY = Object.freeze({
   source: 'futures_paper_execution_target_reservation',
 });
 
-const VALID_TARGETS = Object.freeze(['ibkr_paper']);
+const VALID_TARGETS = Object.freeze(['ibkr_paper', 'ibkr_live']);
 const DEFAULT_DIR = path.resolve(__dirname, '../../data/futures-paper/execution-target-reservations');
 
 // Reservations are a candidate-level, write-once dedup lock. The candidate they
@@ -36,6 +37,20 @@ const SWEEP_THROTTLE_MS = 5 * 60 * 1000;
 
 function nowIso(now = new Date()) {
   return new Date(now).toISOString();
+}
+
+function buildReservationSafety(executionTarget = 'ibkr_paper') {
+  const target = ibPaperExecutionConfigService.normalizeExecutionTarget(executionTarget);
+  const safety = ibPaperExecutionConfigService.buildExecutionSafety(target);
+  return {
+    ...SAFETY,
+    ...safety,
+    actions_allowed: false,
+    can_place_orders: false,
+    broker_enabled: false,
+    paper_only: target === 'ibkr_paper',
+    source: 'futures_paper_execution_target_reservation',
+  };
 }
 
 function safeString(value) {
@@ -141,6 +156,7 @@ function createFuturesPaperExecutionTargetReservationService(options = {}) {
   } = {}) {
     const id = safeString(candidateId);
     const target = safeString(executionTarget);
+    const reservationSafety = buildReservationSafety(target);
     if (!id) return { ok: false, reserved: false, blocker: 'candidate_id_missing', ...SAFETY };
     if (target === 'internal_simulation') {
       return {
@@ -170,7 +186,7 @@ function createFuturesPaperExecutionTargetReservationService(options = {}) {
       reservedAt: nowIso(now),
       updatedAt: nowIso(now),
       metadata: metadata && typeof metadata === 'object' ? metadata : {},
-      ...SAFETY,
+      ...reservationSafety,
     };
     try {
       const fd = fs.openSync(file, 'wx');
@@ -180,12 +196,12 @@ function createFuturesPaperExecutionTargetReservationService(options = {}) {
       } finally {
         fs.closeSync(fd);
       }
-      return { ok: true, reserved: true, record, ...SAFETY };
+      return { ok: true, reserved: true, record, ...reservationSafety };
     } catch (err) {
       if (err && err.code === 'EEXIST') {
         const existing = readJson(file);
         if (existing && existing.executionTarget === target) {
-          return { ok: true, reserved: false, duplicate: true, record: existing, ...SAFETY };
+          return { ok: true, reserved: false, duplicate: true, record: existing, ...reservationSafety };
         }
         return {
           ok: false,
@@ -194,10 +210,10 @@ function createFuturesPaperExecutionTargetReservationService(options = {}) {
           existing: existing || null,
           candidateId: id,
           requestedExecutionTarget: target,
-          ...SAFETY,
+          ...reservationSafety,
         };
       }
-      return { ok: false, reserved: false, blocker: 'execution_target_reservation_failed', error: err.message, candidateId: id, ...SAFETY };
+      return { ok: false, reserved: false, blocker: 'execution_target_reservation_failed', error: err.message, candidateId: id, ...reservationSafety };
     }
   }
 
@@ -211,11 +227,11 @@ function createFuturesPaperExecutionTargetReservationService(options = {}) {
       candidateId: current.candidateId,
       executionTarget: current.executionTarget,
       updatedAt: nowIso(patch.now || new Date()),
-      ...SAFETY,
+      ...buildReservationSafety(current.executionTarget),
     };
     delete next.now;
     writeJsonAtomic(fileFor(id), next);
-    return { ok: true, record: next, ...SAFETY };
+    return { ok: true, record: next, ...buildReservationSafety(next.executionTarget) };
   }
 
   function listReservations() {

@@ -11,8 +11,6 @@ const reconciliationModule = require('./ibPaperBrokerReconciliationService');
 const futuresMarketDataService = require('./futuresMarketDataService');
 const futuresPaperQuoteSourceService = require('./futuresPaperQuoteSourceService');
 const futuresPaperScannerService = require('./futuresPaperScannerService');
-const strategyRegistryService = require('./strategyRegistryService');
-const canonicalExecutionRouter = require('./canonical/canonicalExecutionRouter');
 const ibPaperAccountSummaryService = require('./ibPaperAccountSummaryService');
 const futuresMarketHoursService = require('./futuresMarketHoursService');
 const executionTargetReservationModule = require('./futuresPaperExecutionTargetReservationService');
@@ -20,6 +18,7 @@ const lifecycleIdentity = require('./futuresLifecycleIdentityService');
 
 const SAFETY = Object.freeze({
   mode: 'ibkr_paper',
+  executionTarget: 'ibkr_paper',
   environment: 'paper',
   paperOnly: true,
   live_trading_enabled: false,
@@ -29,6 +28,17 @@ const SAFETY = Object.freeze({
   source: 'ib_paper_execution_orchestrator',
 });
 const DEFAULT_ACCOUNT_SUMMARY_REFRESH_TIMEOUT_MS = 8_000;
+
+function buildSafety(executionTarget = 'ibkr_paper') {
+  return {
+    ...configService.buildExecutionSafety(executionTarget),
+    source: 'ib_paper_execution_orchestrator',
+  };
+}
+
+function blockerForTarget(executionTarget, paperBlocker, liveBlocker) {
+  return configService.normalizeExecutionTarget(executionTarget) === 'ibkr_live' ? liveBlocker : paperBlocker;
+}
 
 function nowIso(now = new Date()) {
   return new Date(now).toISOString();
@@ -386,23 +396,27 @@ function sanitizeOrderPlan(orderPlan, accountMasked = null, identity = {}) {
     transmitSequence: orderPlan.transmitSequence,
     protectiveModel: orderPlan.protectiveModel,
     accountMasked,
-    paperOnly: true,
+    executionTarget: orderPlan.executionTarget || null,
+    paperOnly: orderPlan.executionTarget ? orderPlan.executionTarget === 'ibkr_paper' : true,
   };
 }
 
 function createIbPaperExecutionOrchestratorService(options = {}) {
-  const adapter = options.adapter || adapterModule.defaultIbPaperExecutionAdapterService;
+  const executionTarget = configService.normalizeExecutionTarget(options.executionTarget || configService.getActiveExecutionTarget());
+  const environment = configService.getExpectedEnvironment(executionTarget);
+  const safety = buildSafety(executionTarget);
+  const adapter = options.adapter || (executionTarget === 'ibkr_paper'
+    ? adapterModule.defaultIbPaperExecutionAdapterService
+    : adapterModule.createIbPaperExecutionAdapterService({ executionTarget }));
   const intentService = options.intentService || intentServiceModule.defaultIbPaperExecutionIntentService;
-  const marketData = options.marketDataService || futuresMarketDataService.defaultFuturesMarketDataService;
-  const quoteSource = options.quoteSourceService || futuresPaperQuoteSourceService.defaultFuturesPaperQuoteSourceService;
-	  const scanner = options.scannerService || futuresPaperScannerService.defaultFuturesPaperScannerService;
-		  const accountSummaryService = options.accountSummaryService || ibPaperAccountSummaryService.defaultIbPaperAccountSummaryService;
-		  const strategyRegistry = options.strategyRegistryService || strategyRegistryService;
-	  const executionRouter = options.executionRouterService || canonicalExecutionRouter;
-	  const executionTargetReservations = options.executionTargetReservationService
-	    || executionTargetReservationModule.defaultFuturesPaperExecutionTargetReservationService;
+	  const marketData = options.marketDataService || futuresMarketDataService.defaultFuturesMarketDataService;
+	  const quoteSource = options.quoteSourceService || futuresPaperQuoteSourceService.defaultFuturesPaperQuoteSourceService;
+		  const scanner = options.scannerService || futuresPaperScannerService.defaultFuturesPaperScannerService;
+			  const accountSummaryService = options.accountSummaryService || ibPaperAccountSummaryService.defaultIbPaperAccountSummaryService;
+  const executionTargetReservations = options.executionTargetReservationService
+    || executionTargetReservationModule.defaultFuturesPaperExecutionTargetReservationService;
   const reconciliation = options.reconciliationService
-    || reconciliationModule.createIbPaperBrokerReconciliationService({ adapter, intentService });
+    || reconciliationModule.createIbPaperBrokerReconciliationService({ adapter, intentService, executionTarget });
   const statusCacheTtlMs = Number(options.statusCacheTtlMs || 1_000);
   const accountSummaryRefreshTimeoutMs = Number.isFinite(Number(options.accountSummaryRefreshTimeoutMs))
     ? Math.max(1, Number(options.accountSummaryRefreshTimeoutMs))
@@ -443,7 +457,7 @@ function createIbPaperExecutionOrchestratorService(options = {}) {
   }
 
   function readRuntimeAccountSummary(now = new Date()) {
-    const limits = configService.getPilotLimits();
+    const limits = configService.getPilotLimits({ executionTarget });
     let adapterSummary = null;
     if (typeof adapter.getAccountSummary === 'function') {
       const summary = adapter.getAccountSummary();
@@ -461,7 +475,7 @@ function createIbPaperExecutionOrchestratorService(options = {}) {
 
   async function readFreshRuntimeAccountSummary(adapterStatus = {}, now = new Date()) {
     let summary = readRuntimeAccountSummary(now);
-    const limits = configService.getPilotLimits();
+    const limits = configService.getPilotLimits({ executionTarget });
     const ageMs = safeNumber(summary?.cacheAgeMs);
     const stale = !summary || summary.ok !== true || summary.stale === true || ageMs == null || ageMs > limits.maxAccountSummaryAgeMs;
     const ready = adapterStatus.ready === true || adapterStatus.connectionState === 'READY';
@@ -509,6 +523,13 @@ function createIbPaperExecutionOrchestratorService(options = {}) {
     return summary;
   }
 
+  function verifyTargetAccount(accountIdMasked = null) {
+    if (typeof adapter.verifyExecutionAccount === 'function') {
+      return adapter.verifyExecutionAccount(accountIdMasked, executionTarget);
+    }
+    return adapter.verifyPaperAccount(accountIdMasked);
+  }
+
   async function reconcileRuntime({ force = false } = {}) {
     const adapterStatus = adapter.getStatus();
     if (adapterStatus.ready !== true && adapterStatus.connectionState !== 'READY') {
@@ -520,9 +541,14 @@ function createIbPaperExecutionOrchestratorService(options = {}) {
   }
 
   async function startRuntime() {
-    const flags = configService.getFlags();
+    const flags = configService.getFlags({ executionTarget });
     if (!flags.executionEnabled) {
-      return { ok: false, error: 'ibkr_paper_execution_disabled', flags, ...SAFETY };
+      return {
+        ok: false,
+        error: blockerForTarget(executionTarget, 'ibkr_paper_execution_disabled', 'ibkr_live_execution_disabled'),
+        flags,
+        ...safety,
+      };
     }
     const connectionAttempt = typeof adapter.startPermanentRuntime === 'function'
       ? await adapter.startPermanentRuntime()
@@ -531,7 +557,7 @@ function createIbPaperExecutionOrchestratorService(options = {}) {
       await reconcileRuntime({ force: true });
     }
     await buildExecutionStatus({ force: true });
-    return { ok: connectionAttempt?.ok === true, connectionAttempt, flags, ...SAFETY };
+    return { ok: connectionAttempt?.ok === true, connectionAttempt, flags, ...safety };
   }
 
   function getRuntimeReadinessSnapshot() {
@@ -545,7 +571,7 @@ function createIbPaperExecutionOrchestratorService(options = {}) {
       : [];
     const ready = adapterStatus.ready === true || runtimeState === 'READY';
     return {
-      ...SAFETY,
+      ...safety,
       ok: true,
       dryRun: true,
       source: 'ib_paper_execution_runtime_singleton',
@@ -593,7 +619,7 @@ function createIbPaperExecutionOrchestratorService(options = {}) {
 	    return {
 	      ok: true,
 	      generatedAt: nowIso(),
-	      status: configService.getFlags().executionEnabled ? 'pending' : 'disabled',
+      status: configService.getFlags({ executionTarget }).executionEnabled ? 'pending' : 'disabled',
 	      runtimeState: adapterStatus.connectionState || adapterStatus.state || (adapterStatus.connected ? 'CONNECTED' : 'DISCONNECTED'),
 	      executionRuntimeState: adapterStatus.connectionState || adapterStatus.state || (adapterStatus.connected ? 'CONNECTED' : 'DISCONNECTED'),
       runtimeReadiness,
@@ -613,7 +639,7 @@ function createIbPaperExecutionOrchestratorService(options = {}) {
       reconnectCount: adapterStatus.reconnectCount ?? runtimeReadiness.reconnectCount ?? 0,
       runtimeLifecycle: adapterStatus.runtimeLifecycle || runtimeReadiness.runtimeLifecycle || null,
       runtimeLifecycleState: adapterStatus.runtimeLifecycleState || runtimeReadiness.runtimeLifecycleState || null,
-	      ...SAFETY,
+	      ...safety,
 	    };
 	  }
 
@@ -624,7 +650,7 @@ function createIbPaperExecutionOrchestratorService(options = {}) {
     }
     if (!force && statusInflight) return statusInflight;
     statusInflight = (async () => {
-	    const flags = configService.getFlags();
+	    const flags = configService.getFlags({ executionTarget });
 	    const connectionAttempt = null;
 	    const adapterStatus = adapter.getStatus();
     const runtimeReadiness = getRuntimeReadinessSnapshot();
@@ -632,11 +658,11 @@ function createIbPaperExecutionOrchestratorService(options = {}) {
 	    const runtimeAccountSummary = await readFreshRuntimeAccountSummary(adapterStatus, statusNow);
     const accountSummary = runtimeAccountSummary || buildBlockedAccountSummary();
     const accountOk = accountSummary?.ok === true;
-    const verification = adapter.verifyPaperAccount(accountSummary?.account?.accountIdMasked || null);
+	    const verification = verifyTargetAccount(accountSummary?.account?.accountIdMasked || null);
     const rec = adapterStatus.ready === true || adapterStatus.connectionState === 'READY'
       ? await reconcileRuntime({ force: false })
       : reconciliation.getCachedReconciliation();
-    const safety = configService.buildSafetyView();
+	    const safety = configService.buildSafetyView({ executionTarget });
     const brokerIntents = Array.isArray(rec.intents) ? rec.intents : [];
     const brokerOpenOrders = attributeBrokerRows(Array.isArray(rec.openOrders) ? rec.openOrders : [], brokerIntents);
     const brokerExecutions = attributeBrokerRows(Array.isArray(rec.executions) ? rec.executions : [], brokerIntents);
@@ -655,10 +681,13 @@ function createIbPaperExecutionOrchestratorService(options = {}) {
 	      flags,
       safety: {
         ...safety,
-        verifiedPaperAccount: verification.ok === true && accountSummary?.ok === true,
-        liveAccountBlocked: verification.live_account_detected !== true,
+	        verifiedPaperAccount: executionTarget === 'ibkr_paper' && verification.ok === true && accountSummary?.ok === true,
+	        verifiedLiveAccount: executionTarget === 'ibkr_live' && verification.ok === true && accountSummary?.ok === true,
+	        targetAccountVerified: verification.ok === true && accountSummary?.ok === true,
+	        liveAccountBlocked: executionTarget === 'ibkr_paper' && verification.live_account_detected !== true,
+	        paperAccountBlocked: executionTarget === 'ibkr_live' && verification.blocker !== 'paper_account_detected_on_live_target',
       },
-      clientIds: configService.getExecutionClientConfig(),
+	      clientIds: configService.getExecutionClientConfig({ executionTarget }),
 	      executionClient: adapterStatus,
 	      executionConnected: adapterStatus.ready === true || adapterStatus.connected === true,
 	      nextValidId: adapterStatus.nextValidId ?? null,
@@ -697,17 +726,22 @@ function createIbPaperExecutionOrchestratorService(options = {}) {
         cacheAgeMs: accountSummary?.cacheAgeMs ?? ageMsFromGeneratedAt(accountSummary?.generatedAt, statusNow),
 	        generatedAt: accountSummary?.generatedAt || null,
 	      },
-	      paperAccountVerified: verification.ok === true && accountOk === true,
-	      verifiedPaperAccount: verification.ok === true && accountOk === true,
-      liveAccountBlocked: verification.live_account_detected !== true,
-      liveAccountDetected: verification.live_account_detected === true,
+		      paperAccountVerified: executionTarget === 'ibkr_paper' && verification.ok === true && accountOk === true,
+		      verifiedPaperAccount: executionTarget === 'ibkr_paper' && verification.ok === true && accountOk === true,
+		      liveAccountVerified: executionTarget === 'ibkr_live' && verification.ok === true && accountOk === true,
+		      verifiedLiveAccount: executionTarget === 'ibkr_live' && verification.ok === true && accountOk === true,
+	      targetAccountVerified: verification.ok === true && accountOk === true,
+	      liveAccountBlocked: executionTarget === 'ibkr_paper' && verification.live_account_detected !== true,
+	      liveAccountDetected: executionTarget === 'ibkr_paper' && verification.live_account_detected === true,
+	      paperAccountBlocked: executionTarget === 'ibkr_live' && verification.blocker !== 'paper_account_detected_on_live_target',
+	      paperAccountDetected: executionTarget === 'ibkr_live' && verification.blocker === 'paper_account_detected_on_live_target',
 	      orderSubmissionMode: flags.orderSubmissionMode,
       orderSendingBlocked: true,
       wouldCreateIbPaperOrder: false,
       can_place_orders: false,
       actions_allowed: false,
-	      paperBrokerExecutionEnabled: flags.executionEnabled,
-      liveBrokerExecutionEnabled: false,
+		      paperBrokerExecutionEnabled: flags.paperBrokerExecutionEnabled,
+	      liveBrokerExecutionEnabled: flags.liveBrokerExecutionEnabled,
       reconciliation: {
         status: rec.status,
         degraded: rec.degraded === true,
@@ -731,7 +765,7 @@ function createIbPaperExecutionOrchestratorService(options = {}) {
       brokerCommissions,
       killSwitch: configService.readKillSwitch(),
       connectionAttempt,
-      ...SAFETY,
+      ...safety,
     };
     statusCache = { payload, atMs: Date.now() };
     return payload;
@@ -748,43 +782,54 @@ function createIbPaperExecutionOrchestratorService(options = {}) {
   } = {}) {
     const wantedOrderId = Number(orderId);
     if (!Number.isInteger(wantedOrderId) || wantedOrderId <= 0) {
-      return { ok: false, modified: false, blocker: 'order_id_required', ...SAFETY };
+      return { ok: false, modified: false, blocker: 'order_id_required', ...safety };
     }
-    if (!reason) return { ok: false, modified: false, blocker: 'modify_reason_required', ...SAFETY };
+    if (!reason) return { ok: false, modified: false, blocker: 'modify_reason_required', ...safety };
     const patch = orderPatch && typeof orderPatch === 'object' ? orderPatch : {};
     const patchKeys = Object.keys(patch);
     if (patchKeys.length !== 1 || !['lmtPrice', 'auxPrice'].includes(patchKeys[0])) {
-      return { ok: false, modified: false, blocker: 'modify_patch_field_not_allowed', ...SAFETY };
+      return { ok: false, modified: false, blocker: 'modify_patch_field_not_allowed', ...safety };
     }
     const status = await buildExecutionStatus({ force: true });
     const openOrders = Array.isArray(status.brokerOpenOrders) ? status.brokerOpenOrders : [];
     const openOrder = openOrders.find((row) => Number(row.orderId) === wantedOrderId
       || (orderRef && String(row.order?.orderRef || '') === String(orderRef)));
-    if (!openOrder) return { ok: false, modified: false, blocker: 'order_not_open_at_adapter', orderId: wantedOrderId, ...SAFETY };
+    if (!openOrder) return { ok: false, modified: false, blocker: 'order_not_open_at_adapter', orderId: wantedOrderId, ...safety };
     const orderType = safeUpper(openOrder.order?.orderType || openOrder.orderType);
     if ((patchKeys[0] === 'lmtPrice' && orderType !== 'LMT') || (patchKeys[0] === 'auxPrice' && orderType !== 'STP')) {
-      return { ok: false, modified: false, blocker: 'modify_patch_field_not_allowed_for_order_type', orderId: wantedOrderId, orderType, ...SAFETY };
+      return { ok: false, modified: false, blocker: 'modify_patch_field_not_allowed_for_order_type', orderId: wantedOrderId, orderType, ...safety };
     }
-    const adapterVerification = adapter.verifyPaperAccount(status.account?.accountIdMasked || null);
+    const adapterVerification = verifyTargetAccount(status.account?.accountIdMasked || null);
+    const targetAccountVerified = executionTarget === 'ibkr_live'
+      ? status.liveAccountVerified === true
+      : status.paperAccountVerified === true;
+    const wrongAccountBlocked = executionTarget === 'ibkr_live'
+      ? status.paperAccountDetected !== true
+      : status.liveAccountDetected !== true;
+    const accountCheckCode = executionTarget === 'ibkr_live' ? 'live_account_verified' : 'paper_account_verified';
+    const wrongAccountCheckCode = executionTarget === 'ibkr_live' ? 'paper_account_blocked' : 'live_account_blocked';
     const guardDecision = {
       allowed: status.runtimeState === 'READY'
-        && status.paperAccountVerified === true
+        && targetAccountVerified === true
         && adapterVerification.ok === true
-        && status.liveAccountDetected !== true,
-      environment: 'paper',
-      verifiedPaperAccount: status.paperAccountVerified === true && adapterVerification.ok === true,
-      liveAccountBlocked: status.liveAccountDetected !== true,
+        && wrongAccountBlocked === true,
+      environment,
+      executionTarget,
+      verifiedPaperAccount: executionTarget === 'ibkr_paper' && targetAccountVerified === true && adapterVerification.ok === true,
+      verifiedLiveAccount: executionTarget === 'ibkr_live' && targetAccountVerified === true && adapterVerification.ok === true,
+      liveAccountBlocked: executionTarget === 'ibkr_paper' && wrongAccountBlocked === true,
+      paperAccountBlocked: executionTarget === 'ibkr_live' && wrongAccountBlocked === true,
       checks: [
         { code: 'runtime_ready', ok: status.runtimeState === 'READY' },
-        { code: 'paper_account_verified', ok: status.paperAccountVerified === true && adapterVerification.ok === true },
-        { code: 'live_account_blocked', ok: status.liveAccountDetected !== true },
+        { code: accountCheckCode, ok: targetAccountVerified === true && adapterVerification.ok === true },
+        { code: wrongAccountCheckCode, ok: wrongAccountBlocked === true },
         { code: 'owned_order_open', ok: true },
       ],
       blockers: [],
     };
     if (guardDecision.allowed !== true) {
       const blocker = guardDecision.checks.find((check) => check.ok !== true)?.code || 'guard_not_passed';
-      return { ok: false, modified: false, blocker, guard: guardDecision, ...SAFETY };
+      return { ok: false, modified: false, blocker, guard: guardDecision, ...safety };
     }
     const result = await adapter.modifyPaperOrder({
       orderId: wantedOrderId,
@@ -803,7 +848,7 @@ function createIbPaperExecutionOrchestratorService(options = {}) {
       orderType,
       orderPatch: patch,
       guard: guardDecision,
-      ...SAFETY,
+      ...safety,
     };
   }
 
@@ -811,28 +856,39 @@ function createIbPaperExecutionOrchestratorService(options = {}) {
 	  // paper-konto + runtime READY, bygger guardDecision, delegerar till adapterns
 	  // enda placeOrder-modul. Skapar ingen kandidat, rör ej canonical pipeline.
 	  async function flattenOwnedPosition({ root = null, reason = null, audit = {} } = {}) {
-	    if (!reason) return { ok: false, flattened: false, blocker: 'flatten_reason_required', ...SAFETY };
-	    if (!root) return { ok: false, flattened: false, blocker: 'root_required', ...SAFETY };
+	    if (!reason) return { ok: false, flattened: false, blocker: 'flatten_reason_required', ...safety };
+	    if (!root) return { ok: false, flattened: false, blocker: 'root_required', ...safety };
 	    const status = await buildExecutionStatus({ force: true });
-	    const adapterVerification = adapter.verifyPaperAccount(status.account?.accountIdMasked || null);
+	    const adapterVerification = verifyTargetAccount(status.account?.accountIdMasked || null);
+	    const targetAccountVerified = executionTarget === 'ibkr_live'
+	      ? status.liveAccountVerified === true
+	      : status.paperAccountVerified === true;
+	    const wrongAccountBlocked = executionTarget === 'ibkr_live'
+	      ? status.paperAccountDetected !== true
+	      : status.liveAccountDetected !== true;
+	    const accountCheckCode = executionTarget === 'ibkr_live' ? 'live_account_verified' : 'paper_account_verified';
+	    const wrongAccountCheckCode = executionTarget === 'ibkr_live' ? 'paper_account_blocked' : 'live_account_blocked';
 	    const guardDecision = {
 	      allowed: status.runtimeState === 'READY'
-	        && status.paperAccountVerified === true
+	        && targetAccountVerified === true
 	        && adapterVerification.ok === true
-	        && status.liveAccountDetected !== true,
-	      environment: 'paper',
-	      verifiedPaperAccount: status.paperAccountVerified === true && adapterVerification.ok === true,
-	      liveAccountBlocked: status.liveAccountDetected !== true,
+	        && wrongAccountBlocked === true,
+	      environment,
+	      executionTarget,
+	      verifiedPaperAccount: executionTarget === 'ibkr_paper' && targetAccountVerified === true && adapterVerification.ok === true,
+	      verifiedLiveAccount: executionTarget === 'ibkr_live' && targetAccountVerified === true && adapterVerification.ok === true,
+	      liveAccountBlocked: executionTarget === 'ibkr_paper' && wrongAccountBlocked === true,
+	      paperAccountBlocked: executionTarget === 'ibkr_live' && wrongAccountBlocked === true,
 	      checks: [
 	        { code: 'runtime_ready', ok: status.runtimeState === 'READY' },
-	        { code: 'paper_account_verified', ok: status.paperAccountVerified === true && adapterVerification.ok === true },
-	        { code: 'live_account_blocked', ok: status.liveAccountDetected !== true },
+	        { code: accountCheckCode, ok: targetAccountVerified === true && adapterVerification.ok === true },
+	        { code: wrongAccountCheckCode, ok: wrongAccountBlocked === true },
 	      ],
 	      blockers: [],
 	    };
 	    if (guardDecision.allowed !== true) {
 	      const blocker = guardDecision.checks.find((check) => check.ok !== true)?.code || 'guard_not_passed';
-	      return { ok: false, flattened: false, blocker, guard: guardDecision, ...SAFETY };
+	      return { ok: false, flattened: false, blocker, guard: guardDecision, ...safety };
 	    }
 	    // Samma kontraktsupplösning som buildShadowExecution använder för entries,
 	    // så att flatten-ordern bär symbol och expiry precis som en normal order.
@@ -845,11 +901,11 @@ function createIbPaperExecutionOrchestratorService(options = {}) {
 	      audit,
 	      contract: flattenContract.ok ? flattenContract.contract : null,
 	    });
-	    return { ...result, guard: guardDecision, ...SAFETY };
+	    return { ...result, guard: guardDecision, ...safety };
 	  }
 
   async function buildShadowExecution({ candidateId = null, candidate = null, now = new Date(), actualSubmit = false } = {}) {
-    const flags = configService.getFlags();
+    const flags = configService.getFlags({ executionTarget });
     const selected = selectCandidate(candidateId, candidate);
     if (!selected.candidate) {
       return {
@@ -860,13 +916,13 @@ function createIbPaperExecutionOrchestratorService(options = {}) {
         blockedReason: 'no_strategy_candidate',
         message: 'Ingen legitim futures-kandidat finns i kön. Ingen falsk signal skapas.',
         orderSubmissionMode: flags.orderSubmissionMode,
-        ...SAFETY,
+        ...safety,
       };
     }
 
     const selectedCandidate = selected.candidate;
     const selectedIdentity = lifecycleIdentity.identityFrom(selectedCandidate);
-    const limits = configService.getPilotLimits();
+    const limits = configService.getPilotLimits({ executionTarget });
 	    const signalTimestamp = selectedCandidate.signalTimestamp || null;
 	    const ageMs = ageMsFromTimestamp(signalTimestamp, now);
     const status = await buildExecutionStatus();
@@ -881,7 +937,7 @@ function createIbPaperExecutionOrchestratorService(options = {}) {
       currency: quote?.currency || 'USD',
       secType: 'FUT',
     };
-    const adapterVerification = adapter.verifyPaperAccount(status.account.accountIdMasked || null);
+    const adapterVerification = verifyTargetAccount(status.account.accountIdMasked || null);
     const accountMasked = status.account.accountIdMasked || adapterVerification.accountIdMasked || null;
     const idempotencyKey = intentService.buildIdempotencyKey({
       strategyId: selectedCandidate.strategyId,
@@ -891,7 +947,7 @@ function createIbPaperExecutionOrchestratorService(options = {}) {
       candidateId: selectedCandidate.candidateId,
       signalTimestamp,
       accountIdMasked: accountMasked,
-      environment: 'paper',
+      environment,
     });
     const executionId = buildExecutionId(idempotencyKey || `${selectedCandidate.strategyId}:${selectedCandidate.candidateId}:${signalTimestamp}`);
     const intentId = idempotencyKey || null;
@@ -903,25 +959,21 @@ function createIbPaperExecutionOrchestratorService(options = {}) {
       tradeId,
     });
     const duplicate = idempotencyKey ? intentService.getIntent(idempotencyKey) : null;
-		    const executionAllowlist = typeof strategyRegistry.canExecuteStrategy === 'function'
-		      ? strategyRegistry.canExecuteStrategy(selectedCandidate.strategyId)
-		      : { allowed: false, blockedReason: 'strategy_registry_execution_allowlist_unavailable', strategyId: selectedCandidate.strategyId, source: 'strategy_registry_execution_allowlist' };
-		    const session = futuresMarketHoursService.getCmeEquityIndexFuturesSessionState(now);
-	    // Canonical Signal → Execution Readiness Engine → Entry Contract (policy).
-	    // Beslutet kommer från motorn; objektet behåller dagens fältnamn så att
-	    // guard, execution-adapter och API-svar är oförändrade.
-		    const entryContract = executionRouter.routeExecutionReadiness({
-		      strategyId: selectedCandidate.strategyId,
-		      candidate: selectedCandidate,
-		      now,
-	      marketContext: {
-	        marketType: 'futures',
-	        session: session.sessionId || null,
-	        sessionId: session.sessionId || null,
-	        isMarketOpen: session.isMarketOpen === true,
-	      },
-	    });
-	    const rec = status.reconciliation?.degraded === true
+    const session = futuresMarketHoursService.getCmeEquityIndexFuturesSessionState(now);
+    const executionAllowlist = {
+      allowed: true,
+      strategyId: selectedCandidate.strategyId,
+      source: 'production_execution_law_v2',
+      bypassedAsProductionGate: true,
+    };
+    const entryContract = {
+      allowed: true,
+      entryContractVersion: null,
+      reasonCode: null,
+      source: 'production_execution_law_v2',
+      bypassedAsProductionGate: true,
+    };
+    const rec = status.reconciliation?.degraded === true
 	      ? status.reconciliation
 	      : reconciliation.getCachedReconciliation();
     const brokerRisk = brokerRiskService.evaluateBrokerRisk({
@@ -944,6 +996,7 @@ function createIbPaperExecutionOrchestratorService(options = {}) {
 	        },
 	      },
       reconciliation: rec,
+      executionTarget,
       now,
     });
     const intent = {
@@ -952,8 +1005,8 @@ function createIbPaperExecutionOrchestratorService(options = {}) {
       intentId,
       tradeId,
       idempotencyKey,
-      environment: 'paper',
-      executionTarget: 'ibkr_paper',
+      environment,
+      executionTarget,
       strategyId: selectedCandidate.strategyId,
       candidateId: selectedCandidate.candidateId || null,
       signalId: selectedCandidate.signalId || selectedCandidate.originalSignalId || null,
@@ -964,11 +1017,13 @@ function createIbPaperExecutionOrchestratorService(options = {}) {
       signalTimestamp,
       ageMs,
       maxSubmitAgeMs: limits.maxIntentAgeMs,
-      paperAccountIdMasked: accountMasked,
+      paperAccountIdMasked: executionTarget === 'ibkr_paper' ? accountMasked : null,
+      liveAccountIdMasked: executionTarget === 'ibkr_live' ? accountMasked : null,
       source: selected.source,
     };
-	    const guard = guardService.evaluatePaperExecutionGuard({
-      intent,
+		    const guard = guardService.evaluateExecutionGuard({
+      executionTarget,
+	      intent,
       candidate: selectedCandidate,
       contract,
       quote,
@@ -1007,12 +1062,12 @@ function createIbPaperExecutionOrchestratorService(options = {}) {
         candidateId: selectedCandidate.candidateId,
         signalId: intent.signalId || null,
         intentId,
-        executionId,
-        idempotencyKey,
-        executionTarget: 'ibkr_paper',
-        strategyId: selectedCandidate.strategyId,
-	        signalTimestamp,
-	        status: 'ibkr_paper_reserved',
+	        executionId,
+	        idempotencyKey,
+	        executionTarget,
+	        strategyId: selectedCandidate.strategyId,
+		        signalTimestamp,
+		        status: `${executionTarget}_reserved`,
 	        now,
 	        metadata: {
 	          lifecycleId: executionIdentity.lifecycleId || null,
@@ -1046,8 +1101,8 @@ function createIbPaperExecutionOrchestratorService(options = {}) {
 	          signalTimestamp,
 		          orderType: selectedCandidate.orderType,
 		          quantity: selectedCandidate.quantity,
-	          executionTarget: 'ibkr_paper',
-	        },
+		          executionTarget,
+		        },
 		      })
 		      : { created: false, skipped: true };
 		    const finalGuard = effectiveGuard.allowed && idempotencyKey && intentCreate.created !== true
@@ -1103,10 +1158,10 @@ function createIbPaperExecutionOrchestratorService(options = {}) {
       createdAt: nowIso(now),
       maxSubmitAge: limits.maxIntentAgeMs,
       riskSnapshot: brokerRisk,
-      source: selected.source,
-      paperOnly: true,
-      orderRef: adapter.buildOrderRef(executionId, 'entry'),
-		      executionTarget: 'ibkr_paper',
+	      source: selected.source,
+	      paperOnly: executionTarget === 'ibkr_paper',
+	      orderRef: adapter.buildOrderRef(executionId, 'entry'),
+			      executionTarget,
 			      wouldSubmit: finalGuard.allowed === true,
 		      actualSubmit: false,
 	    };
@@ -1118,9 +1173,10 @@ function createIbPaperExecutionOrchestratorService(options = {}) {
 	      });
 	    }
 
-    let submitResult = null;
-	    if (actualSubmit === true) {
-	      submitResult = await adapter.submitPaperOrder({
+	    let submitResult = null;
+		    if (actualSubmit === true) {
+		      const submitOrder = adapter.submitOrder || adapter.submitPaperOrder;
+		      submitResult = await submitOrder({
 		        guardDecision: finalGuard,
 	        intentRecord: intentCreate.record,
 	        orderPlan,
@@ -1181,7 +1237,7 @@ function createIbPaperExecutionOrchestratorService(options = {}) {
       orderPlan: sanitizeOrderPlan(orderPlan, accountMasked, executionIdentity),
       submitResult,
       orderSubmissionMode: flags.orderSubmissionMode,
-      ...SAFETY,
+      ...safety,
     };
   }
 

@@ -484,9 +484,10 @@ const service = orchestratorModule.createIbPaperExecutionOrchestratorService({
   assert.equal(ignoredClientCandidate.normalizedOrder.candidateId, 'cand-1');
   assert.equal(ignoredClientCandidate.normalizedOrder.quantity, 1);
   assert.equal(ignoredClientCandidate.candidate.quantity, 1);
-  assert.equal(ignoredClientCandidate.executionAllowlist.source, 'strategy_registry_execution_allowlist');
-  assert.equal(ignoredClientCandidate.executionAllowlist.status, 'active');
-  assert.equal(ignoredClientCandidate.entryContract.entryContractVersion, 'server_test_contract');
+  assert.equal(ignoredClientCandidate.executionAllowlist.source, 'production_execution_law_v2');
+  assert.equal(ignoredClientCandidate.executionAllowlist.bypassedAsProductionGate, true);
+  assert.equal(ignoredClientCandidate.entryContract.source, 'production_execution_law_v2');
+  assert.equal(ignoredClientCandidate.entryContract.bypassedAsProductionGate, true);
 
   const unknown = await service.buildShadowExecution({
     candidateId: 'does-not-exist',
@@ -752,6 +753,198 @@ const service = orchestratorModule.createIbPaperExecutionOrchestratorService({
   assert.equal(vwap.orderPlan.signalId, 'QQQ_2026-08-06T14:24:00.000Z');
   assert.equal(vwap.orderPlan.executionId, vwap.normalizedOrder.executionId);
   assert.equal(vwap.orderPlan.idempotencyKey, vwap.normalizedOrder.idempotencyKey);
+
+  {
+    const liveEnv = {
+      IBKR_EXECUTION_TARGET: 'ibkr_live',
+      IBKR_LIVE_EXECUTION_ENABLED: 'true',
+      IBKR_LIVE_EXECUTION_SHADOW_MODE: 'true',
+      IBKR_LIVE_ORDER_SUBMISSION_ENABLED: 'false',
+      IBKR_LIVE_BROKER_ENABLED: 'true',
+      IBKR_LIVE_TRADING_ENABLED: 'true',
+      IBKR_LIVE_ACCOUNT_ORDERS_ALLOWED: 'true',
+      IBKR_LIVE_GATEWAY_PORT: '4001',
+    };
+    const previousEnv = Object.fromEntries(Object.keys(liveEnv).map((key) => [key, process.env[key]]));
+    Object.assign(process.env, liveEnv);
+    try {
+      const liveCandidate = {
+        lifecycleId: 'life-live-cand-1',
+        candidateId: 'cand-live-1',
+        signalId: 'sig-live-1',
+        strategyId: 'native_futures_momentum_v1',
+        root: 'MNQ',
+        symbol: 'MNQ',
+        direction: 'long',
+        signalTimestamp: '2026-07-15T22:29:30.000Z',
+        quantity: 1,
+        orderType: 'MKT',
+        stopLossPrice: 22980,
+        takeProfitPrice: 23040,
+        executionTarget: 'ibkr_live',
+      };
+      const liveAdapter = {
+        getStatus: () => ({
+          ready: true,
+          state: 'READY',
+          connectionState: 'READY',
+          connected: true,
+          host: '127.0.0.1',
+          port: 4001,
+          clientId: 966,
+          nextValidIdReady: true,
+          nextValidId: 9900,
+          managedAccounts: [{ accountIdMasked: 'U1***567', classification: 'live_or_unknown' }],
+          managedAccountCount: 1,
+        }),
+        getAccountSummary: () => ({
+          ok: true,
+          generatedAt: '2026-07-15T22:30:00.000Z',
+          account: {
+            accountIdMasked: 'U1***567',
+            classification: 'live_or_unknown',
+            currency: 'USD',
+            netLiquidation: 100000,
+            realizedPnl: 0,
+            unrealizedPnl: 0,
+          },
+          cacheAgeMs: 1000,
+        }),
+        getConnectionReadinessSnapshot: () => ({
+          ok: true,
+          executionTarget: 'ibkr_live',
+          environment: 'live',
+          runtimeState: 'READY',
+          gatewayReachable: true,
+          status: 'verified',
+          liveMode: 'live',
+          liveModeVerified: true,
+          liveAccountVerified: true,
+          managedAccounts: ['U1234567'],
+          managedAccountCount: 1,
+          liveAccountId: 'U1234567',
+          nextValidId: 9900,
+        }),
+        markReconciled: () => {},
+        verifyExecutionAccount: () => ({
+          ok: true,
+          executionTarget: 'ibkr_live',
+          accountIdMasked: 'U1***567',
+          accountIdRawForSubmit: 'U1234567',
+          classification: 'live_or_unknown',
+          live_account_detected: true,
+        }),
+        buildOrderRef: (executionId, leg) => `TOS-LIVE-${executionId}-${leg}`,
+        createExecutionEvidence: ({ orderPlan }) => ({
+          source: 'ib_paper_execution_orchestrator',
+          evidenceVersion: 1,
+          generatedAt: '2026-07-15T22:30:00.000Z',
+          expiresAt: '2026-07-15T22:32:00.000Z',
+          fingerprint: `live-fp-${orderPlan.entry.totalQuantity}-${orderPlan.contract.conId}`,
+          signature: 'live-test-signature',
+        }),
+        buildOrderPlan: ({ executionId, contract, side, quantity, entryType, stopLossPrice, takeProfitPrice, tif, outsideRth }) => {
+          const action = side === 'short' ? 'SELL' : 'BUY';
+          const exit = action === 'BUY' ? 'SELL' : 'BUY';
+          return {
+            executionTarget: 'ibkr_live',
+            environment: 'live',
+            contract: {
+              conId: contract.conId,
+              localSymbol: contract.localSymbol,
+              secType: 'FUT',
+              exchange: 'CME',
+              currency: 'USD',
+              symbol: contract.root,
+              expiry: contract.expiry,
+            },
+            entry: { action, totalQuantity: quantity, orderType: entryType, tif, outsideRth, transmit: false, orderRef: `TOS-LIVE-${executionId}-entry` },
+            takeProfit: { action: exit, totalQuantity: quantity, orderType: 'LMT', lmtPrice: takeProfitPrice, tif: 'GTC', outsideRth, transmit: false, orderRef: `TOS-LIVE-${executionId}-takeProfit` },
+            stopLoss: { action: exit, totalQuantity: quantity, orderType: 'STP', auxPrice: stopLossPrice, tif: 'GTC', outsideRth, transmit: true, orderRef: `TOS-LIVE-${executionId}-stopLoss` },
+            ocaGroup: `TOSL-${executionId}`,
+            transmitSequence: ['entry:false', 'takeProfit:false', 'stopLoss:true'],
+            protectiveModel: 'one_stop',
+          };
+        },
+        submitOrder: async () => { throw new Error('live shadow test must not submit'); },
+      };
+      const liveService = orchestratorModule.createIbPaperExecutionOrchestratorService({
+        executionTarget: 'ibkr_live',
+        adapter: liveAdapter,
+        intentService: intentModule.createIbPaperExecutionIntentService({ dir: path.join(tmp, 'live-intents') }),
+        reconciliationService: fakeReconciliation,
+        executionTargetReservationService: reservationModule.createFuturesPaperExecutionTargetReservationService({ dir: path.join(tmp, 'live-reservations') }),
+        marketDataService: {
+          isEnabled: () => true,
+          adapter: {
+            resolveContract: async () => ({
+              ok: true,
+              contract: {
+                root: 'MNQ',
+                conId: 793356225,
+                localSymbol: 'MNQU6',
+                expiry: '20260918',
+                exchange: 'CME',
+                currency: 'USD',
+                secType: 'FUT',
+              },
+            }),
+          },
+        },
+        quoteSourceService: {
+          getQuote: () => ({
+            root: 'MNQ',
+            source: 'ibkr_realtime',
+            simulated: false,
+            delayed: false,
+            stale: false,
+            updatedAt: '2026-07-15T22:29:55.000Z',
+            last: 23000,
+            bid: 22999.75,
+            ask: 23000,
+            spread: 0.25,
+            tickSize: 0.25,
+            conId: 793356225,
+            localSymbol: 'MNQU6',
+            expiry: '20260918',
+            exchange: 'CME',
+            currency: 'USD',
+          }),
+        },
+        scannerService: { getCandidates: () => ({ candidates: [liveCandidate] }) },
+      });
+      const liveStatus = await liveService.buildExecutionStatus({ force: true });
+      assert.equal(liveStatus.executionTarget, 'ibkr_live');
+      assert.equal(liveStatus.environment, 'live');
+      assert.equal(liveStatus.liveAccountVerified, true);
+      assert.equal(liveStatus.paperAccountVerified, false);
+      assert.equal(liveStatus.clientIds.port, 4001);
+
+      const live = await liveService.buildShadowExecution({
+        candidateId: 'cand-live-1',
+        now: new Date('2026-07-15T22:30:00.000Z'),
+        actualSubmit: false,
+      });
+      assert.equal(live.ok, true);
+      assert.equal(live.status, 'shadow_ready');
+      assert.equal(live.executionTarget, 'ibkr_live');
+      assert.equal(live.intent.executionTarget, 'ibkr_live');
+      assert.equal(live.intent.environment, 'live');
+      assert.equal(live.intent.liveAccountIdMasked, 'U1***567');
+      assert.equal(live.intent.paperAccountIdMasked, null);
+      assert.equal(live.normalizedOrder.executionTarget, 'ibkr_live');
+      assert.equal(live.normalizedOrder.paperOnly, false);
+      assert.equal(live.orderPlan.executionTarget, 'ibkr_live');
+      assert.equal(live.orderPlan.environment, 'live');
+      assert.ok(live.normalizedOrder.orderRef.startsWith('TOS-LIVE-'));
+      assert.equal(live.executionTargetReservation.record.executionTarget, 'ibkr_live');
+    } finally {
+      for (const [key, value] of Object.entries(previousEnv)) {
+        if (value == null) delete process.env[key];
+        else process.env[key] = value;
+      }
+    }
+  }
 
   console.log('ibPaperExecutionOrchestratorService.test.js passed');
 })().catch((err) => {

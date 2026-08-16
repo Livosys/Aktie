@@ -10,8 +10,9 @@ const adapterModule = require('./ibPaperExecutionAdapterService');
 const intentModule = require('./ibPaperExecutionIntentService');
 
 class FakeIB extends EventEmitter {
-  constructor() {
+  constructor(accountId = 'DUQ565596') {
     super();
+    this.accountId = accountId;
     this.placeOrderCalls = [];
     this.cancelOrderCalls = [];
   }
@@ -19,16 +20,16 @@ class FakeIB extends EventEmitter {
 	  connect() {
 	    setImmediate(() => {
 	      this.emit(EventName.connected);
-	      this.emit(EventName.managedAccounts, 'DUQ565596');
+	      this.emit(EventName.managedAccounts, this.accountId);
 	      this.emit(EventName.nextValidId, 9000);
 	    });
 	  }
 
 	  reqAccountSummary(reqId) {
 	    setImmediate(() => {
-	      this.emit(EventName.accountSummary, reqId, 'DUQ565596', 'AccountType', 'INDIVIDUAL', '');
-	      this.emit(EventName.accountSummary, reqId, 'DUQ565596', 'NetLiquidation', '100000', 'USD');
-	      this.emit(EventName.accountSummary, reqId, 'DUQ565596', 'TotalCashValue', '100000', 'USD');
+	      this.emit(EventName.accountSummary, reqId, this.accountId, 'AccountType', 'INDIVIDUAL', '');
+	      this.emit(EventName.accountSummary, reqId, this.accountId, 'NetLiquidation', '100000', 'USD');
+	      this.emit(EventName.accountSummary, reqId, this.accountId, 'TotalCashValue', '100000', 'USD');
 	      this.emit(EventName.accountSummaryEnd, reqId);
 	    });
 	  }
@@ -77,9 +78,21 @@ let flags = {
 function baseGuard() {
   return {
     allowed: true,
+    executionTarget: 'ibkr_paper',
     environment: 'paper',
     verifiedPaperAccount: true,
     liveAccountBlocked: true,
+    checks: [{ code: 'risk_approval_passed', ok: true }],
+  };
+}
+
+function baseLiveGuard() {
+  return {
+    allowed: true,
+    executionTarget: 'ibkr_live',
+    environment: 'live',
+    verifiedLiveAccount: true,
+    paperAccountBlocked: true,
     checks: [{ code: 'risk_approval_passed', ok: true }],
   };
 }
@@ -89,7 +102,6 @@ function baseRisk() {
     allowed: true,
     checks: [
       { code: 'quantity_exactly_one_micro', ok: true },
-      { code: 'spread_within_limit', ok: true },
       { code: 'account_summary_fresh', ok: true },
     ],
   };
@@ -111,6 +123,26 @@ function makeIntent(intentService) {
       orderType: 'MKT',
       signalTimestamp: '2026-07-15T22:29:30.000Z',
       paperAccountIdMasked: 'DU***596',
+    },
+  }).record;
+}
+
+function makeLiveIntent(intentService) {
+  return intentService.createIntent({
+    idempotencyKey: 'idem-live-1',
+    executionId: 'fxp_live_1234567890',
+    intent: {
+      executionTarget: 'ibkr_live',
+      strategyId: 'native_futures_momentum_v1',
+      candidateId: 'cand-live-1',
+      root: 'MNQ',
+      conId: 793356225,
+      localSymbol: 'MNQU6',
+      direction: 'long',
+      quantity: 1,
+      orderType: 'MKT',
+      signalTimestamp: '2026-07-15T22:29:30.000Z',
+      liveAccountIdMasked: 'U1***567',
     },
   }).record;
 }
@@ -253,21 +285,35 @@ function wait(ms) {
   const reconciliation = { status: 'ok', degraded: false, counts: { openOrders: 0, positions: 0, executions: 0 } };
   const intentRecord = makeIntent(intentService);
 
-  const fabricated = await service.submitPaperOrder({
-    guardDecision,
-    intentRecord,
-    orderPlan,
-    verifiedAccount,
+	  const fabricated = await service.submitPaperOrder({
+	    guardDecision,
+	    intentRecord,
+	    orderPlan,
+	    verifiedAccount,
     brokerRisk,
     executionAllowlist,
     entryContract,
     reconciliation,
   });
-  assert.equal(fabricated.submitted, false);
-  assert.equal(fabricated.blocker, 'execution_evidence_missing');
+	  assert.equal(fabricated.submitted, false);
+	  assert.equal(fabricated.blocker, 'execution_evidence_missing');
+	  assert.equal(fake.placeOrderCalls.length, 0);
+
+  const blockedPolicyMetadata = await service.submitPaperOrder({
+    guardDecision,
+    intentRecord,
+    orderPlan,
+    verifiedAccount,
+    brokerRisk,
+    executionAllowlist: { allowed: false, blockedReason: 'strategy_not_in_execution_allowlist' },
+    entryContract: { allowed: false, blockedReason: 'entry_contract_not_approved' },
+    reconciliation,
+  });
+  assert.equal(blockedPolicyMetadata.submitted, false);
+  assert.equal(blockedPolicyMetadata.blocker, 'execution_evidence_missing');
   assert.equal(fake.placeOrderCalls.length, 0);
 
-  const evidence = service.createExecutionEvidence({
+	  const evidence = service.createExecutionEvidence({
     guardDecision,
     intentRecord,
     orderPlan,
@@ -344,7 +390,52 @@ function wait(ms) {
   assert.equal(fractional.submitted, false);
   assert.equal(fractional.blocker, 'quantity_must_be_exactly_one');
 
-  const noTakeProfitPlan = service.buildOrderPlan({
+  const invalidTakeProfitPlan = {
+    ...orderPlan,
+    takeProfit: { ...orderPlan.takeProfit, lmtPrice: 'not-a-price' },
+  };
+  const invalidTakeProfitIntent = intentService.createIntent({
+    idempotencyKey: 'idem-invalid-take-profit',
+    executionId: 'fxp_invalid_take_profit',
+    intent: { ...intentRecord, idempotencyKey: 'idem-invalid-take-profit', executionId: 'fxp_invalid_take_profit' },
+  }).record;
+  const invalidTakeProfitEvidence = service.createExecutionEvidence({
+    guardDecision,
+    intentRecord: invalidTakeProfitIntent,
+    orderPlan: invalidTakeProfitPlan,
+    brokerRisk,
+    executionAllowlist,
+    entryContract,
+    reconciliation,
+    verifiedAccount,
+  });
+  const invalidTakeProfit = await service.submitPaperOrder({
+    guardDecision,
+    intentRecord: invalidTakeProfitIntent,
+    orderPlan: invalidTakeProfitPlan,
+    verifiedAccount,
+    executionEvidence: invalidTakeProfitEvidence,
+    brokerRisk,
+    executionAllowlist,
+    entryContract,
+    reconciliation,
+  });
+  assert.equal(invalidTakeProfit.submitted, false);
+  assert.equal(invalidTakeProfit.blocker, 'take_profit_invalid');
+  assert.equal(fake.placeOrderCalls.length, 0);
+
+  const stopOnlyFake = new FakeIB();
+  const stopOnlyIntentService = intentModule.createIbPaperExecutionIntentService({
+    dir: fs.mkdtempSync(path.join(tmp, 'stop-only-')),
+  });
+  const stopOnlyService = adapterModule.createIbPaperExecutionAdapterService({
+    ibFactory: () => stopOnlyFake,
+    flagsProvider: () => flags,
+    intentService: stopOnlyIntentService,
+    connectTimeoutMs: 1000,
+  });
+  await stopOnlyService.connectPaperExecutionClient();
+  const noTakeProfitPlan = stopOnlyService.buildOrderPlan({
     executionId: 'fxp_no_take_profit',
     contract: {
       root: 'MNQ',
@@ -359,12 +450,14 @@ function wait(ms) {
     entryType: 'MKT',
     stopLossPrice: 22980,
   });
-  const noTakeProfitIntent = intentService.createIntent({
+  assert.equal(noTakeProfitPlan.takeProfit, null);
+  assert.deepEqual(noTakeProfitPlan.transmitSequence, ['entry:false', 'stopLoss:true']);
+  const noTakeProfitIntent = stopOnlyIntentService.createIntent({
     idempotencyKey: 'idem-no-take-profit',
     executionId: 'fxp_no_take_profit',
     intent: { ...intentRecord, idempotencyKey: 'idem-no-take-profit', executionId: 'fxp_no_take_profit' },
   }).record;
-  const noTakeProfitEvidence = service.createExecutionEvidence({
+  const noTakeProfitEvidence = stopOnlyService.createExecutionEvidence({
     guardDecision,
     intentRecord: noTakeProfitIntent,
     orderPlan: noTakeProfitPlan,
@@ -374,7 +467,7 @@ function wait(ms) {
     reconciliation,
     verifiedAccount,
   });
-  const noTakeProfit = await service.submitPaperOrder({
+  const noTakeProfit = await stopOnlyService.submitPaperOrder({
     guardDecision,
     intentRecord: noTakeProfitIntent,
     orderPlan: noTakeProfitPlan,
@@ -385,8 +478,16 @@ function wait(ms) {
     entryContract,
     reconciliation,
   });
-  assert.equal(noTakeProfit.submitted, false);
-  assert.equal(noTakeProfit.blocker, 'take_profit_required');
+  assert.equal(noTakeProfit.submitted, true);
+  assert.equal(noTakeProfit.parentOrderId, 9000);
+  assert.deepEqual(stopOnlyFake.placeOrderCalls.map((call) => call.orderId), [9000, 9001]);
+  assert.deepEqual(stopOnlyFake.placeOrderCalls.map((call) => call.order.transmit), [false, true]);
+  assert.equal(stopOnlyFake.placeOrderCalls[0].order.orderRef.endsWith('-entry'), true);
+  assert.equal(stopOnlyFake.placeOrderCalls[1].order.orderRef.endsWith('-stopLoss'), true);
+  const noTakeProfitStored = stopOnlyIntentService.getIntent('idem-no-take-profit');
+  assert.deepEqual(noTakeProfitStored.expectedOrderIds, [9000, 9001]);
+  assert.deepEqual(noTakeProfitStored.orderRefs.map((ref) => ref.split('-').pop()), ['entry', 'stopLoss']);
+  assert.deepEqual(noTakeProfitStored.expectedBracketLegs.map((leg) => leg.leg), ['entry', 'stopLoss']);
   assert.equal(fake.placeOrderCalls.length, 0);
 
   flags = { ...flags, submissionEnabled: false, orderSubmissionMode: 'armed_but_submission_off' };
@@ -489,6 +590,89 @@ function wait(ms) {
   assert.equal(fake.placeOrderCalls[2].order.parentId, 9000);
   assert.equal(fake.placeOrderCalls[0].order.account, 'DUQ565596');
   fake.beforePlaceOrder = null;
+
+  const liveIntentService = intentModule.createIbPaperExecutionIntentService({
+    dir: fs.mkdtempSync(path.join(tmp, 'live-target-')),
+  });
+  const liveFake = new FakeIB('U1234567');
+  const liveFlags = {
+    executionEnabled: true,
+    shadowMode: false,
+    submissionEnabled: true,
+    orderSubmissionMode: 'live_pilot',
+    live_trading_enabled: true,
+    live_broker_enabled: true,
+    live_order_submission_enabled: true,
+    live_account_orders_allowed: true,
+  };
+  const liveService = adapterModule.createIbPaperExecutionAdapterService({
+    executionTarget: 'ibkr_live',
+    port: 4001,
+    clientId: 966,
+    ibFactory: () => liveFake,
+    flagsProvider: () => liveFlags,
+    intentService: liveIntentService,
+    connectTimeoutMs: 1000,
+  });
+  const liveConnected = await liveService.connectPaperExecutionClient();
+  assert.equal(liveConnected.ok, true);
+  assert.equal(liveService.config.executionTarget, 'ibkr_live');
+  assert.equal(liveService.config.expectedEnvironment, 'live');
+  assert.equal(liveService.getStatus().executionTarget, 'ibkr_live');
+  assert.equal(liveService.getStatus().environment, 'live');
+  assert.equal(liveService.getConnectionReadinessSnapshot().liveModeVerified, true);
+  assert.equal(liveService.verifyLiveAccount('U1***567').ok, true);
+  assert.equal(liveService.verifyPaperAccount('DU***596').ok, false);
+
+  const livePlan = liveService.buildOrderPlan({
+    executionId: 'fxp_live_1234567890',
+    contract: {
+      root: 'MNQ',
+      conId: 793356225,
+      localSymbol: 'MNQU6',
+      expiry: '20260918',
+      exchange: 'CME',
+      currency: 'USD',
+    },
+    side: 'long',
+    quantity: 1,
+    entryType: 'MKT',
+    stopLossPrice: 22980,
+    takeProfitPrice: 23040,
+  });
+  assert.equal(livePlan.executionTarget, 'ibkr_live');
+  assert.equal(livePlan.environment, 'live');
+  assert.equal(livePlan.entry.orderRef.startsWith('TOS-LIVE-'), true);
+  const liveIntent = makeLiveIntent(liveIntentService);
+  const liveVerifiedAccount = { ok: true, classification: 'live_or_unknown', accountIdMasked: 'U1***567' };
+  const liveGuard = baseLiveGuard();
+  const liveEvidence = liveService.createExecutionEvidence({
+    guardDecision: liveGuard,
+    intentRecord: liveIntent,
+    orderPlan: livePlan,
+    brokerRisk,
+    executionAllowlist,
+    entryContract,
+    reconciliation,
+    verifiedAccount: liveVerifiedAccount,
+  });
+  const liveSubmit = await liveService.submitOrder({
+    guardDecision: liveGuard,
+    intentRecord: liveIntent,
+    orderPlan: livePlan,
+    verifiedAccount: liveVerifiedAccount,
+    executionEvidence: liveEvidence,
+    brokerRisk,
+    executionAllowlist,
+    entryContract,
+    reconciliation,
+  });
+  assert.equal(liveSubmit.submitted, true);
+  assert.equal(liveSubmit.executionTarget, 'ibkr_live');
+  assert.equal(liveSubmit.environment, 'live');
+  assert.deepEqual(liveFake.placeOrderCalls.map((call) => call.orderId), [9000, 9001, 9002]);
+  assert.equal(liveFake.placeOrderCalls[0].order.account, 'U1234567');
+  assert.equal(liveFake.placeOrderCalls.every((call) => call.order.orderRef.startsWith('TOS-LIVE-')), true);
 
   const readOnlyRejectIntent = intentService.createIntent({
     idempotencyKey: 'idem-readonly-reject',

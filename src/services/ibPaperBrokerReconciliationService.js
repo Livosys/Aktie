@@ -39,8 +39,39 @@ function orderRefOf(row = {}) {
 
 function executionIdFromOrderRef(ref) {
   const text = String(ref || '');
-  if (!text.startsWith('TOS-PAPER-')) return null;
-  return text.replace(/^TOS-PAPER-/, '').split('-')[0] || null;
+  if (text.startsWith('TOS-PAPER-')) return text.replace(/^TOS-PAPER-/, '').split('-')[0] || null;
+  if (text.startsWith('TOS-LIVE-')) return text.replace(/^TOS-LIVE-/, '').split('-')[0] || null;
+  return null;
+}
+
+function executionTargetFromOrderRef(ref) {
+  const text = String(ref || '');
+  if (text.startsWith('TOS-LIVE-')) return 'ibkr_live';
+  if (text.startsWith('TOS-PAPER-')) return 'ibkr_paper';
+  return null;
+}
+
+function buildSafety(executionTarget = 'ibkr_paper') {
+  return {
+    ...configService.buildExecutionSafety(executionTarget),
+    source: 'ib_paper_broker_reconciliation',
+  };
+}
+
+function intentExecutionTarget(intent = {}, fallback = 'ibkr_paper') {
+  const raw = intent.executionTarget
+    || intent.executionSource
+    || intent.intent?.executionTarget
+    || intent.intent?.executionSource
+    || executionTargetFromOrderRef(orderRefOf(intent))
+    || fallback;
+  return configService.normalizeExecutionTarget(raw);
+}
+
+function filterIntentsForExecutionTarget(intents = [], executionTarget = 'ibkr_paper') {
+  const target = configService.normalizeExecutionTarget(executionTarget);
+  return (Array.isArray(intents) ? intents : [])
+    .filter((intent) => intentExecutionTarget(intent, 'ibkr_paper') === target);
 }
 
 function upperText(value) {
@@ -326,12 +357,15 @@ function compareSnapshots({ intents = [], openOrders = [], executions = [], posi
 function createIbPaperBrokerReconciliationService(options = {}) {
   const adapter = options.adapter;
   const intentService = options.intentService || intentServiceModule.defaultIbPaperExecutionIntentService;
+  const executionTarget = configService.normalizeExecutionTarget(options.executionTarget || configService.getActiveExecutionTarget());
+  const environment = configService.getExpectedEnvironment(executionTarget);
+  const safety = buildSafety(executionTarget);
   let lastSnapshot = null;
 
   async function reconcilePaperBroker({ force = false } = {}) {
-    const flags = configService.getFlags();
+    const flags = configService.getFlags({ executionTarget });
     const adapterStatus = adapter?.getStatus ? adapter.getStatus() : null;
-    const intents = intentService.listIntents({ limit: 250 });
+    const intents = filterIntentsForExecutionTarget(intentService.listIntents({ limit: 250 }), executionTarget);
 	    if (!adapter || adapterStatus?.connected !== true || adapterStatus?.nextValidIdReady !== true) {
 	      const reason = adapterStatus?.connected === true && adapterStatus?.nextValidIdReady !== true
 	        ? 'next_valid_id_not_ready'
@@ -341,7 +375,9 @@ function createIbPaperBrokerReconciliationService(options = {}) {
 	        status: flags.executionEnabled ? 'degraded' : 'disabled',
 	        degraded: flags.executionEnabled === true,
 	        newEntriesAllowed: false,
-	        blockedReason: flags.executionEnabled ? reason : 'ibkr_paper_execution_disabled',
+	        blockedReason: flags.executionEnabled
+          ? reason
+          : (executionTarget === 'ibkr_live' ? 'ibkr_live_execution_disabled' : 'ibkr_paper_execution_disabled'),
 	        generatedAt: nowIso(),
         intents,
         openOrders: [],
@@ -350,7 +386,9 @@ function createIbPaperBrokerReconciliationService(options = {}) {
 	        discrepancies: flags.executionEnabled ? [{ type: 'stale_reconciliation', reason }] : [],
         counts: { intents: intents.length, openOrders: 0, executions: 0, positions: 0, orderStatuses: 0, activeStops: 0 },
         force,
-        ...SAFETY,
+        executionTarget,
+        environment,
+        ...safety,
       };
       lastSnapshot = snapshot;
       return snapshot;
@@ -403,7 +441,9 @@ function createIbPaperBrokerReconciliationService(options = {}) {
 	    }
 	    // Läkta poster måste läsas om innan jämförelsen, annars flaggar
 	    // compareSnapshots dem en sista gång på en status som inte längre gäller.
-	    const effectiveIntents = healed.length ? intentService.listIntents({ limit: 250 }) : intents;
+	    const effectiveIntents = healed.length
+      ? filterIntentsForExecutionTarget(intentService.listIntents({ limit: 250 }), executionTarget)
+      : intents;
 	    const compared = compareSnapshots({ intents: effectiveIntents, openOrders, executions, positions, orderStatuses });
 	    const allDiscrepancies = [...requestDiscrepancies, ...compared.discrepancies];
 	    const degraded = allDiscrepancies.length > 0;
@@ -430,7 +470,9 @@ function createIbPaperBrokerReconciliationService(options = {}) {
 	        accountSummary: { ok: accountSummaryResult.ok === true, timedOut: accountSummaryResult.timedOut === true },
 	      },
       force,
-      ...SAFETY,
+      executionTarget,
+      environment,
+      ...safety,
     };
     lastSnapshot = snapshot;
     return snapshot;
@@ -447,7 +489,9 @@ function createIbPaperBrokerReconciliationService(options = {}) {
       generatedAt: nowIso(),
       discrepancies: [{ type: 'stale_reconciliation', reason: 'reconciliation_not_run' }],
       counts: { intents: 0, openOrders: 0, executions: 0, positions: 0, orderStatuses: 0, activeStops: 0 },
-      ...SAFETY,
+      executionTarget,
+      environment,
+      ...safety,
     };
   }
 
@@ -465,6 +509,9 @@ module.exports = {
   STALE_ENTRY_FILL_GRACE_MS,
   orderRefOf,
   executionIdFromOrderRef,
+  executionTargetFromOrderRef,
+  intentExecutionTarget,
+  filterIntentsForExecutionTarget,
   intentHasAttributableExposure,
   findResolvableStaleIntents,
   compareSnapshots,

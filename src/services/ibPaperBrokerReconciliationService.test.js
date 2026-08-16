@@ -4,6 +4,13 @@ const assert = require('assert');
 const recon = require('./ibPaperBrokerReconciliationService');
 
 {
+  assert.equal(recon.executionIdFromOrderRef('TOS-PAPER-fxp_paper_123-entry'), 'fxp_paper_123');
+  assert.equal(recon.executionIdFromOrderRef('TOS-LIVE-fxp_live_456-takeProfit'), 'fxp_live_456');
+  assert.equal(recon.executionTargetFromOrderRef('TOS-PAPER-fxp_paper_123-entry'), 'ibkr_paper');
+  assert.equal(recon.executionTargetFromOrderRef('TOS-LIVE-fxp_live_456-takeProfit'), 'ibkr_live');
+}
+
+{
   const result = recon.compareSnapshots({
     intents: [{
       executionId: 'abc123',
@@ -438,6 +445,43 @@ const foreignProtectiveOrders = [
 }
 
 (async () => {
+  {
+    const stored = [
+      {
+        executionTarget: 'ibkr_paper',
+        executionId: 'paper-submitted',
+        idempotencyKey: 'paper-submitted',
+        status: 'submitted',
+        orderRef: 'TOS-PAPER-paper-submitted-entry',
+      },
+      {
+        executionTarget: 'ibkr_live',
+        executionId: 'live-filled',
+        idempotencyKey: 'live-filled',
+        status: 'filled',
+        orderRef: 'TOS-LIVE-live-filled-entry',
+      },
+    ];
+    const liveService = recon.createIbPaperBrokerReconciliationService({
+      executionTarget: 'ibkr_live',
+      adapter: {
+        getStatus: () => ({ connected: true, nextValidIdReady: true }),
+        getOpenPaperOrders: async () => ({ ok: true, orders: [] }),
+        getPaperExecutions: async () => ({ ok: true, executions: [] }),
+        getPaperPositions: async () => ({ ok: true, positions: [] }),
+        getAccountSummary: async () => ({ ok: true }),
+        getOrderStatuses: () => [],
+      },
+      intentService: { listIntents: () => stored.map((row) => ({ ...row })) },
+    });
+    const snapshot = await liveService.reconcilePaperBroker({ force: true });
+    assert.equal(snapshot.executionTarget, 'ibkr_live');
+    assert.equal(snapshot.environment, 'live');
+    assert.equal(snapshot.intents.length, 1);
+    assert.equal(snapshot.intents[0].executionId, 'live-filled');
+    assert.equal(snapshot.degraded, false);
+  }
+
   // ── FAS 5: läkningen ska ge en ren reconciliation utan manuell inblandning ──
   {
     // Ägaren till dagens position måste finnas lokalt, annars flaggas dess

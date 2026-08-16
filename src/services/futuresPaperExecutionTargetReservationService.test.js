@@ -49,6 +49,27 @@ const reservationModule = require('./futuresPaperExecutionTargetReservationServi
   assert.equal(missingLifecycle.ok, true);
   assert.equal(missingLifecycle.record.lifecycleId, null);
 
+  const liveReservation = service.reserveExecutionTarget({
+    lifecycleId: 'life-live-1',
+    candidateId: 'cand-live-1',
+    executionTarget: 'ibkr_live',
+    strategyId: 'native_futures_momentum_v1',
+    signalTimestamp: '2026-07-15T22:29:45.000Z',
+  });
+  assert.equal(liveReservation.ok, true);
+  assert.equal(liveReservation.reserved, true);
+  assert.equal(liveReservation.record.executionTarget, 'ibkr_live');
+  assert.equal(liveReservation.record.environment, 'live');
+  assert.equal(liveReservation.record.paperOnly, false);
+
+  const liveThenPaperConflict = service.reserveExecutionTarget({
+    candidateId: 'cand-live-1',
+    executionTarget: 'ibkr_paper',
+    strategyId: 'native_futures_momentum_v1',
+  });
+  assert.equal(liveThenPaperConflict.ok, false);
+  assert.equal(liveThenPaperConflict.blocker, 'execution_target_already_reserved');
+
   const attempts = await Promise.all([
     Promise.resolve().then(() => service.reserveExecutionTarget({ candidateId: 'cand-race-2', executionTarget: 'internal_simulation' })),
     Promise.resolve().then(() => service.reserveExecutionTarget({ candidateId: 'cand-race-2', executionTarget: 'ibkr_paper' })),
