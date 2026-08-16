@@ -12,7 +12,8 @@
 
 const futuresPaperLedgerService = require('./futuresPaperLedgerService');
 const futuresPaperStorageService = require('./futuresPaperStorageService');
-const ibPaperExecutionOrchestratorService = require('./ibPaperExecutionOrchestratorService');
+const ibPaperExecutionIntentService = require('./ibPaperExecutionIntentService');
+const ibPaperExecutionConfigService = require('./ibPaperExecutionConfigService');
 const internalSimulationRetirement = require('./futuresInternalSimulationRetirementService');
 const strategyIdNormalizer = require('./strategyIdNormalizerService');
 const catalogService = require('./daytradingStrategyCatalogService');
@@ -30,8 +31,50 @@ const SAFETY = Object.freeze({
 });
 
 const MIN_TRADES_FOR_RATE_LEADERS = 5;
+const DEFAULT_INTENT_READ_LIMIT = Number.MAX_SAFE_INTEGER;
 
 function nowIso() { return new Date().toISOString(); }
+
+function normalizeExecutionTarget(value = null) {
+  return ibPaperExecutionConfigService.normalizeExecutionTarget(value || ibPaperExecutionConfigService.getActiveExecutionTarget());
+}
+
+function buildSafety(executionTarget = 'ibkr_paper') {
+  const target = ibPaperExecutionConfigService.normalizeExecutionTarget(executionTarget);
+  return {
+    ...SAFETY,
+    ...ibPaperExecutionConfigService.buildExecutionSafety(target),
+    mode: target === 'ibkr_paper' ? SAFETY.mode : target,
+    actions_allowed: false,
+    can_place_orders: false,
+    broker_enabled: false,
+    paper_only: target === 'ibkr_paper',
+    live_enabled: target === 'ibkr_live',
+    source: 'futures_paper_strategy_performance',
+  };
+}
+
+function executionTargetFromOrderRef(ref) {
+  const text = String(ref || '');
+  if (text.startsWith('TOS-LIVE-')) return 'ibkr_live';
+  if (text.startsWith('TOS-PAPER-')) return 'ibkr_paper';
+  return null;
+}
+
+function rowExecutionTarget(row = {}, fallback = 'ibkr_paper') {
+  return ibPaperExecutionConfigService.normalizeExecutionTarget(
+    row.executionTarget
+    || row.executionSource
+    || executionTargetFromOrderRef(row.orderRef)
+    || fallback,
+  );
+}
+
+function filterRowsForExecutionTarget(rows = [], executionTarget = 'ibkr_paper') {
+  const target = ibPaperExecutionConfigService.normalizeExecutionTarget(executionTarget);
+  return (Array.isArray(rows) ? rows : [])
+    .filter((row) => rowExecutionTarget(row, 'ibkr_paper') === target);
+}
 
 function num(value) {
   const n = Number(value);
@@ -225,10 +268,12 @@ function buildLegacyStrategyStats() {
 // executions persisteras inte. Stängda trades från tidigare dagar finns däremot
 // kvar i intent-loggen med brokerns egen realiserade PnL (filledRealizedPNL).
 // Utan den här källan nollställs all historik vid dygnsskiftet.
-function closedIntentRows(intents = []) {
+function closedIntentRows(intents = [], options = {}) {
+  const executionTarget = normalizeExecutionTarget(options.executionTarget || 'ibkr_paper');
   const rows = [];
   for (const intent of (Array.isArray(intents) ? intents : [])) {
     if (!intent || intent.status !== 'filled') continue;
+    if (rowExecutionTarget(intent, 'ibkr_paper') !== executionTarget) continue;
     const realized = Number(
       intent.filledRealizedPNL ?? intent.filledRealizedPnl ?? intent.realizedPNL,
     );
@@ -241,18 +286,22 @@ function closedIntentRows(intents = []) {
       strategyId: intent.strategyId || intent.orderRef || null,
       realizedResult: realized,
       commission: fees,
+      executionTarget,
+      executionSource: executionTarget,
     });
   }
   return rows;
 }
 
-function buildStrategyStats({ executions = [], intents = [] } = {}) {
+function buildStrategyStats({ executions = [], intents = [], executionTarget = 'ibkr_paper' } = {}) {
+  const target = normalizeExecutionTarget(executionTarget);
   const closedExecutions = (Array.isArray(executions) ? executions : [])
+    .filter((row) => rowExecutionTarget(row, target) === target)
     .filter((row) => row && (row.strategyId || row.orderRef) && isClosedBrokerExecution(row));
   // Live-executionen vinner när samma fill finns i båda källorna, så en trade
   // som stängdes idag inte räknas två gånger.
   const seenExecIds = new Set(closedExecutions.map((row) => row.execId).filter(Boolean));
-  const historical = closedIntentRows(intents)
+  const historical = closedIntentRows(intents, { executionTarget: target })
     .filter((row) => !(row.execId && seenExecIds.has(row.execId)));
 
   const normalized = [...closedExecutions, ...historical]
@@ -262,22 +311,42 @@ function buildStrategyStats({ executions = [], intents = [] } = {}) {
       netPnlSek: row.realizedResult ?? row.realizedPnlSek ?? row.realizedPnl ?? row.realizedPNL,
       grossPnlSek: row.realizedResult ?? row.realizedPnlSek ?? row.realizedPnl ?? row.realizedPNL,
       feesSek: row.commission ?? 0,
-      dataSource: 'ibkr_paper',
-      executionSource: 'ibkr_paper',
+      dataSource: target,
+      executionSource: target,
       provenance: 'broker_fill',
     }));
   return aggregateTrades(normalized);
 }
 
 function readBrokerExecutions(options = {}) {
-  if (Array.isArray(options.executions)) return options.executions;
+  const target = normalizeExecutionTarget(options.executionTarget || options.reconciliation?.executionTarget);
+  if (Array.isArray(options.executions)) return filterRowsForExecutionTarget(options.executions, target);
   if (options.reconciliation && Array.isArray(options.reconciliation.executions)) {
-    return options.reconciliation.executions;
+    return filterRowsForExecutionTarget(options.reconciliation.executions, target);
   }
   try {
+    const ibPaperExecutionOrchestratorService = require('./ibPaperExecutionOrchestratorService');
     const cached = ibPaperExecutionOrchestratorService.defaultIbPaperExecutionOrchestratorService
       .reconciliation.getCachedReconciliation();
-    return Array.isArray(cached?.executions) ? cached.executions : [];
+    return Array.isArray(cached?.executions) ? filterRowsForExecutionTarget(cached.executions, target) : [];
+  } catch (_) {
+    return [];
+  }
+}
+
+function readExecutionIntents(options = {}) {
+  const target = normalizeExecutionTarget(options.executionTarget || options.reconciliation?.executionTarget);
+  if (Array.isArray(options.intents)) return filterRowsForExecutionTarget(options.intents, target);
+  if (options.reconciliation && Array.isArray(options.reconciliation.intents)) {
+    return filterRowsForExecutionTarget(options.reconciliation.intents, target);
+  }
+  try {
+    const limit = Number.isFinite(Number(options.intentLimit))
+      ? Number(options.intentLimit)
+      : DEFAULT_INTENT_READ_LIMIT;
+    const svc = ibPaperExecutionIntentService.defaultIbPaperExecutionIntentService;
+    const intents = svc && typeof svc.listIntents === 'function' ? svc.listIntents({ limit }) : [];
+    return filterRowsForExecutionTarget(intents, target);
   } catch (_) {
     return [];
   }
@@ -298,13 +367,14 @@ function pickLeader(list, valueFn, { minTrades = 0 } = {}) {
   return { strategyId: w.strategyId, displayName: w.displayName, value: valueFn(w), closedTrades: w.closedTrades };
 }
 
-function buildLeaders(list) {
+function buildLeaders(list, options = {}) {
+  const target = normalizeExecutionTarget(options.executionTarget || 'ibkr_paper');
   return {
     highestNetPnl: pickLeader(list, (s) => s.netPnlSek),
     highestWinRate: pickLeader(list, (s) => s.winRatePct, { minTrades: MIN_TRADES_FOR_RATE_LEADERS }),
     mostWins: pickLeader(list, (s) => s.wins),
     highestAverageNetPnl: pickLeader(list, (s) => s.avgNetPnlSek, { minTrades: MIN_TRADES_FOR_RATE_LEADERS }),
-    performanceContext: 'ibkr_paper',
+    performanceContext: target,
     notRealMarketPerformance: false,
     minTradesForRateLeaders: MIN_TRADES_FOR_RATE_LEADERS,
   };
@@ -312,26 +382,33 @@ function buildLeaders(list) {
 
 // Publikt: karta strategyId → stats (för aggregatorn) + lista + topplistor.
 function getPerformance(options = {}) {
+  const executionTarget = normalizeExecutionTarget(options.executionTarget || options.reconciliation?.executionTarget);
+  const safety = buildSafety(executionTarget);
   const executions = readBrokerExecutions(options);
-  const strategies = buildStrategyStats({ executions });
+  const intents = readExecutionIntents(options);
+  const strategies = buildStrategyStats({ executions, intents, executionTarget });
   return {
     status: 'ok',
     readOnly: true,
     generatedAt: nowIso(),
-    performanceContext: 'ibkr_paper',
-    executionSource: 'ibkr_paper',
+    performanceContext: executionTarget,
+    executionSource: executionTarget,
+    executionTarget,
     notRealMarketPerformance: false,
     legacySimulationExcluded: true,
     count: strategies.length,
     strategies,
-    leaders: buildLeaders(strategies),
-    ...SAFETY,
+    leaders: buildLeaders(strategies, { executionTarget }),
+    ...safety,
   };
 }
 
-function getPerformanceMap() {
+function getPerformanceMap(options = {}) {
   const map = new Map();
-  for (const s of buildStrategyStats({ executions: readBrokerExecutions() })) map.set(s.strategyId, s);
+  const executionTarget = normalizeExecutionTarget(options.executionTarget || options.reconciliation?.executionTarget);
+  const executions = readBrokerExecutions(options);
+  const intents = readExecutionIntents(options);
+  for (const s of buildStrategyStats({ executions, intents, executionTarget })) map.set(s.strategyId, s);
   return map;
 }
 
@@ -345,10 +422,13 @@ module.exports = {
   // Persisterad stängningshistorik ur intent-loggen — används även för
   // verifieringen i deskens performance-normalisering.
   closedIntentRows,
+  rowExecutionTarget,
+  filterRowsForExecutionTarget,
   buildStrategyStats,
   buildLegacyStrategyStats,
   isClosedBrokerExecution,
   readBrokerExecutions,
+  readExecutionIntents,
   buildLeaders,
   pickLeader,
   provenanceByTradeId,

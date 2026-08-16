@@ -29,13 +29,13 @@ assert.equal(fridayMorning.exchangeLocalTime, '10:00');
 assert.equal(fridayMorning.minutesUntilWeeklyClose, 360);
 assert.equal(fridayMorning.entryBlocked, false);
 
-// ── 2. Fredag, INOM 90 min före stängning → blockeras ────────────────────────
+// ── 2. Fredag, INOM 90 min före stängning → fönstret observeras ──────────────
 // Exakt på gränsen: 14:30 CT = 90 min kvar. Gränsen är inklusive.
 const atBoundary = getWeekendEntryCutoffState(new Date('2026-07-31T19:30:00.000Z'));
 assert.equal(atBoundary.exchangeLocalTime, '14:30');
 assert.equal(atBoundary.minutesUntilWeeklyClose, 90);
-assert.equal(atBoundary.entryBlocked, true, 'exakt 90 min kvar ska blockeras');
-assert.equal(atBoundary.reason, 'weekend_entry_cutoff');
+assert.equal(atBoundary.entryBlocked, true, 'exakt 90 min kvar ska observeras');
+assert.equal(atBoundary.reason, null);
 
 // Det faktiska produktionsfallet: fxp_1d7d8c85a6922fd6 öppnades
 // 2026-07-31T20:02:30Z = 15:02 CT, 57 min före stängning, och stoppades ut
@@ -43,7 +43,7 @@ assert.equal(atBoundary.reason, 'weekend_entry_cutoff');
 const realIncident = getWeekendEntryCutoffState(new Date('2026-07-31T20:02:30.000Z'));
 assert.equal(realIncident.exchangeLocalTime, '15:02');
 assert.equal(realIncident.minutesUntilWeeklyClose, 58);
-assert.equal(realIncident.entryBlocked, true, 'den observerade helgaffären ska blockeras');
+assert.equal(realIncident.entryBlocked, true, 'den observerade helgaffären ligger i helgfönstret');
 
 // Sista minuten före stängning: 15:59 CT = 1 min kvar.
 const lastMinute = getWeekendEntryCutoffState(new Date('2026-07-31T20:59:00.000Z'));

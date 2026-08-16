@@ -15,6 +15,18 @@ function t(strategyId, netPnlSek, extra = {}) {
   return { strategyId, netPnlSek, grossPnlSek: extra.grossPnlSek ?? netPnlSek, feesSek: extra.feesSek ?? 0, dataSource: extra.dataSource ?? 'simulated_fallback', provenance: extra.provenance ?? 'stored_net' };
 }
 
+function intent(strategyId, realizedPnl, extra = {}) {
+  return {
+    status: extra.status ?? 'filled',
+    strategyId,
+    filledRealizedPNL: realizedPnl,
+    filledExecId: extra.execId ?? `filled-${strategyId}-${realizedPnl}`,
+    entryCommission: extra.entryCommission ?? 0,
+    filledCommission: extra.filledCommission ?? 0,
+    ...extra,
+  };
+}
+
 // 13) Historisk net PnL summeras korrekt (+ gross/fees).
 test('net/gross/fees sum correctly', () => {
   const [s] = perf.aggregateTrades([
@@ -103,6 +115,7 @@ test('IBKR paper performance invariants hold', () => {
       { strategyId: 'trend_continuation', realizedResult: -25, commission: 2.5, execId: 'exec-2' },
       { strategyId: 'trend_continuation', realizedResult: null, commission: 2.5, execId: 'exec-open-entry' },
     ],
+    intents: [],
   });
   assert.strictEqual(out.performanceContext, 'ibkr_paper');
   assert.strictEqual(out.executionSource, 'ibkr_paper');
@@ -124,9 +137,73 @@ test('open broker executions without realized PnL are not closed trades', () => 
       { strategyId: 'trend_continuation', realizedResult: null, commission: 2.5, execId: 'exec-open-entry' },
       { strategyId: 'trend_continuation', commission: 2.5, execId: 'exec-missing-realized-pnl' },
     ],
+    intents: [],
   });
   assert.strictEqual(out.count, 0);
   assert.deepStrictEqual(out.strategies, []);
+});
+
+test('IBKR intent history is included in active performance', () => {
+  const out = perf.getPerformance({
+    executions: [],
+    intents: [
+      intent('trend_continuation', 71.28, { execId: 'intent-exit-1', entryCommission: 0.61, filledCommission: 0.61 }),
+      intent('trend_continuation', -10, { execId: 'intent-exit-2' }),
+    ],
+  });
+  assert.strictEqual(out.count, 1);
+  const [s] = out.strategies;
+  assert.strictEqual(s.strategyId, 'trend_continuation');
+  assert.strictEqual(s.closedTrades, 2);
+  assert.strictEqual(s.netPnlSek, 61.28);
+  assert.strictEqual(s.feesSek, 1.22);
+  assert.deepStrictEqual(s.executionSources, ['ibkr_paper']);
+  assert.strictEqual(s.pnlProvenance, 'broker_fill');
+});
+
+test('live broker executions de-duplicate matching filled intents', () => {
+  const out = perf.getPerformance({
+    executions: [
+      { strategyId: 'trend_continuation', realizedResult: 25, commission: 1, execId: 'same-exit' },
+    ],
+    intents: [
+      intent('trend_continuation', 25, { execId: 'same-exit', entryCommission: 1, filledCommission: 1 }),
+    ],
+  });
+  const [s] = out.strategies;
+  assert.strictEqual(s.closedTrades, 1);
+  assert.strictEqual(s.netPnlSek, 25);
+  assert.strictEqual(s.feesSek, 1);
+});
+
+test('execution target filters mixed paper and live performance rows', () => {
+  const out = perf.getPerformance({
+    executionTarget: 'ibkr_live',
+    executions: [
+      { strategyId: 'trend_continuation', realizedResult: 25, commission: 1, execId: 'live-exit', orderRef: 'TOS-LIVE-live-exit-takeProfit' },
+      { strategyId: 'trend_continuation', realizedResult: 99, commission: 1, execId: 'paper-exit', orderRef: 'TOS-PAPER-paper-exit-takeProfit' },
+    ],
+    intents: [
+      intent('trend_continuation', 25, { execId: 'live-exit', executionTarget: 'ibkr_live', orderRef: 'TOS-LIVE-live-exit-entry' }),
+      intent('trend_continuation', 99, { execId: 'paper-exit', executionTarget: 'ibkr_paper', orderRef: 'TOS-PAPER-paper-exit-entry' }),
+    ],
+  });
+  assert.strictEqual(out.executionTarget, 'ibkr_live');
+  assert.strictEqual(out.performanceContext, 'ibkr_live');
+  assert.strictEqual(out.executionSource, 'ibkr_live');
+  assert.strictEqual(out.paper_only, false);
+  const [s] = out.strategies;
+  assert.strictEqual(s.closedTrades, 1);
+  assert.strictEqual(s.netPnlSek, 25);
+  assert.deepStrictEqual(s.executionSources, ['ibkr_live']);
+});
+
+test('performance map uses the same IBKR intent source', () => {
+  const map = perf.getPerformanceMap({
+    executions: [],
+    intents: [intent('trend_continuation', 10, { execId: 'map-exit' })],
+  });
+  assert.strictEqual(map.get('trend_continuation').closedTrades, 1);
 });
 
 // 20) Vanlig Paper Trading blandas inte in och legacy-ledgern är separat.
@@ -135,6 +212,7 @@ test('does not read normal paper trading data as active source', () => {
   assert.ok(!/paper-trading\/trades|paperTradingAgent|automation-approvals/.test(src), 'must not read normal paper trading sources');
   assert.ok(/buildLegacyStrategyStats/.test(src), 'legacy simulation remains a separate archive reader');
   assert.ok(/ibPaperExecutionOrchestratorService/.test(src), 'active performance reads cached IBKR paper executions');
+  assert.ok(/ibPaperExecutionIntentService/.test(src), 'active performance reads persisted IBKR paper intents');
 });
 
 if (process.exitCode) console.error(`\nfuturesPaperStrategyPerformanceService: FAILURES (passed ${passed})`);

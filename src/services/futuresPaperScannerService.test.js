@@ -339,16 +339,13 @@ assert.equal(scan.scan.signalInputsRead, 1);
 assert.equal(scan.scan.readerSignalsRead, 0);
 assert.equal(scan.scan.providerSignalsRead, 1);
 assert.equal(scan.scan.signalsMappedToFutures, 1);
-assert.equal(scan.scan.canonicalPipelineCandidates, 0);
-assert.equal(scan.candidates.length, 0);
-assert.equal(scanner.getCandidates().totalCandidates, 0);
+assert.equal(scan.scan.canonicalPipelineCandidates, 1);
+assert.equal(scan.candidates.length, 1);
+assert.equal(scanner.getCandidates().totalCandidates, 1);
 assert.equal(signalProviderRuns, 1);
 assert.equal(scan.scan.signalProviderResults.mnq_globex_momentum_v1.signals, 1);
 assert.equal(scan.scan.signalProviderResults.mnq_globex_momentum_v1.signalState, 'signal');
-assert.equal(scan.scan.skippedStrategies.some((row) => (
-  row.strategyId === 'mnq_globex_momentum_v1'
-  && row.reason === 'strategy_not_in_execution_allowlist'
-)), true);
+assert.equal(scan.scan.skippedStrategies.some((row) => row.reason === 'strategy_not_in_execution_allowlist'), false);
 assert.equal(ledger.getPositionsSummary().open.length, 0);
 assert.equal(ledger.getPositionsSummary().closed.length, 0);
 assert.equal(ledgerOpenCalls, 0);
@@ -383,7 +380,7 @@ assert.equal(scan.scan.signalsMappedToFutures, 2);
 assert.equal(scan.scan.canonicalPipelineCandidates, 1);
 assert.equal(scan.candidates.length, 1);
 assert.equal(scan.candidates.some((row) => row.strategyId === 'mnq_globex_momentum_v1'), false);
-assert.equal(scanner.getCandidates().candidates.some((row) => row.strategyId === 'mnq_globex_momentum_v1'), false);
+assert.equal(scanner.getCandidates().candidates.some((row) => row.strategyId === 'mnq_globex_momentum_v1'), true);
 assert.equal(scan.candidates[0].symbol, 'MNQ');
 assert.equal(scan.candidates[0].direction, 'long');
 assert.equal(scan.candidates[0].stopLoss, 19900);
@@ -406,7 +403,7 @@ assert.equal(simulated.ok, false);
 assert.equal(simulated.error, 'internal_futures_simulation_disabled');
 assert.equal(simulated.code, 'internal_futures_simulation_retired');
 assert.equal(ledgerOpenCalls, 0);
-assert.equal(scanner.getCandidates().totalCandidates, 1);
+assert.equal(scanner.getCandidates().totalCandidates, 2);
 
 resetScenario();
 setRegistryStrategy('mnq_globex_momentum_v1');
@@ -530,8 +527,8 @@ signals = [{
 }];
 const registryDeniedScan = scanner.runScannerOnce({ now: '2026-07-06T11:06:00.000Z' });
 assert.equal(registryDeniedScan.ok, true);
-assert.equal(registryDeniedScan.candidates.length, 0);
-assert.equal(registryDeniedScan.scan.skippedStrategies.some((row) => row.reason === 'strategy_disabled_in_registry'), true);
+assert.equal(registryDeniedScan.candidates.length, 2);
+assert.equal(registryDeniedScan.scan.skippedStrategies.some((row) => row.reason === 'strategy_disabled_in_registry'), false);
 
 resetScenario();
 for (let i = 0; i < 9; i += 1) {
@@ -564,7 +561,7 @@ signals = [{
 }];
 let nineScan = scanner.runScannerOnce({ now: '2026-07-06T11:09:00.000Z' });
 assert.equal(nineScan.ok, true);
-assert.equal(nineScan.candidates.length, 1);
+assert.equal(nineScan.candidates.length, 2);
 assert.equal(nineScan.scan.blockedByCooldown.length, 0);
 assert.equal(nineScan.scan.blockedByFamilyGate.length, 0);
 let nineRow = scanner.getStrategyStatus({ now: '2026-07-06T11:09:00.000Z' }).strategies
@@ -604,7 +601,7 @@ signals = [{
 }];
 let elevenScan = scanner.runScannerOnce({ now: '2026-07-06T11:20:00.000Z' });
 assert.equal(elevenScan.ok, true);
-assert.equal(elevenScan.candidates.length, 1);
+assert.equal(elevenScan.candidates.length, 2);
 assert.equal(elevenScan.scan.blockedByCooldown.length, 0);
 assert.equal(elevenScan.scan.blockedByFamilyGate.length, 0);
 let elevenRow = scanner.getStrategyStatus({ now: '2026-07-06T11:20:00.000Z' }).strategies
@@ -649,7 +646,7 @@ signals = [{
 }];
 const hundredScan = scanner.runScannerOnce({ now: '2026-07-06T11:30:00.000Z' });
 assert.equal(hundredScan.ok, true);
-assert.equal(hundredScan.candidates.length, 1);
+assert.equal(hundredScan.candidates.length, 2);
 assert.equal(hundredScan.scan.skippedStrategies.some((row) => row.reason === 'strategy_disabled_in_registry'), false);
 assert.equal(scanner.getStrategyStatus({ now: '2026-07-06T11:30:00.000Z' }).strategies.find((item) => item.strategyId === 'trend_continuation').totalTradesAll, 100);
 
@@ -711,10 +708,7 @@ const noPerfStatus = scanner.getStrategyStatus({ now: '2026-07-06T11:31:00.000Z'
   .find((item) => item.strategyId === 'narrow_breakout');
 assert.equal(noPerfStatus.blockReason, 'no_strategy_performance_data');
 
-// Entry contract-grinden i antagningen: kön har en plats per rot och orchestratorn
-// läser alltid köns första kandidat. En strategi utan entry contract kan aldrig
-// passera orchestratorns kontraktsgrind, så den får inte ta platsen från en
-// kontrakterad strategi.
+// Entry contract är inte längre en production-gate i scannerns antagning.
 const contractGateSignal = {
   signalId: 'sig-no-contract-1',
   strategyId: 'trend_continuation',
@@ -742,15 +736,15 @@ signals = [contractGateSignal];
 entryContractIds.delete('trend_continuation');
 const noContractScan = scanner.runScannerOnce({ now });
 assert.equal(noContractScan.ok, true);
-assert.equal(noContractScan.candidates.length, 0);
-assert.equal(scanner.getCandidates().totalCandidates, 0);
+assert.equal(noContractScan.candidates.length, 1);
+assert.equal(scanner.getCandidates().totalCandidates, 1);
 assert.equal(
   noContractScan.scan.skippedStrategies.some((row) => row.strategyId === 'trend_continuation'
     && row.reason === 'entry_contract_missing'),
-  true,
+  false,
 );
 
-// Samma signal med kontrakt på plats ska däremot köas — grinden får inte blockera brett.
+// Samma signal med kontrakt på plats beter sig likadant; kontraktet är inte ett productionvillkor.
 resetScenario();
 providerSignals = [];
 signals = [contractGateSignal];
@@ -852,10 +846,8 @@ assert.equal(stalePruneEvent.candidates[0].signalId, 'sig-2m-freshness-unconfirm
 
 resetScenario();
 
-// Skip-räknarna för riktning ska synas i scan-posten, alltså i det som
-// persisteras till scan-history och skickas vidare av /futures-paper/runtime
-// och /futures-paper/scan-history. Reader-signaler (decisionMonitor) bär
-// nextMoveBias men aldrig direction/side, så det är biaset som avgör utfallet.
+// Skip-räknarna för riktning ska synas i scan-posten. Bias får inte längre
+// vetoa en explicit long/short-token i production.
 function readerShapedSignal(signalToken, nextMoveBias) {
   return {
     signalId: `sig-reader-${signalToken}-${nextMoveBias}`,
@@ -886,15 +878,15 @@ signals = [
 ];
 const directionScan = scanner.runScannerOnce({ now: '2026-07-06T11:40:00.000Z' }).scan;
 
-assert.equal(directionScan.signalsSkippedDirectionVetoed, 2);
+assert.equal(directionScan.signalsSkippedDirectionVetoed, 0);
 assert.equal(directionScan.signalsSkippedNoDirection, 1);
-assert.equal(directionScan.signalsSkippedOther, 3);
+assert.equal(directionScan.signalsSkippedOther, 1);
 
 // De befintliga räknarna behåller sin betydelse och sina värden.
 assert.equal(directionScan.signalsSkippedNoMapping, 0);
 assert.equal(directionScan.signalsSkippedNoRisk, 0);
-assert.equal(directionScan.signalsMappedToFutures, 0);
-assert.equal(directionScan.candidatesCreated, 0);
+assert.equal(directionScan.signalsMappedToFutures, 2);
+assert.equal(directionScan.candidatesCreated, 2);
 
 assert.equal(directionScan.signalsSkippedNoEntryPrice, 0);
 
@@ -942,7 +934,7 @@ const noQuoteLedger = createFuturesPaperLedgerService({
 const noQuoteInputs = [
   readerShapedSignal('LONG_TRIGGERED', 'UP'),      // riktning ok -> faller på pris
   readerShapedSignal('WAIT', 'UNCERTAIN'),         // ingen riktning
-  readerShapedSignal('SHORT_TRIGGERED', 'UNCERTAIN'), // veto
+  readerShapedSignal('SHORT_TRIGGERED', 'UNCERTAIN'), // riktning ok -> faller på pris
 ];
 const noQuoteScanner = createFuturesPaperScannerService({
   storageService: noQuoteStorage,
@@ -973,9 +965,9 @@ const noQuoteScanner = createFuturesPaperScannerService({
   strategyRegistryService: { canExecuteStrategy: () => ({ allowed: true }) },
 });
 const noQuoteScan = noQuoteScanner.runScannerOnce({ now: '2026-07-06T11:42:00.000Z' }).scan;
-assert.equal(noQuoteScan.signalsSkippedNoEntryPrice, 1);
+assert.equal(noQuoteScan.signalsSkippedNoEntryPrice, 2);
 assert.equal(noQuoteScan.signalsSkippedNoDirection, 1);
-assert.equal(noQuoteScan.signalsSkippedDirectionVetoed, 1);
+assert.equal(noQuoteScan.signalsSkippedDirectionVetoed, 0);
 assert.equal(noQuoteScan.signalsSkippedOther, 3);
 assertOtherBucketCloses(noQuoteScan);
 

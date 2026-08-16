@@ -1,11 +1,9 @@
 'use strict';
 
-// Scenario-test för Futures Paper strategy control:
-//  - default cooldown 30 min per strategyId (central STRATEGY_COOLDOWN_MINUTES)
-//  - family gate: bara bästa kandidaten i en familj per scan
-//  - öppen position i familjen blockerar nya kandidater
-//  - family cooldown efter stängd trade
-//  - annan familj påverkas inte
+// Scenario-test för Production Execution Law v2:
+//  - scanner får bevara family/cooldown-metadata
+//  - scanner får inte använda family rank, öppen family-position eller cooldown
+//    för att blockera strategy-kandidater
 //  - allt förblir ibkr_paper shadow utan intern position
 // Alla trades sker i tmp-katalog via injicerade services — inget rör prod-data.
 
@@ -116,11 +114,20 @@ const scanner = createFuturesPaperScannerService({
   },
 });
 
+function familyForFixture(strategyId) {
+  if (String(strategyId || '').startsWith('vwap_')) return 'vwap_family';
+  if (String(strategyId || '').startsWith('ema_')) return 'ema_trend_family';
+  return null;
+}
+
 function makeSignal({ signalId, strategyId, strategyName, symbol, direction, confidence, entry, stopLoss, takeProfit, createdAt }) {
+  const strategyFamily = familyForFixture(strategyId);
   return {
     signalId,
     strategyId,
     strategyName: strategyName || strategyId,
+    strategyFamily,
+    signalFamily: strategyFamily,
     symbol,
     market: 'stocks',
     direction,
@@ -145,7 +152,7 @@ assert.equal(engineConfig.cooldownMinutes, 30);
 assert.equal(engineConfig.familyCooldownMinutes, 30);
 assert.equal(engineConfig.familyExclusiveEnabled, true);
 
-// ── Scan 1 (11:00): två kandidater i vwap_family → bara bästa köas ──────────
+// ── Scan 1 (11:00): två kandidater i vwap_family → båda köas ────────────────
 const t0 = '2026-07-08T11:00:00.000Z';
 signals = [
   makeSignal({ signalId: 'sig-vwap-b', strategyId: 'vwap_failed_breakout_short', symbol: 'SPY', direction: 'short', confidence: 0.7, entry: 500, stopLoss: 502.5, takeProfit: 495, createdAt: t0 }),
@@ -153,15 +160,15 @@ signals = [
 ];
 let scan = scanner.runScannerOnce({ now: t0 });
 assert.equal(scan.ok, true);
-assert.equal(scan.candidates.length, 1);
-assert.equal(scan.candidates[0].strategyId, 'vwap_volume_breakout_long');
-assert.equal(scan.candidates[0].strategyFamily, 'vwap_family');
-assert.equal(scan.candidates[0].familyRank, 1);
-assert.equal(scan.candidates[0].familyGateDecision, 'allowed');
-assert.equal(scan.candidates[0].strategyCooldownDecision, 'allowed');
-assert.equal(scan.scan.blockedByFamilyGate.length, 1);
-assert.equal(scan.scan.blockedByFamilyGate[0].strategyId, 'vwap_failed_breakout_short');
-assert.equal(scan.scan.blockedByFamilyGate[0].reason, 'strategy_family_not_best_candidate');
+assert.equal(scan.candidates.length, 2);
+assert.equal(scan.candidates.some((row) => row.strategyId === 'vwap_volume_breakout_long'), true);
+assert.equal(scan.candidates.some((row) => row.strategyId === 'vwap_failed_breakout_short'), true);
+const vwapLong = scan.candidates.find((row) => row.strategyId === 'vwap_volume_breakout_long');
+assert.equal(vwapLong.strategyFamily, 'vwap_family');
+assert.equal(vwapLong.familyRank, null);
+assert.equal(vwapLong.familyGateDecision, 'not_evaluated');
+assert.equal(vwapLong.strategyCooldownDecision, 'not_evaluated');
+assert.equal(scan.scan.blockedByFamilyGate.length, 0);
 assert.equal(scan.scan.config.cooldownMinutes, 30);
 assert.equal(scan.scan.config.familyExclusiveEnabled, true);
 assert.equal(scan.scan.mode, 'ibkr_paper');
@@ -215,7 +222,7 @@ assert.equal(seededOpen.position.strategyCooldownDecision, 'allowed');
 assert.equal(seededOpen.position.strategyCooldownBlockReason, null);
 assert.equal(seededOpen.position.nextAllowedAt, null);
 
-// ── Scan 2 (11:05): öppen vwap-position blockerar familjen, ema släpps ───────
+// ── Scan 2 (11:05): öppen vwap-position blockerar inte scanner-kön ───────────
 const t1 = '2026-07-08T11:05:00.000Z';
 signals = [
   makeSignal({ signalId: 'sig-vwap-c', strategyId: 'vwap_failed_breakout_short', symbol: 'SPY', direction: 'short', confidence: 0.8, entry: 500, stopLoss: 502.5, takeProfit: 495, createdAt: t1 }),
@@ -224,13 +231,10 @@ signals = [
 scan = scanner.runScannerOnce({ now: t1 });
 assert.equal(scan.ok, true);
 const vwapBlocked = scan.scan.blockedByFamilyGate.find((row) => row.strategyId === 'vwap_failed_breakout_short');
-assert.ok(vwapBlocked, 'vwap_failed_breakout_short ska family-blockeras');
-assert.equal(vwapBlocked.reason, 'strategy_family_position_open');
-assert.equal(vwapBlocked.strategyFamily, 'vwap_family');
-// Annan familj (ema_trend_family) påverkas inte.
-assert.equal(scan.candidates.length, 1);
-assert.equal(scan.candidates[0].strategyId, 'ema_breakdown');
-assert.equal(scan.candidates[0].strategyFamily, 'ema_trend_family');
+assert.equal(vwapBlocked, undefined);
+assert.equal(scan.candidates.length, 2);
+assert.equal(scan.candidates.some((row) => row.strategyId === 'vwap_failed_breakout_short'), true);
+assert.equal(scan.candidates.some((row) => row.strategyId === 'ema_breakdown'), true);
 
 // ── Stäng vwap-positionen (11:06) ────────────────────────────────────────────
 const closed = ledger.closeFuturesPaperPosition({
@@ -259,29 +263,24 @@ assert.equal(closedView.strategyCooldownDecision, 'allowed');
 assert.equal(closedView.strategyCooldownBlockReason, null);
 assert.equal(closedView.nextAllowedAt, null);
 
-// ── Scan 3a (11:10): samma strategyId 10 min efter trade → strategy cooldown ─
+// ── Scan 3a (11:10): samma strategyId 10 min efter trade → köas ändå ────────
 const t2 = '2026-07-08T11:10:00.000Z';
 signals = [
   makeSignal({ signalId: 'sig-vwap-d', strategyId: 'vwap_volume_breakout_long', symbol: 'QQQ', direction: 'long', confidence: 0.9, entry: 500, stopLoss: 497.5, takeProfit: 505, createdAt: t2 }),
 ];
 scan = scanner.runScannerOnce({ now: t2 });
-assert.equal(scan.candidates.length, 0);
-assert.equal(scan.scan.blockedByCooldown.length, 1);
-assert.equal(scan.scan.blockedByCooldown[0].strategyId, 'vwap_volume_breakout_long');
-assert.equal(scan.scan.blockedByCooldown[0].reason, 'strategy_cooldown_active');
-assert.ok(scan.scan.blockedByCooldown[0].cooldownMinutesRemaining > 0);
+assert.equal(scan.candidates.length, 1);
+assert.equal(scan.candidates[0].strategyId, 'vwap_volume_breakout_long');
+assert.equal(scan.scan.blockedByCooldown.length, 0);
 
-// ── Scan 3b (11:10): annan strategi i samma familj → family cooldown ─────────
+// ── Scan 3b (11:10): annan strategi i samma familj → köas ändå ──────────────
 signals = [
   makeSignal({ signalId: 'sig-vwap-e', strategyId: 'vwap_failed_breakout_short', symbol: 'QQQ', direction: 'short', confidence: 0.8, entry: 500, stopLoss: 502.5, takeProfit: 495, createdAt: t2 }),
 ];
 scan = scanner.runScannerOnce({ now: t2 });
-assert.equal(scan.candidates.length, 0);
-assert.equal(scan.scan.blockedByFamilyGate.length, 1);
-assert.equal(scan.scan.blockedByFamilyGate[0].strategyId, 'vwap_failed_breakout_short');
-assert.equal(scan.scan.blockedByFamilyGate[0].reason, 'strategy_family_cooldown_active');
-assert.ok(scan.scan.blockedByFamilyGate[0].familyCooldownMinutesRemaining > 0);
-assert.ok(scan.scan.blockedByFamilyGate[0].nextAllowedAt, 'family-blocket ska ange nextAllowedAt');
+assert.equal(scan.candidates.length, 1);
+assert.equal(scan.candidates[0].strategyId, 'vwap_failed_breakout_short');
+assert.equal(scan.scan.blockedByFamilyGate.length, 0);
 
 // ── Scan 4 (11:45): >30 min efter senaste family-trade → tillåts igen ────────
 const t3 = '2026-07-08T11:45:00.000Z';

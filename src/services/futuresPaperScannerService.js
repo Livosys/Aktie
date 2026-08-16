@@ -5,13 +5,9 @@
 // och skriver kö-/scanstatus. Aktiv execution är alltid IBKR Paper shadow/execution;
 // den interna futures-simulatorn är pensionerad och får inte muteras.
 //
-// Automation-regler (Futures Paper Automation Engine):
-// - strategikälla = Strategy Registry execution allowlist + paper readiness + strategy performance
-// - cooldown per strategyId (FUTURES_PAPER_STRATEGY_COOLDOWN_MINUTES om satt,
-//   annars central STRATEGY_COOLDOWN_MINUTES, default 30 — strategyTradeControlService)
-// - strategy family-exklusivitet: endast bästa kandidaten i en familj per scan,
-//   öppen position i familjen blockerar nya, family cooldown (default 30 min)
-// - scan history (FUTURES_PAPER_SCAN_HISTORY_LIMIT, default 10)
+// Production Execution Law v2:
+// Scannern är inte en trading-gate. Den normaliserar strategy-signaler till en
+// kö för IBKR Paper execution och får bara stoppa tekniska kö-/schemafel.
 
 const path = require('path');
 const storageService = require('./futuresPaperStorageService');
@@ -23,8 +19,8 @@ const futuresTradingOsSignalAdapterService = require('./futuresTradingOsSignalAd
 const futuresCanonicalSignalProviderService = require('./futuresCanonicalSignalProviderService');
 const strategyTradeControl = require('./strategyTradeControlService');
 const strategyRegistryService = require('./strategyRegistryService');
-const paperStrategyEntryContractService = require('./paperStrategyEntryContractService');
 const executionTargetReservationModule = require('./futuresPaperExecutionTargetReservationService');
+const ibPaperExecutionConfigService = require('./ibPaperExecutionConfigService');
 const { buildFuturesSessionMetadata } = require('./futuresMarketHoursService');
 const internalSimulationRetirement = require('./futuresInternalSimulationRetirementService');
 const lifecycleIdentity = require('./futuresLifecycleIdentityService');
@@ -46,11 +42,20 @@ const MAX_QUEUE_LENGTH = 10;
 const MAX_OPEN_POSITIONS = 2;
 
 const BLOCK_REASON_COOLDOWN = strategyTradeControl.BLOCK_REASON_STRATEGY_COOLDOWN;
-const FAMILY_BLOCK_REASONS = new Set([
-  strategyTradeControl.BLOCK_REASON_FAMILY_NOT_BEST,
-  strategyTradeControl.BLOCK_REASON_FAMILY_POSITION_OPEN,
-  strategyTradeControl.BLOCK_REASON_FAMILY_COOLDOWN,
-]);
+
+function buildScannerSafety(executionTarget = 'ibkr_paper') {
+  const target = ibPaperExecutionConfigService.normalizeExecutionTarget(executionTarget);
+  const safety = ibPaperExecutionConfigService.buildExecutionSafety(target);
+  return {
+    ...SAFETY,
+    ...safety,
+    actions_allowed: false,
+    can_place_orders: false,
+    broker_enabled: false,
+    paper_only: target === 'ibkr_paper',
+    source: 'futures_paper_scanner',
+  };
+}
 
 function nowIso(now = new Date()) {
   return new Date(now).toISOString();
@@ -121,6 +126,11 @@ function assertPaperOnly(input = {}) {
 }
 
 function createFuturesPaperScannerService(options = {}) {
+  const executionTarget = ibPaperExecutionConfigService.normalizeExecutionTarget(
+    options.executionTarget || ibPaperExecutionConfigService.getActiveExecutionTarget(),
+  );
+  const scannerSafety = buildScannerSafety(executionTarget);
+  const executionTargetReservedStatus = `${executionTarget}_reserved_for_shadow`;
   const storage = options.storageService || storageService.defaultFuturesPaperStorageService;
   const ledger = options.ledgerService || futuresPaperLedgerService.defaultFuturesPaperLedgerService;
   // Composite quote-källa: riktiga IB-quotes när IB_FUTURES_DATA_ENABLED är på
@@ -134,7 +144,6 @@ function createFuturesPaperScannerService(options = {}) {
     || futuresCanonicalSignalProviderService.defaultFuturesCanonicalSignalProviderService;
   const signalAdapter = options.signalAdapterService || futuresTradingOsSignalAdapterService.defaultFuturesTradingOsSignalAdapterService;
   const strategyRegistry = options.strategyRegistryService || strategyRegistryService;
-  const entryContracts = options.entryContractService || paperStrategyEntryContractService;
   const executionTargetReservations = options.executionTargetReservationService
     || executionTargetReservationModule.createFuturesPaperExecutionTargetReservationService({
       dir: path.join(storage.rootDir, 'execution-target-reservations'),
@@ -146,6 +155,11 @@ function createFuturesPaperScannerService(options = {}) {
   const archiveFile = path.join(storage.rootDir, 'candidate-archive.jsonl');
   const scanHistoryFile = path.join(storage.rootDir, 'scan-history.json');
   let autoTimer = null;
+
+  function normalizeQueueExecutionTarget(row = {}) {
+    if (row.executionTarget === 'ibkr_live') return 'ibkr_live';
+    return 'ibkr_paper';
+  }
 
   function emptyPositionsSummary() {
     return { open: [], closed: [], totalOpen: 0, totalClosed: 0, updatedAt: null };
@@ -240,10 +254,12 @@ function createFuturesPaperScannerService(options = {}) {
           status,
         };
       }
+      const rowExecutionTarget = normalizeQueueExecutionTarget(row);
       return {
         ...row,
-        executionTarget: 'ibkr_paper',
-        executionSource: 'ibkr_paper',
+        executionTarget: rowExecutionTarget,
+        executionSource: rowExecutionTarget,
+        paperOnly: rowExecutionTarget === 'ibkr_paper',
         internalSimulationRetired: true,
         status,
       };
@@ -280,7 +296,8 @@ function createFuturesPaperScannerService(options = {}) {
   }
 
   function isQueueCandidateSelectable(candidate = {}) {
-    return isQueueCandidateActive(candidate);
+    return isQueueCandidateActive(candidate)
+      && normalizeQueueExecutionTarget(candidate) === executionTarget;
   }
 
   function activeQueueCandidates(queue = []) {
@@ -392,7 +409,7 @@ function createFuturesPaperScannerService(options = {}) {
         candidate: null,
         queue,
         activeQueue: active,
-        ...SAFETY,
+        ...scannerSafety,
       };
     }
     const claimedAt = nowIso(now);
@@ -428,7 +445,7 @@ function createFuturesPaperScannerService(options = {}) {
       candidate: claimedCandidate,
       queue: nextQueue,
       activeQueue: activeQueueCandidates(nextQueue),
-      ...SAFETY,
+      ...scannerSafety,
     };
   }
 
@@ -442,14 +459,14 @@ function createFuturesPaperScannerService(options = {}) {
   } = {}) {
     const key = candidateKey(candidate || { candidateId });
     if (!key) {
-      return { ok: false, blocker: 'candidate_id_missing', ...SAFETY };
+      return { ok: false, blocker: 'candidate_id_missing', ...scannerSafety };
     }
     const rawQueue = readQueue();
     const queue = rawQueue.slice();
     const index = queue.findIndex((row) => candidateKey(row) === key);
     const queueCandidate = index >= 0 ? queue[index] : candidate || null;
     if (!queueCandidate) {
-      return { ok: false, blocker: 'candidate_not_found', candidateId: key, ...SAFETY };
+      return { ok: false, blocker: 'candidate_not_found', candidateId: key, ...scannerSafety };
     }
     const completedAt = nowIso(now);
     const completedCandidate = {
@@ -490,7 +507,7 @@ function createFuturesPaperScannerService(options = {}) {
       completed: true,
       candidate: completedCandidate,
       queue,
-      ...SAFETY,
+      ...scannerSafety,
     };
   }
 
@@ -524,7 +541,7 @@ function createFuturesPaperScannerService(options = {}) {
       timestamp,
       sessionMetadata,
       ...payload,
-      ...SAFETY,
+      ...scannerSafety,
     });
   }
 
@@ -760,9 +777,10 @@ function createFuturesPaperScannerService(options = {}) {
     const signalTimestamp = candidate.signalTimestamp || candidate.timestamp || candidate.createdAt || null;
     const nextCandidate = {
       ...candidate,
-      executionTarget: 'ibkr_paper',
-      executionSource: 'ibkr_paper',
-      executionTargetStatus: 'ibkr_paper_reserved_for_shadow',
+      executionTarget,
+      executionSource: executionTarget,
+      executionTargetStatus: executionTargetReservedStatus,
+      paperOnly: executionTarget === 'ibkr_paper',
       orderSubmissionEnabled: false,
       actualSubmit: false,
       shadowMode: true,
@@ -773,10 +791,10 @@ function createFuturesPaperScannerService(options = {}) {
       lifecycleId: nextCandidate.lifecycleId || null,
       candidateId: nextCandidate.candidateId,
       signalId: nextCandidate.signalId || nextCandidate.originalSignalId || null,
-      executionTarget: 'ibkr_paper',
+      executionTarget,
       strategyId: nextCandidate.strategyId,
       signalTimestamp,
-      status: 'ibkr_paper_reserved_for_shadow',
+      status: executionTargetReservedStatus,
       now,
       metadata: {
         symbol: nextCandidate.symbol || nextCandidate.futuresSymbol || null,
@@ -796,7 +814,7 @@ function createFuturesPaperScannerService(options = {}) {
         executionTargetReservation: {
           reserved: reservation.reserved === true,
           duplicate: reservation.duplicate === true,
-          status: reservation.record?.status || 'ibkr_paper_reserved_for_shadow',
+          status: reservation.record?.status || executionTargetReservedStatus,
           reservedAt: reservation.record?.reservedAt || null,
           updatedAt: reservation.record?.updatedAt || null,
         },
@@ -818,8 +836,6 @@ function createFuturesPaperScannerService(options = {}) {
       feed,
     });
     const signalInputs = Array.isArray(signalInputResult?.signalInputs) ? signalInputResult.signalInputs : [];
-    const { allowlistError } = getApprovedStrategySource();
-    const positionsSummary = getActivePositionsSummary();
     const rawQueue = readQueue();
     const queuePrune = pruneAndArchiveQueue(rawQueue, {
       now,
@@ -843,11 +859,6 @@ function createFuturesPaperScannerService(options = {}) {
     const signalsSkippedNoRisk = [];
     const signalsSkippedOther = [];
 
-    const busySymbols = new Set([
-      ...(positionsSummary.open || []).map((row) => String(row.symbol || row.root || '').toUpperCase().slice(0, 3)),
-      ...queue.map((row) => String(row.symbol || '').toUpperCase()),
-    ]);
-
     const adapterResult = signalAdapter.getFuturesCandidates({
       now,
       quotes: feed.quotes || [],
@@ -864,16 +875,9 @@ function createFuturesPaperScannerService(options = {}) {
       target.push(row);
     }
 
-    // Family-exklusivitet: rangordna kandidaterna inom sina familjer så att
-    // endast bästa kandidaten (högst confidence) i varje familj kan gå vidare.
-    const familyRanks = strategyTradeControl.rankFamilyCandidates(canonicalCandidates, {
-      familyOf: familyOfCandidate,
-    });
-
     for (const candidate of canonicalCandidates) {
       const strategyId = String(candidate.strategyId || '');
-      const familyMeta = familyRanks.get(candidate)
-        || { strategyFamily: familyOfCandidate(candidate), familyRank: null, isBestInFamily: true };
+      const strategyFamily = candidate.strategyFamily || candidate.signalFamily || null;
       const symbol = String(candidate.futuresSymbol || candidate.symbol || '').toUpperCase().slice(0, 3);
       if (!strategyId) {
         skippedStrategies.push({ strategyId: null, signalId: candidate.signalId || null, reason: 'missing_strategy_id' });
@@ -883,43 +887,12 @@ function createFuturesPaperScannerService(options = {}) {
         skippedStrategies.push({ strategyId, signalId: candidate.signalId || null, reason: 'unsupported_futures_symbol' });
         continue;
       }
-      const executionAllowlist = typeof strategyRegistry.canExecuteStrategy === 'function'
-        ? strategyRegistry.canExecuteStrategy(strategyId)
-        : { allowed: false, blockedReason: 'strategy_registry_execution_allowlist_unavailable' };
-      if (!executionAllowlist.allowed) {
-        skippedStrategies.push({
-          strategyId,
-          signalId: candidate.signalId || null,
-          reason: executionAllowlist.blockedReason || 'strategy_not_in_execution_allowlist',
-          registryStatus: executionAllowlist.status || null,
-          registryEnabled: executionAllowlist.enabled ?? null,
-        });
-        continue;
-      }
-      // Kön har bara en plats per rot (busySymbols nedan) och orchestratorn läser
-      // alltid köns första kandidat. En strategi utan entry contract kan aldrig
-      // passera orchestratorns kontraktsgrind, så om den får ta platsen svälts
-      // varje kontrakterad strategi ut. Avvisa den före reservationen i stället.
-      if (entryContracts.entryContractsEnabled() && !entryContracts.getEntryContract(strategyId)) {
-        skippedStrategies.push({
-          strategyId,
-          signalId: candidate.signalId || null,
-          reason: 'entry_contract_missing',
-        });
-        continue;
-      }
-      if (busySymbols.has(symbol)) {
-        skippedStrategies.push({ strategyId, signalId: candidate.signalId || null, reason: 'futures_symbol_busy', symbol });
-        continue;
-      }
       const hasQueuedCandidate = queue.some((row) => (
         (candidate.signalId && row.signalId === candidate.signalId)
         || (candidate.candidateId && row.candidateId === candidate.candidateId)
-        || (row.strategyId === strategyId && String(row.symbol || '').toUpperCase() === symbol)
       )) || added.some((row) => (
         (candidate.signalId && row.signalId === candidate.signalId)
         || (candidate.candidateId && row.candidateId === candidate.candidateId)
-        || (row.strategyId === strategyId && String(row.symbol || '').toUpperCase() === symbol)
       ));
       if (hasQueuedCandidate) {
         skippedStrategies.push({ strategyId, signalId: candidate.signalId || null, reason: 'candidate_already_queued' });
@@ -930,64 +903,11 @@ function createFuturesPaperScannerService(options = {}) {
         continue;
       }
 
-      // Family-exklusivitet gäller även mot kandidater som redan står i kön
-      // (från tidigare scans) — endast en kandidat per familj åt gången.
-      if (config.familyExclusiveEnabled && familyMeta.strategyFamily) {
-        const familyAlreadyQueued = [...queue, ...added].some((row) => (
-          (row.strategyFamily || familyOfCandidate(row)) === familyMeta.strategyFamily
-        ));
-        if (familyAlreadyQueued) {
-          blockedByFamilyGate.push({
-            strategyId,
-            signalId: candidate.signalId || null,
-            reason: strategyTradeControl.BLOCK_REASON_FAMILY_NOT_BEST,
-            strategyFamily: familyMeta.strategyFamily,
-            familyRank: familyMeta.familyRank,
-            detail: 'family_candidate_already_queued',
-          });
-          continue;
-        }
-      }
-
-      const gate = evaluateStrategyGate(strategyId, {
-        now,
-        positionsSummary,
-        strategyFamily: familyMeta.strategyFamily,
-        familyRank: familyMeta.familyRank,
-      });
-      if (gate.blockReason === BLOCK_REASON_COOLDOWN) {
-        blockedByCooldown.push({
-          strategyId,
-          signalId: candidate.signalId || null,
-          reason: BLOCK_REASON_COOLDOWN,
-          lastTradeAt: gate.lastTradeAt,
-          nextAllowedAt: gate.nextAllowedAt,
-          cooldownMinutesRemaining: gate.cooldownMinutesRemaining,
-        });
-        continue;
-      }
-      if (FAMILY_BLOCK_REASONS.has(gate.blockReason)) {
-        blockedByFamilyGate.push({
-          strategyId,
-          signalId: candidate.signalId || null,
-          reason: gate.blockReason,
-          strategyFamily: gate.strategyFamily,
-          familyRank: gate.familyRank,
-          familyOpenTrades: gate.familyOpenTrades,
-          familyLastTradeAt: gate.familyLastTradeAt,
-          nextAllowedAt: gate.familyNextAllowedAt,
-          familyCooldownMinutesRemaining: gate.familyCooldownMinutesRemaining,
-        });
-        continue;
-      }
-
-      // Uppgift 5-metadata: kandidaten bär family/cooldown-beslutet vidare
-      // in i kön, simuleringen och ledger-positionen.
-      candidate.strategyFamily = familyMeta.strategyFamily || null;
-      candidate.familyRank = familyMeta.familyRank ?? null;
-      candidate.familyGateDecision = gate.familyGateDecision;
+      candidate.strategyFamily = strategyFamily || null;
+      candidate.familyRank = candidate.familyRank ?? null;
+      candidate.familyGateDecision = candidate.familyGateDecision || 'not_evaluated';
       candidate.familyBlockReason = null;
-      candidate.strategyCooldownDecision = gate.strategyCooldownDecision || 'allowed';
+      candidate.strategyCooldownDecision = candidate.strategyCooldownDecision || 'not_evaluated';
       candidate.strategyCooldownBlockReason = null;
       candidate.nextAllowedAt = null;
       if (!candidate.sessionMetadata) {
@@ -1010,13 +930,12 @@ function createFuturesPaperScannerService(options = {}) {
           signalId: candidate.signalId || null,
           candidateId: candidate.candidateId || null,
           reason: reservation.reservation?.blocker || reservation.reservation?.error || 'execution_target_reservation_failed',
-          executionTarget: 'ibkr_paper',
+          executionTarget,
         });
         continue;
       }
 
       added.push(reservation.candidate);
-      busySymbols.add(symbol);
     }
 
     const nextQueue = writeQueue([...queue, ...added]);
@@ -1051,7 +970,7 @@ function createFuturesPaperScannerService(options = {}) {
       staleQueuedCandidateDetails: staleQueuedCandidates.slice(0, 10),
       dataSource: feed.feed.source,
       simulatedData: feed.feed.simulated === true,
-      allowlistError: allowlistError || null,
+      allowlistError: null,
       signalInputsRead: adapterResult?.stats?.signalInputsRead || 0,
       readerSignalsRead: signalInputResult?.stats?.readerSignalsRead || 0,
       providerSignalsRead: signalInputResult?.stats?.providerSignalsRead || 0,
@@ -1060,17 +979,11 @@ function createFuturesPaperScannerService(options = {}) {
       signalsSkippedNoMapping: signalsSkippedNoMapping.length,
       signalsSkippedNoRisk: signalsSkippedNoRisk.length,
       signalsSkippedOther: signalsSkippedOther.length,
-      // Fullständig uppdelning INUTI signalsSkippedOther, inte ett komplement
-      // till den. Fältet ovan behåller exakt sin gamla betydelse — allt som
-      // varken saknar mapping eller risk — så befintliga konsumenter är
-      // opåverkade. adaptSignal kan bara skippa på fyra orsaker, och två av dem
-      // (no_safe_futures_mapping, missing_trading_os_risk) har egna hinkar, så
-      // de tre nedan täcker other-hinken exakt:
-      //   signalsSkippedOther === NoDirection + DirectionVetoed + NoEntryPrice
-      // Testet asserterar likheten, så en ny orsakskod i adaptern faller ut som
-      // ett rött test i stället för som en tyst lucka i telemetrin.
+      // Uppdelning INUTI signalsSkippedOther, inte ett komplement till den.
+      // DirectionVetoed behålls som legacy-fält för dashboards men produceras
+      // inte längre av adaptern; bias får inte vetoa strategy-riktning.
       signalsSkippedNoDirection: countSkipReason(signalsSkippedOther, 'missing_signal_direction'),
-      signalsSkippedDirectionVetoed: countSkipReason(signalsSkippedOther, 'direction_vetoed_by_bias'),
+      signalsSkippedDirectionVetoed: 0,
       signalsSkippedNoEntryPrice: countSkipReason(signalsSkippedOther, 'no_futures_entry_price'),
       signalProviderResults: signalInputResult?.providerResults || {},
       canonicalPipelineCandidates: canonicalPipelineCandidates.length,
@@ -1080,7 +993,7 @@ function createFuturesPaperScannerService(options = {}) {
         other: signalsSkippedOther.slice(0, 10),
       },
       status: 'completed',
-      executionTarget: 'ibkr_paper',
+      executionTarget,
       internalSimulationRetired: true,
       summary: `${adapterResult?.stats?.signalInputsRead || 0} canonical signal inputs lästa, `
         + `${canonicalPipelineCandidates.length} futures-kandidater köade, `
@@ -1092,7 +1005,7 @@ function createFuturesPaperScannerService(options = {}) {
         familyCooldownMinutes: config.familyCooldownMinutes,
         familyExclusiveEnabled: config.familyExclusiveEnabled,
       },
-      ...SAFETY,
+      ...scannerSafety,
     };
     appendScanHistory(scanRecord);
     writeScannerState({ lastScanAt: startedAt, lastScanSummary: scanRecord });
@@ -1106,7 +1019,7 @@ function createFuturesPaperScannerService(options = {}) {
       scan: scanRecord,
       candidates: added,
       queue: nextQueue,
-      ...SAFETY,
+      ...scannerSafety,
     };
   }
 
@@ -1117,7 +1030,7 @@ function createFuturesPaperScannerService(options = {}) {
       generatedAt: nowIso(),
       candidates: queue,
       totalCandidates: queue.length,
-      ...SAFETY,
+      ...scannerSafety,
     };
   }
 
@@ -1307,7 +1220,7 @@ function createFuturesPaperScannerService(options = {}) {
       allowlistError: allowlistError || null,
       config: getEngineConfig(),
       strategies: rows,
-      ...SAFETY,
+      ...scannerSafety,
     };
   }
 
@@ -1319,7 +1232,7 @@ function createFuturesPaperScannerService(options = {}) {
       totalScans: scans.length,
       limit: getEngineConfig().scanHistoryLimit,
       scans,
-      ...SAFETY,
+      ...scannerSafety,
     };
   }
 
@@ -1386,13 +1299,13 @@ function createFuturesPaperScannerService(options = {}) {
       quotes: feed.quotes,
       engineConfig: getEngineConfig(),
       executionTargetModel: {
-        onlyActiveExecutionTarget: 'ibkr_paper',
+        onlyActiveExecutionTarget: executionTarget,
         internalSimulationRetired: true,
         orderSubmissionEnabled: false,
         shadowMode: true,
       },
       statusReasons: buildStatusReasons({ now }),
-      ...SAFETY,
+      ...scannerSafety,
     };
   }
 
@@ -1401,7 +1314,7 @@ function createFuturesPaperScannerService(options = {}) {
     storageService.writeJson(stateFile, createDefaultScannerState());
     storageService.writeJson(scanHistoryFile, { scans: [], updatedAt: nowIso() });
     writeQueue([]);
-    return { ok: true, ...SAFETY };
+    return { ok: true, ...scannerSafety };
   }
 
   // Återuppta auto-simulation efter restart om den var påslagen (paper-only).

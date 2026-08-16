@@ -624,6 +624,39 @@ assert.equal(accountUpdatesPositionRuntime.openPositions[0].localSymbol, 'MNQU6'
 assert.equal(accountUpdatesPositionRuntime.openPositions[0].quantity, 1);
 assert.equal(accountUpdatesPositionRuntime.openPositions[0].signedQuantity, 1);
 
+const flatAccountUpdatesPositionRuntime = svc.buildFuturesPaperDeskRuntime(minimalRuntimeOptions({
+  ibAccount: {
+    ok: true,
+    status: 'ok',
+    generatedAt: TEST_NOW,
+    account: {
+      accountIdMasked: 'DU***596',
+      classification: 'paper',
+      currency: 'SEK',
+      netLiquidation: 11063846.43,
+    },
+    portfolioPositions: [{
+      accountMasked: 'DU***596',
+      accountClassification: 'paper',
+      conId: 793356225,
+      symbol: 'MNQ',
+      localSymbol: 'MNQU6',
+      secType: 'FUT',
+      position: 0,
+      marketPrice: 29907,
+      marketValue: 0,
+      avgCost: 0,
+      unrealizedPnl: 0,
+      realizedPnl: -1.72,
+      source: 'ibkr_paper_account_updates',
+    }],
+  },
+}));
+assert.equal(flatAccountUpdatesPositionRuntime.positions.totalOpen, 0);
+assert.equal(flatAccountUpdatesPositionRuntime.openPositions.length, 0);
+assert.equal(flatAccountUpdatesPositionRuntime.brokerPositions.length, 0);
+assert.equal(flatAccountUpdatesPositionRuntime.broker.counts.positions, 0);
+
 const staleAccountRuntime = svc.buildFuturesPaperDeskRuntime(minimalRuntimeOptions({
   ibAccount: {
     ok: true,
@@ -820,6 +853,126 @@ assert.equal(missingCommissionAndRealizedPnlRuntime.executions.count, 1);
 assert.equal(missingCommissionAndRealizedPnlRuntime.closedTrades.length, 0);
 assert.equal(missingCommissionAndRealizedPnlRuntime.recentClosedTrades.length, 0);
 assert.equal(missingCommissionAndRealizedPnlRuntime.performance.strategy.length, 0);
+
+const intentClosedTradeRuntime = svc.buildFuturesPaperDeskRuntime(minimalRuntimeOptions({
+  brokerReconciliation: {
+    ...EMPTY_BROKER_RECONCILIATION,
+    ok: true,
+    status: 'ok',
+    degraded: false,
+    generatedAt: '2026-07-06T10:08:00.000Z',
+    counts: { positions: 0, openOrders: 0, executions: 0, orderStatuses: 0, intents: 1 },
+    intents: [{
+      status: 'filled',
+      strategyId: 'trend_continuation',
+      tradeId: 'trade-intent-1',
+      lifecycleId: 'life-intent-1',
+      signalId: 'signal-intent-1',
+      candidateId: 'candidate-intent-1',
+      intentId: 'intent-intent-1',
+      idempotencyKey: 'intent-intent-1',
+      executionId: 'execution-intent-1',
+      root: 'MNQ',
+      localSymbol: 'MNQU6',
+      direction: 'long',
+      quantity: 1,
+      entryFilledPrice: 20000,
+      filledPrice: 20012.5,
+      entryFilledAt: '2026-07-06T10:01:00.000Z',
+      filledAt: '2026-07-06T10:08:00.000Z',
+      filledLeg: 'takeProfit',
+      entryExecId: 'entry-exec-intent-1',
+      filledExecId: 'exit-exec-intent-1',
+      entryFilledOrderId: 2100,
+      filledOrderId: 2101,
+      ibOrderId: 2100,
+      entryCommission: 0.61,
+      filledCommission: 0.61,
+      filledRealizedPNL: 61.28,
+    }],
+    executions: [],
+    commissions: [],
+    orderStatuses: [],
+    discrepancies: [],
+  },
+}));
+assert.equal(intentClosedTradeRuntime.closedTrades.length, 1);
+assert.equal(intentClosedTradeRuntime.recentClosedTrades.length, 1);
+assert.equal(intentClosedTradeRuntime.closedTrades[0].source, 'ibkr_paper_intent');
+assert.equal(intentClosedTradeRuntime.closedTrades[0].tradeId, 'trade-intent-1');
+assert.equal(intentClosedTradeRuntime.closedTrades[0].lifecycleId, 'life-intent-1');
+assert.equal(intentClosedTradeRuntime.closedTrades[0].signalId, 'signal-intent-1');
+assert.equal(intentClosedTradeRuntime.closedTrades[0].candidateId, 'candidate-intent-1');
+assert.equal(intentClosedTradeRuntime.closedTrades[0].intentId, 'intent-intent-1');
+assert.equal(intentClosedTradeRuntime.closedTrades[0].executionId, 'execution-intent-1');
+assert.equal(intentClosedTradeRuntime.closedTrades[0].brokerExecutionId, 'exit-exec-intent-1');
+assert.equal(intentClosedTradeRuntime.closedTrades[0].brokerOrderId, 2101);
+assert.equal(intentClosedTradeRuntime.closedTrades[0].entry, 20000);
+assert.equal(intentClosedTradeRuntime.closedTrades[0].exit, 20012.5);
+assert.equal(intentClosedTradeRuntime.closedTrades[0].result, 'WIN');
+assert.equal(intentClosedTradeRuntime.closedTrades[0].commission, 1.22);
+assert.equal(intentClosedTradeRuntime.performance.strategy[0].strategyId, 'trend_continuation');
+assert.equal(intentClosedTradeRuntime.performance.strategy[0].closedTrades, 1);
+assert.equal(intentClosedTradeRuntime.performance.strategy[0].netPnl, 61.28);
+
+const liveIntentFilteringRuntime = svc.buildFuturesPaperDeskRuntime(minimalRuntimeOptions({
+  executionTarget: 'ibkr_live',
+  brokerReconciliation: {
+    ...EMPTY_BROKER_RECONCILIATION,
+    executionTarget: 'ibkr_live',
+    ok: true,
+    status: 'ok',
+    degraded: false,
+    generatedAt: '2026-07-06T10:09:00.000Z',
+    counts: { positions: 0, openOrders: 0, executions: 0, orderStatuses: 0, intents: 2 },
+    intents: [
+      {
+        executionTarget: 'ibkr_paper',
+        status: 'filled',
+        strategyId: 'trend_continuation',
+        tradeId: 'paper-trade-filtered',
+        executionId: 'paper-execution-filtered',
+        orderRef: 'TOS-PAPER-paper-execution-filtered-entry',
+        root: 'MNQ',
+        entryFilledPrice: 20000,
+        filledPrice: 20010,
+        filledAt: '2026-07-06T10:08:00.000Z',
+        filledExecId: 'paper-exit-filtered',
+        filledRealizedPNL: 99,
+      },
+      {
+        executionTarget: 'ibkr_live',
+        status: 'filled',
+        strategyId: 'trend_continuation',
+        tradeId: 'live-trade-kept',
+        executionId: 'live-execution-kept',
+        orderRef: 'TOS-LIVE-live-execution-kept-entry',
+        root: 'MNQ',
+        entryFilledPrice: 20000,
+        filledPrice: 20012.5,
+        filledAt: '2026-07-06T10:09:00.000Z',
+        filledExecId: 'live-exit-kept',
+        entryCommission: 0.61,
+        filledCommission: 0.61,
+        filledRealizedPNL: 61.28,
+      },
+    ],
+    executions: [],
+    commissions: [],
+    orderStatuses: [],
+    discrepancies: [],
+  },
+}));
+assert.equal(liveIntentFilteringRuntime.executionTarget, 'ibkr_live');
+assert.equal(liveIntentFilteringRuntime.environment, 'live');
+assert.equal(liveIntentFilteringRuntime.desk.paperOnly, false);
+assert.equal(liveIntentFilteringRuntime.closedTrades.length, 1);
+assert.equal(liveIntentFilteringRuntime.closedTrades[0].tradeId, 'live-trade-kept');
+assert.equal(liveIntentFilteringRuntime.closedTrades[0].source, 'ibkr_live_intent');
+assert.equal(liveIntentFilteringRuntime.brokerReconciliation.intents.length, 1);
+assert.equal(liveIntentFilteringRuntime.brokerReconciliation.intents[0].executionTarget, 'ibkr_live');
+assert.equal(liveIntentFilteringRuntime.performance.context.executionTarget, 'ibkr_live');
+assert.equal(liveIntentFilteringRuntime.performance.strategy[0].netPnl, 61.28);
 
 const originalGetCachedSummary = accountSummaryModule.defaultIbPaperAccountSummaryService.getCachedSummary;
 const originalGetSummary = accountSummaryModule.defaultIbPaperAccountSummaryService.getSummary;

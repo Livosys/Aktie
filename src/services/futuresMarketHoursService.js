@@ -247,7 +247,7 @@ function getWeekendEntryCutoffState(now = new Date(), options = {}) {
     cutoffMinutes,
     minutesUntilWeeklyClose,
     entryBlocked,
-    reason: entryBlocked ? 'weekend_entry_cutoff' : null,
+    reason: null,
     exchangeTimezone: CME_EQUITY_INDEX_TIMEZONE,
     exchangeLocalTime: local.exchangeLocalTime,
     weeklyCloseLocalTime: '16:00',
