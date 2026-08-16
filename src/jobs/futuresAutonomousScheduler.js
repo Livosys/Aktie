@@ -13,13 +13,13 @@
  *        completes and persists candidates.json BEFORE the consumer runs.
  *
  *   2) orchestrator.buildShadowExecution({ actualSubmit: true })  (consumer, ASYNC)
- *        candidate -> approval -> entry contract -> broker risk -> execution
- *        guard -> execution-target reservation -> intent idempotency ->
- *        adapter.submitPaperOrder() -> IBKR placeOrder.
+ *        candidate -> broker risk -> execution guard -> execution-target
+ *        reservation -> intent idempotency -> adapter.submitPaperOrder()
+ *        -> IBKR placeOrder.
  *
- * ALL trading decisions, safety gates, dedup and idempotency stay in the
- * existing services. This scheduler CANNOT bypass any of them:
- *   - Approval / entry-contract / broker-risk / 24-check execution guard
+ * ALL technical safety gates, dedup and idempotency stay in the existing
+ * services. This scheduler CANNOT bypass any of them:
+ *   - Broker-risk / execution guard
  *   - Execution-target reservation (candidate-level atomic lock)
  *   - Intent idempotency (order-level atomic lock)
  *   - Kill switch, paper-only, shadow-mode and submission flags
@@ -49,6 +49,8 @@ const LOG_PREFIX = '[FuturesAutonomousScheduler]';
 // schedulers' safety posture.
 const SAFETY = Object.freeze({
   mode: 'ibkr_paper',
+  executionTarget: 'ibkr_paper',
+  environment: 'paper',
   paperOnly: true,
   live_trading_enabled: false,
   live_broker_enabled: false,
@@ -56,6 +58,15 @@ const SAFETY = Object.freeze({
   can_place_orders: false, // this scheduler never places orders itself; the adapter does, behind the guard
   source: 'futures_autonomous_scheduler',
 });
+
+const executionTarget = configService.getActiveExecutionTarget();
+const environment = configService.getExpectedEnvironment(executionTarget);
+const safety = {
+  ...SAFETY,
+  ...configService.buildExecutionSafety(executionTarget),
+  can_place_orders: false, // this scheduler never places orders itself; the adapter does, behind the guard
+  source: 'futures_autonomous_scheduler',
+};
 
 function envBool(name, fallback = false) {
   const raw = process.env[name];
@@ -91,7 +102,7 @@ const loggedFills = new Set(); // dedup for ORDER_FILLED logs
 function logEvent(event, detail = {}) {
   // One structured JSON line per event so future debugging is trivial to grep.
   try {
-    console.log(`${LOG_PREFIX} ${event} ${JSON.stringify({ event, at: new Date().toISOString(), ...detail })}`);
+    console.log(`${LOG_PREFIX} ${event} ${JSON.stringify({ event, at: new Date().toISOString(), executionTarget, environment, ...detail })}`);
   } catch (_) {
     console.log(`${LOG_PREFIX} ${event}`);
   }
@@ -100,10 +111,16 @@ function logEvent(event, detail = {}) {
 // Read-only readiness gate built entirely from the EXISTING execution status
 // and config. Returns { ready, skipEvent, detail, session } — never mutates.
 async function evaluateReadiness(now) {
-  const flags = configService.getFlags();
+  const flags = configService.getFlags({ executionTarget });
   const killSwitch = configService.readKillSwitch();
   const session = marketHours.getCmeEquityIndexFuturesSessionState(now);
   const status = await orchestrator.buildExecutionStatus();
+  const targetAccountVerified = executionTarget === 'ibkr_live'
+    ? status.liveAccountVerified === true
+    : status.paperAccountVerified === true;
+  const wrongAccountDetected = executionTarget === 'ibkr_live'
+    ? status.paperAccountDetected === true
+    : status.liveAccountDetected === true;
 
   // (1) Execution runtime READY  (7) runtime healthy
   if (status.runtimeState !== 'READY') {
@@ -113,9 +130,22 @@ async function evaluateReadiness(now) {
   if (status.executionConnected !== true || status.nextValidIdReady !== true) {
     return { ready: false, skipEvent: 'IB_DISCONNECTED', detail: { executionConnected: status.executionConnected === true, nextValidIdReady: status.nextValidIdReady === true }, session, status };
   }
-  // (3) Paper account verified + live account blocked
-  if (status.paperAccountVerified !== true || status.liveAccountDetected === true) {
-    return { ready: false, skipEvent: 'RUNTIME_NOT_READY', detail: { reason: 'paper_account_not_verified', paperAccountVerified: status.paperAccountVerified === true, liveAccountDetected: status.liveAccountDetected === true }, session, status };
+  // (3) Target account verified + opposite account blocked.
+  if (targetAccountVerified !== true || wrongAccountDetected === true) {
+    return {
+      ready: false,
+      skipEvent: 'RUNTIME_NOT_READY',
+      detail: {
+        reason: executionTarget === 'ibkr_live' ? 'live_account_not_verified' : 'paper_account_not_verified',
+        executionTarget,
+        paperAccountVerified: status.paperAccountVerified === true,
+        liveAccountVerified: status.liveAccountVerified === true,
+        paperAccountDetected: status.paperAccountDetected === true,
+        liveAccountDetected: status.liveAccountDetected === true,
+      },
+      session,
+      status,
+    };
   }
   // (4) CME session open
   if (session.isMarketOpen !== true || session.closedReason != null) {
@@ -128,7 +158,17 @@ async function evaluateReadiness(now) {
   // (6) Submission flags valid — cannot submit while shadow mode is active or
   //     while execution/submission is disabled.
   if (flags.executionEnabled !== true) {
-    return { ready: false, skipEvent: 'SUBMISSION_DISABLED', detail: { reason: 'ibkr_paper_execution_disabled', orderSubmissionMode: flags.orderSubmissionMode }, session, status };
+    return {
+      ready: false,
+      skipEvent: 'SUBMISSION_DISABLED',
+      detail: {
+        reason: executionTarget === 'ibkr_live' ? 'ibkr_live_execution_disabled' : 'ibkr_paper_execution_disabled',
+        executionTarget,
+        orderSubmissionMode: flags.orderSubmissionMode,
+      },
+      session,
+      status,
+    };
   }
   if (flags.shadowMode === true) {
     return { ready: false, skipEvent: 'SHADOW_MODE_ACTIVE', detail: { orderSubmissionMode: flags.orderSubmissionMode }, session, status };
@@ -137,7 +177,7 @@ async function evaluateReadiness(now) {
     return { ready: false, skipEvent: 'SUBMISSION_DISABLED', detail: { reason: 'order_submission_disabled', orderSubmissionMode: flags.orderSubmissionMode }, session, status };
   }
 
-  return { ready: true, skipEvent: null, detail: { sessionId: session.sessionId, orderSubmissionMode: flags.orderSubmissionMode }, session, status };
+  return { ready: true, skipEvent: null, detail: { sessionId: session.sessionId, executionTarget, orderSubmissionMode: flags.orderSubmissionMode }, session, status };
 }
 
 // Observability only: derive fill/position lifecycle from the broker snapshot
@@ -177,11 +217,11 @@ function observeLifecycle(status) {
 async function tick() {
   if (running) {
     logEvent('TICK_SKIPPED', { skipReason: 'already_running' });
-    return { ok: true, ran: false, skipped: true, skipReason: 'already_running', submitted: false, ...SAFETY };
+    return { ok: true, ran: false, skipped: true, skipReason: 'already_running', submitted: false, ...safety };
   }
   running = true; // set BEFORE any await so a synchronously-launched overlapping tick is ignored
   const startedAtMs = Date.now();
-  logEvent('TICK_STARTED', {});
+  logEvent('TICK_STARTED', { executionTarget, environment });
   try {
     const now = new Date();
 
@@ -190,7 +230,7 @@ async function tick() {
     if (!readiness.ready) {
       logEvent(readiness.skipEvent, readiness.detail);
       logEvent('TICK_FINISHED', { skipped: true, skipReason: readiness.skipEvent, durationMs: Date.now() - startedAtMs });
-      return { ok: true, ran: false, skipped: true, skipReason: readiness.skipEvent, submitted: false, ...SAFETY };
+      return { ok: true, ran: false, skipped: true, skipReason: readiness.skipEvent, submitted: false, ...safety };
     }
 
     // (3) PRODUCER — synchronous; completes and persists the queue before we await the consumer.
@@ -201,7 +241,7 @@ async function tick() {
     const claim = scanner.claimCandidateForIbkrPaper({ now, claimedBy: 'futures_autonomous_scheduler' });
     const claimedCandidate = claim?.candidate || null;
 
-    // (5) CONSUMER — drives the existing approval/risk/guard/reservation/intent/adapter chain.
+    // (5) CONSUMER — drives the existing risk/guard/reservation/intent/adapter chain.
     let result = null;
     let executionError = null;
     if (claimedCandidate) {
@@ -234,6 +274,7 @@ async function tick() {
       logEvent('NO_CANDIDATE', { candidatesCreated });
     } else if (submitted) {
       logEvent('ORDER_SUBMITTED', {
+        executionTarget,
         strategyId: claimedCandidate?.strategyId || null,
         root: claimedCandidate?.root || null,
         parentOrderId: result?.submitResult?.parentOrderId ?? null,
@@ -250,11 +291,11 @@ async function tick() {
     observeLifecycle(await orchestrator.buildExecutionStatus({ force: true }));
 
     logEvent('TICK_FINISHED', { skipped: false, candidatesCreated, submitted, blockedReason, durationMs: Date.now() - startedAtMs });
-    return { ok: true, ran: true, skipped: false, submitted, blockedReason, candidatesCreated, ...SAFETY };
+    return { ok: true, ran: true, skipped: false, submitted, blockedReason, candidatesCreated, ...safety };
   } catch (err) {
     logEvent('TICK_ERROR', { error: err && err.message ? err.message : String(err) });
     logEvent('TICK_FINISHED', { skipped: false, error: true, durationMs: Date.now() - startedAtMs });
-    return { ok: false, ran: true, skipped: false, submitted: false, error: err && err.message ? err.message : String(err), ...SAFETY };
+    return { ok: false, ran: true, skipped: false, submitted: false, error: err && err.message ? err.message : String(err), ...safety };
   } finally {
     running = false;
   }

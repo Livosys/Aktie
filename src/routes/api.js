@@ -611,7 +611,7 @@ router.get('/status/replay', (req, res) => {
 });
 
 // ── Read-only Backend Status: Paper Trading (Låtsashandel) ───────────────────
-// Reads finished paper-trade results only (data/paper-trading/trades.jsonl). It
+// Reads finished IBKR Paper trade results only (ibkr-execution intent-index). It
 // never starts a paper trade, never places orders and never enables a broker.
 // For the live agent controls see /paper-trading/* — this is read-only status.
 router.get('/status/paper-trading', (req, res) => {
@@ -3785,11 +3785,14 @@ router.get('/futures-paper/positions', async (req, res) => {
   try {
     const status = await ibPaperExecutionOrchestratorService.defaultIbPaperExecutionOrchestratorService.buildExecutionStatus();
     const positions = Array.isArray(status.brokerPositions) ? status.brokerPositions : [];
+    const executionTarget = status.executionTarget || 'ibkr_paper';
     res.json({
+      ...ibPaperExecutionOrchestratorService.SAFETY,
+      ...status,
       ok: true,
       generatedAt: status.generatedAt,
-      source: 'ibkr_paper',
-      executionTarget: 'ibkr_paper',
+      source: executionTarget,
+      executionTarget,
       noInternalSimulationFallback: true,
       positions: {
         open: positions,
@@ -3801,7 +3804,6 @@ router.get('/futures-paper/positions', async (req, res) => {
       openPositions: positions,
       closedPositions: [],
       reconciliation: status.reconciliation || null,
-      ...ibPaperExecutionOrchestratorService.SAFETY,
     });
   } catch (err) {
     res.status(500).json({ ok: false, error: err.message, source: 'ibkr_paper', ...ibPaperExecutionOrchestratorService.SAFETY });
@@ -3824,18 +3826,27 @@ router.get('/futures-paper/trades', async (req, res) => {
   try {
     const status = await ibPaperExecutionOrchestratorService.defaultIbPaperExecutionOrchestratorService.buildExecutionStatus();
     const executions = Array.isArray(status.brokerExecutions) ? status.brokerExecutions : [];
+    const executionTarget = status.executionTarget || 'ibkr_paper';
+    const intents = futuresPaperStrategyPerformanceService.readExecutionIntents({
+      intentLimit: req.query.limit || req.query.n,
+      executionTarget,
+    });
+    const intentTrades = futuresPaperDeskService.normalizeFilledIntentTrades(intents, { executionTarget });
+    const trades = intentTrades.length ? intentTrades : executions;
     res.json({
+      ...ibPaperExecutionOrchestratorService.SAFETY,
+      ...status,
       ok: true,
       generatedAt: status.generatedAt,
-      source: 'ibkr_paper',
-      executionTarget: 'ibkr_paper',
+      source: executionTarget,
+      tradeSource: intentTrades.length ? `${executionTarget}_intent` : executionTarget,
+      executionTarget,
       noInternalSimulationFallback: true,
-      trades: executions,
+      trades,
       fills: executions,
-      totalTrades: executions.length,
+      totalTrades: trades.length,
       commissions: status.brokerCommissions || [],
       reconciliation: status.reconciliation || null,
-      ...ibPaperExecutionOrchestratorService.SAFETY,
     });
   } catch (err) {
     res.status(500).json({ ok: false, error: err.message, source: 'ibkr_paper', ...ibPaperExecutionOrchestratorService.SAFETY });
@@ -4355,18 +4366,27 @@ router.get('/futures-paper/closed-trades', async (req, res) => {
   try {
     const status = await ibPaperExecutionOrchestratorService.defaultIbPaperExecutionOrchestratorService.buildExecutionStatus();
     const executions = Array.isArray(status.brokerExecutions) ? status.brokerExecutions : [];
+    const executionTarget = status.executionTarget || 'ibkr_paper';
+    const intents = futuresPaperStrategyPerformanceService.readExecutionIntents({
+      intentLimit: req.query.limit || req.query.n,
+      executionTarget,
+    });
+    const intentTrades = futuresPaperDeskService.normalizeFilledIntentTrades(intents, { executionTarget });
+    const trades = intentTrades.length ? intentTrades : executions;
     res.json({
+      ...ibPaperExecutionOrchestratorService.SAFETY,
+      ...status,
       ok: true,
       generatedAt: status.generatedAt,
-      source: 'ibkr_paper',
-      executionTarget: 'ibkr_paper',
+      source: executionTarget,
+      tradeSource: intentTrades.length ? `${executionTarget}_intent` : executionTarget,
+      executionTarget,
       noInternalSimulationFallback: true,
-      totalClosedTrades: executions.length,
-      trades: executions,
+      totalClosedTrades: trades.length,
+      trades,
       fills: executions,
       commissions: status.brokerCommissions || [],
       reconciliation: status.reconciliation || null,
-      ...ibPaperExecutionOrchestratorService.SAFETY,
     });
   } catch (err) {
     res.status(500).json({ ok: false, error: err.message, source: 'ibkr_paper', ...ibPaperExecutionOrchestratorService.SAFETY });
@@ -4846,13 +4866,44 @@ router.get('/paper-trading/loss-review-queue/:groupId/test-preview', (req, res) 
 });
 
 router.get('/paper-trading/trades', (req, res) => {
-  try { res.json(paperTrading.getTrades()); }
-  catch (err) { res.status(500).json({ ok: false, error: err.message }); }
+  try {
+    const runtime = paperTradingRuntimeService.buildPaperTradingRuntime({
+      limit: req.query.limit || req.query.n,
+    });
+    res.json({
+      ok: true,
+      source: runtime.tradeSource || 'ibkr_paper_intent',
+      tradeSource: runtime.tradeSource || 'ibkr_paper_intent',
+      trades: runtime.closedTrades,
+      closedTrades: runtime.closedTrades,
+      openTrades: runtime.openTrades,
+      totalTrades: runtime.summary?.closedCount ?? runtime.closedTrades.length,
+      totalClosedTrades: runtime.summary?.closedCount ?? runtime.closedTrades.length,
+      totalOpenTrades: runtime.summary?.openCount ?? runtime.openTrades.length,
+      generatedAt: runtime.updatedAt,
+      safety: runtime.safety,
+      ...paperTradingRuntimeService.SAFETY,
+    });
+  } catch (err) { res.status(500).json({ ok: false, error: err.message, ...paperTradingRuntimeService.SAFETY }); }
 });
 
 router.get('/paper-trading/performance', (req, res) => {
-  try { res.json(paperTrading.getPerformance()); }
-  catch (err) { res.status(500).json({ ok: false, error: err.message }); }
+  try {
+    const runtime = paperTradingRuntimeService.buildPaperTradingRuntime({
+      limit: req.query.limit || req.query.n,
+    });
+    res.json({
+      ok: true,
+      source: runtime.tradeSource || 'ibkr_paper_intent',
+      tradeSource: runtime.tradeSource || 'ibkr_paper_intent',
+      performance: runtime.strategyPerformance,
+      strategies: runtime.strategyPerformance?.strategies || [],
+      summary: runtime.strategyPerformance?.summary || null,
+      generatedAt: runtime.updatedAt,
+      safety: runtime.safety,
+      ...paperTradingRuntimeService.SAFETY,
+    });
+  } catch (err) { res.status(500).json({ ok: false, error: err.message, ...paperTradingRuntimeService.SAFETY }); }
 });
 
 router.get('/paper-trading/events', (req, res) => {
