@@ -256,6 +256,13 @@ export default function FuturesPaperDeskPage() {
     || scanHistory.find((row) => hasValue(row?.executionTarget))?.executionTarget
     || null;
   const executionTargetText = textOrEmpty(executionTarget);
+  const isLiveExecution = executionTarget === 'ibkr_live';
+  const executionModeText = isLiveExecution ? 'LIVE' : (executionTarget === 'ibkr_paper' ? 'PAPER' : executionTargetText);
+  const executionFlagPrefix = isLiveExecution ? 'IBKR_LIVE' : 'IBKR_PAPER';
+  const executionModeLabel = isLiveExecution ? 'IBKR Live' : 'IBKR Paper';
+  const statusCopy = isLiveExecution
+    ? 'Futures använder IBKR Live som aktiv execution target. Strategier, riskgrindar, idempotency och broker-submit körs genom Live-pathen.'
+    : STATUS_COPY;
   const accountSourceText = textOrEmpty(account.source || executionData.account?.source || data.technical?.accountSource);
   const brokerMirrorSourceText = textOrEmpty(reconciliation.source || executionData.reconciliation?.source || data.technical?.activePositionSource || data.technical?.activeTradeSource || account.source);
   const accountHint = account.accountIdMasked
@@ -312,6 +319,11 @@ export default function FuturesPaperDeskPage() {
     executionSnapshot: executionData,
     analyticsSnapshot: analytics,
   }), [analytics, data, executionData, tradingEventStore]);
+  const tabs = useMemo(() => TABS.map((tab) => {
+    if (tab.id === 'konto') return { ...tab, label: `IBKR ${executionModeText}-konto` };
+    if (tab.id === 'ibkr') return { ...tab, label: `IBKR ${executionModeText} Execution` };
+    return tab;
+  }), [executionModeText]);
 
   const livePositionCards = useMemo(() => brokerPositions.map((position, index) => {
     const root = positionRoot(position);
@@ -325,7 +337,7 @@ export default function FuturesPaperDeskPage() {
   }), [brokerPositions, instrumentByRoot, quoteByRoot, strategyStore]);
 
   const kpis = useMemo(() => [
-    { label: 'Execution target', value: executionTargetText, tone: hasValue(executionTarget) ? 'good' : 'warning' },
+    { label: 'Execution target', value: executionModeText, hint: executionTargetText, tone: hasValue(executionTarget) ? 'good' : 'warning' },
     {
       label: 'Net Liquidation',
       value: moneyOrWaiting(account.netLiquidation, currency, waitingForRuntime),
@@ -381,16 +393,16 @@ export default function FuturesPaperDeskPage() {
 
   return (
     <DashboardShell
-      title="Futures Paper Desk"
-      subtitle="IBKR Paper Trading är enda aktiva execution-miljö för Futures Paper. Intern futures-simulering är avvecklad."
+      title={isLiveExecution ? 'Futures Live Desk' : 'Futures Paper Desk'}
+      subtitle={`${executionModeLabel} är aktiv execution target. Intern futures-simulering är avvecklad.`}
       safety={data}
-      tabs={TABS}
+      tabs={tabs}
       activeTab={activeTab}
       onTab={handleTabChange}
       kpis={kpis}
     >
       <section style={{ ...sectionStyle({ marginBottom: 14, borderColor: 'rgba(59,130,246,0.35)', background: 'rgba(59,130,246,0.08)' }) }}>
-        <strong>{STATUS_COPY}</strong>
+        <strong>{statusCopy}</strong>
       </section>
 
       {runtime.error ? (
@@ -406,7 +418,7 @@ export default function FuturesPaperDeskPage() {
             <SectionHeader
               eyebrow="Dashboard overview"
               title="Broker runtime snapshot"
-              summary="Overview-vyn använder befintlig runtime och IBKR Paper execution status. Saknade brokerfält visas som — tills backend levererar en snapshot."
+              summary={`Overview-vyn använder befintlig runtime och ${executionModeLabel} execution status. Saknade brokerfält visas som — tills backend levererar en snapshot.`}
               action={refreshButton}
             />
             <StatusRail
@@ -456,17 +468,17 @@ export default function FuturesPaperDeskPage() {
             <MetricCard label="Buying Power" value={moneyOrWaiting(account.buyingPower, currency, waitingForRuntime)} hint={snapshotHint({ waiting: waitingForRuntime, fallback: accountSourceText })} tone={account.buyingPower == null ? 'warning' : 'neutral'} />
             <MetricCard label="Unrealized PnL" value={moneyOrWaiting(account.unrealizedPnl, currency, waitingForRuntime)} hint={accountSourceText} tone={numberOrNull(account.unrealizedPnl) < 0 ? 'danger' : (hasValue(account.unrealizedPnl) ? 'success' : 'warning')} />
             <MetricCard label="Realized PnL" value={moneyOrWaiting(account.realizedPnl, currency, waitingForRuntime)} hint={accountSourceText} tone={numberOrNull(account.realizedPnl) < 0 ? 'danger' : (hasValue(account.realizedPnl) ? 'success' : 'warning')} />
-            <MetricCard label="Daily broker PnL" value={moneyOrWaiting(dailyBrokerPnl, currency, waitingForRuntime)} hint={hasValue(dailyBrokerPnl) ? 'IBKR Paper dailyPnl' : snapshotHint({ waiting: waitingForRuntime, fallback: 'Broker dailyPnl saknas i snapshot' })} tone={numberOrNull(dailyBrokerPnl) < 0 ? 'danger' : (hasValue(dailyBrokerPnl) ? 'success' : 'warning')} />
+            <MetricCard label="Daily broker PnL" value={moneyOrWaiting(dailyBrokerPnl, currency, waitingForRuntime)} hint={hasValue(dailyBrokerPnl) ? `${executionModeLabel} dailyPnl` : snapshotHint({ waiting: waitingForRuntime, fallback: 'Broker dailyPnl saknas i snapshot' })} tone={numberOrNull(dailyBrokerPnl) < 0 ? 'danger' : (hasValue(dailyBrokerPnl) ? 'success' : 'warning')} />
             <MetricCard label="Open broker positions" value={countOrEmpty(brokerPositions.length, hasBrokerPositionSnapshot)} hint={snapshotHint({ waiting: waitingForRuntime, fallback: brokerMirrorSourceText })} tone={hasBrokerPositionSnapshot && brokerPositions.length ? 'info' : 'neutral'} />
             <MetricCard label="Open broker orders" value={countOrEmpty(brokerOrders.length, hasBrokerOrderSnapshot)} hint={snapshotHint({ waiting: waitingForRuntime, fallback: brokerMirrorSourceText })} tone={hasBrokerOrderSnapshot && brokerOrders.length ? 'warning' : 'neutral'} />
             <MetricCard label="Reconciliation status" value={reconciliationStatus} hint={reconciliation.blockedReason || snapshotHint({ waiting: waitingForRuntime || waitingForExecution, fallback: 'Broker mirror' })} tone={degraded ? 'warning' : 'success'} />
           </div>
 
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(300px, 1fr))', gap: 12, marginTop: 14 }}>
-            <OverviewPanel eyebrow="Account" title="Account overview" summary="Konto-KPI:er från IBKR Paper account summary. Inga interna simvärden används.">
+            <OverviewPanel eyebrow="Account" title="Account overview" summary={`Konto-KPI:er från IBKR ${executionModeText}. Inga interna simvärden används.`}>
               <FieldGrid
                 items={[
-                  { label: 'Account', value: textOrEmpty(account.accountIdMasked || executionData.account?.accountIdMasked), hint: account.unavailableReason || executionData.account?.blocker || 'Maskerat paper-konto', tone: account.accountIdMasked || executionData.account?.accountIdMasked ? 'success' : 'warning' },
+                  { label: 'Account', value: textOrEmpty(account.accountIdMasked || executionData.account?.accountIdMasked), hint: account.unavailableReason || executionData.account?.blocker || `Maskerat ${executionModeText}-konto`, tone: account.accountIdMasked || executionData.account?.accountIdMasked ? 'success' : 'warning' },
                   { label: 'Currency', value: textOrEmpty(currency) },
                   { label: 'Snapshot', value: fmtTime(account.updatedAt || ibAccount.generatedAt || executionData.account?.generatedAt), hint: ibAccount.cacheAgeMs != null || executionData.account?.cacheAgeMs != null ? `cache age ${fmtAge(ibAccount.cacheAgeMs ?? executionData.account?.cacheAgeMs)}` : null },
                   { label: 'Account status', value: account.degraded ? 'Degraded' : (hasValue(account.accountIdMasked) ? 'OK' : EMPTY_VALUE), hint: account.stale ? 'stale snapshot' : null, tone: account.degraded ? 'warning' : (hasValue(account.accountIdMasked) ? 'success' : 'neutral') },
@@ -476,7 +488,7 @@ export default function FuturesPaperDeskPage() {
               />
             </OverviewPanel>
 
-            <OverviewPanel eyebrow="Execution" title="Execution control" summary="Read-only status från IBKR Paper execution orchestrator.">
+            <OverviewPanel eyebrow="Execution" title="Execution control" summary={`Read-only status från ${executionModeLabel} execution orchestrator.`}>
               <FieldGrid
                 items={[
                   { label: 'Status', value: hasExecutionSnapshot ? textOrEmpty(executionData.status) : EMPTY_VALUE, tone: statusTone(executionData.status) },
@@ -547,10 +559,10 @@ export default function FuturesPaperDeskPage() {
                 ]}
               />
               <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginTop: 12 }}>
-                <Pill tone={boolTone(flags.executionEnabled)}>IBKR_PAPER_EXECUTION_ENABLED={boolText(flags.executionEnabled)}</Pill>
-                <Pill tone={boolTone(flags.shadowMode)}>IBKR_PAPER_EXECUTION_SHADOW_MODE={boolText(flags.shadowMode)}</Pill>
-                <Pill tone={boolTone(flags.submissionEnabled, { trueTone: 'danger', falseTone: 'success' })}>IBKR_PAPER_ORDER_SUBMISSION_ENABLED={boolText(flags.submissionEnabled)}</Pill>
-                <Pill tone={boolTone(executionData.liveBrokerExecutionEnabled, { trueTone: 'danger', falseTone: 'success' })}>IBKR_LIVE_EXECUTION_ENABLED={boolText(executionData.liveBrokerExecutionEnabled)}</Pill>
+                <Pill tone={boolTone(flags.executionEnabled)}>{executionFlagPrefix}_EXECUTION_ENABLED={boolText(flags.executionEnabled)}</Pill>
+                <Pill tone={boolTone(flags.shadowMode)}>{executionFlagPrefix}_EXECUTION_SHADOW_MODE={boolText(flags.shadowMode)}</Pill>
+                <Pill tone={boolTone(flags.submissionEnabled, { trueTone: 'danger', falseTone: 'success' })}>{executionFlagPrefix}_ORDER_SUBMISSION_ENABLED={boolText(flags.submissionEnabled)}</Pill>
+                <Pill tone={boolTone(executionData.liveBrokerExecutionEnabled, { trueTone: 'danger', falseTone: 'success' })}>LIVE broker={boolText(executionData.liveBrokerExecutionEnabled)}</Pill>
                 <Pill tone={boolTone(data.controls?.manualTradingEnabled, { trueTone: 'warning', falseTone: 'success' })}>manualTradingEnabled={boolText(data.controls?.manualTradingEnabled)}</Pill>
               </div>
             </OverviewPanel>
@@ -759,8 +771,9 @@ export default function FuturesPaperDeskPage() {
 
       {activeTab === 'runtime' && (
         <section style={{ ...sectionStyle({ marginTop: 14 }) }}>
-          <SectionHeader eyebrow="Runtime" title="Scanner och kandidater" summary="Scannern skapar server-side kandidater för IBKR Paper shadow. Intern execution är blockerad." />
+          <SectionHeader eyebrow="Runtime" title="Scanner och kandidater" summary={`Scannern skapar server-side kandidater för ${executionModeLabel}. Intern execution är blockerad.`} />
           <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginBottom: 12 }}>
+            <Pill tone={hasValue(executionTarget) ? 'success' : 'warning'}>{executionModeText}</Pill>
             <Pill tone={hasValue(executionTarget) ? 'success' : 'warning'}>onlyActiveExecutionTarget={executionTargetText}</Pill>
             <Pill tone="success">candidate queue={countOrEmpty(queueCandidates.length, Array.isArray(candidateQueue.candidates))}</Pill>
             <Pill tone={market.isMarketOpen || market.isOpen ? 'success' : 'warning'}>session={market.sessionLabel || market.session || EMPTY_VALUE}</Pill>
@@ -768,7 +781,7 @@ export default function FuturesPaperDeskPage() {
           </div>
           <CompactTable
             rows={queueCandidates}
-            emptyText="Inga kandidater väntar på IBKR Paper shadow."
+            emptyText={`Inga kandidater väntar på ${executionModeLabel}.`}
             columns={[
               { key: 'candidateId', label: 'Candidate' },
               { key: 'strategyId', label: 'Strategy' },
@@ -807,12 +820,12 @@ export default function FuturesPaperDeskPage() {
 
       {activeTab === 'ibkr' && (
         <section style={{ ...sectionStyle({ marginTop: 14 }) }}>
-          <SectionHeader eyebrow="IBKR Paper Execution" title="Execution status" summary="Shadow mode är på, actual submit är av. Livekonto och riktiga pengar är blockerade." action={refreshButton} />
+          <SectionHeader eyebrow={`IBKR ${executionModeText} Execution`} title="Execution status" summary={`${executionModeText} target`} action={refreshButton} />
           {execution.error ? <div style={{ color: 'var(--warning)', marginBottom: 10 }}>{execution.error}</div> : null}
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))', gap: 10 }}>
             <MetricCard label="Status" value={executionData.status || EMPTY_VALUE} hint={executionData.orderSubmissionMode || safety.orderSubmissionMode || EMPTY_VALUE} tone={statusTone(executionData.status)} />
             <MetricCard label="Execution client" value={boolText(executionConnected)} hint={executionClient.host || executionClient.port ? `${executionClient.host || EMPTY_VALUE}:${executionClient.port || EMPTY_VALUE}` : EMPTY_VALUE} tone={boolTone(executionConnected)} />
-            <MetricCard label="Paper account" value={executionData.paperAccountVerified ? 'Verifierat' : (hasExecutionSnapshot ? 'Blockerat' : EMPTY_VALUE)} hint={executionData.account?.accountIdMasked || executionData.account?.blocker || EMPTY_VALUE} tone={executionData.paperAccountVerified ? 'success' : 'warning'} />
+            <MetricCard label={isLiveExecution ? 'Live account' : 'Paper account'} value={(isLiveExecution ? executionData.liveAccountVerified : executionData.paperAccountVerified) ? 'Verifierat' : (hasExecutionSnapshot ? 'Blockerat' : EMPTY_VALUE)} hint={executionData.account?.accountIdMasked || executionData.account?.blocker || EMPTY_VALUE} tone={(isLiveExecution ? executionData.liveAccountVerified : executionData.paperAccountVerified) ? 'success' : 'warning'} />
             <MetricCard label="Reconciliation" value={reconciliation.status || EMPTY_VALUE} hint={reconciliation.blockedReason || EMPTY_VALUE} tone={degraded ? 'warning' : 'success'} />
             <MetricCard label="Open orders" value={countOrEmpty(reconciliation.counts?.openOrders ?? brokerOrders.length, hasValue(reconciliation.counts?.openOrders) || hasBrokerOrderSnapshot)} hint={brokerMirrorSourceText} />
             <MetricCard label="Executions" value={countOrEmpty(reconciliation.counts?.executions ?? brokerFills.length, hasValue(reconciliation.counts?.executions) || hasBrokerFillSnapshot)} hint={brokerMirrorSourceText} />
@@ -829,7 +842,7 @@ export default function FuturesPaperDeskPage() {
 
       {activeTab === 'godkannande' && (
         <section style={{ ...sectionStyle({ marginTop: 14 }) }}>
-          <SectionHeader eyebrow="Godkännande" title="Strategigodkännande" summary="Approval, entry contracts, session eligibility och riskregler styr om en candidate får nå IBKR Paper shadow execution." />
+            <SectionHeader eyebrow="Godkännande" title="Strategigodkännande" summary={`Approval, entry contracts, session eligibility och riskregler styr om en candidate får nå ${executionModeLabel}.`} />
           <FuturesPaperStrategyApprovalPanel />
         </section>
       )}
@@ -837,12 +850,12 @@ export default function FuturesPaperDeskPage() {
       {activeTab === 'teknik' && (
         <>
           <section style={{ ...sectionStyle({ marginTop: 14 }) }}>
-            <SectionHeader eyebrow="Tekniskt" title="Aktiva källor" summary="Aktiv konto-, positions- och fill-state kommer från IBKR Paper. Replay och Batch är separata forskningsmotorer." />
+            <SectionHeader eyebrow="Tekniskt" title="Aktiva källor" summary={`Aktiv konto-, positions- och fill-state kommer från ${executionModeLabel}. Replay och Batch är separata forskningsmotorer.`} />
             <CompactTable
               rows={[
                 { key: 'Execution target', value: executionTargetText, detail: 'Runtime-reported target' },
                 { key: 'Account source', value: data.technical?.accountSource || EMPTY_VALUE, detail: 'NetLiquidation, AvailableFunds, BuyingPower' },
-                { key: 'Position source', value: data.technical?.activePositionSource || EMPTY_VALUE, detail: 'IBKR Paper positions API / mirror' },
+                { key: 'Position source', value: data.technical?.activePositionSource || EMPTY_VALUE, detail: `${executionModeLabel} positions API / mirror` },
                 { key: 'Trade source', value: data.technical?.activeTradeSource || EMPTY_VALUE, detail: 'execDetails + commissionReport' },
                 { key: 'Replay', value: data.dataPipeline?.replay?.ready ? 'Redo' : (data.dataPipeline?.replay?.blocker || EMPTY_VALUE), detail: 'Offline research, skriver inte broker mirror' },
                 { key: 'Batch', value: data.dataPipeline?.batch?.ready ? 'Redo' : (data.dataPipeline?.batch?.blocker || EMPTY_VALUE), detail: 'Offline research, skriver inte broker mirror' },

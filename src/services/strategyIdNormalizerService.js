@@ -19,6 +19,7 @@
  */
 
 const catalog = require('./daytradingStrategyCatalogService');
+const nativeFuturesStrategyRegistry = require('./nativeFuturesStrategyRegistryService');
 
 const SAFETY = Object.freeze({
   mode: 'paper_only',
@@ -173,7 +174,38 @@ function normalizeStrategyId(input) {
     });
   }
 
-  // 3) Unknown.
+  // 3) Native futures-id. Trades, intents och broker-order stämplas med
+  //    native-id (native_futures_trend_continuation_v1) medan katalogen,
+  //    approvals och performance är nycklade på legacy-id (trend_continuation).
+  //    Kopplingen läses ur strategins egen ORIGIN_STRATEGY_ID-deklaration, inte
+  //    ur en handskriven tabell, så den kan inte glida isär från koden.
+  const nativeStrategy = nativeFuturesStrategyRegistry.getNativeStrategy(key);
+  if (nativeStrategy) {
+    const origin = nativeStrategy.originStrategyId;
+    if (origin && isCanonical(origin)) {
+      return result({
+        input: key,
+        canonicalStrategyId: origin,
+        status: 'native_futures_migration',
+        ambiguous: false,
+        possibleCanonicalIds: [origin],
+        reason: 'native_futures_strategy_mapped_to_origin',
+      });
+    }
+    // Native från början, eller ett ursprung som inte längre finns i katalogen.
+    // Ingen gissning: id:t är känt men har ingen canonical motsvarighet.
+    return result({
+      input: key,
+      status: 'native_futures_only',
+      ambiguous: false,
+      possibleCanonicalIds: [],
+      reason: origin
+        ? 'native_futures_origin_not_in_canonical_catalog'
+        : 'native_futures_strategy_without_legacy_origin',
+    });
+  }
+
+  // 4) Unknown.
   return result({
     input: key,
     status: 'unknown',
@@ -192,6 +224,12 @@ function explainStrategyId(input) {
   const res = normalizeStrategyId(input);
   const notes = {
     exact_canonical_match: 'Redan ett canonical strategy_id.',
+    native_futures_strategy_mapped_to_origin:
+      `Native futures-strategi, migrerad från canonical ${res.canonicalStrategyId}.`,
+    native_futures_strategy_without_legacy_origin:
+      'Native futures-strategi utan legacy-förlaga — har ingen canonical motsvarighet.',
+    native_futures_origin_not_in_canonical_catalog:
+      'Native futures-strategi vars ursprung inte längre finns i canonical-katalogen.',
     legacy_alias_mapped_to_canonical: `Legacy-nyckel mappad till canonical ${res.canonicalStrategyId}.`,
     legacy_key_matches_multiple_canonical_strategies:
       'Legacy-nyckel matchar flera canonical strategier — välj manuellt, väljs aldrig automatiskt.',

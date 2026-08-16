@@ -7,6 +7,7 @@ const futuresPaperLedgerService = require('./futuresPaperLedgerService');
 const futuresPaperScannerService = require('./futuresPaperScannerService');
 const paperEnabledStrategiesService = require('./paperEnabledStrategiesService');
 const daytradingStrategyCatalogService = require('./daytradingStrategyCatalogService');
+const nativeFuturesStrategyRegistry = require('./nativeFuturesStrategyRegistryService');
 const futuresContractCatalog = require('./futuresContractCatalogService');
 const futuresMarketHoursService = require('./futuresMarketHoursService');
 const futuresMarketDataService = require('./futuresMarketDataService');
@@ -19,6 +20,7 @@ const ibPaperBrokerReconciliationService = require('./ibPaperBrokerReconciliatio
 const lifecycleIdentity = require('./futuresLifecycleIdentityService');
 const futuresPaperStorageService = require('./futuresPaperStorageService');
 const canonicalExecutionRouter = require('./canonical/canonicalExecutionRouter');
+const ibPaperExecutionConfigService = require('./ibPaperExecutionConfigService');
 
 const SAFETY = Object.freeze({
   mode: 'paper_only',
@@ -35,6 +37,21 @@ const DEFAULT_ACCOUNT = Object.freeze({
   baseCurrency: 'SEK',
   startingBalance: 100000,
 });
+
+function buildDeskSafety(executionTarget = 'ibkr_paper') {
+  const target = ibPaperExecutionConfigService.normalizeExecutionTarget(executionTarget);
+  return {
+    ...SAFETY,
+    ...ibPaperExecutionConfigService.buildExecutionSafety(target),
+    mode: target === 'ibkr_paper' ? SAFETY.mode : target,
+    actions_allowed: false,
+    can_place_orders: false,
+    broker_enabled: false,
+    paper_only: target === 'ibkr_paper',
+    live_enabled: target === 'ibkr_live',
+    source: 'futures_paper_desk',
+  };
+}
 
 // Instrumentlistan byggs från den centrala kontraktskatalogen (MNQ/MES/NQ/ES).
 // contractSize = pointValueUsd behålls som fältnamn för bakåtkompatibilitet i UI.
@@ -405,8 +422,22 @@ function buildCanonicalStrategyOverview({
       scannerRow?.market_regime,
     );
 
+    // Migrerade strategier körs via sin native-implementation. Trades, intents
+    // och broker-order stämplas med native-id:t, medan den här raden är nycklad
+    // på legacy-id:t. Utan kopplingen syns aldrig i UI:t vilken kod som faktiskt
+    // handlar, och native-id:na på Ledger/Positioner går inte att para ihop med
+    // någon strategirad.
+    const nativeStrategy = nativeFuturesStrategyRegistry.soleNativeStrategyForOrigin(strategy.id);
+
     return {
       strategyId: strategy.id,
+      // Id:t som faktiskt hamnar på order och trades hos brokern.
+      executionStrategyId: nativeStrategy?.strategyId || strategy.id,
+      nativeMigrated: Boolean(nativeStrategy),
+      nativeStrategyId: nativeStrategy?.strategyId || null,
+      nativeStrategyVersion: nativeStrategy?.strategyVersion || null,
+      nativeTargetSignalFamily: nativeStrategy?.targetSignalFamily || null,
+      nativeTargetSignalSubtype: nativeStrategy?.targetSignalSubtype || null,
       displayName: paperRow.displayName || strategy.name || strategy.id,
       family: paperRow.family || strategy.family || null,
       strategyFamily: paperRow.family || strategy.family || null,
@@ -705,7 +736,13 @@ function buildProtectiveContextByConId(brokerOrders = [], intentByExecutionId = 
 
 const INSTRUMENT_BY_ROOT = new Map(FUTURES_INSTRUMENTS.map((row) => [String(row.root).toUpperCase(), row]));
 
-function normalizeBrokerPosition(row = {}, { reconciliationTimestamp = null, quote = null, protective = null } = {}) {
+function normalizeBrokerPosition(row = {}, {
+  reconciliationTimestamp = null,
+  quote = null,
+  protective = null,
+  executionTarget = 'ibkr_paper',
+} = {}) {
+  const target = ibPaperExecutionConfigService.normalizeExecutionTarget(row.executionTarget || executionTarget);
   const qty = Number(row.position ?? row.quantity ?? row.size ?? 0);
   const root = safeString(row.symbol || row.root || row.contract?.symbol);
   const strategyContext = strategyContextFromIntent(protective?.intent);
@@ -730,7 +767,7 @@ function normalizeBrokerPosition(row = {}, { reconciliationTimestamp = null, quo
     })
     : null;
   return {
-    id: row.conId ? `ibkr_paper_position_${row.conId}` : `ibkr_paper_position_${root || 'unknown'}`,
+    id: row.conId ? `${target}_position_${row.conId}` : `${target}_position_${root || 'unknown'}`,
     accountMasked: row.accountMasked || row.accountIdMasked || null,
     account: row.accountMasked || row.accountIdMasked || null,
     root,
@@ -776,15 +813,18 @@ function normalizeBrokerPosition(row = {}, { reconciliationTimestamp = null, quo
     entryConfidence: candidateSignal?.confidence ?? null,
     entryTimeframe: candidateSignal?.timeframe ?? null,
     exitReason: null,
-    source: 'ibkr_paper',
-    executionSource: 'ibkr_paper',
+    source: target,
+    executionSource: target,
+    executionTarget: target,
+    paperOnly: target === 'ibkr_paper',
     reconciliationTimestamp,
     protectiveOrderStatus: row.protectiveOrderStatus || 'unknown',
     uncertain: false,
   };
 }
 
-function normalizeBrokerExecution(row = {}, commissionsByExecId = new Map(), intentByExecutionId = new Map()) {
+function normalizeBrokerExecution(row = {}, commissionsByExecId = new Map(), intentByExecutionId = new Map(), options = {}) {
+  const target = ibPaperExecutionConfigService.normalizeExecutionTarget(row.executionTarget || options.executionTarget || 'ibkr_paper');
   const commission = commissionsByExecId.get(row.execId) || null;
   const strategyContext = strategyContextFromIntent(intentForOrderRef(intentByExecutionId, row.orderRef));
   // Exitorsaken är deterministisk ur vilket orderben som fylldes — IBKR:s orderRef
@@ -823,8 +863,10 @@ function normalizeBrokerExecution(row = {}, commissionsByExecId = new Map(), int
     accountMasked: row.accountMasked || null,
     time: row.time || row.receivedAt || null,
     receivedAt: row.receivedAt || null,
-    source: 'ibkr_paper',
-    executionSource: 'ibkr_paper',
+    source: target,
+    executionSource: target,
+    executionTarget: target,
+    paperOnly: target === 'ibkr_paper',
   };
 }
 
@@ -834,7 +876,8 @@ function normalizeBrokerExecution(row = {}, commissionsByExecId = new Map(), int
 // uppströms ströks tyst igen och Futures Desk visade null där backend visste
 // svaret. Fälten läses i första hand från raden (redan attribuerad) och faller
 // annars tillbaka på intenten via orderRef — samma väg som fills använder.
-function normalizeBrokerOrder(row = {}, intentByExecutionId = new Map()) {
+function normalizeBrokerOrder(row = {}, intentByExecutionId = new Map(), options = {}) {
+  const target = ibPaperExecutionConfigService.normalizeExecutionTarget(row.executionTarget || options.executionTarget || 'ibkr_paper');
   const orderRef = row.order?.orderRef || row.orderRef || null;
   const strategyContext = strategyContextFromIntent(intentForOrderRef(intentByExecutionId, orderRef));
   return {
@@ -864,12 +907,15 @@ function normalizeBrokerOrder(row = {}, intentByExecutionId = new Map()) {
     transmit: row.order?.transmit === true,
     status: row.state || row.status || null,
     updatedAt: row.updatedAt || null,
-    source: 'ibkr_paper',
-    executionSource: 'ibkr_paper',
+    source: target,
+    executionSource: target,
+    executionTarget: target,
+    paperOnly: target === 'ibkr_paper',
   };
 }
 
-function buildCanonicalAccountAndMargin(ibAccount) {
+function buildCanonicalAccountAndMargin(ibAccount, { executionTarget = 'ibkr_paper' } = {}) {
+  const target = ibPaperExecutionConfigService.normalizeExecutionTarget(executionTarget);
   const ibAccountView = ibAccount?.ok === true ? ibAccount.account : null;
   const blocker = ibAccount?.ok === true
     ? null
@@ -886,10 +932,10 @@ function buildCanonicalAccountAndMargin(ibAccount) {
     fullMaintMarginReq: ibAccountView?.fullMaintMarginReq ?? null,
     excessLiquidity: ibAccountView?.excessLiquidity ?? null,
     updatedAt,
-    source: 'ibkr_paper',
+    source: target,
   };
   const account = {
-    source: 'ibkr_paper',
+    source: target,
     status: ibAccount?.status || null,
     accountIdMasked: ibAccountView?.accountIdMasked || null,
     currency: ibAccountView?.currency || null,
@@ -920,7 +966,9 @@ function buildCanonicalBrokerRuntime({
   brokerOrders = [],
   brokerExecutions = [],
   brokerCommissions = [],
+  executionTarget = 'ibkr_paper',
 } = {}) {
+  const target = ibPaperExecutionConfigService.normalizeExecutionTarget(executionTarget);
   const updatedAt = brokerReconciliation?.generatedAt || null;
   const discrepancies = safeArray(brokerReconciliation?.discrepancies);
   const orderStatuses = safeArray(brokerReconciliation?.orderStatuses);
@@ -940,7 +988,7 @@ function buildCanonicalBrokerRuntime({
     blockedReason: brokerReconciliation?.blockedReason || null,
     counts,
     updatedAt,
-    source: 'ibkr_paper',
+    source: target,
     reconciliation: brokerReconciliation || null,
   };
   const orders = {
@@ -950,19 +998,19 @@ function buildCanonicalBrokerRuntime({
     totalOpen: brokerOrders.length,
     totalCompleted: 0,
     updatedAt,
-    source: 'ibkr_paper',
+    source: target,
   };
   const executions = {
     items: safeArray(brokerExecutions),
     count: brokerExecutions.length,
     updatedAt,
-    source: 'ibkr_paper',
+    source: target,
   };
   const commissions = {
     items: safeArray(brokerCommissions),
     count: brokerCommissions.length,
     updatedAt,
-    source: 'ibkr_paper',
+    source: target,
   };
   return { broker, orders, executions, commissions };
 }
@@ -972,7 +1020,9 @@ function buildCanonicalPortfolio({
   positions = {},
   orders = {},
   executions = {},
+  executionTarget = 'ibkr_paper',
 } = {}) {
+  const target = ibPaperExecutionConfigService.normalizeExecutionTarget(executionTarget);
   const executionItems = safeArray(executions?.items);
   const realizedPnl = numberOrNull(account?.realizedPnl);
   const unrealizedPnl = numberOrNull(account?.unrealizedPnl);
@@ -993,8 +1043,107 @@ function buildCanonicalPortfolio({
       orders?.updatedAt,
       executions?.updatedAt,
     ]),
-    source: 'ibkr_paper',
+    source: target,
   };
+}
+
+function exitReasonFromFilledLeg(leg) {
+  const value = String(leg || '').trim();
+  if (value === 'stopLoss') return 'stop_loss';
+  if (value === 'takeProfit') return 'take_profit';
+  if (value === 'emergencyFlatten' || value === 'emergency_flatten') return 'emergency_flatten';
+  return value || null;
+}
+
+function normalizeFilledIntentTrade(intent = {}) {
+  if (!intent || intent.status !== 'filled') return null;
+  const target = ibPaperExecutionConfigService.normalizeExecutionTarget(intent.executionTarget || 'ibkr_paper');
+  const realizedPnl = numberOrNull(intent.filledRealizedPNL ?? intent.filledRealizedPnl ?? intent.realizedPNL);
+  if (realizedPnl === null) return null;
+  const entryPrice = numberOrNull(intent.entryFilledPrice ?? intent.entryAvgFillPrice ?? intent.entryLastFillPrice);
+  const exitPrice = numberOrNull(intent.filledPrice ?? intent.filledAvgPrice ?? intent.filledLastPrice);
+  const commission = sumNumbersOrNull([intent.entryCommission, intent.filledCommission]) ?? 0;
+  const openedAt = intent.entryFilledAt || intent.entryExecutionAt || intent.signalTimestamp || intent.createdAt || null;
+  const closedAt = intent.filledAt || intent.filledExecutionAt || intent.updatedAt || null;
+  const exitReason = exitReasonFromFilledLeg(intent.filledLeg);
+  return {
+    id: intent.tradeId || intent.filledExecId || intent.executionId || intent.intentId || null,
+    tradeId: intent.tradeId || null,
+    lifecycleId: intent.lifecycleId || null,
+    signalId: intent.signalId || null,
+    candidateId: intent.candidateId || null,
+    intentId: intent.intentId || intent.idempotencyKey || null,
+    executionId: intent.executionId || null,
+    idempotencyKey: intent.idempotencyKey || null,
+    strategyId: intent.strategyId || null,
+    strategy_id: intent.strategyId || null,
+    symbol: intent.root || intent.localSymbol || null,
+    root: intent.root || null,
+    localSymbol: intent.localSymbol || null,
+    conId: intent.conId ?? null,
+    direction: intent.direction || null,
+    side: intent.side || null,
+    quantity: numberOrNull(intent.filledQuantity ?? intent.entryQuantity ?? intent.quantity),
+    entryPrice,
+    exitPrice,
+    entry: entryPrice,
+    exit: exitPrice,
+    fillPrice: exitPrice,
+    opened_at: openedAt,
+    openedAt,
+    closed_at: closedAt,
+    closedAt,
+    entryExecId: intent.entryExecId || null,
+    execId: intent.filledExecId || null,
+    brokerExecId: intent.filledExecId || null,
+    brokerExecutionId: intent.filledExecId || null,
+    entryBrokerOrderId: intent.entryFilledOrderId ?? intent.parentOrderId ?? intent.ibOrderId ?? null,
+    exitBrokerOrderId: intent.filledOrderId ?? null,
+    brokerOrderId: intent.filledOrderId ?? intent.ibOrderId ?? null,
+    ibOrderId: intent.ibOrderId ?? null,
+    orderRef: intent.orderRef || null,
+    exitReason,
+    exitReasonCode: exitReason,
+    result: realizedPnl > 0 ? 'WIN' : (realizedPnl < 0 ? 'LOSS' : 'BREAKEVEN'),
+    pnl: realizedPnl,
+    pnlUsd: realizedPnl,
+    realizedPnl,
+    realizedResult: realizedPnl,
+    commission,
+    feesUsd: commission,
+    currency: intent.filledCommissionCurrency || intent.entryCommissionCurrency || 'USD',
+    source: `${target}_intent`,
+    executionSource: target,
+    executionTarget: target,
+    paperOnly: target === 'ibkr_paper',
+    status: intent.status,
+    updatedAt: intent.updatedAt || null,
+  };
+}
+
+function intentMatchesExecutionTarget(intent = {}, executionTarget = 'ibkr_paper') {
+  const target = ibPaperExecutionConfigService.normalizeExecutionTarget(executionTarget);
+  const raw = intent.executionTarget
+    || intent.executionSource
+    || intent.intent?.executionTarget
+    || intent.intent?.executionSource
+    || ibPaperBrokerReconciliationService.executionTargetFromOrderRef?.(intent.orderRef)
+    || 'ibkr_paper';
+  return ibPaperExecutionConfigService.normalizeExecutionTarget(raw) === target;
+}
+
+function filterIntentsForExecutionTarget(intents = [], executionTarget = 'ibkr_paper') {
+  return safeArray(intents).filter((intent) => intentMatchesExecutionTarget(intent, executionTarget));
+}
+
+function normalizeFilledIntentTrades(intents = [], options = {}) {
+  const filteredIntents = options.executionTarget
+    ? filterIntentsForExecutionTarget(intents, options.executionTarget)
+    : safeArray(intents);
+  return filteredIntents
+    .map(normalizeFilledIntentTrade)
+    .filter(Boolean)
+    .sort((a, b) => String(b.closed_at || '').localeCompare(String(a.closed_at || '')));
 }
 
 function buildPerformanceVerificationByStrategy(executions = []) {
@@ -1038,6 +1187,7 @@ function normalizeCanonicalPerformanceStrategy(row = {}, verification = null, un
     strategyId: row.strategyId || null,
     displayName: row.displayName || row.strategyName || row.strategyId || null,
     tradeCount,
+    closedTrades: tradeCount,
     // wins/losses/breakeven beräknas redan av futuresPaperStrategyPerformanceService
     // men föll tidigare bort här. De kräver ingen ratio-tröskel — det är råa antal.
     wins: hasVerifiedRealizedPnl ? wins : null,
@@ -1068,18 +1218,21 @@ function buildCanonicalPerformance({
   executions = {},
   portfolio = {},
   intents = [],
+  executionTarget = 'ibkr_paper',
 } = {}) {
+  const target = ibPaperExecutionConfigService.normalizeExecutionTarget(executionTarget);
   const executionItems = safeArray(executions?.items);
   const intentItems = safeArray(intents);
   // Historiken från intent-loggen verifieras med samma regel som live-executions:
   // den bär broker-verifierad realiserad PnL och avgifter.
-  const historicalClosedRows = futuresPaperStrategyPerformanceService.closedIntentRows(intentItems);
+  const historicalClosedRows = futuresPaperStrategyPerformanceService.closedIntentRows(intentItems, { executionTarget: target });
   const verificationByStrategy = buildPerformanceVerificationByStrategy(
     [...executionItems, ...historicalClosedRows],
   );
   const strategyStats = futuresPaperStrategyPerformanceService.buildStrategyStats({
     executions: executionItems,
     intents: intentItems,
+    executionTarget: target,
   });
   // Orealiserad PnL per strategi summeras från de öppna positionerna, som numera
   // bär både strategyId och beräknad live-PnL.
@@ -1107,8 +1260,9 @@ function buildCanonicalPerformance({
   ));
   return {
     context: {
-      performanceContext: 'ibkr_paper',
-      executionSource: 'ibkr_paper',
+      performanceContext: target,
+      executionSource: target,
+      executionTarget: target,
       notRealMarketPerformance: false,
       legacySimulationExcluded: true,
       strategyCount: strategy.length,
@@ -1158,6 +1312,19 @@ function buildFuturesPaperDeskRuntime(options = {}) {
 
   const brokerReconciliation = options.brokerReconciliation
     || ibPaperExecutionOrchestratorService.defaultIbPaperExecutionOrchestratorService.reconciliation.getCachedReconciliation();
+  const executionTarget = ibPaperExecutionConfigService.normalizeExecutionTarget(
+    options.executionTarget
+    || brokerReconciliation?.executionTarget
+    || scannerRuntime?.executionTargetModel?.onlyActiveExecutionTarget
+    || scannerRuntime?.executionTarget
+    || ibPaperExecutionConfigService.getActiveExecutionTarget(),
+  );
+  const deskSafety = buildDeskSafety(executionTarget);
+  const reconciliationIntents = filterIntentsForExecutionTarget(brokerReconciliation.intents, executionTarget);
+  const brokerReconciliationForTarget = {
+    ...brokerReconciliation,
+    intents: reconciliationIntents,
+  };
   const brokerCommissionsRaw = safeArray(
     options.brokerCommissions
     || brokerReconciliation.commissions
@@ -1174,9 +1341,9 @@ function buildFuturesPaperDeskRuntime(options = {}) {
   } catch (_) { /* degraded */ }
   // Ordrarna normaliseras före positionerna: skyddsordrarna bär den orderRef som
   // kopplar en position till sin strategi och sina SL/TP-nivåer.
-  const intentByExecutionId = buildIntentContext(brokerReconciliation);
+  const intentByExecutionId = buildIntentContext(brokerReconciliationForTarget);
   const brokerOrders = safeArray(options.brokerOrders || brokerReconciliation.openOrders)
-    .map((row) => normalizeBrokerOrder(row, intentByExecutionId));
+    .map((row) => normalizeBrokerOrder(row, intentByExecutionId, { executionTarget }));
   const protectiveByConId = buildProtectiveContextByConId(brokerOrders, intentByExecutionId);
   // Entrypriset för en öppen position finns i entry-fillen från IBKR. Positionens
   // avgCost är kostnadsbas inklusive multiplikator och är därför inte samma sak.
@@ -1211,21 +1378,24 @@ function buildFuturesPaperDeskRuntime(options = {}) {
       reconciliationTimestamp: brokerReconciliation.generatedAt || null,
       quote: quoteByRoot.get(String(row.symbol || row.root || '').toUpperCase()) || null,
       protective: protectiveByConId.get(String(row.conId ?? row.contract?.conId ?? '')) || null,
+      executionTarget,
     }));
   const brokerExecutions = rawBrokerExecutions
-    .map((row) => normalizeBrokerExecution(row, commissionsByExecId, intentByExecutionId));
+    .map((row) => normalizeBrokerExecution(row, commissionsByExecId, intentByExecutionId, { executionTarget }));
   const closedBrokerExecutions = brokerExecutions.filter(futuresPaperStrategyPerformanceService.isClosedBrokerExecution);
+  const closedIntentTrades = normalizeFilledIntentTrades(reconciliationIntents, { executionTarget });
   const {
     broker,
     orders,
     executions,
     commissions,
   } = buildCanonicalBrokerRuntime({
-    brokerReconciliation,
+    brokerReconciliation: brokerReconciliationForTarget,
     brokerPositions,
     brokerOrders,
     brokerExecutions,
     brokerCommissions: brokerCommissionsRaw,
+    executionTarget,
   });
   const positions = {
     open: brokerPositions,
@@ -1233,10 +1403,16 @@ function buildFuturesPaperDeskRuntime(options = {}) {
     totalOpen: brokerPositions.length,
     totalClosed: 0,
     updatedAt: brokerReconciliation.generatedAt || null,
-    source: 'ibkr_paper',
+    source: executionTarget,
+    executionTarget,
   };
-  const closedTrades = closedBrokerExecutions;
-  const recentClosedTrades = { ok: true, trades: closedBrokerExecutions, source: 'ibkr_paper' };
+  const closedTrades = closedIntentTrades.length ? closedIntentTrades : closedBrokerExecutions;
+  const recentClosedTrades = {
+    ok: true,
+    trades: closedTrades,
+    source: closedIntentTrades.length ? `${executionTarget}_intent` : executionTarget,
+    executionTarget,
+  };
   const latestEvents = [];
   const strategyOverview = options.strategyOverview
     || buildCanonicalStrategyOverview({
@@ -1263,17 +1439,20 @@ function buildFuturesPaperDeskRuntime(options = {}) {
   const nextTransition = (() => {
     try { return futuresMarketHoursService.getNextSessionTransition(now); } catch (_) { return null; }
   })();
-  const { account: activeAccount, margin } = buildCanonicalAccountAndMargin(ibAccount);
-  const accountUpdatePositions = safeArray(ibAccount?.portfolioPositions).map((row) => normalizeBrokerPosition(row, {
-    reconciliationTimestamp: ibAccount?.generatedAt || null,
-    quote: quoteByRoot.get(String(row.symbol || row.root || '').toUpperCase()) || null,
-  }));
+  const { account: activeAccount, margin } = buildCanonicalAccountAndMargin(ibAccount, { executionTarget });
+  const accountUpdatePositions = safeArray(ibAccount?.portfolioPositions)
+    .map((row) => normalizeBrokerPosition(row, {
+      reconciliationTimestamp: ibAccount?.generatedAt || null,
+      quote: quoteByRoot.get(String(row.symbol || row.root || '').toUpperCase()) || null,
+      executionTarget,
+    }))
+    .filter((position) => Number(position.quantity) !== 0 && Number(position.signedQuantity) !== 0);
   const runtimeOpenPositions = brokerPositions.length ? brokerPositions : accountUpdatePositions;
   positions.open = runtimeOpenPositions;
   positions.totalOpen = runtimeOpenPositions.length;
   if (!brokerPositions.length && accountUpdatePositions.length) {
     positions.updatedAt = ibAccount?.generatedAt || null;
-    positions.source = 'ibkr_paper_account_updates';
+    positions.source = `${executionTarget}_account_updates`;
   }
   const openPositions = runtimeOpenPositions;
   const portfolio = buildCanonicalPortfolio({
@@ -1281,6 +1460,7 @@ function buildFuturesPaperDeskRuntime(options = {}) {
     positions,
     orders,
     executions,
+    executionTarget,
   });
   const runtimePerformance = buildCanonicalPerformance({
     account: activeAccount,
@@ -1288,7 +1468,8 @@ function buildFuturesPaperDeskRuntime(options = {}) {
     orders,
     executions: { ...executions, items: closedBrokerExecutions, count: closedBrokerExecutions.length },
     portfolio,
-    intents: safeArray(brokerReconciliation.intents),
+    intents: reconciliationIntents,
+    executionTarget,
   });
   const legacyClosedTrades = options.legacyClosedTrades
     || futuresPaperLedgerService.defaultFuturesPaperLedgerService.getRecentClosedTrades({
@@ -1307,26 +1488,34 @@ function buildFuturesPaperDeskRuntime(options = {}) {
   };
 
   return {
-    ok: true,
-    generatedAt: nowIso(now),
-    ibDataLayer,
+	    ok: true,
+	    generatedAt: nowIso(now),
+    executionTarget,
+    environment: ibPaperExecutionConfigService.getExpectedEnvironment(executionTarget),
+	    ibDataLayer,
     ibAccount,
     dataPipeline,
     nextSessionTransition: nextTransition,
     desk: {
-      id: 'futures-paper',
-      route: '/futures-paper',
-      label: 'Paper Futures',
-      focusMarkets: ['MNQ', 'MES'],
-      scope: 'futures_paper',
-      paperOnly: true,
+	      id: 'futures-paper',
+	      route: '/futures-paper',
+		      label: executionTarget === 'ibkr_live' ? 'Live Futures' : 'Paper Futures',
+	      focusMarkets: ['MNQ', 'MES'],
+	      scope: executionTarget === 'ibkr_live' ? 'futures_live' : 'futures_paper',
+		      paperOnly: executionTarget === 'ibkr_paper',
+		      executionTarget,
       manualControlsEnabled: false,
       unlimitedTradeLimit: true,
-      notes: [
-        'Futures Paper använder IBKR Paper Trading som enda execution-miljö.',
-        'Shadow mode validerar strategier och orderplaner; faktisk ordersändning är avstängd.',
-        'Livekonton och riktiga pengar är blockerade.',
-      ],
+	      notes: executionTarget === 'ibkr_live'
+	        ? [
+	          'Futures-desken använder IBKR Live som execution-miljö.',
+	          'Live order submission styrs av live-flaggor och execution guards.',
+	        ]
+	        : [
+	          'Futures Paper använder IBKR Paper Trading som enda execution-miljö.',
+	          'Shadow mode validerar strategier och orderplaner; faktisk ordersändning är avstängd.',
+	          'Livekonton och riktiga pengar är blockerade.',
+	        ],
     },
     market: session,
     account: activeAccount,
@@ -1346,7 +1535,7 @@ function buildFuturesPaperDeskRuntime(options = {}) {
     brokerExecutions,
     brokerFills: brokerExecutions,
     brokerCommissions: brokerCommissionsRaw,
-    brokerReconciliation,
+    brokerReconciliation: brokerReconciliationForTarget,
     latestEvents,
     instruments,
     strategyPulse,
@@ -1383,7 +1572,8 @@ function buildFuturesPaperDeskRuntime(options = {}) {
     recentClosedTrades: recentClosedTrades?.trades || [],
     legacyInternalSimulation,
     dataFeed: scannerRuntime?.dataFeed || { source: 'none', simulated: false, fallback: false },
-    quotes: scannerRuntime?.quotes || [],
+	    quotes: scannerRuntime?.quotes || [],
+    ...deskSafety,
     statusReasons: scannerRuntime?.statusReasons || [],
     chart: {
       activeSymbol: 'MNQ',
@@ -1404,10 +1594,10 @@ function buildFuturesPaperDeskRuntime(options = {}) {
       scannerSource: 'futuresPaperScannerService',
       priceFeedSource: scannerRuntime?.dataFeed?.source || 'futuresPaperPriceFeedService',
       activePositionSource: 'ibPaperBrokerReconciliationService',
-      activeTradeSource: 'ibPaperBrokerReconciliationService',
+      activeTradeSource: 'ibPaperExecutionIntentService',
       legacyArchiveSource: 'futuresPaperLedgerService',
     },
-    ...SAFETY,
+    ...deskSafety,
   };
 }
 
@@ -1422,6 +1612,10 @@ module.exports = {
   sessionAllowedForStrategy,
   normalizePaperExecutionStatus,
   normalizeBrokerOrder,
+  normalizeFilledIntentTrade,
+  normalizeFilledIntentTrades,
+  intentMatchesExecutionTarget,
+  filterIntentsForExecutionTarget,
   buildCanonicalStrategyOverview,
   buildFuturesPaperDeskRuntime,
 };

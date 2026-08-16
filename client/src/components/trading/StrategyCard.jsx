@@ -103,6 +103,12 @@ export const StrategyCard = React.memo(function StrategyCard({
           </div>
         </div>
         <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, justifyContent: 'flex-end' }}>
+          {/* Visar att strategin körs via sin native futures-implementation. Det
+              är den koden som faktiskt fattar beslutet och det id:t som hamnar
+              på broker-order och trades. */}
+          {strategy.nativeMigrated ? (
+            <StatusBadge tone="info" compact>NATIVE</StatusBadge>
+          ) : null}
           <StatusBadge tone={runtimeTone} compact>{runtime}</StatusBadge>
           <StatusBadge tone={statusTone(strategy.approvalState)} compact>{textOrEmpty(strategy.approvalState)}</StatusBadge>
           <StatusBadge tone={statusTone(strategy.riskState)} compact>{textOrEmpty(strategy.riskState)}</StatusBadge>
