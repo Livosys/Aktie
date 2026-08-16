@@ -1,49 +1,7 @@
 import React from 'react';
 import { Link, useLocation } from 'react-router-dom';
+import { navGroupsFor, isNavItemActive, NAV_SURFACES } from '../navigation.js';
 
-const NAV_GROUPS = [
-  {
-    id: 'mini-futures',
-    label: 'Mini Futures',
-    items: [
-      { path: '/supervisor', label: 'Översikt', icon: 'O', match: ['/', '/supervisor', '/overview', '/oversikt'], accent: 'blue' },
-      { path: '/futures-paper', label: 'Futures', icon: 'F', match: ['/futures-paper', '/paper-futures'], excludeTabs: ['positioner', 'ordrar'], accent: 'teal' },
-      { path: '/futures-paper?tab=positioner', label: 'Positioner', icon: 'P', match: ['/futures-paper'], tab: 'positioner', accent: 'green' },
-      // Fliken heter 'ordrar' av bakåtkompatibilitetsskäl men visar Live Scanner.
-      // Etiketten följer innehållet; sökvägen är oförändrad så gamla länkar lever.
-      { path: '/futures-paper?tab=ordrar', label: 'Live Scanner', icon: 'S', match: ['/futures-paper'], tab: 'ordrar', accent: 'orange' },
-    ],
-  },
-  {
-    // Replay och Batch är egna arbetsytor, inte laborationer. De bor fortfarande
-    // på /lab?tab=... så att varje befintlig länk och omdirigering fungerar —
-    // det är bara navigationen som slutat gömma dem bakom Labs.
-    id: 'research',
-    label: 'Forskning',
-    items: [
-      { path: '/lab?tab=replay', label: 'Replay', icon: 'R', match: ['/lab'], tab: 'replay', accent: 'purple' },
-      { path: '/lab?tab=batch', label: 'Batch', icon: 'B', match: ['/lab'], tab: 'batch', accent: 'teal' },
-    ],
-  },
-  {
-    id: 'system',
-    label: 'Operativt',
-    items: [
-      { path: '/insikter', label: 'Historik', icon: 'H', match: ['/insikter', '/resultat', '/history', '/historik', '/data-center', '/datacenter', '/setup-performance', '/setup-resultat'], accent: 'purple' },
-      { path: '/system', label: 'System', icon: 'S', match: ['/system', '/system-health', '/health', '/halsa', '/alerts', '/larm', '/sakerhet', '/risk', '/risk-engine', '/safety', '/execution-safety'], accent: 'blue' },
-    ],
-  },
-  {
-    id: 'labs',
-    label: 'Labs',
-    items: [
-      // Kvar i Labs: strategier, review, kandidater, learning, marknader, sliders,
-      // exits, AI-agent och beslutsråd — det experimentella. Replay och Batch har
-      // flyttat till Forskning, så Labs får inte längre lysa upp på deras flikar.
-      { path: '/lab', label: 'Labs', icon: 'L', match: ['/lab', '/trading-lab', '/strategy-lab', '/strategilabb', '/review-chart', '/machine', '/intelligence', '/intelligens', '/missed-breakouts', '/micro-move', '/wave', '/exit-engine', '/exit', '/pinescript', '/pine-script', '/ai', '/narrow', '/narrow-state'], excludeTabs: ['replay', 'batch'], accent: 'teal' },
-    ],
-  },
-];
 
 const ACCENT_CLASS = {
   blue:   'sb-icon-blue',
@@ -53,21 +11,9 @@ const ACCENT_CLASS = {
   teal:   'sb-icon-teal',
 };
 
-function isActive(item, pathname, search) {
-  const tab = new URLSearchParams(search).get('tab');
-  if (item.tab) {
-    return (item.match || [item.path]).some((p) => pathname === p.split('?')[0]) && tab === item.tab;
-  }
-  const matches = (item.match || [item.path]).map((p) => p.split('?')[0]);
-  const matched = matches.some((p) => pathname === p || pathname.startsWith(`${p}/`));
-  if (!matched) return false;
-  if (item.excludeTabs?.includes(tab)) return false;
-  return true;
-}
-
 function NavItem({ item, onClose }) {
   const { pathname, search } = useLocation();
-  const active = isActive(item, pathname, search);
+  const active = isNavItemActive(item, pathname, search);
   const iconCls = active ? `sb-icon ${ACCENT_CLASS[item.accent] || 'sb-icon-blue'} sb-icon-active` : `sb-icon ${ACCENT_CLASS[item.accent] || 'sb-icon-blue'}`;
 
   return (
@@ -106,7 +52,7 @@ export default function Sidebar({ open, onClose }) {
 
         {/* Nav */}
         <nav className="sb-nav" aria-label="Huvudnavigation">
-          {NAV_GROUPS.map((group) => (
+          {navGroupsFor(NAV_SURFACES.SIDEBAR).map((group) => (
             <div key={group.id} className="sb-group">
               {group.label && (
                 <div className="sb-group-header">
@@ -117,7 +63,7 @@ export default function Sidebar({ open, onClose }) {
               )}
               <div className="sb-group-items">
                 {group.items.map((item) => (
-                  <NavItem key={item.path} item={item} onClose={onClose} />
+                  <NavItem key={item.id} item={item} onClose={onClose} />
                 ))}
               </div>
             </div>
