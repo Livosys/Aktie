@@ -12,15 +12,20 @@ export default function MobileBottomNav() {
     { id: 'overview', label: 'Översikt', active: pathname === '/' || pathname.startsWith('/supervisor'), to: '/supervisor' },
     { id: 'futures', label: 'Futures', active: onFuturesPage && !['positioner', 'ordrar'].includes(currentTab), to: '/futures-paper' },
     { id: 'positions', label: 'Positioner', active: onFuturesPage && currentTab === 'positioner', to: '/futures-paper?tab=positioner' },
-    { id: 'execution', label: 'Execution', active: onFuturesPage && currentTab === 'ordrar', to: '/futures-paper?tab=ordrar' },
+    // Fliken heter 'ordrar' av bakåtkompatibilitetsskäl men visar Live Scanner.
+    { id: 'execution', label: 'Live Scanner', active: onFuturesPage && currentTab === 'ordrar', to: '/futures-paper?tab=ordrar' },
   ];
+  // Replay och Batch ligger först: de är egna arbetsytor, inte laborationer.
+  // Aktivt läge avgörs av tab-parametern, inte av en exakt URL-sträng, så att
+  // /replay och andra omdirigeringar också markerar rätt post.
+  const onLabPage = pathname.startsWith('/lab');
   const drawerLinks = [
+    { id: 'replay', label: 'Replay', active: (onLabPage && currentTab === 'replay') || pathname.startsWith('/replay'), to: '/lab?tab=replay' },
+    { id: 'batch', label: 'Batch', active: (onLabPage && currentTab === 'batch') || pathname.startsWith('/batch'), to: '/lab?tab=batch' },
     { id: 'history', label: 'Historik', active: pathname.startsWith('/insikter'), to: '/insikter' },
     { id: 'system', label: 'System', active: pathname.startsWith('/system'), to: '/system' },
-    { id: 'labs', label: 'Labs', active: pathname.startsWith('/lab') && !['/lab?tab=batch', '/lab?tab=replay'].includes(currentLocation), to: '/lab' },
+    { id: 'labs', label: 'Labs', active: onLabPage && !['batch', 'replay'].includes(currentTab), to: '/lab' },
     { id: 'pinescript', label: 'PineScript', active: pathname.startsWith('/pinescript') || pathname.startsWith('/pine-script'), to: '/pinescript' },
-    { id: 'batch', label: 'Batch Lab', active: currentLocation === '/lab?tab=batch', to: '/lab?tab=batch' },
-    { id: 'replay', label: 'Replay Lab', active: currentLocation === '/lab?tab=replay' || pathname.startsWith('/replay'), to: '/lab?tab=replay' },
     { id: 'ai', label: 'AI Research', active: pathname.startsWith('/ai'), to: '/ai' },
     { id: 'narrow', label: 'Narrow Lab', active: pathname.startsWith('/narrow'), to: '/narrow' },
   ];
