@@ -159,6 +159,14 @@ function defaultNativeFuturesSignalReader({
   feed = null,
   symbols = ['MNQ', 'MES'],
   timeframe = '2m',
+  // Färskhetsfönstret för quotes. Live vill ha sekunder; en historisk feed
+  // härleder sin quote ur senast stängda candle och är därför alltid minst en
+  // bar gammal. Utan den här parametern skulle varje replay-rad fastna på
+  // stale_market_data och kedjan aldrig utvärderas.
+  //
+  // Motorn lär sig INTE vilken feed den har — det är kompositionsroten som
+  // sätter fönstret, precis som den väljer feed.
+  maxQuoteAgeMs = null,
 } = {}) {
   if (!priceFeedService && !feed) return [];
   const candleCache = new Map();
@@ -195,6 +203,12 @@ function defaultNativeFuturesSignalReader({
   const scanner = createNativeFuturesScanner({
     symbols,
     timeframe,
+    // Number(null) är 0 och Number.isFinite(0) är true — utan null-kontrollen
+    // hade utelämnad parameter satt fönstret till noll och gjort varje quote
+    // stale. Endast ett positivt tal får åsidosätta scannerns default.
+    ...(maxQuoteAgeMs != null && Number(maxQuoteAgeMs) > 0
+      ? { maxQuoteAgeMs: Number(maxQuoteAgeMs) }
+      : {}),
     contractReader: ({ symbol }) => {
       const candleResult = candlesFor(symbol);
       return normalizeContractFrom(candleResult?.contract || quoteFor(symbol), symbol);
