@@ -346,7 +346,7 @@ test('5 · identitetsfälten är stabila när kedjan faktiskt producerar signale
   if (!DAY) return;
   const feedA = historicalModule.createHistoricalPriceFeedService();
   const feedB = historicalModule.createHistoricalPriceFeedService();
-  const FIELDS = ['signalId', 'strategyId', 'entry', 'stopLoss', 'takeProfit',
+  const FIELDS = ['signalId', 'strategyId', 'entryPrice', 'stopLoss', 'takeProfit', 'riskReward',
     'signalFamily', 'signalSubtype', 'candidateId', 'direction', 'symbol', 'signalTimestamp'];
 
   // Går igenom en handelsdag minut för minut med replay-grinden, så att
@@ -362,6 +362,11 @@ test('5 · identitetsfälten är stabila när kedjan faktiskt producerar signale
     const sa = signalsAt(feedA, now, { maxQuoteAgeMs: REPLAY_QUOTE_AGE_MS });
     const sb = signalsAt(feedB, now, { maxQuoteAgeMs: REPLAY_QUOTE_AGE_MS });
     for (let k = 0; k < sa.length; k += 1) {
+      // Ett fält som saknas på BÅDA sidor jämför ingenting. Kräv att de
+      // prisbärande fälten faktiskt finns, annars är assertionen tom.
+      for (const field of ['signalId', 'strategyId', 'entryPrice', 'stopLoss', 'takeProfit']) {
+        assert.ok(sa[k]?.[field] != null, `${field} saknas i signalen — assertionen vore tom`);
+      }
       for (const field of FIELDS) {
         assert.deepEqual(sb[k]?.[field], sa[k]?.[field], `${field} skiljer @ ${now.toISOString()}`);
       }
