@@ -1,25 +1,24 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
-import { DashboardShell, EmptyState } from '../components/dashboard/DashboardKit.jsx';
+import { DashboardShell } from '../components/dashboard/DashboardKit.jsx';
 import FuturesTechnicalInfoPanel from '../components/futures/FuturesTechnicalInfoPanel.jsx';
 import FuturesPaperStrategyApprovalPanel from '../components/futures/FuturesPaperStrategyApprovalPanel.jsx';
 import {
-  positionRoot,
-  stablePositionKey,
-} from '../domain/PositionDomain.js';
-import {
+  BrokerOrdersPanel,
   FieldGrid,
-  FillTimeline,
+  FillsPanel,
+  LiveScannerPanel,
   MetricCard,
   OverviewPanel,
-  OrderTimeline,
-  PositionCard,
+  PositionDeskPanel,
   PortfolioIntelligence,
   QuoteTape,
   SectionHeader,
   StatusBadge as Pill,
   StatusRail,
   StrategyDashboard,
+  StrategyStatisticsPanel,
+  TradeJournal,
   TradingAnalyticsPanel,
   createDecisionStore,
   createTradingEventStore,
@@ -27,6 +26,9 @@ import {
   statusTone,
   tradingSectionStyle as sectionStyle,
 } from '../components/trading/index.js';
+import { buildTradeJournal } from '../domain/TradeJournalDomain.js';
+import { buildScannerRows, summarizeScanner } from '../domain/ScannerDomain.js';
+import { buildPositionDeskRows, summarizePositionDesk } from '../domain/PositionDeskDomain.js';
 import {
   EMPTY_VALUE,
   WAITING_BROKER,
@@ -49,14 +51,25 @@ const FETCH_TIMEOUT_MS = 7_000;
 
 const STATUS_COPY = 'Futures Paper använder IBKR Paper Trading som enda execution-miljö. Systemet är nu i shadow mode: strategier och orderplaner valideras, men faktisk ordersändning är avstängd tills säkerhetsgranskningen och första pilotordern har godkänts. Livekonton och riktiga pengar är blockerade.';
 
+// Flikordningen ÄR informationshierarkin. Trade först, därefter statistik, sedan
+// brokerns lager (order → execution), sedan kontext och sist diagnostik. Id:na är
+// oförändrade, så gamla ?tab=-länkar fortsätter fungera.
 const TABS = [
+  // Nivå 1 — det användaren öppnar varje dag. Nivå 2 (trade details) bor inuti raden.
+  { id: 'trades', label: 'Trades' },
+  { id: 'analytics', label: 'Analytics' },
+  // Live Scanner: vad som scannas just nu. Id:t 'ordrar' behålls med flit —
+  // sidomenyns Execution-post pekar hit och gamla länkar ska inte dö.
+  { id: 'ordrar', label: 'Live Scanner' },
+  // Nivå 3–4 — hur brokern hanterade traden.
+  { id: 'broker-orders', label: 'Broker Orders' },
+  { id: 'fills', label: 'Executions' },
+  // Kontext kring traderna.
   { id: 'oversikt', label: 'Översikt' },
   { id: 'strategier', label: 'Strategy Dashboard' },
-  { id: 'analytics', label: 'Analytics' },
+  { id: 'positioner', label: 'Positioner' },
   { id: 'konto', label: 'IBKR Paper-konto' },
-  { id: 'positioner', label: 'Brokerpositioner' },
-  { id: 'ordrar', label: 'Ordrar' },
-  { id: 'fills', label: 'Fills & trades' },
+  // Nivå 5 — identitet, diagnostik och arkiv.
   { id: 'runtime', label: 'Runtime' },
   { id: 'ibkr', label: 'IBKR Paper Execution' },
   { id: 'godkannande', label: 'Godkännande' },
@@ -66,8 +79,11 @@ const TABS = [
 
 const TAB_IDS = new Set(TABS.map((tab) => tab.id));
 
+// Trades är den primära vyn — den är det operatören öppnar varje dag.
+const DEFAULT_TAB = 'trades';
+
 function normalizeTabId(tabId) {
-  return TAB_IDS.has(tabId) ? tabId : 'oversikt';
+  return TAB_IDS.has(tabId) ? tabId : DEFAULT_TAB;
 }
 
 async function fetchJsonWithTimeout(url, { timeoutMs = FETCH_TIMEOUT_MS, signal } = {}) {
@@ -171,7 +187,7 @@ export default function FuturesPaperDeskPage() {
     const nextTab = normalizeTabId(tabId);
     setSearchParams((current) => {
       const next = new URLSearchParams(current);
-      if (nextTab === 'oversikt') {
+      if (nextTab === DEFAULT_TAB) {
         next.delete('tab');
       } else {
         next.set('tab', nextTab);
@@ -274,24 +290,6 @@ export default function FuturesPaperDeskPage() {
   const dailyBrokerPnl = account.dailyPnl ?? null;
   const degraded = account.degraded === true || reconciliation.degraded === true;
 
-  const instrumentByRoot = useMemo(() => {
-    const map = new Map();
-    for (const instrument of instruments) {
-      const root = positionRoot(instrument);
-      if (root) map.set(root, instrument);
-    }
-    return map;
-  }, [instruments]);
-
-  const quoteByRoot = useMemo(() => {
-    const map = new Map();
-    for (const quote of quotes) {
-      const root = positionRoot(quote);
-      if (root) map.set(root, quote);
-    }
-    return map;
-  }, [quotes]);
-
   const strategyStore = useMemo(() => createStrategyStore({
     runtimeSnapshot: data,
     executionSnapshot: executionData,
@@ -325,19 +323,71 @@ export default function FuturesPaperDeskPage() {
     return tab;
   }), [executionModeText]);
 
-  const livePositionCards = useMemo(() => brokerPositions.map((position, index) => {
-    const root = positionRoot(position);
-    return {
-      key: stablePositionKey(position, index),
-      position,
-      instrument: instrumentByRoot.get(root) || null,
-      quote: quoteByRoot.get(root) || null,
-      strategy: strategyStore.resolveStrategy(position),
-    };
-  }), [brokerPositions, instrumentByRoot, quoteByRoot, strategyStore]);
+  // En rad = en trade. Grupperingen använder befintlig identitetskedja
+  // (signalId → candidateId → intentId → executionId → tradeId → brokerOrderIds)
+  // och skapar ingen ny datamodell och ingen ny persistence.
+  const tradeJournal = useMemo(() => buildTradeJournal({
+    intents: brokerOrderIntents,
+    brokerOrders,
+    brokerFills,
+    brokerOrderStatuses,
+    brokerPositions,
+    resolveStrategy: (source) => strategyStore.resolveStrategy(source),
+  }), [brokerFills, brokerOrderIntents, brokerOrderStatuses, brokerOrders, brokerPositions, strategyStore]);
 
-  const kpis = useMemo(() => [
-    { label: 'Execution target', value: executionModeText, hint: executionTargetText, tone: hasValue(executionTarget) ? 'good' : 'warning' },
+  // Live Scanner: en rad per (strategi × marknad). Härleds ur samma runtime-
+  // snapshot som resten av sidan — ingen egen hämtning, inget nytt API.
+  const scannerRows = useMemo(() => buildScannerRows({
+    strategyOverview,
+    candidates: queueCandidates,
+    brokerPositions,
+    scanner,
+    scanHistory,
+    quotes,
+    resolveStrategy: (source) => strategyStore.resolveStrategy(source),
+  }), [brokerPositions, quotes, queueCandidates, scanHistory, scanner, strategyOverview, strategyStore]);
+
+  const scannerSummary = useMemo(
+    () => summarizeScanner(scannerRows, { scanner, candidates: queueCandidates, scanHistory }),
+    [queueCandidates, scanHistory, scanner, scannerRows],
+  );
+
+  const [focusExecutionId, setFocusExecutionId] = useState(null);
+  const selectTrade = useCallback((executionId) => {
+    if (!executionId) return;
+    setFocusExecutionId(executionId);
+    handleTabChange('trades');
+  }, [handleTabChange]);
+
+  // Live Trading Desk: en rad = en öppen position. Raden byggs ur broker mirror
+  // och den öppna traden i journalen, och allt live räknas ur den quote som
+  // runtime-snapshoten redan levererar — ingen ny hämtning, inget nytt API.
+  const positionDeskRows = useMemo(() => buildPositionDeskRows({
+    brokerPositions,
+    trades: tradeJournal.trades,
+    quotes,
+    instruments,
+    resolveStrategy: (source) => strategyStore.resolveStrategy(source),
+    now: Date.now(),
+  }), [brokerPositions, instruments, quotes, strategyStore, tradeJournal.trades]);
+
+  const positionDeskSummary = useMemo(
+    () => summarizePositionDesk(positionDeskRows, { trades: tradeJournal.trades, now: Date.now() }),
+    [positionDeskRows, tradeJournal.trades],
+  );
+
+  // KPI-raden ligger ovanför varje flik, alltså även i standardvyn. Den ska svara
+  // på "kan jag handla och hur mycket", inte rapportera backend-tillstånd.
+  // Execution target är ett routingvärde som står still dygnet runt — det bor i
+  // Teknisk info och på traden. Reconciliation är brokerdiagnostik: den visas bara
+  // när den är degraderad, för då är den ett faktiskt varningstecken.
+  // Positioner har egna KPI:er (öppet, orealiserat, dagens resultat). Konto- och
+  // brokerkorten skulle bara konkurrera med dem om blicken — de bor på Översikt
+  // och IBKR Paper-konto och visas därför inte ovanför trading desken.
+  const kpis = useMemo(() => (activeTab === 'positioner' ? [] : [
+    ...(hasValue(executionTarget) ? [] : [
+      { label: 'Execution target', value: executionTargetText, tone: 'warning' },
+    ]),
     {
       label: 'Net Liquidation',
       value: moneyOrWaiting(account.netLiquidation, currency, waitingForRuntime),
@@ -362,13 +412,14 @@ export default function FuturesPaperDeskPage() {
       hint: snapshotHint({ waiting: waitingForRuntime, fallback: brokerMirrorSourceText }),
       tone: hasBrokerPositionSnapshot && brokerPositions.length ? 'blue' : 'good',
     },
-    {
+    ...(degraded ? [{
       label: 'Reconciliation',
       value: reconciliationStatus,
       hint: reconciliation.blockedReason || snapshotHint({ waiting: waitingForRuntime || waitingForExecution, fallback: 'Broker mirror' }),
-      tone: degraded ? 'warning' : 'good',
-    },
-  ], [
+      tone: 'warning',
+    }] : []),
+  ]), [
+    activeTab,
     account.availableFunds,
     account.buyingPower,
     account.netLiquidation,
@@ -394,7 +445,10 @@ export default function FuturesPaperDeskPage() {
   return (
     <DashboardShell
       title={isLiveExecution ? 'Futures Live Desk' : 'Futures Paper Desk'}
-      subtitle={`${executionModeLabel} är aktiv execution target. Intern futures-simulering är avvecklad.`}
+      // Underrubriken säger vad sidan visar, inte hur den är byggd. Att IBKR Paper är
+      // enda execution-miljö står redan i säkerhetsbannern nedanför — och att den interna
+      // simuleringen är avvecklad är migrationshistorik, inte något en trader behöver.
+      subtitle="Trades tagna av dina strategier: vilken strategi, hur det gick och varför de stängdes."
       safety={data}
       tabs={tabs}
       activeTab={activeTab}
@@ -411,6 +465,21 @@ export default function FuturesPaperDeskPage() {
           <div style={{ color: 'var(--muted)', marginTop: 6, fontSize: 13 }}>{runtime.error}</div>
         </section>
       ) : null}
+
+      {activeTab === 'trades' && (
+        <div style={{ marginTop: 14 }}>
+          <TradeJournal
+            trades={tradeJournal.trades}
+            totalTrades={tradeJournal.totalTrades}
+            truncated={tradeJournal.truncated}
+            currency={currency || 'USD'}
+            waiting={waitingForRuntime && !hasOrderLifecycleSnapshot}
+            focusExecutionId={focusExecutionId}
+            onFocusHandled={() => setFocusExecutionId(null)}
+            action={refreshButton}
+          />
+        </div>
+      )}
 
       {activeTab === 'oversikt' && (
         <>
@@ -571,24 +640,43 @@ export default function FuturesPaperDeskPage() {
       )}
 
       {activeTab === 'strategier' && (
-        <StrategyDashboard
-          strategyStore={strategyStore}
-          eventStore={tradingEventStore}
-          decisionStore={decisionStore}
-          waiting={waitingForRuntime && !hasRuntimeSnapshot}
-          title="Strategy Dashboard"
-          summary="Central operating console for Futures Paper strategy state, signal context, risk, approval and performance. All rows consume the shared Strategy Store."
-        />
+        <div style={{ display: 'grid', gap: 14 }}>
+          <StrategyDashboard
+            strategyStore={strategyStore}
+            eventStore={tradingEventStore}
+            decisionStore={decisionStore}
+            waiting={waitingForRuntime && !hasRuntimeSnapshot}
+            title="Strategy Dashboard"
+            summary="Central operating console for Futures Paper strategy state, signal context, risk, approval and performance. All rows consume the shared Strategy Store."
+          />
+        </div>
       )}
 
       {activeTab === 'analytics' && (
-        <TradingAnalyticsPanel
-          strategyStore={strategyStore}
-          eventStore={tradingEventStore}
-          decisionStore={decisionStore}
-          analytics={analytics}
-          waiting={waitingForRuntime && !hasRuntimeSnapshot}
-        />
+        <div style={{ display: 'grid', gap: 14 }}>
+          {/* Analytics = statistik för traders. Samma journalrader ses ur tre vinklar:
+              vilken strategi, vilken familj och vilken marknad som tjänar pengar.
+              Siffrorna kan inte gå isär med Trades-sidan — de räknas ur samma rader.
+              Backend-fälten och seriekatalogen bor i Runtime, inte här. */}
+          <StrategyStatisticsPanel
+            trades={tradeJournal.trades}
+            currency={currency || 'USD'}
+            waiting={waitingForRuntime && !hasOrderLifecycleSnapshot}
+            groupBy="strategy"
+          />
+          <StrategyStatisticsPanel
+            trades={tradeJournal.trades}
+            currency={currency || 'USD'}
+            waiting={waitingForRuntime && !hasOrderLifecycleSnapshot}
+            groupBy="family"
+          />
+          <StrategyStatisticsPanel
+            trades={tradeJournal.trades}
+            currency={currency || 'USD'}
+            waiting={waitingForRuntime && !hasOrderLifecycleSnapshot}
+            groupBy="symbol"
+          />
+        </div>
       )}
 
       {activeTab === 'konto' && (
@@ -606,105 +694,50 @@ export default function FuturesPaperDeskPage() {
       )}
 
       {activeTab === 'positioner' && (
-        <section style={{ ...sectionStyle({ marginTop: 14 }) }}>
-            <SectionHeader eyebrow={`source=${brokerMirrorSourceText}`} title="Live Position System" summary="Aktiva positioner kommer från backendens positionskälla eller reconciliation mirror. Kortens beräknade fält visas bara när befintliga broker-, quote- och instrumentfält räcker." />
-          {waitingForRuntime && !hasBrokerPositionSnapshot ? (
-            <EmptyState text={WAITING_BROKER} />
-          ) : livePositionCards.length ? (
-            <div style={{
-              display: 'grid',
-              gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))',
-              gap: 12,
-            }}>
-              {livePositionCards.map((item) => (
-                <PositionCard
-                  key={item.key}
-                  position={item.position}
-                  instrument={item.instrument}
-                  quote={item.quote}
-                  brokerOrders={hasBrokerOrderSnapshot ? brokerOrders : []}
-                  brokerOrdersAvailable={hasBrokerOrderSnapshot}
-                  reconciliation={reconciliation}
-                  snapshotAt={data.generatedAt || executionData.generatedAt}
-                  currency={currency}
-                  strategy={item.strategy}
-                  eventStore={tradingEventStore}
-                  decisionStore={decisionStore}
-                />
-              ))}
-            </div>
-          ) : (
-            <EmptyState text={hasBrokerPositionSnapshot ? 'Inga öppna brokerpositioner.' : EMPTY_VALUE} />
-          )}
-
-          <div style={{ marginTop: 16 }}>
-            <SectionHeader eyebrow="Broker mirror detail" title="Brokerpositioner" summary="Tabellen visar råa brokerfält från samma frontend-snapshot som positionkorten." />
-          </div>
-          <CompactTable
-            rows={brokerPositions}
-            emptyText={degraded ? `Brokerpositioner är osäkra: ${reconciliation.blockedReason || 'reconciliation_degraded'}` : 'Inga öppna brokerpositioner.'}
-            columns={[
-              { key: 'accountMasked', label: 'Account', render: (row) => row.accountMasked || EMPTY_VALUE },
-              { key: 'root', label: 'Root', render: (row) => row.root || row.symbol || EMPTY_VALUE },
-              { key: 'localSymbol', label: 'LocalSymbol' },
-              { key: 'conId', label: 'conId' },
-              { key: 'expiry', label: 'Expiry' },
-              { key: 'side', label: 'Side' },
-              { key: 'quantity', label: 'Qty', render: (row) => fmtNumber(row.quantity) },
-              { key: 'averageCost', label: 'Avg cost', render: (row) => fmtNumber(row.averageCost ?? row.avgCost, 2) },
-              { key: 'marketPrice', label: 'Market price', render: (row) => fmtNumber(row.marketPrice, 2) },
-              { key: 'unrealizedPnl', label: 'Unrealized PnL', render: (row) => fmtMoney(row.unrealizedPnl, currency) },
-              { key: 'realizedPnl', label: 'Realized PnL', render: (row) => fmtMoney(row.realizedPnl, currency) },
-              { key: 'source', label: 'Source', render: (row) => (hasValue(row.source || row.executionSource) ? <Pill tone="success">{row.source || row.executionSource}</Pill> : EMPTY_VALUE) },
-              { key: 'reconciliationTimestamp', label: 'Reconciled', render: (row) => fmtTime(row.reconciliationTimestamp) },
-              { key: 'protectiveOrderStatus', label: 'Protection', render: (row) => row.protectiveOrderStatus || EMPTY_VALUE },
-            ]}
+        <div style={{ marginTop: 14 }}>
+          {/* Positioner är en trading desk, inte en brokerspegel: standardvyn visar
+              bara öppna positioner och det som avgör nästa beslut. Broker mirror,
+              reconciliation, account summary och execution control bor i Runtime
+              respektive IBKR Paper-konto — de finns kvar, men inte här. */}
+          <PositionDeskPanel
+            rows={positionDeskRows}
+            summary={positionDeskSummary}
+            currency={currency || 'USD'}
+            waiting={waitingForRuntime && !hasBrokerPositionSnapshot}
+            action={refreshButton}
           />
-        </section>
+        </div>
       )}
 
       {activeTab === 'ordrar' && (
-        <section style={{ ...sectionStyle({ marginTop: 14 }) }}>
-          <SectionHeader
-            eyebrow="strategy-driven lifecycle"
-            title="Orders & Strategy Lifecycle"
-            summary="Orderkort kopplar broker mirror, orderstatusar, kandidater och reconciliation intents tillbaka till strategin när fälten redan finns i runtime-snapshoten."
+        <div style={{ marginTop: 14 }}>
+          <LiveScannerPanel
+            rows={scannerRows}
+            summary={scannerSummary}
+            scanHistory={scanHistory}
+            scannerConnected={scanner.connected ?? null}
+            waiting={waitingForRuntime && !hasRuntimeSnapshot}
+            action={refreshButton}
           />
-          <OrderTimeline
-            orders={orderLifecycleRows}
-            orderStatuses={brokerOrderStatuses}
-            strategyStore={strategyStore}
-            eventStore={tradingEventStore}
-            decisionStore={decisionStore}
-            reconciliation={reconciliation}
-            snapshotAt={data.generatedAt || executionData.generatedAt}
-            waiting={waitingForRuntime && !hasOrderLifecycleSnapshot && !hasBrokerOrderStatusSnapshot}
-          />
-          <div style={{ marginTop: 16 }}>
-            <SectionHeader eyebrow="Broker mirror detail" title="Open broker orders" summary="Råa openOrder-fält från samma frontend-snapshot. Strategikontexten ovan använder endast befintliga order-, candidate- och intentfält." />
-          </div>
-          <CompactTable
-            rows={brokerOrders}
-            emptyText="Inga öppna brokerorders."
-            columns={[
-              { key: 'orderId', label: 'OrderId' },
-              { key: 'permId', label: 'PermId' },
-              { key: 'orderRef', label: 'OrderRef' },
-              { key: 'accountMasked', label: 'Account' },
-              { key: 'localSymbol', label: 'LocalSymbol' },
-              { key: 'conId', label: 'conId' },
-              { key: 'action', label: 'Action' },
-              { key: 'quantity', label: 'Qty', render: (row) => fmtNumber(row.quantity) },
-              { key: 'orderType', label: 'Type' },
-              { key: 'limitPrice', label: 'Limit', render: (row) => fmtNumber(row.limitPrice, 2) },
-              { key: 'stopPrice', label: 'Stop', render: (row) => fmtNumber(row.stopPrice, 2) },
-              { key: 'status', label: 'Status', render: (row) => <Pill tone={statusTone(row.status)}>{row.status || EMPTY_VALUE}</Pill> },
-              { key: 'updatedAt', label: 'Updated', render: (row) => fmtTime(row.updatedAt) },
-            ]}
+        </div>
+      )}
+
+      {activeTab === 'broker-orders' && (
+        <>
+          <BrokerOrdersPanel
+            brokerOrders={brokerOrders}
+            brokerOrderStatuses={brokerOrderStatuses}
+            waiting={waitingForRuntime && !hasBrokerOrderSnapshot && !hasBrokerOrderStatusSnapshot}
+            onSelectTrade={selectTrade}
+            action={refreshButton}
           />
           {brokerOrderStatuses.length ? (
-            <div style={{ marginTop: 16 }}>
-              <SectionHeader eyebrow="Broker lifecycle events" title="Order status events" summary="IBKR orderStatus-fält från broker reconciliation; används också för fylld/återstående kvantitet och average fill price i livscykelkorten." />
+            <section style={{ ...sectionStyle({ marginTop: 14 }) }}>
+              <SectionHeader
+                eyebrow="Broker lifecycle events"
+                title="Order status events"
+                summary="Råa IBKR orderStatus-fält från broker reconciliation. Ingen PnL, ingen strategistatistik — bara brokerns egen orderlivscykel."
+              />
               <CompactTable
                 rows={brokerOrderStatuses.map((row, index) => ({ ...row, id: row.orderId || row.permId || index }))}
                 emptyText="Inga orderstatus-events i snapshot."
@@ -721,57 +754,37 @@ export default function FuturesPaperDeskPage() {
                   { key: 'updatedAt', label: 'Updated', render: (row) => fmtTime(row.updatedAt) },
                 ]}
               />
-            </div>
+            </section>
           ) : null}
-        </section>
+          {/* Ingen trade-statistik här — den här sidan svarar bara för brokerns ordrar. */}
+          <div style={{ marginTop: 10, color: 'var(--muted)', fontSize: 12 }}>
+            {fmtNumber(orderLifecycleRows.length)} orderrader i broker mirror + intent-logg.
+          </div>
+        </>
       )}
 
       {activeTab === 'fills' && (
-        <section style={{ ...sectionStyle({ marginTop: 14 }) }}>
-          <SectionHeader
-            eyebrow="strategy-linked executions"
-            title="Fills & Strategy Attribution"
-            summary="Fills länkas tillbaka till strategi, candidate och orderRef när backend redan exponerar kopplingen via broker executions eller reconciliation intents."
-          />
-          <FillTimeline
-            fills={brokerFills}
-            strategyStore={strategyStore}
-            eventStore={tradingEventStore}
-            decisionStore={decisionStore}
+        <>
+          <FillsPanel
+            brokerFills={brokerFills}
+            currency={currency || 'USD'}
             waiting={waitingForRuntime && !hasBrokerFillSnapshot}
-          />
-          <div style={{ marginTop: 16 }}>
-            <SectionHeader eyebrow="Broker mirror detail" title="Fills & trades" summary="Nya trades skapas från execDetails, commissionReport och broker reconciliation. Legacy-resultat ingår inte i totalsiffror." />
-          </div>
-          <CompactTable
-            rows={brokerFills}
-            emptyText="Inga brokerfills i reconciliation-mirrorn."
-            columns={[
-              { key: 'ibOrderId', label: 'IB orderId' },
-              { key: 'permId', label: 'permId' },
-              { key: 'execId', label: 'execId' },
-              { key: 'orderRef', label: 'orderRef' },
-              { key: 'strategyId', label: 'strategyId' },
-              { key: 'candidateId', label: 'candidateId' },
-              { key: 'conId', label: 'conId' },
-              { key: 'localSymbol', label: 'localSymbol' },
-              { key: 'side', label: 'side' },
-              { key: 'quantity', label: 'qty', render: (row) => fmtNumber(row.quantity) },
-              { key: 'fillPrice', label: 'fill price', render: (row) => fmtNumber(row.fillPrice, 2) },
-              { key: 'commission', label: 'commission', render: (row) => row.commission == null ? EMPTY_VALUE : `${fmtNumber(row.commission, 2)} ${row.commissionCurrency || ''}` },
-              { key: 'realizedResult', label: 'realized result', render: (row) => fmtMoney(row.realizedResult, currency) },
-              { key: 'source', label: 'source', render: (row) => (hasValue(row.source || row.executionSource) ? <Pill tone="success">{row.source || row.executionSource}</Pill> : EMPTY_VALUE) },
-            ]}
+            onSelectTrade={selectTrade}
+            action={refreshButton}
           />
           {brokerCommissions.length ? (
             <div style={{ marginTop: 10, color: 'var(--muted)', fontSize: 12 }}>Commission reports: {fmtNumber(brokerCommissions.length)}</div>
           ) : null}
-        </section>
+        </>
       )}
 
       {activeTab === 'runtime' && (
+        <>
+        {/* Radarn — kandidatkön och scanhistoriken — bor på Live Scanner. Kvar här
+            ligger den råa runtime-diagnostiken: routing, blockers och scanmotorns
+            egna räknare, alltså det som beskriver systemet och inte handeln. */}
         <section style={{ ...sectionStyle({ marginTop: 14 }) }}>
-          <SectionHeader eyebrow="Runtime" title="Scanner och kandidater" summary={`Scannern skapar server-side kandidater för ${executionModeLabel}. Intern execution är blockerad.`} />
+          <SectionHeader eyebrow="Runtime" title="Scanner runtime" summary="Routing, blockers och scanmotorns egna räknare. Vad som faktiskt scannas visas på Live Scanner." />
           <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginBottom: 12 }}>
             <Pill tone={hasValue(executionTarget) ? 'success' : 'warning'}>{executionModeText}</Pill>
             <Pill tone={hasValue(executionTarget) ? 'success' : 'warning'}>onlyActiveExecutionTarget={executionTargetText}</Pill>
@@ -779,19 +792,6 @@ export default function FuturesPaperDeskPage() {
             <Pill tone={market.isMarketOpen || market.isOpen ? 'success' : 'warning'}>session={market.sessionLabel || market.session || EMPTY_VALUE}</Pill>
             <Pill tone={degraded ? 'warning' : 'success'}>reconciliation={reconciliation.status || EMPTY_VALUE}</Pill>
           </div>
-          <CompactTable
-            rows={queueCandidates}
-            emptyText={`Inga kandidater väntar på ${executionModeLabel}.`}
-            columns={[
-              { key: 'candidateId', label: 'Candidate' },
-              { key: 'strategyId', label: 'Strategy' },
-              { key: 'symbol', label: 'Root' },
-              { key: 'direction', label: 'Side' },
-              { key: 'executionTarget', label: 'Target', render: (row) => (hasValue(row.executionTarget) ? <Pill tone="success">{row.executionTarget}</Pill> : EMPTY_VALUE) },
-              { key: 'status', label: 'Status', render: (row) => <Pill tone={statusTone(row.status)}>{row.status || EMPTY_VALUE}</Pill> },
-              { key: 'timestamp', label: 'Signal time', render: (row) => fmtTime(row.signalTimestamp || row.timestamp || row.createdAt) },
-            ]}
-          />
           <div style={{ marginTop: 14 }}>
             <SectionHeader eyebrow="Blockers" title="Status reasons" />
             <div style={{ display: 'grid', gap: 6 }}>
@@ -800,8 +800,33 @@ export default function FuturesPaperDeskPage() {
               )) : <div style={{ color: 'var(--muted)', fontSize: 13 }}>Inga runtime-reasons.</div>}
             </div>
           </div>
+          {/* Broker mirror-tabellen låg tidigare på Positioner. Den beskriver hur
+              brokern speglas, inte hur handeln går, och är därför diagnostik. */}
           <div style={{ marginTop: 14 }}>
-            <SectionHeader eyebrow="Scan history" title="Senaste scans" />
+            <SectionHeader eyebrow={`Broker mirror · source=${brokerMirrorSourceText}`} title="Brokerpositioner" summary="Råa brokerfält från reconciliation-spegeln. Handelsvyn över samma positioner finns på Positioner." />
+            <CompactTable
+              rows={brokerPositions}
+              emptyText={degraded ? `Brokerpositioner är osäkra: ${reconciliation.blockedReason || 'reconciliation_degraded'}` : 'Inga öppna brokerpositioner.'}
+              columns={[
+                { key: 'accountMasked', label: 'Account', render: (row) => row.accountMasked || EMPTY_VALUE },
+                { key: 'root', label: 'Root', render: (row) => row.root || row.symbol || EMPTY_VALUE },
+                { key: 'localSymbol', label: 'LocalSymbol' },
+                { key: 'conId', label: 'conId' },
+                { key: 'expiry', label: 'Expiry' },
+                { key: 'side', label: 'Side' },
+                { key: 'quantity', label: 'Qty', render: (row) => fmtNumber(row.quantity) },
+                { key: 'averageCost', label: 'Avg cost', render: (row) => fmtNumber(row.averageCost ?? row.avgCost, 2) },
+                { key: 'marketPrice', label: 'Market price', render: (row) => fmtNumber(row.marketPrice, 2) },
+                { key: 'unrealizedPnl', label: 'Unrealized PnL', render: (row) => fmtMoney(row.unrealizedPnl, currency) },
+                { key: 'realizedPnl', label: 'Realized PnL', render: (row) => fmtMoney(row.realizedPnl, currency) },
+                { key: 'source', label: 'Source', render: (row) => (hasValue(row.source || row.executionSource) ? <Pill tone="success">{row.source || row.executionSource}</Pill> : EMPTY_VALUE) },
+                { key: 'reconciliationTimestamp', label: 'Reconciled', render: (row) => fmtTime(row.reconciliationTimestamp) },
+                { key: 'protectiveOrderStatus', label: 'Protection', render: (row) => row.protectiveOrderStatus || EMPTY_VALUE },
+              ]}
+            />
+          </div>
+          <div style={{ marginTop: 14 }}>
+            <SectionHeader eyebrow="Scan history" title="Senaste scans" summary="Rå scanmotor-telemetri. Scanner-timeline per strategi finns i Live Scanner-radens detaljvy." />
             <CompactTable
               rows={scanHistory.map((row) => ({ ...row, id: row.scanId }))}
               emptyText="Inga scans ännu."
@@ -816,6 +841,18 @@ export default function FuturesPaperDeskPage() {
             />
           </div>
         </section>
+        {/* Backend performance-fält och seriekatalogen beskriver vilka fält runtime
+            exponerar — diagnostik, inte handelsstatistik. Den bor i Runtime. */}
+        <div style={{ marginTop: 14 }}>
+          <TradingAnalyticsPanel
+            strategyStore={strategyStore}
+            eventStore={tradingEventStore}
+            decisionStore={decisionStore}
+            analytics={analytics}
+            waiting={waitingForRuntime && !hasRuntimeSnapshot}
+          />
+        </div>
+        </>
       )}
 
       {activeTab === 'ibkr' && (

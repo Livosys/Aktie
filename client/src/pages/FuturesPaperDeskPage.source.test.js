@@ -13,9 +13,13 @@ assert.match(source, /Livekonton och riktiga pengar är blockerade/);
 for (const label of [
   'Översikt',
   'IBKR Paper-konto',
+  // Positioner är en live trading desk; broker mirror-tabellen heter fortfarande
+  // Brokerpositioner men ligger numera under Runtime.
+  'Positioner',
   'Brokerpositioner',
-  'Ordrar',
-  'Fills & trades',
+  // En sida, ett ansvar — flikarna heter efter vad de faktiskt visar.
+  'Broker Orders',
+  'Executions',
   'Runtime',
   'IBKR Paper Execution',
   'Godkännande',
@@ -41,9 +45,33 @@ for (const required of [
   'brokerMirrorSourceText',
   'source=internal_legacy_simulation',
   'Äldre interna simuleringar',
+  // Steg 3: Positioner är en live trading desk byggd på befintlig snapshot.
+  'PositionDeskPanel',
+  'buildPositionDeskRows',
+  'summarizePositionDesk',
+  'positionDeskRows',
+  'positionDeskSummary',
+  'Broker mirror · source=',
 ]) {
   assert.match(source, new RegExp(required.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
 }
+
+// Positioner får inte återfå brokerdiagnostiken: positionskorten, den råa
+// mirror-tabellen och kontopanelerna ligger på Runtime respektive IBKR Paper-konto.
+for (const movedOffPositions of [
+  'Live Position System',
+  'PositionCard',
+  'stablePositionKey',
+]) {
+  assert.doesNotMatch(source, new RegExp(movedOffPositions.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+}
+
+// Ingen ny datakälla: sidan hämtar fortfarande bara runtime och execution status.
+const fetchedUrls = [...source.matchAll(/useJson\('([^']+)'/g)].map((match) => match[1]);
+assert.deepEqual(fetchedUrls, [
+  '/api/futures-paper/runtime',
+  '/api/futures-paper/ibkr-paper-execution/status?connect=false',
+]);
 
 for (const retiredActiveSurface of [
   '/api/futures-paper/account/reset',
