@@ -1,34 +1,18 @@
 import React, { useEffect, useState } from 'react';
 import { Link, useLocation } from 'react-router-dom';
+import { navItemsFor, isNavItemActive, NAV_SURFACES } from './navigation.js';
 
 export default function MobileBottomNav() {
   const { pathname, search } = useLocation();
   const [drawerOpen, setDrawerOpen] = useState(false);
   const currentLocation = `${pathname}${search}`;
-  const currentTab = new URLSearchParams(search).get('tab');
-  const onFuturesPage = pathname.startsWith('/futures-paper') || pathname.startsWith('/paper-futures');
 
-  const tabs = [
-    { id: 'overview', label: 'Översikt', active: pathname === '/' || pathname.startsWith('/supervisor'), to: '/supervisor' },
-    { id: 'futures', label: 'Futures', active: onFuturesPage && !['positioner', 'ordrar'].includes(currentTab), to: '/futures-paper' },
-    { id: 'positions', label: 'Positioner', active: onFuturesPage && currentTab === 'positioner', to: '/futures-paper?tab=positioner' },
-    // Fliken heter 'ordrar' av bakåtkompatibilitetsskäl men visar Live Scanner.
-    { id: 'execution', label: 'Live Scanner', active: onFuturesPage && currentTab === 'ordrar', to: '/futures-paper?tab=ordrar' },
-  ];
-  // Replay och Batch ligger först: de är egna arbetsytor, inte laborationer.
-  // Aktivt läge avgörs av tab-parametern, inte av en exakt URL-sträng, så att
-  // /replay och andra omdirigeringar också markerar rätt post.
-  const onLabPage = pathname.startsWith('/lab');
-  const drawerLinks = [
-    { id: 'replay', label: 'Replay', active: (onLabPage && currentTab === 'replay') || pathname.startsWith('/replay'), to: '/lab?tab=replay' },
-    { id: 'batch', label: 'Batch', active: (onLabPage && currentTab === 'batch') || pathname.startsWith('/batch'), to: '/lab?tab=batch' },
-    { id: 'history', label: 'Historik', active: pathname.startsWith('/insikter'), to: '/insikter' },
-    { id: 'system', label: 'System', active: pathname.startsWith('/system'), to: '/system' },
-    { id: 'labs', label: 'Labs', active: onLabPage && !['batch', 'replay'].includes(currentTab), to: '/lab' },
-    { id: 'pinescript', label: 'PineScript', active: pathname.startsWith('/pinescript') || pathname.startsWith('/pine-script'), to: '/pinescript' },
-    { id: 'ai', label: 'AI Research', active: pathname.startsWith('/ai'), to: '/ai' },
-    { id: 'narrow', label: 'Narrow Lab', active: pathname.startsWith('/narrow'), to: '/narrow' },
-  ];
+  // Både flikraden och lådan ritas ur den gemensamma menyn, med samma
+  // aktiv-regel som sidomenyn och toppmenyn.
+  const withActive = (surface) => navItemsFor(surface)
+    .map((item) => ({ ...item, active: isNavItemActive(item, pathname, search) }));
+  const tabs = withActive(NAV_SURFACES.MOBILE_BOTTOM);
+  const drawerLinks = withActive(NAV_SURFACES.MOBILE_DRAWER);
   const drawerActive = drawerLinks.some((link) => link.active);
 
   useEffect(() => {
@@ -53,7 +37,7 @@ export default function MobileBottomNav() {
             {drawerLinks.map((link) => (
               <Link
                 key={link.id}
-                to={link.to}
+                to={link.path}
                 className={`mob-drawer-item${link.active ? ' active' : ''}`}
                 onClick={() => setDrawerOpen(false)}
               >
@@ -67,7 +51,7 @@ export default function MobileBottomNav() {
         {tabs.map((tab) => (
           <Link
             key={tab.id}
-            to={tab.to}
+            to={tab.path}
             className={`mob-tab${tab.active ? ' mob-tab-active' : ''}`}
             aria-label={tab.label}
           >
