@@ -17,6 +17,7 @@ const fs = require('fs');
 const path = require('path');
 const automationApprovalService = require('./automationApprovalService');
 const daytradingStrategyCatalog = require('./daytradingStrategyCatalogService');
+const tradeStats = require('./tradeStatsService');
 
 const SAFETY = Object.freeze({
   mode: 'paper_only',
@@ -28,7 +29,6 @@ const SAFETY = Object.freeze({
 });
 
 const DATA_DIR = path.resolve(__dirname, '../../data');
-const TRADES_FILE = path.join(DATA_DIR, 'paper-trading/trades.jsonl');
 const SKIPPED_FILE = path.join(DATA_DIR, 'daytrading-learning/skipped-signals.jsonl');
 
 const WINDOW_MS = Object.freeze({ '24h': 86400e3, '3d': 3 * 86400e3, '7d': 7 * 86400e3 });
@@ -91,6 +91,19 @@ function readRowsSince(file, sinceTs, tsField = 'timestamp') {
   return rows;
 }
 
+function readTradeRowsSince(sinceTs) {
+  try {
+    return tradeStats.loadPaperTrades()
+      .map((obj) => {
+        const ts = tsOf(obj.timestamp || obj.exitTime || obj.closed_at || obj.entryTime || obj.opened_at);
+        return ts != null && ts >= sinceTs ? { ...obj, _ts: ts } : null;
+      })
+      .filter(Boolean);
+  } catch (_) {
+    return [];
+  }
+}
+
 function mapCategoryToChainStop(category) {
   switch (category) {
     case 'market_closed': return CHAIN_STOP.MARKET_CLOSED;
@@ -122,7 +135,7 @@ function buildStrategyPipelineTruth(options = {}) {
   const rejectedSet = new Set((approvals.rejectedStrategyIds || []).filter(Boolean));
 
   // --- data within 7d --------------------------------------------------------
-  const trades = readRowsSince(TRADES_FILE, widest);
+  const trades = readTradeRowsSince(widest);
   const skipped = readRowsSince(SKIPPED_FILE, widest);
 
   // --- universe of strategies actually in the pipeline -----------------------
@@ -244,7 +257,7 @@ function buildStrategyPipelineTruth(options = {}) {
     dataSources: {
       approvals: 'automationApprovalService.getAutomationApprovals',
       catalog: 'daytradingStrategyCatalogService.getStrategyById',
-      trades: 'data/paper-trading/trades.jsonl',
+      trades: 'tradeStatsService.loadPaperTrades',
       skipped: 'data/daytrading-learning/skipped-signals.jsonl',
     },
     counts: {

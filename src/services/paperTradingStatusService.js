@@ -3,15 +3,13 @@
 /**
  * Read-only paper trading status service.
  *
- * Inspects the simulated ("paper") trade results written by the paper trading
- * agent (data/paper-trading/trades.jsonl) and turns them into a compact,
+ * Inspects the current IBKR Paper execution-intent trade results and turns
+ * them into a compact,
  * render-safe status for the supervisor "Låtsashandel" view. It NEVER starts a
  * paper trade, never schedules one, never places orders and never enables a
  * broker. Pure read of existing files.
  *
- * Paper trading in this system is a simulation over live/2m signals: each row is
- * a finished låtsastest with an entry reason, an exit reason and a WIN/LOSS/
- * TIMEOUT outcome. No real money and no real orders are involved.
+ * Paper trading in this system is read-only broker paper execution telemetry.
  *
  * Aggregate numbers (win rate, avg pnl, best strategy) are delegated to
  * tradeStatsService so this endpoint can never disagree with the supervisor
@@ -22,6 +20,7 @@ const fs = require('fs');
 const path = require('path');
 
 const tradeStats = require('./tradeStatsService');
+const ibPaperExecutionIntentService = require('./ibPaperExecutionIntentService');
 
 const ROOT = path.resolve(__dirname, '../..');
 const DEFAULT_TRADES_FILE = path.join(ROOT, 'data/paper-trading/trades.jsonl');
@@ -57,8 +56,57 @@ function safeError(err) {
 // Read raw paper-trade rows (read-only). Reuses tradeStatsService's reader when
 // the default file is requested so both stay in sync; otherwise reads the
 // provided test file directly.
-function readTrades(file) {
+function exitReasonFromFilledLeg(leg) {
+  const value = String(leg || '').trim();
+  if (value === 'stopLoss') return 'stop_loss';
+  if (value === 'takeProfit') return 'take_profit';
+  if (value === 'emergencyFlatten' || value === 'emergency_flatten') return 'emergency_flatten';
+  return value || null;
+}
+
+function normalizeIbkrIntentTrade(row = {}) {
+  if (!row || row.status !== 'filled') return null;
+  const realizedPnl = num(row.filledRealizedPNL ?? row.filledRealizedPnl ?? row.realizedPNL);
+  if (realizedPnl === null) return null;
+  return {
+    tradeId: row.tradeId || row.filledExecId || row.executionId || row.intentId || null,
+    signalId: row.signalId || null,
+    lifecycleId: row.lifecycleId || null,
+    candidateId: row.candidateId || null,
+    intentId: row.intentId || row.idempotencyKey || null,
+    executionId: row.executionId || null,
+    brokerOrderId: row.filledOrderId ?? row.ibOrderId ?? null,
+    brokerExecutionId: row.filledExecId || null,
+    symbol: row.root || row.localSymbol || null,
+    strategyId: row.strategyId || null,
+    opened_at: row.entryFilledAt || row.entryExecutionAt || row.signalTimestamp || row.createdAt || null,
+    closed_at: row.filledAt || row.filledExecutionAt || row.updatedAt || null,
+    result: realizedPnl > 0 ? 'WIN' : (realizedPnl < 0 ? 'LOSS' : 'BREAKEVEN'),
+    pnl: realizedPnl,
+    exitReason: exitReasonFromFilledLeg(row.filledLeg),
+    source: 'ibkr_paper_intent',
+    paperOnly: true,
+  };
+}
+
+function shouldUseIbkrIntentSource(file, options = {}) {
+  return Array.isArray(options.ibkrIntents) || file === DEFAULT_TRADES_FILE;
+}
+
+function sourceForTrades(file, options = {}) {
+  return shouldUseIbkrIntentSource(file, options) ? 'ibkr_paper_intent' : file;
+}
+
+function readTrades(file, options = {}) {
   try {
+    if (Array.isArray(options.trades)) return options.trades;
+    if (shouldUseIbkrIntentSource(file, options)) {
+      const intents = Array.isArray(options.ibkrIntents)
+        ? options.ibkrIntents
+        : ibPaperExecutionIntentService.defaultIbPaperExecutionIntentService
+          .listIntents({ limit: Number.MAX_SAFE_INTEGER });
+      return intents.map(normalizeIbkrIntentTrade).filter(Boolean);
+    }
     if (file === DEFAULT_TRADES_FILE && typeof tradeStats.loadPaperTrades === 'function') {
       return tradeStats.loadPaperTrades();
     }
@@ -158,7 +206,7 @@ function sortNewestFirst(rows) {
   });
 }
 
-function buildSummary(rows) {
+function buildSummary(rows, source = 'ibkr_paper_intent') {
   let stats = null;
   try {
     stats = typeof tradeStats.computeStats === 'function'
@@ -180,7 +228,7 @@ function buildSummary(rows) {
   }
   return {
     status: rows.length ? 'ok' : 'empty',
-    source: 'data/paper-trading/trades.jsonl',
+    source,
     emptyReason: rows.length ? null : 'no_paper_trades',
     message: rows.length ? `${rows.length} låtsastester lästa (read-only simulering).` : 'Det finns inga låtsastester att visa ännu.',
     totalTrades: stats ? stats.totalTrades : rows.length,
@@ -200,14 +248,15 @@ function buildSummary(rows) {
 }
 
 function emptyResult(extra) {
+  const source = extra?.source || 'ibkr_paper_intent';
   return {
     ok: true,
     status: 'empty',
     count: 0,
     latestPaperTrade: {},
     recentPaperTrades: [],
-    summary: buildSummary([]),
-    source: 'data/paper-trading/trades.jsonl',
+    summary: buildSummary([], source),
+    source,
     updatedAt: nowIso(),
     ...SAFETY,
     ...extra,
@@ -216,6 +265,7 @@ function emptyResult(extra) {
 
 function buildPaperTradingStatus(options = {}) {
   const file = options.tradesFile || DEFAULT_TRADES_FILE;
+  const source = sourceForTrades(file, options);
   const allowlistService = options.allowlistService || null;
   const approvalsService = options.approvalsService || null;
   try {
@@ -253,10 +303,10 @@ function buildPaperTradingStatus(options = {}) {
       note: 'Allowlist saknas i denna miljö.',
     };
     const exists = fs.existsSync(file) || file === DEFAULT_TRADES_FILE;
-    const rows = readTrades(file);
+    const rows = readTrades(file, options);
     if (!rows.length) {
       const summary = {
-        ...buildSummary([]),
+        ...buildSummary([], source),
         latestPaperTradeId: null,
         allowlistApprovedCount: allowlist.approvedCount,
         allowlistRejectedCount: allowlist.rejectedCount,
@@ -270,6 +320,7 @@ function buildPaperTradingStatus(options = {}) {
         fileExists: fs.existsSync(file),
         emptyReason: 'no_paper_trades',
         allowlist,
+        source,
         summary,
       });
     }
@@ -278,7 +329,7 @@ function buildPaperTradingStatus(options = {}) {
     const recent = sorted.slice(0, MAX_RECENT).map(normalizeTrade).filter(Boolean);
     const latest = recent[0] || {};
     const summary = {
-      ...buildSummary(rows),
+      ...buildSummary(rows, source),
       latestPaperTradeId: latest.id || null,
       allowlistApprovedCount: allowlist.approvedCount,
       allowlistRejectedCount: allowlist.rejectedCount,
@@ -296,9 +347,9 @@ function buildPaperTradingStatus(options = {}) {
       recentPaperTrades: recent,
       summary,
       allowlist,
-      source: 'data/paper-trading/trades.jsonl',
+      source,
       updatedAt: nowIso(),
-      message: `${rows.length} låtsastester lästa (read-only simulering).`,
+      message: `${rows.length} låtsastester lästa (read-only IBKR Paper).`,
       ...SAFETY,
     };
   } catch (err) {
@@ -335,7 +386,7 @@ function buildPaperTradingStatus(options = {}) {
         blockedCount: 0,
         note: 'Allowlist kunde inte läsas.',
       },
-      source: 'data/paper-trading/trades.jsonl',
+      source: 'ibkr_paper_intent',
       updatedAt: nowIso(),
       message: safeError(err),
       ...SAFETY,

@@ -4,6 +4,7 @@ const fs = require('fs');
 const path = require('path');
 
 const catalog = require('./daytradingStrategyCatalogService');
+const tradeStats = require('./tradeStatsService');
 
 const SAFETY = Object.freeze({
   actions_allowed: false,
@@ -16,7 +17,6 @@ const SAFETY = Object.freeze({
 const RUNTIME_PARTIAL_MISSING_CRYPTO_SIGNAL_CONTEXT = 'runtime_partial_missing_crypto_signal_context';
 const RUNTIME_PARTIAL_MISSING_CRYPTO_SIGNAL_CONTEXT_SV = 'Runtime partial — saknar crypto signal context.';
 
-const TRADES_FILE = path.resolve(__dirname, '../../data/paper-trading/trades.jsonl');
 const EVENTS_FILE = path.resolve(__dirname, '../../data/paper-trading/events.jsonl');
 const STATE_FILE = path.resolve(__dirname, '../../data/paper-trading/state.json');
 const CONTROL_CONFIG_FILE = path.resolve(__dirname, '../../data/config/daytrading-control.json');
@@ -848,7 +848,7 @@ function topReasons(rows, rawSignals) {
 }
 
 function tradeStatsByStrategy() {
-  const trades = readJsonl(TRADES_FILE)
+  const trades = tradeStats.loadPaperTrades()
     .filter((trade) => withinWindow(trade))
     .map(enrichPaperTradeWithStrategy);
   const stats = new Map();

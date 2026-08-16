@@ -13,6 +13,7 @@
 
 const fs = require('fs');
 const path = require('path');
+const ibPaperExecutionIntentService = require('./ibPaperExecutionIntentService');
 
 const SAFETY = Object.freeze({
   mode: 'paper_only',
@@ -39,9 +40,47 @@ function median(arr) {
   return a.length % 2 ? a[m] : (a[m - 1] + a[m]) / 2;
 }
 
-function readTrades() {
-  if (!fs.existsSync(TRADES_FILE)) return [];
-  return fs.readFileSync(TRADES_FILE, 'utf8')
+function durationSec(start, end) {
+  const a = tsOf(start);
+  const b = tsOf(end);
+  if (a === null || b === null) return null;
+  return Math.max(0, Math.round((b - a) / 1000));
+}
+
+function exitReasonFromFilledLeg(leg) {
+  const value = String(leg || '').trim();
+  if (value === 'stopLoss') return 'stop_loss';
+  if (value === 'takeProfit') return 'take_profit';
+  if (value === 'emergencyFlatten' || value === 'emergency_flatten') return 'emergency_flatten';
+  return value || null;
+}
+
+function normalizeIbkrIntentTrade(row = {}) {
+  if (!row || row.status !== 'filled') return null;
+  const realizedPnl = num(row.filledRealizedPNL ?? row.filledRealizedPnl ?? row.realizedPNL);
+  if (realizedPnl === null) return null;
+  const openedAt = row.entryFilledAt || row.entryExecutionAt || row.signalTimestamp || row.createdAt || null;
+  const closedAt = row.filledAt || row.filledExecutionAt || row.updatedAt || null;
+  const exitReasonCode = exitReasonFromFilledLeg(row.filledLeg);
+  return {
+    ts: tsOf(closedAt || openedAt),
+    durationSec: durationSec(openedAt, closedAt),
+    pnlPct: realizedPnl,
+    result: realizedPnl > 0 ? 'WIN' : (realizedPnl < 0 ? 'LOSS' : 'BREAKEVEN'),
+    exitReasonCode,
+    exitSource: 'ibkr_paper',
+    exitEngineDecision: null,
+    strategyId: row.strategyId || 'unknown',
+    signalSubtype: row.signalSubtype || row.signal_subtype || 'unknown',
+    statusAtEntry: lower(row.statusAtEntry),
+    firstTargetTouchAt: exitReasonCode === 'take_profit' ? closedAt : null,
+    firstStopTouchAt: exitReasonCode === 'stop_loss' ? closedAt : null,
+  };
+}
+
+function readLegacyTrades(file = TRADES_FILE) {
+  if (!fs.existsSync(file)) return [];
+  return fs.readFileSync(file, 'utf8')
     .split('\n')
     .filter((l) => l && l.charCodeAt(0) === 123)
     .map((l) => { try { return JSON.parse(l); } catch (_) { return null; } })
@@ -61,6 +100,22 @@ function readTrades() {
       firstTargetTouchAt: t.firstTargetTouchAt || null,
       firstStopTouchAt: t.firstStopTouchAt || null,
     }));
+}
+
+function readTrades(options = {}) {
+  if (Array.isArray(options.trades)) return options.trades;
+  if (Array.isArray(options.ibkrIntents) || !options.file) {
+    try {
+      const intents = Array.isArray(options.ibkrIntents)
+        ? options.ibkrIntents
+        : ibPaperExecutionIntentService.defaultIbPaperExecutionIntentService
+          .listIntents({ limit: Number.MAX_SAFE_INTEGER });
+      return intents.map(normalizeIbkrIntentTrade).filter(Boolean);
+    } catch (_) {
+      return [];
+    }
+  }
+  return readLegacyTrades(options.file);
 }
 
 // "default" exit = closed with no explicit reason code (the fallback close).
@@ -111,7 +166,10 @@ function summarize(trades) {
 
 function buildShortExitTruth(options = {}) {
   const now = options.now ? new Date(options.now).getTime() : Date.now();
-  const all = readTrades();
+  const all = readTrades(options);
+  const dataSource = Array.isArray(options.ibkrIntents) || !options.file
+    ? 'ibkr_paper_intent'
+    : options.file;
 
   const windows = {};
   for (const [wk, ms] of Object.entries(WINDOW_MS)) {
@@ -138,7 +196,7 @@ function buildShortExitTruth(options = {}) {
     generatedAt: new Date(now).toISOString(),
     safety: { ...SAFETY },
     note: 'Detta ändrar inte exit. Det visar bara varför trades stängdes.',
-    dataSource: 'data/paper-trading/trades.jsonl',
+    dataSource,
     windows,
   };
 }

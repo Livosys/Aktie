@@ -14,6 +14,7 @@ const path = require('path');
 const crypto = require('crypto');
 
 const catalogService = require('./daytradingStrategyCatalogService');
+const tradeStats = require('./tradeStatsService');
 
 const SAFETY = Object.freeze({
   mode: 'paper_only',
@@ -450,14 +451,8 @@ function latestCandidateByStrategyId() {
 
 function tradeStatsByStrategyId() {
   const stats = new Map();
-  const file = path.resolve(__dirname, '../../data/paper-trading/trades.jsonl');
   try {
-    if (!fs.existsSync(file)) return stats;
-    const lines = fs.readFileSync(file, 'utf8').split('\n');
-    for (const line of lines) {
-      if (!line.trim()) continue;
-      let trade;
-      try { trade = JSON.parse(line); } catch (_) { continue; }
+    for (const trade of tradeStats.loadPaperTrades()) {
       const id = trade.resolvedStrategyId || trade.strategyId || trade.strategy_id || trade.canonicalStrategyId || null;
       if (!id) continue;
       if (!stats.has(id)) stats.set(id, { count: 0, wins: 0, losses: 0, pnlSum: 0, pnlCount: 0, latest: null });
@@ -465,8 +460,9 @@ function tradeStatsByStrategyId() {
       stat.count += 1;
       if (trade.result === 'WIN') stat.wins += 1;
       if (trade.result === 'LOSS') stat.losses += 1;
-      if (Number.isFinite(Number(trade.pnlPct))) {
-        stat.pnlSum += Number(trade.pnlPct);
+      const pnl = Number(trade.pnlPct ?? trade.pnl ?? trade.pnlUsd ?? trade.realizedPnl);
+      if (Number.isFinite(pnl)) {
+        stat.pnlSum += pnl;
         stat.pnlCount += 1;
       }
       const at = trade.entryTime || trade.opened_at || trade.closed_at || null;
@@ -476,7 +472,7 @@ function tradeStatsByStrategyId() {
           symbol: trade.symbol || null,
           direction: trade.direction || null,
           result: trade.result || null,
-          pnlPct: Number.isFinite(Number(trade.pnlPct)) ? Number(trade.pnlPct) : null,
+          pnlPct: Number.isFinite(pnl) ? pnl : null,
         };
       }
     }

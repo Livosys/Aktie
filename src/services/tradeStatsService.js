@@ -4,9 +4,10 @@
  * Trade Stats Service — canonical, READ-ONLY trade statistics.
  *
  * This is the single source of truth for how a trade outcome is classified and
- * how win rate is computed across the whole platform. Today several services
- * read the same `paper-trading/trades.jsonl` but disagree on the numbers,
- * purely because they treat TIMEOUT differently:
+ * how win rate is computed across the whole platform. The default source is
+ * IBKR Paper execution intents; explicit file options are kept for legacy
+ * fixtures and archived replays. Historically, services disagreed on the same
+ * paper rows because they treated TIMEOUT differently:
  *
  *   - setupPerformanceService      → decisiveWinRate (TIMEOUT excluded)  → 58.5%
  *   - aiOptimizationAgentService   → winRate         (TIMEOUT in denom)  → 47.99%
@@ -46,6 +47,7 @@
 
 const fs = require('fs');
 const path = require('path');
+const ibPaperExecutionIntentService = require('./ibPaperExecutionIntentService');
 
 const SAFETY = Object.freeze({
   mode: 'paper_only',
@@ -334,9 +336,51 @@ function riskRewardStatusLabel(metrics = {}) {
   return 'Neutral – granska manuellt';
 }
 
-// ── convenience: canonical paper-trade stats from disk (read-only) ────────────
-function loadPaperTrades() {
-  return readJsonl(PAPER_TRADES_FILE);
+function exitReasonFromFilledLeg(leg) {
+  const value = String(leg || '').trim();
+  if (value === 'stopLoss') return 'stop_loss';
+  if (value === 'takeProfit') return 'take_profit';
+  if (value === 'emergencyFlatten' || value === 'emergency_flatten') return 'emergency_flatten';
+  return value || null;
+}
+
+function normalizeIbkrIntentTrade(row = {}) {
+  if (!row || row.status !== 'filled') return null;
+  const realizedPnl = num(row.filledRealizedPNL ?? row.filledRealizedPnl ?? row.realizedPNL);
+  if (realizedPnl === null) return null;
+  return {
+    tradeId: row.tradeId || row.filledExecId || row.executionId || row.intentId || null,
+    signalId: row.signalId || null,
+    lifecycleId: row.lifecycleId || null,
+    candidateId: row.candidateId || null,
+    intentId: row.intentId || row.idempotencyKey || null,
+    executionId: row.executionId || null,
+    brokerOrderId: row.filledOrderId ?? row.ibOrderId ?? null,
+    brokerExecutionId: row.filledExecId || null,
+    symbol: row.root || row.localSymbol || null,
+    strategyId: row.strategyId || null,
+    opened_at: row.entryFilledAt || row.entryExecutionAt || row.signalTimestamp || row.createdAt || null,
+    closed_at: row.filledAt || row.filledExecutionAt || row.updatedAt || null,
+    result: realizedPnl > 0 ? 'WIN' : (realizedPnl < 0 ? 'LOSS' : 'BREAKEVEN'),
+    pnl: realizedPnl,
+    exitReason: exitReasonFromFilledLeg(row.filledLeg),
+    source: 'ibkr_paper_intent',
+    paperOnly: true,
+  };
+}
+
+// ── convenience: canonical paper-trade stats from current source (read-only) ──
+function loadPaperTrades(options = {}) {
+  if (options.file) return readJsonl(options.file);
+  try {
+    const intents = Array.isArray(options.ibkrIntents)
+      ? options.ibkrIntents
+      : ibPaperExecutionIntentService.defaultIbPaperExecutionIntentService
+        .listIntents({ limit: Number.MAX_SAFE_INTEGER });
+    return intents.map(normalizeIbkrIntentTrade).filter(Boolean);
+  } catch (_) {
+    return [];
+  }
 }
 
 function buildPaperTradeStats(opts = {}) {

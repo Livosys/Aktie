@@ -21,6 +21,7 @@ const DEFAULT_FILES = Object.freeze({
 
 const MATCH_TOLERANCE_SECONDS = 15;
 const entryQualityGateService = require('./entryQualityGateService');
+const ibPaperExecutionIntentService = require('./ibPaperExecutionIntentService');
 
 const SAFETY = Object.freeze({
   mode: 'paper_only',
@@ -191,6 +192,68 @@ function normalizeTrade(row = {}) {
     paperOnly: row.paperOnly === true || row.paper_only === true,
     raw: row,
   };
+}
+
+function exitReasonFromFilledLeg(leg) {
+  const value = String(leg || '').trim();
+  if (value === 'stopLoss') return 'stop_loss';
+  if (value === 'takeProfit') return 'take_profit';
+  if (value === 'emergencyFlatten' || value === 'emergency_flatten') return 'emergency_flatten';
+  return value || null;
+}
+
+function normalizeIbkrIntentTradeRow(row = {}) {
+  if (!row || row.status !== 'filled') return null;
+  const realizedPnl = num(row.filledRealizedPNL ?? row.filledRealizedPnl ?? row.realizedPNL);
+  if (realizedPnl === null) return null;
+  return {
+    tradeId: text(row.tradeId || row.filledExecId || row.executionId || row.intentId),
+    signalId: text(row.signalId),
+    lifecycleId: text(row.lifecycleId),
+    candidateId: text(row.candidateId),
+    intentId: text(row.intentId || row.idempotencyKey),
+    executionId: text(row.executionId),
+    idempotencyKey: text(row.idempotencyKey),
+    brokerOrderId: row.filledOrderId ?? row.ibOrderId ?? null,
+    brokerExecutionId: text(row.filledExecId),
+    symbol: text(row.root || row.localSymbol),
+    localSymbol: text(row.localSymbol),
+    strategyId: text(row.strategyId),
+    direction: text(row.direction || row.side),
+    openedAt: iso(row.entryFilledAt || row.entryExecutionAt || row.signalTimestamp || row.createdAt),
+    closedAt: iso(row.filledAt || row.filledExecutionAt || row.updatedAt),
+    result: realizedPnl > 0 ? 'WIN' : (realizedPnl < 0 ? 'LOSS' : 'BREAKEVEN'),
+    pnl: realizedPnl,
+    pnlUsd: realizedPnl,
+    commission: [row.entryCommission, row.filledCommission]
+      .map(num)
+      .filter((value) => value !== null)
+      .reduce((sum, value) => sum + value, 0),
+    entryPrice: num(row.entryFilledPrice ?? row.entryAvgFillPrice ?? row.entryLastFillPrice),
+    exitPrice: num(row.filledPrice ?? row.filledAvgPrice ?? row.filledLastPrice),
+    exitReasonCode: exitReasonFromFilledLeg(row.filledLeg),
+    exitSource: 'ibkr_paper',
+    source: 'ibkr_paper_intent',
+    paperOnly: true,
+  };
+}
+
+function usesIbkrIntentSource(options = {}) {
+  return Array.isArray(options.ibkrIntents) || !options.files;
+}
+
+function readIbkrIntentTradeRows(options = {}) {
+  let intents = [];
+  if (Array.isArray(options.ibkrIntents)) {
+    intents = options.ibkrIntents;
+  } else {
+    intents = ibPaperExecutionIntentService.defaultIbPaperExecutionIntentService
+      .listIntents({ limit: Number.MAX_SAFE_INTEGER });
+  }
+  return intents
+    .map(normalizeIbkrIntentTradeRow)
+    .filter(Boolean)
+    .sort((a, b) => String(normalizeClosedAt(b) || '').localeCompare(String(normalizeClosedAt(a) || '')));
 }
 
 function isClosedTrade(row = {}) {
@@ -496,6 +559,12 @@ function buildExplanationForTrade(row, events) {
   return {
     tradeId: trade.tradeId || null,
     tradeKey: trade.tradeKey,
+    lifecycleId: text(trade.raw?.lifecycleId || null),
+    candidateId: text(trade.raw?.candidateId || null),
+    intentId: text(trade.raw?.intentId || null),
+    executionId: text(trade.raw?.executionId || null),
+    brokerOrderId: trade.raw?.brokerOrderId ?? null,
+    brokerExecutionId: text(trade.raw?.brokerExecutionId || null),
     symbol: trade.symbol || 'unknown',
     strategyId: trade.strategyId || 'unknown',
     setup: trade.setup || 'unknown',
@@ -520,9 +589,15 @@ function buildExplanationForTrade(row, events) {
 
 function findTradeRows(options = {}) {
   const files = { ...DEFAULT_FILES, ...(options.files || {}) };
+  if (usesIbkrIntentSource(options)) return readIbkrIntentTradeRows(options);
   return readJsonl(files.trades)
     .filter(isClosedTrade)
     .sort((a, b) => String(normalizeClosedAt(b) || '').localeCompare(String(normalizeClosedAt(a) || '')));
+}
+
+function tradeSourceForOptions(options = {}, sources = null) {
+  if (sources?.tradeSource) return sources.tradeSource;
+  return usesIbkrIntentSource(options) ? 'ibkr_paper_intent' : (options.files?.trades || DEFAULT_FILES.trades);
 }
 
 function timeMatches(normalizedValue, searchedValue, toleranceMs) {
@@ -715,7 +790,7 @@ function diagnoseTradeLookup(rows, criteria = {}) {
 function buildTradeExplanations(options = {}) {
   const files = { ...DEFAULT_FILES, ...(options.files || {}) };
   const limit = clampLimit(options.limit, 50);
-  const trades = findTradeRows({ files });
+  const trades = findTradeRows(options);
   const events = readJsonl(files.events).map(normalizeEvent);
   const state = readJson(files.state, {});
   const explanations = trades.slice(0, limit).map((row) => buildExplanationForTrade(row, events)).filter(Boolean);
@@ -726,8 +801,9 @@ function buildTradeExplanations(options = {}) {
     limit,
     items: explanations,
     safety: SAFETY,
+    tradeSource: tradeSourceForOptions(options),
     source: {
-      trades: files.trades,
+      trades: tradeSourceForOptions(options),
       events: files.events,
       state: files.state,
     },
@@ -746,7 +822,8 @@ function preloadExplanationSources(options = {}) {
   const files = { ...DEFAULT_FILES, ...(options.files || {}) };
   return {
     files,
-    tradeRows: findTradeRows({ files }),
+    tradeRows: findTradeRows(options),
+    tradeSource: tradeSourceForOptions(options),
     eventRows: readJsonl(files.events).map(normalizeEvent),
   };
 }
@@ -754,7 +831,7 @@ function preloadExplanationSources(options = {}) {
 function buildTradeExplanationLookup(options = {}) {
   const files = { ...DEFAULT_FILES, ...(options.files || {}) };
   const sources = options.sources || null;
-  const trades = sources ? sources.tradeRows : findTradeRows({ files });
+  const trades = sources ? sources.tradeRows : findTradeRows(options);
   const events = sources ? sources.eventRows : readJsonl(files.events).map(normalizeEvent);
   const trade = findMatchingTrade(trades, options.lookup || options);
 
@@ -766,8 +843,9 @@ function buildTradeExplanationLookup(options = {}) {
       tradeExplanation: null,
       diagnosis,
       safety: SAFETY,
+      tradeSource: tradeSourceForOptions(options, sources),
       source: {
-        trades: files.trades,
+        trades: tradeSourceForOptions(options, sources),
         events: files.events,
         state: files.state,
       },
@@ -780,8 +858,9 @@ function buildTradeExplanationLookup(options = {}) {
     found: true,
     tradeExplanation: buildExplanationForTrade(trade, events),
     safety: SAFETY,
+    tradeSource: tradeSourceForOptions(options, sources),
     source: {
-      trades: files.trades,
+      trades: tradeSourceForOptions(options, sources),
       events: files.events,
       state: files.state,
     },

@@ -1,13 +1,11 @@
 'use strict';
 
-const fs = require('fs');
-const path = require('path');
-
 const catalogService = require('./daytradingStrategyCatalogService');
 const runtimeConnector = require('./strategyRuntimeConnectorService');
 const strategyPerformanceRead = require('./strategyPerformanceReadService');
 const batchAutopilotService = require('./batchAutopilotService');
 const replayAutopilotService = require('./replayAutopilotService');
+const tradeStats = require('./tradeStatsService');
 
 const SAFETY = Object.freeze({
   mode: 'paper_only',
@@ -17,8 +15,6 @@ const SAFETY = Object.freeze({
   broker_enabled: false,
 });
 
-const ROOT = path.resolve(__dirname, '../..');
-const PAPER_TRADES_FILE = path.join(ROOT, 'data/paper-trading/trades.jsonl');
 const MATRIX_CACHE_TTL_MS = 30_000;
 
 let _matrixCache = null;
@@ -39,23 +35,6 @@ function safeArray(value) {
 
 function unique(values) {
   return [...new Set(safeArray(values).flatMap((value) => safeArray(value)).filter(Boolean).map(String))];
-}
-
-function readJsonl(file) {
-  try {
-    if (!fs.existsSync(file)) return [];
-    return fs.readFileSync(file, 'utf8')
-      .split(/\r?\n/)
-      .map((line) => line.trim())
-      .filter(Boolean)
-      .map((line) => {
-        try { return JSON.parse(line); }
-        catch (_) { return null; }
-      })
-      .filter(Boolean);
-  } catch (_) {
-    return [];
-  }
 }
 
 function resultOfTrade(row) {
@@ -91,12 +70,12 @@ function timestampOf(row) {
 
 function buildPaperStats() {
   const groups = new Map();
-  for (const row of readJsonl(PAPER_TRADES_FILE)) {
+  for (const row of tradeStats.loadPaperTrades()) {
     const id = row.strategy_id || row.strategyId || row.runtime_strategy || row.strategy;
     if (!id) continue;
     if (!groups.has(id)) {
       groups.set(id, {
-        source: 'data/paper-trading/trades.jsonl',
+        source: 'tradeStatsService.loadPaperTrades',
         trades: 0,
         wins: 0,
         losses: 0,
@@ -216,7 +195,7 @@ function simulationSummaryFor(row) {
 function paperSummaryFor(row) {
   if (!row) {
     return {
-      source: 'data/paper-trading/trades.jsonl',
+      source: 'tradeStatsService.loadPaperTrades',
       status: 'needs_more_data',
       totalTrades: 0,
       winRate: null,

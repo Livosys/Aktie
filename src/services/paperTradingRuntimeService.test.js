@@ -201,6 +201,7 @@ assert.equal(runtime.summary.openCount, 1);
 assert.equal(runtime.summary.closedCount, 2);
 assert.equal(runtime.summary.limit, 50);
 assert.equal(runtime.summary.returnedCount, 6);
+assert.equal(runtime.tradeSource, 'paper_trading_legacy_file');
 assert.equal(runtime.openTrades[0].strategy_id, 'ema_pullback_continuation');
 assert.equal(runtime.closedTrades[0].strategy_id, 'narrow_breakout');
 assert.equal(runtime.closedTrades[0].paperOnly, true);
@@ -215,6 +216,75 @@ assert.equal(summary.summary.closedCount, 2);
 assert.ok(Array.isArray(summary.latestClosedTrades));
 assert.ok(Array.isArray(summary.latestBlockedCandidates));
 assert.equal(summary.live_trading_enabled, false);
+
+const ibkrRuntime = svc.buildPaperTradingRuntime({
+  files,
+  limit: 50,
+  ibkrIntents: [{
+    status: 'filled',
+    strategyId: 'trend_continuation',
+    tradeId: 'ibkr-trade-1',
+    lifecycleId: 'ibkr-life-1',
+    signalId: 'ibkr-signal-1',
+    candidateId: 'ibkr-candidate-1',
+    intentId: 'ibkr-intent-1',
+    idempotencyKey: 'ibkr-intent-1',
+    executionId: 'ibkr-execution-1',
+    root: 'MNQ',
+    localSymbol: 'MNQU6',
+    direction: 'short',
+    quantity: 1,
+    entryFilledPrice: 20100,
+    filledPrice: 20090,
+    entryFilledAt: '2026-06-11T10:00:00.000Z',
+    filledAt: '2026-06-11T10:10:00.000Z',
+    filledLeg: 'takeProfit',
+    filledOrderId: 3101,
+    filledExecId: 'ibkr-exec-1',
+    entryCommission: 0.61,
+    filledCommission: 0.61,
+    filledRealizedPNL: 48.78,
+  }, {
+    status: 'submitted',
+    strategyId: 'resistance_rejection',
+    tradeId: 'ibkr-open-trade-1',
+    lifecycleId: 'ibkr-open-life-1',
+    signalId: 'ibkr-open-signal-1',
+    candidateId: 'ibkr-open-candidate-1',
+    intentId: 'ibkr-open-intent-1',
+    idempotencyKey: 'ibkr-open-intent-1',
+    executionId: 'ibkr-open-execution-1',
+    root: 'MNQ',
+    localSymbol: 'MNQU6',
+    direction: 'long',
+    quantity: 1,
+    entryFilledPrice: 20050,
+    entryFilledAt: '2026-06-11T10:20:00.000Z',
+    ibOrderId: 3200,
+    entryExecId: 'ibkr-open-entry-exec-1',
+  }],
+});
+assert.equal(ibkrRuntime.tradeSource, 'ibkr_paper_intent');
+assert.equal(ibkrRuntime.summary.openCount, 1);
+assert.equal(ibkrRuntime.summary.closedCount, 1);
+assert.equal(ibkrRuntime.openTrades[0].source, 'ibkr_paper_intent');
+assert.equal(ibkrRuntime.openTrades[0].tradeId, 'ibkr-open-trade-1');
+assert.equal(ibkrRuntime.openTrades[0].intentStatus, 'submitted');
+assert.equal(ibkrRuntime.openTrades[0].brokerExecutionId, 'ibkr-open-entry-exec-1');
+assert.equal(ibkrRuntime.closedTrades[0].source, 'ibkr_paper_intent');
+assert.equal(ibkrRuntime.closedTrades[0].tradeId, 'ibkr-trade-1');
+assert.equal(ibkrRuntime.closedTrades[0].lifecycleId, 'ibkr-life-1');
+assert.equal(ibkrRuntime.closedTrades[0].candidateId, 'ibkr-candidate-1');
+assert.equal(ibkrRuntime.closedTrades[0].intentId, 'ibkr-intent-1');
+assert.equal(ibkrRuntime.closedTrades[0].executionId, 'ibkr-execution-1');
+assert.equal(ibkrRuntime.closedTrades[0].brokerExecutionId, 'ibkr-exec-1');
+assert.equal(ibkrRuntime.closedTrades[0].brokerOrderId, 3101);
+assert.equal(ibkrRuntime.closedTrades[0].strategy_id, 'trend_continuation');
+assert.equal(ibkrRuntime.closedTrades[0].result, 'WIN');
+assert.equal(ibkrRuntime.closedTrades[0].pnl, 48.78);
+assert.equal(ibkrRuntime.closedTrades[0].commission, 1.22);
+assert.equal(ibkrRuntime.strategyPerformance.strategies[0].strategy_id, 'trend_continuation');
+assert.equal(ibkrRuntime.strategyPerformance.strategies[0].closedTrades, 1);
 
 const previewA = svc._internal.buildDailySelectionPreview({ files, now: '2026-06-16T14:30:00.000Z', selectionCount: 3 });
 const previewB = svc._internal.buildDailySelectionPreview({ files, now: '2026-06-16T14:30:00.000Z', selectionCount: 3 });

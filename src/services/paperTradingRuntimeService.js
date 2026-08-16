@@ -19,6 +19,7 @@ const strategyCatalog = require('./daytradingStrategyCatalogService');
 const strategyIdNormalizer = require('./strategyIdNormalizerService');
 const strategyRuntimeMatrixService = require('./strategyRuntimeMatrixService');
 const tradeStats = require('./tradeStatsService');
+const ibPaperExecutionIntentService = require('./ibPaperExecutionIntentService');
 
 const ROOT = path.resolve(__dirname, '../..');
 const DEFAULT_FILES = Object.freeze({
@@ -316,6 +317,151 @@ function normalizeTrade(row = {}, statusOverride = null) {
     status,
     ...SAFETY,
   };
+}
+
+function exitReasonFromFilledLeg(leg) {
+  const value = String(leg || '').trim();
+  if (value === 'stopLoss') return 'stop_loss';
+  if (value === 'takeProfit') return 'take_profit';
+  if (value === 'emergencyFlatten' || value === 'emergency_flatten') return 'emergency_flatten';
+  return value || null;
+}
+
+function normalizeIbkrIntentTrade(row = {}) {
+  if (!row || row.status !== 'filled') return null;
+  const realizedPnl = num(row.filledRealizedPNL ?? row.filledRealizedPnl ?? row.realizedPNL);
+  if (realizedPnl === null) return null;
+  const strategy = strategyMeta({ strategyId: row.strategyId });
+  const openedAt = iso(row.entryFilledAt || row.entryExecutionAt || row.signalTimestamp || row.createdAt);
+  const closedAt = iso(row.filledAt || row.filledExecutionAt || row.updatedAt);
+  const exitReason = exitReasonFromFilledLeg(row.filledLeg);
+  const commission = [row.entryCommission, row.filledCommission]
+    .map(num)
+    .filter((value) => value !== null)
+    .reduce((sum, value) => sum + value, 0);
+  return {
+    tradeId: text(row.tradeId || row.filledExecId || row.executionId || row.intentId),
+    signalId: text(row.signalId),
+    lifecycleId: text(row.lifecycleId),
+    candidateId: text(row.candidateId),
+    intentId: text(row.intentId || row.idempotencyKey),
+    executionId: text(row.executionId),
+    idempotencyKey: text(row.idempotencyKey),
+    brokerOrderId: row.filledOrderId ?? row.ibOrderId ?? null,
+    brokerExecutionId: text(row.filledExecId),
+    symbol: text(row.root || row.localSymbol),
+    localSymbol: text(row.localSymbol),
+    conId: row.conId ?? null,
+    marketType: 'futures',
+    marketGroup: 'mini_futures',
+    direction: text(row.direction || row.side),
+    source: 'ibkr_paper_intent',
+    executionSource: 'ibkr_paper',
+    strategy_id: strategy.strategy_id,
+    strategy_name: strategy.strategy_name,
+    inputStrategyKey: strategy.inputStrategyKey,
+    canonicalStatus: strategy.canonicalStatus,
+    ambiguous: strategy.ambiguous,
+    possibleCanonicalIds: strategy.possibleCanonicalIds,
+    legacyLabel: strategy.legacyLabel,
+    setup: null,
+    signalFamily: null,
+    opened_at: openedAt,
+    closed_at: closedAt,
+    timestamp: closedAt || openedAt || eventTime(row),
+    result: realizedPnl > 0 ? 'WIN' : (realizedPnl < 0 ? 'LOSS' : 'BREAKEVEN'),
+    pnl: realizedPnl,
+    pnlUsd: realizedPnl,
+    realizedPnl,
+    commission,
+    entryPrice: num(row.entryFilledPrice ?? row.entryAvgFillPrice ?? row.entryLastFillPrice),
+    exitPrice: num(row.filledPrice ?? row.filledAvgPrice ?? row.filledLastPrice),
+    exitReasonCode: exitReason,
+    exitSource: 'ibkr_paper',
+    quantity: num(row.filledQuantity ?? row.entryQuantity ?? row.quantity),
+    statusAtEntry: null,
+    blockedReason: null,
+    paperOnly: true,
+    status: 'closed',
+    ...SAFETY,
+  };
+}
+
+const TERMINAL_IBKR_INTENT_STATUSES = new Set(['filled', 'cancelled', 'rejected', 'expired', 'guard_blocked']);
+
+function readIbkrIntents(options = {}) {
+  if (Array.isArray(options.ibkrIntents)) return { rows: options.ibkrIntents, degraded: false };
+  if (options.files) return { rows: null, degraded: false };
+  try {
+    const rows = ibPaperExecutionIntentService.defaultIbPaperExecutionIntentService
+      .listIntents({ limit: Number.MAX_SAFE_INTEGER });
+    return { rows, degraded: false };
+  } catch (_) {
+    return { rows: [], degraded: true };
+  }
+}
+
+function readIbkrIntentClosedTrades(options = {}) {
+  const { rows: intents, degraded } = readIbkrIntents(options);
+  if (degraded) return { rows: [], total: 0, source: 'ibkr_paper_intent', degraded: true };
+  const rows = arr(intents).map(normalizeIbkrIntentTrade).filter(Boolean).sort(newestFirst);
+  return { rows, total: rows.length, source: 'ibkr_paper_intent', degraded: false };
+}
+
+function normalizeIbkrIntentOpenTrade(row = {}) {
+  if (!row || TERMINAL_IBKR_INTENT_STATUSES.has(String(row.status || ''))) return null;
+  const strategy = strategyMeta({ strategyId: row.strategyId });
+  const openedAt = iso(row.entryFilledAt || row.entryExecutionAt || row.submitStartedAt || row.createdAt || row.signalTimestamp);
+  return {
+    tradeId: text(row.tradeId || row.executionId || row.intentId),
+    signalId: text(row.signalId),
+    lifecycleId: text(row.lifecycleId),
+    candidateId: text(row.candidateId),
+    intentId: text(row.intentId || row.idempotencyKey),
+    executionId: text(row.executionId),
+    idempotencyKey: text(row.idempotencyKey),
+    brokerOrderId: row.ibOrderId ?? row.parentOrderId ?? null,
+    brokerExecutionId: text(row.entryExecId || null),
+    symbol: text(row.root || row.localSymbol),
+    localSymbol: text(row.localSymbol),
+    conId: row.conId ?? null,
+    marketType: 'futures',
+    marketGroup: 'mini_futures',
+    direction: text(row.direction || row.side),
+    source: 'ibkr_paper_intent',
+    executionSource: 'ibkr_paper',
+    strategy_id: strategy.strategy_id,
+    strategy_name: strategy.strategy_name,
+    inputStrategyKey: strategy.inputStrategyKey,
+    canonicalStatus: strategy.canonicalStatus,
+    ambiguous: strategy.ambiguous,
+    possibleCanonicalIds: strategy.possibleCanonicalIds,
+    legacyLabel: strategy.legacyLabel,
+    setup: null,
+    signalFamily: null,
+    opened_at: openedAt,
+    closed_at: null,
+    timestamp: openedAt || eventTime(row),
+    result: 'OPEN',
+    pnl: null,
+    pnlUsd: null,
+    entryPrice: num(row.entryFilledPrice ?? row.entryAvgFillPrice ?? row.entryLastFillPrice),
+    exitPrice: null,
+    quantity: num(row.entryQuantity ?? row.quantity),
+    statusAtEntry: null,
+    blockedReason: null,
+    paperOnly: true,
+    status: 'open',
+    intentStatus: row.status || null,
+    ...SAFETY,
+  };
+}
+
+function readIbkrIntentOpenTrades(options = {}) {
+  const { rows: intents, degraded } = readIbkrIntents(options);
+  if (degraded) return { rows: [], total: 0, source: 'ibkr_paper_intent', degraded: true };
+  const rows = arr(intents).map(normalizeIbkrIntentOpenTrade).filter(Boolean).sort(newestFirst);
+  return { rows, total: rows.length, source: 'ibkr_paper_intent', degraded: false };
 }
 
 function blockedReasonFromRow(row = {}) {
@@ -884,12 +1030,21 @@ function buildPaperTradingRuntime(options = {}) {
   const files = { ...DEFAULT_FILES, ...(options.files || {}) };
   const warnings = [];
 
+  const ibkrTradesRead = readIbkrIntentClosedTrades(options);
+  if (ibkrTradesRead.degraded) warnings.push('ibkr_intent_trades_degraded');
+  const ibkrOpenTradesRead = readIbkrIntentOpenTrades(options);
+  if (ibkrOpenTradesRead.degraded) warnings.push('ibkr_intent_open_trades_degraded');
+  const useLegacyTradeFile = Boolean(options.files) && !Array.isArray(options.ibkrIntents);
   const state = readJson(files.state, {});
-  const openTrades = arr(state?.openTrades).map((row) => normalizeTrade(row, 'open')).filter(Boolean).sort(newestFirst);
-
-  const tradesRead = readTail(files.trades, Math.max(limit * 4, 200));
-  if (tradesRead.degraded) warnings.push('trades_file_degraded');
-  const closedTrades = tradesRead.rows.map((row) => normalizeTrade(row, 'closed')).filter(Boolean).sort(newestFirst);
+  const openTrades = useLegacyTradeFile
+    ? arr(state?.openTrades).map((row) => normalizeTrade(row, 'open')).filter(Boolean).sort(newestFirst)
+    : ibkrOpenTradesRead.rows;
+  const legacyTradesRead = useLegacyTradeFile ? readTail(files.trades, Math.max(limit * 4, 200)) : null;
+  if (legacyTradesRead?.degraded) warnings.push('trades_file_degraded');
+  const closedTrades = useLegacyTradeFile
+    ? legacyTradesRead.rows.map((row) => normalizeTrade(row, 'closed')).filter(Boolean).sort(newestFirst)
+    : ibkrTradesRead.rows;
+  const tradeSource = useLegacyTradeFile ? 'paper_trading_legacy_file' : 'ibkr_paper_intent';
 
   const eventsRead = readTail(files.events, Math.max(limit * 4, 200));
   if (eventsRead.degraded) warnings.push('events_file_degraded');
@@ -929,8 +1084,7 @@ function buildPaperTradingRuntime(options = {}) {
   // limited window) so the metrics reflect the full paper history. Fault-isolated.
   let strategyPerformance = { strategies: [], summary: null };
   try {
-    const allClosed = readJsonl(files.trades).map((row) => normalizeTrade(row, 'closed')).filter(Boolean);
-    strategyPerformance = buildStrategyPerformance(allClosed);
+    strategyPerformance = buildStrategyPerformance(closedTrades);
   } catch (_) {
     warnings.push('strategy_performance_failed');
   }
@@ -948,6 +1102,7 @@ function buildPaperTradingRuntime(options = {}) {
     safety: { ...SAFETY },
     status: warnings.length ? 'degraded' : 'ok',
     source: 'paperTradingRuntimeService',
+    tradeSource,
     summary: {
       openCount: openTrades.length,
       closedCount: closedTrades.length,
@@ -956,6 +1111,7 @@ function buildPaperTradingRuntime(options = {}) {
       latestEventAt,
       returnedCount: mergedRecords.length,
       limit,
+      tradeSource,
     },
     openTrades: limitedOpenTrades,
     closedTrades: limitedClosedTrades,
@@ -1002,6 +1158,10 @@ module.exports = {
     normalizeTrade,
     normalizeRuntimeEvent,
     normalizeGateDecision,
+    normalizeIbkrIntentTrade,
+    normalizeIbkrIntentOpenTrade,
+    readIbkrIntentClosedTrades,
+    readIbkrIntentOpenTrades,
     strategyMeta,
     buildStrategies,
     buildBlockerBreakdown,

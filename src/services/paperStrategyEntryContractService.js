@@ -5,6 +5,7 @@ const path = require('path');
 
 const catalogService = require('./daytradingStrategyCatalogService');
 const lifecycleIdentity = require('./futuresLifecycleIdentityService');
+const tradeStats = require('./tradeStatsService');
 
 const SAFETY = Object.freeze({
   mode: 'paper_only',
@@ -873,6 +874,15 @@ function readJsonl(file) {
   }
 }
 
+function readTradeRows() {
+  if (process.env.PAPER_ENTRY_CONTRACT_TRADES_FILE) return readJsonl(TRADES_FILE);
+  try {
+    return tradeStats.loadPaperTrades();
+  } catch (_) {
+    return [];
+  }
+}
+
 function timeOf(row = {}) {
   return row.timestamp || row.entryTime || row.opened_at || row.closed_at || row.exitTime || row.at || null;
 }
@@ -951,7 +961,8 @@ function buildEntryContractDiagnostics(options = {}) {
     }
   }
 
-  for (const trade of readJsonl(TRADES_FILE)) {
+  const tradeRows = readTradeRows();
+  for (const trade of tradeRows) {
     const time = parseTime(trade.entryTime || trade.opened_at);
     if (time == null || time < sinceMs) continue;
     const id = strategyIdOf(trade);
@@ -982,7 +993,7 @@ function buildEntryContractDiagnostics(options = {}) {
     const ranked = Object.entries(diag.blockReasons).sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]));
     diag.commonBlocker = ranked[0] ? { reasonCode: ranked[0][0], count: ranked[0][1] } : null;
     diag.timeoutRate = diag.trades > 0 ? round((diag.timeouts / diag.trades) * 100, 2) : null;
-    const trades = readJsonl(TRADES_FILE).filter((trade) => {
+    const trades = tradeRows.filter((trade) => {
       const time = parseTime(trade.entryTime || trade.opened_at);
       return time != null && time >= sinceMs && strategyIdOf(trade) === diag.strategyId;
     });

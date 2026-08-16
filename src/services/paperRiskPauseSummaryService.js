@@ -11,7 +11,6 @@
 const fs = require('fs');
 const path = require('path');
 
-const riskEngineService = require('./riskEngineService');
 const tradeStats = require('./tradeStatsService');
 const consecutiveLossWindow = require('./consecutiveLossWindowService');
 
@@ -180,10 +179,26 @@ function loadRiskReviewState(files = DEFAULT_FILES, now = new Date()) {
   return normalizeRiskReviewState(raw, now);
 }
 
+async function loadRiskConfigFallback() {
+  try {
+    const riskEngineService = require('./riskEngineService');
+    if (riskEngineService && typeof riskEngineService.getRiskConfig === 'function') {
+      return await riskEngineService.getRiskConfig();
+    }
+  } catch (_) {
+    // Optional runtime dependency; status remains read-only with defaults.
+  }
+  return {};
+}
+
 async function buildPaperRiskPauseSummary(options = {}) {
   const files = { ...DEFAULT_FILES, ...(options.files || {}) };
-  const riskConfig = options.riskConfig || await riskEngineService.getRiskConfig();
-  const trades = readJsonl(files.trades);
+  const riskConfig = options.riskConfig || await loadRiskConfigFallback();
+  const useLegacyFiles = Boolean(options.files);
+  const trades = Array.isArray(options.trades)
+    ? options.trades
+    : (useLegacyFiles ? readJsonl(files.trades) : tradeStats.loadPaperTrades());
+  const tradeSource = useLegacyFiles ? files.trades : 'ibkr_paper_intent';
   const events = readJsonl(files.events);
   const closedTrades = trades.filter((row) => normalizeResult(row) !== 'OPEN');
   const riskState = buildConsecutiveLossState(closedTrades, riskConfig);
@@ -197,6 +212,7 @@ async function buildPaperRiskPauseSummary(options = {}) {
   return {
     ok: true,
     source: 'paperRiskPauseSummaryService',
+    tradeSource,
     generatedAt: nowIso(),
     summary: {
       active: pauseTrading,
@@ -220,7 +236,7 @@ async function buildPaperRiskPauseSummary(options = {}) {
 
 function createPaperRiskPauseSummaryService(overrides = {}) {
   const files = { ...DEFAULT_FILES, ...(overrides.files || {}) };
-  const riskConfigProvider = overrides.riskConfigProvider || (() => riskEngineService.getRiskConfig());
+  const riskConfigProvider = overrides.riskConfigProvider || loadRiskConfigFallback;
   return {
     SAFETY,
     async getRiskPauseSummary(options = {}) {

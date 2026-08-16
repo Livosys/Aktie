@@ -7,12 +7,7 @@ const fs = require('fs');
 const path = require('path');
 
 const { loadCandles } = require('../data/marketDataStore');
-const auditTrail = require('./auditTrailService');
-const setupPerformance = require('./setupPerformanceService');
-const strategyPerformance = require('./strategyPerformanceService');
-const tradingAgentsResultMemory = require('./tradingAgentsResultMemoryService');
-const strategyBatchTest = require('./strategyBatchTestService');
-const aiOptimizationAgent = require('./aiOptimizationAgentService');
+const ibPaperExecutionIntentService = require('./ibPaperExecutionIntentService');
 
 const SAFETY = Object.freeze({
   actions_allowed: false,
@@ -108,20 +103,84 @@ function readJsonl(file) {
   }
 }
 
-function readStateOpenTrades() {
+function readStateOpenTrades(file = PAPER_STATE_FILE) {
   try {
-    if (!fs.existsSync(PAPER_STATE_FILE)) return [];
-    const state = JSON.parse(fs.readFileSync(PAPER_STATE_FILE, 'utf8'));
+    if (!fs.existsSync(file)) return [];
+    const state = JSON.parse(fs.readFileSync(file, 'utf8'));
     return Array.isArray(state.openTrades) ? state.openTrades : [];
   } catch (_) {
     return [];
   }
 }
 
-function allTrades() {
+function exitReasonFromFilledLeg(leg) {
+  const value = String(leg || '').trim();
+  if (value === 'stopLoss') return 'stop_loss';
+  if (value === 'takeProfit') return 'take_profit';
+  if (value === 'emergencyFlatten' || value === 'emergency_flatten') return 'emergency_flatten';
+  return value || '';
+}
+
+function normalizeIbkrIntentReplayTrade(row = {}) {
+  if (!row || row.status !== 'filled') return null;
+  const realizedPnl = Number(row.filledRealizedPNL ?? row.filledRealizedPnl ?? row.realizedPNL);
+  if (!Number.isFinite(realizedPnl)) return null;
+  return {
+    tradeId: row.tradeId || row.filledExecId || row.executionId || row.intentId || '',
+    trade_id: row.tradeId || row.filledExecId || row.executionId || row.intentId || '',
+    lifecycleId: row.lifecycleId || '',
+    candidateId: row.candidateId || '',
+    signalId: row.signalId || '',
+    intentId: row.intentId || row.idempotencyKey || '',
+    executionId: row.executionId || '',
+    brokerOrderId: row.filledOrderId ?? row.ibOrderId ?? '',
+    brokerExecutionId: row.filledExecId || '',
+    symbol: row.root || row.localSymbol || '',
+    localSymbol: row.localSymbol || '',
+    strategyId: row.strategyId || '',
+    strategy_id: row.strategyId || '',
+    direction: row.direction || row.side || '',
+    openedAt: row.entryFilledAt || row.entryExecutionAt || row.signalTimestamp || row.createdAt || '',
+    closedAt: row.filledAt || row.filledExecutionAt || row.updatedAt || '',
+    result: realizedPnl > 0 ? 'WIN' : (realizedPnl < 0 ? 'LOSS' : 'BREAKEVEN'),
+    pnl: realizedPnl,
+    pnlUsd: realizedPnl,
+    entryPrice: row.entryFilledPrice ?? row.entryAvgFillPrice ?? row.entryLastFillPrice ?? '',
+    exitPrice: row.filledPrice ?? row.filledAvgPrice ?? row.filledLastPrice ?? '',
+    exitReasonCode: exitReasonFromFilledLeg(row.filledLeg),
+    exitSource: 'ibkr_paper',
+    source: 'ibkr_paper_intent',
+    paperOnly: true,
+  };
+}
+
+function readClosedTradeRows(options = {}) {
+  const files = { ...DEFAULT_FILES, ...(options.files || {}) };
+  if (Array.isArray(options.ibkrIntents) || !options.files) {
+    try {
+      const intents = Array.isArray(options.ibkrIntents)
+        ? options.ibkrIntents
+        : ibPaperExecutionIntentService.defaultIbPaperExecutionIntentService
+          .listIntents({ limit: Number.MAX_SAFE_INTEGER });
+      return intents.map(normalizeIbkrIntentReplayTrade).filter(Boolean);
+    } catch (_) {
+      return [];
+    }
+  }
+  return readJsonl(files.trades);
+}
+
+function tradeSourceForOptions(options = {}) {
+  return Array.isArray(options.ibkrIntents) || !options.files
+    ? 'ibkr_paper_intent'
+    : (options.files?.trades || PAPER_TRADES_FILE);
+}
+
+function allTrades(options = {}) {
+  const files = { ...DEFAULT_FILES, ...(options.files || {}) };
   return [
-    ...readJsonl(PAPER_TRADES_FILE),
-    ...readStateOpenTrades(),
+    ...readClosedTradeRows(options),
+    ...readStateOpenTrades(files.state),
   ].map(normalizeTradeForReplay);
 }
 
@@ -181,6 +240,22 @@ function cleanValue(value) {
   return value;
 }
 
+function buildSetupIdForTrade(trade = {}) {
+  if (trade.setup_id || trade.setupId) return trade.setup_id || trade.setupId;
+  try {
+    const setupPerformance = require('./setupPerformanceService');
+    if (setupPerformance && typeof setupPerformance.buildSetupId === 'function') {
+      return setupPerformance.buildSetupId(trade);
+    }
+  } catch (_) {
+    // Optional research dependency can be unavailable in lightweight checks.
+  }
+  return [
+    trade.strategy_id || trade.strategyId || '',
+    trade.setup || trade.signalSubtype || trade.signalFamily || '',
+  ].filter(Boolean).join(':');
+}
+
 function normalizeTradeForReplay(trade = {}) {
   const openedAt = iso(trade.opened_at || trade.openedAt || trade.entryTime || trade.createdAt);
   const closedAt = iso(trade.closed_at || trade.closedAt || trade.exitTime);
@@ -191,7 +266,7 @@ function normalizeTradeForReplay(trade = {}) {
   const pnl = Number.isFinite(Number(trade.pnl_pct ?? trade.pnlPct ?? trade.pnl))
     ? Number(trade.pnl_pct ?? trade.pnlPct ?? trade.pnl)
     : (entryPrice && exitPrice ? calcPnlPct({ ...trade, entryPrice }, exitPrice) : 0);
-  const setupId = trade.setup_id || trade.setupId || setupPerformance.buildSetupId(trade);
+  const setupId = buildSetupIdForTrade(trade);
   return {
     ...trade,
     trade_id: trade.trade_id || trade.tradeId || trade.id || '',
@@ -1038,9 +1113,8 @@ function simulatePaperQualityV2Trade(tradeInput) {
 }
 
 function buildExitProfileComparison(options = {}) {
-  const files = { ...DEFAULT_FILES, ...(options.files || {}) };
   const limit = Math.max(1, Math.min(200, Number(options.limit || 131) || 131));
-  const paperTrades = readJsonl(files.trades)
+  const paperTrades = readClosedTradeRows(options)
     .map(normalizeTradeForReplay)
     .filter((trade) => String(trade.result || '').toUpperCase() !== 'OPEN')
     .slice(0, limit);
@@ -1239,6 +1313,7 @@ function buildExitProfileComparison(options = {}) {
     ok: true,
     profile: 'comparison',
     sample_size: paperTrades.length,
+    trade_source: tradeSourceForOptions(options),
     replay_sample_size: paperTrades.length,
     replay_trade_instances: profiles.reduce((sum, row) => sum + (Number(row.simulated_trades || 0) || 0), 0),
     profile_count: profiles.length,
@@ -1262,18 +1337,23 @@ async function buildMemoryContext(trade) {
     learning_text: '',
   };
   try {
+    const tradingAgentsResultMemory = require('./tradingAgentsResultMemoryService');
     parts.result_memory = await tradingAgentsResultMemory.buildResultMemorySummary(trade.symbol);
   } catch (_) {}
   try {
+    const setupPerformance = require('./setupPerformanceService');
     parts.setup_performance = await setupPerformance.getSetupById(trade.setup_id);
   } catch (_) {}
   try {
+    const strategyPerformance = require('./strategyPerformanceService');
     parts.strategy_performance = strategyPerformance.getSignalPerformanceBadge(trade.strategy_id);
   } catch (_) {}
   try {
+    const strategyBatchTest = require('./strategyBatchTestService');
     parts.batch_result = strategyBatchTest.getLatestBatchComparison();
   } catch (_) {}
   try {
+    const aiOptimizationAgent = require('./aiOptimizationAgentService');
     parts.ai_optimization = aiOptimizationAgent.getRecommendedConfig();
   } catch (_) {}
 

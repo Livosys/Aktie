@@ -228,6 +228,46 @@ const missingTradeIdLookup = svc.buildTradeExplanationLookup({
 assert.equal(missingTradeIdLookup.found, true);
 assert.equal(missingTradeIdLookup.tradeExplanation.symbol, 'MSFT');
 
+const ibkrLookup = svc.buildTradeExplanationLookup({
+  files,
+  ibkrIntents: [{
+    status: 'filled',
+    strategyId: 'trend_continuation',
+    tradeId: 'ibkr-trade-expl-1',
+    lifecycleId: 'ibkr-life-expl-1',
+    signalId: 'ibkr-signal-expl-1',
+    candidateId: 'ibkr-candidate-expl-1',
+    intentId: 'ibkr-intent-expl-1',
+    idempotencyKey: 'ibkr-intent-expl-1',
+    executionId: 'ibkr-execution-expl-1',
+    root: 'MNQ',
+    localSymbol: 'MNQU6',
+    direction: 'long',
+    entryFilledPrice: 20000,
+    filledPrice: 20015,
+    entryFilledAt: '2026-06-11T10:00:00.000Z',
+    filledAt: '2026-06-11T10:05:00.000Z',
+    filledLeg: 'takeProfit',
+    filledOrderId: 4101,
+    filledExecId: 'ibkr-exec-expl-1',
+    entryCommission: 0.61,
+    filledCommission: 0.61,
+    filledRealizedPNL: 73.78,
+  }],
+  lookup: { tradeId: 'ibkr-trade-expl-1' },
+});
+assert.equal(ibkrLookup.tradeSource, 'ibkr_paper_intent');
+assert.equal(ibkrLookup.found, true);
+assert.equal(ibkrLookup.tradeExplanation.tradeId, 'ibkr-trade-expl-1');
+assert.equal(ibkrLookup.tradeExplanation.lifecycleId, 'ibkr-life-expl-1');
+assert.equal(ibkrLookup.tradeExplanation.candidateId, 'ibkr-candidate-expl-1');
+assert.equal(ibkrLookup.tradeExplanation.intentId, 'ibkr-intent-expl-1');
+assert.equal(ibkrLookup.tradeExplanation.executionId, 'ibkr-execution-expl-1');
+assert.equal(ibkrLookup.tradeExplanation.brokerOrderId, 4101);
+assert.equal(ibkrLookup.tradeExplanation.brokerExecutionId, 'ibkr-exec-expl-1');
+assert.equal(ibkrLookup.tradeExplanation.result, 'WIN');
+assert.equal(ibkrLookup.tradeExplanation.pnlPct, 73.78);
+
 const failedLookup = svc.buildTradeExplanationLookup({
   files,
   lookup: {
