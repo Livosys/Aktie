@@ -12,6 +12,23 @@ export const StrategyOverviewPanel = React.memo(function StrategyOverviewPanel({
           { label: 'Strategy ID', value: textOrEmpty(strategy.strategyId) },
           { label: 'Strategy Name', value: strategyDisplayName(strategy) },
           { label: 'Strategy Family', value: textOrEmpty(strategy.strategyFamily) },
+          // Migrerade strategier körs via sin native-implementation, och det är
+          // det id:t som hamnar på broker-order, intents och trades. Utan det
+          // här fältet går native-id:na på Ledger och Positioner inte att para
+          // ihop med någon strategi.
+          {
+            label: 'Execution Engine',
+            value: strategy.nativeMigrated ? 'Native Futures' : 'Legacy',
+            hint: textOrEmpty(strategy.nativeStrategyVersion),
+          },
+          {
+            label: 'Execution Strategy ID',
+            value: textOrEmpty(strategy.executionStrategyId || strategy.strategyId),
+          },
+          {
+            label: 'Native Signal',
+            value: textOrEmpty(strategy.nativeTargetSignalSubtype || strategy.nativeTargetSignalFamily),
+          },
           { label: 'Symbol', value: textOrEmpty(strategy.symbol) },
           { label: 'Direction', value: textOrEmpty(strategy.direction) },
         ]}

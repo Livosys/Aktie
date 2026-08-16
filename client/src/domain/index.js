@@ -11,3 +11,4 @@ export * as PortfolioDomain from './PortfolioDomain.js';
 export * as PositionDomain from './PositionDomain.js';
 export * as RiskDomain from './RiskDomain.js';
 export * as StrategyDomain from './StrategyDomain.js';
+export * as TradeJournalDomain from './TradeJournalDomain.js';
