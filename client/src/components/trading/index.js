@@ -1,4 +1,10 @@
 export { AiDecisionCenter } from './AiDecisionCenter.jsx';
+export { BrokerOrdersPanel } from './BrokerOrdersPanel.jsx';
+export { FillsPanel } from './FillsPanel.jsx';
+export { LiveScannerPanel } from './LiveScannerPanel.jsx';
+export { StrategyStatisticsPanel } from './StrategyStatisticsPanel.jsx';
+export { TradeDetailCard } from './TradeDetailCard.jsx';
+export { TradeJournal } from './TradeJournal.jsx';
 export { DecisionBadge } from './DecisionBadge.jsx';
 export { DecisionCard } from './DecisionCard.jsx';
 export { DecisionEvidencePanel } from './DecisionEvidencePanel.jsx';
@@ -17,6 +23,7 @@ export { OverviewPanel, SectionHeader, tradingSectionStyle } from './OverviewPan
 export { OrderCard } from './OrderCard.jsx';
 export { OrderTimeline } from './OrderTimeline.jsx';
 export { PositionCard, normalizePositionMetrics } from './PositionCard.jsx';
+export { PositionDeskPanel } from './PositionDeskPanel.jsx';
 export { PositionHeader } from './PositionHeader.jsx';
 export { PositionMetrics } from './PositionMetrics.jsx';
 export { PortfolioIntelligence } from './PortfolioIntelligence.jsx';
@@ -39,6 +46,7 @@ export { StrategyRuntimePanel } from './StrategyRuntimePanel.jsx';
 export { StrategySignalPanel } from './StrategySignalPanel.jsx';
 export { StatusBadge, StatusRail, statusTone, toneTokens } from './StatusBadge.jsx';
 export { TradingAnalyticsPanel } from './TradingAnalyticsPanel.jsx';
+export { TradingDashboardPanel } from './TradingDashboardPanel.jsx';
 export {
   EMPTY_STRATEGY_VIEW_MODEL,
   hasStrategyPerformance,
