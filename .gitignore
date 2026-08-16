@@ -15,6 +15,11 @@ data/paper-trading/
 data/replay-intelligence/
 data/strategy-lab/
 data/exit-calibration/
+# ...men src/data är KÄLLKOD, inte runtime-state. Regeln 'data/' ovan matchar
+# varje katalog med det namnet på valfri nivå. De sju filer som redan låg där
+# är spårade bara för att de är äldre än regeln — varje ny modul i src/data
+# hade annars ignorerats tyst och hamnat i drift utan att finnas i git.
+!src/data/
 _review_snapshots/
 dump.rdb
 dist/

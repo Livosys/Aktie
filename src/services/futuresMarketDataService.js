@@ -12,6 +12,7 @@
 
 const adapterModule = require('./ibFuturesDataAdapterService');
 const candleAggregator = require('../data/candleAggregator');
+const candleWindow = require('../data/candleWindow');
 const marketDataStore = require('../data/marketDataStore');
 const futuresContractCatalog = require('./futuresContractCatalogService');
 
@@ -50,12 +51,8 @@ function nowIso(now = new Date()) {
   return new Date(now).toISOString();
 }
 
-function timeframeMinutes(timeframe) {
-  if (timeframe === '1m') return 1;
-  if (timeframe === '2m') return 2;
-  if (timeframe === '5m') return 5;
-  return null;
-}
+// Tidsramarna bor i candleWindow, som live-feeden och den historiska feeden delar.
+const timeframeMinutes = candleWindow.timeframeMinutes;
 
 function createFuturesMarketDataService(options = {}) {
   const adapter = options.adapter || adapterModule.defaultIbFuturesDataAdapterService;
@@ -223,32 +220,12 @@ function createFuturesMarketDataService(options = {}) {
     if (refreshTimer) { clearInterval(refreshTimer); refreshTimer = null; }
   }
 
-  function buildSourceMeta(quoteOrBar, mode) {
-    const delayed = quoteOrBar?.delayed === true;
-    return {
-      provider: 'ibkr',
-      mode: delayed && mode === 'realtime' ? 'delayed' : mode,
-      realTime: mode === 'realtime' && !delayed,
-      delayed,
-      historical: mode === 'historical',
-      simulated: false,
-      fixture: false,
-      replay: false,
-    };
-  }
+  // Härkomst- och kvalitetsformen delas med candleWindow, så att en quote och
+  // ett candle aldrig kan beskriva sin källa på olika sätt.
+  const buildSourceMeta = candleWindow.buildSourceMeta;
 
-  function buildQuality({ staleAgeMs, timestampValid, contractValid, closedCandleValid = true, volumeValid = true, reasons = [] }) {
-    const status = reasons.length ? 'degraded' : 'ok';
-    return { status, reasons, staleAgeMs: staleAgeMs ?? null, timestampValid, contractValid, closedCandleValid, volumeValid };
-  }
-
-  const DATA_SAFETY = Object.freeze({
-    readOnly: true,
-    actions_allowed: false,
-    can_place_orders: false,
-    live_trading_enabled: false,
-    broker_enabled: false,
-  });
+  const buildQuality = candleWindow.buildQuality;
+  const DATA_SAFETY = candleWindow.DATA_SAFETY;
 
   function getQuote(root, now = new Date()) {
     if (!isEnabled()) return null;
@@ -347,38 +324,9 @@ function createFuturesMarketDataService(options = {}) {
     return age >= 0 ? age <= QUOTE_FRESH_MS : false;
   }
 
-  function normalizeBar(root, bar, { timeframe, isClosed, contract }) {
-    return {
-      instrument: root,
-      localSymbol: contract?.localSymbol || null,
-      conId: contract?.conId || null,
-      expiry: contract?.expiry || null,
-      exchange: contract?.exchange || 'CME',
-      currency: contract?.currency || 'USD',
-      timeframe,
-      timestamp: bar.ts || bar.t || bar.timestamp,
-      ts: bar.ts || bar.t || bar.timestamp,
-      t: bar.ts || bar.t || bar.timestamp,
-      open: bar.open ?? bar.o,
-      high: bar.high ?? bar.h,
-      low: bar.low ?? bar.l,
-      close: bar.close ?? bar.c,
-      volume: bar.volume ?? bar.v ?? null,
-      tradeCount: bar.tradeCount ?? null,
-      isClosed,
-      dataSource: 'ib',
-      source: buildSourceMeta({ delayed: false }, 'historical'),
-      quality: buildQuality({
-        staleAgeMs: null,
-        timestampValid: Boolean(bar.ts || bar.t || bar.timestamp),
-        contractValid: Boolean(contract?.conId),
-        closedCandleValid: isClosed,
-        volumeValid: (bar.volume ?? bar.v) != null,
-        reasons: [],
-      }),
-      safety: DATA_SAFETY,
-    };
-  }
+  // normalizeBar bor numera i candleWindow, dit både live-feeden och den
+  // historiska feeden går. Den lokala kopian är borttagen med flit: två
+  // radformare för samma rad är två datamodeller.
 
   // Closed candles + max ETT tydligt öppet candle per timeframe.
   function getCandles(root, { timeframe = '1m', limit = 500, now = new Date() } = {}) {
@@ -398,44 +346,19 @@ function createFuturesMarketDataService(options = {}) {
       exchange: contractInfo.exchange || 'CME',
       currency: contractInfo.currency || 'USD',
     };
-    const nowMs = new Date(now).getTime();
     const bars1m = state.bars1m.map((b) => ({
       ts: b.timestamp, t: b.timestamp,
       open: b.open, high: b.high, low: b.low, close: b.close,
       volume: b.volume, tradeCount: b.tradeCount,
     }));
 
-    let aggregated;
-    if (minutes === 1) aggregated = bars1m.map((b) => ({ ...b, incomplete: false }));
-    else aggregated = candleAggregator.aggregateBars(bars1m, minutes);
-
-    const tfMs = minutes * 60 * 1000;
-    const rows = aggregated.map((bar) => {
-      const startMs = new Date(bar.ts || bar.t).getTime();
-      // Ett candle är stängt först när hela perioden har passerat.
-      const isClosed = Number.isFinite(startMs) && (startMs + tfMs) <= nowMs && bar.incomplete !== true;
-      return normalizeBar(key, bar, { timeframe, isClosed, contract });
-    });
-    const closed = rows.filter((r) => r.isClosed);
-    const openCandles = rows.filter((r) => !r.isClosed);
-    const openCandle = openCandles.length ? openCandles[openCandles.length - 1] : null;
-    const limited = closed.slice(Math.max(0, closed.length - Math.max(1, limit)));
-    const latest = limited[limited.length - 1] || null;
+    // Fönstret byggs av candleWindow — exakt samma funktion som den historiska
+    // feeden anropar. Ingen egen aggregering, ingen egen stängningsregel.
+    const window = candleWindow.buildCandleWindow({ root: key, bars1m, timeframe, limit, now, contract });
     return {
-      ok: true,
-      root: key,
-      timeframe,
-      candles: limited,
-      openCandle,
-      count: limited.length,
-      firstTimestamp: limited[0]?.timestamp || null,
-      latestClosedTimestamp: latest?.timestamp || null,
-      staleAgeMs: latest ? nowMs - new Date(latest.timestamp).getTime() - tfMs : null,
-      dataQuality: limited.length ? 'ib_historical' : 'missing',
-      source: buildSourceMeta({ delayed: false }, 'historical'),
+      ...window,
       lastRefreshAt: state.lastRefreshAt,
       lastError: state.lastError,
-      safety: DATA_SAFETY,
     };
   }
 
@@ -572,6 +495,11 @@ function createFuturesMarketDataService(options = {}) {
     stop,
     isStarted: () => started,
     refreshAllOnce,
+    // Exponerade så att en anropare kan ladda barer UTAN att skriva till
+    // marknadsdatalagret (persist: false). Paritetstestet kräver det, och
+    // backfill-tjänsten behöver samma ingång.
+    refreshRoot,
+    backfillRoot,
     getQuote,
     getLatestHistoricalQuote,
     isQuoteFresh,

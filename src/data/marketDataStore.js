@@ -304,10 +304,28 @@ function loadIbImportManifest(symbol) {
   }
 }
 
+/**
+ * Läs RÅ barer för en källa över ett datumintervall.
+ *
+ * loadCandles kan bara nå alpaca-raw eftersom dirForTimeframe har 'alpaca' som
+ * default. Den historiska feeden behöver IB:s 1-minutersbarer — samma barer som
+ * live-feeden håller i minnet — och de ligger under ib/raw. Additiv funktion:
+ * inga befintliga anropare berörs.
+ */
+function loadRawBars(symbol, start, end, source = 'ib') {
+  const dates = getDatesInRange(start, end);
+  const all = [];
+  for (const date of dates) {
+    all.push(...readJsonl(filePath(rawDir(symbol, source), date)));
+  }
+  return dedupeByTimestamp(all);
+}
+
 module.exports = {
   saveRawBars,
   saveCandles2m,
   loadCandles,
+  loadRawBars,
   hasData,
   hasCandlesInRange,
   listAvailableDates,
