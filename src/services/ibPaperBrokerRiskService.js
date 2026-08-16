@@ -5,6 +5,7 @@ const futuresContractCatalog = require('./futuresContractCatalogService');
 
 const SAFETY = Object.freeze({
   mode: 'ibkr_paper',
+  executionTarget: 'ibkr_paper',
   environment: 'paper',
   paperOnly: true,
   live_trading_enabled: false,
@@ -13,6 +14,13 @@ const SAFETY = Object.freeze({
   live_account_orders_allowed: false,
   source: 'ib_paper_broker_risk',
 });
+
+function buildSafety(executionTarget = 'ibkr_paper') {
+  return {
+    ...configService.buildExecutionSafety(executionTarget),
+    source: 'ib_paper_broker_risk',
+  };
+}
 
 function nowMs(now = new Date()) {
   const ms = new Date(now).getTime();
@@ -41,18 +49,55 @@ function addCheck(checks, code, ok, blocker, detail = {}) {
   });
 }
 
+const TERMINAL_ORDER_STATUSES = Object.freeze(['cancelled', 'apicancelled', 'filled']);
+
+// Benet står i orderRef, som vi själva skriver: TOS-{PAPER,LIVE}-<executionId>-<ben>.
+// Det är den enda identifieraren som är vår egen och som inte förändras under
+// orderns livstid.
+const ORDER_REF_LEG_PATTERN = /-(entry|stopLoss|takeProfit|flatten)$/;
+
+function legOfOrderRow(row = {}) {
+  const ref = row.orderRef ?? row.order?.orderRef ?? null;
+  const match = ORDER_REF_LEG_PATTERN.exec(String(ref || ''));
+  if (match) return match[1];
+  const explicit = String(row.role || row.order?.role || '').trim();
+  return explicit || null;
+}
+
+function isTerminalOrderRow(row = {}) {
+  const status = String(row.status || row.state || row.orderStatus || '').toLowerCase();
+  return TERMINAL_ORDER_STATUSES.includes(status);
+}
+
+// Räknar VÄNTANDE ENTRY-ORDER. Tidigare identifierades entry-ordern på
+// `role` plus `parentId === 0`. `role` sätts aldrig på broker-rader — varken
+// adaptern eller reconciliation skriver fältet — så parentId var i praktiken
+// enda kriteriet, och parentId ägs av IB och ändras under orderns livstid:
+// skyddsbenen får förälderns orderId vid inläggning men rapporteras med
+// parentId 0 när föräldern inte längre finns i orderboken. Samma bracket-par
+// räknades därför som 0 väntande entries dagen det lades och som 2 två dagar
+// senare. orderRef-benet är vårt eget och ligger stilla hela vägen.
 function countPendingEntries(openOrders = []) {
   return openOrders.filter((row) => {
-    const role = String(row.role || row.order?.role || '').toLowerCase();
-    const parentId = row.parentId ?? row.order?.parentId ?? null;
-    const status = String(row.status || row.state || row.orderStatus || '').toLowerCase();
-    const isCancelled = ['cancelled', 'apicancelled', 'filled'].includes(status);
-    return !isCancelled && (!role || role === 'entry') && (parentId == null || Number(parentId) === 0);
+    if (isTerminalOrderRow(row)) return false;
+    const leg = legOfOrderRow(row);
+    // Okänt ben = order vi inte lagt själva. Fail closed: den räknas som en
+    // väntande entry och stryper nya entries hellre än att släppa igenom dem.
+    if (leg == null) return true;
+    return leg === 'entry';
   }).length;
 }
 
+// Räknar ÖPPEN EXPONERING i kontrakt, inte antal positionsrader. En rad från
+// IB:s reqPositions aggregerar hela nettopositionen per kontrakt (.position är
+// signerad kvantitet), så radräkning gjorde taket verkningslöst: med taket > 1
+// kunde varje ny entry lägga ännu ett kontrakt på en BEFINTLIG rad utan att
+// radantalet steg, och exponeringen växte obehindrat.
 function getPositionCount(positions = []) {
-  return positions.filter((row) => Number(row.position ?? row.quantity ?? row.size ?? 0) !== 0).length;
+  return positions.reduce((total, row) => {
+    const qty = Number(row.position ?? row.signedQuantity ?? row.quantity ?? row.size ?? 0);
+    return Number.isFinite(qty) ? total + Math.abs(qty) : total;
+  }, 0);
 }
 
 function spreadTicks(quote, tickSize) {
@@ -64,6 +109,7 @@ function spreadTicks(quote, tickSize) {
 }
 
 function evaluateBrokerRisk({
+  executionTarget = null,
   root,
   quantity,
   orderType,
@@ -75,7 +121,9 @@ function evaluateBrokerRisk({
   reconciliation = null,
   now = new Date(),
 } = {}) {
-  const limits = configService.getPilotLimits();
+  const target = configService.normalizeExecutionTarget(executionTarget);
+  const targetSafety = buildSafety(target);
+  const limits = configService.getPilotLimits({ executionTarget: target });
   const checks = [];
   const normalizedRoot = String(root || '').trim().toUpperCase();
   const qty = Number(quantity);
@@ -93,6 +141,8 @@ function evaluateBrokerRisk({
 	  const accountAgeMs = numberOrNull(accountSummary?.cacheAgeMs ?? accountSummary?.ageMs)
 	    ?? ageMsFromGeneratedAt(accountSummary?.generatedAt, now);
 	  const realizedPnl = numberOrNull(accountSummary?.account?.realizedPnl ?? accountSummary?.realizedPnl);
+  const expectedAccountClassification = target === 'ibkr_live' ? 'live_or_unknown' : 'paper';
+  const accountSummaryBlocker = target === 'ibkr_live' ? 'live_account_summary_missing' : 'paper_account_summary_missing';
   const openPositionCount = getPositionCount(positions);
   const pendingEntries = countPendingEntries(openOrders);
 
@@ -117,10 +167,7 @@ function evaluateBrokerRisk({
 	  addCheck(checks, 'quote_ask_gte_bid', bid != null && ask != null && ask >= bid, 'quote_crossed_or_invalid', { bid, ask });
 	  addCheck(checks, 'spread_numeric', spread != null && spread >= 0, 'spread_unknown', { spread });
 	  addCheck(checks, 'spread_ticks_numeric', spreadInTicks != null && Number.isFinite(spreadInTicks), 'spread_ticks_unknown', { spreadTicks: spreadInTicks });
-	  addCheck(checks, 'spread_within_limit', spreadInTicks != null && spreadInTicks <= limits.maxSpreadTicks, 'spread_too_wide', { spreadTicks: spreadInTicks, maxSpreadTicks: limits.maxSpreadTicks });
-	  addCheck(checks, 'stop_risk_within_limit', stopRiskUsd != null && stopRiskUsd <= limits.maxStopRiskUsd, 'stop_risk_too_large', { stopRiskUsd, maxStopRiskUsd: limits.maxStopRiskUsd });
-	  addCheck(checks, 'contract_notional_sanity_limit', contractNotionalUsd != null && contractNotionalUsd <= limits.maxContractNotionalUsd, 'contract_notional_too_large', { contractNotionalUsd, maxContractNotionalUsd: limits.maxContractNotionalUsd });
-	  addCheck(checks, 'account_summary_present', accountSummary?.ok === true && accountSummary?.account?.classification === 'paper' && Boolean(accountSummary?.account?.accountIdMasked), 'paper_account_summary_missing', { accountIdMasked: accountSummary?.account?.accountIdMasked || null });
+	  addCheck(checks, 'account_summary_present', accountSummary?.ok === true && accountSummary?.account?.classification === expectedAccountClassification && Boolean(accountSummary?.account?.accountIdMasked), accountSummaryBlocker, { accountIdMasked: accountSummary?.account?.accountIdMasked || null, classification: accountSummary?.account?.classification || null, expectedClassification: expectedAccountClassification });
 	  addCheck(checks, 'account_summary_has_timestamp', Boolean(accountSummary?.generatedAt), 'account_summary_timestamp_missing', { generatedAt: accountSummary?.generatedAt || null });
 	  addCheck(checks, 'account_summary_fresh', accountAgeMs != null && accountAgeMs <= limits.maxAccountSummaryAgeMs, 'account_summary_stale', { accountAgeMs, maxAccountSummaryAgeMs: limits.maxAccountSummaryAgeMs });
 	  addCheck(checks, 'daily_loss_within_limit', realizedPnl == null || realizedPnl > -Math.abs(limits.maxDailyLossSek), 'daily_paper_loss_limit', { realizedPnl, maxDailyLossSek: limits.maxDailyLossSek });
@@ -139,11 +186,12 @@ function evaluateBrokerRisk({
 	    stopRiskUsd,
 	    spreadTicks: spreadInTicks,
     quoteAgeMs,
-    ...SAFETY,
+    ...targetSafety,
   };
 }
 
 module.exports = {
   SAFETY,
   evaluateBrokerRisk,
+  _internal: { countPendingEntries, getPositionCount, legOfOrderRow },
 };
