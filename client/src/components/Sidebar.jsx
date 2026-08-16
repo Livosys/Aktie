@@ -9,7 +9,20 @@ const NAV_GROUPS = [
       { path: '/supervisor', label: 'Översikt', icon: 'O', match: ['/', '/supervisor', '/overview', '/oversikt'], accent: 'blue' },
       { path: '/futures-paper', label: 'Futures', icon: 'F', match: ['/futures-paper', '/paper-futures'], excludeTabs: ['positioner', 'ordrar'], accent: 'teal' },
       { path: '/futures-paper?tab=positioner', label: 'Positioner', icon: 'P', match: ['/futures-paper'], tab: 'positioner', accent: 'green' },
-      { path: '/futures-paper?tab=ordrar', label: 'Execution', icon: 'E', match: ['/futures-paper'], tab: 'ordrar', accent: 'orange' },
+      // Fliken heter 'ordrar' av bakåtkompatibilitetsskäl men visar Live Scanner.
+      // Etiketten följer innehållet; sökvägen är oförändrad så gamla länkar lever.
+      { path: '/futures-paper?tab=ordrar', label: 'Live Scanner', icon: 'S', match: ['/futures-paper'], tab: 'ordrar', accent: 'orange' },
+    ],
+  },
+  {
+    // Replay och Batch är egna arbetsytor, inte laborationer. De bor fortfarande
+    // på /lab?tab=... så att varje befintlig länk och omdirigering fungerar —
+    // det är bara navigationen som slutat gömma dem bakom Labs.
+    id: 'research',
+    label: 'Forskning',
+    items: [
+      { path: '/lab?tab=replay', label: 'Replay', icon: 'R', match: ['/lab'], tab: 'replay', accent: 'purple' },
+      { path: '/lab?tab=batch', label: 'Batch', icon: 'B', match: ['/lab'], tab: 'batch', accent: 'teal' },
     ],
   },
   {
@@ -24,7 +37,10 @@ const NAV_GROUPS = [
     id: 'labs',
     label: 'Labs',
     items: [
-      { path: '/lab', label: 'Labs', icon: 'L', match: ['/lab', '/trading-lab', '/strategy-lab', '/strategilabb', '/replay', '/review-chart', '/machine', '/intelligence', '/intelligens', '/missed-breakouts', '/micro-move', '/wave', '/exit-engine', '/exit', '/pinescript', '/pine-script', '/ai', '/narrow', '/narrow-state'], accent: 'teal' },
+      // Kvar i Labs: strategier, review, kandidater, learning, marknader, sliders,
+      // exits, AI-agent och beslutsråd — det experimentella. Replay och Batch har
+      // flyttat till Forskning, så Labs får inte längre lysa upp på deras flikar.
+      { path: '/lab', label: 'Labs', icon: 'L', match: ['/lab', '/trading-lab', '/strategy-lab', '/strategilabb', '/review-chart', '/machine', '/intelligence', '/intelligens', '/missed-breakouts', '/micro-move', '/wave', '/exit-engine', '/exit', '/pinescript', '/pine-script', '/ai', '/narrow', '/narrow-state'], excludeTabs: ['replay', 'batch'], accent: 'teal' },
     ],
   },
 ];

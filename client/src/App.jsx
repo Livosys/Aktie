@@ -62,6 +62,13 @@ function ProtectedTradingOs() {
           <Route path="/ai"          element={<AiControlRoomPage />} />
           <Route path="/ai/:section" element={<AiControlRoomPage />} />
 
+          {/* Förstklassiga arbetsytor. Vyerna är oförändrade — det här är bara
+              egna adresser till dem, så att ett menyval går att bokmärka och
+              dela utan att gå via Labs. /replay finns redan bland legacy-
+              routerna nedan och lämnas orörd. */}
+          <Route path="/batch"        element={<Navigate to="/lab?tab=batch" replace />} />
+          <Route path="/live-scanner" element={<Navigate to="/futures-paper?tab=ordrar" replace />} />
+
           {/* Legacy primary routes */}
           <Route path="/signalpuls"  element={<RedirectWithSearch to="/live" />} />
           <Route path="/trading-lab" element={<RedirectWithSearch to="/lab" />} />
