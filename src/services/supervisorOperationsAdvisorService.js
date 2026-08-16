@@ -6,6 +6,7 @@ const path = require('path');
 const daytradingLearning = require('./daytradingLearningEngineService');
 const daytradingControl = require('./daytradingControlService');
 const paperTrading = require('../paperTrading/paperTradingAgent');
+const tradeStats = require('./tradeStatsService');
 
 const SAFETY = Object.freeze({
   actions_allowed: false,
@@ -29,7 +30,6 @@ const WINDOW_LABELS = Object.freeze({
   '30d': 'Senaste 30 dagarna',
 });
 
-const PAPER_TRADES_FILE = path.resolve(__dirname, '../../data/paper-trading/trades.jsonl');
 const PAPER_EVENTS_FILE = path.resolve(__dirname, '../../data/paper-trading/events.jsonl');
 
 function nowIso() {
@@ -81,6 +81,14 @@ function withinWindow(row, sinceMs) {
   const time = new Date(ts).getTime();
   if (!Number.isFinite(time)) return true;
   return time >= sinceMs;
+}
+
+function loadCurrentPaperTradesSince(sinceMs) {
+  try {
+    return tradeStats.loadPaperTrades().filter((row) => withinWindow(row, sinceMs));
+  } catch (_) {
+    return [];
+  }
 }
 
 function text(value, fallback = '') {
@@ -438,10 +446,9 @@ function buildWindowAdvisor(windowKey = '1d') {
   const runtime = daytradingControl.getRuntimeStrategies();
   const recommendation = daytradingControl.getRecommendation();
   const paperStatus = paperTrading.getStatus();
-  const paperPerformance = paperTrading.getPerformance();
   const gateHistory = paperTrading.getGateDecisionsHistory({ since: sinceIso, limit: 2000 });
 
-  const trades = readJsonl(PAPER_TRADES_FILE).filter((row) => withinWindow(row, sinceMs));
+  const trades = loadCurrentPaperTradesSince(sinceMs);
   const events = readJsonl(PAPER_EVENTS_FILE).filter((row) => withinWindow(row, sinceMs));
   const gateDecisions = Array.isArray(gateHistory.decisions) ? gateHistory.decisions : [];
   const runtimeRows = Array.isArray(runtime.strategies) ? runtime.strategies.map(formatStrategyRow) : [];
@@ -491,12 +498,13 @@ function buildWindowAdvisor(windowKey = '1d') {
     },
     paper_status: {
       enabled: paperStatus.enabled === true,
-      open_count: paperStatus.openCount ?? paperStatus.open_count ?? 0,
+      open_count: learningTop.open_trades ?? 0,
       performance: {
-        win_rate: paperPerformance?.win_rate ?? null,
-        timeout_rate: paperPerformance?.timeout_rate ?? null,
-        avg_pnl: paperPerformance?.avg_pnl ?? null,
-        total: paperPerformance?.total ?? paperPerformance?.trades ?? null,
+        win_rate: learningTop.win_rate ?? null,
+        timeout_rate: learningTop.closed_trades ? Math.round(((learningTop.timeout || 0) / learningTop.closed_trades) * 10000) / 100 : null,
+        avg_pnl: learningTop.avg_pl ?? null,
+        total: learningTop.trades_total ?? trades.length,
+        trade_source: learning.trade_source || 'ibkr_paper_intent',
       },
     },
     window_metrics: windowMetrics,
@@ -518,6 +526,7 @@ function buildWindowAdvisor(windowKey = '1d') {
       runtime_strategies: '/api/daytrading/runtime-strategies',
       recommendation: '/api/daytrading/recommendation',
       paper_gate_history: '/api/paper-trading/gate-decisions-history',
+      paper_trades: 'tradeStatsService.loadPaperTrades',
     },
   };
 

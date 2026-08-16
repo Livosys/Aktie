@@ -36,7 +36,6 @@ const DATA_FILES = Object.freeze({
   batchResultsDir: path.join(DATA_ROOT, 'strategy-batches/results'),
   batchGridSummary: path.join(DATA_ROOT, 'strategy-batches/top-strategy-grid-v1-summary.json'),
   replayRunsDir: path.join(DATA_ROOT, 'replay/runs'),
-  paperTradesFile: path.join(DATA_ROOT, 'paper-trading/trades.jsonl'),
   learningConnectorSummary: path.join(DATA_ROOT, 'learning-connector/summary.json'),
   signalLearningSummary: path.join(DATA_ROOT, 'signals/learning-summary.json'),
   paperAllowlistFile: path.join(DATA_ROOT, 'automation-approvals.json'),
@@ -721,7 +720,7 @@ function summarizePaperStatus(paperTradingStatusService) {
       message: err && err.message ? err.message : String(err),
       summary: {
         status: 'error',
-        source: 'data/paper-trading/trades.jsonl',
+        source: 'ibkr_paper_intent',
         emptyReason: 'paper_status_error',
         message: err && err.message ? err.message : String(err),
         totalTrades: 0,
@@ -2335,7 +2334,7 @@ async function buildOverview() {
       source: 'paperTradingStatusService',
       summary: {
         status: 'error',
-        source: 'data/paper-trading/trades.jsonl',
+        source: 'ibkr_paper_intent',
         emptyReason: 'paper_summary_error',
         message: err && err.message ? err.message : 'unavailable',
         totalTrades: 0,

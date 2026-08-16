@@ -9,7 +9,7 @@
 //   closed too early.
 //
 // This module is STRICTLY read-only:
-//   - It only reads data/paper-trading/trades.jsonl.
+//   - It reads the current paper-trade stats source by default.
 //   - It never writes trades, state, config or env.
 //   - It never imports order/broker/execution code.
 //   - It is pure: running it many times produces the same result, no side
@@ -33,6 +33,7 @@
 
 const fs = require('fs');
 const path = require('path');
+const tradeStats = require('./tradeStatsService');
 
 const SAFETY = Object.freeze({
   mode: 'paper_only',
@@ -141,18 +142,19 @@ function normalizeTrade(raw = {}) {
     exitReason: raw.exitReason || null,
     exitReasonCode: raw.exitReasonCode || null,
     exitSource: raw.exitSource || null,
-    realizedPnl: num(raw.pnlPct),
-    mfe: num(raw.maxFavorablePct),
-    mae: num(raw.maxAdversePct),
-    target: num(raw.targetPct),
-    stop: num(raw.stopPct),
+    realizedPnl: num(raw.pnlPct ?? raw.pnl_pct ?? raw.pnl ?? raw.pnlUsd ?? raw.realizedPnl),
+    mfe: num(raw.maxFavorablePct ?? raw.mfePct ?? raw.max_favorable_pct),
+    mae: num(raw.maxAdversePct ?? raw.maePct ?? raw.max_adverse_pct),
+    target: num(raw.targetPct ?? raw.takeProfit ?? raw.take_profit ?? raw.target_pct),
+    stop: num(raw.stopPct ?? raw.stopLoss ?? raw.stop_loss ?? raw.stop_pct),
     durationSec: num(raw.duration_seconds),
     exitTime: raw.exitTime || raw.closed_at || null,
   };
 }
 
-function loadClosedTrades(file = PAPER_TRADES_FILE) {
-  return readJsonl(file)
+function loadClosedTrades(file = null) {
+  const rows = file ? readJsonl(file) : tradeStats.loadPaperTrades();
+  return rows
     .map(normalizeTrade)
     // require the fields the approximation depends on
     .filter((t) => t.realizedPnl !== null && t.mfe !== null && t.mae !== null && t.target !== null && t.stop !== null);
@@ -308,7 +310,7 @@ function bucketCounts(rows) {
 
 // --- run a full comparison ---------------------------------------------------
 function runComparison(options = {}) {
-  const file = options.file || PAPER_TRADES_FILE;
+  const file = options.file || null;
   const trades = loadClosedTrades(file);
 
   const profileOrder = ['baseline', 'mild_exit_v1', 'mild_exit_v2', 'entry_filtered_plus_mild_exit'];
@@ -384,7 +386,7 @@ function runComparison(options = {}) {
 
   return {
     safety: SAFETY,
-    dataSource: file,
+    dataSource: file || 'tradeStatsService.loadPaperTrades',
     replayType: 'APPROXIMATION (closed-trade MFE/MAE based) — NOT exact bar replay (no 2m candles available for trade windows)',
     totalClosedTrades: trades.length,
     missingFieldsNote: 'exitProfile, entryQualityScore/Warnings, wouldRequire2mConfirmation, absolute stopLoss/takeProfit, riskReward, marketState/regime/timeframe are NOT logged; approximation uses targetPct/stopPct + MFE/MAE.',

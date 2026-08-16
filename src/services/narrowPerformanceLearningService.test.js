@@ -42,7 +42,7 @@ function loadServiceWithData(seedFn) {
     ]);
 
     writeJson(path.join(tmpDir, 'strategy-batches', 'results', 'batch_old.json'), {
-      strategy_id: 'narrow_state_expansion_long',
+      strategy_id: 'vwap_volume_breakout_long',
       symbol: 'BTCUSDT',
       trades: 12,
       wins: 6,
@@ -66,7 +66,7 @@ function loadServiceWithData(seedFn) {
   assert.equal(summary.summary.status, 'needs_more_data', 'empty dataset status');
   assert.equal(summary.summary.totalTrades, 0, 'empty dataset total trades');
   assert.equal(summary.summary.message, 'Systemet har ännu för lite Narrow State-data för säker slutsats.', 'empty dataset message');
-  assert.equal(summary.rankings.length, 3, 'empty dataset ranking scaffold');
+  assert.equal(summary.rankings.length, 6, 'empty dataset ranking scaffold');
   assert.equal(summary.scoreBands.length, 4, 'empty dataset score-band scaffold');
   assert.equal(summary.confirmations.length, 5, 'empty dataset confirmation scaffold');
   assert.equal(summary.recommendedNextTest.strategy_id, 'narrow_breakout_v1', 'empty dataset next test');

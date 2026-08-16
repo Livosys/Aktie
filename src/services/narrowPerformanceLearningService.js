@@ -22,6 +22,7 @@
 
 const fs = require('fs');
 const path = require('path');
+const tradeStats = require('./tradeStatsService');
 
 const SAFETY = Object.freeze({
   actions_allowed: false,
@@ -35,12 +36,18 @@ const SAFETY = Object.freeze({
 // The three known narrow strategies. These are the only strategy_id fallbacks
 // we accept when strategy_family is missing from source data.
 const KNOWN_NARROW_IDS = Object.freeze([
+  'narrow_breakout',
+  'narrow_state_expansion_long',
+  'narrow_state_fakeout_reversal',
   'narrow_breakout_v1',
   'narrow_fakeout_reversal_v1',
   'narrow_vwap_mean_reversion_v1',
 ]);
 
 const FRIENDLY_NAMES = Object.freeze({
+  narrow_breakout: 'Breakout efter trång marknad',
+  narrow_state_expansion_long: 'Narrow State Expansion Long',
+  narrow_state_fakeout_reversal: 'Narrow State Fakeout Reversal',
   narrow_breakout_v1: 'Breakout efter trång marknad',
   narrow_fakeout_reversal_v1: 'Falskt breakout och vändning',
   narrow_vwap_mean_reversion_v1: 'Återgång mot VWAP',
@@ -114,7 +121,7 @@ function resultFromRow(row) {
   if (['loss', 'lost', 'sl', 'stop'].includes(r)) return 'loss';
   if (['breakeven', 'be', 'flat'].includes(r)) return 'breakeven';
   // Derive from pnl if explicit result missing
-  const pnl = num(row.pnlPct ?? row.pnl_percent ?? row.pnlPercent ?? row.pnl_paper ?? row.pnl);
+  const pnl = num(row.pnlPct ?? row.pnl_percent ?? row.pnlPercent ?? row.pnl_paper ?? row.pnl ?? row.pnlUsd ?? row.realizedPnl);
   if (pnl !== null) {
     if (pnl > 0.01) return 'win';
     if (pnl < -0.01) return 'loss';
@@ -220,7 +227,7 @@ function summarizeMissingDataWarnings(records, rawSourceCounts) {
 // `wins`, `losses`, `breakeven` make both granularities aggregate cleanly.
 function normalizeNarrowRecord(row, source, overrides = {}) {
   const result = resultFromRow(row);
-  const pnl = num(row.pnlPct ?? row.pnl_paper ?? row.pnl_percent ?? row.pnl);
+  const pnl = num(row.pnlPct ?? row.pnl_paper ?? row.pnl_percent ?? row.pnl ?? row.pnlUsd ?? row.realizedPnl);
   const strategyFamily = narrowFamilyOf(row);
   const narrowScore = num(row.narrowScore ?? row.narrow_score);
   const regimeLabel = row.regimeLabel ?? row.regime_label ?? null;
@@ -304,7 +311,9 @@ function normalizeConfirmations(c) {
 // ── Source readers (all robust, never throw) ─────────────────────────────────
 
 function readPaperRecords() {
-  const rows = safeReadJsonlLines(PAPER_TRADES_FILE);
+  const rows = process.env.NARROW_DATA_DIR
+    ? safeReadJsonlLines(PAPER_TRADES_FILE)
+    : tradeStats.loadPaperTrades();
   const out = [];
   const warnings = [];
   for (const row of rows) {

@@ -10,6 +10,7 @@
 
 const fs   = require('fs');
 const path = require('path');
+const tradeStats = require('./tradeStatsService');
 
 // ── Safety contract ───────────────────────────────────────────────────────────
 const SAFETY = Object.freeze({
@@ -25,7 +26,6 @@ const COMPASS_PATH      = path.join(DATA_DIR, 'market-compass.json');
 const PERSONALITY_STOCKS= path.join(DATA_DIR, 'signals/market-personality-stocks.json');
 const PERSONALITY_CRYPTO= path.join(DATA_DIR, 'signals/market-personality-crypto.json');
 const REGIME_PROFILES   = path.join(DATA_DIR, 'signals/regime-profiles.json');
-const TRADES_PATH       = path.join(DATA_DIR, 'paper-trading/trades.jsonl');
 const REGIME_DIR        = path.join(DATA_DIR, 'market-regime');
 const HISTORY_PATH      = path.join(REGIME_DIR, 'history.json');
 const STATUS_PATH       = path.join(REGIME_DIR, 'status.json');
@@ -187,11 +187,7 @@ function loadJson(p) {
 
 function loadTrades() {
   try {
-    if (!fs.existsSync(TRADES_PATH)) return [];
-    const raw = fs.readFileSync(TRADES_PATH, 'utf8');
-    return raw.split('\n').filter(Boolean).map(l => {
-      try { return JSON.parse(l); } catch { return null; }
-    }).filter(Boolean);
+    return tradeStats.loadPaperTrades();
   } catch { return []; }
 }
 

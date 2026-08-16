@@ -4,7 +4,7 @@ const fs = require('fs');
 const path = require('path');
 
 const redisService = require('./redisService');
-const replayIntelligenceService = require('./replayIntelligenceService');
+const tradeStats = require('./tradeStatsService');
 
 const CACHE_KEY = 'exit:calibration';
 const RECENT_CACHE_KEY = 'exit:calibration:recent';
@@ -12,7 +12,6 @@ const CACHE_TTL_SECONDS = 30 * 60;
 const DATA_DIR = path.resolve(__dirname, '../../data/exit-calibration');
 const CALIBRATION_FILE = path.join(DATA_DIR, 'calibration.json');
 const RECENT_FILE = path.join(DATA_DIR, 'recent.json');
-const PAPER_TRADES_FILE = path.resolve(__dirname, '../../data/paper-trading/trades.jsonl');
 const MIN_REASON_SAMPLE = 2;
 const MEANINGFUL_DELTA = 0.02;
 
@@ -38,21 +37,6 @@ function writeJson(file, value) {
   fs.writeFileSync(file, JSON.stringify(value, null, 2) + '\n', 'utf8');
 }
 
-function readJsonl(file) {
-  try {
-    if (!fs.existsSync(file)) return [];
-    return fs.readFileSync(file, 'utf8')
-      .split('\n')
-      .filter((line) => line.trim())
-      .map((line) => {
-        try { return JSON.parse(line); } catch (_) { return null; }
-      })
-      .filter(Boolean);
-  } catch (_) {
-    return [];
-  }
-}
-
 function round(value, decimals = 4) {
   const n = Number(value);
   if (!Number.isFinite(n)) return 0;
@@ -67,6 +51,14 @@ function pct(part, total) {
 function asNumber(value) {
   const n = Number(value);
   return Number.isFinite(n) ? n : null;
+}
+
+function loadReplayIntelligenceService() {
+  try {
+    return require('./replayIntelligenceService');
+  } catch (_) {
+    return null;
+  }
 }
 
 function normalizeResult(result, pnl, reason) {
@@ -178,12 +170,12 @@ function actualFromReplayEvent(event) {
 }
 
 function rowFromPaperTrade(trade) {
-  const pnl = asNumber(trade.pnlPct ?? trade.pnl_pct);
+  const pnl = asNumber(trade.pnlPct ?? trade.pnl_pct ?? trade.pnl ?? trade.pnlUsd ?? trade.realizedPnl);
   if (pnl == null) return null;
   const reason = inferExitReason(trade);
   const isEngine = isExitEnginePaperTrade(trade);
   return {
-    source: isEngine ? 'paper_exit_engine' : 'paper_legacy',
+    source: isEngine ? 'paper_exit_engine' : (trade.source === 'ibkr_paper_intent' ? 'paper_ibkr_intent' : 'paper_legacy'),
     trade_id: trade.tradeId || trade.trade_id || null,
     timestamp: trade.exitTime || trade.exit_time || trade.entryTime || trade.entry_time || null,
     symbol: trade.symbol || 'UNKNOWN',
@@ -390,6 +382,8 @@ function pickBestWorstReason(groups) {
 }
 
 function loadReplayEvents() {
+  const replayIntelligenceService = loadReplayIntelligenceService();
+  if (!replayIntelligenceService) return { sessions: [], events: [] };
   const sessions = replayIntelligenceService.listReplaySessions();
   const events = [];
   for (const session of sessions) {
@@ -401,7 +395,7 @@ function loadReplayEvents() {
 }
 
 function collectRows() {
-  const paperTrades = readJsonl(PAPER_TRADES_FILE).map(rowFromPaperTrade).filter(Boolean);
+  const paperTrades = tradeStats.loadPaperTrades().map(rowFromPaperTrade).filter(Boolean);
   const { sessions, events } = loadReplayEvents();
   const pairedEvents = events.filter((event) => event.baseline_pnl_pct != null && event.simulated_pnl_pct != null);
   const baselineRows = pairedEvents.map(baselineFromReplayEvent).filter(Boolean);

@@ -9,6 +9,7 @@
 
 const fs = require('fs');
 const path = require('path');
+const tradeStats = require('./tradeStatsService');
 
 const ROOT = path.resolve(__dirname, '../..');
 const DEFAULT_FILES = Object.freeze({
@@ -91,11 +92,13 @@ function svLabel(rawType) {
 }
 function resultFor(raw = {}) {
   const finite = (v) => (v !== null && v !== undefined && v !== '' && Number.isFinite(Number(v)) ? Number(v) : null);
+  const pnlUsd = finite(raw.paper_pnl_usd);
   const pnl = finite(firstPresent(raw.paper_pnl_percent, raw.result?.pnl_pct, raw.avg_pnl, raw.avgPnl, raw.avgResult, raw.pnlPercent));
   const win = finite(firstPresent(raw.win_rate, raw.winRate));
   const combos = finite(firstPresent(raw.combinationsTested, raw.combinations_tested, raw.progress?.completed));
   const parts = [];
-  if (pnl !== null) parts.push(`P/L ${pnl > 0 ? '+' : ''}${pnl}%`);
+  if (pnlUsd !== null) parts.push(`P/L ${pnlUsd > 0 ? '+' : ''}$${pnlUsd}`);
+  else if (pnl !== null) parts.push(`P/L ${pnl > 0 ? '+' : ''}${pnl}%`);
   if (win !== null) parts.push(`Träff ${win}%`);
   if (combos !== null) parts.push(`${combos} komb.`);
   return parts.length ? parts.join(' · ') : null;
@@ -325,20 +328,24 @@ function eventsFromReplayRuns(dir, limit) {
   });
 }
 
-// Read the newest finished paper trades (data/paper-trading/trades.jsonl) and
+// Read the newest finished paper trades and
 // turn each into one read-only "Låtsastest klart" event. Never starts a trade,
 // never places an order. Pure read of an existing append-only log.
-function eventsFromPaperTrades(file, limit) {
+function eventsFromPaperTrades(file, limit, options = {}) {
   return sourceRead('paper', () => {
-    const read = readJsonlTail(file, Math.max(1, Math.min(limit, 40)));
+    const rowsFromSource = options.useLegacyFile
+      ? readJsonlTail(file, Math.max(1, Math.min(limit, 40))).rows
+      : tradeStats.loadPaperTrades().slice(0, Math.max(1, Math.min(limit, 40)));
     const rows = [];
-    for (const row of read.rows) {
+    for (const row of rowsFromSource) {
       if (!row || typeof row !== 'object') continue;
       const ts = firstPresent(row.exitTime, row.closed_at, row.entryTime, row.opened_at);
       if (!ts) continue;
       const result = str(row.result ?? row.outcome, '').toUpperCase();
-      const label = row.strategyName || row.familyLabelSv || row.signalSubtype || row.signalFamily || 'Signal';
+      const label = row.strategyName || row.strategy_id || row.strategyId || row.familyLabelSv || row.signalSubtype || row.signalFamily || 'Signal';
       const exit = row.exitReason || row.exit_reason || null;
+      const pnlValue = Number.isFinite(Number(row.pnlPct ?? row.pnl)) ? Math.round(Number(row.pnlPct ?? row.pnl) * 100) / 100 : null;
+      const isIbkrIntent = row.source === 'ibkr_paper_intent';
       rows.push({
         event: 'paper_trade.simulated',
         type: 'paper_trade.simulated',
@@ -349,7 +356,8 @@ function eventsFromPaperTrades(file, limit) {
         symbol: row.symbol || null,
         strategy: row.strategy_id || row.strategyId || row.strategy || null,
         timeframe: '2m',
-        paper_pnl_percent: Number.isFinite(Number(row.pnlPct)) ? Math.round(Number(row.pnlPct) * 100) / 100 : null,
+        paper_pnl_percent: isIbkrIntent ? null : pnlValue,
+        paper_pnl_usd: isIbkrIntent ? pnlValue : null,
         message: `${row.symbol || 'Signal'} · ${label}${result ? ` · ${result}` : ''}${exit ? ` (${exit})` : ''}`,
         paper_only: true,
       });
@@ -438,6 +446,7 @@ function summarizeLiveActivity(events, sources, warnings) {
 
 function buildLiveActivity(options = {}) {
   const files = { ...DEFAULT_FILES, ...(options.files || {}) };
+  const useLegacyPaperTrades = Boolean(options.files);
   const limit = limitFromQuery(options.limit);
   const sourceLimit = Math.max(limit, 50);
   const sources = [
@@ -447,7 +456,7 @@ function buildLiveActivity(options = {}) {
     eventsFromBatches(files.batchFile, sourceLimit),
     eventsFromBatchResults(files.batchResultsDir, sourceLimit),
     eventsFromReplayRuns(files.replayRunsDir, sourceLimit),
-    eventsFromPaperTrades(files.paperTradesFile, sourceLimit),
+    eventsFromPaperTrades(files.paperTradesFile, sourceLimit, { useLegacyFile: useLegacyPaperTrades }),
     eventsFromJsonl('system_events', files.eventLog, sourceLimit),
   ];
   const warnings = sources.filter((s) => s.status === 'degraded').map((s) => ({ source: s.name, error: s.error || 'source_degraded' }));

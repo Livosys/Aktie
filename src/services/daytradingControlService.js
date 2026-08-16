@@ -12,6 +12,7 @@ const dataCoverage = require('./dataCoverageExpansionService');
 const candidateLog = require('./candidateLogService');
 const auditTrail = require('./auditTrailService');
 const paperTrading = require('../paperTrading/paperTradingAgent');
+const paperTradingRuntime = require('./paperTradingRuntimeService');
 const executionSafety = require('./executionSafetyService');
 const strategyRuntimeConnector = require('./strategyRuntimeConnectorService');
 const { buildCryptoSignalContext } = strategyRuntimeConnector;
@@ -26,7 +27,6 @@ const SAFETY = Object.freeze({
 
 const CONFIG_FILE = path.resolve(__dirname, '../../data/config/daytrading-control.json');
 const IMPACT_FILE = path.resolve(__dirname, '../../data/daytrading-control/latest-impact.json');
-const PAPER_TRADES_FILE = path.resolve(__dirname, '../../data/paper-trading/trades.jsonl');
 const PAPER_EVENTS_FILE = path.resolve(__dirname, '../../data/paper-trading/events.jsonl');
 
 const DEFAULT_CONFIG = Object.freeze({
@@ -319,7 +319,8 @@ function countBy(arr = [], keyFn) {
 }
 
 function getPaperTradeSummary48h() {
-  const rows = readJsonl(PAPER_TRADES_FILE, []);
+  const tradeData = getCurrentPaperTrades({ limit: 500 });
+  const rows = tradeData.trades;
   const recent = rows.filter((row) => isWithinHours(paperTimeOf(row), 48));
   const counts = {};
   for (const row of recent) {
@@ -330,7 +331,7 @@ function getPaperTradeSummary48h() {
   const vwapReject = counts.VWAP_REJECTION_DOWN || 0;
   return {
     window_hours: 48,
-    source: 'data/paper-trading/trades.jsonl',
+    source: tradeData.source,
     total: recent.length,
     by_raw_signal: Object.entries(counts)
       .map(([raw_signal, count]) => ({ raw_signal, count }))
@@ -936,6 +937,36 @@ function normalizeTradeLimit(value) {
   return Math.min(parsed, 500);
 }
 
+function getCurrentPaperTrades(options = {}) {
+  const limit = normalizeTradeLimit(options.limit || 500);
+  try {
+    const runtime = paperTradingRuntime.buildPaperTradingRuntime({ limit });
+    const trades = [
+      ...(Array.isArray(runtime.openTrades) ? runtime.openTrades : []),
+      ...(Array.isArray(runtime.closedTrades) ? runtime.closedTrades : []),
+    ].sort((a, b) => sortNewestFirstByTime(
+      tradeTimestampOf(a) || a.timestamp || a.tradeId,
+      tradeTimestampOf(b) || b.timestamp || b.tradeId,
+    ));
+    return {
+      ok: true,
+      source: runtime.tradeSource || runtime.summary?.tradeSource || 'ibkr_paper_intent',
+      total: (runtime.summary?.openCount || 0) + (runtime.summary?.closedCount || 0),
+      trades,
+      runtime,
+    };
+  } catch (err) {
+    return {
+      ok: false,
+      source: 'ibkr_paper_intent_unavailable',
+      error: err.message || String(err),
+      total: 0,
+      trades: [],
+      runtime: null,
+    };
+  }
+}
+
 function numericPnl(value) {
   if (value == null || value === '–') return null;
   const n = Number(value);
@@ -1245,7 +1276,8 @@ function formatPaperSignalRow(row = {}, runtime = {}, paperTrade = null, blocker
 
 function getLiveTrades(options = {}) {
   const limit = normalizeTradeLimit(options.limit);
-  const allTrades = paperTrading.getTrades().trades || [];
+  const tradeData = getCurrentPaperTrades({ limit });
+  const allTrades = tradeData.trades;
   const today = new Date().toISOString().slice(0, 10);
   const nowMs = Date.now();
   const rows = allTrades
@@ -1260,7 +1292,7 @@ function getLiveTrades(options = {}) {
       const currentPrice = result === 'OPEN'
         ? (enriched.currentPrice ?? enriched.exitPrice ?? null)
         : (enriched.exitPrice ?? enriched.currentPrice ?? null);
-      const pnlPct = enriched.pnlPct ?? enriched.unrealizedPct ?? null;
+      const pnlPct = enriched.pnlPct ?? enriched.unrealizedPct ?? enriched.pnl ?? null;
       const pnlKr = tradePnlKr(enriched);
       const source = result === 'OPEN'
         ? 'open_trade'
@@ -1340,7 +1372,8 @@ function getLiveTrades(options = {}) {
   return {
     ok: true,
     limit,
-    total_available: allTrades.length,
+    total_available: tradeData.total,
+    tradeSource: tradeData.source,
     trades: rows,
     todayTrades,
     todayOpenTrades,
@@ -1374,8 +1407,8 @@ function getPaperSignals(options = {}) {
   const runtimeSummary = strategyRuntimeConnector.getStrategyRuntimeSummary();
   const runtimeById = Object.fromEntries((runtimeSummary.strategies || []).map((strategy) => [strategy.id || strategy.strategy_id, strategy]));
   const paperStatus = paperTrading.getStatus();
-  const tradesData = paperTrading.getTrades();
-  const trades = Array.isArray(tradesData.trades) ? tradesData.trades : [];
+  const tradesData = getCurrentPaperTrades({ limit: 500 });
+  const trades = tradesData.trades;
   const latestScanAt = scan.lastScan || crypto.lastScan || null;
   const freshnessWindowMinutes = 24 * 60;
   const freshnessWindowHours = 24;
@@ -1527,6 +1560,7 @@ function getPaperSignals(options = {}) {
   return {
     ok: true,
     generatedAt,
+    tradeSource: tradesData.source,
     freshnessWindow,
     latestScanAt,
     safety: {
@@ -1595,8 +1629,8 @@ function getPaperStrategyDiagnostics() {
   const runtimeIndex = buildStrategyIndex(runtimeRows);
   const catalogIndex = buildStrategyIndex(catalog.strategies || []);
   const paperSignals = getPaperSignals({ limit: 200 });
-  const tradesData = paperTrading.getTrades();
-  const allTrades = Array.isArray(tradesData.trades) ? tradesData.trades : [];
+  const tradesData = getCurrentPaperTrades({ limit: 500 });
+  const allTrades = tradesData.trades;
   const recentCandidates = candidateLog.loadRecent(100);
   const normalizedRecentCandidates = recentCandidates.map((candidate) => {
     const resolved = resolveStrategyRow(candidate, catalogIndex) || resolveStrategyRow(candidate, runtimeIndex) || null;
@@ -1827,7 +1861,8 @@ function getPaperStrategyDiagnostics() {
     },
     paperTradesToday: {
       today: today,
-      total: (paperTrading.getTrades().trades || []).filter((trade) => isoDateOnly(tradeTimestampOf(trade)) === today).length,
+      source: tradesData.source,
+      total: allTrades.filter((trade) => isoDateOnly(tradeTimestampOf(trade)) === today).length,
     },
     ...SAFETY,
   };
@@ -2215,7 +2250,8 @@ function buildStrategyFlowDiagnostics() {
     const rawType = String(row.eventType || row.raw?.type || row.raw?.decision || row.raw?.status || '').toUpperCase();
     return !['MARKET_CLOSED', 'AGENT_STARTED'].includes(rawType);
   });
-  const trades = (paperTrading.getTrades().trades || []).map((trade) => {
+  const tradeData = getCurrentPaperTrades({ limit: 500 });
+  const trades = tradeData.trades.map((trade) => {
     const enriched = strategyRuntimeConnector.enrichPaperTradeWithStrategy(trade);
     return normalizeFlowRow({
       ...trade,

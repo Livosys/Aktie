@@ -4,6 +4,8 @@ const fs = require('fs');
 const path = require('path');
 const redisService = require('./redisService');
 const marketUniverse = require('./marketUniverseService');
+const tradeStats = require('./tradeStatsService');
+const paperTradingRuntime = require('./paperTradingRuntimeService');
 
 const ROOT = path.resolve(__dirname, '../..');
 const DATA_ROOT = path.join(ROOT, 'data');
@@ -316,9 +318,14 @@ function scanReplay() {
 }
 
 function scanPaperTrading() {
-  const trades = readJsonl(abs('data/paper-trading/trades.jsonl'));
-  const state = readJson(abs('data/paper-trading/state.json'), {});
-  const openTrades = Array.isArray(state.openTrades) ? state.openTrades : [];
+  const trades = tradeStats.loadPaperTrades();
+  let openTrades = [];
+  try {
+    const runtime = paperTradingRuntime.buildPaperTradingRuntime({ limit: 500 });
+    openTrades = Array.isArray(runtime.openTrades) ? runtime.openTrades : [];
+  } catch (_) {
+    openTrades = [];
+  }
   const bySymbol = new Map();
   const range = { first: null, latest: null };
   for (const trade of [...trades, ...openTrades]) {
@@ -328,6 +335,7 @@ function scanPaperTrading() {
     addDate(range, trade.exitTime || trade.closed_at || trade.entryTime);
   }
   return {
+    source: 'ibkr_paper_intent',
     total: trades.length + openTrades.length,
     closed: trades.length,
     open: openTrades.length,

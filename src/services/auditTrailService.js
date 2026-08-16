@@ -3,6 +3,8 @@
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
+const tradeStats = require('./tradeStatsService');
+const paperTradingRuntime = require('./paperTradingRuntimeService');
 
 const SAFETY = Object.freeze({
   actions_allowed: false,
@@ -12,8 +14,6 @@ const SAFETY = Object.freeze({
 
 const DATA_DIR = path.resolve(__dirname, '../../data/audit-trail');
 const EVENTS_FILE = path.join(DATA_DIR, 'events.jsonl');
-const PAPER_TRADES_FILE = path.resolve(__dirname, '../../data/paper-trading/trades.jsonl');
-const PAPER_STATE_FILE = path.resolve(__dirname, '../../data/paper-trading/state.json');
 const MAX_EVENTS = 5000;
 const MAX_AGE_MS = 14 * 24 * 60 * 60 * 1000;
 
@@ -99,9 +99,16 @@ function readJsonl(file) {
 
 function readPaperOpenTrades() {
   try {
-    if (!fs.existsSync(PAPER_STATE_FILE)) return [];
-    const state = JSON.parse(fs.readFileSync(PAPER_STATE_FILE, 'utf8'));
-    return Array.isArray(state.openTrades) ? state.openTrades : [];
+    const runtime = paperTradingRuntime.buildPaperTradingRuntime({ limit: 500 });
+    return Array.isArray(runtime.openTrades) ? runtime.openTrades : [];
+  } catch (_) {
+    return [];
+  }
+}
+
+function readPaperClosedTrades() {
+  try {
+    return tradeStats.loadPaperTrades();
   } catch (_) {
     return [];
   }
@@ -224,7 +231,7 @@ function tradeDurationLabel(seconds) {
 }
 
 function paperTradeFallbackEvents(limit = 100) {
-  const closed = readJsonl(PAPER_TRADES_FILE);
+  const closed = readPaperClosedTrades();
   const open = readPaperOpenTrades();
   const events = [];
   for (const trade of open) {

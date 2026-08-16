@@ -4,9 +4,8 @@
 // Reads paper/replay trades, builds setup IDs, computes per-setup statistics.
 // actions_allowed=false, can_place_orders=false, live_trading_enabled=false
 
-const fs   = require('fs');
-const path = require('path');
 const redisService = require('./redisService');
+const tradeStats = require('./tradeStatsService');
 
 const SAFETY = Object.freeze({
   actions_allowed:       false,
@@ -16,8 +15,6 @@ const SAFETY = Object.freeze({
   can_modify_risk:       false,
   source:                'setup_performance_v1',
 });
-
-const TRADES_FILE = path.join(__dirname, '../../data/paper-trading/trades.jsonl');
 
 const KEYS = Object.freeze({
   performance: 'setups:performance',
@@ -120,13 +117,8 @@ function buildSetupLabel(id) {
 // ── Trade reader ──────────────────────────────────────────────────────────────
 
 function readTrades() {
-  if (!fs.existsSync(TRADES_FILE)) return [];
   try {
-    return fs.readFileSync(TRADES_FILE, 'utf8')
-      .split('\n')
-      .filter(Boolean)
-      .map(line => { try { return JSON.parse(line); } catch (_) { return null; } })
-      .filter(Boolean);
+    return tradeStats.loadPaperTrades();
   } catch (_) { return []; }
 }
 
@@ -141,7 +133,7 @@ function computeStats(setupId, trades) {
   const decisive = wins.length + losses.length;
   const win_rate = decisive > 0 ? r2(wins.length / decisive * 100) : null;
 
-  const pnls     = trades.map(t => t.pnlPct || 0);
+  const pnls     = trades.map(t => t.pnlPct ?? t.pnl ?? 0);
   const avg_pnl  = pnls.length ? r2(pnls.reduce((a, b) => a + b, 0) / pnls.length) : 0;
   const total_pnl = r2(pnls.reduce((a, b) => a + b, 0));
   const max_drawdown = r2(pnls.length ? Math.min(...pnls) : 0);
@@ -152,7 +144,7 @@ function computeStats(setupId, trades) {
   for (const t of trades) {
     const s = t.symbol || '?';
     if (!bySym[s]) bySym[s] = [];
-    bySym[s].push(t.pnlPct || 0);
+    bySym[s].push(t.pnlPct ?? t.pnl ?? 0);
   }
   const symArr = Object.entries(bySym)
     .filter(([, a]) => a.length >= 2)
@@ -314,17 +306,16 @@ async function getStatus() {
   const cached = await rGet(KEYS.status);
   if (cached) return cached;
 
-  const exists = fs.existsSync(TRADES_FILE);
+  const exists = true;
   let trade_count = 0;
-  if (exists) {
-    try {
-      trade_count = fs.readFileSync(TRADES_FILE, 'utf8').split('\n').filter(Boolean).length;
-    } catch (_) {}
-  }
+  try {
+    trade_count = readTrades().length;
+  } catch (_) {}
 
   const status = {
     ok:                  true,
     trades_file_exists:  exists,
+    trade_source:        'ibkr_paper_intent',
     trade_count,
     cache_keys:          memCache.size,
     built_at:            new Date().toISOString(),

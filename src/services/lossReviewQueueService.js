@@ -5,6 +5,7 @@ const path = require('path');
 
 const paperTradeExplanationService = require('./paperTradeExplanationService');
 const entryQualityGateService = require('./entryQualityGateService');
+const tradeStats = require('./tradeStatsService');
 
 const ROOT = path.resolve(__dirname, '../..');
 const DEFAULT_FILES = Object.freeze({
@@ -497,9 +498,13 @@ function buildTradeContext(trade, options) {
 
 function createLossReviewQueueService(options = {}) {
   const files = { ...DEFAULT_FILES, ...(options.files || {}) };
+  const useLegacyFiles = Boolean(options.files) && !Array.isArray(options.ibkrIntents) && !Array.isArray(options.trades);
+  const tradeSource = useLegacyFiles ? files.trades : 'ibkr_paper_intent';
 
   function loadClosedTrades() {
-    const rows = Array.isArray(options.trades) ? options.trades : readJsonl(files.trades);
+    const rows = Array.isArray(options.trades)
+      ? options.trades
+      : (useLegacyFiles ? readJsonl(files.trades) : tradeStats.loadPaperTrades({ ibkrIntents: options.ibkrIntents }));
     return rows
       .filter(isClosedTrade)
       .map(normalizeTrade)
@@ -512,14 +517,18 @@ function createLossReviewQueueService(options = {}) {
     const explanationService = options.explanationService || paperTradeExplanationService;
     // Read + parse trades/events once and reuse for every loss trade's
     // explanation lookup, instead of re-parsing the files per trade (O(N²)).
+    const explanationOptions = useLegacyFiles
+      ? { files }
+      : { ibkrIntents: options.ibkrIntents };
     const sources = typeof explanationService.preloadExplanationSources === 'function'
-      ? explanationService.preloadExplanationSources({ files })
+      ? explanationService.preloadExplanationSources(explanationOptions)
       : undefined;
     const tradeContexts = closedTrades.map((trade) => buildTradeContext(trade, { ...options, files, sources }));
     const { groups, summary, missingFields } = aggregateLosses(closedTrades, tradeContexts);
 
     return {
       ok: true,
+      tradeSource,
       safety: { ...SAFETY },
       summary: {
         totalClosed: closedTrades.length,

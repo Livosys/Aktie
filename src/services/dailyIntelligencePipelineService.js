@@ -10,7 +10,8 @@ const researchScope = require('../config/researchMarketScope');
 const { saveRawBars, saveCandles2m, loadCandles, countCandles, getDatesInRange } = require('../data/marketDataStore');
 const { aggregate1mTo2m, aggregateBars, filterComplete } = require('../data/candleAggregator');
 const { runReplay } = require('../scanner/replayEngine');
-const paperTrading = require('../paperTrading/paperTradingAgent');
+const paperTradingRuntime = require('./paperTradingRuntimeService');
+const tradeStats = require('./tradeStatsService');
 const daytradingCatalog = require('./daytradingStrategyCatalogService');
 const strategyPerformance = require('./strategyPerformanceService');
 
@@ -426,39 +427,42 @@ function normalizePct(value) {
   return Math.abs(n) <= 1 ? round(n * 100, 2) : round(n, 2);
 }
 function collectPaperTradingSummary() {
-  const perf = paperTrading.getPerformance();
-  const trades = paperTrading.getTrades();
-  const allTrades = safeArray(trades.trades);
+  const closed = tradeStats.loadPaperTrades();
+  const perf = tradeStats.computeStats(closed, { deriveFromPnl: true });
+  const runtime = paperTradingRuntime.buildPaperTradingRuntime({ limit: 500 });
+  const openTrades = safeArray(runtime.openTrades);
+  const allTrades = [...openTrades, ...closed].sort((a, b) => String(b.exitTime || b.closed_at || b.entryTime || b.opened_at || '').localeCompare(String(a.exitTime || a.closed_at || a.entryTime || a.opened_at || '')));
   const today = todayIso();
   const todayTrades = allTrades.filter((t) => String(t.entryTime || t.opened_at || t.created_at || '').startsWith(today));
-  const closed = allTrades.filter((t) => t.result !== 'OPEN');
   const latestTrade = allTrades[0] || null;
-  const bySubtype = Object.entries(perf.bySignalSubtype || {}).map(([key, v]) => ({
-    key,
-    trades: v.trades || 0,
-    win_rate: v.trades ? round(((v.wins || 0) / v.trades) * 100, 2) : 0,
-    avg_pnl: v.trades ? round((v.pnlSum || 0) / v.trades, 2) : 0,
-  })).sort((a, b) => b.avg_pnl - a.avg_pnl);
-  const totalPnl = closed.reduce((sum, t) => sum + (Number(t.pnlPct) || 0), 0);
+  const bySubtype = tradeStats.computeStatsByGroup(closed, tradeStats.resolveGroupKey, { deriveFromPnl: true })
+    .map((row) => ({
+      key: row.key,
+      trades: row.totalTrades || 0,
+      win_rate: row.winRate || 0,
+      avg_pnl: row.avgPnl || 0,
+    }))
+    .sort((a, b) => b.avg_pnl - a.avg_pnl);
   return {
     status: 'active',
-    total_trades: perf.totalTrades || allTrades.length || 0,
+    source: runtime.tradeSource || 'ibkr_paper_intent',
+    total_trades: perf.totalTrades || closed.length || 0,
     trades_today: todayTrades.length,
-    win_rate: normalizePct(perf.winRate),
-    avg_pnl: normalizePct(perf.avgPnlPct),
-    total_pnl: round(totalPnl, 2),
-    timeout_rate: perf.totalTrades ? round(((perf.timeouts || 0) / perf.totalTrades) * 100, 2) : null,
+    win_rate: perf.winRate,
+    avg_pnl: round(perf.avgPnl, 2),
+    total_pnl: round(perf.totalPnl, 2),
+    timeout_rate: perf.timeoutRate,
     best_strategy: bySubtype[0]?.key || 'För lite data',
     weakest_strategy: bySubtype[bySubtype.length - 1]?.key || 'För lite data',
     latest_trade: latestTrade ? {
       symbol: latestTrade.symbol || '',
       result: latestTrade.result || '',
-      pnl: normalizePct(latestTrade.pnlPct),
+      pnl: round(latestTrade.pnlPct ?? latestTrade.pnl ?? latestTrade.pnlUsd ?? latestTrade.realizedPnl, 2),
       time: latestTrade.exitTime || latestTrade.entryTime || '',
     } : null,
-    open_positions: perf.openTrades || trades.openCount || 0,
-    closed_positions: trades.closedCount || closed.length || 0,
-    conclusion_sv: allTrades.length ? `${todayTrades.length} låtsastrades idag, total win rate ${normalizePct(perf.winRate) ?? 'för lite data'}%.` : 'Inga låtsastrades ännu.',
+    open_positions: runtime.summary?.openCount || openTrades.length || 0,
+    closed_positions: runtime.summary?.closedCount || closed.length || 0,
+    conclusion_sv: allTrades.length ? `${todayTrades.length} låtsastrades idag, total win rate ${perf.winRate ?? 'för lite data'}%.` : 'Inga låtsastrades ännu.',
   };
 }
 

@@ -10,8 +10,7 @@
 const fs   = require('fs');
 const path = require('path');
 const strategyPerformance = require('./strategyPerformanceService');
-const strategyBatchTest = require('./strategyBatchTestService');
-const topStrategyGrid = require('./topStrategyGridService');
+const tradeStats = require('./tradeStatsService');
 
 // ── Safety constants ──────────────────────────────────────────────────────────
 const SAFETY = Object.freeze({
@@ -20,9 +19,10 @@ const SAFETY = Object.freeze({
   live_trading_enabled:   false,
   agent_mode:             'analysis_only',
 });
+const BATCH_TEST_SAFETY = Object.freeze({ ...SAFETY, paper_only: true, read_only: true });
+const TOP_GRID_SAFETY = Object.freeze({ ...SAFETY, paper_only: true, read_only: true });
 
 // ── Paths ─────────────────────────────────────────────────────────────────────
-const TRADES_PATH   = path.join(__dirname, '../../data/paper-trading/trades.jsonl');
 const STATE_PATH    = path.join(__dirname, '../../data/paper-trading/state.json');
 const RUNS_DIR      = path.join(__dirname, '../../data/replay/runs');
 const OPT_DIR       = path.join(__dirname, '../../data/optimization');
@@ -34,11 +34,7 @@ if (!fs.existsSync(OPT_DIR)) fs.mkdirSync(OPT_DIR, { recursive: true });
 // ── Data loaders ──────────────────────────────────────────────────────────────
 function loadTrades() {
   try {
-    if (!fs.existsSync(TRADES_PATH)) return [];
-    const raw = fs.readFileSync(TRADES_PATH, 'utf8');
-    return raw.split('\n').filter(Boolean).map(l => {
-      try { return JSON.parse(l); } catch { return null; }
-    }).filter(Boolean);
+    return tradeStats.loadPaperTrades();
   } catch { return []; }
 }
 
@@ -66,7 +62,7 @@ function stats(trades) {
   const wins     = trades.filter(t => t.result === 'WIN').length;
   const losses   = trades.filter(t => t.result === 'LOSS').length;
   const timeouts = trades.filter(t => t.result === 'TIMEOUT').length;
-  const pnls     = trades.map(t => t.pnlPct || 0);
+  const pnls     = trades.map(t => t.pnlPct ?? t.pnl ?? 0);
   const totalPnl = pnls.reduce((a, b) => a + b, 0);
   const avgPnl   = totalPnl / trades.length;
   const winRate  = wins / trades.length;
@@ -95,10 +91,12 @@ function stats(trades) {
 }
 
 function holdMinutes(trade) {
-  if (!trade.entryTime || !trade.exitTime) return null;
+  const entryTime = trade.entryTime || trade.opened_at || trade.openedAt;
+  const exitTime = trade.exitTime || trade.closed_at || trade.closedAt;
+  if (!entryTime || !exitTime) return null;
   try {
-    const e = new Date(trade.entryTime).getTime();
-    const x = new Date(trade.exitTime).getTime();
+    const e = new Date(entryTime).getTime();
+    const x = new Date(exitTime).getTime();
     return (x - e) / 60000;
   } catch { return null; }
 }
@@ -746,7 +744,7 @@ function buildBatchOptimizationSummary(batchComparison) {
     return {
       latestBatch: {},
       recommendations: ['Inga batch-resultat ännu. Kör Batch-test i Trading Lab för att optimera strategier.'],
-      ...strategyBatchTest.SAFETY,
+      ...BATCH_TEST_SAFETY,
     };
   }
   const best = batchComparison.recommended_config?.strategy_id ? batchComparison.recommended_config : null;
@@ -782,7 +780,7 @@ function buildBatchOptimizationSummary(batchComparison) {
     pauseCandidates,
     needsMoreData,
     recommendations,
-    ...strategyBatchTest.SAFETY,
+    ...BATCH_TEST_SAFETY,
   };
 }
 
@@ -792,7 +790,7 @@ function buildTopStrategyGridAdvice(gridSummary) {
       bestOverall: {},
       bestPerStrategy: [],
       recommendations: ['Inga top-grid-resultat ännu. Kör Top Strategy Parameter Grid för de bästa nya strategierna.'],
-      ...topStrategyGrid.SAFETY,
+      ...TOP_GRID_SAFETY,
     };
   }
   const bestOverall = gridSummary.best_overall?.[0] || {};
@@ -810,7 +808,7 @@ function buildTopStrategyGridAdvice(gridSummary) {
     pauseCandidates,
     recommendations,
     note_sv: gridSummary.note_sv,
-    ...topStrategyGrid.SAFETY,
+    ...TOP_GRID_SAFETY,
   };
 }
 
@@ -832,8 +830,16 @@ function buildOptimizationSummary() {
   const weakConfigs    = detectWeakConfigurations(trades);
   const recommendations = buildRecommendations(trades);
   const daytradingStrategies = strategyPerformance.getStrategyPerformance();
-  const batchComparison = strategyBatchTest.getLatestBatchComparison();
-  const topGridSummary = topStrategyGrid.getSummary();
+  let batchComparison = { ok: false };
+  try {
+    const strategyBatchTest = require('./strategyBatchTestService');
+    batchComparison = strategyBatchTest.getLatestBatchComparison();
+  } catch (_) {}
+  let topGridSummary = { ok: false };
+  try {
+    const topStrategyGrid = require('./topStrategyGridService');
+    topGridSummary = topStrategyGrid.getSummary();
+  } catch (_) {}
 
   const summary = {
     generatedAt: new Date().toISOString(),

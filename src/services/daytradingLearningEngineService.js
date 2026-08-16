@@ -19,6 +19,8 @@
 
 const fs = require('fs');
 const path = require('path');
+const tradeStats = require('./tradeStatsService');
+const paperTradingRuntime = require('./paperTradingRuntimeService');
 
 const SAFETY = Object.freeze({
   paper_only: true,
@@ -35,9 +37,8 @@ const SKIPPED_FILE = path.join(LEARNING_DIR, 'skipped-signals.jsonl');
 const OUTCOMES_FILE = path.join(LEARNING_DIR, 'outcomes.jsonl');
 const SUMMARY_FILE = path.join(LEARNING_DIR, 'latest-summary.json');
 
-// Canonical trades-logg (delas med paper trading agenten)
-const TRADES_FILE = path.resolve(__dirname, '../../data/paper-trading/trades.jsonl');
-const PAPER_STATE_FILE = path.resolve(__dirname, '../../data/paper-trading/state.json');
+// Current closed paper-trade truth is read through tradeStatsService, which
+// normalizes IBKR Paper execution intents for analytics.
 
 const MAX_ROWS_PER_FILE = 50000; // trimma jsonl-filerna så de inte växer obegränsat
 const MIN_TRADES_STRONG = 20;    // tröskel för strong/promising vs needs_more_data
@@ -138,6 +139,9 @@ function makeId() {
 }
 function nowIso() { return new Date().toISOString(); }
 function num(v) { const n = Number(v); return Number.isFinite(n) ? n : null; }
+function pnlValueOf(row = {}) {
+  return num(firstPresent(row.paper_pnl_percent, row.paperPnlPercent, row.pnl_percent, row.pnlPct, row.pnl, row.pnlUsd, row.realizedPnl));
+}
 function round(v, d = 4) {
   const n = Number(v);
   if (!Number.isFinite(n)) return 0;
@@ -203,7 +207,7 @@ function buildInstrumentSignalFields(input = {}, marketGroup = null, pnlPct = nu
   );
   const group = marketGroup || input.market_group || input.marketGroup || resolveMarketGroup(symbol, input.market || input.marketType);
   const tradedSymbol = firstPresent(input.traded_symbol, input.tradedSymbol, symbol);
-  const paperPnl = num(firstPresent(input.paper_pnl_percent, input.paperPnlPercent, input.pnl_percent, input.pnlPct, pnlPct));
+  const paperPnl = num(firstPresent(input.paper_pnl_percent, input.paperPnlPercent, input.pnl_percent, input.pnlPct, pnlPct, input.pnl, input.pnlUsd, input.realizedPnl));
   const underlyingMove = num(firstPresent(
     input.underlying_move_percent,
     input.underlyingMovePercent,
@@ -469,7 +473,7 @@ function recordPaperTradeClosed(trade = {}, exit = null) {
     const symbol = trade.symbol || null;
     const market_group = trade.market_group || resolveMarketGroup(symbol, trade.marketGroup || trade.marketType);
     const result = exit?.result || trade.result || null;
-    const pnlPct = num(exit?.pnlPct ?? trade.pnlPct ?? trade.pnl_percent);
+    const pnlPct = pnlValueOf({ ...trade, ...(exit || {}) });
     const instrumentFields = buildInstrumentSignalFields({ ...trade, ...(exit || {}) }, market_group, pnlPct);
     const row = {
       ...baseEnvelope('paper_trade_closed', 'paper_agent'),
@@ -528,7 +532,7 @@ function bumpTrade(agg, trade) {
   else if (outcome === 'loss') agg.losses += 1;
   else if (outcome === 'timeout') agg.timeout += 1;
   else if (outcome === 'breakeven') agg.breakeven += 1;
-  const pnl = num(trade.pnlPct ?? trade.pnl_percent);
+  const pnl = pnlValueOf(trade);
   if (pnl != null) {
     agg.total_pl = round(agg.total_pl + pnl, 4);
     if (agg.best_pl == null || pnl > agg.best_pl) agg.best_pl = round(pnl, 4);
@@ -706,10 +710,30 @@ function enrichTradeForSummary(trade = {}) {
   const mg = trade.market_group || resolveMarketGroup(trade.symbol || trade.traded_symbol, trade.marketGroup || trade.marketType || trade.market);
   return {
     ...trade,
-    ...buildInstrumentSignalFields(trade, mg, trade.paper_pnl_percent ?? trade.pnlPct ?? trade.pnl_percent),
+    ...buildInstrumentSignalFields(trade, mg, pnlValueOf(trade)),
     market_group: mg,
     risk_class: trade.risk_class || riskClassForGroup(mg),
   };
+}
+
+function readCurrentClosedTrades(options = {}) {
+  if (Array.isArray(options.closedTrades)) return options.closedTrades;
+  try {
+    return tradeStats.loadPaperTrades({ ibkrIntents: options.ibkrIntents });
+  } catch (err) {
+    console.warn('[learning] current paper trade source unavailable:', err.message);
+    return [];
+  }
+}
+
+function readCurrentOpenTradesCount(options = {}) {
+  if (Array.isArray(options.openTrades)) return options.openTrades.length;
+  try {
+    const runtime = paperTradingRuntime.buildPaperTradingRuntime({ limit: 1, ibkrIntents: options.ibkrIntents });
+    return Number(runtime.summary?.openCount || 0);
+  } catch (_) {
+    return 0;
+  }
 }
 
 /**
@@ -727,7 +751,7 @@ function buildLearningSummary(options = {}) {
   let openTradesCount = 0;
 
   try {
-    closedTrades = safeReadJsonl(TRADES_FILE).filter((r) => withinWindow(r, sinceMs));
+    closedTrades = readCurrentClosedTrades(options).filter((r) => withinWindow(r, sinceMs));
   } catch { closedTrades = []; }
   try {
     skipped = safeReadJsonl(SKIPPED_FILE).filter((r) => withinWindow(r, sinceMs));
@@ -736,8 +760,7 @@ function buildLearningSummary(options = {}) {
     outcomeRows = safeReadJsonl(OUTCOMES_FILE).filter((r) => withinWindow(r, sinceMs));
   } catch { outcomeRows = []; }
   try {
-    const state = safeReadJson(PAPER_STATE_FILE, {});
-    openTradesCount = Array.isArray(state.openTrades) ? state.openTrades.length : 0;
+    openTradesCount = readCurrentOpenTradesCount(options);
   } catch { openTradesCount = 0; }
 
   const closedOutcomeRows = outcomeRows.filter((r) => r.type === 'paper_trade_closed');
@@ -767,7 +790,7 @@ function buildLearningSummary(options = {}) {
   const wins = trades.filter((t) => normalizeOutcome(t.result ?? t.outcome) === 'win').length;
   const losses = trades.filter((t) => normalizeOutcome(t.result ?? t.outcome) === 'loss').length;
   const timeout = trades.filter((t) => normalizeOutcome(t.result ?? t.outcome) === 'timeout').length;
-  const pnls = trades.map((t) => num(t.pnlPct ?? t.pnl_percent)).filter((v) => v != null);
+  const pnls = trades.map(pnlValueOf).filter((v) => v != null);
   const totalPl = round(pnls.reduce((a, b) => a + b, 0), 4);
   const avgPl = pnls.length ? round(totalPl / pnls.length, 4) : 0;
   const bestPl = pnls.length ? round(Math.max(...pnls), 4) : 0;
@@ -824,6 +847,7 @@ function buildLearningSummary(options = {}) {
     ok: true,
     ...SAFETY,
     generated_at: nowIso(),
+    trade_source: 'ibkr_paper_intent',
     window: { hours },
     summary,
     by_strategy: byStrategy.slice(0, limit),

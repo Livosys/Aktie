@@ -6,6 +6,7 @@
 // actions_allowed=false, can_place_orders=false, live_trading_enabled=false always.
 
 const redisService = require('./redisService');
+const tradeStats = require('./tradeStatsService');
 
 const SAFETY = Object.freeze({
   actions_allowed: false,
@@ -297,17 +298,13 @@ async function getTradingAgentsLessons(symbol) {
 // ── Auto-link: match pending analyses to closed paper trades ─────────────────
 
 async function autoLinkClosedTrades(symbol) {
-  let paperTrading;
-  try { paperTrading = require('../paperTrading/paperTradingAgent'); } catch (_) { return; }
-
   const sym = String(symbol || '').toUpperCase();
   let closedTrades = [];
   try {
-    const { trades } = paperTrading.getTrades();
-    closedTrades = (trades || []).filter((t) =>
+    closedTrades = tradeStats.loadPaperTrades().filter((t) =>
       (t.symbol || t.signalSymbol || '').toUpperCase() === sym &&
       t.result !== 'OPEN' &&
-      t.pnlPct != null
+      (t.pnlPct != null || t.pnl != null || t.pnlUsd != null || t.realizedPnl != null)
     );
   } catch (_) { return; }
 
@@ -337,8 +334,9 @@ async function autoLinkClosedTrades(symbol) {
     if (matchIdx !== -1) {
       const match = pending[matchIdx];
       pending.splice(matchIdx, 1); // remove to prevent double-linking same analysis
+      const pnl = trade.pnlPct ?? trade.pnl ?? trade.pnlUsd ?? trade.realizedPnl ?? null;
       await linkAnalysisToTrade(match.analysis_id, tradeId, {
-        pnl_pct:     trade.pnlPct,
+        pnl_pct:     pnl,
         win:         trade.result === 'WIN',
         result:      trade.result,
         exit_reason: trade.exitReason,

@@ -9,7 +9,9 @@ const strategyLabService = require('./strategyLabService');
 const agentReasoningService = require('./agentReasoningService');
 const vectorMemoryService = require('./vectorMemoryService');
 const notificationEngineV2 = require('../alerts/notificationEngineV2');
-const paperTrading = require('../paperTrading/paperTradingAgent');
+const paperTradingRuntime = require('./paperTradingRuntimeService');
+const paperTradingStatusService = require('./paperTradingStatusService');
+const tradeStats = require('./tradeStatsService');
 const { buildSystemHealth } = require('../systemHealth');
 const llmAdapter = require('./llmAnalysisAdapter');
 
@@ -69,6 +71,7 @@ async function buildSystemContext() {
     paperStatus,
     paperPerf,
     paperTrades,
+    paperRuntime,
     riskStatus,
     exitStatus,
     exitCalib,
@@ -82,9 +85,10 @@ async function buildSystemContext() {
     slPresets,
     healthRaw,
   ] = await Promise.all([
-    tryRead('paper.status',        () => paperTrading.getStatus(),                    warnings),
-    tryRead('paper.performance',   () => paperTrading.getPerformance(),               warnings),
-    tryRead('paper.trades',        () => paperTrading.getTrades(),                    warnings),
+    tryRead('paper.status',        () => paperTradingStatusService.buildPaperTradingStatus(), warnings),
+    tryRead('paper.performance',   () => tradeStats.computeStats(tradeStats.loadPaperTrades(), { deriveFromPnl: true }), warnings),
+    tryRead('paper.trades',        () => ({ trades: tradeStats.loadPaperTrades(), source: 'ibkr_paper_intent' }), warnings),
+    tryRead('paper.runtime',       () => paperTradingRuntime.buildPaperTradingRuntime({ limit: 10 }), warnings),
     tryRead('risk.status',         () => riskEngineService.getRiskStatus(),           warnings),
     tryRead('exit.status',         () => exitEngineService.getExitEngineStatus(),     warnings),
     tryRead('exit.calibration',    () => exitCalibrationService.getCalibration(),     warnings),
@@ -103,16 +107,17 @@ async function buildSystemContext() {
 
   // Paper trading summary
   const paper = paperStatus ? {
-    enabled: paperStatus.enabled,
-    open_count: paperStatus.openCount || 0,
-    open_trades: (paperStatus.openTrades || []).map(t => ({
+    enabled: paperStatus.ok !== false,
+    source: paperStatus.source || paperTrades?.source || 'ibkr_paper_intent',
+    open_count: paperRuntime?.summary?.openCount || 0,
+    open_trades: (paperRuntime?.openTrades || []).map(t => ({
       symbol: t.symbol, subtype: t.subtype || t.signalSubtype,
       unrealized_pct: t.unrealizedPct, age_min: t.ageMin,
     })),
-    win_rate: paperPerf?.win_rate ?? null,
-    total_trades: paperPerf?.total ?? null,
-    timeout_rate: paperPerf?.timeout_rate ?? null,
-    avg_pl_pct: paperPerf?.avg_pl ?? null,
+    win_rate: paperPerf?.winRate ?? null,
+    total_trades: paperPerf?.totalTrades ?? null,
+    timeout_rate: paperPerf?.timeoutRate ?? null,
+    avg_pl_pct: paperPerf?.avgPnl ?? null,
     recent_trade_count: (paperTrades?.trades || []).slice(0, 10).length,
   } : null;
 

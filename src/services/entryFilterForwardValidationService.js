@@ -11,7 +11,7 @@
 //   trades that close AFTER a chosen cutoff.
 //
 // Why this is safe / read-only:
-//   - Pure function of data/paper-trading/trades.jsonl. Only fs/path required.
+//   - Pure function of the current paper-trade stats source by default.
 //   - Never reads or sets PAPER_ENTRY_QUALITY_GATE_ENABLED — the gate is
 //     irrelevant here; this never blocks anything. mode stays paper_only.
 //   - Never writes trades/state/config/env, never places orders.
@@ -26,6 +26,7 @@
 
 const fs = require('fs');
 const path = require('path');
+const tradeStats = require('./tradeStatsService');
 
 const SAFETY = Object.freeze({
   mode: 'paper_only',
@@ -76,7 +77,7 @@ function deriveSignals(raw = {}) {
   const isRegularPullback = /regular_pullback|regular pullback|trend continuation|rekyl/.test(setupBlob);
   const isNarrowWait = /narrow_wait/.test(setupBlob);
   const result = String(raw.result ?? raw.outcome ?? '').trim().toUpperCase() || 'UNKNOWN';
-  const pnlPct = num(raw.pnlPct ?? raw.pnl_pct ?? raw.pnl);
+  const pnlPct = num(raw.pnlPct ?? raw.pnl_pct ?? raw.pnl_percent ?? raw.pnl ?? raw.pnlUsd ?? raw.realizedPnl);
   const isCaution = statusAtEntry === 'caution';
   return {
     symbol: String(raw.symbol || '').toUpperCase() || null,
@@ -98,8 +99,9 @@ function deriveSignals(raw = {}) {
   };
 }
 
-function loadSignals(file = PAPER_TRADES_FILE) {
-  return readJsonl(file).map(deriveSignals).filter((s) => s.pnlPct !== null);
+function loadSignals(file = null) {
+  const rows = file ? readJsonl(file) : tradeStats.loadPaperTrades();
+  return rows.map(deriveSignals).filter((s) => s.pnlPct !== null);
 }
 
 // --- metrics over a set of signals -------------------------------------------
@@ -152,7 +154,7 @@ function evaluateWindow(signals, label, flagKey = 'wouldSkip') {
 
 // --- main entry: split into historical vs forward window ---------------------
 function runForwardValidation(options = {}) {
-  const file = options.file || PAPER_TRADES_FILE;
+  const file = options.file || null;
   const signals = loadSignals(file);
 
   // cutoff: default = start of current UTC day. Trades whose ENTRY is >= cutoff
@@ -171,7 +173,7 @@ function runForwardValidation(options = {}) {
 
   return {
     safety: SAFETY,
-    dataSource: file,
+    dataSource: file || 'tradeStatsService.loadPaperTrades',
     note: 'OBSERVE-ONLY: wouldSkip flaggar men blockerar inget. Gaten (PAPER_ENTRY_QUALITY_GATE_ENABLED) varken läses eller sätts. Forward-validering = mät om flaggans historiska edge håller på trades som öppnats efter cutoff.',
     cutoffIso: new Date(cutoffTs).toISOString(),
     totalTrades: signals.length,
