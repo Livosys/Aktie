@@ -69,9 +69,47 @@ function contractFromBars(bars, root) {
   return { conId: null, localSymbol: null, expiry: null, exchange: 'CME', currency: 'USD' };
 }
 
+// ── quote-källa ──────────────────────────────────────────────────────────────
+// Historiken innehåller idag barer, inte quotes. Priset härleds därför ur
+// senast stängda candle och märks derivedFromCandle, med bid och ask null i
+// stället för påhittade.
+//
+// När IB-quotes börjar sparas byts BARA den här funktionen ut — feeden,
+// motorn, replay och batch är oförändrade. Kontraktet är avsiktligt smalt:
+// (root, now, lastCandle) in, quote eller null ut.
+function derivedFromCandleQuoteSource({ root, now, lastCandle }) {
+  if (!lastCandle) return null;
+  return {
+    instrument: root,
+    root,
+    symbol: root,
+    localSymbol: lastCandle.localSymbol,
+    conId: lastCandle.conId,
+    expiry: lastCandle.expiry,
+    exchange: lastCandle.exchange,
+    currency: lastCandle.currency,
+    last: lastCandle.close,
+    bid: null,
+    ask: null,
+    close: lastCandle.close,
+    timestamp: lastCandle.timestamp,
+    staleAgeMs: new Date(now).getTime() - new Date(lastCandle.timestamp).getTime(),
+    connected: true,
+    derivedFromCandle: true,
+    quoteSource: 'derived_from_candle',
+    source: candleWindow.buildSourceMeta({ delayed: false }, 'historical'),
+    safety: SAFETY,
+  };
+}
+
 function createHistoricalPriceFeedService(options = {}) {
   const dataStore = options.store || store;
   const source = options.source || DEFAULT_SOURCE;
+  // Byt den här mot en läsare av lagrade IB-quotes när de finns. Inget annat
+  // i systemet behöver ändras.
+  const quoteSource = typeof options.quoteSource === 'function'
+    ? options.quoteSource
+    : derivedFromCandleQuoteSource;
   // Replay anropar per tick. Utan dagcache skulle varje tick läsa om samma
   // JSONL-filer från disk, vilket gör en dags replay till tiotusentals läsningar.
   const dayCache = new Map();
@@ -185,44 +223,30 @@ function createHistoricalPriceFeedService(options = {}) {
     };
   }
 
-  // Historiken har inga quotes — bara barer. Priset härleds därför ur det
-  // senast stängda candlet och märks som härlett. Att hitta på en spread här
-  // vore att ljuga för strategierna om vad som var känt vid tidpunkten.
+  // Delegerar till quote-källan. Feeden avgör VILKEN bar som är den sista
+  // kända vid `now`; källan avgör hur en quote ser ut.
   function getQuote(root, now = new Date()) {
     const key = upper(root);
     const result = getCandles(key, { now, timeframe: '1m', limit: 1 });
-    const last = result.candles[result.candles.length - 1];
-    if (!last) return null;
-    const ts = last.timestamp;
-    return {
-      instrument: key,
-      root: key,
-      symbol: key,
-      localSymbol: last.localSymbol,
-      conId: last.conId,
-      expiry: last.expiry,
-      exchange: last.exchange,
-      currency: last.currency,
-      last: last.close,
-      bid: null,
-      ask: null,
-      close: last.close,
-      timestamp: ts,
-      staleAgeMs: new Date(now).getTime() - new Date(ts).getTime(),
-      connected: true,
-      derivedFromCandle: true,
-      source: candleWindow.buildSourceMeta({ delayed: false }, 'historical'),
-      safety: SAFETY,
-    };
+    const lastCandle = result.candles[result.candles.length - 1] || null;
+    return quoteSource({ root: key, now, lastCandle, store: dataStore, source }) || null;
   }
 
-  return { SAFETY, getCandles, getQuote, clearCache, _internal: { loadBarsBefore, contractFromBars } };
+  return {
+    SAFETY,
+    getCandles,
+    getQuote,
+    clearCache,
+    quoteSourceName: quoteSource === derivedFromCandleQuoteSource ? 'derived_from_candle' : 'custom',
+    _internal: { loadBarsBefore, contractFromBars },
+  };
 }
 
 const defaultHistoricalPriceFeedService = createHistoricalPriceFeedService();
 
 module.exports = {
   SAFETY,
+  derivedFromCandleQuoteSource,
   createHistoricalPriceFeedService,
   defaultHistoricalPriceFeedService,
   getCandles: defaultHistoricalPriceFeedService.getCandles,
