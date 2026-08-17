@@ -38,6 +38,7 @@ export { StrategyFilters } from './StrategyFilters.jsx';
 export { StrategyGrid } from './StrategyGrid.jsx';
 export { StrategyIntelligencePanel } from './StrategyIntelligencePanel.jsx';
 export { StrategyMetadataPanel } from './StrategyMetadataPanel.jsx';
+export { StrategyLifecyclePanel } from './StrategyLifecyclePanel.jsx';
 export { StrategyOrdersPanel } from './StrategyOrdersPanel.jsx';
 export { StrategyOverviewPanel } from './StrategyOverviewPanel.jsx';
 export { StrategyPerformancePanel } from './StrategyPerformancePanel.jsx';

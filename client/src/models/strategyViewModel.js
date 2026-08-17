@@ -257,6 +257,10 @@ export function normalizeStrategyViewModel(source = {}) {
       createdAt: firstValue(source.metadata?.createdAt, source.createdAt, source.created_at, candidate?.createdAt, intent?.createdAt),
       updatedAt: firstValue(source.metadata?.updatedAt, source.updatedAt, source.updated_at, source.timestamp, candidate?.updatedAt, intent?.updatedAt),
     },
+    // Strategy Library: livscykel, confidence, befordran och pensionering.
+    // Backend hänger fälten på översiktsraden, så de följer med utan att någon
+    // ny hämtning eller något nytt API behövs.
+    library: source.library || overview?.library || null,
   };
 }
 
