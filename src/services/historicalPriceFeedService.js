@@ -223,6 +223,43 @@ function createHistoricalPriceFeedService(options = {}) {
     };
   }
 
+  // ── exekveringssidans barer ────────────────────────────────────────────────
+  //
+  // getCandles svarar på "vad visste strategin vid `now`" och lämnar därför
+  // aldrig ut framtiden. En fyllningsmodell ställer den motsatta frågan: "vad
+  // hände SEDAN med ordern". Båda behövs, och de får aldrig blandas ihop —
+  // därför är det ett eget, tydligt namngivet anrop.
+  //
+  // Får ENDAST anropas av exekveringslagret, efter att beslutet är fattat.
+  // Native Engine ser aldrig den här metoden.
+  function getBarsBetween(root, from, to) {
+    const key = upper(root);
+    const fromMs = new Date(from).getTime();
+    const toMs = new Date(to).getTime();
+    if (!Number.isFinite(fromMs) || !Number.isFinite(toMs) || toMs < fromMs) return [];
+
+    const out = [];
+    for (let ms = fromMs; ms <= toMs + 24 * 60 * 60 * 1000; ms += 24 * 60 * 60 * 1000) {
+      for (const bar of loadDay(key, dateKey(ms))) {
+        const ts = barTimestamp(bar);
+        const barMs = ts ? new Date(ts).getTime() : NaN;
+        if (Number.isFinite(barMs) && barMs >= fromMs && barMs <= toMs) {
+          out.push({
+            ts,
+            t: ts,
+            timestamp: ts,
+            open: bar.open ?? bar.o,
+            high: bar.high ?? bar.h,
+            low: bar.low ?? bar.l,
+            close: bar.close ?? bar.c,
+            volume: bar.volume ?? bar.v ?? null,
+          });
+        }
+      }
+    }
+    return out.sort((a, b) => new Date(a.ts) - new Date(b.ts));
+  }
+
   // Delegerar till quote-källan. Feeden avgör VILKEN bar som är den sista
   // kända vid `now`; källan avgör hur en quote ser ut.
   function getQuote(root, now = new Date()) {
@@ -236,6 +273,7 @@ function createHistoricalPriceFeedService(options = {}) {
     SAFETY,
     getCandles,
     getQuote,
+    getBarsBetween,
     clearCache,
     quoteSourceName: quoteSource === derivedFromCandleQuoteSource ? 'derived_from_candle' : 'custom',
     _internal: { loadBarsBefore, contractFromBars },

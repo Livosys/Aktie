@@ -108,6 +108,65 @@ function spreadTicks(quote, tickSize) {
   return spread / tickSize;
 }
 
+// ── två sorters kontroller ───────────────────────────────────────────────────
+//
+// Riskmotorn prövar två saker som råkar bo i samma lista:
+//
+//   1. Är ORDERN tillåten?      symbol, kvantitet, ordertyp, positionstak,
+//                               stop loss, dagsförlust. Gäller överallt.
+//   2. Är BROKERN frisk just nu? realtidsquote, bid/ask, kontosammanfattningens
+//                               ålder, avstämning. Gäller bara mot en levande
+//                               anslutning.
+//
+// Skillnaden syntes aldrig förrän Replay skulle köra samma motor. Mot en fil
+// kan grupp 2 aldrig passera — historiken innehåller barer, inte quotes, så
+// bid och ask är null och källan är derived_from_candle. Frestelsen är att ge
+// Replay en egen, mildare riskmotor. Det vore två riskregelverk, och det ena
+// skulle sluta likna det andra.
+//
+// I stället NAMNGES grupp 2 här. Motorn räknar precis som förut och `allowed`
+// betyder precis samma sak som förut — paper och live är oförändrade. Replay
+// kör samma anrop och redovisar båda grupperna var för sig, så att det syns i
+// rapporten exakt vilka kontroller som inte gick att pröva.
+const BROKER_CONNECTIVITY_CHECKS = Object.freeze([
+  'quote_realtime',
+  'quote_not_stale_flagged',
+  'quote_has_timestamp',
+  'quote_fresh',
+  'quote_bid_numeric',
+  'quote_ask_numeric',
+  'quote_ask_gte_bid',
+  'spread_numeric',
+  'spread_ticks_numeric',
+  'account_summary_present',
+  'account_summary_has_timestamp',
+  'account_summary_fresh',
+  'reconciliation_ok',
+]);
+
+const CONNECTIVITY_CHECK_SET = new Set(BROKER_CONNECTIVITY_CHECKS);
+
+/**
+ * Delar ett riskutfall i orderrisk och brokeranslutning.
+ *
+ * `allowed` i utfallet är och förblir konjunktionen av BÅDA. Den här funktionen
+ * tolkar bara resultatet — den mildrar ingenting.
+ */
+function partitionBlockers(result = {}) {
+  const checks = Array.isArray(result.checks) ? result.checks : [];
+  const failed = checks.filter((check) => check.ok !== true);
+  const orderRisk = failed.filter((check) => !CONNECTIVITY_CHECK_SET.has(check.code));
+  const connectivity = failed.filter((check) => CONNECTIVITY_CHECK_SET.has(check.code));
+  return {
+    orderRiskBlockers: orderRisk.map((check) => check.blocker || check.code),
+    orderRiskChecks: orderRisk,
+    connectivityBlockers: connectivity.map((check) => check.blocker || check.code),
+    connectivityChecks: connectivity,
+    // Sant när ordern hade släppts igenom om brokeranslutningen vore frisk.
+    orderRiskAllowed: orderRisk.length === 0,
+  };
+}
+
 function evaluateBrokerRisk({
   executionTarget = null,
   root,
@@ -192,6 +251,8 @@ function evaluateBrokerRisk({
 
 module.exports = {
   SAFETY,
+  BROKER_CONNECTIVITY_CHECKS,
   evaluateBrokerRisk,
+  partitionBlockers,
   _internal: { countPendingEntries, getPositionCount, legOfOrderRow },
 };
