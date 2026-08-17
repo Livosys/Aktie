@@ -69,6 +69,9 @@ const narrowStateEngine = require('../services/narrowStateEngineService');
 const narrowPerformanceLearning = require('../services/narrowPerformanceLearningService');
 const narrowTestAutopilot = require('../services/narrowTestAutopilotService');
 const strategyRegistry   = require('../services/strategyRegistryService');
+const strategyLibrary    = require('../services/library/strategyLibraryService').defaultStrategyLibrary;
+const promotionEngine    = require('../services/library/promotionEngineService');
+const retirementEngine   = require('../services/library/retirementEngineService');
 const strategyScore      = require('../services/strategyScoreService');
 const strategyHistory    = require('../services/strategyHistoryService');
 const strategyTestPlanner = require('../services/strategyTestPlannerService');
@@ -5422,6 +5425,86 @@ router.get('/strategies/registry/status', (req, res) => {
     res.json({ ok: true, ...strategyRegistry.getStatus() });
   } catch (err) {
     res.status(500).json({ ok: false, error: err.message, ...strategyRegistry.SAFETY });
+  }
+});
+
+// ── Strategy Library ────────────────────────────────────────────────────────
+//
+// Read-only. Biblioteket skrivs av Replay, Paper och Live via recordern, aldrig
+// via HTTP: en livscykelövergång eller en pensionering ska inte kunna utlösas
+// av ett anrop utifrån. Rutterna här läser bara.
+
+router.get('/strategy-library', (req, res) => {
+  try {
+    res.json({
+      ok: true,
+      strategies: strategyLibrary.listStrategies(),
+      status: strategyLibrary.getStatus(),
+    });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message, ...strategyLibrary.SAFETY });
+  }
+});
+
+router.get('/strategy-library/status', (req, res) => {
+  try {
+    res.json({ ok: true, ...strategyLibrary.getStatus() });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message, ...strategyLibrary.SAFETY });
+  }
+});
+
+// Revisionsspåret. Kronologiskt, aldrig gallrat.
+router.get('/strategy-library/audit', (req, res) => {
+  try {
+    const limit = Math.min(Number(req.query.limit) || 500, 5000);
+    res.json({
+      ok: true,
+      events: strategyLibrary.getAuditTrail({
+        limit,
+        since: req.query.since || null,
+        types: req.query.types ? String(req.query.types).split(',') : null,
+      }),
+      ...strategyLibrary.SAFETY,
+    });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message, ...strategyLibrary.SAFETY });
+  }
+});
+
+// Befordrings- och pensioneringsbedömningar. Utvärderar, genomför aldrig.
+router.get('/strategy-library/promotion', (req, res) => {
+  try {
+    res.json(promotionEngine.evaluateAll(strategyLibrary));
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message, ...promotionEngine.SAFETY });
+  }
+});
+
+router.get('/strategy-library/retirement', (req, res) => {
+  try {
+    res.json(retirementEngine.evaluateAll(strategyLibrary));
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message, ...retirementEngine.SAFETY });
+  }
+});
+
+router.get('/strategy-library/:strategyId', (req, res) => {
+  try {
+    const record = strategyLibrary.getStrategy(req.params.strategyId);
+    if (!record) {
+      return res.status(404).json({ ok: false, error: 'unknown_strategy', ...strategyLibrary.SAFETY });
+    }
+    return res.json({
+      ok: true,
+      strategy: record,
+      history: strategyLibrary.getHistory(req.params.strategyId),
+      promotion: promotionEngine.evaluatePromotion(record),
+      retirement: retirementEngine.evaluateRetirement(record),
+      ...strategyLibrary.SAFETY,
+    });
+  } catch (err) {
+    return res.status(500).json({ ok: false, error: err.message, ...strategyLibrary.SAFETY });
   }
 });
 

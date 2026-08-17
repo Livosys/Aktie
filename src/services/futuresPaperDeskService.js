@@ -8,6 +8,7 @@ const futuresPaperScannerService = require('./futuresPaperScannerService');
 const paperEnabledStrategiesService = require('./paperEnabledStrategiesService');
 const daytradingStrategyCatalogService = require('./daytradingStrategyCatalogService');
 const nativeFuturesStrategyRegistry = require('./nativeFuturesStrategyRegistryService');
+const strategyLibraryOverview = require('./library/strategyLibraryOverviewService');
 const futuresContractCatalog = require('./futuresContractCatalogService');
 const futuresMarketHoursService = require('./futuresMarketHoursService');
 const futuresMarketDataService = require('./futuresMarketDataService');
@@ -1424,6 +1425,14 @@ function buildFuturesPaperDeskRuntime(options = {}) {
 	      candidateQueue: scannerRuntime?.candidateQueue?.candidates || [],
 	    });
 
+  // Strategy Library-fälten läggs på de befintliga raderna. Läsfel får aldrig
+  // ta ner strategiöversikten — enrichStrategyOverview returnerar då raderna
+  // oförändrade med en förklaring i meta.
+  const strategyLibraryEnrichment = strategyLibraryOverview.enrichStrategyOverview(
+    safeArray(strategyOverview.strategies),
+    { now },
+  );
+
   // Lätta, cache-baserade IB-summeringar (aldrig tunga IB-anrop härifrån).
   let ibDataLayer = { enabled: false, started: false, connected: false, source: 'disabled' };
   let ibAccount = options.ibAccount || null;
@@ -1561,13 +1570,17 @@ function buildFuturesPaperDeskRuntime(options = {}) {
       tradableNow: strategyStatus.tradableNow,
       config: strategyStatus.config,
     } : null,
-    strategyOverview: strategyOverview.strategies,
+    // Samma rader som förut, berikade med Strategy Library-fälten (lifecycle,
+    // confidence, promotion, retirement). Ingen ny lista, ingen ny panel — de
+    // fälten hänger på raderna som redan renderas.
+    strategyOverview: strategyLibraryEnrichment.rows,
     strategyOverviewMeta: {
       totalStrategies: strategyOverview.totalStrategies,
       currentSession: strategyOverview.currentSession,
       currentSessionId: strategyOverview.currentSessionId,
       marketOpen: strategyOverview.marketOpen,
       counts: strategyOverview.counts,
+      library: strategyLibraryEnrichment.library,
     },
     recentClosedTrades: recentClosedTrades?.trades || [],
     legacyInternalSimulation,
