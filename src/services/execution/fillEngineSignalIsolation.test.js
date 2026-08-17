@@ -17,6 +17,7 @@ const assert = require('node:assert/strict');
 const historicalModule = require('../historicalPriceFeedService');
 const signalProvider = require('../canonical/nativeFuturesSignalProvider');
 const store = require('../../data/marketDataStore');
+const coverage = require('../../data/marketDataCoverage');
 const iface = require('./fillEngineInterface');
 const perfect = require('./perfectFillEngine');
 const simulated = require('./simulatedFillEngine');
@@ -28,18 +29,9 @@ const ROOTS = ['MNQ', 'MES'];
 const TIMEFRAME = '2m';
 const REPLAY_QUOTE_AGE_MS = 2 * 60 * 1000;
 
-function availableDay() {
-  const listed = store.listAvailableDates('MNQ') || {};
-  const dates = Array.isArray(listed) ? listed : [...(listed.raw || []), ...(listed['2m'] || [])];
-  for (const date of [...new Set(dates)].sort().reverse()) {
-    const mnq = store.loadRawBars('MNQ', date, date, 'ib') || [];
-    const mes = store.loadRawBars('MES', date, date, 'ib') || [];
-    if (mnq.length > 600 && mes.length > 600) return date;
-  }
-  return null;
-}
-
-const DAY = availableDay();
+// Fönstret nedan är 13:00–15:00Z, plus 30 minuters barer efter sista signalen
+// för att kunna fylla ordern. Dygnet måste täcka hela sträckan.
+const DAY = coverage.findCompleteDay({ roots: ROOTS, throughUtcTime: '15:30' });
 
 function collectSignals(feed, { count = 60, startIso } = {}) {
   const start = new Date(startIso).getTime();

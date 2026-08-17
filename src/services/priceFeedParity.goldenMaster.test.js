@@ -23,6 +23,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 
 const store = require('../data/marketDataStore');
+const coverage = require('../data/marketDataCoverage');
 const candleWindow = require('../data/candleWindow');
 const priceFeedInterface = require('./priceFeedInterface');
 const marketDataModule = require('./futuresMarketDataService');
@@ -40,22 +41,10 @@ const ROOTS = ['MNQ', 'MES'];
 const TIMEFRAME = '2m';
 const LIMIT = 250;
 
-function availableDay() {
-  // listAvailableDates ger { raw: [...], '2m': [...] }. Rå-listan täcker bara
-  // alpaca-sökvägen, så vi utgår från 2m-datumen och kontrollerar rå IB-barer
-  // för varje kandidat.
-  const listed = store.listAvailableDates('MNQ') || {};
-  const dates = Array.isArray(listed) ? listed : [...(listed.raw || []), ...(listed['2m'] || [])];
-  const usable = [...new Set(dates)].sort().reverse();
-  for (const date of usable) {
-    const mnq = store.loadRawBars('MNQ', date, date, 'ib') || [];
-    const mes = store.loadRawBars('MES', date, date, 'ib') || [];
-    if (mnq.length > 600 && mes.length > 600) return date;
-  }
-  return null;
-}
-
-const DAY = availableDay();
+// Dagvalet ligger i marketDataCoverage, inte här. Klockslaget nedan är den
+// senaste tidpunkt testet frågar om — dygnet måste ha data ända dit, annars
+// mäter vi tomrum och kallar det paritet.
+const DAY = coverage.findCompleteDay({ roots: ['MNQ', 'MES'], throughUtcTime: '18:00' });
 
 // Tidpunkter spridda över dygnet. Varje punkt är ett eget paritetsfall.
 const CLOCKS = DAY ? [
