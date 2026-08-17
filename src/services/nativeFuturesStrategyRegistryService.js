@@ -61,6 +61,10 @@ function describe(strategyModule) {
     migrated: originStrategyId != null,
     targetSignalFamily: text(strategyModule?.TARGET_SIGNAL_FAMILY),
     targetSignalSubtype: text(strategyModule?.TARGET_SIGNAL_SUBTYPE),
+    // Strategins egna parametrar, som de står i koden. Underlaget för Strategy
+    // DNA:s muterbara block — så att ingen handskriven parametertabell behöver
+    // finnas vid sidan av strategierna.
+    defaultOptions: Object.freeze({ ...(strategyModule?.DEFAULT_OPTIONS || {}) }),
   });
 }
 

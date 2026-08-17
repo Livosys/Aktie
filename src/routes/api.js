@@ -73,6 +73,10 @@ const strategyLibrary    = require('../services/library/strategyLibraryService')
 const promotionEngine    = require('../services/library/promotionEngineService');
 const retirementEngine   = require('../services/library/retirementEngineService');
 const marketIntelligence = require('../services/market/marketIntelligenceService');
+const strategyDnaService  = require('../services/dna/strategyDnaService');
+const aiMemory           = require('../services/memory/aiMemoryService').defaultAiMemory;
+const familyTree         = require('../services/evolution/strategyFamilyTreeService').defaultStrategyFamilyTree;
+const aiOptimizerInterface = require('../services/optimizer/aiOptimizerInterface');
 const strategyScore      = require('../services/strategyScoreService');
 const strategyHistory    = require('../services/strategyHistoryService');
 const strategyTestPlanner = require('../services/strategyTestPlannerService');
@@ -5488,6 +5492,93 @@ router.get('/strategy-library/retirement', (req, res) => {
   } catch (err) {
     res.status(500).json({ ok: false, error: err.message, ...retirementEngine.SAFETY });
   }
+});
+
+// ── Strategy DNA, AI Memory och släktträdet ─────────────────────────────────
+//
+// Read-only hela vägen. Mutationer och pensioneringar av grenar sker aldrig via
+// HTTP: ett genom som föds av ett externt anrop har ingen spårbar avsikt bakom
+// sig, och släktträdet är ett minne — inte en yta att fjärrstyra.
+
+router.get('/strategy-dna', (req, res) => {
+  try {
+    res.json({
+      ok: true,
+      blocks: strategyDnaService.DNA_BLOCKS,
+      strategies: strategyDnaService.listStrategyDna().map((dna) => ({
+        strategyId: dna.strategyId,
+        strategyVersion: dna.strategyVersion,
+        dnaHash: dna.dnaHash,
+        parameterHash: dna.parameterHash,
+        mutableBlocks: dna.mutableBlocks,
+        declaredBlocks: dna.declaredBlocks,
+        inferredBlocks: dna.inferredBlocks,
+        parameters: strategyDnaService.parametersOf(dna.genome),
+        lineage: dna.lineage,
+      })),
+      ...strategyDnaService.SAFETY,
+    });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message, ...strategyDnaService.SAFETY });
+  }
+});
+
+router.get('/ai-memory/status', (req, res) => {
+  try {
+    res.json(aiMemory.getStatus());
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message, ...aiMemory.SAFETY });
+  }
+});
+
+router.get('/ai-memory/experiments', (req, res) => {
+  try {
+    const limit = Math.min(Number(req.query.limit) || 200, 2000);
+    res.json({
+      ok: true,
+      experiments: aiMemory.listExperiments().slice(-limit),
+      ...aiMemory.SAFETY,
+    });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message, ...aiMemory.SAFETY });
+  }
+});
+
+router.get('/strategy-family-tree', (req, res) => {
+  try {
+    res.json({
+      ok: true,
+      nodes: familyTree.listNodes(),
+      branches: familyTree.listBranches(),
+      status: familyTree.getStatus(),
+    });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message, ...familyTree.SAFETY });
+  }
+});
+
+router.get('/strategy-family-tree/:dnaHash', (req, res) => {
+  try {
+    const node = familyTree.getNode(req.params.dnaHash);
+    if (!node) return res.status(404).json({ ok: false, error: 'unknown_node', ...familyTree.SAFETY });
+    return res.json({
+      ok: true,
+      node,
+      ancestry: familyTree.ancestryOf(req.params.dnaHash),
+      children: familyTree.childrenOf(req.params.dnaHash),
+      descendants: familyTree.descendantsOf(req.params.dnaHash),
+      history: familyTree.getHistory(req.params.dnaHash),
+      ...familyTree.SAFETY,
+    });
+  } catch (err) {
+    return res.status(500).json({ ok: false, error: err.message, ...familyTree.SAFETY });
+  }
+});
+
+// Optimeraren är inte byggd. Rutten redovisar kontraktet den kommer att hållas
+// till, så att kraven är synliga innan koden finns.
+router.get('/ai-optimizer/contract', (req, res) => {
+  res.json({ ok: true, ...aiOptimizerInterface.describeInterface() });
 });
 
 // ── Market DNA och Market Intelligence ──────────────────────────────────────

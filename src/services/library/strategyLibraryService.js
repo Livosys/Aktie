@@ -38,6 +38,7 @@ const crypto = require('crypto');
 
 const lifecycle = require('./strategyLifecycle');
 const nativeRegistry = require('../nativeFuturesStrategyRegistryService');
+const strategyDna = require('../dna/strategyDnaService');
 
 const SAFETY = Object.freeze({
   actions_allowed: false,
@@ -88,25 +89,16 @@ function sha(value) {
   return crypto.createHash('sha256').update(String(value)).digest('hex').slice(0, 16);
 }
 
-// ── DNA-hashar ───────────────────────────────────────────────────────────────
+// Strategins DNA beräknas INTE här — lika lite som marknadens.
 //
-// DNA Engine är inte byggd ännu, men biblioteket måste kunna lagra hasharna nu
-// — annars går en versionsändring inte att spåra i efterhand.
+// Biblioteket räknade tidigare en egen hash ur registerbeskrivningen plus
+// källfilen. Det var rätt så länge ingen DNA-modul fanns. När strategyDnaService
+// kom fanns det plötsligt TVÅ hashar för samma sak, och två svar på "har
+// strategin ändrats" är i praktiken noll svar: förr eller senare pekar de åt
+// olika håll och ingen vet vilken som gäller.
 //
-// Strategins DNA härleds ur det som FAKTISKT bestämmer vad strategin är i dag:
-// dess registerbeskrivning plus innehållet i dess källfil. Ändras koden ändras
-// hashen. Det är exakt vad en DNA-hash ska göra, och det är mätbart redan nu.
-// När DNA Engine kommer byts funktionen ut — fältet och historiken finns redan.
-function computeStrategyDnaHash(descriptor = {}, sourceText = null) {
-  const identity = [
-    descriptor.strategyId,
-    descriptor.strategyVersion,
-    descriptor.originStrategyId,
-    descriptor.targetSignalFamily,
-    descriptor.targetSignalSubtype,
-  ].join('|');
-  return sha(sourceText == null ? identity : `${identity}::${sourceText}`);
-}
+// Biblioteket tar emot hashen och lagrar den. Vad ett strategi-DNA ÄR avgörs på
+// ett enda ställe.
 
 // Marknads-DNA beräknas INTE här. Biblioteket lagrar vad det får; vad ett
 // marknads-DNA är avgörs av marketDnaService.
@@ -297,9 +289,10 @@ function createStrategyLibrary(options = {}) {
   const eventsFile = options.eventsFile || DEFAULT_EVENTS_FILE;
   const registry = options.registry || nativeRegistry;
   const clock = typeof options.now === 'function' ? options.now : () => new Date();
-  const sourceReader = typeof options.sourceReader === 'function'
-    ? options.sourceReader
-    : defaultSourceReader;
+  // DNA-beräkningen injiceras. Standard är den enda riktiga: strategyDnaService.
+  const dnaHashFor = typeof options.dnaHashFor === 'function'
+    ? options.dnaHashFor
+    : (descriptor) => strategyDna.deriveStrategyDna(descriptor)?.dnaHash || null;
 
   function ensureDir() {
     fs.mkdirSync(path.dirname(eventsFile), { recursive: true });
@@ -416,7 +409,7 @@ function createStrategyLibrary(options = {}) {
 
     for (const descriptor of descriptors) {
       const record = existing.get(descriptor.strategyId);
-      const dnaHash = computeStrategyDnaHash(descriptor, sourceReader(descriptor.strategyId));
+      const dnaHash = dnaHashFor(descriptor);
 
       if (!record) {
         append(descriptor.strategyId, EVENT_TYPES.REGISTERED, {
@@ -581,20 +574,6 @@ function createStrategyLibrary(options = {}) {
   };
 }
 
-// Läser strategins källfil så att DNA-hashen ändras när koden gör det.
-function defaultSourceReader(strategyId) {
-  const dir = path.resolve(__dirname, '..');
-  try {
-    for (const file of fs.readdirSync(dir)) {
-      if (!/^nativeFutures.*StrategyService\.js$/.test(file) || file.includes('.test.')) continue;
-      const full = path.join(dir, file);
-      const content = fs.readFileSync(full, 'utf8');
-      if (content.includes(`STRATEGY_ID = '${strategyId}'`)) return content;
-    }
-  } catch (_) { /* saknad källfil ger identitetsbaserad hash */ }
-  return null;
-}
-
 module.exports = {
   SAFETY,
   DEFAULT_EVENTS_FILE,
@@ -602,7 +581,6 @@ module.exports = {
   EVENT_TYPES,
   SCORE_TYPES,
   createStrategyLibrary,
-  computeStrategyDnaHash,
 
   defaultStrategyLibrary: createStrategyLibrary(),
 };

@@ -237,6 +237,10 @@ const defaultNativeFuturesNarrowStateExpansionStrategy = createNativeFuturesNarr
 module.exports = {
   STRATEGY_ID,
   STRATEGY_VERSION,
+  // Strategins parametrar. Exponeras för att Strategy DNA ska kunna härledas
+  // ur koden i stället för ur en handskriven tabell — och för att en mutation
+  // ska kunna ändra ett värde utan att någon rör strategikoden.
+  DEFAULT_OPTIONS,
   ORIGIN_STRATEGY_ID,
   DECISIONS,
   DIRECTIONS,
