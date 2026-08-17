@@ -5,6 +5,7 @@ import { StatusBadge, statusTone } from './StatusBadge.jsx';
 import { StrategyApprovalPanel } from './StrategyApprovalPanel.jsx';
 import { StrategyIntelligencePanel } from './StrategyIntelligencePanel.jsx';
 import { StrategyMetadataPanel } from './StrategyMetadataPanel.jsx';
+import { StrategyLifecyclePanel } from './StrategyLifecyclePanel.jsx';
 import { StrategyOrdersPanel } from './StrategyOrdersPanel.jsx';
 import { StrategyOverviewPanel } from './StrategyOverviewPanel.jsx';
 import { StrategyPerformancePanel } from './StrategyPerformancePanel.jsx';
@@ -108,6 +109,10 @@ export const StrategyDrawer = React.memo(function StrategyDrawer({
         </header>
 
         <StrategyIntelligencePanel strategy={strategy} />
+        {/* Strategy Library: var strategin är i sitt liv. Ligger högt upp för
+            att den ramar in allt annat i lådan — ett resultat betyder olika
+            saker i Draft och i Live. */}
+        <StrategyLifecyclePanel strategy={strategy} />
         <StrategyOverviewPanel strategy={strategy} />
         <StrategyRuntimePanel strategy={strategy} />
         <StrategySignalPanel strategy={strategy} />
