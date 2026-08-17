@@ -24,9 +24,14 @@ const SAFETY = Object.freeze({
   source: 'native_futures_strategy_registry',
 });
 
-// Samma moduler som nativeFuturesSignalProvider registrerar som evaluators.
-// Listan hålls medvetet explicit: en strategi som inte är registrerad hos
-// providern ska inte heller synas som migrerad i UI:t.
+// DEN ENDA listan över native futures-strategier i systemet.
+//
+// Tidigare fanns den två gånger: här, och som NATIVE_STRATEGY_EVALUATORS inuti
+// nativeFuturesSignalProvider. Två listor över samma sak glider förr eller
+// senare isär — och konsekvensen hade varit tyst: en strategi som körs i paper
+// men inte syns i registret, eller tvärtom. Providern läser numera härifrån,
+// vilket också är det som gör att Replay kan köra utan att känna till en enda
+// strategi. Registrera en modul här och den dyker upp i BÅDA.
 const STRATEGY_MODULES = Object.freeze([
   require('./nativeFuturesMomentumStrategyService'),
   require('./nativeFuturesNarrowStateExpansionStrategyService'),
@@ -61,6 +66,36 @@ function describe(strategyModule) {
 
 const DESCRIPTORS = Object.freeze(STRATEGY_MODULES.map(describe).filter(Boolean));
 
+// ── evaluators ───────────────────────────────────────────────────────────────
+//
+// Varje strategimodul exporterar exakt en `evaluate*`-funktion, men under sitt
+// eget namn (evaluateNativeFuturesMomentumStrategy, ...). Konventionen läses
+// här i stället för att varje anropare importerar de åtta namnen för hand.
+//
+// Hittas noll eller flera kastar modulen vid inläsning. En strategi som tyst
+// hoppas över är den värsta av de tänkbara utgångarna: paper och replay skulle
+// då köra olika uppsättningar utan att någonting rapporterade det.
+function resolveEvaluator(strategyModule) {
+  const keys = Object.keys(strategyModule || {})
+    .filter((key) => key.startsWith('evaluate') && typeof strategyModule[key] === 'function');
+  const strategyId = text(strategyModule?.STRATEGY_ID) || '(okänd modul)';
+  if (keys.length !== 1) {
+    throw new Error(
+      `${strategyId}: en strategimodul måste exportera exakt en evaluate*-funktion, hittade ${keys.length} (${keys.join(', ') || 'inga'})`,
+    );
+  }
+  return strategyModule[keys[0]];
+}
+
+const EVALUATORS = Object.freeze(
+  STRATEGY_MODULES
+    .filter((strategyModule) => text(strategyModule?.STRATEGY_ID))
+    .map((strategyModule) => Object.freeze({
+      strategyId: text(strategyModule.STRATEGY_ID),
+      evaluate: resolveEvaluator(strategyModule),
+    })),
+);
+
 const BY_STRATEGY_ID = new Map(DESCRIPTORS.map((row) => [row.strategyId, row]));
 
 // Ett legacy-id kan i princip bära flera native-implementationer. Det gör det
@@ -80,6 +115,28 @@ const BY_ORIGIN_STRATEGY_ID = (() => {
 
 function listNativeStrategies() {
   return DESCRIPTORS;
+}
+
+/**
+ * Strategierna som utvärderingsbara enheter, i registreringsordning.
+ *
+ * Det här är den enda vägen till en native-evaluator. Signal-providern (och
+ * därmed både Paper och Replay) itererar över den här listan — ingen anropare
+ * får importera en strategimodul direkt för att köra den.
+ *
+ * @returns {ReadonlyArray<{strategyId: string, evaluate: Function}>}
+ */
+function listStrategyEvaluators() {
+  return EVALUATORS;
+}
+
+/** Familj/subtyp för ett native-id. Det är den enda kopplingen som finns. */
+function signalTaxonomyFor(strategyId) {
+  const row = getNativeStrategy(strategyId);
+  return {
+    signalFamily: row?.targetSignalFamily || null,
+    signalSubtype: row?.targetSignalSubtype || null,
+  };
 }
 
 function getNativeStrategy(strategyId) {
@@ -113,6 +170,8 @@ function soleNativeStrategyForOrigin(originStrategyId) {
 module.exports = {
   SAFETY,
   listNativeStrategies,
+  listStrategyEvaluators,
+  signalTaxonomyFor,
   getNativeStrategy,
   isNativeStrategyId,
   originStrategyIdFor,

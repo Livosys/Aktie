@@ -14,30 +14,7 @@ const {
 const {
   createNativeFuturesScanner,
 } = require('../nativeFuturesScannerService');
-const {
-  evaluateNativeFuturesMomentumStrategy,
-} = require('../nativeFuturesMomentumStrategyService');
-const {
-  evaluateNativeFuturesNarrowStateExpansionStrategy,
-} = require('../nativeFuturesNarrowStateExpansionStrategyService');
-const {
-  evaluateNativeFuturesEmaPullbackContinuationStrategy,
-} = require('../nativeFuturesEmaPullbackContinuationStrategyService');
-const {
-  evaluateNativeFuturesVwapVolumeBreakoutStrategy,
-} = require('../nativeFuturesVwapVolumeBreakoutStrategyService');
-const {
-  evaluateNativeFuturesVwapFailedBreakoutShortStrategy,
-} = require('../nativeFuturesVwapFailedBreakoutShortStrategyService');
-const {
-  evaluateNativeFuturesTrendContinuationStrategy,
-} = require('../nativeFuturesTrendContinuationStrategyService');
-const {
-  evaluateNativeFuturesNarrowBreakoutShortStrategy,
-} = require('../nativeFuturesNarrowBreakoutShortStrategyService');
-const {
-  evaluateNativeFuturesNarrowFakeoutReversalStrategy,
-} = require('../nativeFuturesNarrowFakeoutReversalStrategyService');
+const strategyRegistry = require('../nativeFuturesStrategyRegistryService');
 const {
   adaptNativeFuturesStrategyDecision,
 } = require('./nativeFuturesCanonicalAdapter');
@@ -56,19 +33,17 @@ const SAFETY = Object.freeze({
   source: 'native_futures_signal_provider',
 });
 
-// Registret över native futures-strategier. Varje snapshot utvärderas av samtliga;
-// en strategi som inte triggar returnerar NO_SIGNAL och bidrar med noll signaler.
-// Ordningen påverkar bara i vilken ordning signaler köas, inte om de skapas.
-const NATIVE_STRATEGY_EVALUATORS = Object.freeze([
-  evaluateNativeFuturesMomentumStrategy,
-  evaluateNativeFuturesNarrowStateExpansionStrategy,
-  evaluateNativeFuturesEmaPullbackContinuationStrategy,
-  evaluateNativeFuturesVwapVolumeBreakoutStrategy,
-  evaluateNativeFuturesVwapFailedBreakoutShortStrategy,
-  evaluateNativeFuturesTrendContinuationStrategy,
-  evaluateNativeFuturesNarrowBreakoutShortStrategy,
-  evaluateNativeFuturesNarrowFakeoutReversalStrategy,
-]);
+// Strategierna hämtas ur Strategy Registry, som är den enda listan. Varje
+// snapshot utvärderas av samtliga; en strategi som inte triggar returnerar
+// NO_SIGNAL och bidrar med noll signaler. Ordningen påverkar bara i vilken
+// ordning signaler köas, inte om de skapas.
+//
+// Listan läses vid varje anrop, inte en gång vid inläsning. Det är det som gör
+// att en nyregistrerad strategi dyker upp i både Paper och Replay utan att en
+// enda rad i någon av dem ändras.
+function strategyEvaluators() {
+  return strategyRegistry.listStrategyEvaluators();
+}
 
 function nowIso(now = new Date()) {
   return new Date(now).toISOString();
@@ -167,8 +142,13 @@ function defaultNativeFuturesSignalReader({
   // Motorn lär sig INTE vilken feed den har — det är kompositionsroten som
   // sätter fönstret, precis som den väljer feed.
   maxQuoteAgeMs = null,
+  // Ren observationskrok för Replay-rapporten (Decision Monitor-utfall per
+  // strategi och symbol). Anropas efter att beslutet är fattat och kan därför
+  // inte påverka det. Utelämnas i live och paper.
+  onDecision = null,
 } = {}) {
   if (!priceFeedService && !feed) return [];
+  const observer = typeof onDecision === 'function' ? onDecision : null;
   const candleCache = new Map();
   const quoteCache = new Map();
 
@@ -224,12 +204,24 @@ function defaultNativeFuturesSignalReader({
   const scan = scanner.scan({ now });
   const signals = [];
   for (const snapshot of scan.rows || []) {
-    for (const evaluate of NATIVE_STRATEGY_EVALUATORS) {
+    for (const { strategyId, evaluate } of strategyEvaluators()) {
       const decision = evaluate(snapshot, { now });
       const adapted = adaptNativeFuturesStrategyDecision(nativeDecisionInput(decision), {
         marketSnapshot: snapshot,
         now,
       });
+      // Observationskrok. Paper skickar inte in någon; Replay samlar upp varje
+      // beslut för sin rapport. Kroken får aldrig påverka utfallet — den ser
+      // resultatet efter att det redan är bestämt.
+      if (observer) {
+        observer({
+          now, strategyId, snapshot, decision,
+          accepted: adapted.ok === true && Boolean(adapted.signal),
+          adapterReason: adapted.reason || null,
+          adapterErrors: adapted.errors || [],
+          signal: adapted.signal || null,
+        });
+      }
       if (adapted.ok === true && adapted.signal) signals.push(adapted.signal);
     }
   }
