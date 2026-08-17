@@ -27,6 +27,7 @@
 const fillReport = require('../execution/fillReportService');
 const strategyScore = require('../score/strategyScoreV1Service');
 const marketClassification = require('./marketClassificationService');
+const marketDna = require('../market/marketDnaService');
 const strategyRegistry = require('../nativeFuturesStrategyRegistryService');
 const ledgerMath = require('../futuresPaperLedgerService');
 
@@ -261,8 +262,18 @@ function buildReplayReport(runResult = {}) {
     closed,
   );
 
-  // ── Market Classification ─────────────────────────────────────────────────
+  // ── Market Classification och Market DNA ──────────────────────────────────
   const classification = marketClassification.classifyRun(runResult.candlesBySymbol || {});
+  // DNA per symbol, plus ett sammanslaget avtryck för hela körningen. Etiketten
+  // säger VAD marknaden var; DNA:t är fingeravtrycket som gör det möjligt att
+  // hitta liknande perioder och se vad strategin aldrig prövats i.
+  const dnaBySymbol = Object.entries(runResult.candlesBySymbol || {})
+    .map(([symbol, candles]) => marketDna.computeMarketDna(candles, {
+      symbol,
+      from: runResult.config?.from || null,
+      to: runResult.config?.effectiveTo || runResult.config?.to || null,
+    }));
+  const dnaSummary = marketDna.summarizeDnaSet(dnaBySymbol);
 
   // ── Decision Monitor ──────────────────────────────────────────────────────
   const signalDecisions = decisions.filter((row) => row.decision === 'SIGNAL');
@@ -379,6 +390,16 @@ function buildReplayReport(runResult = {}) {
     strategyScore: scores,
     executionScore,
     marketClassification: classification,
+    marketDna: {
+      perSymbol: dnaBySymbol,
+      // Ett avtryck för hela körningen: mängden förhållanden den täckte.
+      combinedHash: marketDna.combineMarketDnaHashes(dnaBySymbol.map((row) => row.dnaHash)),
+      // Grov regim är det som räknas när man frågar "hur många regimer".
+      // Skiljer sig symbolerna åt redovisas båda i stället för ett medelvärde.
+      regimeKeys: [...new Set(dnaBySymbol.map((row) => row.regimeKey).filter((key) => key && key !== 'unknown'))],
+      distinctProfiles: dnaSummary.distinctProfiles,
+      distinctRegimes: dnaSummary.distinctRegimes,
+    },
     performance: runResult.performance || null,
 
     // ── vägen bakåt ─────────────────────────────────────────────────────────

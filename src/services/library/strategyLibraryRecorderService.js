@@ -38,6 +38,7 @@ const libraryModule = require('./strategyLibraryService');
 const nativeRegistry = require('../nativeFuturesStrategyRegistryService');
 const strategyScoreV1 = require('../score/strategyScoreV1Service');
 const confidenceScore = require('../score/confidenceScoreService');
+const marketDna = require('../market/marketDnaService');
 
 const SAFETY = Object.freeze({
   actions_allowed: false,
@@ -101,6 +102,22 @@ function createStrategyLibraryRecorder(options = {}) {
     const id = runId || `replay:${runResult.config?.mode}:${runResult.config?.from}:${runResult.config?.to}`;
     const classification = report.marketClassification?.classification || null;
     const executionScore = report.executionScore?.total ?? null;
+    // Market DNA för perioden. Den grova regimnyckeln följer med varje körning
+    // så att Market Intelligence kan svara på vilka förhållanden strategin har
+    // sett — och, viktigare, vilka den aldrig har sett.
+    // En körning täcker en MÄNGD regimer — MNQ och MES kan ha olika karaktär
+    // samma dag. Mängden lagras som mängd.
+    //
+    // Första versionen slog ihop dem till en sträng ("down/normal+down/quiet").
+    // Det såg ut att fungera men var fel på två sätt: den sammansatta nyckeln
+    // fanns inte i katalogen och kunde därför aldrig matcha, så täckningen
+    // räknade nycklar som inte existerar och samma regim listades samtidigt som
+    // testad och som blind fläck.
+    const runRegimeKeys = [...new Set(report.marketDna?.regimeKeys || [])].sort();
+    // Entydig nyckel bara när körningen faktiskt hade EN regim. Annars null —
+    // en tvetydighet ska inte döljas bakom ett påhittat namn.
+    const runRegimeKey = runRegimeKeys.length === 1 ? runRegimeKeys[0] : null;
+    const runDnaHash = report.marketDna?.combinedHash || null;
     const written = [];
     const skipped = [];
 
@@ -124,6 +141,9 @@ function createStrategyLibraryRecorder(options = {}) {
         strategyScore: score.total,
         executionScore,
         marketClassification: classification,
+        marketRegimeKey: runRegimeKey,
+        marketRegimeKeys: runRegimeKeys,
+        marketDnaHash: runDnaHash,
         qualified: score.qualified === true,
         at,
       });
@@ -138,14 +158,37 @@ function createStrategyLibraryRecorder(options = {}) {
       // Confidence räknas på ALLT strategin har gjort, inte bara den här
       // körningen — måttet handlar om samlad kunskap.
       const record = library.getStrategy(strategyId);
+      const runs = record?.replayHistory || [];
+
+      // Confidence räknar GROVA regimer, inte fina DNA-profiler.
+      //
+      // Det är ett medvetet val och det viktigaste i hela kopplingen: med det
+      // fina avtrycket blir nästan varje handelsdag en egen profil, och då
+      // skulle en strategi se ut att ha prövats i tre marknadsregimer efter tre
+      // dagar. Upplösningen skulle avgöra måttet i stället för verkligheten.
+      // Sexton dygn i lagret ger 15 fina profiler men 6 grova regimer — och det
+      // är sexan som är svaret på "hur många sorters marknad har vi sett".
       const conf = confidenceScore.calculateConfidenceScore(
         replayTradesAsScored(record),
-        { marketClassifications: (record?.replayHistory || []).map((row) => row.marketClassification) },
+        {
+          // Unionen av regimerna, inte en nyckel per körning: en körning som
+          // täckte två regimer har visat strategin två sorters marknad.
+          marketClassifications: runs.flatMap((row) => (
+            Array.isArray(row.marketRegimeKeys) && row.marketRegimeKeys.length
+              ? row.marketRegimeKeys
+              : [row.marketRegimeKey || row.marketClassification].filter(Boolean)
+          )),
+        },
       );
       library.recordScore({ strategyId, scoreType: 'confidenceScore', value: conf.total, detail: conf.evidence, at });
+
+      // Strategins market DNA är mängden förhållanden den levt igenom, inte den
+      // senaste körningen.
       library.recordMarketDna({
         strategyId,
-        classifications: (record?.replayHistory || []).map((row) => row.marketClassification),
+        marketDnaHash: marketDna.combineMarketDnaHashes(runs.map((row) => row.marketDnaHash)),
+        profiles: [...new Set(runs.map((row) => row.marketDnaHash).filter(Boolean))],
+        regimeKeys: [...new Set(runs.map((row) => row.marketRegimeKey).filter(Boolean))],
         at,
       });
 

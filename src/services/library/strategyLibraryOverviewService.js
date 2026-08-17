@@ -72,6 +72,21 @@ function libraryViewFor(record, { now }) {
     retirementReason: retirement.alreadyRetired
       ? (record.retirementHistory.at(-1)?.reason || null)
       : (retirement.primaryReason || null),
+    // Regimerna strategin har mött. Läses ur postens egna körningar och är
+    // därmed gratis.
+    //
+    // Den FULLSTÄNDIGA bilden — hur många regimer som finns och vilka som är
+    // blinda fläckar — kräver DNA-katalogen, och den läser hela
+    // marknadsdatalagret. Den får inte byggas här: desk-runtime pollas
+    // regelbundet, och en tung läsning i den vägen har frusit event-loopen
+    // förut. Katalogen bor i /api/market-intelligence i stället.
+    regimesSeen: [...new Set(
+      record.replayHistory.flatMap((row) => (
+        Array.isArray(row.marketRegimeKeys) && row.marketRegimeKeys.length
+          ? row.marketRegimeKeys
+          : [row.marketRegimeKey].filter(Boolean)
+      )).flatMap((key) => String(key).split('+')).filter(Boolean),
+    )].sort(),
     replayRuns: record.replayHistory.length,
     paperTrades: record.paperHistory.length,
     liveTrades: record.liveHistory.length,

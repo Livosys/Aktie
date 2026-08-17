@@ -108,13 +108,13 @@ function computeStrategyDnaHash(descriptor = {}, sourceText = null) {
   return sha(sourceText == null ? identity : `${identity}::${sourceText}`);
 }
 
-// Marknads-DNA: vilka marknadsförhållanden strategin har prövats i. Härleds ur
-// klassificeringarna som faktiskt registrerats, sorterade så att samma
-// uppsättning alltid ger samma hash.
-function computeMarketDnaHash(classifications = []) {
-  const unique = [...new Set(classifications.filter(Boolean))].sort();
-  return unique.length ? sha(unique.join('|')) : null;
-}
+// Marknads-DNA beräknas INTE här. Biblioteket lagrar vad det får; vad ett
+// marknads-DNA är avgörs av marketDnaService.
+//
+// Tidigare hashade den här modulen klassificeringsetiketterna ("range",
+// "trend_up") och kallade resultatet market DNA. Det var för trubbigt för att
+// bära namnet — två helt olika sidledes-dagar fick samma hash — och det lade
+// dessutom en marknadsmodell i en bokföringsmodul.
 
 // ── tom post ─────────────────────────────────────────────────────────────────
 
@@ -220,6 +220,17 @@ function applyEvent(record, event) {
         strategyScore: num(event.strategyScore),
         executionScore: num(event.executionScore),
         marketClassification: text(event.marketClassification),
+        // Market DNA för perioden körningen gjordes i. Den grova regimnyckeln
+        // är den som räknas när man frågar "hur många regimer"; det fina
+        // avtrycket är det som matchar mot liknande perioder.
+        // Entydig regim, eller null när körningen spände över flera.
+        marketRegimeKey: text(event.marketRegimeKey),
+        // Hela mängden regimer körningen täckte. Det är den som räknas när man
+        // frågar vad strategin HAR sett.
+        marketRegimeKeys: Array.isArray(event.marketRegimeKeys)
+          ? event.marketRegimeKeys.map(text).filter(Boolean)
+          : (text(event.marketRegimeKey) ? [text(event.marketRegimeKey)] : []),
+        marketDnaHash: text(event.marketDnaHash),
         qualified: event.qualified === true,
       }];
       break;
@@ -507,13 +518,20 @@ function createStrategyLibrary(options = {}) {
     return append(payload.strategyId, EVENT_TYPES.LIVE_RECORDED, payload);
   }
 
-  function recordMarketDna({ strategyId, classifications = [], at = null }) {
-    const marketDnaHash = computeMarketDnaHash(classifications);
-    if (!marketDnaHash) return null;
+  /**
+   * @param {string}   marketDnaHash  sammanslaget avtryck från marketDnaService
+   * @param {string[]} [profiles]     de fina profilerna bakom det
+   * @param {string[]} [regimeKeys]   de grova regimerna bakom det
+   */
+  function recordMarketDna({ strategyId, marketDnaHash, profiles = [], regimeKeys = [], at = null }) {
+    const hash = text(marketDnaHash);
+    if (!hash) return null;
     const previous = getStrategy(strategyId)?.currentMarketDnaHash ?? null;
-    if (previous === marketDnaHash) return null;
+    // Oförändrat DNA ger ingen händelse. En logg som fylls med identiska rader
+    // gör de verkliga förändringarna omöjliga att se.
+    if (previous === hash) return null;
     return append(strategyId, EVENT_TYPES.MARKET_DNA_UPDATED, {
-      marketDnaHash, previousMarketDnaHash: previous, classifications, at,
+      marketDnaHash: hash, previousMarketDnaHash: previous, profiles, regimeKeys, at,
     });
   }
 
@@ -585,6 +603,6 @@ module.exports = {
   SCORE_TYPES,
   createStrategyLibrary,
   computeStrategyDnaHash,
-  computeMarketDnaHash,
+
   defaultStrategyLibrary: createStrategyLibrary(),
 };

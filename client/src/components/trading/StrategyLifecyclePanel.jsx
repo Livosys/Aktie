@@ -129,6 +129,18 @@ export const StrategyLifecyclePanel = React.memo(function StrategyLifecyclePanel
       value: `${library.replayRuns ?? 0} replay · ${library.paperTrades ?? 0} paper · ${library.liveTrades ?? 0} live`,
       hint: library.currentMarketDnaHash ? `Market DNA ${library.currentMarketDnaHash}` : null,
     },
+    {
+      // Vilka sorters marknad strategin faktiskt mött. Ett bra resultat i en
+      // enda regim är inte ett bra resultat — det är ett obeprövat resultat,
+      // och den skillnaden ska synas här.
+      label: 'Marknadsregimer',
+      value: library.regimesSeen?.length ? library.regimesSeen.join(' · ') : 'Ingen ännu',
+      tone: !library.regimesSeen?.length ? 'warning'
+        : library.regimesSeen.length >= 3 ? 'success' : 'blue',
+      hint: library.regimesSeen?.length
+        ? `${library.regimesSeen.length} prövade — blinda fläckar visas i Market Intelligence`
+        : 'Strategin har aldrig körts i replay',
+    },
   ];
 
   return (

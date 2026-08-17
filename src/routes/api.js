@@ -72,6 +72,7 @@ const strategyRegistry   = require('../services/strategyRegistryService');
 const strategyLibrary    = require('../services/library/strategyLibraryService').defaultStrategyLibrary;
 const promotionEngine    = require('../services/library/promotionEngineService');
 const retirementEngine   = require('../services/library/retirementEngineService');
+const marketIntelligence = require('../services/market/marketIntelligenceService');
 const strategyScore      = require('../services/strategyScoreService');
 const strategyHistory    = require('../services/strategyHistoryService');
 const strategyTestPlanner = require('../services/strategyTestPlannerService');
@@ -5486,6 +5487,42 @@ router.get('/strategy-library/retirement', (req, res) => {
     res.json(retirementEngine.evaluateAll(strategyLibrary));
   } catch (err) {
     res.status(500).json({ ok: false, error: err.message, ...retirementEngine.SAFETY });
+  }
+});
+
+// ── Market DNA och Market Intelligence ──────────────────────────────────────
+//
+// Read-only. Katalogen byggs ur marknadsdatalagret vid anrop; den är billig nog
+// (en DNA-beräkning per rot och handelsdag) och alltid färsk.
+
+router.get('/market-intelligence', (req, res) => {
+  try {
+    res.json(marketIntelligence.buildMarketIntelligence({ library: strategyLibrary }));
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message, ...marketIntelligence.SAFETY });
+  }
+});
+
+router.get('/market-intelligence/catalog', (req, res) => {
+  try {
+    const catalog = marketIntelligence.buildMarketDnaCatalog();
+    res.json({
+      ok: true,
+      summary: catalog.summary,
+      periods: catalog.periods.map((row) => ({
+        symbol: row.symbol,
+        from: row.from,
+        to: row.to,
+        dnaHash: row.dnaHash,
+        regimeKey: row.regimeKey,
+        classification: row.classification,
+        traits: row.traits,
+      })),
+      skipped: catalog.skipped,
+      ...marketIntelligence.SAFETY,
+    });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message, ...marketIntelligence.SAFETY });
   }
 });
 

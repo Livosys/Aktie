@@ -114,6 +114,9 @@ test('2 · Replay uppdaterar Library', () => {
   };
   const report = {
     marketClassification: { classification: 'range' },
+    // Market DNA följer med rapporten sedan fas 6. Utan den sätts inget
+    // marknads-DNA — biblioteket hittar inte på ett.
+    marketDna: { combinedHash: 'aabbccdd11223344', regimeKeys: ['flat/normal'] },
     executionScore: { total: 71 },
     strategyScore: {
       perStrategy: [{
@@ -274,7 +277,11 @@ test('7 · pensionering bevarar allt och tar aldrig bort något', () => {
   library.recordScore({ strategyId, scoreType: 'strategyScore', value: 12 });
   library.recordScore({ strategyId, scoreType: 'executionScore', value: 38 });
   library.recordScore({ strategyId, scoreType: 'confidenceScore', value: 55 });
-  library.recordMarketDna({ strategyId, classifications: ['range', 'trend_up'] });
+  library.recordMarketDna({
+    strategyId,
+    marketDnaHash: 'abc123def4567890',
+    regimeKeys: ['flat/normal', 'up/normal'],
+  });
   forceTo(library, strategyId, lifecycle.STAGES.PAPER);
   const before = library.getStrategy(strategyId);
 
@@ -385,7 +392,7 @@ test('9 · historik skrivs aldrig över', () => {
     () => library.recordReplayRun({ strategyId, runId: 'r1', trades: 12, strategyScore: 70 }),
     () => library.recordTransition({ strategyId, to: lifecycle.STAGES.DRAFT, reason: 'b' }),
     () => library.recordApproval({ strategyId, decision: 'approved', approvedBy: 'test' }),
-    () => library.recordMarketDna({ strategyId, classifications: ['range'] }),
+    () => library.recordMarketDna({ strategyId, marketDnaHash: 'feed0000cafe1234' }),
   ];
 
   for (const step of mutate) {
