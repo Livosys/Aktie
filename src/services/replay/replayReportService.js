@@ -104,6 +104,142 @@ function decomposeExecutionCost(closedTrades) {
   };
 }
 
+// ── lägesspecifika avsnitt ───────────────────────────────────────────────────
+//
+// De tre lägena svarar på tre olika frågor, och rapporten ska svara på den
+// fråga som ställdes — inte på alla tre varje gång.
+//
+//   production  Hade Paper gjort så här? (Rapportens huvuddel räcker.)
+//   strategy    Hur bra är varje strategi FÖR SIG? Underlag till AI.
+//   portfolio   Vilka bör gå till Paper, och hur trängs de?
+//
+// Gemensamt: inget avsnitt räknar om en siffra som redan finns.
+
+function buildStrategyModeReport(runResult, scores) {
+  const decisions = runResult.decisions || [];
+  const signalsByStrategy = tally(decisions.filter((row) => row.decision === 'SIGNAL'), 'strategyId');
+  const blocksByStrategy = tally(runResult.riskBlocks || [], 'strategyId');
+
+  // En rad per strategi, med hela dess isolerade underlag. Det är precis den
+  // här tabellen AI ska tränas mot — varje strategi mätt på sitt eget flöde,
+  // inte på vad som blev över när någon annan tog platsen.
+  const rows = scores.perStrategy.map((score) => ({
+    strategyId: score.strategyId,
+    signals: signalsByStrategy[score.strategyId] || 0,
+    blocked: blocksByStrategy[score.strategyId] || 0,
+    trades: score.stats.trades,
+    strategyScore: score.total,
+    band: score.band,
+    winRate: score.stats.winRate,
+    expectancyUsd: score.stats.expectancyUsd,
+    profitFactor: score.stats.profitFactor,
+    maxDrawdownUsd: score.stats.maxDrawdownUsd,
+    meetsWinRateFloor: score.meetsWinRateFloor,
+    qualified: score.qualified,
+    confidence: score.confidence,
+    // Så få affärer att poängen inte betyder något ännu.
+    sampleWarning: score.qualified ? null : 'thin_sample',
+  }));
+
+  return {
+    mode: 'strategy',
+    purpose: 'AI-träning: varje strategi isolerad med eget kapital och egen positionsplats.',
+    minTradesForRanking: strategyScore.MIN_TRADES_FOR_RANKING,
+    strategies: rows,
+    // Kandidater för portföljläget. Kräver ett underlag som håller — annars
+    // hade en enda lyckträff kunnat ta sig hela vägen till Paper.
+    portfolioCandidates: rows
+      .filter((row) => row.qualified && row.strategyScore >= 55)
+      .map((row) => row.strategyId),
+    thinSamples: rows.filter((row) => row.sampleWarning).map((row) => row.strategyId),
+  };
+}
+
+function buildPortfolioModeReport(runResult, scores) {
+  const closed = (runResult.trades || []).filter((row) => row.status === 'closed');
+  const allocationBlocks = (runResult.riskBlocks || []).filter((row) => row.allocationBlock === true);
+  const netTotal = closed.reduce((total, row) => total + (Number(row.netPnlUsd) || 0), 0);
+
+  const byStrategy = new Map();
+  for (const row of closed) {
+    const key = row.strategyId || 'unknown';
+    if (!byStrategy.has(key)) byStrategy.set(key, []);
+    byStrategy.get(key).push(row);
+  }
+
+  const scoreOf = new Map(scores.perStrategy.map((row) => [row.strategyId, row]));
+
+  // Andel av portföljens resultat är bara meningsfull mot en POSITIV summa. Med
+  // en förlustbringande portfölj gav divisionen omvända tecken: en strategi som
+  // tjänade pengar redovisades som -53 % "bidrag". Andelen av den absoluta
+  // rörelsen är däremot alltid definierad och behåller sitt tecken.
+  //
+  // Nämnaren summeras per STRATEGI, inte per affär. Med affärer i nämnaren och
+  // strateginetton i täljaren tog andelarna inte ut varandra till 100 %, för då
+  // jämfördes två olika saker.
+  const netByStrategy = new Map(
+    [...byStrategy.entries()].map(([strategyId, rows]) => [
+      strategyId,
+      rows.reduce((total, row) => total + (Number(row.netPnlUsd) || 0), 0),
+    ]),
+  );
+  const grossAbsolute = [...netByStrategy.values()]
+    .reduce((total, net) => total + Math.abs(net), 0);
+
+  // Rangordningen inför Paper. Bidraget till portföljens resultat väger, men
+  // avgör inte ensamt: en strategi som tjänar pengar och samtidigt tränger ut
+  // alla andra är inte självklart den man vill ta vidare.
+  const ranking = [...byStrategy.entries()].map(([strategyId, rows]) => {
+    const net = netByStrategy.get(strategyId) || 0;
+    const score = scoreOf.get(strategyId);
+    return {
+      strategyId,
+      trades: rows.length,
+      netPnlUsd: Math.round(net * 100) / 100,
+      // Andel av en VINST. Null när portföljen inte gick plus — då finns ingen
+      // vinst att fördela, och ett procenttal hade bara varit vilseledande.
+      shareOfProfitPct: netTotal > 0 ? Math.round((net / netTotal) * 10000) / 100 : null,
+      // Alltid definierad: hur stor del av portföljens totala rörelse strategin
+      // stod för, med sitt eget tecken.
+      shareOfActivityPct: grossAbsolute > 0 ? Math.round((net / grossAbsolute) * 10000) / 100 : null,
+      strategyScore: score?.total ?? null,
+      band: score?.band ?? null,
+      qualified: score?.qualified ?? false,
+      confidence: score?.confidence ?? 0,
+      winRate: score?.stats.winRate ?? null,
+      meetsWinRateFloor: score?.meetsWinRateFloor ?? false,
+      // Hur ofta strategin stängdes ute av att portföljen var full.
+      crowdedOut: allocationBlocks.filter((row) => row.strategyId === strategyId).length,
+    };
+  }).sort((a, b) => Number(b.qualified) - Number(a.qualified) // ogrundade sist
+    || (b.strategyScore ?? -1) - (a.strategyScore ?? -1)
+    || b.netPnlUsd - a.netPnlUsd);
+
+  return {
+    mode: 'portfolio',
+    purpose: 'Slutlig rangordning innan Paper: godkända strategier i samma kapital.',
+    maxConcurrentPositions: runResult.config?.allocation?.maxConcurrentPositions ?? null,
+    approvedStrategies: runResult.config?.allocation?.approvedStrategies ?? null,
+    sharedCapital: runResult.config?.allocation?.sharedCapital === true,
+    ranking,
+    // Rangordningens faktiska svar. Kräver ett underlag som håller — en
+    // strategi med för få affärer kan aldrig rekommenderas till Paper, hur
+    // bra siffrorna än ser ut.
+    readyForPaper: ranking
+      .filter((row) => row.qualified && row.strategyScore >= 55 && row.netPnlUsd > 0)
+      .map((row) => row.strategyId),
+    blockedByThinSample: ranking.filter((row) => !row.qualified).map((row) => row.strategyId),
+    crowding: {
+      // Trängseln är portföljens egen kostnad. Är den hög är taket för lågt,
+      // eller så är strategierna för lika varandra.
+      blockedByConcurrency: allocationBlocks.length,
+      byStrategy: tally(allocationBlocks, 'strategyId'),
+      booksUsed: runResult.counts?.books ?? null,
+    },
+    portfolioPerformance: runResult.performance || null,
+  };
+}
+
 /**
  * Bygger rapporten för ett RunResult från nativeReplayEngineService.
  */
@@ -169,9 +305,24 @@ function buildReplayReport(runResult = {}) {
     };
   }
 
+  const mode = runResult.config?.mode || 'production';
+  const modeReport = mode === 'strategy' ? buildStrategyModeReport(runResult, scores)
+    : mode === 'portfolio' ? buildPortfolioModeReport(runResult, scores)
+      : {
+        mode: 'production',
+        purpose: 'Identisk med Paper Trading: en bok, samma grindar, samma positionstak.',
+      };
+
   return {
     version: REPORT_VERSION,
     engineVersion: runResult.engineVersion || null,
+    mode,
+    modeReport,
+    books: (runResult.books || []).map((book) => ({
+      bookId: book.bookId,
+      trades: book.trades.length,
+      performance: book.performance,
+    })),
     config: runResult.config || null,
     dataCoverage: runResult.dataCoverage || null,
     ticks: runResult.ticks || 0,
@@ -191,6 +342,11 @@ function buildReplayReport(runResult = {}) {
     },
     riskBlocks: {
       count: runResult.counts?.riskBlocked || 0,
+      // Åtskilda med flit: Broker Risk säger "ordern får inte läggas", medan
+      // allokeringen säger "portföljen har ingen plats". Olika frågor, olika
+      // åtgärder.
+      fromAllocation: runResult.counts?.allocationBlocked || 0,
+      fromBrokerRisk: (runResult.counts?.riskBlocked || 0) - (runResult.counts?.allocationBlocked || 0),
       byBlocker: tally(
         (runResult.riskBlocks || []).flatMap((row) => (row.blockers || []).map((blocker) => ({ blocker }))),
         'blocker',

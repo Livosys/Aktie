@@ -285,8 +285,15 @@ test('12 · ingen replay-specifik kopia av kedjan finns', () => {
     .filter((file) => file.endsWith('.js') && !file.includes('.test.'));
   const engineDir = path.join(SERVICES, 'execution');
 
+  // Kommentarer räknas inte. En kommentar som FÖRKLARAR varför en riskregel
+  // inte får dupliceras ska inte falla på att den nämner regelns namn.
+  const codeOf = (file) => fs.readFileSync(path.join(__dirname, file), 'utf8')
+    .split('\n')
+    .filter((line) => !line.trim().startsWith('//'))
+    .join('\n');
+
   for (const file of replayFiles) {
-    const source = fs.readFileSync(path.join(__dirname, file), 'utf8');
+    const source = codeOf(file);
     // Ingen egen scanner, adapter, aggregering eller riskregel.
     assert.doesNotMatch(source, /function\s+\w*[Ss]canner/, `${file}: egen scanner`);
     assert.doesNotMatch(source, /function\s+\w*aggregate/, `${file}: egen aggregering`);

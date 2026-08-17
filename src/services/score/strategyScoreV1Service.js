@@ -44,6 +44,22 @@ const SCORE_MAX = Object.freeze({
 // Golvet från beslut D2. Rapporteras, avgör inte.
 const WIN_RATE_FLOOR = 65;
 
+// ── varför ett antal affärer måste GRINDA och inte bara ge poäng ─────────────
+//
+// Första versionen lät urvalsstorleken vara en av fem poängkomponenter. En
+// strategi med EN vinnande affär fick då 0,3 av 15 på den komponenten men
+// maxade de fyra andra — och landade på 85 av 100, bandet "strong", och blev
+// ensam portföljkandidat. Ett sammanträffande rankades över allt annat.
+//
+// Poängen räknas därför fortfarande, men bandet och all vidareanvändning
+// kräver ett minsta underlag. En strategi under gränsen får bandet
+// insufficient_data oavsett hur bra siffrorna ser ut. Att ett tunt underlag
+// ser ut som ett omdöme är farligare än att sakna omdöme.
+const MIN_TRADES_FOR_RANKING = 20;
+
+// Underlaget uttryckt som 0–1. Full säkerhet vid 50 affärer.
+const FULL_CONFIDENCE_TRADES = 50;
+
 function num(value) {
   const n = Number(value);
   return Number.isFinite(n) ? n : null;
@@ -75,6 +91,9 @@ function scoreTrades(trades = [], { strategyId = null } = {}) {
       max: { ...SCORE_MAX },
       band: 'insufficient_data',
       stats: { trades: 0 },
+      confidence: 0,
+      qualified: false,
+      minTradesForRanking: MIN_TRADES_FOR_RANKING,
       meetsWinRateFloor: false,
       winRateFloor: WIN_RATE_FLOOR,
       reason: 'no_scored_trades',
@@ -128,15 +147,21 @@ function scoreTrades(trades = [], { strategyId = null } = {}) {
   };
 
   const totalScore = round(Object.values(components).reduce((a, b) => a + b, 0));
+  const qualified = scored.length >= MIN_TRADES_FOR_RANKING;
 
   return {
     strategyId,
     total: totalScore,
     components,
     max: { ...SCORE_MAX },
-    band: totalScore >= 75 ? 'strong'
-      : totalScore >= 55 ? 'promising'
-        : totalScore >= 35 ? 'weak' : 'failing',
+    // Under gränsen finns inget omdöme att ge, hur bra poängen än ser ut.
+    band: !qualified ? 'insufficient_data'
+      : totalScore >= 75 ? 'strong'
+        : totalScore >= 55 ? 'promising'
+          : totalScore >= 35 ? 'weak' : 'failing',
+    confidence: round(clamp(scored.length / FULL_CONFIDENCE_TRADES, 0, 1), 3),
+    qualified,
+    minTradesForRanking: MIN_TRADES_FOR_RANKING,
     stats: {
       trades: scored.length,
       wins: wins.length,
@@ -152,7 +177,7 @@ function scoreTrades(trades = [], { strategyId = null } = {}) {
     // Gränsen från D2. Informerar, avgör inte.
     meetsWinRateFloor: winRate >= WIN_RATE_FLOOR,
     winRateFloor: WIN_RATE_FLOOR,
-    reason: null,
+    reason: qualified ? null : 'below_min_trades_for_ranking',
     version: SCORE_VERSION,
     ...SAFETY,
   };
@@ -176,6 +201,8 @@ module.exports = {
   SCORE_VERSION,
   SCORE_MAX,
   WIN_RATE_FLOOR,
+  MIN_TRADES_FOR_RANKING,
+  FULL_CONFIDENCE_TRADES,
   scoreTrades,
   scoreByStrategy,
 };

@@ -80,6 +80,61 @@ function fillView(fill = {}) {
   };
 }
 
+// Största fall från en topp i den ackumulerade strategikurvan. Räknas på
+// strategyPnl — exekveringens bidrag mäts separat och ska inte blandas in.
+function maxDrawdown(rows) {
+  let peak = 0;
+  let equity = 0;
+  let worst = 0;
+  for (const row of rows) {
+    equity += row.strategyPnlUsd;
+    if (equity > peak) peak = equity;
+    const dd = peak - equity;
+    if (dd > worst) worst = dd;
+  }
+  return round(worst, 2);
+}
+
+/**
+ * Sammanfattar en uppsättning affärer.
+ *
+ * Ligger utanför ledgern med flit: Replay Framework kör flera böcker samtidigt
+ * och måste kunna summera dem tillsammans utan en andra uträkning. Att ha två
+ * funktioner som räknar profit factor är hur två delar av ett system börjar
+ * rapportera olika resultat för samma affärer.
+ */
+function summarizeTrades(trades = []) {
+  const closed = trades.filter((row) => row.status === TRADE_STATUS.CLOSED);
+  const open = trades.filter((row) => row.status === TRADE_STATUS.OPEN);
+  const withResult = closed.filter((row) => num(row.strategyPnlUsd) != null);
+  const sum = (key) => withResult.reduce((total, row) => total + (num(row[key]) || 0), 0);
+  const wins = withResult.filter((row) => row.strategyPnlUsd > 0);
+  const losses = withResult.filter((row) => row.strategyPnlUsd < 0);
+  const grossWin = wins.reduce((total, row) => total + row.strategyPnlUsd, 0);
+  const grossLoss = Math.abs(losses.reduce((total, row) => total + row.strategyPnlUsd, 0));
+
+  return {
+    trades: closed.length,
+    openTrades: open.length,
+    scored: withResult.length,
+    wins: wins.length,
+    losses: losses.length,
+    winRate: withResult.length ? round((wins.length / withResult.length) * 100, 2) : null,
+    strategyPnlUsd: round(sum('strategyPnlUsd'), 2),
+    executedPnlUsd: round(sum('executedPnlUsd'), 2),
+    executionCostUsd: round(sum('executionCostUsd'), 2),
+    commissionUsd: round(sum('commissionUsd'), 2),
+    netPnlUsd: round(sum('netPnlUsd'), 2),
+    avgWinUsd: wins.length ? round(grossWin / wins.length, 2) : null,
+    avgLossUsd: losses.length ? round(grossLoss / losses.length, 2) : null,
+    profitFactor: grossLoss > 0 ? round(grossWin / grossLoss, 3) : (grossWin > 0 ? null : 0),
+    expectancyUsd: withResult.length ? round(sum('strategyPnlUsd') / withResult.length, 2) : null,
+    maxDrawdownUsd: maxDrawdown(withResult),
+    avgHoldingMs: withResult.length
+      ? Math.round(withResult.reduce((t, r) => t + (r.holdingMs || 0), 0) / withResult.length) : null,
+  };
+}
+
 function createTradeLedger(options = {}) {
   const math = options.ledgerMath || paperLedgerMath;
   const trades = new Map();
@@ -205,49 +260,7 @@ function createTradeLedger(options = {}) {
   }
 
   function summary() {
-    const closed = closedTrades();
-    const withResult = closed.filter((row) => row.strategyPnlUsd != null);
-    const sum = (key) => withResult.reduce((total, row) => total + (num(row[key]) || 0), 0);
-    const wins = withResult.filter((row) => row.strategyPnlUsd > 0);
-    const losses = withResult.filter((row) => row.strategyPnlUsd < 0);
-    const grossWin = wins.reduce((total, row) => total + row.strategyPnlUsd, 0);
-    const grossLoss = Math.abs(losses.reduce((total, row) => total + row.strategyPnlUsd, 0));
-
-    return {
-      trades: closed.length,
-      openTrades: openTrades().length,
-      scored: withResult.length,
-      wins: wins.length,
-      losses: losses.length,
-      winRate: withResult.length ? round((wins.length / withResult.length) * 100, 2) : null,
-      strategyPnlUsd: round(sum('strategyPnlUsd'), 2),
-      executedPnlUsd: round(sum('executedPnlUsd'), 2),
-      executionCostUsd: round(sum('executionCostUsd'), 2),
-      commissionUsd: round(sum('commissionUsd'), 2),
-      netPnlUsd: round(sum('netPnlUsd'), 2),
-      avgWinUsd: wins.length ? round(grossWin / wins.length, 2) : null,
-      avgLossUsd: losses.length ? round(grossLoss / losses.length, 2) : null,
-      profitFactor: grossLoss > 0 ? round(grossWin / grossLoss, 3) : (grossWin > 0 ? null : 0),
-      expectancyUsd: withResult.length ? round(sum('strategyPnlUsd') / withResult.length, 2) : null,
-      maxDrawdownUsd: maxDrawdown(withResult),
-      avgHoldingMs: withResult.length
-        ? Math.round(withResult.reduce((t, r) => t + (r.holdingMs || 0), 0) / withResult.length) : null,
-    };
-  }
-
-  // Största fall från en topp i den ackumulerade strategikurvan. Räknas på
-  // strategyPnl — exekveringens bidrag mäts separat och ska inte blandas in.
-  function maxDrawdown(rows) {
-    let peak = 0;
-    let equity = 0;
-    let worst = 0;
-    for (const row of rows) {
-      equity += row.strategyPnlUsd;
-      if (equity > peak) peak = equity;
-      const dd = peak - equity;
-      if (dd > worst) worst = dd;
-    }
-    return round(worst, 2);
+    return summarizeTrades(all());
   }
 
   /** Affärer grupperade per strategi — underlaget för Strategy Score. */
@@ -280,5 +293,6 @@ module.exports = {
   SAFETY,
   TRADE_STATUS,
   createTradeLedger,
-  _internal: { deterministicTradeId },
+  summarizeTrades,
+  _internal: { deterministicTradeId, maxDrawdown },
 };

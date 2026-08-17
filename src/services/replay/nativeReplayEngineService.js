@@ -32,6 +32,11 @@
 // aldrig en, och nämner ingen vid namn. Signal-providern hämtar dem ur Strategy
 // Registry vid varje anrop, så en nyregistrerad strategi körs automatiskt.
 //
+// Den vet inte heller vilket EXEKVERINGSLÄGE den kör i. Production, Strategy
+// och Portfolio skiljer sig bara i vilken bok en signal debiteras och hur många
+// böcker som får vara i marknaden samtidigt — och det ägs av
+// replayBookAllocator. Loopen nedan är ordagrant densamma i alla tre lägena.
+//
 // ── En avvikelse som redovisas i stället för att döljas ──────────────────────
 //
 // Produktionens native-väg går INTE genom Execution Readiness / entry contract:
@@ -52,6 +57,7 @@ const fillEngineInterface = require('../execution/fillEngineInterface');
 const simulatedFill = require('../execution/simulatedFillEngine');
 const bracketExit = require('../execution/bracketExitResolver');
 const tradeLedgerModule = require('../trade/tradeLedgerService');
+const bookAllocator = require('./replayBookAllocator');
 const coverage = require('../../data/marketDataCoverage');
 
 const { defaultNativeFuturesSignalReader } = signalProvider._internal;
@@ -141,13 +147,21 @@ function createNativeReplayEngine(options = {}) {
       ? Math.min(requestedEndMs, new Date(dataCoverage.effectiveTo).getTime())
       : requestedEndMs;
 
-    const ledger = createLedger();
+    // Böckerna. I production är det exakt en, och då beter sig allt nedan
+    // precis som innan lägena fanns.
+    const allocator = options.bookAllocator || bookAllocator.createBookAllocator({
+      mode: config.mode || bookAllocator.REPLAY_MODES.PRODUCTION,
+      maxConcurrentPositions: config.maxConcurrentPositions,
+      approvedStrategies: config.approvedStrategies,
+      createLedger,
+    });
+
     const decisions = [];
     const riskBlocks = [];
     const unfilledEntries = [];
     const rejectedSignals = [];
-    // tradeId → { exitAtMs, exit, reason } — utgången löses vid entry men
-    // bokförs först när klockan passerar den, så att positionen upptar sin
+    // tradeId → { bookId, exitAtMs, exit, reason } — utgången löses vid entry
+    // men bokförs först när klockan passerar den, så att positionen upptar sin
     // plats i riskmotorn under hela sin livstid precis som i drift.
     const pendingExits = new Map();
 
@@ -164,7 +178,8 @@ function createNativeReplayEngine(options = {}) {
       //    nya signaler, annars kan en stängd position blockera en ny entry.
       for (const [tradeId, pending] of [...pendingExits.entries()]) {
         if (pending.exitAtMs > ms) continue;
-        ledger.close(tradeId, { exit: pending.exit, reason: pending.reason, closedAt: iso(pending.exitAtMs) });
+        allocator.ledgerFor(pending.bookId)
+          .close(tradeId, { exit: pending.exit, reason: pending.reason, closedAt: iso(pending.exitAtMs) });
         pendingExits.delete(tradeId);
       }
 
@@ -217,6 +232,25 @@ function createNativeReplayEngine(options = {}) {
         const root = String(signal.symbol || '').toUpperCase();
         const quote = feed.getQuote(root, now);
 
+        // 3a. Allokering: vilken bok? Det är HÄR — och bara här — lägena
+        //     skiljer sig. Blockeringar från allokeringen hålls åtskilda från
+        //     Broker Risks blockerare, för de svarar på olika frågor.
+        const slot = allocator.acquire(signal, { now });
+        if (!slot.ok) {
+          riskBlocks.push({
+            at: iso(now),
+            signalId: signal.signalId,
+            strategyId: signal.strategyId,
+            symbol: root,
+            blockers: [slot.blocker],
+            connectivityBlockers: [],
+            allocationBlock: true,
+            detail: slot.detail,
+          });
+          continue;
+        }
+        const ledger = slot.ledger;
+
         const risk = brokerRisk.evaluateBrokerRisk({
           executionTarget,
           root,
@@ -225,8 +259,8 @@ function createNativeReplayEngine(options = {}) {
           stopLossPrice: signal.stopLoss,
           quote: quote ? { ...quote, updatedAt: quote.timestamp } : null,
           openOrders: [],
-          positions: ledger.brokerPositionsView(),
-          accountSummary: replayAccountSummary(ledger, now, executionTarget),
+          positions: allocator.positionsFor(slot.bookId),
+          accountSummary: replayAccountSummary(allocator, slot.bookId, now, executionTarget),
           reconciliation: null,
           now,
         });
@@ -238,8 +272,10 @@ function createNativeReplayEngine(options = {}) {
             signalId: signal.signalId,
             strategyId: signal.strategyId,
             symbol: root,
+            bookId: slot.bookId,
             blockers: partition.orderRiskBlockers,
             connectivityBlockers: partition.connectivityBlockers,
+            allocationBlock: false,
           });
           continue;
         }
@@ -309,6 +345,7 @@ function createNativeReplayEngine(options = {}) {
 
         if (resolved.exit) {
           pendingExits.set(trade.tradeId, {
+            bookId: slot.bookId,
             exitAtMs: new Date(resolved.exit.timestamp).getTime(),
             exit: resolved.exit,
             reason: resolved.reason,
@@ -320,8 +357,12 @@ function createNativeReplayEngine(options = {}) {
     // Kvarvarande öppna positioner stängs på sin lösta utgång även om klockan
     // inte hann dit. En öppen position får aldrig försvinna ur statistiken.
     for (const [tradeId, pending] of pendingExits.entries()) {
-      ledger.close(tradeId, { exit: pending.exit, reason: pending.reason, closedAt: iso(pending.exitAtMs) });
+      allocator.ledgerFor(pending.bookId)
+        .close(tradeId, { exit: pending.exit, reason: pending.reason, closedAt: iso(pending.exitAtMs) });
     }
+
+    const allTrades = allocator.mergedTrades();
+    const closedTrades = allTrades.filter((row) => row.status === 'closed');
 
     return {
       config: {
@@ -330,6 +371,8 @@ function createNativeReplayEngine(options = {}) {
         effectiveTo: iso(endMs),
         symbols, timeframe, quantity, orderType, executionTarget,
         exitWindowMinutes, maxQuoteAgeMs,
+        mode: allocator.mode,
+        allocation: allocator.describe(),
         fillEngine: fillEngine.describe(),
         // Strategierna LISTAS för spårbarhet, men motorn har aldrig frågat
         // efter dem — providern hämtade dem ur registret.
@@ -342,17 +385,24 @@ function createNativeReplayEngine(options = {}) {
         uniqueSignals: seenSignalIds.size,
         signalsRejectedByContract: rejectedSignals.length,
         riskBlocked: riskBlocks.length,
+        // Blockerade av ALLOKERINGEN (portföljens trängsel, ej godkänd
+        // strategi) — skilt från Broker Risks blockerare, de svarar på olika
+        // frågor och blandade ihop går ingen av dem att åtgärda.
+        allocationBlocked: riskBlocks.filter((row) => row.allocationBlock === true).length,
         unfilledEntries: unfilledEntries.length,
-        trades: ledger.closedTrades().length,
-        openAtEnd: ledger.openTrades().length,
+        trades: closedTrades.length,
+        openAtEnd: allTrades.filter((row) => row.status === 'open').length,
+        books: allocator.listBooks().length,
       },
       decisions,
       rejectedSignals,
       riskBlocks,
       unfilledEntries,
-      trades: ledger.all(),
-      tradesByStrategy: ledger.byStrategy(),
-      performance: ledger.summary(),
+      trades: allTrades,
+      tradesByStrategy: allocator.tradesByStrategy(),
+      performance: allocator.mergedPerformance(),
+      // Per bok. I production är detta alltid exakt en post.
+      books: allocator.listBooks(),
       candlesBySymbol,
       engineVersion: ENGINE_VERSION,
       ...SAFETY,
@@ -370,8 +420,9 @@ function createNativeReplayEngine(options = {}) {
 // heter maxDailyLossSek medan realizedPnl kommer i USD, både från IB och
 // härifrån. Replay speglar driften i stället för att tyst räkna om — annars
 // hade replay och paper haft olika gränser.
-function replayAccountSummary(ledger, now, executionTarget) {
-  const summary = ledger.summary();
+// Vilket resultat gränsen mäts mot avgörs av läget: eget kapital per bok i
+// production och strategy, gemensamt i portfolio. Allokatorn äger den regeln.
+function replayAccountSummary(allocator, bookId, now, executionTarget) {
   return {
     ok: true,
     generatedAt: iso(now),
@@ -379,7 +430,7 @@ function replayAccountSummary(ledger, now, executionTarget) {
     account: {
       accountIdMasked: 'REPLAY',
       classification: executionTarget === 'ibkr_live' ? 'live_or_unknown' : 'paper',
-      realizedPnl: summary.netPnlUsd ?? 0,
+      realizedPnl: allocator.realizedPnlFor(bookId),
       unrealizedPnl: 0,
     },
   };
@@ -389,6 +440,7 @@ module.exports = {
   SAFETY,
   ENGINE_VERSION,
   DEFAULTS,
+  REPLAY_MODES: bookAllocator.REPLAY_MODES,
   createNativeReplayEngine,
   _internal: { replayAccountSummary },
 };
