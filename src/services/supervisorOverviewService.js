@@ -20,6 +20,7 @@ const path = require('path');
 const { fork } = require('child_process');
 
 const tradeStats = require('./tradeStatsService');
+const strategyLibraryService = require('./library/strategyLibraryService');
 
 const SAFETY = Object.freeze({
   mode: 'paper_only',
@@ -681,6 +682,17 @@ function summarizePaperStatus(paperTradingStatusService) {
       totalTrades: ranked[0].totalTrades,
       avgPnl: ranked[0].avgPnl,
     } : null;
+    if (bestStrategy && ranked[0]) {
+      try {
+        strategyLibraryService.defaultStrategyLibrary.recordPaperReviewRecommendation({
+          strategyId: ranked[0].key,
+          reason: 'best_performing_in_comparison',
+          evidence: `Win rate: ${ranked[0].winRate || 0}%, Avg PnL: ${ranked[0].avgPnl || 0}, Trades: ${ranked[0].totalTrades || 0}`,
+        });
+      } catch (err) {
+        // Silently skip if recording fails; doesn't block the overview
+      }
+    }
     const worstStrategy = ranked.length ? {
       strategy: ranked[ranked.length - 1].key,
       winRate: ranked[ranked.length - 1].winRate,

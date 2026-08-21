@@ -71,6 +71,7 @@ const EVENT_TYPES = Object.freeze({
   DNA_UPDATED: 'DNA_UPDATED',
   MARKET_DNA_UPDATED: 'MARKET_DNA_UPDATED',
   APPROVAL_RECORDED: 'APPROVAL_RECORDED',
+  PAPER_REVIEW_RECOMMENDED: 'PAPER_REVIEW_RECOMMENDED',
   RETIRED: 'RETIRED',
   VERSION_CHANGED: 'VERSION_CHANGED',
   // ── Kostnadsuppgift återförd i efterhand ──────────────────────────────────
@@ -319,6 +320,15 @@ function applyEvent(record, event) {
         stage: text(event.stage),
         note: text(event.note),
       }];
+      break;
+
+    case EVENT_TYPES.PAPER_REVIEW_RECOMMENDED:
+      next.lastPaperReviewRecommendation = {
+        at,
+        reason: text(event.reason),
+        evidence: text(event.evidence),
+        source: text(event.source),
+      };
       break;
 
     default:
@@ -640,6 +650,17 @@ function createStrategyLibrary(options = {}) {
     return append(payload.strategyId, EVENT_TYPES.LIVE_RECORDED, payload);
   }
 
+  function recordPaperReviewRecommendation({ strategyId, reason, evidence, source = 'ai_factory' } = {}) {
+    const id = text(strategyId);
+    if (!id) return null;
+    return append(id, EVENT_TYPES.PAPER_REVIEW_RECOMMENDED, {
+      strategyId: id,
+      reason: text(reason),
+      evidence: text(evidence),
+      source: text(source),
+    });
+  }
+
   /**
    * @param {string}   marketDnaHash  sammanslaget avtryck från marketDnaService
    * @param {string[]} [profiles]     de fina profilerna bakom det
@@ -697,6 +718,7 @@ function createStrategyLibrary(options = {}) {
     recordCostBackfill,
     recordPaperTrade,
     recordLiveTrade,
+    recordPaperReviewRecommendation,
     recordMarketDna,
     recordApproval,
     getStatus,

@@ -555,9 +555,19 @@ function listStrategies() {
   for (const id of Object.keys(store.strategies || {})) ids.add(id);
 
   const strategies = [];
+  const libraryService = require('./library/strategyLibraryService');
   for (const id of ids) {
-    try { strategies.push(buildStrategyView(id, { store, closedTs, degraded, registryMap })); }
-    catch (err) { strategies.push({ strategyId: id, error: true, errorMessage: safeString(err && err.message) || 'strategy_view_failed', ...SAFETY }); }
+    try {
+      const view = buildStrategyView(id, { store, closedTs, degraded, registryMap });
+      // Filter: only show strategies that either:
+      // 1. Have PAPER_REVIEW_RECOMMENDED event (AI Factory recommendation)
+      // 2. Are already in approval store (user has already engaged)
+      const hasRecommendation = view && view.approval && view.approval.status === null && store.strategies[id];
+      const isRecommended = libraryService.defaultStrategyLibrary.getHistory(id, { types: [libraryService.EVENT_TYPES.PAPER_REVIEW_RECOMMENDED] }).length > 0;
+      if (store.strategies[id] || isRecommended) {
+        strategies.push(view);
+      }
+    } catch (err) { strategies.push({ strategyId: id, error: true, errorMessage: safeString(err && err.message) || 'strategy_view_failed', ...SAFETY }); }
   }
   const result = {
     status: 'ok', readOnly: true, generatedAt: nowIso(), schemaVersion: SCHEMA_VERSION,
