@@ -46,7 +46,13 @@ const SAFETY = Object.freeze({
 });
 
 const TREE_VERSION = 'strategy-family-tree-v1';
-const DEFAULT_EVENTS_FILE = path.resolve(__dirname, '../../../data/ai-memory/lineage.jsonl');
+// Env-överstyrbar av samma skäl som STRATEGY_LIBRARY_EVENTS_FILE: släktträdet
+// är append-only och ska aldrig gallras, men en körning måste gå att pröva
+// bredvid driftens spår.
+const DEFAULT_EVENTS_FILE = path.resolve(
+  process.env.STRATEGY_FAMILY_TREE_FILE
+    || path.resolve(__dirname, '../../../data/ai-memory/lineage.jsonl'),
+);
 
 const EVENT_TYPES = Object.freeze({
   NODE_CREATED: 'NODE_CREATED',

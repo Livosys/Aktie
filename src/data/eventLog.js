@@ -28,6 +28,7 @@
 
 const fs = require('fs');
 const path = require('path');
+const writeGuard = require('./productionWriteGuard');
 
 const SAFETY = Object.freeze({
   actions_allowed: false,
@@ -61,8 +62,41 @@ function createEventLog(options = {}) {
     fs.mkdirSync(path.dirname(file), { recursive: true });
   }
 
-  /** Alla händelser i skrivordning. En trasig rad hoppas över, aldrig hela filen. */
-  function read() {
+  // ── Läscache på filens avtryck ────────────────────────────────────────────
+  //
+  // Loggen är APPEND-ONLY. Ingen rad ändras någonsin, och filen växer bara i
+  // slutet. Därför räcker (storlek, mtime) som avtryck: två läsningar med
+  // samma avtryck kan omöjligt ge olika innehåll, och varje tillägg — vårt
+  // eget eller en barnprocess — flyttar bägge.
+  //
+  // Utan den här cachen läses och JSON-parsas hela loggen om vid VARJE anrop.
+  // Strategy Library gör 16 000 rader / 10 MB per fråga, och en enda
+  // fabrikssida ställer dussintals frågor. Det var den enskilt största
+  // orsaken till att event-loopen stod stilla i minuter.
+  //
+  // Cachen är per loggobjekt, inte global: två instanser mot samma fil har var
+  // sitt avtryck och kan inte förgifta varandra.
+  let cachedFingerprint = null;
+  let cachedRows = null;
+  let cachedProjection = null;
+
+  function fingerprint() {
+    try {
+      const stat = fs.statSync(file);
+      return `${stat.size}:${stat.mtimeMs}`;
+    } catch (_) {
+      return 'missing';
+    }
+  }
+
+  /** Tvinga nästa läsning att gå till disk igen. */
+  function invalidate() {
+    cachedFingerprint = null;
+    cachedRows = null;
+    cachedProjection = null;
+  }
+
+  function parseFile() {
     try {
       if (!fs.existsSync(file)) return [];
       return fs.readFileSync(file, 'utf8')
@@ -74,6 +108,25 @@ function createEventLog(options = {}) {
     } catch (_) {
       return [];
     }
+  }
+
+  function rows() {
+    const current = fingerprint();
+    if (cachedRows && cachedFingerprint === current) return cachedRows;
+    cachedRows = parseFile();
+    cachedProjection = null;
+    cachedFingerprint = current;
+    return cachedRows;
+  }
+
+  /**
+   * Alla händelser i skrivordning. En trasig rad hoppas över, aldrig hela filen.
+   *
+   * Returnerar en egen array så att en anropare som sorterar eller splittar
+   * inte rör cachen. Raderna själva delas — ingen läsare skriver i dem.
+   */
+  function read() {
+    return rows().slice();
   }
 
   /**
@@ -89,6 +142,10 @@ function createEventLog(options = {}) {
     if (allowedTypes.size && !allowedTypes.has(type)) {
       throw new Error(`${label}_unknown_event_type:${type}`);
     }
+    // En sandlåda får aldrig lägga rader i driftens permanenta minne. Se
+    // productionWriteGuard: loggen är append-only, så en felaktig rad går inte
+    // att ta bort i efterhand.
+    writeGuard.assertWritable(file, label);
     const recordedAt = new Date(clock()).toISOString();
     const event = {
       ...payload,
@@ -99,6 +156,10 @@ function createEventLog(options = {}) {
     };
     ensureDir();
     fs.appendFileSync(file, `${JSON.stringify(event)}\n`, 'utf8');
+    // Avtrycket räcker nästan alltid, men två tillägg inom samma millisekund
+    // på ett filsystem med grov mtime skulle kunna se identiska ut. Vi vet att
+    // vi just skrev, så vi gissar inte.
+    invalidate();
     return event;
   }
 
@@ -109,9 +170,21 @@ function createEventLog(options = {}) {
    * @param {Function} apply   (record, event) => ny post
    */
   function project(blank, apply, events = null) {
-    const rows = events || read();
+    // Explicit inskickade händelser cachas aldrig — då är det inte loggens
+    // tillstånd som efterfrågas utan anroparens egen mängd.
+    if (events) return fold(events, blank, apply);
+    const source = rows();
+    if (cachedProjection && cachedProjection.blank === blank && cachedProjection.apply === apply) {
+      return cachedProjection.value;
+    }
+    const value = fold(source, blank, apply);
+    cachedProjection = { blank, apply, value };
+    return value;
+  }
+
+  function fold(events, blank, apply) {
     const byKey = new Map();
-    for (const event of rows) {
+    for (const event of events) {
       const current = byKey.get(event[keyField]) || blank(event[keyField]);
       byKey.set(event[keyField], apply(current, event));
     }
@@ -121,7 +194,7 @@ function createEventLog(options = {}) {
   /** Loggen för en entitet, i skrivordning. */
   function historyFor(key, { types = null } = {}) {
     const id = text(key);
-    return read()
+    return rows()
       .filter((event) => event[keyField] === id)
       .filter((event) => !types || types.includes(event.type));
   }
@@ -132,29 +205,29 @@ function createEventLog(options = {}) {
    */
   function auditTrail({ since = null, types = null, limit = null } = {}) {
     const sinceMs = since ? Date.parse(since) : null;
-    let rows = read();
+    let out = rows();
     if (Number.isFinite(sinceMs)) {
-      rows = rows.filter((e) => Date.parse(e.recordedAt || e.at) >= sinceMs);
+      out = out.filter((e) => Date.parse(e.recordedAt || e.at) >= sinceMs);
     }
-    if (types) rows = rows.filter((e) => types.includes(e.type));
-    return limit ? rows.slice(-Math.abs(limit)) : rows;
+    if (types) out = out.filter((e) => types.includes(e.type));
+    return limit ? out.slice(-Math.abs(limit)) : out.slice();
   }
 
   function stats() {
-    const rows = read();
+    const all = rows();
     const byType = {};
-    for (const row of rows) byType[row.type] = (byType[row.type] || 0) + 1;
+    for (const row of all) byType[row.type] = (byType[row.type] || 0) + 1;
     return {
       file,
-      events: rows.length,
-      entities: new Set(rows.map((row) => row[keyField])).size,
+      events: all.length,
+      entities: new Set(all.map((row) => row[keyField])).size,
       byType,
-      firstRecordedAt: rows[0]?.recordedAt || null,
-      lastRecordedAt: rows[rows.length - 1]?.recordedAt || null,
+      firstRecordedAt: all[0]?.recordedAt || null,
+      lastRecordedAt: all[all.length - 1]?.recordedAt || null,
     };
   }
 
-  return { SAFETY, file, keyField, read, append, project, historyFor, auditTrail, stats };
+  return { SAFETY, file, keyField, read, append, project, historyFor, auditTrail, stats, invalidate };
 }
 
 module.exports = { SAFETY, createEventLog };

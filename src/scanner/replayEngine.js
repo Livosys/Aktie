@@ -2,10 +2,8 @@
 /**
  * Replay Engine
  *
- * Replays historical 2m candles through the full signal pipeline,
+ * Replays historical 2m candles through Strategy Runtime,
  * producing a structured run with events, summary, and insights.
- *
- * Pipeline per candle: Narrow v2 → Engine v3 → Market Regime V2 → Historical Edge
  */
 
 const fs   = require('fs');
@@ -13,14 +11,10 @@ const path = require('path');
 
 const { loadCandles }         = require('../data/marketDataStore');
 const { toScannerFormat }     = require('../data/candleAggregator');
-const { calcIndicators }      = require('./indicators');
-const { classifyNarrowState } = require('./narrowState');
-const { applyEngineV3 }       = require('./engineV3');
-const { calcMarketRegimeV2, applyMarketRegimeV2 } = require('./marketRegimeEngine');
-const { applyHistoricalEdge } = require('./historicalEdge');
 const { buildInsights }       = require('./replayInsights');
 const dataCoverage            = require('../services/dataCoverageExpansionService');
 const marketUniverse          = require('../services/marketUniverseService');
+const strategyRuntimeModule   = require('../services/strategyRuntimeService');
 
 const REPLAY_DIR   = path.resolve(__dirname, '../../data/replay/runs');
 const MIN_CANDLES  = 20;
@@ -95,7 +89,7 @@ function toEventRecord(result, runId) {
 // ── Per-symbol replay ─────────────────────────────────────────────────────────
 
 /**
- * Run the full pipeline on one symbol's candle history.
+ * Run a runtime on one symbol's candle history.
  *
  * @param {string}   symbol
  * @param {Array}    candles   sorted 2m candles in scanner format
@@ -105,7 +99,7 @@ function toEventRecord(result, runId) {
  *                                 when available from a separate pass
  * @returns {Array} event records
  */
-function replaySymbol(symbol, candles, runId, mode, refResultFn) {
+function replaySymbol(symbol, candles, runId, mode, refResultFn, runtime, runtimeContext) {
   const events = [];
   let prev = null;
 
@@ -116,34 +110,33 @@ function replaySymbol(symbol, candles, runId, mode, refResultFn) {
     const window     = candles.slice(sliceStart, i);
     if (window.length < MIN_CANDLES) continue;
 
-    const indicators = calcIndicators(window);
-    if (!indicators) continue;
-
     const lastCandle = window[window.length - 1];
-    const price      = lastCandle.c;
     const candleTs   = lastCandle.t || lastCandle.ts;
+    const refResult = refResultFn ? refResultFn(candleTs) : null;
 
-    let result;
+    let executed;
     try {
-      result = classifyNarrowState({ symbol, price, candles2m: window, indicators, lastUpdate: candleTs });
+      executed = runtime.execute({
+        symbol,
+        candles: window,
+        mode,
+        refResult,
+        lastUpdate: candleTs,
+        runtimeContext,
+      });
     } catch (err) {
-      console.warn(`[ReplayEngine] classifyNarrowState(${symbol}) error:`, err.message);
+      console.warn(`[ReplayEngine] runtime.execute(${symbol}) error:`, err.message);
       continue;
     }
 
-    // Engine v3 — use refResult if available, else null
-    const refResult = refResultFn ? refResultFn(candleTs) : null;
-    try { result = applyEngineV3(result, refResult); } catch (_) {}
+    if (!executed || executed.ok === false || !executed.result) {
+      if (mode === 'debug' && executed && executed.reason) {
+        console.warn(`[ReplayEngine] runtime.execute(${symbol}) skipped:`, executed.reason);
+      }
+      continue;
+    }
 
-    // Market Regime V2 — self-referential if no cross-ref, otherwise use refResult
-    try {
-      const mktInput = refResult || result;
-      const mktCtx   = calcMarketRegimeV2(mktInput);
-      result = applyMarketRegimeV2(result, mktCtx);
-    } catch (_) {}
-
-    // Historical Edge (uses global cache, may have no data — safe to fail)
-    try { result = applyHistoricalEdge(result); } catch (_) {}
+    const result = executed.result;
 
     if (isInteresting(result, prev)) {
       events.push(toEventRecord(result, runId));
@@ -167,8 +160,9 @@ function replaySymbol(symbol, candles, runId, mode, refResultFn) {
  * @param {string}   [opts.mode]  'scan_only' | 'with_outcomes' | 'debug'
  * @returns {Promise<{ runId, summary }>}
  */
-async function runReplay({ symbols, start, end, mode = 'scan_only' }) {
+async function runReplay({ symbols, start, end, mode = 'scan_only', strategyRuntime = null, runtimeContext = null }) {
   const runId  = makeRunId();
+  const runtime = strategyRuntime || strategyRuntimeModule.defaultStrategyRuntime;
   const requestedSymbols = Array.isArray(symbols) ? symbols : [];
   const replaySymbols = requestedSymbols.filter((symbol) => marketUniverse.symbolEnabledFor(symbol, 'replay'));
   const skippedByControls = requestedSymbols
@@ -247,7 +241,7 @@ async function runReplay({ symbols, start, end, mode = 'scan_only' }) {
     console.log(`[ReplayEngine] ${symbol}: ${candles.length} candles → replaying…`);
 
     // No cross-reference in this version (self-referential regime)
-    const events = replaySymbol(symbol, candles, runId, mode, null);
+    const events = replaySymbol(symbol, candles, runId, mode, null, runtime, runtimeContext);
     allEvents = allEvents.concat(events);
 
     const sym_evts = events.filter((e) => e.state !== 'NO_TRADE');
