@@ -560,9 +560,8 @@ function listStrategies() {
     try {
       const view = buildStrategyView(id, { store, closedTs, degraded, registryMap });
       // Filter: only show strategies that either:
-      // 1. Have PAPER_REVIEW_RECOMMENDED event (AI Factory recommendation)
-      // 2. Are already in approval store (user has already engaged)
-      const hasRecommendation = view && view.approval && view.approval.status === null && store.strategies[id];
+      // 1. Are already in approval store (user has already engaged)
+      // 2. Have PAPER_REVIEW_RECOMMENDED event (AI Factory recommendation)
       const isRecommended = libraryService.defaultStrategyLibrary.getHistory(id, { types: [libraryService.EVENT_TYPES.PAPER_REVIEW_RECOMMENDED] }).length > 0;
       if (store.strategies[id] || isRecommended) {
         strategies.push(view);
