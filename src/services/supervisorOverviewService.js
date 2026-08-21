@@ -682,16 +682,29 @@ function summarizePaperStatus(paperTradingStatusService) {
       totalTrades: ranked[0].totalTrades,
       avgPnl: ranked[0].avgPnl,
     } : null;
-    if (bestStrategy && ranked[0]) {
-      try {
-        strategyLibraryService.defaultStrategyLibrary.recordPaperReviewRecommendation({
-          strategyId: ranked[0].key,
-          reason: 'best_performing_in_comparison',
-          evidence: `Win rate: ${ranked[0].winRate || 0}%, Avg PnL: ${ranked[0].avgPnl || 0}, Trades: ${ranked[0].totalTrades || 0}`,
+    // ── PAPER Readiness Recommendation ────────────────────────────────────
+    // Only recommend strategies that are CANDIDATE stage and ready for PAPER
+    // per canonical promotionEngineService gates: executionScore != null AND >= 40.
+    // Strategies in DRAFT/TESTING/LEARNING/other stages cannot jump to PAPER.
+    // bestStrategy remains display-only info; it does NOT gate readiness.
+    try {
+      const lib = strategyLibraryService.defaultStrategyLibrary;
+      const candidateStrategies = lib.listStrategies()
+        .filter(s => s.lifecycle === 'candidate');
+      for (const cand of candidateStrategies) {
+        // Gate 1: Must have execution score measured
+        if (cand.executionScore == null) continue;
+        // Gate 2: Execution score must meet canonical floor (>= 40)
+        if ((cand.executionScore ?? -1) < 40) continue;
+        // This strategy is ready for PAPER per canonical rules
+        lib.recordPaperReviewRecommendation({
+          strategyId: cand.strategyId,
+          reason: 'candidate_ready_for_paper_stage',
+          evidence: `executionScore: ${cand.executionScore}, strategyScore: ${cand.strategyScore}`,
         });
-      } catch (err) {
-        // Silently skip if recording fails; doesn't block the overview
       }
+    } catch (err) {
+      // Silently skip if recording fails; doesn't block the overview
     }
     const worstStrategy = ranked.length ? {
       strategy: ranked[ranked.length - 1].key,
