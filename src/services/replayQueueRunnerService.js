@@ -113,6 +113,79 @@ function replayedDaysFrom(library) {
 }
 
 /**
+ * Vilka regimer har samma strategi + genom redan testats på?
+ * Läser från biblioteket och returnerar en SET av klassificeringar.
+ *
+ * Om strategin eller genomet är okänt returneras en tom SET — då väljer
+ * scheduler på vanligt sätt (unreplayed day). Regimer klassificeras som:
+ * - marketClassification: grov klassificering från candledata
+ * - marketRegimeKeys: fina regime-nycklar från Market DNA (t.ex., 'up/normal')
+ *
+ * För kallstart används marketClassification. För varje körning lagras både.
+ */
+function strategiesTestedInRegimes(job = {}, library = null) {
+  const regimesPerStrategy = new Map();
+  if (!library || typeof library.listStrategies !== 'function') {
+    return regimesPerStrategy;
+  }
+  try {
+    for (const record of library.listStrategies()) {
+      const strategyId = safeString(record.strategyId);
+      if (!strategyId) continue;
+      const regimes = new Set();
+      for (const row of safeArray(record.replayHistory)) {
+        // Prefer fine-grained regimeKeys; fall back to marketClassification.
+        if (Array.isArray(row.marketRegimeKeys) && row.marketRegimeKeys.length) {
+          row.marketRegimeKeys.forEach((k) => regimes.add(safeString(k)));
+        } else {
+          const mc = safeString(row.marketClassification);
+          if (mc) regimes.add(mc);
+        }
+      }
+      if (regimes.size > 0) {
+        regimesPerStrategy.set(strategyId, regimes);
+      }
+    }
+  } catch (_) { /* biblioteket är inte en förutsättning */ }
+  return regimesPerStrategy;
+}
+
+/**
+ * Vilka klassificeringar motsvarar ett dygn? Läses från historiska metadata.
+ * I denna minimal version klassificerar vi inte dygnen själva — vi använder
+ * istället tidigare körningar på samma dygn för att härleda klassificering.
+ *
+ * Med fler körningar växer klassificeringsmångden, och en dag kan klassificeras
+ * som flera olika regimer (t.ex. en dag som såg både upptrend och förvirring).
+ *
+ * Om dagen inte körts tidigare eller biblioteket är otillgängligt returneras
+ * en tom SET — då fallbacker scheduler.
+ */
+function regimeKeysForDay(tradingDay = '', library = null) {
+  const regimes = new Set();
+  if (!library || typeof library.listStrategies !== 'function') {
+    return regimes;
+  }
+  try {
+    for (const record of library.listStrategies()) {
+      for (const row of safeArray(record.replayHistory)) {
+        const from = safeString(row.from);
+        // Match på trading day (first 10 chars av ISO date).
+        if (from && from.slice(0, 10) === tradingDay.slice(0, 10)) {
+          if (Array.isArray(row.marketRegimeKeys) && row.marketRegimeKeys.length) {
+            row.marketRegimeKeys.forEach((k) => regimes.add(safeString(k)));
+          } else {
+            const mc = safeString(row.marketClassification);
+            if (mc) regimes.add(mc);
+          }
+        }
+      }
+    }
+  } catch (_) { /* biblioteket är inte en förutsättning */ }
+  return regimes;
+}
+
+/**
  * Fönstret Native Replay ska köra, eller null när historiken saknar ett
  * körbart dygn inom jobbets period.
  *
@@ -199,7 +272,46 @@ function nativeWindowForJob(job = {}, {
   if (!candidates.length) return null;
 
   const replayed = replayedDaysFrom(library);
-  const picked = candidates.find((row) => !replayed.has(row.window.date)) || candidates[0];
+  const strategyId = safeString(job.strategy?.id);
+  const genomeHash = safeString(job.genome?.dna_hash);
+
+  // ── Regime-aware selection ────────────────────────────────────────────────
+  //
+  // Om detta är en strategi med ett specifikt genom, försök välja ett dygn som
+  // testats i en ANNAN regime än vad samma strategi + genom redan sett.
+  // Canonical gate kräver 2+ regimer för promotion.
+  //
+  // Strategi:
+  // 1. Läs vilka regimer samma strategyId redan testats på från biblioteket.
+  // 2. För varje kandidat-dag, klassificera dess regime(r) från tidigare körningar.
+  // 3. Välj första dag med ett dygn vars regime är okänd eller skiljer sig från
+  //    vad samma strategi redan testats på.
+  // 4. Om ingen sådan dag finns, fallback till befintlig logic (unreplayed day).
+  //
+  let picked;
+  if (strategyId && library) {
+    const testedRegimes = strategiesTestedInRegimes(job, library).get(strategyId) || new Set();
+    // Sortera candidates: prioritera dagar med okänd klassificering, sedan dagar
+    // med regime som inte redan testats.
+    const scored = candidates.map((candidate) => {
+      const dayRegimes = regimeKeysForDay(candidate.tradingDay, library);
+      const isReplayed = replayed.has(candidate.window.date);
+      const hasNewRegime = dayRegimes.size === 0 || ![...dayRegimes].some((r) => testedRegimes.has(r));
+      return { ...candidate, dayRegimes, isReplayed, hasNewRegime, testedRegimes };
+    });
+    // Sortlista: 1. unreplayed + new regime, 2. unreplayed + unknown regime,
+    // 3. any + new regime, 4. fallback.
+    const unreplayedNewRegime = scored.find((c) => !c.isReplayed && c.hasNewRegime);
+    if (unreplayedNewRegime) {
+      picked = unreplayedNewRegime;
+    } else {
+      // Fallback to unreplayed day, or most recent.
+      picked = scored.find((row) => !row.isReplayed) || scored[0];
+    }
+  } else {
+    // Fallback för strategies utan strategyId.
+    picked = candidates.find((row) => !replayed.has(row.window.date)) || candidates[0];
+  }
 
   // Sista kontrollen görs på DET dygn som ska köras, inte på alla 218: att läsa
   // fönstret är en filläsning per rot, och att göra det för hela listan hade
@@ -525,5 +637,8 @@ module.exports = {
     nativeWindowForJob,
     nativeResultAsQueueResult,
     FUTURES_ROOTS,
+    replayedDaysFrom,
+    strategiesTestedInRegimes,
+    regimeKeysForDay,
   },
 };

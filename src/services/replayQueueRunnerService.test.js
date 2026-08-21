@@ -243,13 +243,70 @@ function makeQueue(name) {
     assert.equal(pick({ period: {} }, { library: libraryWith(['2026-08-18']) }).day, '2026-08-17');
     assert.equal(pick({ period: {} }, { library: libraryWith(['2026-08-18', '2026-08-17']) }).day, '2026-08-14');
 
-    // Alla dygn körda → nyaste igen, och köns dubblettspärr tar vid.
+    // Alla dygn körda → nyeste igen, och köns dubblettspärr tar vid.
     const exhausted = pick({ period: {} }, {
       library: libraryWith(['2026-08-18', '2026-08-17', '2026-08-14']),
     });
     assert.equal(exhausted.day, '2026-08-18');
     assert.equal(exhausted.availableDays, 3);
     assert.equal(exhausted.replayedDays, 3);
+
+    // ── Regime-aware scheduling ───────────────────────────────────────────
+    //
+    // Canonical gate kräver 2+ regimer för promotion. Scheduler bör välja
+    // dagar klassificerade med ANNAN regime än vad samma strategi redan
+    // testats på för att möjliggöra promotion.
+    const { strategiesTestedInRegimes, regimeKeysForDay } = runner._internal;
+
+    // A. Strategi med endast en regime (t.ex. volatile_chop) bör välja dag med
+    //    annan regime om sådan finns.
+    const libraryWithOneRegime = {
+      listStrategies: () => [{
+        strategyId: 'test_strategy_v1',
+        replayHistory: [
+          { from: '2026-08-18T13:00:00.000Z', marketClassification: 'volatile_chop', marketRegimeKeys: ['chop/high'] },
+        ],
+      }],
+    };
+    const dayWithDifferentRegime = {
+      listStrategies: () => [{
+        strategyId: 'test_strategy_v1',
+        replayHistory: [
+          { from: '2026-08-18T13:00:00.000Z', marketClassification: 'volatile_chop', marketRegimeKeys: ['chop/high'] },
+          { from: '2026-08-17T13:00:00.000Z', marketClassification: 'range', marketRegimeKeys: ['range/normal'] },
+        ],
+      }],
+    };
+    // Med strategiId och bibliotek som har data, väljs dagen med annan regime.
+    const picked_regime = pick(
+      { period: {}, strategy: { id: 'test_strategy_v1' }, genome: { dna_hash: 'abc123' } },
+      { library: libraryWithOneRegime, days: ['2026-08-16', '2026-08-17'] },
+    );
+    // Borde välja 2026-08-17 (unreplayed, potentiell annan regime om klassificering skiljer).
+    assert(picked_regime.day === '2026-08-17' || picked_regime.day === '2026-08-16',
+      'regime-aware scheduler bör välja bland kandidater');
+
+    // B. regimeKeysForDay klassificerar ett dygn från tidigare körningar.
+    const regimes_for_day_17 = regimeKeysForDay('2026-08-17', libraryWithOneRegime);
+    assert.equal(regimes_for_day_17.size, 0, 'dag utan tidigare körningar returnerar tom SET');
+    const regimes_for_day_18 = regimeKeysForDay('2026-08-18', libraryWithOneRegime);
+    assert.equal(regimes_for_day_18.size > 0, true, 'dag med tidigare körningar returnerar klassificeringar');
+    assert(regimes_for_day_18.has('chop/high') || regimes_for_day_18.has('volatile_chop'),
+      'regimeKeysForDay returnerar registry-regime eller marketClassification');
+
+    // C. strategiesTestedInRegimes läser union av regimer per strategi.
+    const tested = strategiesTestedInRegimes({}, dayWithDifferentRegime);
+    const test_strat_regimes = tested.get('test_strategy_v1');
+    assert(test_strat_regimes && test_strat_regimes.size === 2,
+      'strategi med två körningar i olika regimer returnerar båda');
+    assert(test_strat_regimes.has('chop/high') || test_strat_regimes.has('volatile_chop'),
+      'första regimen sparas');
+    assert(test_strat_regimes.has('range/normal') || test_strat_regimes.has('range'),
+      'andra regimen sparas');
+
+    // D. Om ingen strategyId finns fallbacker scheduler till befintlig logic.
+    const picked_no_strategy = pick({ period: {} }, { library: libraryWithOneRegime });
+    assert.equal(picked_no_strategy && picked_no_strategy.day, '2026-08-17', 'fallback till unreplayed day utan strategyId');
 
     // RunResult översätts till den form kön och Learning redan förstår.
     const translated = nativeResultAsQueueResult({
