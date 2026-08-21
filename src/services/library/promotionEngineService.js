@@ -149,8 +149,20 @@ function totalReplayTrades(record) {
 }
 
 function replayRegimes(record) {
+  // Prefer fine-grained marketRegimeKeys (e.g., 'up/normal', 'down/quiet');
+  // fall back to coarse marketClassification (e.g., 'volatile_chop', 'range').
+  //
+  // Canonical gate counts UNIQUE regimes across all replays. A single run may
+  // carry multiple marketRegimeKeys, e.g., ['down/normal', 'down/quiet'], so
+  // the union captures all market conditions seen. Strategy with 1
+  // marketClassification but 2+ marketRegimeKeys has seen 2+ regimes.
   return [...new Set((record.replayHistory || [])
-    .map((row) => row.marketClassification)
+    .flatMap((row) => {
+      if (Array.isArray(row.marketRegimeKeys) && row.marketRegimeKeys.length) {
+        return row.marketRegimeKeys;
+      }
+      return row.marketClassification ? [row.marketClassification] : [];
+    })
     .filter((value) => value && value !== 'unknown'))];
 }
 
