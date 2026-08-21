@@ -22,6 +22,7 @@ const { fork } = require('child_process');
 const tradeStats = require('./tradeStatsService');
 const strategyLibraryService = require('./library/strategyLibraryService');
 const promotionEngine = require('./library/promotionEngineService');
+const lifecyclePromotion = require('./library/strategyLifecyclePromotionService');
 
 const SAFETY = Object.freeze({
   mode: 'paper_only',
@@ -2203,6 +2204,19 @@ async function buildOverview() {
   }
 
   const preloadedDayLearning = getCachedReadOnly('day_learning_summary', daytradingLearning.getLearningSummary, () => daytradingLearning.getLearningSummary({ hours: 168, limit: 200 }));
+
+  // ── Canonical Lifecycle Progression ──────────────────────────────────────
+  // Apply any pending strategy promotions based on canonical gates.
+  // This runs before building overview so promoted strategies appear in current state.
+  let lifecyclePromotionResult = null;
+  try {
+    lifecyclePromotionResult = lifecyclePromotion.promoteReadyStrategies(
+      strategyLibraryService.defaultStrategyLibrary
+    );
+  } catch (err) {
+    // Silently skip promotions; doesn't block overview
+    lifecyclePromotionResult = { ok: false, evaluated: 0, promoted: [] };
+  }
 
   const [
     system_health, learning, strategies, narrow, autopilotBlock,

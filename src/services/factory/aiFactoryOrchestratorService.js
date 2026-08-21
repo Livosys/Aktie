@@ -14,6 +14,8 @@ const replaySchedulerModule = require('../replaySchedulerService');
 const replayQueueRunnerModule = require('../replayQueueRunnerService');
 const strategyDna = require('../dna/strategyDnaService');
 const nativeStrategyRegistry = require('../nativeFuturesStrategyRegistryService');
+const lifecyclePromotionModule = require('../library/strategyLifecyclePromotionService');
+const promotionEngineModule = require('../library/promotionEngineService');
 
 const ORCHESTRATOR_VERSION = 'ai-factory-orchestrator-v1';
 // Env-överstyrbar enligt samma mönster som STRATEGY_LIBRARY_EVENTS_FILE,
@@ -579,6 +581,42 @@ function shouldSkipScheduling(evolutionResult) {
   return existing > 0 || alreadyInTree > 0;
 }
 
+/**
+ * After lifecycle promotions, check if any CANDIDATE strategies are now ready for PAPER review.
+ * Records PAPER_REVIEW_RECOMMENDED event for canonical-approved strategies.
+ */
+function recordPaperReviewRecommendations(lib, promotedStrategies = []) {
+  if (!lib || typeof lib.recordPaperReviewRecommendation !== 'function') return { recorded: 0 };
+  if (!promotedStrategies || !Array.isArray(promotedStrategies)) return { recorded: 0 };
+
+  const recorded = [];
+
+  try {
+    for (const promoted of promotedStrategies) {
+      // Only check strategies that were promoted TO candidate
+      if (promoted.to !== 'candidate') continue;
+
+      const strategy = lib.getStrategy(promoted.strategyId);
+      if (!strategy) continue;
+
+      // Check if this newly promoted CANDIDATE can move to PAPER
+      const evaluation = promotionEngineModule.evaluatePromotion(strategy);
+      if (evaluation.from === 'candidate' && evaluation.to === 'paper' && evaluation.allowed) {
+        lib.recordPaperReviewRecommendation({
+          strategyId: promoted.strategyId,
+          reason: 'canonical_promotion_ready_for_paper',
+          evidence: `CANDIDATE→PAPER gates all passed. Checks: ${evaluation.checks.map(c => c.code).join(', ')}`,
+        });
+        recorded.push(promoted.strategyId);
+      }
+    }
+  } catch (err) {
+    // Silently skip; doesn't block orchestrator
+  }
+
+  return { recorded: recorded.length, strategyIds: recorded };
+}
+
 function createAiFactoryOrchestrator(options = {}) {
   const memory = options.memory || aiMemoryModule.defaultAiMemory;
   const library = options.library || strategyLibraryModule.defaultStrategyLibrary;
@@ -760,6 +798,31 @@ function createAiFactoryOrchestrator(options = {}) {
       if (!queueRunner || typeof queueRunner.runNextJob !== 'function') return { ok: false, reason: 'replay_queue_runner_unavailable' };
       const executed = await queueRunner.runNextJob();
       if (executed.ok === false) return executed;
+
+      // ── Automatic Lifecycle Progression ──────────────────────────────────
+      // After replay evidence is persisted, evaluate and apply pending promotions.
+      // This makes lifecycle advancement event-driven rather than endpoint-driven.
+      let promotionResult = null;
+      let paperReviewResult = null;
+      if (executed.executed === true) {
+        try {
+          promotionResult = lifecyclePromotionModule.promoteReadyStrategies(library);
+          // For newly promoted CANDIDATE strategies, record PAPER_REVIEW_RECOMMENDED if eligible
+          if (promotionResult?.promoted && Array.isArray(promotionResult.promoted)) {
+            paperReviewResult = recordPaperReviewRecommendations(library, promotionResult.promoted);
+          }
+        } catch (err) {
+          // Log but don't block orchestrator: replay evidence is already persisted
+          promotionResult = {
+            ok: false,
+            reason: 'promotion_evaluation_failed',
+            error: err?.message || String(err),
+            evaluated: 0,
+            promoted: [],
+          };
+        }
+      }
+
       return {
         ok: true,
         executed: executed.executed === true,
@@ -772,6 +835,18 @@ function createAiFactoryOrchestrator(options = {}) {
         requestedGenome: text(executed.job?.genome?.dna_hash),
         executedGenomes: arrOf(executed.replay?.summary?.executedGenomes),
         requestedGenomes: arrOf(executed.replay?.summary?.requestedGenomes),
+        // Lifecycle promotions triggered by replay evidence
+        lifecyclePromotion: promotionResult ? {
+          ok: promotionResult.ok !== false,
+          evaluated: promotionResult.evaluated || 0,
+          promoted: promotionResult.promoted || [],
+          failures: promotionResult.failures || [],
+        } : null,
+        // PAPER review recommendations for newly promoted CANDIDATES
+        paperReviewRecommendations: paperReviewResult ? {
+          recorded: paperReviewResult.recorded,
+          strategyIds: paperReviewResult.strategyIds || [],
+        } : null,
       };
     }
 
