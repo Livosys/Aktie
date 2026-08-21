@@ -20,6 +20,7 @@ const strategyIdNormalizer = require('./strategyIdNormalizerService');
 const futuresPaperLedgerService = require('./futuresPaperLedgerService');
 const paperAllowlistService = require('./paperAllowlistService');
 const strategyRegistryService = require('./strategyRegistryService');
+const nativeFuturesStrategyRegistryService = require('./nativeFuturesStrategyRegistryService');
 
 const SAFETY = Object.freeze({
   mode: 'paper_only',
@@ -527,6 +528,10 @@ function listStrategies() {
     for (const s of (catalog.strategies || [])) if (s && s.id) ids.add(s.id);
   } catch (err) { /* katalogfel → visa åtminstone store-poster */ }
   for (const id of registryStrategyIds(registryMap)) ids.add(id);
+  try {
+    const nativeStrategies = nativeFuturesStrategyRegistryService.listNativeStrategies({ includeBase: true });
+    for (const strategy of (nativeStrategies || [])) if (strategy && strategy.strategyId) ids.add(strategy.strategyId);
+  } catch (err) { /* native registry fel → visa åtminstone legacy + store */ }
   for (const id of Object.keys(store.strategies || {})) ids.add(id);
 
   const strategies = [];
