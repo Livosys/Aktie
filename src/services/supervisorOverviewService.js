@@ -21,6 +21,7 @@ const { fork } = require('child_process');
 
 const tradeStats = require('./tradeStatsService');
 const strategyLibraryService = require('./library/strategyLibraryService');
+const promotionEngine = require('./library/promotionEngineService');
 
 const SAFETY = Object.freeze({
   mode: 'paper_only',
@@ -683,25 +684,25 @@ function summarizePaperStatus(paperTradingStatusService) {
       avgPnl: ranked[0].avgPnl,
     } : null;
     // ── PAPER Readiness Recommendation ────────────────────────────────────
-    // Only recommend strategies that are CANDIDATE stage and ready for PAPER
-    // per canonical promotionEngineService gates: executionScore != null AND >= 40.
-    // Strategies in DRAFT/TESTING/LEARNING/other stages cannot jump to PAPER.
-    // bestStrategy remains display-only info; it does NOT gate readiness.
+    // Only recommend strategies that pass canonical promotionEngineService gates
+    // for CANDIDATE → PAPER transition. Supervisor does NOT duplicate gate logic;
+    // it asks the canonical evaluator: "Can this strategy move forward to PAPER?"
+    // If yes, record the recommendation. bestStrategy remains display-only info;
+    // it does NOT gate readiness.
     try {
       const lib = strategyLibraryService.defaultStrategyLibrary;
-      const candidateStrategies = lib.listStrategies()
-        .filter(s => s.lifecycle === 'candidate');
-      for (const cand of candidateStrategies) {
-        // Gate 1: Must have execution score measured
-        if (cand.executionScore == null) continue;
-        // Gate 2: Execution score must meet canonical floor (>= 40)
-        if ((cand.executionScore ?? -1) < 40) continue;
-        // This strategy is ready for PAPER per canonical rules
-        lib.recordPaperReviewRecommendation({
-          strategyId: cand.strategyId,
-          reason: 'candidate_ready_for_paper_stage',
-          evidence: `executionScore: ${cand.executionScore}, strategyScore: ${cand.strategyScore}`,
-        });
+      const allStrategies = lib.listStrategies();
+      for (const strategy of allStrategies) {
+        // Ask canonical evaluator: can this strategy move forward?
+        const evaluation = promotionEngine.evaluatePromotion(strategy);
+        // If strategy is CANDIDATE and passes all gates for PAPER, recommend it
+        if (evaluation.from === 'candidate' && evaluation.to === 'paper' && evaluation.allowed) {
+          lib.recordPaperReviewRecommendation({
+            strategyId: strategy.strategyId,
+            reason: 'canonical_promotion_ready_for_paper',
+            evidence: `All CANDIDATE→PAPER gates passed. Checks: ${evaluation.checks.map(c => c.code).join(', ')}`,
+          });
+        }
       }
     } catch (err) {
       // Silently skip if recording fails; doesn't block the overview
