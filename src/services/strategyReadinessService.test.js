@@ -14,6 +14,92 @@ const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'strategy-readiness-manual-
 process.env.PAPER_ENABLED_STRATEGIES_FILE = path.join(tmpDir, 'enabled-strategies.json');
 process.env.PAPER_MANUAL_STRATEGY_LIST_ENABLED = 'false';
 
+// ── Godkännandena är testets egna, inte driftens ────────────────────────────
+//
+// Testet läste driftens approval-store. Den tömdes 2026-08-07 ("strategies":
+// {}), och då blev vwap_failed_breakout_short 'not_approved' — trots att pausen
+// hävdes 2026-07-30. Testet mätte alltså ett datumtillstånd, inte kod.
+//
+// Att skriva tillbaka godkännandet i driftens store vore att ge en strategi
+// paper-behörighet för att få ett test grönt. Testet äger i stället sin egen
+// store, precis som det redan gör med den manuella strategilistan.
+process.env.PAPER_STRATEGY_APPROVALS_FILE = path.join(tmpDir, 'strategy-approvals.json');
+fs.writeFileSync(process.env.PAPER_STRATEGY_APPROVALS_FILE, `${JSON.stringify({
+  schemaVersion: 1,
+  strategies: {
+    // Pausen på short-strategin hävdes 2026-07-30 på uttryckligt användarbeslut.
+    // Paper är ändå blockerad — av familjevalet och av LONG_ONLY — och det är
+    // just den skillnaden testet finns för att bevaka.
+    vwap_failed_breakout_short: {
+      status: 'approved',
+      source: 'user_decision_2026_07_30',
+      approvedAt: '2026-07-30T00:00:00.000Z',
+      pausedAt: null,
+      removedAt: null,
+      history: [],
+    },
+    // Long-strategin i samma familj är godkänd och handlar. Utan den blir
+    // familjevalet meningslöst: en vald strategi som inte är godkänd kan inte
+    // vara familjens vinnare, och då mäter assertionen om short-strategin
+    // ingenting.
+    vwap_volume_breakout_long: {
+      status: 'approved',
+      source: 'initial_migration_from_existing_futures_runtime',
+      approvedAt: '2026-07-10T20:46:14.840Z',
+      pausedAt: null,
+      removedAt: null,
+      history: [],
+    },
+    // Två ytterligare long-strategier som är godkända och valda i sina familjer
+    // — de tre tillsammans bildar det kompletta slutläget för paper-körbara
+    // strategier efter FAS D2 (assertion 14 i testet).
+    ema_pullback_continuation: {
+      status: 'approved',
+      source: 'test_fixture_fas_d2',
+      approvedAt: '2026-07-10T00:00:00.000Z',
+      pausedAt: null,
+      removedAt: null,
+      history: [],
+    },
+    narrow_state_expansion_long: {
+      status: 'approved',
+      source: 'test_fixture_fas_d2',
+      approvedAt: '2026-07-10T00:00:00.000Z',
+      pausedAt: null,
+      removedAt: null,
+      history: [],
+    },
+    // narrow_breakout är godkänd men INTE vald i narrow_state — den är en kort-strategi
+    // i praktiken (producerar bara bear-signal) och är avlagd för expansion_long.
+    narrow_breakout: {
+      status: 'approved',
+      source: 'test_fixture_fas_d2',
+      approvedAt: '2026-07-10T00:00:00.000Z',
+      pausedAt: null,
+      removedAt: null,
+      history: [],
+    },
+    // narrow_fakeout_reversal_v1 är godkänd men INTE vald i narrow_state.
+    narrow_fakeout_reversal_v1: {
+      status: 'approved',
+      source: 'test_fixture_fas_d2',
+      approvedAt: '2026-07-10T00:00:00.000Z',
+      pausedAt: null,
+      removedAt: null,
+      history: [],
+    },
+  },
+  // Familjevalen: tre strategier är valda i sina respektive familjer, alla är
+  // godkända och handlar long. Testet bevakar att ett val inte kan skapas genom
+  // att approva en strategi (hävningen av pausen fick inte flytta VWAP-valet).
+  selectedByFamily: {
+    vwap_family: 'vwap_volume_breakout_long',
+    ema_trend_family: 'ema_pullback_continuation',
+    narrow_state: 'narrow_state_expansion_long',
+  },
+  updatedAt: '2026-07-30T00:00:00.000Z',
+}, null, 2)}\n`, 'utf8');
+
 const paperEnabledStrategies = require('./paperEnabledStrategiesService');
 paperEnabledStrategies._internal.writeStoreAtomic(
   paperEnabledStrategies.buildInitialStore({
