@@ -79,6 +79,21 @@ const GATE_REASON = Object.freeze({
 // Last-known-good in-memory state (mot store-/parsefel).
 let _lastGoodStore = null;
 
+// Discovery cache: strategies list + registry version tag.
+// Invalidates when store or registry changes (detected by comparing versions).
+let _discoveryCache = null;
+let _discoveryCacheVersion = null;
+
+function getCacheVersion() {
+  try {
+    const store = loadStore();
+    const registryStatus = strategyRegistryService.getStatus();
+    return `${JSON.stringify(Object.keys(store.strategies || {})).length}:${registryStatus?.total_strategies || 0}:${nativeFuturesStrategyRegistryService.listNativeStrategies().length || 0}`;
+  } catch (_) {
+    return null;
+  }
+}
+
 function nowIso(now = new Date()) {
   return new Date(now).toISOString();
 }
@@ -519,6 +534,11 @@ function buildStrategyView(id, { store, closedTs, degraded, registryMap = null }
 }
 
 function listStrategies() {
+  const cacheVersion = getCacheVersion();
+  if (_discoveryCache && _discoveryCacheVersion === cacheVersion) {
+    return _discoveryCache;
+  }
+
   const { store, degraded } = loadStore();
   const closedTs = closedTimestampsByStrategy();
   const registryMap = registryStrategiesById();
@@ -539,10 +559,13 @@ function listStrategies() {
     try { strategies.push(buildStrategyView(id, { store, closedTs, degraded, registryMap })); }
     catch (err) { strategies.push({ strategyId: id, error: true, errorMessage: safeString(err && err.message) || 'strategy_view_failed', ...SAFETY }); }
   }
-  return {
+  const result = {
     status: 'ok', readOnly: true, generatedAt: nowIso(), schemaVersion: SCHEMA_VERSION,
     degraded: Boolean(degraded), count: strategies.length, strategies, ...SAFETY,
   };
+  _discoveryCache = result;
+  _discoveryCacheVersion = cacheVersion;
+  return result;
 }
 
 function getStrategy(rawId) {
@@ -565,6 +588,9 @@ function pushHistory(entry, id, { previousStatus, newStatus, action, source, rea
 }
 
 function mutate(rawId, action, { source = 'api', now = new Date() } = {}) {
+  _discoveryCache = null;
+  _discoveryCacheVersion = null;
+
   const id = canonicalId(rawId);
   if (!id) return { ok: false, code: 404, changed: false, reason: 'unknown_strategy_id', ...SAFETY };
 
