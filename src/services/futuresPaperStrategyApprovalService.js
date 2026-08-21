@@ -547,6 +547,13 @@ function listStrategies() {
     const catalog = catalogService.getCatalog();
     for (const s of (catalog.strategies || [])) if (s && s.id) ids.add(s.id);
   } catch (err) { /* katalogfel → visa åtminstone store-poster */ }
+  // registryStrategyIds returns CANONICAL ids, but we need VARIANT ids too
+  // (e.g., trend_continuation__fast, not just trend_continuation)
+  // Include all registry strategies with full ID including variants
+  try {
+    const allRegistry = strategyRegistryService.listStrategies();
+    for (const s of (allRegistry || [])) if (s && (s.id || s.strategy_id)) ids.add(s.id || s.strategy_id);
+  } catch (err) { /* fallback to canonical only */ }
   for (const id of registryStrategyIds(registryMap)) ids.add(id);
   try {
     const nativeStrategies = nativeFuturesStrategyRegistryService.listNativeStrategies({ includeBase: true });
@@ -562,8 +569,15 @@ function listStrategies() {
       // Filter: only show strategies that either:
       // 1. Are already in approval store (user has already engaged)
       // 2. Have PAPER_REVIEW_RECOMMENDED event (AI Factory recommendation)
+      //
+      // Note: For variant IDs (e.g., __fast, __patient), store uses canonical IDs
+      // but recommendation event exists on variant. Check both raw and canonical.
       const isRecommended = libraryService.defaultStrategyLibrary.getHistory(id, { types: [libraryService.EVENT_TYPES.PAPER_REVIEW_RECOMMENDED] }).length > 0;
-      if (store.strategies[id] || isRecommended) {
+      const canonicalVariant = canonicalId(id);
+      const isRecommendedCanonical = canonicalVariant && canonicalVariant !== id
+        ? libraryService.defaultStrategyLibrary.getHistory(canonicalVariant, { types: [libraryService.EVENT_TYPES.PAPER_REVIEW_RECOMMENDED] }).length > 0
+        : false;
+      if (store.strategies[id] || store.strategies[canonicalVariant] || isRecommended || isRecommendedCanonical) {
         strategies.push(view);
       }
     } catch (err) { strategies.push({ strategyId: id, error: true, errorMessage: safeString(err && err.message) || 'strategy_view_failed', ...SAFETY }); }
