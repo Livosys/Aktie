@@ -36,9 +36,12 @@ const path = require('path');
 
 const libraryModule = require('./strategyLibraryService');
 const nativeRegistry = require('../nativeFuturesStrategyRegistryService');
+const strategyRegistry = require('../strategyRegistryService');
 const strategyScoreV1 = require('../score/strategyScoreV1Service');
 const confidenceScore = require('../score/confidenceScoreService');
 const marketDna = require('../market/marketDnaService');
+const strategyDna = require('../dna/strategyDnaService');
+const aiMemoryModule = require('../memory/aiMemoryService');
 
 const SAFETY = Object.freeze({
   actions_allowed: false,
@@ -51,6 +54,13 @@ const SAFETY = Object.freeze({
 });
 
 const DEFAULT_PAPER_TRADES_FILE = path.resolve(__dirname, '../../../data/futures-paper/trades.jsonl');
+
+// Vem som bad om körningen. Sista värdet är fallback: en okänd beställare är
+// systemet, aldrig ett tomt fält — annars går det inte att skilja "vi vet inte"
+// från "ingen frågade".
+const REQUESTERS = Object.freeze([
+  'manual', 'batch', 'optimizer', 'evolution', 'regression', 'benchmark', 'system',
+]);
 
 function num(value) {
   const n = Number(value);
@@ -77,18 +87,37 @@ function readJsonl(file) {
   }
 }
 
+/**
+ * Strategins deklarerade timeframe, om den har någon.
+ *
+ * Bara research-hypoteser deklarerar en. De åtta modulerna, deras varianter och
+ * de muterade genomen kör i den timeframe kompositionsroten väljer och gör
+ * inget anspråk på någon annan.
+ */
+function declaredTimeframeFor(strategyId) {
+  try {
+    const hypotheses = require('../research/researchHypothesisService');
+    if (!hypotheses.isResearchStrategyId(strategyId)) return null;
+    return hypotheses.getHypothesis(strategyId)?.semantics?.timeframe || null;
+  } catch (_) {
+    return null;
+  }
+}
+
 /** Legacy- eller native-id → native-id. Null när det inte går att avgöra. */
 function resolveNativeStrategyId(strategyId, registry = nativeRegistry) {
   const id = text(strategyId);
   if (!id) return null;
+  if (typeof registry.getStrategy === 'function' && registry.getStrategy(id)) return id;
   if (registry.isNativeStrategyId(id)) return id;
   return registry.soleNativeStrategyForOrigin(id)?.strategyId || null;
 }
 
 function createStrategyLibraryRecorder(options = {}) {
   const library = options.library || libraryModule.defaultStrategyLibrary;
-  const registry = options.registry || nativeRegistry;
+  const registry = options.registry || { ...nativeRegistry, ...strategyRegistry };
   const paperTradesFile = options.paperTradesFile || DEFAULT_PAPER_TRADES_FILE;
+  const memory = options.memory || aiMemoryModule.defaultAiMemory;
 
   // ── Replay ────────────────────────────────────────────────────────────────
 
@@ -98,8 +127,14 @@ function createStrategyLibraryRecorder(options = {}) {
    * @param {object} runResult  från nativeReplayEngineService.run()
    * @param {object} report     från replayReportService.buildReplayReport()
    */
-  function recordReplayRun(runResult, report, { runId = null, at = null } = {}) {
+  function recordReplayRun(runResult, report, { runId = null, at = null, requestedBy = null } = {}) {
     const id = runId || `replay:${runResult.config?.mode}:${runResult.config?.from}:${runResult.config?.to}`;
+    // Varje replay bygger AI:s kunskapsbas, oavsett vem som bad om den. Vem det
+    // var är HÄRKOMST och påverkar därför aldrig experimentets identitet — en
+    // manuell körning och en från evolutionen på samma DNA i samma marknad är
+    // samma experiment, och minnet ska då peka tillbaka till Library i stället
+    // för att bära en egen resultatkopia.
+    const requester = REQUESTERS.includes(requestedBy) ? requestedBy : REQUESTERS[REQUESTERS.length - 1];
     const classification = report.marketClassification?.classification || null;
     const executionScore = report.executionScore?.total ?? null;
     // Market DNA för perioden. Den grova regimnyckeln följer med varje körning
@@ -120,6 +155,7 @@ function createStrategyLibraryRecorder(options = {}) {
     const runDnaHash = report.marketDna?.combinedHash || null;
     const written = [];
     const skipped = [];
+    const experiments = [];
 
     for (const score of report.strategyScore?.perStrategy || []) {
       const strategyId = resolveNativeStrategyId(score.strategyId, registry);
@@ -129,17 +165,61 @@ function createStrategyLibraryRecorder(options = {}) {
       }
 
       const trades = [...(runResult.tradesByStrategy?.get(score.strategyId) || [])];
-      library.recordReplayRun({
+      const stats = score.stats || {};
+      const recoveryFactor = (stats.maxDrawdownUsd > 0 && stats.strategyPnlUsd != null)
+        ? Math.round((stats.strategyPnlUsd / stats.maxDrawdownUsd) * 1000) / 1000
+        : null;
+      const replayEvent = library.recordReplayRun({
         strategyId,
         runId: id,
         mode: runResult.config?.mode || null,
+        // ── Timeframe bokförs ─────────────────────────────────────────────
+        //
+        // Raden bar tidigare inte vilken timeframe körningen använde. Följden
+        // upptäcktes 2026-08-20: en hypotes som deklarerar 5m men av misstag
+        // kördes på 2m fick sina rader summerade ihop med sina riktiga, och en
+        // läsare kunde inte skilja dem åt eftersom fältet inte fanns.
+        //
+        // Värdet finns redan i körningens konfiguration. Att inte skriva ned det
+        // gjorde en blandning av två timeframes omöjlig att upptäcka i
+        // efterhand.
+        timeframe: runResult.config?.timeframe || null,
         from: runResult.config?.from || null,
         to: runResult.config?.effectiveTo || runResult.config?.to || null,
-        trades: score.stats.trades,
-        winRate: score.stats.winRate,
-        strategyPnlUsd: score.stats.strategyPnlUsd,
+        trades: stats.trades,
+        winRate: stats.winRate,
+        strategyPnlUsd: stats.strategyPnlUsd,
+        profitFactor: stats.profitFactor ?? null,
+        expectancyUsd: stats.expectancyUsd ?? null,
+        maxDrawdownUsd: stats.maxDrawdownUsd ?? null,
+        avgWinUsd: stats.avgWinUsd ?? null,
+        avgLossUsd: stats.avgLossUsd ?? null,
+        // ── Netto, kostnad och courtage bokförs också ─────────────────────
+        //
+        // strategyPnlUsd är STRATEGY EDGE — resultatet mätt mot de priser
+        // strategin syftade på. Det är rätt mått för att jämföra signaler, och
+        // därför det som stod här ensamt.
+        //
+        // Men det säger inget om huruvida affärerna hade tjänat pengar. Cykel 1
+        // och 2 mätte hypoteser med profit factor över 1 vars netto var
+        // negativt: courtaget är fast 2,44 USD per affär och
+        // exekveringskostnaden varierade mellan 0,32 och 7,47. En
+        // evidenspolicy som ska kunna svara "bar den här hypotesen sin egen
+        // kostnad?" kan inte läsa det ur strategyPnlUsd.
+        //
+        // Talen RÄKNAS redan av tradeLedgerService.summarizeTrades. De
+        // persisterades bara inte, och biblioteket är den kanoniska
+        // evidenskällan — en fråga som inte går att besvara därifrån går inte
+        // att besvara alls.
+        netPnlUsd: stats.netPnlUsd ?? null,
+        executionCostUsd: stats.executionCostUsd ?? null,
+        commissionUsd: stats.commissionUsd ?? null,
         strategyScore: score.total,
         executionScore,
+        band: score.band ?? null,
+        recoveryFactor,
+        sharpe: null,
+        sharpeAvailable: false,
         marketClassification: classification,
         marketRegimeKey: runRegimeKey,
         marketRegimeKeys: runRegimeKeys,
@@ -192,10 +272,94 @@ function createStrategyLibraryRecorder(options = {}) {
         at,
       });
 
+      // ── AI Memory ─────────────────────────────────────────────────────────
+      //
+      // Ett experiment per STRATEGI, inte per körning. En körning i
+      // strategy-läge utvärderar alla registrerade strategier samtidigt, och
+      // frågan minnet finns för — "har vi prövat det HÄR genomet i den HÄR
+      // marknaden?" — är per strategi. Ett experiment per körning hade gjort
+      // den frågan omöjlig att ställa.
+      //
+      const memoryResult = recordExperimentFor({
+        strategyId, runResult, record: library.getStrategy(strategyId),
+        runDnaHash, runRegimeKeys, classification, runId: id, requester, at,
+        replayEvent,
+      });
+      if (memoryResult) experiments.push(memoryResult);
+
       written.push({ strategyId, trades: trades.length, strategyScore: score.total });
     }
 
-    return { ok: true, runId: id, written, skipped, ...SAFETY };
+    return { ok: true, runId: id, requestedBy: requester, written, skipped, experiments, ...SAFETY };
+  }
+
+  /**
+   * Skriver ett experiment till AI Memory.
+   *
+   * Returnerar null när identiteten är ofullständig — ett experiment utan
+   * Market DNA går inte att återanvända, och att tvinga fram en nyckel ändå
+   * hade gjort alla sådana körningar till samma experiment.
+   */
+  function recordExperimentFor({
+    strategyId, runResult, record, runDnaHash, runRegimeKeys, classification,
+    runId, requester, at, replayEvent,
+  }) {
+    const dna = strategyDna.getStrategyDna(strategyId);
+    if (!dna || !runDnaHash) {
+      return { strategyId, recorded: false, reason: !dna ? 'no_strategy_dna' : 'no_market_dna' };
+    }
+
+    // ── Timeframe in i identiteten (AI Memory v2) ─────────────────────────
+    //
+    // executedTimeframe hämtas ur KÖRNINGENS konfiguration, aldrig ur strategins
+    // metadata. Det är hela poängen: en hypotes som deklarerar 5m men kördes på
+    // 2m ska få en annan identitet än samma hypotes körd rätt, och den
+    // skillnaden finns bara i vad motorn faktiskt stegade i.
+    //
+    // declaredTimeframe är vad strategin säger sig kräva. En strategi som inte
+    // deklarerar någon har inte "okänd" timeframe utan ingen alls, och det
+    // skrivs ut explicit — annars hade ett saknat värde och ett medvetet
+    // frånvarande värde blivit samma experiment.
+    const executedTimeframe = text(runResult.config?.timeframe);
+    const declaredTimeframe = declaredTimeframeFor(strategyId) || aiMemoryModule.NO_DECLARED_TIMEFRAME;
+
+    const spec = {
+      // ── identitet ───────────────────────────────────────────────────────
+      strategyDnaHash: dna.dnaHash,
+      parameterHash: dna.parameterHash,
+      marketDnaHash: runDnaHash,
+      replayMode: runResult.config?.mode || null,
+      executionModel: aiMemoryModule.executionModelOf(runResult.config?.fillEngine || {}),
+      strategyVersion: dna.strategyVersion || record?.currentVersion || 'unknown',
+      declaredTimeframe,
+      executedTimeframe,
+      // ── härkomst: lagras, identifierar inte ─────────────────────────────
+      period: `${runResult.config?.from}..${runResult.config?.effectiveTo || runResult.config?.to}`,
+      symbols: runResult.config?.symbols || [],
+      runId,
+      requestedBy: requester,
+      regimeKeys: runRegimeKeys,
+      marketClassification: classification,
+    };
+
+    const libraryRef = {
+      source: 'strategy_library',
+      resultType: 'replay',
+      strategyId,
+      libraryRunId: runId,
+      eventType: replayEvent?.type || libraryModule.EVENT_TYPES.REPLAY_RECORDED,
+      recordedAt: replayEvent?.recordedAt || null,
+    };
+
+    const written = memory.recordExperiment(spec, libraryRef, { lineage: dna.lineage, at });
+    return {
+      strategyId,
+      recorded: true,
+      experimentKey: written.experimentKey,
+      // Sant betyder att körningen var onödig — experimentet fanns redan i minnet.
+      repeat: written.alreadyKnown === true,
+      requestedBy: requester,
+    };
   }
 
   // Replay-historiken som poängsättbara rader. En körning bidrar med sitt
@@ -239,6 +403,7 @@ function createStrategyLibraryRecorder(options = {}) {
 
     const written = [];
     const skipped = [];
+    const experiments = [];
     let duplicates = 0;
 
     // Redan bokförda affärer, per strategi. Läses en gång.
@@ -261,11 +426,22 @@ function createStrategyLibraryRecorder(options = {}) {
 
       const payload = {
         strategyId,
+        canonicalStrategyId: text(row.canonicalStrategyId || row.originStrategyId || row.strategyId),
+        nativeStrategyId: text(row.nativeStrategyId || resolveNativeStrategyId(row.strategyId, registry)),
+        originStrategyId: text(row.originStrategyId || row.strategyId),
+        strategyVersion: text(row.strategyVersion || row.strategyLogicVersion),
+        strategyFamily: text(row.strategyFamily),
+        candidateId: text(row.candidateId),
+        signalId: text(row.signalId || row.originalSignalId),
         tradeId: row.tradeId,
         openedAt: text(row.openedAt),
         closedAt: text(row.closedAt),
         symbol: text(row.root || row.symbol),
         direction: text(row.side),
+        session: text(row.session || row.entrySession?.session),
+        sessionId: text(row.sessionId || row.entrySession?.sessionId),
+        marketRegime: text(row.marketRegime || row.marketRegimeV2),
+        executionTarget: text(row.executionTarget || row.execution_target) || 'ibkr_paper',
         realizedPnlUsd: num(row.realizedPnlUsd),
         exitReason: text(row.exitReason),
         at: at || text(row.closedAt),

@@ -6,6 +6,11 @@ import GlossaryTooltip from '../components/tradingos/GlossaryTooltip.jsx';
 import QuickHelpModal from '../components/tradingos/QuickHelpModal.jsx';
 import SimpleStatusCard from '../components/tradingos/SimpleStatusCard.jsx';
 import {
+  FACTORY_TERM_KEYS,
+  uiCopy,
+  uiTerm,
+} from '../services/uiTerminologyService.js';
+import {
   resolveKnownStrategy,
   strategyDisplayName,
 } from '../stores/strategyStore.js';
@@ -43,6 +48,16 @@ const ENDPOINTS = [
   { key: 'candidatesRecent', url: '/api/candidates/recent', label: 'Candidates recent' },
   { key: 'replaySessions', url: '/api/replay/sessions', label: 'Replay sessions' },
   { key: 'dataCoverageStatus', url: '/api/data-coverage/status', label: 'Data coverage status' },
+];
+
+const INTRO_GLOSSARY_KEYS = [
+  FACTORY_TERM_KEYS.SIGNAL,
+  FACTORY_TERM_KEYS.STRATEGY,
+  FACTORY_TERM_KEYS.REPLAY_ENGINE,
+  FACTORY_TERM_KEYS.BATCH,
+  FACTORY_TERM_KEYS.SCORE,
+  FACTORY_TERM_KEYS.PAPER_ONLY,
+  FACTORY_TERM_KEYS.REPLAY_QUEUE,
 ];
 
 const ADVISOR_WINDOWS = [
@@ -4683,14 +4698,11 @@ export default function SupervisorV2Page() {
             <BeginnerInfoCard key={card.title} {...card} />
           ))}
         </div>
-        <div className="sup-glossary-row" aria-label="Snabb förklaring av viktiga ord">
-          <GlossaryTooltip term="Signal" help="Ett tecken på att systemet hittat något intressant." />
-          <GlossaryTooltip term="Strategi" help="Ett sätt som systemet testar för att se om något fungerar bättre." />
-          <GlossaryTooltip term="Replay" help="Ett test på gammal data för att se hur något hade fungerat tidigare." />
-          <GlossaryTooltip term="Batch" help="Många tester i grupp." />
-          <GlossaryTooltip term="Score" help="En enkel bedömning av hur lovande något verkar just nu." />
-          <GlossaryTooltip term="Paper only" help="Bara testläge, inga riktiga köp eller sälj görs." />
-          <GlossaryTooltip term="Testkö" help="En lista med tester som kan granskas manuellt." />
+        <div className="sup-glossary-row" aria-label={uiCopy('glossary').ariaLabel}>
+          {INTRO_GLOSSARY_KEYS.map((key) => {
+            const term = uiTerm(key);
+            return <GlossaryTooltip key={key} term={term.displayName} help={term.description} />;
+          })}
         </div>
       </section>
       )}

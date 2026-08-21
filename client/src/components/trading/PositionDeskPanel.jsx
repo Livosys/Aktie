@@ -66,6 +66,12 @@ function directionColor(direction) {
   return 'var(--text)';
 }
 
+function directionLabel(direction) {
+  if (direction === 'LONG') return 'Lång';
+  if (direction === 'SHORT') return 'Kort';
+  return textOrEmpty(direction);
+}
+
 // Avstånd mäts i punkter men handlas i ticks — båda får plats i samma cell.
 function Distance({ points, ticks, tone = null }) {
   if (points == null) return <span style={{ color: 'var(--muted)' }}>{EMPTY_VALUE}</span>;
@@ -181,8 +187,8 @@ function PositionDetail({ row, currency, nowMs }) {
               { label: 'Strategi', value: row.strategyName },
               { label: 'strategyId', value: row.strategyId, mono: true },
               { label: 'Familj', value: row.strategyFamily },
-              { label: 'Riktning', value: row.direction, tone: directionColor(row.direction) },
-              { label: 'Quantity', value: fmtNumber(row.quantity) },
+              { label: 'Riktning', value: directionLabel(row.direction), tone: directionColor(row.direction) },
+              { label: 'Antal', value: fmtNumber(row.quantity) },
               { label: 'Tick size', value: fmtNumber(row.tickSize, 4) },
               { label: 'Point value', value: fmtNumber(row.pointValue, 2) },
               { label: 'Radkälla', value: row.source === 'open_trade' ? 'öppen trade (ej i broker mirror)' : 'broker mirror' },
@@ -210,8 +216,8 @@ function PositionDetail({ row, currency, nowMs }) {
               { label: 'Expiry', value: position.expiry },
               { label: 'Avg cost', value: fmtNumber(position.averageCost ?? position.avgCost, 2) },
               { label: 'Market price', value: fmtNumber(position.marketPrice, 2) },
-              { label: 'Unrealized PnL', value: fmtMoney(position.unrealizedPnl, currency, 2), tone: pnlColor(position.unrealizedPnl) },
-              { label: 'Realized PnL', value: fmtMoney(position.realizedPnl, currency, 2), tone: pnlColor(position.realizedPnl) },
+              { label: 'Orealiserat resultat', value: fmtMoney(position.unrealizedPnl, currency, 2), tone: pnlColor(position.unrealizedPnl) },
+              { label: 'Realiserat resultat', value: fmtMoney(position.realizedPnl, currency, 2), tone: pnlColor(position.realizedPnl) },
               { label: 'Source', value: position.source || position.executionSource },
               { label: 'Reconciled', value: fmtTime(position.reconciliationTimestamp) },
             ]}
@@ -268,7 +274,7 @@ const PositionRow = React.memo(function PositionRow({ row, expanded, onToggle, c
           <div style={{ overflow: 'hidden', textOverflow: 'ellipsis' }}>{textOrEmpty(row.strategyName)}</div>
         </td>
         <td style={{ ...tdStyle, color: 'var(--muted)' }}>{textOrEmpty(row.strategyFamily)}</td>
-        <td style={{ ...tdStyle, color: directionColor(row.direction), fontWeight: 800 }}>{textOrEmpty(row.direction)}</td>
+        <td style={{ ...tdStyle, color: directionColor(row.direction), fontWeight: 800 }}>{directionLabel(row.direction)}</td>
         <td style={tdStyle}>{fmtNumber(row.entryPrice, 2)}</td>
         <td style={tdStyle} title={row.quoteFreshness?.label}>
           {fmtNumber(row.currentPrice, 2)}
@@ -345,50 +351,50 @@ export const PositionDeskPanel = React.memo(function PositionDeskPanel({
     <section style={{ display: 'grid', gap: 12 }}>
       <section style={tradingSectionStyle({ borderColor: 'rgba(34,197,94,0.30)' })}>
         <SectionHeader
-          eyebrow="Live Trading Desk"
+          eyebrow="Öppna positioner"
           title="Öppna positioner"
-          summary="En rad = en öppen position. Sorterad efter vad som kräver ett beslut först: oskyddad risk, nära stop, nära target. Klicka på en rad för order, executions, identitet och replay."
+          summary="En rad = en öppen position. Sorterad efter det som kräver uppmärksamhet först: oskyddad risk, nära stop och nära mål."
           action={action}
         />
         {/* Sju små kort — inget kontosaldo, ingen brokerdiagnostik. De svarar bara
             på hur mycket som är ute, hur det går just nu och hur dagen ligger. */}
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: 8 }}>
           <MetricCard
-            label="Open positions"
+            label="Öppna positioner"
             value={fmtNumber(summary.openPositions)}
             hint={summary.unprotectedPositions ? `${fmtNumber(summary.unprotectedPositions)} utan stop` : null}
             tone={summary.unprotectedPositions ? 'danger' : (summary.openPositions ? 'info' : 'neutral')}
           />
           <MetricCard
-            label="Unrealized PnL"
+            label="Orealiserat resultat"
             value={summary.unrealizedPnl == null ? EMPTY_VALUE : fmtMoney(summary.unrealizedPnl, currency, 2)}
             hint="öppna positioner just nu"
             tone={summary.unrealizedPnl == null ? 'neutral' : (summary.unrealizedPnl < 0 ? 'danger' : 'success')}
           />
           <MetricCard
-            label="Realized PnL idag"
+            label="Realiserat idag"
             value={summary.realizedToday == null ? EMPTY_VALUE : fmtMoney(summary.realizedToday, currency, 2)}
             hint={summary.closedToday ? `${fmtNumber(summary.closedToday)} stängda idag` : 'inga stängda idag'}
             tone={summary.realizedToday == null ? 'neutral' : (summary.realizedToday < 0 ? 'danger' : 'success')}
           />
           <MetricCard
-            label="Net PnL idag"
+            label="Totalt idag"
             value={summary.netToday == null ? EMPTY_VALUE : fmtMoney(summary.netToday, currency, 2)}
             hint="realiserat + orealiserat"
             tone={summary.netToday == null ? 'neutral' : (summary.netToday < 0 ? 'danger' : 'success')}
           />
           <MetricCard
-            label="Winning positions"
+            label="Positioner i vinst"
             value={fmtNumber(summary.winningPositions)}
             tone={summary.winningPositions ? 'success' : 'neutral'}
           />
           <MetricCard
-            label="Losing positions"
+            label="Positioner i förlust"
             value={fmtNumber(summary.losingPositions)}
             tone={summary.losingPositions ? 'danger' : 'neutral'}
           />
           <MetricCard
-            label="Snitt duration"
+            label="Snittid"
             value={averageDuration}
             hint="öppna positioner"
           />
@@ -411,19 +417,19 @@ export const PositionDeskPanel = React.memo(function PositionDeskPanel({
                     <th style={thStyle}>Symbol</th>
                     <th style={thStyle}>Strategi</th>
                     <th style={thStyle}>Familj</th>
-                    <th style={thStyle}>L/S</th>
-                    <th style={thStyle}>Entry</th>
-                    <th style={thStyle}>Current</th>
-                    <th style={thStyle}>Live PnL</th>
-                    <th style={thStyle}>PnL %</th>
+                    <th style={thStyle}>Riktning</th>
+                    <th style={thStyle}>Ingång</th>
+                    <th style={thStyle}>Nu</th>
+                    <th style={thStyle}>Resultat</th>
+                    <th style={thStyle}>Resultat %</th>
                     <th style={thStyle}>Ticks</th>
                     <th style={thStyle}>R</th>
-                    <th style={thStyle}>Qty</th>
+                    <th style={thStyle}>Antal</th>
                     <th style={thStyle}>Stop</th>
-                    <th style={thStyle}>TP</th>
+                    <th style={thStyle}>Mål</th>
                     <th style={thStyle}>Till stop</th>
-                    <th style={thStyle}>Till TP</th>
-                    <th style={thStyle}>Duration</th>
+                    <th style={thStyle}>Till mål</th>
+                    <th style={thStyle}>Tid</th>
                   </tr>
                 </thead>
                 <tbody>

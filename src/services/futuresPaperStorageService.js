@@ -65,6 +65,62 @@ function readJsonl(file) {
   }
 }
 
+/**
+ * De SISTA `limit` raderna i en JSONL-fil, utan att läsa resten.
+ *
+ * Händelseloggen för futures-paper är 136 MB på 31 000 rader. Både
+ * kontovyn och ledgern läste hela filen och tog sedan `.slice(-20)` — samma
+ * svar, men 30 sekunders JSON.parse per läsning, och de gjordes fyra gånger
+ * per bygge av Handelstest-vyn. Det var hela orsaken till att den vyn tog
+ * över två minuter att bygga.
+ *
+ * Läser bakifrån i block tills tillräckligt många radbrytningar hittats.
+ * Identiskt resultat med readJsonl(file).slice(-limit) — trasiga rader
+ * hoppas över på samma sätt.
+ */
+function readJsonlTail(file, limit) {
+  const wanted = Math.max(0, Math.floor(Number(limit) || 0));
+  if (!wanted) return [];
+  let fd = null;
+  try {
+    if (!fs.existsSync(file)) return [];
+    const size = fs.statSync(file).size;
+    if (!size) return [];
+    fd = fs.openSync(file, 'r');
+
+    // Blocket växer tills det rymmer så många rader vi vill ha, eller tills
+    // hela filen är läst. Startgissningen är generös; en rad här är stor.
+    let block = 256 * 1024;
+    let text = '';
+    let start = size;
+    while (start > 0) {
+      start = Math.max(0, size - block);
+      const length = size - start;
+      const buffer = Buffer.allocUnsafe(length);
+      fs.readSync(fd, buffer, 0, length, start);
+      text = buffer.toString('utf8');
+      // En rad mer än vi behöver: den första raden i blocket kan vara avhuggen
+      // och kastas därför bort så länge vi inte står vid filens början.
+      const newlines = (text.match(/\n/g) || []).length;
+      if (newlines > wanted || start === 0) break;
+      block *= 4;
+    }
+
+    let lines = text.split('\n');
+    if (start > 0) lines = lines.slice(1);
+    return lines
+      .map((line) => line.trim())
+      .filter(Boolean)
+      .slice(-wanted)
+      .map((line) => { try { return JSON.parse(line); } catch (_) { return null; } })
+      .filter(Boolean);
+  } catch (_) {
+    return [];
+  } finally {
+    if (fd !== null) { try { fs.closeSync(fd); } catch (_) { /* stängd redan */ } }
+  }
+}
+
 function appendJsonl(file, row) {
   ensureDir(path.dirname(file));
   fs.appendFileSync(file, `${JSON.stringify(row)}\n`, 'utf8');
@@ -150,6 +206,7 @@ function createFuturesPaperStorageService(options = {}) {
     readPositions,
     writePositions,
     readJsonl,
+    readJsonlTail,
     appendEvent,
     readTrades,
     appendTrade,
@@ -169,6 +226,7 @@ module.exports = {
   readJson,
   writeJson,
   readJsonl,
+  readJsonlTail,
   appendJsonl,
   createFuturesPaperStorageService,
   defaultFuturesPaperStorageService,

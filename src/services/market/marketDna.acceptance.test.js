@@ -88,8 +88,18 @@ test('det fina avtrycket skiljer dagar åt — den grova regimen grupperar dem',
   assert.ok(summary.distinctRegimes < summary.periods,
     'varje period blev sin egen regim — då mäter regimnyckeln bara antalet körningar');
 
-  // Rimlighetsband: den grova nyckeln har högst nio möjliga värden.
-  assert.ok(summary.distinctRegimes <= 9);
+  // Rimlighetsband. Nyckeln är riktning/volatilitet, och BÅDA banden har ett
+  // fjärde värde: 'unknown'.
+  //
+  // Det är inte ett fel utan ett svar. Kvartalsvisa rullningsdagar (2025-12-22,
+  // 2026-03-23, 2026-06-22) läser ett kontrakt som knappt handlas — volatilitet
+  // 'dead', range expansion 'unknown' — och då vägrar avtrycket hitta på en
+  // riktning. Sex sådana perioder finns i lagret, tre datum × två rötter.
+  //
+  // Bandet var satt till nio, alltså 3×3, vilket förutsatte att varje dag går
+  // att klassificera. 4×4 är det verkliga taket.
+  assert.ok(summary.distinctRegimes <= 16,
+    `regimnyckeln har fler värden än riktning×volatilitet tillåter: ${summary.distinctRegimes}`);
   console.log(`    (${summary.periods} perioder · ${summary.distinctProfiles} fina profiler`
     + ` · ${summary.distinctRegimes} grova regimer)`);
 });

@@ -2,6 +2,14 @@ import React from 'react';
 import { hasValue, textOrEmpty } from '../../utils/tradingFormatters.js';
 import { FieldGrid } from './FieldGrid.jsx';
 import { OverviewPanel } from './OverviewPanel.jsx';
+import {
+  FACTORY_TERM_KEYS,
+  uiCopy,
+  uiDescription,
+  uiLifecycleStage,
+  uiName,
+  uiPanelHelpItems,
+} from '../../services/uiTerminologyService.js';
 
 // ── Strategy Library i strategilådan ────────────────────────────────────────
 //
@@ -24,27 +32,12 @@ const STAGE_TONE = {
   retired: 'muted',
 };
 
-const PROMOTION_LABEL = {
-  ready: 'Klar för nästa steg',
-  blocked: 'Blockerad',
-  terminal: 'Sista steget',
-  retired: 'Pensionerad',
-  not_in_library: 'Saknas i Library',
-};
-
 const PROMOTION_TONE = {
   ready: 'success',
   blocked: 'muted',
   terminal: 'blue',
   retired: 'muted',
   not_in_library: 'warning',
-};
-
-const RETIREMENT_LABEL = {
-  active: 'Aktiv',
-  suggested: 'Pensionering föreslås',
-  retired: 'Pensionerad',
-  unknown: '—',
 };
 
 const RETIREMENT_TONE = {
@@ -62,6 +55,8 @@ export const StrategyLifecyclePanel = React.memo(function StrategyLifecyclePanel
   const library = strategy?.library;
   if (!library || library.inLibrary === false) return null;
 
+  const panel = uiCopy('strategyLifecyclePanel');
+  const panelHelp = uiPanelHelpItems(FACTORY_TERM_KEYS.STRATEGY_LIBRARY);
   const stage = library.lifecycle || null;
   const promotionStatus = library.promotionStatus || 'not_in_library';
   const retirementStatus = library.retirementStatus || 'unknown';
@@ -70,81 +65,86 @@ export const StrategyLifecyclePanel = React.memo(function StrategyLifecyclePanel
   // förklaras utan att någon behöver läsa loggen.
   const promotionHint = promotionStatus === 'blocked' && library.promotionBlockers?.length
     ? `${library.promotionBlockers[0]}${library.promotionTo ? ` → ${library.promotionTo}` : ''}`
-    : (library.promotionTo ? `Nästa steg: ${library.promotionTo}` : null);
+    : (library.promotionTo ? `${panel.messages.nextStep}: ${uiLifecycleStage(library.promotionTo)}` : null);
 
   const items = [
     {
-      label: 'Lifecycle',
-      value: textOrEmpty(library.lifecycleLabel || stage),
+      label: panel.labels.lifecycle,
+      value: textOrEmpty(uiLifecycleStage(stage || library.lifecycleLabel)),
       tone: STAGE_TONE[stage] || 'muted',
       hint: Number.isFinite(library.lifecycleIndex) && library.lifecycleIndex >= 0
-        ? `Steg ${library.lifecycleIndex + 1} av 8`
+        ? `${panel.messages.step} ${library.lifecycleIndex + 1} ${panel.messages.of} 8`
         : null,
     },
     {
-      label: 'Confidence',
+      label: panel.labels.confidence,
       value: scoreText(library.confidenceScore),
       // Confidence säger hur mycket vi VET. Låg confidence är inget fel — det
       // är en uppmaning att köra fler perioder och fler regimer.
       tone: library.confidenceScore == null ? 'muted'
         : library.confidenceScore >= 70 ? 'success'
           : library.confidenceScore >= 40 ? 'blue' : 'warning',
-      hint: 'Hur mycket vi vet — skilt från Strategy Score',
+      hint: panel.messages.confidenceHint,
     },
     {
-      label: 'Promotion',
-      value: PROMOTION_LABEL[promotionStatus] || promotionStatus,
+      label: panel.labels.promotion,
+      value: panel.promotionLabels[promotionStatus] || promotionStatus,
       tone: PROMOTION_TONE[promotionStatus] || 'muted',
       hint: promotionHint,
     },
     {
-      label: 'Retirement',
-      value: RETIREMENT_LABEL[retirementStatus] || retirementStatus,
+      label: panel.labels.retirement,
+      value: panel.retirementLabels[retirementStatus] || retirementStatus,
       tone: RETIREMENT_TONE[retirementStatus] || 'muted',
       hint: library.retirementReason || null,
     },
     {
-      label: 'Strategy Score',
+      label: panel.labels.strategyScore,
       value: scoreText(library.strategyScoreLibrary),
-      hint: 'Replay — strategins logik',
+      hint: panel.messages.strategyScoreHint,
     },
     {
-      label: 'Execution Score',
+      label: panel.labels.executionScore,
       value: scoreText(library.executionScoreLibrary),
-      hint: 'Vad utförandet kostade',
+      hint: panel.messages.executionScoreHint,
     },
     {
-      label: 'Production Score',
+      label: panel.labels.productionScore,
       value: scoreText(library.productionScore),
       // Ett Production Score på fem affärer är inget omdöme, och det ska synas
       // på raden i stället för att behöva räknas ut av den som läser.
       tone: library.productionScore == null ? 'muted'
         : library.productionScoreQualified === false ? 'warning' : 'blue',
       hint: library.productionScoreQualified === false
-        ? `För få paper-affärer (${library.paperTrades ?? 0}) för att luta sig mot`
-        : 'Paper och live över tid',
+        ? `${panel.messages.tooFewPaperTrades} (${library.paperTrades ?? 0})`
+        : panel.messages.productionScoreHint,
     },
     {
-      label: 'Historik',
-      value: `${library.replayRuns ?? 0} replay · ${library.paperTrades ?? 0} paper · ${library.liveTrades ?? 0} live`,
-      hint: library.currentMarketDnaHash ? `Market DNA ${library.currentMarketDnaHash}` : null,
+      label: panel.labels.history,
+      value: `${library.replayRuns ?? 0} ${panel.messages.replayCount} · ${library.paperTrades ?? 0} ${panel.messages.paperCount} · ${library.liveTrades ?? 0} ${panel.messages.liveCount}`,
+      hint: library.currentMarketDnaHash ? `${panel.messages.marketDnaPrefix} ${library.currentMarketDnaHash}` : null,
     },
     {
       // Vilka sorters marknad strategin faktiskt mött. Ett bra resultat i en
       // enda regim är inte ett bra resultat — det är ett obeprövat resultat,
       // och den skillnaden ska synas här.
-      label: 'Marknadsregimer',
-      value: library.regimesSeen?.length ? library.regimesSeen.join(' · ') : 'Ingen ännu',
+      label: panel.labels.marketRegimes,
+      value: library.regimesSeen?.length ? library.regimesSeen.join(' · ') : panel.messages.noHistory,
       tone: !library.regimesSeen?.length ? 'warning'
         : library.regimesSeen.length >= 3 ? 'success' : 'blue',
       hint: library.regimesSeen?.length
-        ? `${library.regimesSeen.length} prövade — blinda fläckar visas i Market Intelligence`
-        : 'Strategin har aldrig körts i replay',
+        ? `${library.regimesSeen.length} ${panel.messages.tried} — ${panel.messages.blindSpotsInMarketIntelligence}`
+        : panel.messages.neverReplayTested,
     },
+    ...panelHelp,
   ];
 
   return (
-    <OverviewPanel eyebrow="Strategy Library" title="Livscykel och förtroende">
+    <OverviewPanel
+      eyebrow={uiName(FACTORY_TERM_KEYS.STRATEGY_LIBRARY)}
+      title={panel.title}
+      summary={uiDescription(FACTORY_TERM_KEYS.STRATEGY_LIBRARY)}
+    >
       <FieldGrid items={items.filter((item) => hasValue(item.value))} />
     </OverviewPanel>
   );

@@ -34,6 +34,7 @@
 
 const marketDna = require('./marketDnaService');
 const coverage = require('../../data/marketDataCoverage');
+const store = require('../../data/marketDataStore');
 const historicalFeed = require('../historicalPriceFeedService');
 
 const SAFETY = Object.freeze({
@@ -61,6 +62,40 @@ function round(value, decimals = 2) {
  * En rad per (rot, handelsdag). Dagar utan tillräckligt underlag hoppas över
  * och räknas — en halv dag är inte en marknadsregim.
  */
+// ── Cache på lagrets avtryck ─────────────────────────────────────────────────
+//
+// Katalogen läser en bar-serie per (rot, handelsdag) och beräknar Market DNA
+// för var och en. Det är ~440 diskläsningar och 12,7 sekunder synkron CPU, och
+// den byggdes om vid VARJE anrop — inklusive fyra gånger per laddning av
+// fabrikssidan, via Strategy Brain. Det var den djupaste orsaken till att
+// event-loopen stod stilla.
+//
+// Svaret beror bara på (a) argumenten och (b) barfilerna. Barfilerna skrivs
+// bara till, så deras avtryck (storlek + mtime) avgör exakt när katalogen kan
+// ha ändrats. Cachen kan därför aldrig servera ett svar som inte längre
+// stämmer — till skillnad från en TTL.
+const catalogCache = new Map();
+const intelligenceCache = new Map();
+const CACHE_LIMIT = 8;
+
+function remember(cache, key, build) {
+  const hit = cache.get(key);
+  if (hit) return hit;
+  const value = build();
+  cache.set(key, value);
+  // Håll cachen liten: nycklarna innehåller ett filavtryck och blir därför
+  // aldrig återanvända efter att lagret ändrats.
+  while (cache.size > CACHE_LIMIT) cache.delete(cache.keys().next().value);
+  return value;
+}
+
+/** Töm cacherna. För tester och för den som vet att lagret bytts ut under fötterna. */
+function clearCaches() {
+  catalogCache.clear();
+  intelligenceCache.clear();
+  dayCache.clear();
+}
+
 function buildMarketDnaCatalog({
   roots = DEFAULT_ROOTS,
   feed = null,
@@ -69,29 +104,50 @@ function buildMarketDnaCatalog({
   limit = 250,
   atUtcTime = '20:00',
 } = {}) {
+  // En inskickad feed kan läsa vad som helst — då äger anroparen svaret och vi
+  // cachar inte. Standardvägen läser lagret och är cachebar.
+  if (feed) return computeMarketDnaCatalog({ roots, feed, minBars, timeframe, limit, atUtcTime });
+  const key = [
+    'catalog', roots.join(','), minBars, timeframe, limit, atUtcTime,
+    store.fingerprint([...roots]),
+  ].join('|');
+  return remember(catalogCache, key, () => computeMarketDnaCatalog({
+    roots, feed, minBars, timeframe, limit, atUtcTime,
+  }));
+}
+
+// Ett dygns resultat, nycklat på dygnets egna filavtryck. Ett stängt dygn
+// räknas därför en gång i processens liv, och dagens pågående dygn räknas om
+// bara när det faktiskt fått nya barer.
+const dayCache = new Map();
+const DAY_CACHE_LIMIT = 2000;
+
+function computeMarketDnaCatalog({ roots, feed, minBars, timeframe, limit, atUtcTime }) {
   const priceFeed = feed || historicalFeed.createHistoricalPriceFeedService();
+  const cacheable = !feed;
   const periods = [];
   const skipped = [];
 
   for (const root of roots) {
+    const dayFingerprints = cacheable ? store.fingerprintByDate(root) : null;
     for (const date of coverage.listDates(root).sort()) {
-      const day = coverage.coverageFor(root, date);
-      if (day.bars < minBars) {
-        skipped.push({ root, date, bars: day.bars, reason: 'insufficient_bars' });
+      const cacheKey = cacheable
+        ? `${root}|${date}|${minBars}|${timeframe}|${limit}|${atUtcTime}|${dayFingerprints.get(date) || 'none'}`
+        : null;
+      const cached = cacheKey ? dayCache.get(cacheKey) : null;
+      if (cached) {
+        if (cached.skipped) skipped.push(cached.skipped);
+        else periods.push(cached.dna);
         continue;
       }
-      // Klockan sätts alltid explicit — feeden lämnar aldrig ut framtiden, så
-      // fönstret är det strategin hade kunnat se vid den tidpunkten.
-      const now = new Date(`${date}T${atUtcTime}:00.000Z`);
-      const window = priceFeed.getCandles(root, { now, timeframe, limit });
-      const dna = marketDna.computeMarketDna(window.candles || [], {
-        symbol: root, from: date, to: date,
-      });
-      if (!dna.dnaHash) {
-        skipped.push({ root, date, bars: day.bars, reason: dna.reason || 'no_dna' });
-        continue;
+
+      const outcome = computeDay({ root, date, priceFeed, minBars, timeframe, limit, atUtcTime });
+      if (cacheKey) {
+        dayCache.set(cacheKey, outcome);
+        while (dayCache.size > DAY_CACHE_LIMIT) dayCache.delete(dayCache.keys().next().value);
       }
-      periods.push(dna);
+      if (outcome.skipped) skipped.push(outcome.skipped);
+      else periods.push(outcome.dna);
     }
   }
 
@@ -104,6 +160,25 @@ function buildMarketDnaCatalog({
     version: VERSION,
     ...SAFETY,
   };
+}
+
+/** Ett (rot, dygn): antingen ett Market DNA eller ett redovisat överhopp. */
+function computeDay({ root, date, priceFeed, minBars, timeframe, limit, atUtcTime }) {
+  const day = coverage.coverageFor(root, date);
+  if (day.bars < minBars) {
+    return { skipped: { root, date, bars: day.bars, reason: 'insufficient_bars' } };
+  }
+  // Klockan sätts alltid explicit — feeden lämnar aldrig ut framtiden, så
+  // fönstret är det strategin hade kunnat se vid den tidpunkten.
+  const now = new Date(`${date}T${atUtcTime}:00.000Z`);
+  const window = priceFeed.getCandles(root, { now, timeframe, limit });
+  const dna = marketDna.computeMarketDna(window.candles || [], {
+    symbol: root, from: date, to: date,
+  });
+  if (!dna.dnaHash) {
+    return { skipped: { root, date, bars: day.bars, reason: dna.reason || 'no_dna' } };
+  }
+  return { dna };
 }
 
 // Regimerna en körning täckte. En körning över två symboler kan spänna över
@@ -187,6 +262,27 @@ function performanceByRegime(runs) {
  * @param {object} catalog  från buildMarketDnaCatalog
  */
 function buildMarketIntelligence({ library, catalog } = {}) {
+  // Svaret beror på katalogen och på bibliotekets logg. Bägge har billiga,
+  // exakta avtryck; en inskickad katalog eller ett bibliotek utan avtryck
+  // räknas om varje gång i stället för att gissas på.
+  const libraryFingerprint = libraryFingerprintOf(library);
+  if (catalog || !libraryFingerprint) return computeMarketIntelligence({ library, catalog });
+  const key = ['intel', libraryFingerprint, store.fingerprint([...DEFAULT_ROOTS])].join('|');
+  return remember(intelligenceCache, key, () => computeMarketIntelligence({ library, catalog }));
+}
+
+/** Bibliotekets loggversion, eller null när den inte går att avgöra billigt. */
+function libraryFingerprintOf(library) {
+  try {
+    const status = typeof library?.getStatus === 'function' ? library.getStatus() : null;
+    const events = status?.events;
+    return Number.isFinite(events) ? `events:${events}` : null;
+  } catch (_) {
+    return null;
+  }
+}
+
+function computeMarketIntelligence({ library, catalog } = {}) {
   const dnaCatalog = catalog || buildMarketDnaCatalog();
   const availableRegimes = Object.keys(dnaCatalog.summary.regimeCounts || {});
   const availableProfiles = (dnaCatalog.summary.profiles || []).map((row) => row.dnaHash);
@@ -282,6 +378,7 @@ module.exports = {
   DEFAULT_ROOTS,
   buildMarketDnaCatalog,
   buildMarketIntelligence,
+  clearCaches,
   findSimilarPeriods,
   _internal: { testedProfilesFor, performanceByRegime },
 };

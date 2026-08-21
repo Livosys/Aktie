@@ -6,6 +6,7 @@ import { StrategyApprovalPanel } from './StrategyApprovalPanel.jsx';
 import { StrategyIntelligencePanel } from './StrategyIntelligencePanel.jsx';
 import { StrategyMetadataPanel } from './StrategyMetadataPanel.jsx';
 import { StrategyLifecyclePanel } from './StrategyLifecyclePanel.jsx';
+import { StrategyBrainPanel } from './StrategyBrainPanel.jsx';
 import { StrategyOrdersPanel } from './StrategyOrdersPanel.jsx';
 import { StrategyOverviewPanel } from './StrategyOverviewPanel.jsx';
 import { StrategyPerformancePanel } from './StrategyPerformancePanel.jsx';
@@ -113,6 +114,8 @@ export const StrategyDrawer = React.memo(function StrategyDrawer({
             att den ramar in allt annat i lådan — ett resultat betyder olika
             saker i Draft och i Live. */}
         <StrategyLifecyclePanel strategy={strategy} />
+        {/* Kunskapshål och rekommendation för just den här strategin. */}
+        <StrategyBrainPanel strategyId={strategy.strategyId} />
         <StrategyOverviewPanel strategy={strategy} />
         <StrategyRuntimePanel strategy={strategy} />
         <StrategySignalPanel strategy={strategy} />

@@ -8,6 +8,7 @@ import {
   unwrapSources,
 } from './DomainUtils.js';
 import { statusTone } from './StrategyDomain.js';
+import { FACTORY_TERM_KEYS, uiName } from '../services/uiTerminologyService.js';
 
 export const AI_DECISION_CATEGORIES = [
   { label: 'Trend', matchers: [/trend/i, /marketRegime/i, /market_regime/i, /\bregime\b/i] },
@@ -19,7 +20,7 @@ export const AI_DECISION_CATEGORIES = [
   { label: 'Session', matchers: [/session/i, /marketOpen/i, /market_open/i] },
   { label: 'Risk', matchers: [/risk/i, /guard/i, /block/i] },
   { label: 'Supervisor', matchers: [/supervisor/i, /nextRecommendedActions/i, /actionPlan/i] },
-  { label: 'Approval', matchers: [/approval/i, /approved/i, /allowlist/i, /eligible/i] },
+  { label: uiName(FACTORY_TERM_KEYS.APPROVAL), matchers: [/approval/i, /approved/i, /allowlist/i, /eligible/i] },
   { label: 'Execution', matchers: [/execution/i, /order/i, /fill/i, /broker/i] },
 ];
 

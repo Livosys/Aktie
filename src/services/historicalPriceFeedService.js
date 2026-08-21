@@ -114,12 +114,12 @@ function createHistoricalPriceFeedService(options = {}) {
   // JSONL-filer från disk, vilket gör en dags replay till tiotusentals läsningar.
   const dayCache = new Map();
 
-  function loadDay(root, date) {
-    const key = `${root}|${date}`;
+  function loadDay(root, date, contractKey = null) {
+    const key = `${root}|${date}|${contractKey || 'root'}`;
     if (!dayCache.has(key)) {
       let bars = [];
       try {
-        bars = dataStore.loadRawBars(root, date, date, source) || [];
+        bars = dataStore.loadRawBars(root, date, date, source, contractKey ? { contractKey } : {}) || [];
       } catch (_) {
         bars = [];
       }
@@ -135,7 +135,7 @@ function createHistoricalPriceFeedService(options = {}) {
   // Läser bakåt dag för dag tills det finns tillräckligt med barer för det
   // begärda fönstret. Stannar vid MAX_LOOKBACK_DAYS så en saknad historik ger
   // ett ärligt tomt svar i stället för att skanna hela lagret.
-  function loadBarsBefore(root, now, neededBars) {
+  function loadBarsBefore(root, now, neededBars, contractKey = null) {
     const endDate = dateKey(now);
     const nowMs = new Date(now).getTime();
     const collected = [];
@@ -143,7 +143,7 @@ function createHistoricalPriceFeedService(options = {}) {
 
     while (collected.length < neededBars && daysBack < MAX_LOOKBACK_DAYS) {
       const date = shiftDate(endDate, -daysBack);
-      const bars = loadDay(root, date);
+      const bars = loadDay(root, date, contractKey);
       // Endast barer som stängt före `now`. Ett enda framtida ljus här gör
       // hela körningen oreproducerbar.
       const usable = bars.filter((bar) => {
@@ -158,7 +158,7 @@ function createHistoricalPriceFeedService(options = {}) {
     return { bars: collected, daysScanned: daysBack };
   }
 
-  function getCandles(root, { now = new Date(), timeframe = '1m', limit = 50 } = {}) {
+  function getCandles(root, { now = new Date(), timeframe = '1m', limit = 50, contractKey = null } = {}) {
     const key = upper(root);
     const minutes = candleWindow.timeframeMinutes(timeframe);
     if (!minutes) {
@@ -175,13 +175,22 @@ function createHistoricalPriceFeedService(options = {}) {
       Math.max(1, limit) * minutes * 2 + minutes,
       BARS_PER_DAY_ESTIMATE * MAX_LOOKBACK_DAYS,
     );
-    const { bars, daysScanned } = loadBarsBefore(key, now, neededBars);
+    const { bars, daysScanned } = loadBarsBefore(key, now, neededBars, contractKey);
 
     if (!bars.length) {
       return {
         candles: [], openCandle: null, source: 'ib_historical_store',
         dataQuality: 'missing', contract: null,
         warnings: ['no_historical_bars_in_store'],
+      };
+    }
+
+    const contracts = [...new Set(bars.map((bar) => bar.contractKey).filter(Boolean))];
+    if (!contractKey && contracts.length > 1) {
+      return {
+        candles: [], openCandle: null, source: 'historical_unavailable',
+        dataQuality: 'ambiguous', contract: null,
+        warnings: ['ambiguous_contract_ownership', ...contracts.sort()],
       };
     }
 
@@ -232,15 +241,34 @@ function createHistoricalPriceFeedService(options = {}) {
   //
   // Får ENDAST anropas av exekveringslagret, efter att beslutet är fattat.
   // Native Engine ser aldrig den här metoden.
-  function getBarsBetween(root, from, to) {
+  function getBarsBetweenResult(root, from, to, { contractKey = null } = {}) {
     const key = upper(root);
     const fromMs = new Date(from).getTime();
     const toMs = new Date(to).getTime();
-    if (!Number.isFinite(fromMs) || !Number.isFinite(toMs) || toMs < fromMs) return [];
+    if (!Number.isFinite(fromMs) || !Number.isFinite(toMs) || toMs < fromMs) {
+      return { ok: false, reason: 'historical_window_invalid', bars: [] };
+    }
 
+    // ── Filnamnet är inte samma sak som barens kalenderdatum ──────────────────
+    //
+    // Den kontraktspartitionerade backfillen partitionerar på CME:s HANDELSDAG,
+    // och en handelsdag börjar kvällen före: filen 2026-01-15.jsonl innehåller
+    // barer från 2026-01-15T23:00Z till 2026-01-16T21:59Z. Den äldre
+    // rotinfångningen partitionerar på kalenderdatum.
+    //
+    // Skanningen läste tidigare bara filerna [from..to] och missade därför
+    // varje bar vars handelsdag hette något annat än dess kalenderdatum. Utfallet
+    // var no_bars_after_order på ALLA entries i kontraktsläge — signalerna gick
+    // igenom och ingen affär kunde fyllas.
+    //
+    // Ett dygns marginal åt vardera hållet täcker båda konventionerna. Urvalet
+    // görs ändå av tidsfiltret nedan, så marginalen kan inte släppa in en bar
+    // utanför fönstret.
     const out = [];
-    for (let ms = fromMs; ms <= toMs + 24 * 60 * 60 * 1000; ms += 24 * 60 * 60 * 1000) {
-      for (const bar of loadDay(key, dateKey(ms))) {
+    const scanFrom = shiftDate(dateKey(fromMs), -1);
+    const scanTo = shiftDate(dateKey(toMs), 1);
+    for (let cursorDate = scanFrom; cursorDate <= scanTo; cursorDate = shiftDate(cursorDate, 1)) {
+      for (const bar of loadDay(key, cursorDate, contractKey)) {
         const ts = barTimestamp(bar);
         const barMs = ts ? new Date(ts).getTime() : NaN;
         if (Number.isFinite(barMs) && barMs >= fromMs && barMs <= toMs) {
@@ -253,18 +281,46 @@ function createHistoricalPriceFeedService(options = {}) {
             low: bar.low ?? bar.l,
             close: bar.close ?? bar.c,
             volume: bar.volume ?? bar.v ?? null,
+            contractKey: bar.contractKey || null,
+            conId: bar.conId || null,
+            localSymbol: bar.localSymbol || null,
+            expiry: bar.expiry || null,
+            tradingDay: bar.tradingDay || null,
+            session: bar.session || null,
           });
         }
       }
     }
-    return out.sort((a, b) => new Date(a.ts) - new Date(b.ts));
+    // Marginalen ovan läser en dagfil extra i vardera änden. Skulle samma bar
+    // någonsin ligga i två dagfiler — vilket den inte gör idag, men vilket
+    // marginalen gör MÖJLIGT — hade den räknats två gånger, och en dubblerad
+    // bar i exekveringsvägen är en påhittad affärsmöjlighet. Nyckeln är
+    // kontrakt plus tidsstämpel, samma nyckel som marketDataStore använder:
+    // två kontrakt får ha en bar på samma sekund, samma kontrakt får inte.
+    const seen = new Set();
+    const unique = out.filter((bar) => {
+      const key = `${bar.contractKey || 'root'}|${bar.ts}`;
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+
+    const identities = [...new Set(unique.map((bar) => bar.contractKey).filter(Boolean))];
+    if (!contractKey && identities.length > 1) {
+      return { ok: false, reason: 'ambiguous_contract_ownership', contracts: identities.sort(), bars: [] };
+    }
+    return { ok: true, reason: null, contracts: identities.sort(), bars: unique.sort((a, b) => new Date(a.ts) - new Date(b.ts)) };
+  }
+
+  function getBarsBetween(root, from, to, options = {}) {
+    return getBarsBetweenResult(root, from, to, options).bars;
   }
 
   // Delegerar till quote-källan. Feeden avgör VILKEN bar som är den sista
   // kända vid `now`; källan avgör hur en quote ser ut.
-  function getQuote(root, now = new Date()) {
+  function getQuote(root, now = new Date(), options = {}) {
     const key = upper(root);
-    const result = getCandles(key, { now, timeframe: '1m', limit: 1 });
+    const result = getCandles(key, { now, timeframe: '1m', limit: 1, ...options });
     const lastCandle = result.candles[result.candles.length - 1] || null;
     return quoteSource({ root: key, now, lastCandle, store: dataStore, source }) || null;
   }
@@ -274,9 +330,10 @@ function createHistoricalPriceFeedService(options = {}) {
     getCandles,
     getQuote,
     getBarsBetween,
+    getBarsBetweenResult,
     clearCache,
     quoteSourceName: quoteSource === derivedFromCandleQuoteSource ? 'derived_from_candle' : 'custom',
-    _internal: { loadBarsBefore, contractFromBars },
+  _internal: { loadBarsBefore, contractFromBars, getBarsBetweenResult },
   };
 }
 

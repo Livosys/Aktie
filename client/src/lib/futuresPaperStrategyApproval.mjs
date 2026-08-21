@@ -297,10 +297,10 @@ export function strategyDetailFields(strategy) {
 // ── Topplistor (leaders) ─────────────────────────────────────────────────────
 // Mappar backendens leaders-block till visningsrader. Ändrar inga värden.
 export const LEADER_ROWS = Object.freeze([
-  { key: 'highestNetPnl', label: 'Högst nettoresultat', unit: 'kr' },
+  { key: 'highestNetPnl', label: 'Högst nettoresultat', unit: 'money' },
   { key: 'highestWinRate', label: 'Högst win rate', unit: '%' },
   { key: 'mostWins', label: 'Flest vinster', unit: 'V' },
-  { key: 'highestAverageNetPnl', label: 'Högst snitt per trade', unit: 'kr' },
+  { key: 'highestAverageNetPnl', label: 'Högst snitt per trade', unit: 'money' },
 ]);
 
 export function leaderRows(leaders) {

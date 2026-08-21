@@ -24,7 +24,7 @@ export function DashboardTopNav() {
           );
         })}
       </div>
-      <span className="dash-topnav-safety" title="Paper-only research platform">paper-only</span>
+      <span className="dash-topnav-safety" title="Fabriken kan granskas utan riktiga order">Säkert testläge</span>
     </nav>
   );
 }
@@ -52,10 +52,10 @@ export function DashboardTabs({ tabs = [], active, onChange }) {
 export function SafetyBadges({ safety = {} }) {
   const showFlag = (value) => (value === null || value === undefined || value === '' ? '—' : String(value));
   const rows = [
-    ['mode', showFlag(safety.mode), safety.mode === 'paper_only'],
-    ['live_trading', showFlag(safety.live_trading_enabled), safety.live_trading_enabled === false],
-    ['broker', showFlag(safety.broker_enabled), safety.broker_enabled === false],
-    ['can_place_orders', showFlag(safety.can_place_orders), safety.can_place_orders === false],
+    ['Läge', showFlag(safety.mode), safety.mode === 'paper_only'],
+    ['Livehandel', showFlag(safety.live_trading_enabled), safety.live_trading_enabled === false],
+    ['Broker', showFlag(safety.broker_enabled), safety.broker_enabled === false],
+    ['Order', showFlag(safety.can_place_orders), safety.can_place_orders === false],
   ];
   return (
     <div className="dash-safety">

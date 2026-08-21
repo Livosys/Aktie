@@ -340,13 +340,34 @@ function getRegistryStrategy(id) {
   }
 }
 
+/**
+ * Registret nycklat på KANONISKT id.
+ *
+ * ── Varför den kanoniska raden måste vinna ─────────────────────────────────
+ *
+ * Flera registerrader normaliseras till samma kanoniska id: den kanoniska
+ * strategin plus dess parametervarianter (`__fast`, `__patient`, `__volatile`).
+ * Kartan skrevs tidigare i listordning, så den SISTA varianten skrev över den
+ * kanoniska raden.
+ *
+ * Varianterna är interna och står inte i execution allowlist. Den kanoniska
+ * strategin bedömdes därför på en variants egenskaper — `registry_managed:
+ * false` — och blockerades med `strategy_not_in_execution_allowlist`. Effekten
+ * var total: INGEN strategi kunde nå READY, och godkännandevyn visade 0 av 145
+ * som körbara trots att tre var allowlistade och producerverifierade.
+ *
+ * En exakt id-träff vinner alltid. En variant får bara fylla en tom plats.
+ */
 function registryStrategiesById() {
   try {
     const status = strategyRegistryService.getStatus();
     const map = new Map();
     for (const row of (status.strategies || [])) {
-      const id = canonicalId(row.strategy_id || row.strategyId || row.id);
-      if (id) map.set(id, row);
+      const rawId = safeString(row.strategy_id || row.strategyId || row.id);
+      const id = canonicalId(rawId);
+      if (!id) continue;
+      const isCanonicalRow = rawId === id;
+      if (isCanonicalRow || !map.has(id)) map.set(id, row);
     }
     return map;
   } catch (err) {

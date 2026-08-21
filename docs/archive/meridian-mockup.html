@@ -1,0 +1,1268 @@
+<!DOCTYPE html>
+<html lang="sv">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Meridian — AI-driven handel</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,400;12..96,600;12..96,700&family=Instrument+Sans:wght@400;500;600&family=Martian+Mono:wght@300;400;500&display=swap" rel="stylesheet">
+<style>
+/* ============================================================
+   MERIDIAN DESIGNSYSTEM 1.0
+   Tokens — allt i produkten härleds härifrån.
+   ============================================================ */
+:root{
+  /* Yta: bläckblå, inte svart. Svart = terminal. Bläck = instrument. */
+  --ink:        #0D141C;
+  --ink-2:      #121C26;
+  --ink-3:      #17232F;
+  --ink-4:      #1D2C3A;
+  --line:       #22313F;
+  --line-soft:  #1A2632;
+
+  /* Text */
+  --fg:         #E7EBEF;
+  --fg-2:       #9AAABA;
+  --fg-3:       #62778A;
+
+  /* Tillstånd — färg betyder alltid samma sak, överallt */
+  --brass:      #C79A4B;   /* AI äger detta / rekommendation */
+  --brass-dim:  #6B5426;
+  --teal:       #4FA8A0;   /* arbetar just nu */
+  --green:      #5FB98B;   /* bekräftat bra / skarpt */
+  --red:        #D9736A;   /* avvikelse / stopp */
+  --violet:     #8A7FC7;   /* labb / osäkert */
+  --amber-bg:   rgba(199,154,75,.10);
+  --teal-bg:    rgba(79,168,160,.10);
+  --green-bg:   rgba(95,185,139,.10);
+  --red-bg:     rgba(217,115,106,.10);
+  --violet-bg:  rgba(138,127,199,.10);
+
+  /* Typografi */
+  --display: 'Bricolage Grotesque', 'Helvetica Neue', sans-serif;
+  --body:    'Instrument Sans', -apple-system, 'Segoe UI', sans-serif;
+  --data:    'Martian Mono', ui-monospace, 'SF Mono', monospace;
+
+  /* Spacing — 4px-bas, 8px-rytm */
+  --s1:4px; --s2:8px; --s3:12px; --s4:16px; --s5:24px; --s6:32px; --s7:48px; --s8:64px;
+
+  --r-sm:6px; --r:10px; --r-lg:14px;
+  --shadow: 0 1px 0 rgba(255,255,255,.03) inset, 0 8px 24px -12px rgba(0,0,0,.6);
+}
+
+*{box-sizing:border-box; margin:0; padding:0}
+html{-webkit-font-smoothing:antialiased; text-rendering:optimizeLegibility}
+body{
+  background:var(--ink); color:var(--fg);
+  font-family:var(--body); font-size:14px; line-height:1.5;
+  min-height:100vh;
+}
+::selection{background:var(--brass); color:var(--ink)}
+:focus-visible{outline:2px solid var(--brass); outline-offset:2px; border-radius:4px}
+
+/* --- Typskala --------------------------------------------- */
+.t-hero{font-family:var(--display); font-size:38px; line-height:1.05; font-weight:600; letter-spacing:-.025em}
+.t-h1{font-family:var(--display); font-size:26px; line-height:1.15; font-weight:600; letter-spacing:-.02em}
+.t-h2{font-family:var(--display); font-size:18px; font-weight:600; letter-spacing:-.01em}
+.t-h3{font-size:14px; font-weight:600; letter-spacing:-.005em}
+.t-body{font-size:14px; color:var(--fg-2)}
+.t-small{font-size:12.5px; color:var(--fg-2)}
+.eyebrow{
+  font-family:var(--data); font-size:9.5px; font-weight:400;
+  letter-spacing:.16em; text-transform:uppercase; color:var(--fg-3);
+}
+.num{font-family:var(--data); font-weight:400; letter-spacing:-.03em; font-variant-numeric:tabular-nums}
+.pos{color:var(--green)} .neg{color:var(--red)} .dim{color:var(--fg-3)}
+
+/* ============================================================
+   SKAL
+   ============================================================ */
+.app{display:grid; grid-template-columns:236px 1fr; min-height:100vh}
+
+/* --- Sidnavigation ---------------------------------------- */
+.sidebar{
+  border-right:1px solid var(--line-soft); background:var(--ink);
+  display:flex; flex-direction:column; position:sticky; top:0; height:100vh;
+}
+.brand{padding:var(--s5) var(--s5) var(--s6); display:flex; align-items:center; gap:10px}
+.mark{width:22px; height:22px; flex:none}
+.brand-name{font-family:var(--display); font-weight:700; font-size:16px; letter-spacing:-.02em}
+.nav{padding:0 var(--s3); display:flex; flex-direction:column; gap:1px}
+.nav-label{padding:var(--s4) var(--s3) var(--s2)}
+.nav-item{
+  display:flex; align-items:center; gap:10px; width:100%;
+  padding:8px var(--s3); border-radius:var(--r-sm); border:0; background:none;
+  color:var(--fg-2); font:inherit; font-size:13.5px; cursor:pointer; text-align:left;
+  transition:background .12s, color .12s;
+}
+.nav-item:hover{background:var(--ink-2); color:var(--fg)}
+.nav-item[aria-current="page"]{background:var(--ink-3); color:var(--fg); font-weight:500}
+.nav-item svg{width:15px; height:15px; flex:none; opacity:.8}
+.nav-item[aria-current="page"] svg{color:var(--brass); opacity:1}
+.nav-count{margin-left:auto; font-family:var(--data); font-size:10px; color:var(--fg-3)}
+.nav-dot{margin-left:auto; width:5px; height:5px; border-radius:50%; background:var(--brass)}
+
+/* AI-status i sidfoten — alltid synlig, aldrig i vägen */
+.ai-status{margin-top:auto; padding:var(--s4) var(--s5) var(--s5); border-top:1px solid var(--line-soft)}
+.ai-status .row{display:flex; align-items:center; gap:8px; margin-bottom:6px}
+.pulse{width:7px; height:7px; border-radius:50%; background:var(--teal); position:relative; flex:none}
+.pulse::after{
+  content:''; position:absolute; inset:-4px; border-radius:50%;
+  border:1px solid var(--teal); opacity:.5; animation:ping 2.4s ease-out infinite;
+}
+@keyframes ping{0%{transform:scale(.6); opacity:.7} 100%{transform:scale(1.5); opacity:0}}
+
+/* --- Topbar ----------------------------------------------- */
+.main{min-width:0; display:flex; flex-direction:column}
+.topbar{
+  height:56px; border-bottom:1px solid var(--line-soft);
+  display:flex; align-items:center; gap:var(--s4); padding:0 var(--s6);
+  position:sticky; top:0; background:rgba(13,20,28,.82); backdrop-filter:blur(12px); z-index:20;
+}
+.crumb{font-size:13px; color:var(--fg-3)}
+.crumb b{color:var(--fg); font-weight:500}
+.topbar-right{margin-left:auto; display:flex; align-items:center; gap:var(--s3)}
+.pill{
+  display:inline-flex; align-items:center; gap:7px; height:28px; padding:0 11px;
+  border:1px solid var(--line); border-radius:999px; background:var(--ink-2);
+  font-size:12px; color:var(--fg-2); cursor:pointer;
+}
+.pill:hover{background:var(--ink-3); color:var(--fg)}
+.pill .dot{width:6px; height:6px; border-radius:50%; background:var(--green)}
+
+.page{padding:var(--s6) var(--s6) var(--s8); max-width:1240px; width:100%; animation:rise .32s cubic-bezier(.2,.7,.3,1)}
+@keyframes rise{from{opacity:0; transform:translateY(6px)} to{opacity:1; transform:none}}
+@media (prefers-reduced-motion:reduce){*{animation:none !important; transition:none !important}}
+
+/* ============================================================
+   KOMPONENTER
+   ============================================================ */
+
+/* Card — bärande yta. Vänsterskenan kodar tillstånd. */
+.card{
+  background:var(--ink-2); border:1px solid var(--line-soft); border-radius:var(--r);
+  padding:var(--s5); position:relative; overflow:hidden;
+}
+.card.rail::before{content:''; position:absolute; left:0; top:0; bottom:0; width:2px; background:var(--fg-3)}
+.card.rail-brass::before{background:var(--brass)}
+.card.rail-teal::before{background:var(--teal)}
+.card.rail-green::before{background:var(--green)}
+.card.rail-red::before{background:var(--red)}
+.card.rail-violet::before{background:var(--violet)}
+.card-head{display:flex; align-items:flex-start; gap:var(--s3); margin-bottom:var(--s4)}
+.card-head .eyebrow{margin-bottom:5px}
+
+.grid{display:grid; gap:var(--s4)}
+.g2{grid-template-columns:repeat(2,1fr)}
+.g3{grid-template-columns:repeat(3,1fr)}
+.g4{grid-template-columns:repeat(4,1fr)}
+@media(max-width:1100px){.g3,.g4{grid-template-columns:repeat(2,1fr)}}
+
+/* Badge */
+.badge{
+  display:inline-flex; align-items:center; gap:5px; height:21px; padding:0 8px;
+  border-radius:5px; font-family:var(--data); font-size:9.5px; letter-spacing:.09em;
+  text-transform:uppercase; border:1px solid transparent; white-space:nowrap;
+}
+.b-brass{background:var(--amber-bg); color:var(--brass); border-color:rgba(199,154,75,.24)}
+.b-teal{background:var(--teal-bg); color:var(--teal); border-color:rgba(79,168,160,.24)}
+.b-green{background:var(--green-bg); color:var(--green); border-color:rgba(95,185,139,.24)}
+.b-red{background:var(--red-bg); color:var(--red); border-color:rgba(217,115,106,.24)}
+.b-violet{background:var(--violet-bg); color:var(--violet); border-color:rgba(138,127,199,.24)}
+.b-mute{background:var(--ink-3); color:var(--fg-3); border-color:var(--line)}
+
+/* Knappar */
+.btn{
+  display:inline-flex; align-items:center; justify-content:center; gap:7px;
+  height:33px; padding:0 14px; border-radius:7px; border:1px solid var(--line);
+  background:var(--ink-3); color:var(--fg); font:inherit; font-size:13px; font-weight:500;
+  cursor:pointer; transition:.12s;
+}
+.btn:hover{background:var(--ink-4); border-color:var(--fg-3)}
+.btn-primary{background:var(--brass); border-color:var(--brass); color:#17120A; font-weight:600}
+.btn-primary:hover{background:#D9AC5C; border-color:#D9AC5C}
+.btn-ghost{background:transparent; border-color:transparent; color:var(--fg-2)}
+.btn-ghost:hover{background:var(--ink-3); color:var(--fg)}
+.btn-sm{height:27px; padding:0 10px; font-size:12px}
+
+/* Tabell */
+table{width:100%; border-collapse:collapse}
+th{
+  text-align:left; font-family:var(--data); font-size:9.5px; letter-spacing:.13em;
+  text-transform:uppercase; color:var(--fg-3); font-weight:400;
+  padding:0 var(--s3) var(--s3); border-bottom:1px solid var(--line-soft);
+}
+td{padding:13px var(--s3); border-bottom:1px solid var(--line-soft); font-size:13.5px; vertical-align:middle}
+tbody tr{cursor:pointer; transition:background .1s}
+tbody tr:hover{background:var(--ink-3)}
+tbody tr:last-child td{border-bottom:0}
+th:last-child, td:last-child{text-align:right; padding-right:0}
+th:first-child, td:first-child{padding-left:0}
+
+/* Metrik */
+.metric{display:flex; flex-direction:column; gap:5px}
+.metric .v{font-family:var(--data); font-size:23px; letter-spacing:-.04em; font-weight:400}
+.metric .l{font-size:12px; color:var(--fg-3)}
+
+/* Listrad — används i händelseflöden */
+.row-item{
+  display:flex; gap:var(--s4); align-items:flex-start; padding:var(--s4) 0;
+  border-bottom:1px solid var(--line-soft);
+}
+.row-item:last-child{border-bottom:0}
+.row-time{font-family:var(--data); font-size:11px; color:var(--fg-3); width:44px; flex:none; padding-top:2px}
+.row-body{flex:1; min-width:0}
+.row-body p{color:var(--fg-2); font-size:13px; margin-top:3px}
+
+/* Tomläge */
+.empty{
+  text-align:center; padding:var(--s7) var(--s5); border:1px dashed var(--line);
+  border-radius:var(--r); color:var(--fg-3);
+}
+.empty .t-h3{color:var(--fg-2); margin-bottom:6px}
+
+/* Laddläge */
+.skeleton{
+  background:linear-gradient(90deg,var(--ink-3) 25%,var(--ink-4) 50%,var(--ink-3) 75%);
+  background-size:200% 100%; animation:shimmer 1.4s infinite; border-radius:5px; height:11px;
+}
+@keyframes shimmer{to{background-position:-200% 0}}
+
+/* Hjälpruta */
+.hint{
+  display:flex; gap:10px; padding:var(--s3) var(--s4); border-radius:var(--r-sm);
+  background:var(--ink-3); border:1px solid var(--line); font-size:12.5px; color:var(--fg-2);
+}
+.hint svg{width:14px; height:14px; flex:none; color:var(--fg-3); margin-top:2px}
+
+/* Segmenterad kontroll */
+.seg{display:inline-flex; background:var(--ink-2); border:1px solid var(--line); border-radius:8px; padding:2px}
+.seg button{
+  height:27px; padding:0 12px; border:0; border-radius:6px; background:none;
+  color:var(--fg-3); font:inherit; font-size:12.5px; cursor:pointer;
+}
+.seg button[aria-pressed="true"]{background:var(--ink-4); color:var(--fg)}
+
+/* ============================================================
+   SIGNATUR: DYGNSBANDET
+   En kontinuerlig 24h-remsa. Varje streck = en sak AI:n gjorde.
+   Höjd = betydelse. Färg = tillstånd. Detta är produktens ansikte.
+   ============================================================ */
+.band{
+  position:relative; border:1px solid var(--line-soft); border-radius:var(--r-lg);
+  background:linear-gradient(180deg,var(--ink-2),rgba(18,28,38,.4));
+  padding:var(--s5) var(--s5) var(--s3);
+}
+.band-svg{width:100%; height:96px; display:block; overflow:visible}
+.band-axis{display:flex; justify-content:space-between; margin-top:10px}
+.band-axis span{font-family:var(--data); font-size:9.5px; color:var(--fg-3); letter-spacing:.08em}
+.tick{transition:opacity .15s}
+.band:hover .tick{opacity:.45}
+.band .tick:hover{opacity:1}
+.now-line{stroke:var(--brass); stroke-width:1; stroke-dasharray:2 3}
+
+/* Sparkline i kort */
+.spark{width:100%; height:34px; display:block}
+
+/* Pipeline (Arbetet) */
+.pipe{display:grid; grid-template-columns:repeat(4,1fr); gap:var(--s3); position:relative}
+.pipe-stage{
+  border:1px solid var(--line-soft); border-radius:var(--r); background:var(--ink-2);
+  padding:var(--s4); position:relative;
+}
+.pipe-stage .n{font-family:var(--data); font-size:26px; letter-spacing:-.05em}
+.pipe-arrow{position:absolute; top:50%; right:-13px; color:var(--line); z-index:2}
+
+/* Detaljpanel (drawer) */
+.drawer-bg{
+  position:fixed; inset:0; background:rgba(6,10,14,.62); backdrop-filter:blur(2px);
+  z-index:40; opacity:0; pointer-events:none; transition:opacity .2s;
+}
+.drawer-bg.open{opacity:1; pointer-events:auto}
+.drawer{
+  position:fixed; top:0; right:0; bottom:0; width:min(560px,94vw); background:var(--ink-2);
+  border-left:1px solid var(--line); z-index:41; transform:translateX(100%);
+  transition:transform .28s cubic-bezier(.2,.7,.3,1); overflow-y:auto; padding:var(--s6);
+}
+.drawer.open{transform:none}
+.drawer-close{position:absolute; top:var(--s4); right:var(--s4)}
+
+.hr{height:1px; background:var(--line-soft); border:0; margin:var(--s5) 0}
+.stack>*+*{margin-top:var(--s4)}
+.stack-sm>*+*{margin-top:var(--s2)}
+.flex{display:flex; align-items:center; gap:var(--s3)}
+.between{display:flex; align-items:center; justify-content:space-between; gap:var(--s4)}
+.mt2{margin-top:var(--s2)} .mt3{margin-top:var(--s3)} .mt4{margin-top:var(--s4)}
+.mt5{margin-top:var(--s5)} .mt6{margin-top:var(--s6)} .mb4{margin-bottom:var(--s4)}
+.mb5{margin-bottom:var(--s5)} .mb6{margin-bottom:var(--s6)}
+.hidden{display:none !important}
+</style>
+</head>
+<body>
+<div class="app">
+
+  <!-- ==================== SIDNAV ==================== -->
+  <aside class="sidebar">
+    <div class="brand">
+      <svg class="mark" viewBox="0 0 24 24" fill="none">
+        <circle cx="12" cy="12" r="10" stroke="#22313F" stroke-width="1.5"/>
+        <path d="M2 12h20" stroke="#C79A4B" stroke-width="1.5"/>
+        <path d="M12 2c3.5 3.2 3.5 16.8 0 20-3.5-3.2-3.5-16.8 0-20z" stroke="#4FA8A0" stroke-width="1.3"/>
+      </svg>
+      <span class="brand-name">Meridian</span>
+    </div>
+
+    <nav class="nav">
+      <div class="nav-label eyebrow">Översikt</div>
+      <button class="nav-item" data-page="idag" aria-current="page">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>
+        Idag <span class="nav-dot"></span>
+      </button>
+      <button class="nav-item" data-page="arbetet">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 18V8M10 18V5M16 18v-7M22 18h-20"/></svg>
+        Arbetet <span class="nav-count">7</span>
+      </button>
+
+      <div class="nav-label eyebrow">Kapital</div>
+      <button class="nav-item" data-page="strategier">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="4" width="6" height="16" rx="1"/><rect x="11" y="4" width="4" height="16" rx="1"/><path d="M18 5l3 14"/></svg>
+        Strategier <span class="nav-count">24</span>
+      </button>
+      <button class="nav-item" data-page="utvarderingar">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M3 17l5-6 4 3 5-8 4 5"/><path d="M3 21h18"/></svg>
+        Utvärderingar
+      </button>
+      <button class="nav-item" data-page="provhandel">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="5" width="18" height="14" rx="2"/><path d="M3 10h18M8 15h3"/></svg>
+        Provhandel <span class="nav-count">4</span>
+      </button>
+
+      <div class="nav-label eyebrow">Minne</div>
+      <button class="nav-item" data-page="journal">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M5 4h11l4 4v12H5z"/><path d="M9 10h7M9 14h5"/></svg>
+        Journal
+      </button>
+      <button class="nav-item" data-page="system">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 3l8 4v6c0 5-3.5 7.5-8 8-4.5-.5-8-3-8-8V7z"/><path d="M9 12l2 2 4-4"/></svg>
+        System
+      </button>
+    </nav>
+
+    <div class="ai-status">
+      <div class="row"><span class="pulse"></span><span class="t-small" style="color:var(--fg)">AI:n arbetar</span></div>
+      <div class="eyebrow" style="letter-spacing:.1em">Sedan 05:00 · 7 uppgifter</div>
+    </div>
+  </aside>
+
+  <!-- ==================== HUVUDYTA ==================== -->
+  <div class="main">
+    <header class="topbar">
+      <span class="crumb"><b id="crumb">Idag</b></span>
+      <div class="topbar-right">
+        <button class="pill" data-page="system"><span class="dot"></span> Allt fungerar</button>
+        <button class="pill">Tis 18 aug · 14:02</button>
+      </div>
+    </header>
+        <div id="views">
+
+    <!-- ============================================================
+         SIDA 1 — IDAG (startsida)
+         Jobb: svara på "behöver jag göra något?" innan användaren hinner fråga.
+         ============================================================ -->
+    <main class="page" id="p-idag">
+
+      <!-- HERO: en mening om läget. Inte ett tal. -->
+      <div class="mb6">
+        <div class="eyebrow mb4">Tisdag 18 augusti · sedan 05:00</div>
+        <h1 class="t-hero" style="max-width:20ch">AI:n arbetar.<br><span style="color:var(--fg-3)">Två saker väntar på dig.</span></h1>
+        <p class="t-body mt4" style="max-width:62ch">
+          Nattens genomgång är klar. En strategi föreslås för provhandel, en annan har
+          börjat avvika från sitt testade beteende. Resten sköter sig självt.
+        </p>
+      </div>
+
+      <!-- SIGNATUR: Dygnsbandet -->
+      <section class="band mb6">
+        <div class="between mb4">
+          <div>
+            <div class="eyebrow">Dygnsbandet</div>
+            <div class="t-h3 mt2">Senaste 24 timmarna</div>
+          </div>
+          <div class="flex">
+            <span class="badge b-teal">42 tester</span>
+            <span class="badge b-brass">3 förslag</span>
+            <span class="badge b-red">1 avvikelse</span>
+          </div>
+        </div>
+        <svg class="band-svg" id="bandSvg" viewBox="0 0 1000 96" preserveAspectRatio="none"></svg>
+        <div class="band-axis">
+          <span>14:00 IGÅR</span><span>20:00</span><span>02:00</span><span>08:00</span><span>NU 14:02</span>
+        </div>
+      </section>
+
+      <!-- BEHÖVER DIG — den enda ytan med krav på användaren -->
+      <div class="between mb4">
+        <h2 class="t-h1">Behöver dig</h2>
+        <span class="eyebrow">2 av 2 kvar</span>
+      </div>
+      <div class="grid g2 mb6">
+
+        <article class="card rail rail-brass">
+          <div class="card-head">
+            <div style="flex:1">
+              <div class="eyebrow">Förslag · väntar sedan 06:14</div>
+              <h3 class="t-h2">Släpp in <b>Nordisk Momentum</b> i provhandel</h3>
+            </div>
+            <span class="badge b-brass">Hög tillit</span>
+          </div>
+          <p class="t-body">
+            Strategin har hållit i sex år av historik och i tolv separata marknadsklimat.
+            AI:n vill nu se hur den beter sig mot dagens marknad — utan riktiga pengar.
+          </p>
+          <div class="grid g3 mt5 mb5">
+            <div class="metric"><span class="v pos">+18,4 %</span><span class="l">Avkastning i test</span></div>
+            <div class="metric"><span class="v">−7,1 %</span><span class="l">Största nedgång</span></div>
+            <div class="metric"><span class="v">1,62</span><span class="l">Avkastning per risk</span></div>
+          </div>
+          <div class="flex">
+            <button class="btn btn-primary" data-drawer="forslag">Godkänn provhandel</button>
+            <button class="btn" data-drawer="forslag">Visa underlaget</button>
+            <button class="btn btn-ghost">Avvakta</button>
+          </div>
+        </article>
+
+        <article class="card rail rail-red">
+          <div class="card-head">
+            <div style="flex:1">
+              <div class="eyebrow">Avvikelse · upptäckt 11:47</div>
+              <h3 class="t-h2"><b>Volatilitetsskörd</b> beter sig inte som i testet</h3>
+            </div>
+            <span class="badge b-red">Åtgärd krävs</span>
+          </div>
+          <p class="t-body">
+            Strategin tar 40 % fler affärer än den gjorde i historiken och håller dem
+            kortare. AI:n har pausat nya positioner och väntar på ditt besked.
+          </p>
+          <div class="grid g3 mt5 mb5">
+            <div class="metric"><span class="v neg">−2,3 %</span><span class="l">Provhandel 7 dagar</span></div>
+            <div class="metric"><span class="v">31</span><span class="l">Affärer (väntat: 22)</span></div>
+            <div class="metric"><span class="v">4 d</span><span class="l">Sedan avvikelsen</span></div>
+          </div>
+          <div class="flex">
+            <button class="btn btn-primary" data-drawer="avvikelse">Se vad som ändrats</button>
+            <button class="btn">Stoppa strategin</button>
+            <button class="btn btn-ghost">Låt AI:n fortsätta</button>
+          </div>
+        </article>
+      </div>
+
+      <!-- LÄGET — tre kort, ingen kräver handling -->
+      <h2 class="t-h1 mb4">Läget</h2>
+      <div class="grid g3 mb6">
+
+        <article class="card rail rail-green">
+          <div class="eyebrow">Provhandel</div>
+          <div class="between mt3">
+            <span class="num pos" style="font-size:28px; letter-spacing:-.05em">+4,7 %</span>
+            <span class="badge b-green">4 aktiva</span>
+          </div>
+          <svg class="spark mt4" viewBox="0 0 200 34" preserveAspectRatio="none">
+            <path d="M0,26 L20,24 L40,27 L60,20 L80,22 L100,15 L120,17 L140,11 L160,13 L180,7 L200,5"
+                  fill="none" stroke="#5FB98B" stroke-width="1.6"/>
+            <path d="M0,26 L20,24 L40,27 L60,20 L80,22 L100,15 L120,17 L140,11 L160,13 L180,7 L200,5 L200,34 L0,34Z"
+                  fill="url(#gg)" opacity=".16"/>
+            <defs><linearGradient id="gg" x1="0" y1="0" x2="0" y2="1">
+              <stop offset="0" stop-color="#5FB98B"/><stop offset="1" stop-color="#5FB98B" stop-opacity="0"/>
+            </linearGradient></defs>
+          </svg>
+          <p class="t-small mt3">30 dagar. Tre strategier bidrar, en drar ner.</p>
+          <button class="btn btn-sm mt4" data-page="provhandel">Öppna provhandel</button>
+        </article>
+
+        <article class="card rail rail-brass">
+          <div class="eyebrow">AI:ns arbete</div>
+          <div class="between mt3">
+            <span class="num" style="font-size:28px; letter-spacing:-.05em">7</span>
+            <span class="badge b-teal">Pågår</span>
+          </div>
+          <div class="stack-sm mt4">
+            <div class="between t-small"><span>Prövar mot historik</span><span class="num dim">4</span></div>
+            <div class="between t-small"><span>Granskar resultat</span><span class="num dim">2</span></div>
+            <div class="between t-small"><span>Väntar på plats</span><span class="num dim">1</span></div>
+          </div>
+          <p class="t-small mt3">Klart om ca 40 minuter.</p>
+          <button class="btn btn-sm mt4" data-page="arbetet">Se vad AI:n gör</button>
+        </article>
+
+        <article class="card rail">
+          <div class="eyebrow">Marknaden idag</div>
+          <div class="between mt3">
+            <span class="t-h2">Lugn, stigande</span>
+          </div>
+          <div class="stack-sm mt4">
+            <div class="between t-small"><span>Rörlighet</span><span class="num">Låg · 12,4</span></div>
+            <div class="between t-small"><span>Riktning</span><span class="num pos">Upp 3 dagar</span></div>
+            <div class="between t-small"><span>Liknar historiskt</span><span class="num">Maj 2017</span></div>
+          </div>
+          <p class="t-small mt3">Fyra av dina strategier trivs i det här klimatet.</p>
+          <button class="btn btn-sm mt4" data-drawer="marknad">Vad betyder det?</button>
+        </article>
+      </div>
+
+      <!-- MEDAN DU VAR BORTA -->
+      <div class="between mb4">
+        <h2 class="t-h1">Medan du var borta</h2>
+        <button class="btn btn-ghost btn-sm" data-page="journal">Hela journalen →</button>
+      </div>
+      <div class="card">
+        <div class="row-item">
+          <span class="row-time">11:47</span>
+          <div class="row-body">
+            <div class="t-h3">Pausade Volatilitetsskörd</div>
+            <p>Handelsmönstret skilde sig för mycket från testet. Inga nya positioner tas förrän du bestämt.</p>
+          </div>
+          <span class="badge b-red">Automatisk</span>
+        </div>
+        <div class="row-item">
+          <span class="row-time">06:14</span>
+          <div class="row-body">
+            <div class="t-h3">Föreslog Nordisk Momentum för provhandel</div>
+            <p>Klarade sista granskningen efter 38 tester mot olika tidsperioder.</p>
+          </div>
+          <span class="badge b-brass">Väntar</span>
+        </div>
+        <div class="row-item">
+          <span class="row-time">04:02</span>
+          <div class="row-body">
+            <div class="t-h3">Förkastade 9 av 12 idéer</div>
+            <p>De fungerade bara i en marknadstyp. AI:n sparade anteckningarna i journalen.</p>
+          </div>
+          <span class="badge b-mute">Rutin</span>
+        </div>
+        <div class="row-item">
+          <span class="row-time">01:30</span>
+          <div class="row-body">
+            <div class="t-h3">Hämtade ny marknadsdata</div>
+            <p>Fram till gårdagens stängning. Inga luckor hittades.</p>
+          </div>
+          <span class="badge b-mute">Rutin</span>
+        </div>
+      </div>
+    </main>
+
+    <!-- ============================================================
+         SIDA 2 — ARBETET (AI Dashboard)
+         Jobb: göra AI:ns arbete begripligt utan att avslöja maskineriet.
+         ============================================================ -->
+    <main class="page hidden" id="p-arbetet">
+      <div class="between mb5">
+        <div>
+          <div class="eyebrow mb2">AI:ns arbete</div>
+          <h1 class="t-h1">Sju uppgifter pågår</h1>
+          <p class="t-body mt2">AI:n letar efter strategier som håller. Du behöver inte styra det här.</p>
+        </div>
+        <div class="seg">
+          <button aria-pressed="true">Nu</button><button>Idag</button><button>7 dagar</button>
+        </div>
+      </div>
+
+      <!-- Pipeline: fyra begripliga steg istället för interna köer -->
+      <div class="pipe mb6">
+        <div class="pipe-stage rail card rail-violet">
+          <div class="eyebrow">Steg 1</div>
+          <div class="n mt2">12</div>
+          <div class="t-h3 mt2">Söker idéer</div>
+          <p class="t-small mt2">Kombinerar mönster som fungerat förr.</p>
+          <svg class="pipe-arrow" width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="currentColor"><path d="M3 1l4 4-4 4"/></svg>
+        </div>
+        <div class="pipe-stage rail card rail-teal">
+          <div class="eyebrow">Steg 2</div>
+          <div class="n mt2">4</div>
+          <div class="t-h3 mt2">Prövar mot historik</div>
+          <p class="t-small mt2">Kör idén genom 6 års marknad.</p>
+          <svg class="pipe-arrow" width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="currentColor"><path d="M3 1l4 4-4 4"/></svg>
+        </div>
+        <div class="pipe-stage rail card rail-teal">
+          <div class="eyebrow">Steg 3</div>
+          <div class="n mt2">2</div>
+          <div class="t-h3 mt2">Granskar</div>
+          <p class="t-small mt2">Letar efter tur, glapp och överanpassning.</p>
+          <svg class="pipe-arrow" width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="currentColor"><path d="M3 1l4 4-4 4"/></svg>
+        </div>
+        <div class="pipe-stage rail card rail-brass">
+          <div class="eyebrow">Steg 4</div>
+          <div class="n mt2">1</div>
+          <div class="t-h3 mt2">Rekommenderar</div>
+          <p class="t-small mt2">Lägger fram för dig på Idag.</p>
+        </div>
+      </div>
+
+      <div class="grid" style="grid-template-columns:1.6fr 1fr">
+        <section>
+          <h2 class="t-h2 mb4">Just nu</h2>
+          <div class="card">
+            <table>
+              <thead><tr><th>Uppgift</th><th>Steg</th><th>Startad</th><th>Klar om</th></tr></thead>
+              <tbody>
+                <tr data-drawer="uppgift">
+                  <td><b>Nordisk Momentum</b> — 3 varianter mot 2019–2024<div class="t-small dim">Testar om resultatet håller i andra tidsperioder</div></td>
+                  <td><span class="badge b-teal">Prövar</span></td>
+                  <td class="num dim">13:41</td>
+                  <td class="num">6 min</td>
+                </tr>
+                <tr data-drawer="uppgift">
+                  <td><b>Räntekänslig rotation</b> — granskning<div class="t-small dim">Kontrollerar om resultatet beror på tur</div></td>
+                  <td><span class="badge b-teal">Granskar</span></td>
+                  <td class="num dim">13:52</td>
+                  <td class="num">14 min</td>
+                </tr>
+                <tr data-drawer="uppgift">
+                  <td><b>Utbrott Norden</b> — 1 200 marknadsdagar<div class="t-small dim">Prövar mot nedgångsperioder</div></td>
+                  <td><span class="badge b-teal">Prövar</span></td>
+                  <td class="num dim">12:58</td>
+                  <td class="num">22 min</td>
+                </tr>
+                <tr data-drawer="uppgift">
+                  <td><b>Sektorbalans</b> — 8 nya idéer<div class="t-small dim">Bygger varianter av en strategi som fungerat</div></td>
+                  <td><span class="badge b-violet">Söker</span></td>
+                  <td class="num dim">14:00</td>
+                  <td class="num">38 min</td>
+                </tr>
+                <tr data-drawer="uppgift">
+                  <td><b>Volatilitetsskörd</b> — orsaksanalys<div class="t-small dim">Undersöker varför den avviker</div></td>
+                  <td><span class="badge b-brass">Granskar</span></td>
+                  <td class="num dim">11:47</td>
+                  <td class="num">Väntar på dig</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+
+          <h2 class="t-h2 mb4 mt6">Vad AI:n lärde sig idag</h2>
+          <div class="card">
+            <div class="row-item">
+              <div class="row-body">
+                <div class="t-h3">Trendstrategier tappar i låg rörlighet</div>
+                <p>Sjunde gången mönstret bekräftas. AI:n väger nu ner sådana idéer när rörligheten är under 14.</p>
+              </div>
+              <span class="badge b-green">Bekräftad</span>
+            </div>
+            <div class="row-item">
+              <div class="row-body">
+                <div class="t-h3">Fredagseftermiddagar är opålitliga</div>
+                <p>Resultat efter kl 15 på fredagar går inte att lita på i testerna. Sådana affärer räknas nu bort.</p>
+              </div>
+              <span class="badge b-violet">Ny</span>
+            </div>
+          </div>
+        </section>
+
+        <aside class="stack">
+          <div class="card">
+            <div class="eyebrow mb3">Arbetstakt</div>
+            <div class="metric mb4"><span class="v">42</span><span class="l">Tester senaste dygnet</span></div>
+            <div class="between t-small"><span>Kapacitet i bruk</span><span class="num">68 %</span></div>
+            <div style="height:5px; background:var(--ink-4); border-radius:3px; overflow:hidden" class="mt2">
+              <div style="width:68%; height:100%; background:var(--teal)"></div>
+            </div>
+            <p class="t-small mt3">Gott om utrymme. Inga uppgifter köar.</p>
+          </div>
+
+          <div class="card">
+            <div class="eyebrow mb3">Träffsäkerhet</div>
+            <div class="stack-sm">
+              <div class="between t-small"><span>Idéer prövade (30 d)</span><span class="num">318</span></div>
+              <div class="between t-small"><span>Klarade granskning</span><span class="num">11</span></div>
+              <div class="between t-small"><span>Nådde provhandel</span><span class="num">4</span></div>
+              <div class="between t-small"><span>Blev skarpa</span><span class="num pos">2</span></div>
+            </div>
+            <p class="t-small mt4">Ungefär 1 av 160 idéer överlever hela vägen. Det är väntat.</p>
+          </div>
+
+          <div class="hint">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M12 16v-5M12 8h.01"/></svg>
+            <span>Du kan stänga den här sidan. Inget stannar för att du tittar bort.</span>
+          </div>
+        </aside>
+      </div>
+    </main>
+
+    <!-- ============================================================
+         SIDA 3 — STRATEGIER (bibliotek + labb)
+         Jobb: visa var varje strategi står i sin livscykel.
+         ============================================================ -->
+    <main class="page hidden" id="p-strategier">
+      <div class="between mb5">
+        <div>
+          <div class="eyebrow mb2">Strategier</div>
+          <h1 class="t-h1">24 strategier, 5 stadier</h1>
+          <p class="t-body mt2">Varje strategi rör sig åt höger när den bevisat sig. AI:n flyttar dem — du godkänner de två sista stegen.</p>
+        </div>
+        <button class="btn">Ny idé till AI:n</button>
+      </div>
+
+      <!-- Livscykel som filter — strukturen ÄR informationen -->
+      <div class="grid g4 mb6" style="grid-template-columns:repeat(5,1fr)">
+        <button class="card rail rail-violet" style="text-align:left; cursor:pointer">
+          <div class="eyebrow">Stadium 1</div><div class="num mt2" style="font-size:22px">11</div>
+          <div class="t-h3 mt2">Under prövning</div>
+        </button>
+        <button class="card rail" style="text-align:left; cursor:pointer">
+          <div class="eyebrow">Stadium 2</div><div class="num mt2" style="font-size:22px">6</div>
+          <div class="t-h3 mt2">Godkänd i historik</div>
+        </button>
+        <button class="card rail rail-brass" style="text-align:left; cursor:pointer">
+          <div class="eyebrow">Stadium 3</div><div class="num mt2" style="font-size:22px">1</div>
+          <div class="t-h3 mt2">Väntar på dig</div>
+        </button>
+        <button class="card rail rail-teal" style="text-align:left; cursor:pointer">
+          <div class="eyebrow">Stadium 4</div><div class="num mt2" style="font-size:22px">4</div>
+          <div class="t-h3 mt2">I provhandel</div>
+        </button>
+        <button class="card rail rail-green" style="text-align:left; cursor:pointer">
+          <div class="eyebrow">Stadium 5</div><div class="num mt2" style="font-size:22px">2</div>
+          <div class="t-h3 mt2">Skarp</div>
+        </button>
+      </div>
+
+      <div class="card">
+        <table>
+          <thead>
+            <tr><th>Strategi</th><th>Stadium</th><th>Beteende</th><th>Resultat</th><th>AI:ns tillit</th><th>Utveckling</th></tr>
+          </thead>
+          <tbody>
+            <tr data-drawer="strategi">
+              <td><b>Nordisk Momentum</b><div class="t-small dim">Följer starka rörelser i nordiska storbolag</div></td>
+              <td><span class="badge b-brass">Väntar på dig</span></td>
+              <td class="t-small">Håller 4–9 dagar</td>
+              <td class="num pos">+18,4 %</td>
+              <td><span class="badge b-green">Hög</span></td>
+              <td><svg class="spark" style="width:80px" viewBox="0 0 80 24"><path d="M0,20 L16,17 L32,19 L48,10 L64,8 L80,3" fill="none" stroke="#5FB98B" stroke-width="1.5"/></svg></td>
+            </tr>
+            <tr data-drawer="strategi">
+              <td><b>Volatilitetsskörd</b><div class="t-small dim">Säljer överdriven oro i indexoptioner</div></td>
+              <td><span class="badge b-red">Pausad</span></td>
+              <td class="t-small">Avviker från test</td>
+              <td class="num neg">−2,3 %</td>
+              <td><span class="badge b-red">Sjunkande</span></td>
+              <td><svg class="spark" style="width:80px" viewBox="0 0 80 24"><path d="M0,8 L16,6 L32,11 L48,10 L64,16 L80,20" fill="none" stroke="#D9736A" stroke-width="1.5"/></svg></td>
+            </tr>
+            <tr data-drawer="strategi">
+              <td><b>Sektorbalans</b><div class="t-small dim">Viktar om mellan sektorer varje månad</div></td>
+              <td><span class="badge b-green">Skarp</span></td>
+              <td class="t-small">Byter var 21:a dag</td>
+              <td class="num pos">+9,8 %</td>
+              <td><span class="badge b-green">Hög</span></td>
+              <td><svg class="spark" style="width:80px" viewBox="0 0 80 24"><path d="M0,18 L16,15 L32,16 L48,11 L64,9 L80,6" fill="none" stroke="#5FB98B" stroke-width="1.5"/></svg></td>
+            </tr>
+            <tr data-drawer="strategi">
+              <td><b>Räntekänslig rotation</b><div class="t-small dim">Flyttar kapital efter räntebesked</div></td>
+              <td><span class="badge b-teal">I provhandel</span></td>
+              <td class="t-small">2–3 affärer/månad</td>
+              <td class="num pos">+3,1 %</td>
+              <td><span class="badge b-mute">Medel</span></td>
+              <td><svg class="spark" style="width:80px" viewBox="0 0 80 24"><path d="M0,16 L16,18 L32,13 L48,14 L64,10 L80,9" fill="none" stroke="#4FA8A0" stroke-width="1.5"/></svg></td>
+            </tr>
+            <tr data-drawer="strategi">
+              <td><b>Utbrott Norden</b><div class="t-small dim">Köper när priset bryter ett långt intervall</div></td>
+              <td><span class="badge b-violet">Under prövning</span></td>
+              <td class="t-small">Ovanlig, 8/år</td>
+              <td class="num dim">—</td>
+              <td><span class="badge b-mute">För tidigt</span></td>
+              <td><span class="skeleton" style="width:80px; display:block"></span></td>
+            </tr>
+            <tr data-drawer="strategi">
+              <td><b>Utdelningsfönster</b><div class="t-small dim">Handlar runt utdelningsdatum</div></td>
+              <td><span class="badge b-green">Skarp</span></td>
+              <td class="t-small">Säsongsbunden</td>
+              <td class="num pos">+6,2 %</td>
+              <td><span class="badge b-green">Hög</span></td>
+              <td><svg class="spark" style="width:80px" viewBox="0 0 80 24"><path d="M0,19 L16,19 L32,12 L48,12 L64,12 L80,7" fill="none" stroke="#5FB98B" stroke-width="1.5"/></svg></td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div class="hint mt5">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M12 16v-5M12 8h.01"/></svg>
+        <span><b>Tillit</b> är AI:ns egen bedömning av hur väl den känner strategin — inte en prognos om avkastning.</span>
+      </div>
+    </main>
+
+    <!-- ============================================================
+         SIDA 4 — UTVÄRDERINGAR (historiska tester)
+         Jobb: ge ett omdöme, inte en datadump.
+         ============================================================ -->
+    <main class="page hidden" id="p-utvarderingar">
+      <div class="between mb5">
+        <div>
+          <div class="eyebrow mb2">Utvärderingar</div>
+          <h1 class="t-h1">Hur strategier klarat sig mot historien</h1>
+          <p class="t-body mt2">Varje utvärdering är AI:ns omdöme om en strategi, med underlaget bakom.</p>
+        </div>
+        <div class="seg"><button aria-pressed="true">Alla</button><button>Godkända</button><button>Underkända</button></div>
+      </div>
+
+      <!-- Senaste utvärderingen som huvudobjekt -->
+      <article class="card rail rail-green mb6">
+        <div class="between mb4">
+          <div>
+            <div class="eyebrow">Senast avslutad · idag 06:14</div>
+            <h2 class="t-h1 mt2">Nordisk Momentum håller</h2>
+          </div>
+          <span class="badge b-green">Godkänd</span>
+        </div>
+        <p class="t-body mb5" style="max-width:70ch">
+          Strategin gav vinst i 5 av 6 år och i 12 av 14 marknadsklimat. Den svaga perioden
+          var hösten 2022, då den tappade 7,1 % innan den återhämtade sig på nio veckor.
+          AI:n hittade inga tecken på att resultatet beror på tur eller på anpassning i efterhand.
+        </p>
+
+        <svg viewBox="0 0 900 200" style="width:100%; height:200px" preserveAspectRatio="none">
+          <defs>
+            <linearGradient id="eq" x1="0" y1="0" x2="0" y2="1">
+              <stop offset="0" stop-color="#5FB98B" stop-opacity=".22"/>
+              <stop offset="1" stop-color="#5FB98B" stop-opacity="0"/>
+            </linearGradient>
+          </defs>
+          <line x1="0" y1="160" x2="900" y2="160" stroke="#22313F"/>
+          <line x1="0" y1="100" x2="900" y2="100" stroke="#1A2632"/>
+          <line x1="0" y1="40" x2="900" y2="40" stroke="#1A2632"/>
+          <path d="M0,168 L60,160 L120,150 L180,158 L240,138 L300,126 L360,140 L420,118 L480,96 L540,124 L600,104 L660,78 L720,86 L780,58 L840,44 L900,30" fill="none" stroke="#5FB98B" stroke-width="2"/>
+          <path d="M0,168 L60,160 L120,150 L180,158 L240,138 L300,126 L360,140 L420,118 L480,96 L540,124 L600,104 L660,78 L720,86 L780,58 L840,44 L900,30 L900,200 L0,200Z" fill="url(#eq)"/>
+          <path d="M0,176 L120,172 L240,170 L360,166 L480,160 L600,154 L720,148 L840,142 L900,140" fill="none" stroke="#62778A" stroke-width="1.2" stroke-dasharray="3 4"/>
+          <rect x="480" y="20" width="60" height="180" fill="#D9736A" opacity=".07"/>
+        </svg>
+        <div class="between mt3">
+          <span class="eyebrow">2019</span><span class="eyebrow">Strategin — Marknaden</span><span class="eyebrow">2025</span>
+        </div>
+
+        <hr class="hr">
+        <div class="grid g4">
+          <div class="metric"><span class="v pos">+18,4 %</span><span class="l">Per år, i snitt</span></div>
+          <div class="metric"><span class="v">−7,1 %</span><span class="l">Största nedgång</span></div>
+          <div class="metric"><span class="v">1,62</span><span class="l">Avkastning per risk</span></div>
+          <div class="metric"><span class="v">58 %</span><span class="l">Andel vinstaffärer</span></div>
+        </div>
+        <div class="flex mt5">
+          <button class="btn btn-primary">Föreslå för provhandel</button>
+          <button class="btn" data-drawer="underlag">Så testade AI:n</button>
+        </div>
+      </article>
+
+      <h2 class="t-h2 mb4">Tidigare utvärderingar</h2>
+      <div class="card">
+        <table>
+          <thead><tr><th>Strategi</th><th>Omdöme</th><th>Testad period</th><th>Resultat</th><th>Avslutad</th></tr></thead>
+          <tbody>
+            <tr data-drawer="underlag"><td><b>Räntekänslig rotation</b><div class="t-small dim">Godkänd med förbehåll — få affärer</div></td><td><span class="badge b-teal">Godkänd</span></td><td class="num dim">2017–2025</td><td class="num pos">+11,2 %</td><td class="num dim">17 aug</td></tr>
+            <tr data-drawer="underlag"><td><b>Snabb medelåtergång</b><div class="t-small dim">Vinsten försvann efter avgifter</div></td><td><span class="badge b-red">Underkänd</span></td><td class="num dim">2019–2025</td><td class="num neg">−1,4 %</td><td class="num dim">17 aug</td></tr>
+            <tr data-drawer="underlag"><td><b>Nyhetsdriven swing</b><div class="t-small dim">Fungerade bara 2021</div></td><td><span class="badge b-red">Underkänd</span></td><td class="num dim">2019–2025</td><td class="num pos">+22,0 %</td><td class="num dim">16 aug</td></tr>
+            <tr data-drawer="underlag"><td><b>Sektorbalans v3</b><div class="t-small dim">Bättre än föregående version</div></td><td><span class="badge b-green">Godkänd</span></td><td class="num dim">2015–2025</td><td class="num pos">+9,8 %</td><td class="num dim">14 aug</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </main>
+
+    <!-- ============================================================
+         SIDA 5 — PROVHANDEL (paper trading)
+         Jobb: visa hur strategierna beter sig mot dagens marknad, utan pengar.
+         ============================================================ -->
+    <main class="page hidden" id="p-provhandel">
+      <div class="between mb5">
+        <div>
+          <div class="eyebrow mb2">Provhandel · inga riktiga pengar</div>
+          <h1 class="t-h1">Fyra strategier handlar mot dagens marknad</h1>
+          <p class="t-body mt2">Så här hade det gått om du släppt in dem. Dag 1 var 19 juli.</p>
+        </div>
+        <div class="seg"><button>7 d</button><button aria-pressed="true">30 d</button><button>Allt</button></div>
+      </div>
+
+      <div class="grid g4 mb6">
+        <div class="card"><div class="metric"><span class="v pos">+4,7 %</span><span class="l">Samlat resultat</span></div></div>
+        <div class="card"><div class="metric"><span class="v">−3,2 %</span><span class="l">Största nedgång</span></div></div>
+        <div class="card"><div class="metric"><span class="v">86</span><span class="l">Affärer</span></div></div>
+        <div class="card"><div class="metric"><span class="v pos">+1,1 %</span><span class="l">Mot marknaden</span></div></div>
+      </div>
+
+      <div class="grid" style="grid-template-columns:1.5fr 1fr">
+        <section class="card">
+          <div class="between mb4">
+            <h2 class="t-h2">Per strategi</h2>
+            <span class="eyebrow">30 dagar</span>
+          </div>
+          <table>
+            <thead><tr><th>Strategi</th><th>Läge</th><th>Öppna</th><th>Resultat</th><th>Stämmer med test</th></tr></thead>
+            <tbody>
+              <tr data-drawer="strategi"><td><b>Sektorbalans</b></td><td><span class="badge b-green">Handlar</span></td><td class="num">3</td><td class="num pos">+6,1 %</td><td><span class="badge b-green">Ja</span></td></tr>
+              <tr data-drawer="strategi"><td><b>Utdelningsfönster</b></td><td><span class="badge b-green">Handlar</span></td><td class="num">1</td><td class="num pos">+2,4 %</td><td><span class="badge b-green">Ja</span></td></tr>
+              <tr data-drawer="strategi"><td><b>Räntekänslig rotation</b></td><td><span class="badge b-green">Handlar</span></td><td class="num">2</td><td class="num pos">+3,1 %</td><td><span class="badge b-teal">Nästan</span></td></tr>
+              <tr data-drawer="avvikelse"><td><b>Volatilitetsskörd</b></td><td><span class="badge b-red">Pausad</span></td><td class="num">0</td><td class="num neg">−2,3 %</td><td><span class="badge b-red">Nej</span></td></tr>
+            </tbody>
+          </table>
+
+          <hr class="hr">
+          <div class="between mb4"><h2 class="t-h2">Senaste affärerna</h2><button class="btn btn-ghost btn-sm">Visa alla 86 →</button></div>
+          <table>
+            <thead><tr><th>Tid</th><th>Vad</th><th>Strategi</th><th>Varför</th><th>Resultat</th></tr></thead>
+            <tbody>
+              <tr><td class="num dim">13:12</td><td>Köpte <b>Volvo B</b></td><td class="t-small">Sektorbalans</td><td class="t-small">Månadsviktning</td><td class="num dim">Öppen</td></tr>
+              <tr><td class="num dim">11:04</td><td>Sålde <b>Investor B</b></td><td class="t-small">Utdelningsfönster</td><td class="t-small">Utdelning passerad</td><td class="num pos">+1,8 %</td></tr>
+              <tr><td class="num dim">09:31</td><td>Köpte <b>Atlas Copco A</b></td><td class="t-small">Sektorbalans</td><td class="t-small">Sektor undervikt</td><td class="num dim">Öppen</td></tr>
+              <tr><td class="num dim">Igår</td><td>Sålde <b>SEB A</b></td><td class="t-small">Räntekänslig rotation</td><td class="t-small">Räntebesked</td><td class="num pos">+0,9 %</td></tr>
+            </tbody>
+          </table>
+        </section>
+
+        <aside class="stack">
+          <div class="card rail rail-red">
+            <div class="eyebrow mb3">Kräver besked</div>
+            <div class="t-h3">Volatilitetsskörd är pausad</div>
+            <p class="t-small mt2">AI:n stoppade den efter att handelsmönstret ändrats. Fyra dagar utan besked.</p>
+            <button class="btn btn-sm btn-primary mt4" data-drawer="avvikelse">Ta ställning</button>
+          </div>
+          <div class="card">
+            <div class="eyebrow mb3">Vad AI:n bevakar</div>
+            <div class="stack-sm">
+              <div class="between t-small"><span>Antal affärer mot väntat</span><span class="badge b-red">1 avvikelse</span></div>
+              <div class="between t-small"><span>Innehavstid</span><span class="badge b-green">Normal</span></div>
+              <div class="between t-small"><span>Kostnader mot antagande</span><span class="badge b-green">Normal</span></div>
+              <div class="between t-small"><span>Nedgång mot test</span><span class="badge b-green">Inom ramen</span></div>
+            </div>
+            <p class="t-small mt4">Bryts någon av dessa pausar AI:n strategin automatiskt.</p>
+          </div>
+          <div class="card">
+            <div class="eyebrow mb3">Redo för skarpt läge</div>
+            <div class="empty" style="padding:var(--s5)">
+              <div class="t-h3">Ingen ännu</div>
+              <p class="t-small">En strategi behöver 60 dagars provhandel utan avvikelser. Sektorbalans är närmast — 30 dagar kvar.</p>
+            </div>
+          </div>
+        </aside>
+      </div>
+    </main>
+
+    <!-- ============================================================
+         SIDA 6 — JOURNAL (beslut + lärdomar)
+         Jobb: produktens minne. Varför blev det som det blev?
+         ============================================================ -->
+    <main class="page hidden" id="p-journal">
+      <div class="between mb5">
+        <div>
+          <div class="eyebrow mb2">Journal</div>
+          <h1 class="t-h1">Varje beslut, och varför</h1>
+          <p class="t-body mt2">AI:ns och dina beslut i samma flöde. Inget skrivs om i efterhand.</p>
+        </div>
+        <div class="seg"><button aria-pressed="true">Allt</button><button>Mina beslut</button><button>Lärdomar</button></div>
+      </div>
+
+      <div class="grid" style="grid-template-columns:1.5fr 1fr">
+        <section class="stack">
+          <div class="eyebrow">Idag</div>
+          <div class="card rail rail-red">
+            <div class="between mb3">
+              <div><span class="badge b-red">AI pausade</span> <span class="eyebrow" style="margin-left:6px">11:47</span></div>
+            </div>
+            <div class="t-h2">Volatilitetsskörd stoppades för nya positioner</div>
+            <p class="t-body mt3"><b>Varför:</b> Strategin tog 31 affärer på sju dagar. I historiken tog den 22 på samma tid, och höll dem i snitt 1,8 dagar längre. AI:n tolkar det som att marknaden ändrat karaktär, inte att strategin gör fel.</p>
+            <p class="t-body mt3"><b>Vad som händer nu:</b> Öppna positioner får löpa ut. Inga nya tas förrän du svarat.</p>
+            <div class="flex mt4"><button class="btn btn-sm" data-drawer="avvikelse">Se underlaget</button><button class="btn btn-sm btn-ghost">Skriv en kommentar</button></div>
+          </div>
+
+          <div class="card rail rail-brass">
+            <div class="between mb3"><div><span class="badge b-brass">AI föreslog</span> <span class="eyebrow" style="margin-left:6px">06:14</span></div></div>
+            <div class="t-h2">Nordisk Momentum bör provhandlas</div>
+            <p class="t-body mt3"><b>Varför:</b> 38 tester mot olika tidsperioder gav vinst i 34. Inga tecken på att resultatet är efterhandskonstruerat.</p>
+            <p class="t-body mt3"><b>Vad som händer nu:</b> Väntar på ditt godkännande. Inget sker automatiskt.</p>
+          </div>
+
+          <div class="eyebrow mt6">Igår</div>
+          <div class="card rail">
+            <div class="between mb3"><div><span class="badge b-mute">Du beslutade</span> <span class="eyebrow" style="margin-left:6px">16:20</span></div></div>
+            <div class="t-h2">Du avvisade Snabb medelåtergång</div>
+            <p class="t-body mt3"><b>Din motivering:</b> "För många affärer för mitt courtage. Vill inte handla mer än ~40 gånger i månaden."</p>
+            <p class="t-body mt3"><b>AI:ns anteckning:</b> Regeln är sparad. Idéer med fler än 40 affärer per månad rangordnas nu lägre.</p>
+          </div>
+
+          <div class="card rail rail-green">
+            <div class="between mb3"><div><span class="badge b-green">AI befordrade</span> <span class="eyebrow" style="margin-left:6px">09:02</span></div></div>
+            <div class="t-h2">Sektorbalans gick från prövning till provhandel</div>
+            <p class="t-body mt3"><b>Varför:</b> Klarade tio år av historik och fyra nedgångsperioder. Beteendet var stabilt i alla tester.</p>
+          </div>
+        </section>
+
+        <aside class="stack">
+          <div class="card">
+            <div class="eyebrow mb4">Lärdomar som styr AI:n</div>
+            <div class="stack-sm">
+              <div class="row-item" style="padding:10px 0">
+                <div class="row-body"><div class="t-h3">Max 40 affärer per månad</div><p>Från ditt beslut igår</p></div>
+              </div>
+              <div class="row-item" style="padding:10px 0">
+                <div class="row-body"><div class="t-h3">Trendidéer nedvärderas i låg rörlighet</div><p>Bekräftad 7 gånger av AI:n</p></div>
+              </div>
+              <div class="row-item" style="padding:10px 0">
+                <div class="row-body"><div class="t-h3">Fredag efter 15:00 räknas bort</div><p>Ny idag</p></div>
+              </div>
+              <div class="row-item" style="padding:10px 0">
+                <div class="row-body"><div class="t-h3">Inga strategier som kräver belåning</div><p>Från din inställning</p></div>
+              </div>
+            </div>
+            <button class="btn btn-sm mt4">Hantera lärdomar</button>
+          </div>
+
+          <div class="card">
+            <div class="eyebrow mb4">Dina beslut i siffror</div>
+            <div class="stack-sm">
+              <div class="between t-small"><span>Beslut senaste 90 dagarna</span><span class="num">17</span></div>
+              <div class="between t-small"><span>Godkände AI:ns förslag</span><span class="num">12</span></div>
+              <div class="between t-small"><span>Avvisade</span><span class="num">5</span></div>
+              <div class="between t-small"><span>Avvisade som senare visade sig bra</span><span class="num neg">2</span></div>
+            </div>
+            <p class="t-small mt4">Sista raden är avsiktligt obekväm. Den finns för att du ska kunna kalibrera dig själv.</p>
+          </div>
+        </aside>
+      </div>
+    </main>
+
+    <!-- ============================================================
+         SIDA 7 — SYSTEM
+         Jobb: svara på "kan jag lita på det jag ser?" — inte visa serverstatus.
+         ============================================================ -->
+    <main class="page hidden" id="p-system">
+      <div class="mb5">
+        <div class="eyebrow mb2">System</div>
+        <h1 class="t-h1">Allt fungerar</h1>
+        <p class="t-body mt2">Senaste kontrollen kördes för 4 minuter sedan.</p>
+      </div>
+
+      <div class="grid g3 mb6">
+        <article class="card rail rail-green">
+          <div class="between mb3"><div class="eyebrow">Marknadsdata</div><span class="badge b-green">Färsk</span></div>
+          <div class="t-h2">Fram till igår 17:30</div>
+          <p class="t-small mt3">Inga luckor de senaste 90 dagarna. Nästa hämtning kl 01:30.</p>
+        </article>
+        <article class="card rail rail-green">
+          <div class="between mb3"><div class="eyebrow">AI-motorn</div><span class="badge b-green">Igång</span></div>
+          <div class="t-h2">68 % av kapaciteten</div>
+          <p class="t-small mt3">Inga uppgifter köar. Genomsnittlig testtid: 4 min 12 s.</p>
+        </article>
+        <article class="card rail rail-green">
+          <div class="between mb3"><div class="eyebrow">Mäklaranslutning</div><span class="badge b-green">Ansluten</span></div>
+          <div class="t-h2">Provhandel aktiv</div>
+          <p class="t-small mt3">Inga riktiga order kan skickas. Skarpt läge är avstängt.</p>
+        </article>
+      </div>
+
+      <div class="grid" style="grid-template-columns:1.4fr 1fr">
+        <section class="card">
+          <h2 class="t-h2 mb4">Kontroller som körs automatiskt</h2>
+          <table>
+            <thead><tr><th>Kontroll</th><th>Vad den skyddar mot</th><th>Senast</th><th>Status</th></tr></thead>
+            <tbody>
+              <tr><td>Luckor i marknadsdata</td><td class="t-small">Test på ofullständig historik</td><td class="num dim">01:34</td><td><span class="badge b-green">OK</span></td></tr>
+              <tr><td>Framtidsläckage</td><td class="t-small">Att AI:n råkar se morgondagen</td><td class="num dim">13:41</td><td><span class="badge b-green">OK</span></td></tr>
+              <tr><td>Överanpassning</td><td class="t-small">Strategier som bara passar historien</td><td class="num dim">13:52</td><td><span class="badge b-green">OK</span></td></tr>
+              <tr><td>Avvikande beteende</td><td class="t-small">Strategier som ändrar karaktär</td><td class="num dim">11:47</td><td><span class="badge b-red">1 träff</span></td></tr>
+              <tr><td>Kostnadsantaganden</td><td class="t-small">Vinster som försvinner i avgifter</td><td class="num dim">06:10</td><td><span class="badge b-green">OK</span></td></tr>
+            </tbody>
+          </table>
+        </section>
+        <aside class="stack">
+          <div class="card">
+            <div class="eyebrow mb4">Senaste störningen</div>
+            <div class="t-h3">14 augusti, 03:12</div>
+            <p class="t-small mt2">Marknadsdata dröjde 22 minuter. AI:n väntade istället för att testa på ofullständig historik. Inga resultat påverkades.</p>
+          </div>
+          <div class="card">
+            <div class="eyebrow mb4">Gränser du satt</div>
+            <div class="stack-sm">
+              <div class="between t-small"><span>Skarpt läge</span><span class="badge b-mute">Avstängt</span></div>
+              <div class="between t-small"><span>Max strategier samtidigt</span><span class="num">6</span></div>
+              <div class="between t-small"><span>Max affärer per månad</span><span class="num">40</span></div>
+              <div class="between t-small"><span>Belåning</span><span class="badge b-mute">Ej tillåten</span></div>
+            </div>
+            <button class="btn btn-sm mt4">Ändra gränser</button>
+          </div>
+        </aside>
+      </div>
+    </main>
+
+    </div><!-- /views -->
+
+<script>
+/* ============================================================
+   Mockup-interaktion. Ingen affärslogik — bara navigering,
+   detaljpaneler och renderingen av Dygnsbandet.
+   ============================================================ */
+
+/* --- Navigering ------------------------------------------- */
+const titles = {idag:'Idag', arbetet:'Arbetet', strategier:'Strategier',
+  utvarderingar:'Utvärderingar', provhandel:'Provhandel', journal:'Journal', system:'System'};
+
+function go(page){
+  document.querySelectorAll('.page').forEach(p=>p.classList.add('hidden'));
+  const el = document.getElementById('p-'+page);
+  if(!el) return;
+  el.classList.remove('hidden');
+  el.style.animation='none'; void el.offsetWidth; el.style.animation='';
+  document.querySelectorAll('.nav-item').forEach(n=>{
+    n.toggleAttribute('aria-current', n.dataset.page===page);
+    if(n.dataset.page===page) n.setAttribute('aria-current','page');
+  });
+  document.getElementById('crumb').textContent = titles[page]||page;
+  window.scrollTo({top:0});
+}
+document.addEventListener('click', e=>{
+  const nav = e.target.closest('[data-page]');
+  if(nav){ go(nav.dataset.page); return; }
+  const seg = e.target.closest('.seg button');
+  if(seg){ seg.parentElement.querySelectorAll('button').forEach(b=>b.setAttribute('aria-pressed','false'));
+           seg.setAttribute('aria-pressed','true'); }
+});
+
+/* --- Detaljpanel ------------------------------------------ */
+const drawerContent = {
+  forslag:`
+    <div class="eyebrow">Förslag · Nordisk Momentum</div>
+    <h2 class="t-h1 mt3">Så kom AI:n fram till detta</h2>
+    <p class="t-body mt4">Strategin köper nordiska storbolag som rört sig starkt i 20 dagar och säljer när rörelsen mattas. Den håller i snitt sex dagar.</p>
+    <hr class="hr">
+    <div class="eyebrow mb4">Prövningen i tre steg</div>
+    <div class="row-item"><span class="row-time">1</span><div class="row-body"><div class="t-h3">Sex år av historik</div><p>Vinst 5 av 6 år. Svagast hösten 2022.</p></div><span class="badge b-green">Klarade</span></div>
+    <div class="row-item"><span class="row-time">2</span><div class="row-body"><div class="t-h3">38 varianter av samma idé</div><p>34 gav vinst. Resultatet beror inte på exakta inställningar.</p></div><span class="badge b-green">Klarade</span></div>
+    <div class="row-item"><span class="row-time">3</span><div class="row-body"><div class="t-h3">Perioder AI:n aldrig sett</div><p>Testad mot 2015–2018 som hölls undan. Fortsatt vinst.</p></div><span class="badge b-green">Klarade</span></div>
+    <hr class="hr">
+    <div class="eyebrow mb3">Det här talar emot</div>
+    <p class="t-body">Strategin gör 26 affärer i månaden. Din gräns är 40 — den tar alltså två tredjedelar av utrymmet.</p>
+    <div class="flex mt5"><button class="btn btn-primary">Godkänn provhandel</button><button class="btn btn-ghost">Avvakta</button></div>`,
+  avvikelse:`
+    <div class="eyebrow">Avvikelse · Volatilitetsskörd</div>
+    <h2 class="t-h1 mt3">Vad som ändrats</h2>
+    <p class="t-body mt4">AI:n jämför löpande hur strategin beter sig nu mot hur den betedde sig i historiken. Två mått har glidit isär.</p>
+    <hr class="hr">
+    <div class="stack">
+      <div><div class="between mb2"><span class="t-h3">Affärer per vecka</span><span class="num neg">31 mot 22</span></div>
+        <div style="height:5px;background:var(--ink-4);border-radius:3px"><div style="width:78%;height:100%;background:var(--red);border-radius:3px"></div></div></div>
+      <div><div class="between mb2"><span class="t-h3">Innehavstid</span><span class="num neg">2,1 d mot 3,9 d</span></div>
+        <div style="height:5px;background:var(--ink-4);border-radius:3px"><div style="width:54%;height:100%;background:var(--red);border-radius:3px"></div></div></div>
+      <div><div class="between mb2"><span class="t-h3">Kostnad per affär</span><span class="num">Normal</span></div>
+        <div style="height:5px;background:var(--ink-4);border-radius:3px"><div style="width:22%;height:100%;background:var(--green);border-radius:3px"></div></div></div>
+    </div>
+    <hr class="hr">
+    <div class="eyebrow mb3">AI:ns tolkning</div>
+    <p class="t-body">Marknadens rörlighet har fallit under den nivå strategin byggdes för. Den hittar fler men sämre tillfällen. Det liknar sommaren 2019, då samma sak hände och rättade till sig efter fem veckor.</p>
+    <div class="eyebrow mb3 mt5">Dina val</div>
+    <div class="stack-sm">
+      <button class="btn" style="width:100%; justify-content:flex-start">Håll pausen tills rörligheten stiger — AI:n återupptar automatiskt</button>
+      <button class="btn" style="width:100%; justify-content:flex-start">Stoppa strategin helt och flytta tillbaka till prövning</button>
+      <button class="btn" style="width:100%; justify-content:flex-start">Låt den fortsätta — jag accepterar det nya beteendet</button>
+    </div>`,
+  strategi:`
+    <div class="eyebrow">Strategi</div>
+    <h2 class="t-h1 mt3">Nordisk Momentum</h2>
+    <p class="t-body mt4">Följer starka rörelser i nordiska storbolag. Köper efter 20 dagars styrka, säljer när rörelsen mattas.</p>
+    <div class="grid g3 mt5"><div class="metric"><span class="v pos">+18,4 %</span><span class="l">Per år i test</span></div>
+      <div class="metric"><span class="v">−7,1 %</span><span class="l">Största nedgång</span></div>
+      <div class="metric"><span class="v">26</span><span class="l">Affärer/månad</span></div></div>
+    <hr class="hr">
+    <div class="eyebrow mb4">Livslinje</div>
+    <div class="row-item"><span class="row-time">2 aug</span><div class="row-body"><div class="t-h3">Skapad av AI:n</div><p>Byggd på ett mönster som fungerat i tre äldre strategier.</p></div></div>
+    <div class="row-item"><span class="row-time">9 aug</span><div class="row-body"><div class="t-h3">Överlevde prövningen</div><p>38 tester, 34 med vinst.</p></div></div>
+    <div class="row-item"><span class="row-time">Idag</span><div class="row-body"><div class="t-h3">Föreslagen för provhandel</div><p>Väntar på ditt godkännande.</p></div></div>
+    <hr class="hr">
+    <div class="eyebrow mb3">Fungerar bäst när</div>
+    <p class="t-body">Rörligheten är medel till hög och marknaden rör sig i en tydlig riktning. Fungerar dåligt i sidledes, lugna perioder.</p>`,
+  uppgift:`
+    <div class="eyebrow">Pågående uppgift</div>
+    <h2 class="t-h1 mt3">Nordisk Momentum — 3 varianter</h2>
+    <p class="t-body mt4">AI:n prövar om resultatet håller när inställningarna ändras något. Om bara en exakt inställning fungerar är strategin inte pålitlig.</p>
+    <div class="mt5"><div class="between mb2"><span class="t-small">Framsteg</span><span class="num">64 %</span></div>
+      <div style="height:5px;background:var(--ink-4);border-radius:3px"><div style="width:64%;height:100%;background:var(--teal);border-radius:3px"></div></div></div>
+    <hr class="hr">
+    <div class="row-item"><span class="row-time">1</span><div class="row-body"><div class="t-h3">15 dagars styrka istället för 20</div></div><span class="badge b-green">+16,1 %</span></div>
+    <div class="row-item"><span class="row-time">2</span><div class="row-body"><div class="t-h3">25 dagars styrka istället för 20</div></div><span class="badge b-green">+17,8 %</span></div>
+    <div class="row-item"><span class="row-time">3</span><div class="row-body"><div class="t-h3">Utan stopp vid nedgång</div></div><span class="badge b-teal">Pågår</span></div>`,
+  underlag:`
+    <div class="eyebrow">Underlag</div>
+    <h2 class="t-h1 mt3">Så testade AI:n</h2>
+    <p class="t-body mt4">Varje utvärdering följer samma ordning. Strategin måste klara alla fyra steg.</p>
+    <hr class="hr">
+    <div class="row-item"><span class="row-time">01</span><div class="row-body"><div class="t-h3">Grundtest</div><p>Hela historiken, med avgifter och glidning inräknade.</p></div></div>
+    <div class="row-item"><span class="row-time">02</span><div class="row-body"><div class="t-h3">Delperioder</div><p>Uppdelad på 14 marknadsklimat — upp, ner, lugnt, oroligt.</p></div></div>
+    <div class="row-item"><span class="row-time">03</span><div class="row-body"><div class="t-h3">Varianter</div><p>Inställningarna rubbas åt båda håll för att avslöja tursamma träffar.</p></div></div>
+    <div class="row-item"><span class="row-time">04</span><div class="row-body"><div class="t-h3">Undanhållen period</div><p>Testas mot år AI:n aldrig fått använda under utvecklingen.</p></div></div>
+    <hr class="hr">
+    <div class="hint"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M12 16v-5M12 8h.01"/></svg>
+      <span>Ett bra resultat i steg 01 men svagt i 03 betyder nästan alltid att strategin är anpassad i efterhand.</span></div>`,
+  marknad:`
+    <div class="eyebrow">Marknaden idag</div>
+    <h2 class="t-h1 mt3">Lugn och stigande</h2>
+    <p class="t-body mt4">Rörligheten ligger på 12,4 — lågt jämfört med snittet på 18. Marknaden har stigit tre dagar i rad utan större svängningar.</p>
+    <hr class="hr">
+    <div class="eyebrow mb3">Vad det betyder för dina strategier</div>
+    <div class="row-item"><div class="row-body"><div class="t-h3">Sektorbalans</div><p>Trivs. Bygger inte på svängningar.</p></div><span class="badge b-green">Gynnsamt</span></div>
+    <div class="row-item"><div class="row-body"><div class="t-h3">Utdelningsfönster</div><p>Opåverkad av rörligheten.</p></div><span class="badge b-green">Gynnsamt</span></div>
+    <div class="row-item"><div class="row-body"><div class="t-h3">Volatilitetsskörd</div><p>Behöver oro för att tjäna pengar. Därav avvikelsen.</p></div><span class="badge b-red">Ogynnsamt</span></div>
+    <hr class="hr">
+    <div class="eyebrow mb3">Liknar historiskt</div>
+    <p class="t-body">Maj 2017 och juli 2019. Båda gångerna varade lugnet 5–7 veckor innan rörligheten steg igen.</p>`
+};
+const bg = document.getElementById('drawerBg'), dw = document.getElementById('drawer'), dc = document.getElementById('drawerContent');
+document.addEventListener('click', e=>{
+  const t = e.target.closest('[data-drawer]');
+  if(t){
+    dc.innerHTML = '<button class="btn btn-ghost btn-sm drawer-close" onclick="closeDrawer()">Stäng</button>' + (drawerContent[t.dataset.drawer]||'');
+    bg.classList.add('open'); dw.classList.add('open');
+  }
+});
+function closeDrawer(){ bg.classList.remove('open'); dw.classList.remove('open'); }
+bg.addEventListener('click', closeDrawer);
+document.addEventListener('keydown', e=>{ if(e.key==='Escape') closeDrawer(); });
+
+/* --- Dygnsbandet ------------------------------------------
+   Varje streck = en sak AI:n gjorde. Höjd = betydelse.
+   Färg = tillstånd. Läses vänster→höger som ett dygn.
+   -------------------------------------------------------- */
+(function renderBand(){
+  const svg = document.getElementById('bandSvg');
+  if(!svg) return;
+  const W=1000, H=96, mid=H*0.62;
+  let out = `<line x1="0" y1="${mid}" x2="${W}" y2="${mid}" stroke="#22313F" stroke-width="1"/>`;
+  // Sovande timmar markeras som ett svalt fält
+  out += `<rect x="180" y="0" width="420" height="${H}" fill="#0D141C" opacity=".5"/>`;
+
+  let seed = 7;
+  const rnd = ()=> (seed = (seed*1103515245+12345) % 2147483648) / 2147483648;
+
+  for(let i=0;i<118;i++){
+    const x = 6 + i*(W-12)/118;
+    const night = x>180 && x<600;
+    const r = rnd();
+    let color='#4FA8A0', h = 6 + r*(night?34:22), op=.55;
+    if(r>0.93){ color='#C79A4B'; h = 30+r*30; op=1; }        // förslag
+    else if(r<0.06){ color='#8A7FC7'; h = 14+r*40; op=.8; }   // ny idé
+    out += `<line class="tick" x1="${x.toFixed(1)}" y1="${mid}" x2="${x.toFixed(1)}" y2="${(mid-h).toFixed(1)}" stroke="${color}" stroke-width="2" stroke-linecap="round" opacity="${op}"><title>Testkörning</title></line>`;
+  }
+  // Avvikelsen 11:47 — enda strecket under linjen
+  const ax = 6 + 101*(W-12)/118;
+  out += `<line x1="${ax}" y1="${mid}" x2="${ax}" y2="${mid+26}" stroke="#D9736A" stroke-width="2.5" stroke-linecap="round"/>`;
+  out += `<circle cx="${ax}" cy="${mid+30}" r="3" fill="#D9736A"/>`;
+  out += `<text x="${ax-4}" y="${mid+46}" fill="#D9736A" font-family="Martian Mono, monospace" font-size="9" text-anchor="middle">11:47</text>`;
+  // Förslaget 06:14
+  const px = 6 + 78*(W-12)/118;
+  out += `<circle cx="${px}" cy="${mid-64}" r="3" fill="#C79A4B"/>`;
+  // Nu-linjen
+  out += `<line class="now-line" x1="${W-8}" y1="4" x2="${W-8}" y2="${H-4}"/>`;
+  svg.innerHTML = out;
+})();
+</script>
+
+  </div>
+</div>
+
+<div class="drawer-bg" id="drawerBg"></div>
+<aside class="drawer" id="drawer"><div id="drawerContent"></div></aside>
+</body>
+</html>

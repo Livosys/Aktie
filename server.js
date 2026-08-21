@@ -11,6 +11,7 @@ const { startAutoMachineScheduler } = require('./src/jobs/autoMachineScheduler')
 const { startNarrowAutopilotScheduler } = require('./src/jobs/narrowAutopilotScheduler');
 const { startBatchAutopilotScheduler } = require('./src/jobs/batchAutopilotScheduler');
 const { startReplayAutopilotScheduler } = require('./src/jobs/replayAutopilotScheduler');
+const { startReplayScheduler } = require('./src/jobs/replayScheduler');
 const { startFuturesAutonomousScheduler } = require('./src/jobs/futuresAutonomousScheduler');
 const apiRouter = require('./src/routes/api');
 const { initOnStartup: initPaperTrading } = require('./src/paperTrading/paperTradingAgent');
@@ -34,6 +35,10 @@ const ENABLE_AUTO_MACHINE_SCHEDULER = envEnabled('ENABLE_AUTO_MACHINE_SCHEDULER'
 const ENABLE_NARROW_AUTOPILOT_SCHEDULER = envEnabled('ENABLE_NARROW_AUTOPILOT_SCHEDULER', true);
 const ENABLE_BATCH_AUTOPILOT_SCHEDULER = envEnabled('ENABLE_BATCH_AUTOPILOT_SCHEDULER', true);
 const ENABLE_REPLAY_AUTOPILOT_SCHEDULER = envEnabled('ENABLE_REPLAY_AUTOPILOT_SCHEDULER', true);
+// AI Factory-cykeln. Se src/jobs/replayScheduler.js — flaggan styr numera hela
+// kedjan (hjärna → evolution → schemaläggning → replay → bibliotek), inte bara
+// köskrivning. Paper_only hela vägen; replay körs i barnprocess.
+const ENABLE_REPLAY_SCHEDULER = envEnabled('ENABLE_REPLAY_SCHEDULER', true);
 const ENABLE_DAILY_INTELLIGENCE_SCHEDULER = envEnabled('ENABLE_DAILY_INTELLIGENCE_SCHEDULER', true);
 const ENABLE_PAPER_TRADING_INIT = envEnabled('ENABLE_PAPER_TRADING_INIT', true);
 // Autonomous IBKR-paper futures driver — OFF by default; must be explicitly opted in.
@@ -343,6 +348,8 @@ app.listen(PORT, '127.0.0.1', () => {
   else console.log('[Server] Batch autopilot scheduler disabled via ENABLE_BATCH_AUTOPILOT_SCHEDULER=false');
   if (ENABLE_REPLAY_AUTOPILOT_SCHEDULER) startComponent('Replay autopilot scheduler', startReplayAutopilotScheduler);
   else console.log('[Server] Replay autopilot scheduler disabled via ENABLE_REPLAY_AUTOPILOT_SCHEDULER=false');
+  if (ENABLE_REPLAY_SCHEDULER) startComponent('AI Factory cycle', startReplayScheduler);
+  else console.log('[Server] AI Factory cycle disabled via ENABLE_REPLAY_SCHEDULER=false');
   if (ENABLE_DAILY_INTELLIGENCE_SCHEDULER) startComponent('Daily intelligence scheduler', () => dailyIntelligencePipeline.startScheduler());
   else console.log('[Server] Daily intelligence scheduler disabled via ENABLE_DAILY_INTELLIGENCE_SCHEDULER=false');
   if (ENABLE_PAPER_TRADING_INIT) startComponent('Paper trading init', initPaperTrading);
@@ -382,4 +389,24 @@ app.listen(PORT, '127.0.0.1', () => {
     () => redisService.connect(),
     (connected) => console.log(`[Redis] ${connected ? 'connected' : 'fallback mode'} (${redisService.status().clientStatus})`),
   );
+
+  // ── Förvärm Market DNA-katalogen ──────────────────────────────────────────
+  //
+  // Katalogen läser en bar-serie per (rot, handelsdag) och kostar ~13 sekunder
+  // synkron CPU första gången. Den är cachad per dygn efteråt, så kostnaden
+  // betalas exakt en gång per process — men om den betalas av det FÖRSTA
+  // anropet står event-loopen still i 13 sekunder mitt i ett användarbesök.
+  //
+  // Den läggs därför här, efter att servern börjat lyssna men innan trafiken
+  // hittat hit. Read-only: bygger bara upp cachen.
+  setTimeout(() => {
+    const startedAt = Date.now();
+    try {
+      const marketIntelligence = require('./src/services/market/marketIntelligenceService');
+      const catalog = marketIntelligence.buildMarketDnaCatalog();
+      console.log(`[MarketDNA] catalog warmed — ${catalog.periods.length} periods in ${Date.now() - startedAt}ms`);
+    } catch (err) {
+      console.warn(`[MarketDNA] catalog warm-up failed: ${err.message}`);
+    }
+  }, 2000).unref?.();
 });

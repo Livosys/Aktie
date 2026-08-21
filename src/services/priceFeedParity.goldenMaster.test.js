@@ -44,6 +44,24 @@ const LIMIT = 250;
 // Dagvalet ligger i marketDataCoverage, inte här. Klockslaget nedan är den
 // senaste tidpunkt testet frågar om — dygnet måste ha data ända dit, annars
 // mäter vi tomrum och kallar det paritet.
+// ── OBS: dagvalet här är medvetet kvar på findCompleteDay ────────────────────
+//
+// Testet läser samma dygn två gånger — en gång genom den historiska vägen och
+// en gång genom live-vägen — och delar därmed den känslighet som
+// determinismtesterna hade: det nyaste kompletta dygnet är det dygn den löpande
+// infångningen fortfarande skriver till, och en bar som tillkommer mellan
+// läsningarna blir en paritetsavvikelse som inte finns i koden.
+//
+// findClosedCompleteDay löser INTE det här testet, och det är värt att veta
+// varför. Mätt 2026-08-20 faller testet på VARJE äldre dygn (2026-08-13 och
+// 2026-08-14 prövade), vid 06:00 och inte i fönstrets kanter. Skillnaden är att
+// den kontraktspartitionerade backfillen slutar 2026-08-17: för de nyaste
+// dygnen läses bara rotfilen och vägarna är eniga, medan ett äldre dygn läses
+// sammanslaget root + kontrakt och då skiljer sig utfallet.
+//
+// Det är alltså inte dagvalet som är fel utan hur historiken slår ihop två
+// källor för samma dygn, och den frågan är en kanonisk datapolicy — inte något
+// som ska avgöras i en testrad. Lämnas som det var tills den är besvarad.
 const DAY = coverage.findCompleteDay({ roots: ['MNQ', 'MES'], throughUtcTime: '18:00' });
 
 // Tidpunkter spridda över dygnet. Varje punkt är ett eget paritetsfall.

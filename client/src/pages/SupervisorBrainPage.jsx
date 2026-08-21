@@ -16,6 +16,7 @@ import {
   resolveKnownStrategy,
   strategyDisplayName,
 } from '../stores/strategyStore.js';
+import { FACTORY_TERM_KEYS, uiName } from '../services/uiTerminologyService.js';
 
 const REFRESH_MS = 30_000;
 
@@ -1110,7 +1111,7 @@ export default function SupervisorBrainPage() {
             </div>
 
             <div className="tos-two-col">
-              <SectionCard title="AI Memory / Knowledge Base" tone="neutral">
+              <SectionCard title={uiName(FACTORY_TERM_KEYS.AI_MEMORY)} tone="neutral">
                 <div className="tos-list">
                   <div className="tos-list-row">
                     <strong>Learning Connector</strong>

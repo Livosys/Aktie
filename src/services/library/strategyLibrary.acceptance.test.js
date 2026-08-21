@@ -24,14 +24,16 @@ const promotion = require('./promotionEngineService');
 const retirement = require('./retirementEngineService');
 const confidence = require('../score/confidenceScoreService');
 const strategyScoreV1 = require('../score/strategyScoreV1Service');
-const nativeRegistry = require('../nativeFuturesStrategyRegistryService');
+const strategyRegistry = require('../strategyRegistryService');
+const aiMemory = require('../memory/aiMemoryService');
 
 function freshLibrary() {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'strategy-library-'));
   const library = libraryModule.createStrategyLibrary({
     eventsFile: path.join(dir, 'events.jsonl'),
   });
-  return { library, dir, recorder: recorderModule.createStrategyLibraryRecorder({ library }) };
+  const memory = aiMemory.createAiMemory({ eventsFile: path.join(dir, 'memory.jsonl') });
+  return { library, dir, memory, recorder: recorderModule.createStrategyLibraryRecorder({ library, memory }) };
 }
 
 // Driver en strategi framåt utan att bry sig om grindarna — för tester som
@@ -54,9 +56,10 @@ test('1 · alla strategier i registret finns i Strategy Library', () => {
   const { library } = freshLibrary();
   library.syncFromRegistry();
 
-  const registered = nativeRegistry.listNativeStrategies().map((row) => row.strategyId).sort();
+  const registered = strategyRegistry.listStrategies().map((row) => row.strategyId || row.strategy_id || row.id).sort();
   const inLibrary = library.listStrategies().map((row) => row.strategyId).sort();
   assert.deepEqual(inLibrary, registered, 'biblioteket speglar inte registret');
+  assert.ok(inLibrary.length >= 150, 'biblioteket har inte expanderat tillräckligt många strategier');
 
   // Varje post har den efterfrågade metadatan.
   for (const record of library.listStrategies()) {
@@ -83,21 +86,35 @@ test('1b · synken är idempotent och en NY strategi dyker upp automatiskt', () 
 
   // En strategi som tillkommer i registret får sin post utan att en rad i
   // biblioteket ändras.
-  const original = nativeRegistry.listNativeStrategies;
-  nativeRegistry.listNativeStrategies = () => [...original(), Object.freeze({
+  const original = strategyRegistry.listStrategies;
+  strategyRegistry.listStrategies = () => [...original(), Object.freeze({
     strategyId: 'native_futures_probe_v0',
+    strategy_id: 'native_futures_probe_v0',
     strategyVersion: '0.0.1',
+    strategy_version: '0.0.1',
     originStrategyId: null,
+    origin_strategy_id: null,
     migrated: false,
     targetSignalFamily: null,
+    target_signal_family: null,
     targetSignalSubtype: null,
+    target_signal_subtype: null,
+    defaultOptions: {
+      stopLossPct: 0.2,
+      takeProfitR: 1.5,
+      holdingTimeMin: 12,
+      timeoutMin: 12,
+      confidenceThreshold: 65,
+      variantKey: 'probe',
+      variantLabel: 'Probe',
+    },
   })];
   try {
     const third = library.syncFromRegistry();
     assert.deepEqual(third.created, ['native_futures_probe_v0']);
     assert.equal(library.listStrategies().length, first.registryStrategies + 1);
   } finally {
-    nativeRegistry.listNativeStrategies = original;
+    strategyRegistry.listStrategies = original;
   }
 });
 
@@ -106,7 +123,7 @@ test('1b · synken är idempotent och en NY strategi dyker upp automatiskt', () 
 test('2 · Replay uppdaterar Library', () => {
   const { library, recorder } = freshLibrary();
   library.syncFromRegistry();
-  const strategyId = 'native_futures_momentum_v1';
+  const strategyId = 'ema_pullback_continuation';
 
   const runResult = {
     config: { mode: 'strategy', from: '2026-08-11T00:00:00.000Z', to: '2026-08-14T20:00:00.000Z' },
@@ -121,7 +138,16 @@ test('2 · Replay uppdaterar Library', () => {
     strategyScore: {
       perStrategy: [{
         strategyId, total: 62, qualified: true, components: {},
-        stats: { trades: 40, winRate: 55, strategyPnlUsd: 300 },
+        stats: {
+          trades: 40,
+          winRate: 55,
+          strategyPnlUsd: 300,
+          profitFactor: 1.4,
+          expectancyUsd: 7.5,
+          maxDrawdownUsd: 150,
+          avgWinUsd: 80,
+          avgLossUsd: 45,
+        },
       }],
     },
   };
@@ -133,6 +159,15 @@ test('2 · Replay uppdaterar Library', () => {
   assert.equal(record.replayHistory.length, 1);
   assert.equal(record.replayHistory[0].trades, 40);
   assert.equal(record.replayHistory[0].marketClassification, 'range');
+  assert.equal(record.replayHistory[0].profitFactor, 1.4);
+  assert.equal(record.replayHistory[0].expectancyUsd, 7.5);
+  assert.equal(record.replayHistory[0].maxDrawdownUsd, 150);
+  assert.equal(record.replayHistory[0].avgWinUsd, 80);
+  assert.equal(record.replayHistory[0].avgLossUsd, 45);
+  assert.equal(record.replayHistory[0].band, null);
+  assert.equal(record.replayHistory[0].recoveryFactor, 2);
+  assert.equal(record.replayHistory[0].sharpe, null);
+  assert.equal(record.replayHistory[0].sharpeAvailable, false);
   assert.equal(record.strategyScore, 62);
   assert.equal(record.executionScore, 71);
   assert.ok(record.confidenceScore != null, 'Confidence räknades inte');
@@ -159,9 +194,12 @@ test('3 · Paper uppdaterar Library, idempotent', () => {
     assert.equal(new Set(ids).size, ids.length, 'dubbletter i paper-historiken');
   }
 
-  // Legacy-id som saknar native-implementation rapporteras, tystas inte.
-  assert.ok(first.skipped.length > 0);
-  assert.ok(first.skipped.every((row) => row.reason === 'unresolved_strategy_id'));
+  // Legacy-id som fortfarande saknar mappning rapporteras, men expansionen kan
+  // också ha gjort att ingenting längre faller bort.
+  assert.ok(Array.isArray(first.skipped));
+  if (first.skipped.length > 0) {
+    assert.ok(first.skipped.every((row) => row.reason === 'unresolved_strategy_id'));
+  }
   console.log(`    (paper: ${first.written} affärer på ${withPaper.length} strategier`
     + ` · ${first.skipped.length} legacy-affärer utan native-motsvarighet)`);
 });
@@ -169,7 +207,7 @@ test('3 · Paper uppdaterar Library, idempotent', () => {
 test('4 · Live kan uppdatera Library — samma väg, annan sida', () => {
   const { library } = freshLibrary();
   library.syncFromRegistry();
-  const strategyId = 'native_futures_momentum_v1';
+  const strategyId = 'ema_pullback_continuation';
 
   library.recordLiveTrade({
     strategyId, tradeId: 'live-1', openedAt: '2026-08-14T13:00:00.000Z',
@@ -187,7 +225,7 @@ test('4 · Live kan uppdatera Library — samma väg, annan sida', () => {
 test('5 · livscykeln tillåter ett steg åt gången och inga hopp', () => {
   const { library } = freshLibrary();
   library.syncFromRegistry();
-  const strategyId = 'native_futures_momentum_v1';
+  const strategyId = 'ema_pullback_continuation';
 
   // Framåt ett steg: tillåtet.
   const forward = library.recordTransition({ strategyId, to: lifecycle.STAGES.TESTING, reason: 'test' });
@@ -221,7 +259,7 @@ test('5 · livscykeln tillåter ett steg åt gången och inga hopp', () => {
 test('6 · Promotion Engine flyttar bara den som uppfyller kraven', () => {
   const { library } = freshLibrary();
   library.syncFromRegistry();
-  const strategyId = 'native_futures_momentum_v1';
+  const strategyId = 'ema_pullback_continuation';
 
   // Draft → Testing: bara identitet krävs, och den finns efter synken.
   const first = promotion.applyPromotion(library, strategyId);
@@ -249,7 +287,7 @@ test('6 · Promotion Engine flyttar bara den som uppfyller kraven', () => {
 test('6b · Promotion Engine befordrar aldrig till Live på egen hand', () => {
   const { library } = freshLibrary();
   library.syncFromRegistry();
-  const strategyId = 'native_futures_momentum_v1';
+  const strategyId = 'ema_pullback_continuation';
   forceTo(library, strategyId, lifecycle.STAGES.APPROVED);
 
   const decision = promotion.evaluatePromotion(library.getStrategy(strategyId));
@@ -272,7 +310,7 @@ test('6c · Promotion Engine känner inte till AI', () => {
 test('7 · pensionering bevarar allt och tar aldrig bort något', () => {
   const { library } = freshLibrary();
   library.syncFromRegistry();
-  const strategyId = 'native_futures_trend_continuation_v1';
+  const strategyId = 'trend_continuation';
 
   library.recordScore({ strategyId, scoreType: 'strategyScore', value: 12 });
   library.recordScore({ strategyId, scoreType: 'executionScore', value: 38 });
@@ -316,7 +354,7 @@ test('7 · pensionering bevarar allt och tar aldrig bort något', () => {
 test('7b · pensionering kräver ett skäl', () => {
   const { library } = freshLibrary();
   library.syncFromRegistry();
-  const result = retirement.applyRetirement(library, 'native_futures_momentum_v1', {});
+  const result = retirement.applyRetirement(library, 'ema_pullback_continuation', {});
   assert.equal(result.ok, false);
   assert.equal(result.reason, 'retirement_requires_reason');
 });
@@ -326,7 +364,7 @@ test('7b · pensionering kräver ett skäl', () => {
 test('8 · Confidence Score är ett eget mått och blockerar Candidate', () => {
   const { library } = freshLibrary();
   library.syncFromRegistry();
-  const strategyId = 'native_futures_momentum_v1';
+  const strategyId = 'ema_pullback_continuation';
   forceTo(library, strategyId, lifecycle.STAGES.LEARNING);
 
   // Utmärkt Strategy Score, men nästan ingenting bakom sig.
@@ -381,7 +419,7 @@ test('8b · Confidence och Strategy Score mäter olika saker', () => {
 test('9 · historik skrivs aldrig över', () => {
   const { library } = freshLibrary();
   library.syncFromRegistry();
-  const strategyId = 'native_futures_momentum_v1';
+  const strategyId = 'ema_pullback_continuation';
   const file = library.eventsFile;
 
   const snapshots = [];
@@ -416,10 +454,10 @@ test('10 · alla förändringar är spårbara kronologiskt', () => {
   const { library, recorder } = freshLibrary();
   library.syncFromRegistry();
   recorder.ingestExecutionHistory({ target: 'paper' });
-  const strategyId = 'native_futures_momentum_v1';
+  const strategyId = 'ema_pullback_continuation';
   library.recordTransition({ strategyId, to: lifecycle.STAGES.TESTING, reason: 'test' });
   library.recordApproval({ strategyId, decision: 'approved', approvedBy: 'människa' });
-  retirement.applyRetirement(library, 'native_futures_vwap_volume_breakout_long_v1', { reason: 'stalled' });
+  retirement.applyRetirement(library, 'vwap_volume_breakout_long', { reason: 'stalled' });
 
   const trail = library.getAuditTrail();
   assert.ok(trail.length > 0);
@@ -465,7 +503,7 @@ test('11 · biblioteket uppfinner inga strategier — det speglar registret', ()
   // Ingen handskriven lista med strategi-id någonstans i biblioteket.
   assert.doesNotMatch(source, /native_futures_\w+_v\d/,
     'biblioteket har en egen lista med strategi-id');
-  assert.match(source, /require\('\.\.\/nativeFuturesStrategyRegistryService'\)/,
+  assert.match(source, /require\('\.\.\/strategyRegistryService'\)/,
     'biblioteket hämtar inte sin population ur registret');
 
   // Och recordern översätter identiteter via registret, inte via en egen tabell.

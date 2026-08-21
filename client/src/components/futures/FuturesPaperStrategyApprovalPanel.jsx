@@ -32,7 +32,7 @@ import {
   strategyModelKey,
   strategyDisplayName,
 } from '../../stores/strategyStore.js';
-import { numberOrNull } from '../../utils/tradingFormatters.js';
+import { fmtMoney, numberOrNull } from '../../utils/tradingFormatters.js';
 
 // Futures Paper Strategy Approval — knappar + tabell (paper_only).
 //
@@ -143,12 +143,6 @@ function actionButtonStyle(tone, disabled) {
   };
 }
 
-function fmtSek(value) {
-  const n = numberOrNull(value);
-  if (n === null) return '–';
-  return `${n >= 0 ? '' : ''}${n.toLocaleString('sv-SE', { maximumFractionDigits: 2 })} kr`;
-}
-
 function fmtCount(value) {
   const n = numberOrNull(value);
   if (n === null) return '–';
@@ -243,7 +237,7 @@ function ProgressCell({ strategy }) {
   );
 }
 
-function ResultCell({ strategy }) {
+function ResultCell({ strategy, currency }) {
   const r = resultSummary(strategy);
   if (!r.hasData) {
     return <span style={{ color: 'var(--muted, #6b7280)' }}>Inga avslutade trades</span>;
@@ -258,9 +252,9 @@ function ResultCell({ strategy }) {
         {r.breakevenTrades > 0 ? <span style={{ color: 'var(--muted,#6b7280)' }}> / {fmtCount(r.breakevenTrades)}BE</span> : null}
       </div>
       <div style={{ color: 'var(--muted, #6b7280)' }}>Win rate: {r.winRatePct === null ? '–' : `${r.winRatePct}%`}</div>
-      <div style={{ fontWeight: 700, color: TONES[netTone].color }}>Netto: {fmtSek(r.netPnlSek)}</div>
+      <div style={{ fontWeight: 700, color: TONES[netTone].color }}>Netto: {fmtMoney(r.netPnlSek, currency, 2)}</div>
       <div style={{ color: 'var(--muted, #6b7280)', fontSize: 12 }}>
-        Snitt/trade: {r.avgNetPnlSek === null ? '–' : fmtSek(r.avgNetPnlSek)} · PF: {pf}
+        Snitt/trade: {r.avgNetPnlSek === null ? '–' : fmtMoney(r.avgNetPnlSek, currency, 2)} · PF: {pf}
       </div>
       <div style={{ color: 'var(--muted, #6b7280)', fontSize: 11 }}>
         PnL-källa: {provenanceLabel(r.pnlProvenance)}
@@ -269,7 +263,7 @@ function ResultCell({ strategy }) {
   );
 }
 
-function LeadersCard({ leaders }) {
+function LeadersCard({ leaders, currency }) {
   const rows = leaderRows(leaders);
   return (
     <div style={card}>
@@ -285,7 +279,7 @@ function LeadersCard({ leaders }) {
               <>
                 <div style={{ fontWeight: 700, marginTop: 4 }}>{strategyDisplayName(resolveKnownStrategy(row), '—')}</div>
                 <div style={{ fontSize: 13 }}>
-                  {row.unit === 'kr' ? fmtSek(row.value) : `${row.value ?? '–'}${row.unit === '%' ? '%' : (row.unit === 'V' ? ' vinster' : '')}`}
+                  {row.unit === 'money' ? fmtMoney(row.value, currency, 2) : `${row.value ?? '–'}${row.unit === '%' ? '%' : (row.unit === 'V' ? ' vinster' : '')}`}
                   <span style={{ color: 'var(--muted,#6b7280)' }}> · {fmtCount(row.closedTrades)} trades</span>
                 </div>
               </>
@@ -299,7 +293,7 @@ function LeadersCard({ leaders }) {
   );
 }
 
-export default function FuturesPaperStrategyApprovalPanel() {
+export default function FuturesPaperStrategyApprovalPanel({ currency = 'USD' } = {}) {
   const [state, setState] = useState({ loading: true, error: null, data: null });
   const [filter, setFilter] = useState('all');
   const [busyId, setBusyId] = useState(null);
@@ -395,7 +389,7 @@ export default function FuturesPaperStrategyApprovalPanel() {
         </div>
       ) : null}
 
-      {!state.loading && !state.error && state.data ? <LeadersCard leaders={state.data.leaders} /> : null}
+      {!state.loading && !state.error && state.data ? <LeadersCard leaders={state.data.leaders} currency={currency} /> : null}
 
       {/* Filter */}
       <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginBottom: 12 }}>
@@ -501,7 +495,7 @@ export default function FuturesPaperStrategyApprovalPanel() {
                           <Badge tone={statusTone(s)}>{statusLabel(s)}</Badge>
                         </td>
                         <td style={td}><ProgressCell strategy={s} /></td>
-                        <td style={td}><ResultCell strategy={s} /></td>
+                        <td style={td}><ResultCell strategy={s} currency={currency} /></td>
                         <td style={{ ...td, textAlign: 'right' }}>
                           {dup ? (
                             <Badge tone="warning">{duplicateReason(s)}</Badge>

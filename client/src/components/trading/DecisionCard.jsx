@@ -14,10 +14,10 @@ export const DecisionCard = React.memo(function DecisionCard({
     <article style={{
       border: '1px solid var(--border)',
       background: 'var(--surface)',
-      borderRadius: 8,
-      padding: 14,
+      borderRadius: 'var(--r)',
+      padding: 'var(--s5)',
       display: 'grid',
-      gap: 12,
+      gap: 'var(--s4)',
       minWidth: 0,
     }}>
       <DecisionSummary view={view} />
@@ -37,7 +37,7 @@ export const DecisionCard = React.memo(function DecisionCard({
           { label: 'Priority', value: textOrEmpty(view.priority) },
         ]}
       />
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))', gap: 12 }}>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))', gap: 'var(--s4)' }}>
         <DecisionEvidencePanel evidence={evidence} />
         <DecisionRecommendationPanel recommendation={view.recommendedAction} alternatives={alternatives} />
       </div>

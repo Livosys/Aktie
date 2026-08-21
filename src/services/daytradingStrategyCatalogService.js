@@ -20,6 +20,37 @@ const MARKET_LABELS = Object.freeze({
   all: 'Alla',
 });
 
+const FAMILY_LABELS = Object.freeze({
+  crypto_momentum_family: 'Crypto momentum',
+  ema_trend_family: 'EMA trend',
+  gap_family: 'Gap',
+  index_family: 'Index',
+  narrow_state: 'Narrow state',
+  opening_range_family: 'Opening range',
+  volume_breakout_family: 'Volume breakout',
+  vwap_family: 'VWAP',
+});
+
+const FAMILY_VARIANTS = Object.freeze([
+  { key: 'balanced', label: 'Balanced', status: 'active', enabled: true, stop: 1.00, take: 1.00, hold: 1.00, sessionFocus: 'balanced', volatilityFocus: 'balanced', timeframeFocus: 'base' },
+  { key: 'fast', label: 'Fast', status: 'experimental', enabled: true, stop: 0.88, take: 0.90, hold: 0.75, sessionFocus: 'opening', volatilityFocus: 'high', timeframeFocus: 'fast' },
+  { key: 'patient', label: 'Patient', status: 'paper_only', enabled: true, stop: 1.12, take: 1.14, hold: 1.30, sessionFocus: 'midday', volatilityFocus: 'low', timeframeFocus: 'slow' },
+  { key: 'volatile', label: 'Volatile', status: 'watch', enabled: true, stop: 1.18, take: 0.96, hold: 0.82, sessionFocus: 'volatile', volatilityFocus: 'high', timeframeFocus: 'volatile' },
+]);
+
+const CANONICAL_VARIANT = Object.freeze({
+  key: 'canonical',
+  label: 'Canonical',
+  status: 'active',
+  enabled: true,
+  stop: 1.00,
+  take: 1.00,
+  hold: 1.00,
+  sessionFocus: 'canonical',
+  volatilityFocus: 'balanced',
+  timeframeFocus: 'base',
+});
+
 const SCANNER_EMITTER_STRATEGY_IDS = Object.freeze(new Set([
   'crypto_momentum_scalper',
   'ema_pullback_continuation',
@@ -54,6 +85,11 @@ function safeString(value) {
 function safeArray(value) {
   if (!Array.isArray(value)) return [];
   return value.filter((item) => item != null).map((item) => String(item));
+}
+
+function safeNumber(value, fallback = 0) {
+  const n = Number(value);
+  return Number.isFinite(n) ? n : fallback;
 }
 
 function nowIso() {
@@ -118,6 +154,103 @@ function defaultLearningFields() {
     last_learning_review_at: null,
     learning_notes: [],
   };
+}
+
+function familyLabelFor(family) {
+  const key = safeString(family);
+  return FAMILY_LABELS[key] || key || 'Family';
+}
+
+function normalizeTimeframes(value, fallback = ['2m']) {
+  const list = safeArray(value);
+  return list.length ? list : [...fallback];
+}
+
+function profileForVariant(strategy = {}, variant = null) {
+  const baseStop = safeNumber(strategy.default_stop_loss_pct ?? strategy.default_sl, 0.2);
+  const baseTake = safeNumber(strategy.default_take_profit_r ?? strategy.default_tp, 1.5);
+  const baseHold = Math.max(2, Math.round(safeNumber(strategy.default_holding_time_min ?? strategy.default_holding_time ?? strategy.default_timeout_min, 12)));
+  const baseTimeframes = normalizeTimeframes(strategy.default_timeframes, ['2m']);
+  const profile = variant || CANONICAL_VARIANT;
+  const hold = Math.max(2, Math.round(baseHold * profile.hold));
+  const timeframeFocus = profile.timeframeFocus === 'fast'
+    ? baseTimeframes[0] || '2m'
+    : (profile.timeframeFocus === 'slow'
+      ? baseTimeframes[baseTimeframes.length - 1] || baseTimeframes[0] || '5m'
+      : (baseTimeframes[Math.floor(baseTimeframes.length / 2)] || baseTimeframes[0] || '2m'));
+  return {
+    strategyId: safeString(strategy.id) || null,
+    strategyName: safeString(strategy.name || strategy.id) || null,
+    stopLossPct: Number((baseStop * profile.stop).toFixed(4)),
+    takeProfitR: Number((baseTake * profile.take).toFixed(4)),
+    holdingTimeMin: hold,
+    timeoutMin: hold,
+    confidenceThreshold: safeNumber(strategy.confidence_threshold, 65),
+    familyId: safeString(strategy.family) || null,
+    familyName: familyLabelFor(strategy.family),
+    marketGroup: safeString(strategy.market_group || strategy.market || 'all') || 'all',
+    sessionFocus: profile.sessionFocus,
+    volatilityFocus: profile.volatilityFocus,
+    timeframeFocus,
+    variantKey: profile.key,
+    variantLabel: profile.label,
+    signalCount: safeArray(strategy.signal_rules).length,
+    signalDigest: safeArray(strategy.signal_rules).slice(0, 3).join('|') || null,
+    marketLabel: MARKET_LABELS[safeString(strategy.market_group || strategy.market || 'all')] || safeString(strategy.market_group || strategy.market || 'all') || 'all',
+  };
+}
+
+function expandedStrategyDescriptor(strategy, variant = null) {
+  const canonical = !variant;
+  const id = canonical ? strategy.id : `${strategy.id}__${variant.key}`;
+  const defaultOptions = profileForVariant(strategy, variant);
+  const runtimeSignals = normalizeRuntimeSignals(strategy.runtime_signals || strategy.runtimeSignals);
+  const targetSignalFamily = runtimeSignals[0]?.signal_family || null;
+  const targetSignalSubtype = runtimeSignals[0]?.raw_signal || null;
+  const status = canonical
+    ? normalizeStatus(strategy.status, strategy.active === false ? 'paused' : 'paper_only')
+    : (strategy.active === false ? 'paused' : normalizeStatus(variant.status, 'paper_only'));
+  const enabled = canonical ? strategy.active !== false : (strategy.active !== false && variant.enabled !== false);
+  return {
+    ...strategy,
+    id,
+    strategyId: id,
+    strategy_id: id,
+    name: canonical ? strategy.name : `${strategy.name} — ${variant.label}`,
+    strategy_name: canonical ? strategy.name : `${strategy.name} — ${variant.label}`,
+    strategyName: canonical ? strategy.name : `${strategy.name} — ${variant.label}`,
+    familyId: safeString(strategy.family) || null,
+    familyName: familyLabelFor(strategy.family),
+    variantId: canonical ? 'canonical' : variant.key,
+    variantName: canonical ? 'Canonical' : variant.label,
+    variantRank: canonical ? 0 : variant.rank,
+    originStrategyId: strategy.id,
+    origin_strategy_id: strategy.id,
+    strategyVersion: canonical ? 'catalog-v1' : `catalog-v1:${variant.key}`,
+    strategy_version: canonical ? 'catalog-v1' : `catalog-v1:${variant.key}`,
+    targetSignalFamily,
+    targetSignalSubtype,
+    defaultOptions,
+    default_options: defaultOptions,
+    status,
+    enabled,
+    active: enabled,
+    catalog_status: status,
+    catalog_enabled: enabled,
+    description: canonical ? (strategy.description || strategy.description_sv || strategy.explanation || '') : `${strategy.description || strategy.description_sv || strategy.explanation || ''} (${variant.label.toLowerCase()})`,
+    enabled_reason: canonical ? null : `variant:${variant.key}`,
+  };
+}
+
+function expandedStrategyCatalog() {
+  const expanded = [];
+  for (const strategy of STRATEGIES) {
+    expanded.push(expandedStrategyDescriptor(strategy, null));
+    for (const variant of FAMILY_VARIANTS) {
+      expanded.push(expandedStrategyDescriptor(strategy, variant));
+    }
+  }
+  return expanded;
 }
 
 function mapStatusFromCatalog(strategy = {}) {
@@ -1340,6 +1473,38 @@ function getCatalog() {
   };
 }
 
+function getExpandedCatalog() {
+  const strategies = expandedStrategyCatalog();
+  const familyIds = [...new Set(strategies.map((strategy) => strategy.familyId).filter(Boolean))].sort();
+  return {
+    ok: true,
+    strategies,
+    count: strategies.length,
+    canonical_count: STRATEGIES.length,
+    family_count: familyIds.length,
+    families: familyIds.map((familyId) => ({
+      familyId,
+      familyName: familyLabelFor(familyId),
+      strategies: strategies.filter((strategy) => strategy.familyId === familyId).length,
+    })),
+    market_groups: Object.keys(MARKET_LABELS),
+    timeframes: ['1m', '2m', '5m', '15m', '30m', '1h'],
+    adjustable_parameters: [
+      'stop_loss_pct',
+      'take_profit_r',
+      'holding_time',
+      'timeout',
+      'confidence_threshold',
+      'volume_requirement',
+      'cooldown',
+      'max_trades_per_day',
+      'market_group',
+      'timeframe',
+    ],
+    ...SAFETY,
+  };
+}
+
 function getStrategyById(id) {
   const key = safeString(id);
   if (!key) return null;
@@ -1406,6 +1571,7 @@ module.exports = {
   SAFETY,
   STRATEGIES,
   getCatalog,
+  getExpandedCatalog,
   getStrategyById,
   inferStrategyForSignal,
   getStatus,

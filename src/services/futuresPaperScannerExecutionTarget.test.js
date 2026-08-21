@@ -12,6 +12,7 @@ const reservationModule = require('./futuresPaperExecutionTargetReservationServi
 function createLiveScanner(rootDir, candidates) {
   const storage = storageModule.createFuturesPaperStorageService({ rootDir });
   return scannerModule.createFuturesPaperScannerService({
+    strategyPolicyService: { evaluateStrategy: (strategyId) => ({ allowed: true, identity: { canonicalStrategyId: strategyId, nativeStrategyId: strategyId, originStrategyId: strategyId }, approval: { source: 'test', entryContractReady: true } }) },
     executionTarget: 'ibkr_live',
     storageService: storage,
     executionTargetReservationService: reservationModule.createFuturesPaperExecutionTargetReservationService({

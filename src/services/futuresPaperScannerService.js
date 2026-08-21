@@ -24,6 +24,7 @@ const ibPaperExecutionConfigService = require('./ibPaperExecutionConfigService')
 const { buildFuturesSessionMetadata } = require('./futuresMarketHoursService');
 const internalSimulationRetirement = require('./futuresInternalSimulationRetirementService');
 const lifecycleIdentity = require('./futuresLifecycleIdentityService');
+const futuresPaperStrategyPolicy = require('./futuresPaperStrategyPolicyService');
 
 const SAFETY = Object.freeze({
   mode: 'ibkr_paper',
@@ -39,7 +40,18 @@ const SAFETY = Object.freeze({
 
 const SCANNER_SYMBOLS = Object.freeze(['MNQ', 'MES']);
 const MAX_QUEUE_LENGTH = 10;
-const MAX_OPEN_POSITIONS = 2;
+// ── Taket ägs av riskkonfigurationen, inte av scannern ───────────────────────
+//
+// Talet stod tidigare som en tvåa här — en andra kopia av en regel som redan
+// fanns i ibPaperExecutionConfigService. Två kopior av samma tak är hur ett
+// system börjar rapportera en gräns och tillämpa en annan: när taket höjdes
+// till 4 hade scannern fortsatt visa 2 för användaren.
+//
+// Scannern TILLÄMPAR inte taket — det gör Broker Risk vid ordern — men den
+// visar det, och en siffra som visas ska komma från samma ställe som den som
+// gäller.
+const MAX_OPEN_POSITIONS = ibPaperExecutionConfigService
+  .getPilotLimits({ executionTarget: 'ibkr_paper' }).maxOpenPositions;
 
 const BLOCK_REASON_COOLDOWN = strategyTradeControl.BLOCK_REASON_STRATEGY_COOLDOWN;
 
@@ -144,6 +156,7 @@ function createFuturesPaperScannerService(options = {}) {
     || futuresCanonicalSignalProviderService.defaultFuturesCanonicalSignalProviderService;
   const signalAdapter = options.signalAdapterService || futuresTradingOsSignalAdapterService.defaultFuturesTradingOsSignalAdapterService;
   const strategyRegistry = options.strategyRegistryService || strategyRegistryService;
+  const strategyPolicy = options.strategyPolicyService || futuresPaperStrategyPolicy;
   const executionTargetReservations = options.executionTargetReservationService
     || executionTargetReservationModule.createFuturesPaperExecutionTargetReservationService({
       dir: path.join(storage.rootDir, 'execution-target-reservations'),
@@ -858,6 +871,7 @@ function createFuturesPaperScannerService(options = {}) {
     const signalsSkippedNoMapping = [];
     const signalsSkippedNoRisk = [];
     const signalsSkippedOther = [];
+    let approvedStrategyCount = 0;
 
     const adapterResult = signalAdapter.getFuturesCandidates({
       now,
@@ -887,6 +901,21 @@ function createFuturesPaperScannerService(options = {}) {
         skippedStrategies.push({ strategyId, signalId: candidate.signalId || null, reason: 'unsupported_futures_symbol' });
         continue;
       }
+      const policy = strategyPolicy.evaluateStrategy(candidate.strategyId, { fresh: false });
+      if (!policy.allowed) {
+        console.error(`[SCANNER] POLICY BLOCKED: strategyId=${candidate.strategyId} reason=${policy.blockedReason}`);
+        skippedStrategies.push({
+          strategyId,
+          canonicalStrategyId: policy.identity?.canonicalStrategyId || null,
+          nativeStrategyId: policy.identity?.nativeStrategyId || null,
+          signalId: candidate.signalId || null,
+          reason: 'paper_strategy_not_eligible',
+          blockedReason: policy.blockedReason,
+        });
+        continue;
+      }
+      console.error(`[SCANNER] POLICY ALLOWED: strategyId=${candidate.strategyId}`);
+      approvedStrategyCount += 1;
       const hasQueuedCandidate = queue.some((row) => (
         (candidate.signalId && row.signalId === candidate.signalId)
         || (candidate.candidateId && row.candidateId === candidate.candidateId)
@@ -904,6 +933,16 @@ function createFuturesPaperScannerService(options = {}) {
       }
 
       candidate.strategyFamily = strategyFamily || null;
+      candidate.canonicalStrategyId = policy.identity.canonicalStrategyId;
+      candidate.nativeStrategyId = policy.identity.nativeStrategyId;
+      candidate.originStrategyId = policy.identity.originStrategyId;
+      candidate.strategyVersion = candidate.strategyVersion || policy.identity.strategyVersion;
+      candidate.strategyFamily = candidate.strategyFamily || policy.identity.strategyFamily;
+      candidate.paperApproval = {
+        allowed: true,
+        source: policy.approval.source,
+        canonicalStrategyId: policy.identity.canonicalStrategyId,
+      };
       candidate.familyRank = candidate.familyRank ?? null;
       candidate.familyGateDecision = candidate.familyGateDecision || 'not_evaluated';
       candidate.familyBlockReason = null;
@@ -957,7 +996,7 @@ function createFuturesPaperScannerService(options = {}) {
       isMarketOpen: scanSessionMetadata?.isMarketOpen ?? null,
       symbolsScanned: SCANNER_SYMBOLS,
       strategiesChecked: canonicalCandidates.length,
-      approvedStrategies: canonicalCandidates.length,
+      approvedStrategies: approvedStrategyCount,
       candidatesCreated: added.length,
       skippedStrategies,
       tradesOpened: 0,

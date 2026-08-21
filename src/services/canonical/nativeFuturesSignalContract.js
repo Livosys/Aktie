@@ -204,8 +204,28 @@ function isValidTimestamp(value) {
   return Number.isFinite(ts);
 }
 
+// ── Utgångsdatum finns i TVÅ format i lagret ────────────────────────────────
+//
+// IB:s eget fältformat är YYYYMMDD ("20260918") och det är vad den äldre
+// rotinfångningen skrev. Den kontraktspartitionerade backfillen skriver i
+// stället ISO-datum med bindestreck ("2026-09-18"), och samma form står i
+// kontraktsnyckeln ROOT:conId:YYYY-MM-DD.
+//
+// Kontrollen läste tidigare de åtta första tecknen rakt av. På ett ISO-datum
+// blir de "2026-09-", regexet föll, och VARJE signal på kontraktspartitionerad
+// data avvisades som contract_expired_or_invalid. Följden var att hela det
+// exact_contract-lagret var oanvändbart för Replay medan rotläsningen såg ut
+// att fungera — alltså precis tvärtom mot vad datapolicyn kräver.
+//
+// Separatorerna normaliseras bort innan formatkravet prövas. Kravet på åtta
+// siffror står kvar: en kontraktsmånad utan dag (YYYYMM) är fortfarande inte
+// ett giltigt utgångsdatum här, och jämförelsen mot now är oförändrad.
+//
+// ibPaperExecutionGuardService har en egen kopia av den här funktionen och
+// lämnas medvetet orörd: den vägen får sina kontrakt direkt från IBKR i
+// YYYYMMDD och är inte drabbad. Paper ändras inte i en researchfas.
 function expiryIsValid(expiry, now = new Date()) {
-  const raw = String(expiry || '').slice(0, 8);
+  const raw = String(expiry || '').replace(/[^0-9]/g, '').slice(0, 8);
   if (!/^\d{8}$/.test(raw)) return false;
   const y = Number(raw.slice(0, 4));
   const m = Number(raw.slice(4, 6));

@@ -294,6 +294,14 @@ function createNativeFuturesScanner(options = {}) {
       };
     });
 
+    const stats = {
+      monitoredSymbols: symbols.length,
+      ready: rows.filter((row) => row.status === 'ready').length,
+      invalidContracts: rows.filter((row) => row.contractStatus === 'invalid').length,
+      missingMarketData: rows.filter((row) => row.status === 'missing_market_data').length,
+      staleMarketData: rows.filter((row) => row.status === 'stale_market_data').length,
+      closedSessions: rows.filter((row) => row.sessionStatus === 'closed').length,
+    };
     return {
       ok: rows.every((row) => row.status === 'ready'),
       generatedAt,
@@ -302,14 +310,7 @@ function createNativeFuturesScanner(options = {}) {
       timeframe,
       monitoredSymbols: [...symbols],
       rows,
-      stats: {
-        monitoredSymbols: symbols.length,
-        ready: rows.filter((row) => row.status === 'ready').length,
-        invalidContracts: rows.filter((row) => row.contractStatus === 'invalid').length,
-        missingMarketData: rows.filter((row) => row.status === 'missing_market_data').length,
-        staleMarketData: rows.filter((row) => row.status === 'stale_market_data').length,
-        closedSessions: rows.filter((row) => row.sessionStatus === 'closed').length,
-      },
+      stats,
       ...SAFETY,
     };
   }

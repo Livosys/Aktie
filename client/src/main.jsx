@@ -3,6 +3,9 @@ import ReactDOM from 'react-dom/client';
 import { BrowserRouter } from 'react-router-dom';
 import App from './App.jsx';
 import { AuthProvider } from './auth/AuthProvider.jsx';
+// Meridian först: designsystemet definierar tokens och typsnitt, styles.css
+// pekar sedan om sina mörka tokens hit. Ordningen är betydelsebärande.
+import './styles/meridian.css';
 import './styles.css';
 
 const savedTheme = localStorage.getItem('theme') || 'dark';

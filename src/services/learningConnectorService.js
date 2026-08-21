@@ -29,7 +29,18 @@ const crypto = require('crypto');
 const eventLogService = require('./eventLogService');
 
 // ── Paths ─────────────────────────────────────────────────────────────────────
-const DATA_DIR = path.resolve(__dirname, '../../data/learning-connector');
+// Env-överstyrbar enligt samma mönster som STRATEGY_LIBRARY_EVENTS_FILE,
+// AI_MEMORY_EVENTS_FILE, STRATEGY_FAMILY_TREE_FILE och
+// REPLAY_QUEUE_EVENTS_FILE.
+//
+// Utan den skrev en sandlådekörning i driftens learning-logg även när allt
+// annat var omdirigerat — replay-kön anropar connectorn med dess default, och
+// env var enda vägen in. Det inträffade 2026-08-19 (8 rader) och igen
+// 2026-08-20 (2 rader) vid verifieringen av fabrikens loop.
+const DATA_DIR = path.resolve(
+  process.env.LEARNING_CONNECTOR_DIR
+    || path.resolve(__dirname, '../../data/learning-connector'),
+);
 const EVENTS_FILE = path.join(DATA_DIR, 'events.jsonl');
 const STATUS_FILE = path.join(DATA_DIR, 'status.json');
 const SUMMARY_FILE = path.join(DATA_DIR, 'summary.json');

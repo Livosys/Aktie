@@ -63,46 +63,60 @@ export const StrategyCard = React.memo(function StrategyCard({
       onClick={() => onSelect(strategy)}
       style={{
         width: '100%',
-        border: `1px solid ${selected ? tokens.fg : tokens.border}`,
-        borderLeft: `4px solid ${tokens.fg}`,
-        borderRadius: 8,
-        background: 'var(--surface)',
+        // Vänsterskena i tillståndsfärg, 2 px som resten av produkten. Den
+        // tidigare 4 px-kanten läste som en egen ram runt kortet.
+        border: `1px solid ${selected ? tokens.fg : 'var(--border)'}`,
+        borderLeft: `2px solid ${tokens.fg}`,
+        borderRadius: 'var(--r)',
+        // Markerat kort lyfts med yta i stället för med sken. En glow läser som
+        // ett larm, och markering är inte ett larm.
+        background: selected ? 'var(--surface-2)' : 'var(--surface)',
         color: 'var(--text)',
-        padding: 14,
+        padding: 'var(--s5)',
         display: 'grid',
-        gap: 12,
+        gap: 'var(--s4)',
         textAlign: 'left',
         cursor: 'pointer',
         minWidth: 0,
-        boxShadow: selected ? '0 0 0 2px rgba(59,130,246,0.12)' : 'var(--shadow-1, none)',
+        boxShadow: 'var(--elev-0)',
+        font: 'inherit',
       }}
     >
-      <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, alignItems: 'flex-start' }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', gap: 'var(--s3)', alignItems: 'flex-start' }}>
         <div style={{ minWidth: 0 }}>
           <div style={{
+            fontFamily: 'var(--data)',
             color: 'var(--muted)',
-            fontSize: 11,
-            fontWeight: 800,
+            fontSize: 9.5,
+            fontWeight: 400,
             textTransform: 'uppercase',
-            letterSpacing: 0,
+            letterSpacing: '.16em',
           }}>
             Strategy
           </div>
           <div style={{
+            fontFamily: 'var(--display)',
             color: 'var(--text)',
-            fontSize: 19,
-            fontWeight: 900,
-            lineHeight: 1.15,
-            marginTop: 4,
+            fontSize: 18,
+            fontWeight: 600,
+            lineHeight: 1.25,
+            letterSpacing: '-.01em',
+            marginTop: 'var(--s1)',
             overflowWrap: 'anywhere',
           }}>
             {label}
           </div>
-          <div style={{ color: 'var(--muted)', fontSize: 12, marginTop: 4, overflowWrap: 'anywhere' }}>
+          <div style={{
+            fontFamily: 'var(--data)',
+            color: 'var(--muted)',
+            fontSize: 11,
+            marginTop: 'var(--s1)',
+            overflowWrap: 'anywhere',
+          }}>
             {textOrEmpty(strategy.strategyId)}
           </div>
         </div>
-        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, justifyContent: 'flex-end' }}>
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 'var(--s2)', justifyContent: 'flex-end' }}>
           {/* Visar att strategin körs via sin native futures-implementation. Det
               är den koden som faktiskt fattar beslutet och det id:t som hamnar
               på broker-order och trades. */}

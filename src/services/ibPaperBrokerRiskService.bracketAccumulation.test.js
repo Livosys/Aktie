@@ -139,14 +139,24 @@ function evaluate({ openOrders, positions }) {
 
 {
   // Steget som startade floden: EN öppen position, ETT bracket-par kvar.
-  // Under taket 1 måste detta blockera, oavsett vad parentId råkar vara.
+  //
+  // Same_root-grinden togs bort 2026-08-20 — paper får numera bära flera
+  // positioner i samma instrument. Steget SKA därför släppas igenom, och det
+  // som håller emot är kontrakttaket längre ned, inte instrumentet.
+  //
+  // Det som fortfarande måste hålla är D4: bracket-benen får aldrig räknas som
+  // väntande entries, oavsett vilket parentId IB råkar ha satt. Räknades de
+  // som entries skulle taket för väntande order slå i falskt — och räknades de
+  // inte alls skulle en riktig kö av entries kunna byggas obemärkt.
   for (const parentId of [4711, 0]) {
+    const openOrders = bracketPair('fxp_a1', parentId);
     const result = evaluate({
-      openOrders: bracketPair('fxp_a1', parentId),
+      openOrders,
       positions: [{ conId: 793356225, localSymbol: 'MNQU6', position: 1 }],
     });
-    assert.equal(result.allowed, false, `parentId=${parentId} måste blockera`);
-    assert(result.blockers.includes('max_open_broker_positions'), `parentId=${parentId}`);
+    assert.equal(countPendingEntries(openOrders), 0, `parentId=${parentId}: skyddsben är inte entries`);
+    assert.equal(result.allowed, true,
+      `parentId=${parentId} ska släppas igenom, fick ${JSON.stringify(result.blockers)}`);
   }
 }
 
@@ -159,8 +169,8 @@ function evaluate({ openOrders, positions }) {
     { conId: 793356225, localSymbol: 'MNQU6', position: 10 },
   ];
   const result = evaluate({ openOrders, positions });
-  const positionCheck = result.checks.find((c) => c.code === 'max_one_open_broker_position');
-  const pendingCheck = result.checks.find((c) => c.code === 'max_one_pending_entry');
+  const positionCheck = result.checks.find((c) => c.code === 'max_open_paper_positions');
+  const pendingCheck = result.checks.find((c) => c.code === 'max_pending_paper_entries');
 
   assert.equal(result.allowed, false);
   assert.equal(positionCheck.openPositionCount, 19, 'grinden ska se 19 kontrakt, inte 2 rader');
@@ -171,8 +181,8 @@ function evaluate({ openOrders, positions }) {
 }
 
 {
-  // Den avgörande kontrafaktiska: hade positionsräknaren varit rätt hade
-  // floden stannat vid entry nummer två, även med taket satt till 3.
+  // Quantity/exposure räknas fortfarande i kontrakt, även om två roots får
+  // vara öppna samtidigt.
   const positions = [{ conId: 793356225, localSymbol: 'MNQU6', position: 3 }];
   assert.equal(getPositionCount(positions), 3, '3 kontrakt på en rad är 3, inte 1');
 }
@@ -193,8 +203,32 @@ function evaluate({ openOrders, positions }) {
   assert.equal(countPendingEntries(openOrders), 0, 'ingen entry ligger kvar och väntar');
 
   const next = evaluate({ openOrders, positions });
-  assert.equal(next.allowed, false, 'nästa entry måste blockeras');
-  assert.deepEqual(next.blockers, ['max_open_broker_positions'], 'och blockeras av positionstaket');
+  assert.equal(next.allowed, true, 'en andra position i samma instrument är tillåten sedan 2026-08-20');
+
+  // ── Men taket biter, och det biter på KONTRAKT ──────────────────────────
+  //
+  // Det är hela skyddet mot floden nu när instrumentgrinden är borta. Testet
+  // läser taket ur konfigurationen: ett hårdkodat tal här hade tyst blivit
+  // fel nästa gång policyn flyttas, och då hade regressionen sett grön ut.
+  const cap = require('./ibPaperExecutionConfigService').HARD_MAX_OPEN_POSITIONS;
+  const atCap = evaluate({
+    openOrders,
+    // EN rad, hela taket. Radräkning hade sett detta som en position — det var
+    // precis D3, och det var så nitton kontrakt kunde byggas upp.
+    positions: [{ conId: 793356225, localSymbol: 'MNQU6', position: cap }],
+  });
+  assert.equal(atCap.allowed, false, 'vid taket måste nästa entry blockeras');
+  assert(atCap.blockers.includes('max_open_broker_positions'));
+
+  // Och samma tak oavsett hur kontrakten fördelar sig mellan rötterna.
+  const split = evaluate({
+    openOrders,
+    positions: [
+      { conId: 793356225, localSymbol: 'MNQU6', position: Math.ceil(cap / 2) },
+      { conId: 793356217, localSymbol: 'MESU6', position: -Math.floor(cap / 2) },
+    ],
+  });
+  assert.equal(split.allowed, false, 'taket gäller totalen, inte per rot');
 }
 
 console.log('ibPaperBrokerRiskService.bracketAccumulation.test.js passed');

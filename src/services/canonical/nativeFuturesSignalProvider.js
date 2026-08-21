@@ -41,8 +41,14 @@ const SAFETY = Object.freeze({
 // Listan läses vid varje anrop, inte en gång vid inläsning. Det är det som gör
 // att en nyregistrerad strategi dyker upp i både Paper och Replay utan att en
 // enda rad i någon av dem ändras.
-function strategyEvaluators() {
-  return strategyRegistry.listStrategyEvaluators();
+//
+// includeVariants avgör om registrets parametervarianter räknas med. Paper
+// kallar utan flaggan och kör därför exakt de åtta modulerna, som förut.
+// Replay ber om varianterna. Valet ligger hos kompositionsroten, inte här.
+function strategyEvaluators(includeVariants = false, includeEvolved = false, includeResearch = false, includeBase = true, researchCycle = null, genomeHashes = []) {
+  return strategyRegistry.listStrategyEvaluators({
+    includeVariants, includeEvolved, includeResearch, includeBase, researchCycle, genomeHashes,
+  });
 }
 
 function nowIso(now = new Date()) {
@@ -146,6 +152,23 @@ function defaultNativeFuturesSignalReader({
   // strategi och symbol). Anropas efter att beslutet är fattat och kan därför
   // inte påverka det. Utelämnas i live och paper.
   onDecision = null,
+  // Kör även registrets parametervarianter av de åtta modulerna. Av som
+  // standard: paper-vägen ska bete sig oförändrat.
+  includeVariants = false,
+  // Kör även släktträdets muterade genom. Av som standard, av samma skäl.
+  includeEvolved = false,
+  // Kör även research-hypoteserna. Av som standard — de får ALDRIG nå paper,
+  // och paper-vägen anropar utan flaggor.
+  includeResearch = false,
+  // Av-knapp för de åtta produktionsmodulerna. På som standard; stängs bara av
+  // för en isolerad research-batch.
+  includeBase = true,
+  // Begränsar research till en forskningscykel. null = samtliga.
+  researchCycle = null,
+  // Genom som körningen UTTRYCKLIGEN begärt, oavsett EVOLVED_LIMIT. Ett
+  // replay-jobb som skapades för ett visst genom måste kunna garantera att just
+  // det genomet körs — annars svarar körningen på en annan fråga än den ställda.
+  genomeHashes = [],
 } = {}) {
   if (!priceFeedService && !feed) return [];
   const observer = typeof onDecision === 'function' ? onDecision : null;
@@ -204,7 +227,7 @@ function defaultNativeFuturesSignalReader({
   const scan = scanner.scan({ now });
   const signals = [];
   for (const snapshot of scan.rows || []) {
-    for (const { strategyId, evaluate } of strategyEvaluators()) {
+    for (const { strategyId, evaluate } of strategyEvaluators(includeVariants, includeEvolved, includeResearch, includeBase, researchCycle, genomeHashes)) {
       const decision = evaluate(snapshot, { now });
       const adapted = adaptNativeFuturesStrategyDecision(nativeDecisionInput(decision), {
         marketSnapshot: snapshot,

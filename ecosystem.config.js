@@ -5,7 +5,11 @@ module.exports = {
     {
       name: 'nasdaq-scanner',
       script: 'server.js',
-      cwd: '/var/www/nasdaq-scanner-prod',
+      // Katalogen den här filen ligger i. Stod tidigare hårdkodad på -prod,
+      // vilket gjorde att ett start från release-katalogens EGEN ecosystem-fil
+      // ändå startade -prod: backend med paper-taket 1 i stället för 10, och
+      // en frontend från 13 aug helt utan AI Factory.
+      cwd: '/var/www/nasdaq-scanner-release-d109135',
       instances: 1,
       exec_mode: 'fork',
 
@@ -32,6 +36,7 @@ module.exports = {
         NODE_ENV: 'production',
         PORT: 3001,
         REDIS_URL: 'redis://127.0.0.1:6379',
+        FUTURES_NATIVE_PROVIDER_ENABLED: 'true',
       },
     },
   ],

@@ -1442,7 +1442,10 @@ function buildFuturesPaperDeskRuntime(options = {}) {
     if (!ibAccount) ibAccount = ibPaperAccountSummaryService.defaultIbPaperAccountSummaryService.getCachedSummary();
   } catch (_) { /* degraded */ }
   try {
-    const pipeline = futuresDataPipelineStatusService.getStatus({ now });
+    // Bara .replay och .batch används här, och de avgörs av en kataloglistning.
+    // Datasetmanifestet är en full arkivrevision på ~141 sekunder och hör
+    // hemma i datacenter-vyn, inte i en sida som laddas om var minut.
+    const pipeline = futuresDataPipelineStatusService.getStatus({ now, includeDataset: false });
     dataPipeline = { replay: pipeline.replay, batch: pipeline.batch };
   } catch (_) { /* degraded */ }
   const nextTransition = (() => {

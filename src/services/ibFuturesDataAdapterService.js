@@ -59,13 +59,13 @@ function nowIso(now = new Date()) {
   return new Date(now).toISOString();
 }
 
-// IB historical endDateTime kräver explicit UTC-format (yyyymmdd-hh:mm:ss).
+// IB historical endDateTime kräver UTC-format utan en extra "UTC"-suffix
+// när bindestrecksformen används. Gateway accepterar annars inte requesten.
 function toIbUtcDateTime(date) {
   const d = new Date(date);
   const pad = (n) => String(n).padStart(2, '0');
   return `${d.getUTCFullYear()}${pad(d.getUTCMonth() + 1)}${pad(d.getUTCDate())}`
-    + `-${pad(d.getUTCHours())}:${pad(d.getUTCMinutes())}:${pad(d.getUTCSeconds())}`
-    + ' UTC';
+    + ` ${pad(d.getUTCHours())}:${pad(d.getUTCMinutes())}:${pad(d.getUTCSeconds())}`;
 }
 
 function maskAccountId(accountId) {
@@ -337,10 +337,21 @@ function createIbFuturesDataAdapterService(options = {}) {
     return connectOnce();
   }
 
-  async function resolveContract(root, { forceRefresh = false } = {}) {
+  async function resolveContract(root, options = {}) {
     const key = String(root || '').trim().toUpperCase();
     if (!key) return { ok: false, error: 'invalid_root' };
-    const cached = contractCache.get(key);
+    const forceRefresh = options.forceRefresh === true;
+    const requested = options.contract || {};
+    const requestedExpiry = options.expiry || options.lastTradeDateOrContractMonth
+      || requested.expiry || requested.lastTradeDateOrContractMonth || null;
+    const requestedLocalSymbol = options.localSymbol || requested.localSymbol || null;
+    const requestedTradingClass = options.tradingClass || requested.tradingClass || null;
+    const includeExpired = options.includeExpired === true || requested.includeExpired === true
+      || Boolean(requestedExpiry || requestedLocalSymbol);
+    const cacheKey = requestedExpiry || requestedLocalSymbol
+      ? `${key}:${requestedLocalSymbol || ''}:${requestedExpiry || ''}:${includeExpired ? 'expired' : 'current'}`
+      : key;
+    const cached = contractCache.get(cacheKey);
     if (!forceRefresh && cached && (Date.now() - cached.resolvedAtMs) < config.contractCacheTtlMs) {
       return { ok: true, cached: true, ...cached };
     }
@@ -349,7 +360,17 @@ function createIbFuturesDataAdapterService(options = {}) {
       const reqId = nextReqId++;
       const promise = track(reqId, 'contractDetails');
       try {
-        ib.reqContractDetails(reqId, { symbol: key, secType: 'FUT', exchange: 'CME', currency: 'USD' });
+        ib.reqContractDetails(reqId, {
+          symbol: key,
+          secType: 'FUT',
+          exchange: requested.exchange || 'CME',
+          currency: requested.currency || 'USD',
+          lastTradeDateOrContractMonth: requestedExpiry || undefined,
+          localSymbol: requestedLocalSymbol || undefined,
+          tradingClass: requestedTradingClass || undefined,
+          primaryExch: requested.primaryExch || requested.primaryExchange || undefined,
+          includeExpired,
+        });
       } catch (err) {
         return { ok: false, error: err.message };
       }
@@ -362,8 +383,19 @@ function createIbFuturesDataAdapterService(options = {}) {
         .filter((row) => row.contract && row.contract.lastTradeDateOrContractMonth)
         .sort((a, b) => String(a.contract.lastTradeDateOrContractMonth)
           .localeCompare(String(b.contract.lastTradeDateOrContractMonth)));
+      const matchesRequested = contracts.filter((row) => {
+        const contractExpiry = String(row.contract.lastTradeDateOrContractMonth || '').slice(0, 8);
+        const expiryMatches = !requestedExpiry || contractExpiry.startsWith(String(requestedExpiry).replace(/-/g, '').slice(0, 8));
+        const localMatches = !requestedLocalSymbol || row.contract.localSymbol === requestedLocalSymbol;
+        const tradingClassMatches = !requestedTradingClass || row.contract.tradingClass === requestedTradingClass;
+        return expiryMatches && localMatches && tradingClassMatches;
+      });
+      if ((requestedExpiry || requestedLocalSymbol) && !matchesRequested.length) {
+        return { ok: false, error: 'no_matching_contract_details', code: null, contractCount: contracts.length };
+      }
       const today = new Date().toISOString().slice(0, 10).replace(/-/g, '');
-      const frontRow = contracts.find((row) => String(row.contract.lastTradeDateOrContractMonth).slice(0, 8) >= today)
+      const frontRow = matchesRequested[0]
+        || contracts.find((row) => String(row.contract.lastTradeDateOrContractMonth).slice(0, 8) >= today)
         || contracts[0];
       if (!frontRow) return { ok: false, error: 'no_valid_contract' };
       const c = frontRow.contract;
@@ -384,7 +416,7 @@ function createIbFuturesDataAdapterService(options = {}) {
         resolvedAt: nowIso(),
         resolvedAtMs: Date.now(),
       };
-      contractCache.set(key, entry);
+      contractCache.set(cacheKey, entry);
       return { ok: true, cached: false, ...entry };
     });
   }
@@ -477,23 +509,28 @@ function createIbFuturesDataAdapterService(options = {}) {
     };
   }
 
-  async function fetchHistoricalBars({ root, barSize = '1 min', duration = '1 D', endDateTime = null, useRth = 0 } = {}) {
+  async function fetchHistoricalBars({ root, barSize = '1 min', duration = '1 D', endDateTime = null, useRth = 0, contract = null, includeExpired = false } = {}) {
     const key = String(root || '').trim().toUpperCase();
-    const resolved = await resolveContract(key);
+    const resolved = await resolveContract(key, { contract, includeExpired });
     if (!resolved.ok) return { ok: false, error: resolved.error || 'contract_unresolved', bars: [] };
     if (!(await ensureConnected())) return { ok: false, error: 'ib_not_connected', bars: [] };
     return pacedRequest(async () => {
       const reqId = nextReqId++;
       const promise = track(reqId, 'historical');
-      const end = endDateTime instanceof Date ? toIbUtcDateTime(endDateTime) : (endDateTime || '');
+      const rawEnd = endDateTime instanceof Date ? endDateTime : String(endDateTime || '');
+      const end = rawEnd instanceof Date
+        ? toIbUtcDateTime(rawEnd)
+        : (/^\d{8}-\d{2}:\d{2}:\d{2}$/.test(rawEnd) ? rawEnd : toIbUtcDateTime(rawEnd || new Date()));
       try {
         // formatDate=2 → epoch-sekunder; keepUpToDate=false → endast stängda data.
         ib.reqHistoricalData(reqId, {
+          ...resolved.contract,
           conId: resolved.contract.conId,
           exchange: resolved.contract.exchange,
           secType: 'FUT',
           symbol: key,
           currency: resolved.contract.currency,
+          includeExpired: includeExpired === true || resolved.contract.includeExpired === true,
         }, end, duration, barSize, 'TRADES', useRth, 2, false);
       } catch (err) {
         return { ok: false, error: err.message, bars: [] };

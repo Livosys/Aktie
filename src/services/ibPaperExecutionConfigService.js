@@ -29,6 +29,7 @@ const LIVE_DISABLED = Object.freeze({
   live_broker_enabled: false,
   live_order_submission_enabled: false,
   live_account_orders_allowed: false,
+  real_orders_blocked: true,
 });
 
 // Backwards-compatible export name used by the paper modules/tests.
@@ -37,6 +38,36 @@ const LIVE_EXECUTION = LIVE_DISABLED;
 // Pilotens hårda gränser (§9-§13). Symboler kan snävas via env men aldrig
 // utökas utanför HARD_MAX_ALLOWLIST.
 const HARD_MAX_ALLOWLIST = Object.freeze(['MNQ', 'MES']);
+
+// ── Taket för samtidiga paper-positioner ─────────────────────────────────────
+//
+// Taket satt tidigare i HARD_MAX_ALLOWLIST.length, alltså 2, och parades med en
+// grind som tillät högst EN position per rot. Följden var att systemet aldrig
+// kunde ha två affärer i samma instrument — i praktiken en MNQ och en MES, och
+// oftast bara en, eftersom båda rötterna sällan signalerar samtidigt. Mätt
+// 2026-08-19/20 avvisades 2 078 av 2 098 kandidater på max_open_broker_positions.
+//
+// Att härleda taket ur allowlistens längd var dessutom fel storhet: hur många
+// INSTRUMENT som är tillåtna säger ingenting om hur många positioner kontot bör
+// bära. Taket står därför för sig självt.
+//
+// Tio mikrokontrakt är ~19k SEK samlad stopprisk vid 0,3 % stop. Augusti-
+// incidenten låg på 19 kontrakt och orsakades inte av taket utan av att
+// getPositionCount räknade RADER i stället för kontrakt — en rad från IB:s
+// reqPositions aggregerar hela nettopositionen, så varje ny entry kunde lägga
+// ännu ett kontrakt på en befintlig rad utan att radantalet steg. Räknaren
+// summerar nu |kvantitet| och taket biter därför på verklig exponering.
+//
+// ── Varför tio logiska trades är tio, inte ett tal ───────────────────────────
+//
+// IB aggregerar: tio MNQ-entries blir EN positionsrad med tio kontrakt. Att
+// tio ändå är tio hänger på att ägarskapet aldrig går via positionsraden.
+// Varje logisk trade har sitt eget executionId, och det bärs i orderRef
+// (TOS-PAPER-<executionId>-<ben>) på entry, stop och target. Reconciliation
+// matchar intent mot broker på orderRef, aldrig på conId eller positionsrad —
+// det var precis D1-buggen 2026-08-14, där entryfill nycklad på conId gav
+// dagens FÖRSTA fill och därmed fel entry och fel tecken på resultatet.
+const HARD_MAX_OPEN_POSITIONS = 10;
 
 function normalizeExecutionTarget(value = null) {
   const text = String(value || '').trim().toLowerCase();
@@ -56,6 +87,14 @@ function getExpectedEnvironment(executionTarget = null) {
 function buildExecutionSafety(executionTarget = null) {
   const target = normalizeExecutionTarget(executionTarget || getActiveExecutionTarget());
   const environment = getExpectedEnvironment(target);
+  const liveFlags = target === EXECUTION_TARGETS.LIVE
+    ? {
+        live_trading_enabled: envBool('IBKR_LIVE_TRADING_ENABLED', false),
+        live_broker_enabled: envBool('IBKR_LIVE_BROKER_ENABLED', false),
+        live_order_submission_enabled: envBool('IBKR_LIVE_ORDER_SUBMISSION_ENABLED', false),
+        live_account_orders_allowed: envBool('IBKR_LIVE_ACCOUNT_ORDERS_ALLOWED', false),
+      }
+    : LIVE_DISABLED;
   return {
     mode: target,
     executionTarget: target,
@@ -63,15 +102,12 @@ function buildExecutionSafety(executionTarget = null) {
     paperOnly: target === EXECUTION_TARGETS.PAPER,
     paper_trading_enabled: target === EXECUTION_TARGETS.PAPER,
     live_enabled: target === EXECUTION_TARGETS.LIVE,
-    ...(
-      target === EXECUTION_TARGETS.LIVE
-        ? {
-            live_trading_enabled: envBool('IBKR_LIVE_TRADING_ENABLED', false),
-            live_broker_enabled: envBool('IBKR_LIVE_BROKER_ENABLED', false),
-            live_order_submission_enabled: envBool('IBKR_LIVE_ORDER_SUBMISSION_ENABLED', false),
-            live_account_orders_allowed: envBool('IBKR_LIVE_ACCOUNT_ORDERS_ALLOWED', false),
-          }
-        : LIVE_DISABLED
+    ...liveFlags,
+    real_orders_blocked: !(
+      liveFlags.live_trading_enabled === true
+      && liveFlags.live_broker_enabled === true
+      && liveFlags.live_order_submission_enabled === true
+      && liveFlags.live_account_orders_allowed === true
     ),
   };
 }
@@ -134,6 +170,7 @@ function getFlags(options = {}) {
 
 function getPilotLimits(options = {}) {
   const executionTarget = normalizeExecutionTarget(options.executionTarget || getActiveExecutionTarget());
+  const paperTarget = executionTarget === EXECUTION_TARGETS.PAPER;
   const prefix = executionTarget === EXECUTION_TARGETS.LIVE ? 'IBKR_LIVE' : 'IBKR_PAPER';
   const configured = String(process.env[`${prefix}_PILOT_SYMBOLS`] || 'MNQ,MES')
     .split(',').map((s) => s.trim().toUpperCase()).filter(Boolean);
@@ -143,10 +180,23 @@ function getPilotLimits(options = {}) {
     executionTarget,
     symbolAllowlist: symbolAllowlist.length ? symbolAllowlist : [...HARD_MAX_ALLOWLIST],
     maxQuantity: Math.min(envInt(`${prefix}_PILOT_MAX_QUANTITY`, 1), 1),
-    maxOpenPositions: Math.min(envInt(`${prefix}_PILOT_MAX_OPEN_POSITIONS`, 1), 1),
-    maxPendingEntryOrders: 1,
+    // Paper får bära flera positioner samtidigt, även i samma rot, upp till
+    // HARD_MAX_OPEN_POSITIONS. Live behåller sitt enpositions-tak oavsett vad
+    // paper-konfigurationen säger — det är två skilda risknivåer och de får
+    // aldrig läsa samma tal.
+    maxOpenPositions: paperTarget
+      ? Math.min(Math.max(envInt(`${prefix}_PILOT_MAX_OPEN_POSITIONS`, HARD_MAX_OPEN_POSITIONS), 1), HARD_MAX_OPEN_POSITIONS)
+      : Math.min(envInt(`${prefix}_PILOT_MAX_OPEN_POSITIONS`, 1), 1),
+    // Väntande entries får inte överstiga positionstaket. Gjorde de det kunde
+    // fler order ligga ute än kontot får bära, och taket hade blivit sant först
+    // efter att de fyllts.
+    maxPendingEntryOrders: paperTarget
+      ? Math.min(Math.max(envInt(`${prefix}_PILOT_MAX_PENDING_ENTRY_ORDERS`, HARD_MAX_OPEN_POSITIONS), 1), HARD_MAX_OPEN_POSITIONS)
+      : 1,
     maxOrdersPerSignal: 1,
-    maxEntriesPerHour: envInt(`${prefix}_PILOT_MAX_ENTRIES_PER_HOUR`, 2),
+    maxEntriesPerHour: paperTarget
+      ? Math.min(Math.max(envInt(`${prefix}_PILOT_MAX_ENTRIES_PER_HOUR`, 100), 1), 100)
+      : envInt(`${prefix}_PILOT_MAX_ENTRIES_PER_HOUR`, 2),
     maxDailyLossSek: envInt(`${prefix}_PILOT_MAX_DAILY_LOSS_SEK`, 5000),
     maxConsecutiveLosses: envInt(`${prefix}_PILOT_MAX_CONSECUTIVE_LOSSES`, 3),
     maxSpreadTicks: envInt(`${prefix}_PILOT_MAX_SPREAD_TICKS`, 8),
@@ -276,6 +326,7 @@ module.exports = {
   TARGET_ENVIRONMENTS,
   LIVE_EXECUTION,
   HARD_MAX_ALLOWLIST,
+  HARD_MAX_OPEN_POSITIONS,
   KILL_SWITCH_FILE,
   normalizeExecutionTarget,
   getActiveExecutionTarget,

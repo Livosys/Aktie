@@ -82,10 +82,8 @@ async function main() {
     '/api/futures-paper/auto-simulation',
   ];
   const retiredStrategyMutations = [
-    '/api/futures-paper/strategies/vwap_volume_breakout_long/approve',
-    '/api/futures-paper/strategies/vwap_volume_breakout_long/pause',
-    '/api/futures-paper/strategies/vwap_volume_breakout_long/resume',
-    '/api/futures-paper/strategies/vwap_volume_breakout_long/remove',
+    // Strategy approval endpoints are now active (no longer retired).
+    // They are tested in futuresPaperStrategyMutationAuth.test.js instead.
   ];
   const cases = [
     [{ live_trading_enabled: true }, 'live_trading_is_not_allowed'],
@@ -103,6 +101,7 @@ async function main() {
       await assertRetired(baseUrl, endpoint, {});
       await assertRetired(baseUrl, endpoint, { live_trading_enabled: true });
     }
+    // Strategy approval endpoints are no longer retired — tested in futuresPaperStrategyMutationAuth.test.js
     for (const endpoint of retiredStrategyMutations) {
       await assertRetiredStrategyMutation(baseUrl, endpoint, {});
       await assertRetiredStrategyMutation(baseUrl, endpoint, { live_trading_enabled: true });

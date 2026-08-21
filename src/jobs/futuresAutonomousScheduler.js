@@ -39,9 +39,11 @@ const scannerService = require('../services/futuresPaperScannerService');
 const orchestratorService = require('../services/ibPaperExecutionOrchestratorService');
 const configService = require('../services/ibPaperExecutionConfigService');
 const marketHours = require('../services/futuresMarketHoursService');
+const libraryRecorderModule = require('../services/library/strategyLibraryRecorderService');
 
 const scanner = scannerService.defaultFuturesPaperScannerService;
 const orchestrator = orchestratorService.defaultIbPaperExecutionOrchestratorService;
+const libraryRecorder = libraryRecorderModule.createStrategyLibraryRecorder();
 
 const LOG_PREFIX = '[FuturesAutonomousScheduler]';
 
@@ -89,7 +91,7 @@ function intervalMs() {
 }
 
 function startupDelayMs() {
-  const n = envInt('FUTURES_AUTONOMOUS_STARTUP_DELAY_SECONDS', 20);
+  const n = envInt('FUTURES_AUTONOMOUS_STARTUP_DELAY_SECONDS', 60);
   return Math.max(1, Math.min(3600, n)) * 1000;
 }
 
@@ -237,32 +239,82 @@ async function tick() {
     const scan = scanner.runScannerOnce({ now });
     const candidatesCreated = Number(scan?.scan?.candidatesCreated ?? scan?.candidatesCreated ?? 0);
 
-    // (4) CLAIM — fair scheduler lock so a candidate can be consumed once only.
-    const claim = scanner.claimCandidateForIbkrPaper({ now, claimedBy: 'futures_autonomous_scheduler' });
-    const claimedCandidate = claim?.candidate || null;
-
-    // (5) CONSUMER — drives the existing risk/guard/reservation/intent/adapter chain.
+    // (4-5) CLAIM/CONSUME — behandla så många kandidater per tick som taket
+    // tillåter, sekventiellt.
+    //
+    // Taket satt tidigare i Math.min(2, ...), en kvarleva från när paper bar
+    // högst en position per rot. Med ett tak på tio betydde det att tio aldrig
+    // kunde nås: högst två inskickningar per tick, och scannern tickar var
+    // annan minut.
+    //
+    // Gränsen är nu taket självt. Det är säkert därför att varje kandidat ändå
+    // går genom Broker Risk i buildShadowExecution — exponeringen kontrolleras
+    // där, per order, mot verklig kontraktsräkning. Loopen avgör bara hur många
+    // gånger frågan hinner ställas.
+    const tickLimit = Math.max(1, Number(configService.getPilotLimits({ executionTarget }).maxOpenPositions) || 1);
+    const submissions = [];
+    const processedRoots = new Set();
+    let claimedCandidate = null;
     let result = null;
-    let executionError = null;
-    if (claimedCandidate) {
+    for (let attempt = 0; attempt < tickLimit; attempt += 1) {
+      const claim = scanner.claimCandidateForIbkrPaper({ now, claimedBy: 'futures_autonomous_scheduler' });
+      const candidate = claim?.candidate || null;
+      if (!candidate) break;
+      claimedCandidate = candidate;
+      let candidateResult = null;
+      let executionError = null;
+      const candidateRoot = String(candidate.root || candidate.symbol || candidate.futuresSymbol || '').toUpperCase();
+      // Roten spärrades tidigare efter första kandidaten i ticken, med
+      // blockeraren same_symbol_pending_paper_entry. Den grinden finns inte
+      // längre i Broker Risk, och att behålla en kopia av den här hade betytt
+      // att schemaläggaren tillämpade en regel som riskmodellen inte längre
+      // känner till — precis den sortens tyst dubblering som gör att ett system
+      // rapporterar en gräns och tillämpar en annan.
+      //
+      // Roten bokförs fortfarande, för att svaret ska kunna visa hur ticken
+      // fördelade sig.
+      processedRoots.add(candidateRoot);
       try {
-        result = await orchestrator.buildShadowExecution({ candidate: claimedCandidate, actualSubmit: true, now });
+        if (!candidateResult) {
+          candidateResult = await orchestrator.buildShadowExecution({ candidate, actualSubmit: true, now });
+        }
       } catch (err) {
         executionError = err;
-        result = { ok: false, status: 'ERROR', blockedReason: 'orchestrator_error', error: err && err.message ? err.message : String(err) };
+        candidateResult = { ok: false, status: 'ERROR', blockedReason: 'orchestrator_error', error: err && err.message ? err.message : String(err) };
       } finally {
         scanner.completeClaimedCandidate({
-          candidateId: claimedCandidate.candidateId || null,
-          candidate: claimedCandidate,
+          candidateId: candidate.candidateId || null,
+          candidate,
           now,
           completedBy: 'futures_autonomous_scheduler',
-          outcome: executionError ? 'error' : (result?.submitResult?.submitted === true ? 'submitted' : (result?.blockedReason || result?.status || 'completed')),
+          outcome: executionError ? 'error' : (candidateResult?.submitResult?.submitted === true ? 'submitted' : (candidateResult?.blockedReason || candidateResult?.status || 'completed')),
           details: {
-            resultStatus: result?.status || null,
-            blockedReason: result?.blockedReason || null,
-            submitted: result?.submitResult?.submitted === true,
+            resultStatus: candidateResult?.status || null,
+            blockedReason: candidateResult?.blockedReason || null,
+            submitted: candidateResult?.submitResult?.submitted === true,
           },
         });
+      }
+      result = candidateResult;
+      submissions.push({
+        strategyId: candidate.strategyId || null,
+        canonicalStrategyId: candidate.canonicalStrategyId || candidate.strategyId || null,
+        root: candidate.root || candidate.symbol || null,
+        candidateId: candidate.candidateId || null,
+        submitted: candidateResult?.submitResult?.submitted === true,
+        blockedReason: candidateResult?.blockedReason || null,
+      });
+      if (candidateResult?.submitResult?.submitted === true) {
+        logEvent('ORDER_SUBMITTED', {
+          executionTarget,
+          strategyId: candidate.strategyId || null,
+          root: candidate.root || null,
+          parentOrderId: candidateResult?.submitResult?.parentOrderId ?? null,
+          orderRef: candidateResult?.normalizedOrder?.orderRef || null,
+          idempotencyKey: candidateResult?.intent?.idempotencyKey || null,
+        });
+      } else {
+        logEvent('ORDER_REJECTED', { blocker: candidateResult?.submitResult?.blocker || candidateResult?.blockedReason || null });
       }
     }
 
@@ -270,28 +322,18 @@ async function tick() {
     const blockedReason = result?.blockedReason || null;
     const submitted = result?.submitResult?.submitted === true;
 
-    if (!claimedCandidate || blockedReason === 'no_strategy_candidate' || result?.status === 'READY_WAITING_FOR_SIGNAL') {
+    if (!submissions.length || blockedReason === 'no_strategy_candidate' || result?.status === 'READY_WAITING_FOR_SIGNAL') {
       logEvent('NO_CANDIDATE', { candidatesCreated });
-    } else if (submitted) {
-      logEvent('ORDER_SUBMITTED', {
-        executionTarget,
-        strategyId: claimedCandidate?.strategyId || null,
-        root: claimedCandidate?.root || null,
-        parentOrderId: result?.submitResult?.parentOrderId ?? null,
-        orderRef: result?.normalizedOrder?.orderRef || null,
-        idempotencyKey: result?.intent?.idempotencyKey || null,
-      });
-    } else if (result?.submitResult && result?.submitResult?.submitted !== true) {
-      logEvent('ORDER_REJECTED', { blocker: result?.submitResult?.blocker || blockedReason || null });
-    } else {
-      logEvent('GUARD_BLOCKED', { blockedReason, blockers: Array.isArray(result?.blockers) ? result.blockers : [] });
     }
 
     // Observe fill/position lifecycle from the fresh broker snapshot.
     observeLifecycle(await orchestrator.buildExecutionStatus({ force: true }));
+    // Closed paper trades are folded into Strategy Library idempotently. This
+    // is a read-from-ledger sync, not a new execution path or a live write.
+    const paperLearning = libraryRecorder.ingestExecutionHistory({ target: 'paper', at: now.toISOString() });
 
-    logEvent('TICK_FINISHED', { skipped: false, candidatesCreated, submitted, blockedReason, durationMs: Date.now() - startedAtMs });
-    return { ok: true, ran: true, skipped: false, submitted, blockedReason, candidatesCreated, ...safety };
+    logEvent('TICK_FINISHED', { skipped: false, candidatesCreated, submitted, submissions, blockedReason, paperLearning, durationMs: Date.now() - startedAtMs });
+    return { ok: true, ran: true, skipped: false, submitted, submittedCount: submissions.filter((row) => row.submitted).length, submissions, blockedReason, candidatesCreated, paperLearning, ...safety };
   } catch (err) {
     logEvent('TICK_ERROR', { error: err && err.message ? err.message : String(err) });
     logEvent('TICK_FINISHED', { skipped: false, error: true, durationMs: Date.now() - startedAtMs });

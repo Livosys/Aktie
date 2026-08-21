@@ -93,6 +93,24 @@ function shortTime(value) {
   return text === EMPTY_VALUE ? EMPTY_VALUE : text.slice(5, 16);
 }
 
+function tradeStatusLabel(trade = {}) {
+  return {
+    open: 'Öppen',
+    win: 'Vinst',
+    loss: 'Förlust',
+    breakeven: 'Plus minus noll',
+    closed_unverified: 'Resultat saknas',
+    cancelled: 'Avbruten',
+    rejected: 'Stoppad',
+  }[trade.status] || trade.statusLabel || EMPTY_VALUE;
+}
+
+function directionLabel(direction) {
+  if (direction === 'LONG') return 'Lång';
+  if (direction === 'SHORT') return 'Kort';
+  return textOrEmpty(direction);
+}
+
 const TradeRow = React.memo(function TradeRow({ trade, expanded, onToggle, currency, columnCount }) {
   const pnl = trade.status === 'open' ? trade.unrealizedPnl : trade.netPnl;
   const openRow = trade.status === 'open';
@@ -117,7 +135,7 @@ const TradeRow = React.memo(function TradeRow({ trade, expanded, onToggle, curre
           </div>
         </td>
         <td style={{ ...tdStyle, fontWeight: 800 }}>{textOrEmpty(trade.symbol)}</td>
-        <td style={{ ...tdStyle, maxWidth: 190 }} title={`${textOrEmpty(trade.strategyName)}${trade.strategyId ? ` (${trade.strategyId})` : ''}`}>
+        <td style={{ ...tdStyle, maxWidth: 190 }} title={textOrEmpty(trade.strategyName)}>
           <div style={{ overflow: 'hidden', textOverflow: 'ellipsis' }}>{textOrEmpty(trade.strategyName)}</div>
           <div style={{ color: 'var(--muted)', fontSize: 11, overflow: 'hidden', textOverflow: 'ellipsis' }}>
             {textOrEmpty(trade.strategyFamily)}
@@ -125,11 +143,11 @@ const TradeRow = React.memo(function TradeRow({ trade, expanded, onToggle, curre
         </td>
         <td style={tdStyle}>
           {hasValue(trade.direction) ? (
-            <span style={{ color: trade.direction === 'SHORT' ? 'var(--danger)' : 'var(--success)', fontWeight: 800 }}>{trade.direction}</span>
+            <span style={{ color: trade.direction === 'SHORT' ? 'var(--danger)' : 'var(--success)', fontWeight: 800 }}>{directionLabel(trade.direction)}</span>
           ) : EMPTY_VALUE}
         </td>
         <td style={tdStyle}>
-          <StatusBadge tone={trade.statusTone} compact>{trade.statusDot} {trade.statusLabel}</StatusBadge>
+          <StatusBadge tone={trade.statusTone} compact>{trade.statusDot} {tradeStatusLabel(trade)}</StatusBadge>
         </td>
         <td style={tdStyle}>{fmtNumber(trade.entryPrice, 2)}</td>
         <td style={tdStyle}>{fmtNumber(trade.exitPrice, 2)}</td>
@@ -210,11 +228,11 @@ export const TradeJournal = React.memo(function TradeJournal({
     <section style={{ display: 'grid', gap: 12 }}>
       <section style={tradingSectionStyle({ borderColor: 'rgba(59,130,246,0.30)' })}>
         <SectionHeader
-          eyebrow="Execution / Trades"
-          title="Trade Journal"
+          eyebrow="Senaste avslut"
+          title="Affärsjournal"
           // Rubriken beskriver verkligheten — vad en rad är och hur den är sorterad.
           // Att grupperingen sker på executionId är implementation och hör hemma i koden.
-          summary="En rad = en trade, från entry till exit. Öppna trades överst, därefter senast stängda. Klicka på en rad för order, execution och identitet."
+          summary="En rad = en affär, från ingång till avslut. Öppna affärer ligger överst, därefter senaste avslut."
           action={action}
         />
         {/* Varje kort svarar på en av frågorna standardvyn ska klara på tio sekunder:
@@ -223,7 +241,7 @@ export const TradeJournal = React.memo(function TradeJournal({
             largest, sharpe, drawdown) bor i Analytics och upprepas inte här. */}
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: 8 }}>
           <MetricCard
-            label="Trades"
+            label="Affärer"
             value={fmtNumber(summary.trades)}
             hint={truncated ? `av ${fmtNumber(totalTrades)} totalt` : `${fmtNumber(summary.closedTrades)} stängda`}
           />
@@ -233,17 +251,17 @@ export const TradeJournal = React.memo(function TradeJournal({
             hint={summary.strategyNames.length ? summary.strategyNames.slice(0, 3).join(', ') + (summary.strategyNames.length > 3 ? ` +${summary.strategyNames.length - 3}` : '') : null}
           />
           <MetricCard
-            label="Open trades"
+            label="Öppna affärer"
             value={fmtNumber(summary.openTrades)}
             tone={summary.openTrades ? 'info' : 'neutral'}
           />
           <MetricCard
-            label="Win rate"
+            label="Vinstgrad"
             value={summary.winRate == null ? EMPTY_VALUE : fmtPercent(summary.winRate, 1)}
             hint={`${fmtNumber(summary.wins)} W · ${fmtNumber(summary.losses)} L`}
           />
           <MetricCard
-            label="Net PnL"
+            label="Resultat"
             value={fmtMoney(summary.netPnl, currency, 2)}
             tone={summary.netPnl == null ? 'neutral' : (summary.netPnl < 0 ? 'danger' : 'success')}
             hint={`brutto ${fmtMoney(summary.grossPnl, currency, 2)} · courtage ${fmtMoney(summary.commission, currency, 2)}`}
@@ -260,7 +278,7 @@ export const TradeJournal = React.memo(function TradeJournal({
               }
             }}
             style={{ cursor: summary.attention.total ? 'pointer' : 'default', minWidth: 0 }}
-            title={summary.attention.total ? 'Visa endast trades som kräver uppmärksamhet' : null}
+            title={summary.attention.total ? 'Visa endast affärer som kräver uppmärksamhet' : null}
           >
             <MetricCard
               label="Kräver uppmärksamhet"
@@ -268,7 +286,7 @@ export const TradeJournal = React.memo(function TradeJournal({
               tone={summary.attention.total ? 'danger' : 'success'}
               hint={summary.attention.total
                 ? [
-                  summary.attention.rejected ? `${fmtNumber(summary.attention.rejected)} rejected` : null,
+                  summary.attention.rejected ? `${fmtNumber(summary.attention.rejected)} stoppade` : null,
                   summary.attention.openWithoutStop ? `${fmtNumber(summary.attention.openWithoutStop)} utan stop` : null,
                   summary.attention.unverified ? `${fmtNumber(summary.attention.unverified)} utan PnL` : null,
                 ].filter(Boolean).join(' · ')
@@ -339,7 +357,7 @@ export const TradeJournal = React.memo(function TradeJournal({
           <div style={{ padding: 16, color: 'var(--muted)', fontSize: 13 }}>{WAITING_BROKER}</div>
         ) : !filtered.length ? (
           <div style={{ padding: 16, color: 'var(--muted)', fontSize: 13 }}>
-            {trades.length ? 'Inga trades matchar filtret.' : 'Inga trades i broker mirror.'}
+            {trades.length ? 'Inga affärer matchar filtret.' : 'Inga affärer visas ännu.'}
           </div>
         ) : (
           <>
@@ -348,22 +366,22 @@ export const TradeJournal = React.memo(function TradeJournal({
                 <thead>
                   <tr>
                     <th style={thStyle} aria-label="Expandera" />
-                    <th style={thStyle}>Entry / Exit</th>
+                    <th style={thStyle}>Ingång / avslut</th>
                     <th style={thStyle}>Symbol</th>
-                    <th style={thStyle}>Strategi / Family</th>
-                    <th style={thStyle}>L/S</th>
+                    <th style={thStyle}>Strategi / familj</th>
+                    <th style={thStyle}>Riktning</th>
                     <th style={thStyle}>Status</th>
-                    <th style={thStyle}>Entry</th>
-                    <th style={thStyle}>Exit</th>
+                    <th style={thStyle}>Ingång</th>
+                    <th style={thStyle}>Avslut</th>
                     <th style={thStyle}>Stop</th>
-                    <th style={thStyle}>TP</th>
-                    <th style={thStyle}>Qty</th>
-                    <th style={thStyle}>Gross PnL</th>
-                    <th style={thStyle}>Commission</th>
-                    <th style={thStyle}>Net PnL</th>
-                    <th style={thStyle}>PnL %</th>
-                    <th style={thStyle}>Duration</th>
-                    <th style={thStyle}>Exit reason</th>
+                    <th style={thStyle}>Mål</th>
+                    <th style={thStyle}>Antal</th>
+                    <th style={thStyle}>Brutto</th>
+                    <th style={thStyle}>Courtage</th>
+                    <th style={thStyle}>Resultat</th>
+                    <th style={thStyle}>Resultat %</th>
+                    <th style={thStyle}>Tid</th>
+                    <th style={thStyle}>Orsak</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -392,7 +410,7 @@ export const TradeJournal = React.memo(function TradeJournal({
               flexWrap: 'wrap',
             }}>
               <span>
-                Visar {fmtNumber(safePage * PAGE_SIZE + 1)}–{fmtNumber(safePage * PAGE_SIZE + visible.length)} av {fmtNumber(filtered.length)} trades
+                Visar {fmtNumber(safePage * PAGE_SIZE + 1)}–{fmtNumber(safePage * PAGE_SIZE + visible.length)} av {fmtNumber(filtered.length)} affärer
                 {filtered.length !== trades.length ? ` (filtrerat från ${fmtNumber(trades.length)})` : ''}
                 {truncated ? ` · kapat till ${fmtNumber(DEFAULT_TRADE_LIMIT)} av ${fmtNumber(totalTrades)}` : ''}
                 {' · '}* = orealiserad PnL på öppen position

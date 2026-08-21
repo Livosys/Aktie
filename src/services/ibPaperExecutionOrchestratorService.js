@@ -15,6 +15,8 @@ const ibPaperAccountSummaryService = require('./ibPaperAccountSummaryService');
 const futuresMarketHoursService = require('./futuresMarketHoursService');
 const executionTargetReservationModule = require('./futuresPaperExecutionTargetReservationService');
 const lifecycleIdentity = require('./futuresLifecycleIdentityService');
+const futuresPaperStrategyPolicy = require('./futuresPaperStrategyPolicyService');
+const dailyTradeCapModule = require('./futuresPaperDailyTradeCapService');
 
 const SAFETY = Object.freeze({
   mode: 'ibkr_paper',
@@ -415,6 +417,8 @@ function createIbPaperExecutionOrchestratorService(options = {}) {
 			  const accountSummaryService = options.accountSummaryService || ibPaperAccountSummaryService.defaultIbPaperAccountSummaryService;
   const executionTargetReservations = options.executionTargetReservationService
     || executionTargetReservationModule.defaultFuturesPaperExecutionTargetReservationService;
+  const strategyPolicy = options.strategyPolicyService || futuresPaperStrategyPolicy;
+  const dailyTradeCap = options.dailyTradeCapService || dailyTradeCapModule.defaultFuturesPaperDailyTradeCapService;
   const reconciliation = options.reconciliationService
     || reconciliationModule.createIbPaperBrokerReconciliationService({ adapter, intentService, executionTarget });
   const statusCacheTtlMs = Number(options.statusCacheTtlMs || 1_000);
@@ -764,6 +768,7 @@ function createIbPaperExecutionOrchestratorService(options = {}) {
       brokerOrderStatuses,
       brokerCommissions,
       killSwitch: configService.readKillSwitch(),
+      paperTradeLimit: executionTarget === 'ibkr_paper' ? dailyTradeCap.status(statusNow) : null,
       connectionAttempt,
       ...safety,
     };
@@ -921,6 +926,23 @@ function createIbPaperExecutionOrchestratorService(options = {}) {
     }
 
     const selectedCandidate = selected.candidate;
+    const strategyDecision = strategyPolicy.evaluateStrategy(
+      selectedCandidate.strategyId || selectedCandidate.strategy_id || selectedCandidate.canonicalStrategyId,
+      { fresh: false },
+    );
+    if (!strategyDecision.allowed) {
+      return {
+        ok: true,
+        status: 'blocked',
+        wouldSubmit: false,
+        actualSubmit: false,
+        blockedReason: strategyDecision.blockedReason,
+        blockers: [strategyDecision.blockedReason],
+        candidate: selectedCandidate,
+        strategyPolicy: strategyDecision,
+        ...safety,
+      };
+    }
     const selectedIdentity = lifecycleIdentity.identityFrom(selectedCandidate);
     const limits = configService.getPilotLimits({ executionTarget });
 	    const signalTimestamp = selectedCandidate.signalTimestamp || null;
@@ -961,17 +983,17 @@ function createIbPaperExecutionOrchestratorService(options = {}) {
     const duplicate = idempotencyKey ? intentService.getIntent(idempotencyKey) : null;
     const session = futuresMarketHoursService.getCmeEquityIndexFuturesSessionState(now);
     const executionAllowlist = {
-      allowed: true,
+      allowed: strategyDecision.allowed,
       strategyId: selectedCandidate.strategyId,
-      source: 'production_execution_law_v2',
-      bypassedAsProductionGate: true,
+      canonicalStrategyId: strategyDecision.identity.canonicalStrategyId,
+      nativeStrategyId: strategyDecision.identity.nativeStrategyId,
+      source: strategyDecision.approval.source,
     };
     const entryContract = {
-      allowed: true,
-      entryContractVersion: null,
-      reasonCode: null,
-      source: 'production_execution_law_v2',
-      bypassedAsProductionGate: true,
+      allowed: strategyDecision.approval.entryContractReady === true,
+      entryContractVersion: strategyDecision.row?.entryContractVersion || null,
+      reasonCode: strategyDecision.approval.entryContractReady === true ? null : 'paper_entry_contract_missing',
+      source: 'paperEnabledStrategiesService',
     };
     const rec = status.reconciliation?.degraded === true
 	      ? status.reconciliation
@@ -1008,6 +1030,11 @@ function createIbPaperExecutionOrchestratorService(options = {}) {
       environment,
       executionTarget,
       strategyId: selectedCandidate.strategyId,
+      canonicalStrategyId: strategyDecision.identity.canonicalStrategyId,
+      nativeStrategyId: strategyDecision.identity.nativeStrategyId,
+      originStrategyId: strategyDecision.identity.originStrategyId,
+      strategyVersion: selectedCandidate.strategyVersion || strategyDecision.identity.strategyVersion || null,
+      strategyFamily: selectedCandidate.strategyFamily || strategyDecision.identity.strategyFamily || null,
       candidateId: selectedCandidate.candidateId || null,
       signalId: selectedCandidate.signalId || selectedCandidate.originalSignalId || null,
       root: selectedCandidate.root,
@@ -1090,8 +1117,30 @@ function createIbPaperExecutionOrchestratorService(options = {}) {
 	        { code: 'execution_target_reserved', ok: false, blocker: reservation.blocker || 'execution_target_reservation_failed' },
 	      ],
 	    };
-		    const intentCreate = effectiveGuard.allowed && idempotencyKey
-		      ? intentService.createIntent({
+    let dailyTradeReservation = { ok: false, skipped: true };
+    let guardedForIntent = effectiveGuard;
+    if (effectiveGuard.allowed && actualSubmit === true && executionTarget === 'ibkr_paper') {
+      dailyTradeReservation = dailyTradeCap.reserve({
+        idempotencyKey,
+        strategyId: selectedCandidate.strategyId,
+        canonicalStrategyId: strategyDecision.identity.canonicalStrategyId,
+        now,
+      });
+      if (!dailyTradeReservation.ok) {
+        guardedForIntent = {
+          ...effectiveGuard,
+          allowed: false,
+          blockedReason: dailyTradeReservation.blockedReason,
+          blockers: [dailyTradeReservation.blockedReason, ...(effectiveGuard.blockers || [])],
+          checks: [
+            ...(effectiveGuard.checks || []),
+            { code: 'daily_paper_trade_limit', ok: false, blocker: dailyTradeReservation.blockedReason },
+          ],
+        };
+      }
+    }
+    const intentCreate = guardedForIntent.allowed && idempotencyKey
+      ? intentService.createIntent({
 	        idempotencyKey,
 	        executionId,
 	        intent: {
@@ -1105,7 +1154,7 @@ function createIbPaperExecutionOrchestratorService(options = {}) {
 		        },
 		      })
 		      : { created: false, skipped: true };
-		    const finalGuard = effectiveGuard.allowed && idempotencyKey && intentCreate.created !== true
+    const finalGuard = guardedForIntent.allowed && idempotencyKey && intentCreate.created !== true
 		      ? {
 		        ...effectiveGuard,
 		        allowed: false,
@@ -1138,7 +1187,12 @@ function createIbPaperExecutionOrchestratorService(options = {}) {
       idempotencyKey,
       signalId: intent.signalId || null,
 	      candidateId: selectedCandidate.candidateId || null,
-	      strategyId: selectedCandidate.strategyId,
+      strategyId: selectedCandidate.strategyId,
+      canonicalStrategyId: strategyDecision.identity.canonicalStrategyId,
+      nativeStrategyId: strategyDecision.identity.nativeStrategyId,
+      originStrategyId: strategyDecision.identity.originStrategyId,
+      strategyVersion: selectedCandidate.strategyVersion || strategyDecision.identity.strategyVersion || null,
+      strategyFamily: selectedCandidate.strategyFamily || strategyDecision.identity.strategyFamily || null,
 	      root: selectedCandidate.root,
       localSymbol: contract.localSymbol || null,
       conId: contract.conId || null,
@@ -1216,7 +1270,9 @@ function createIbPaperExecutionOrchestratorService(options = {}) {
 				      entryContract,
       brokerRisk,
 		      guard: finalGuard,
-	      executionTargetReservation: reservation,
+      executionTargetReservation: reservation,
+      dailyTradeReservation,
+      strategyPolicy: strategyDecision,
       intent: intentCreate.record || intent,
 	      intentCreate,
 	      executionEvidence: executionEvidence ? {

@@ -15,6 +15,8 @@ const candleAggregator = require('../data/candleAggregator');
 const candleWindow = require('../data/candleWindow');
 const marketDataStore = require('../data/marketDataStore');
 const futuresContractCatalog = require('./futuresContractCatalogService');
+const futuresMarketHours = require('./futuresMarketHoursService');
+const contractProvenance = require('./backfill/canonicalContractProvenanceService');
 
 const SAFETY = Object.freeze({
   mode: 'paper_only',
@@ -49,6 +51,10 @@ function envInt(name, fallback) {
 
 function nowIso(now = new Date()) {
   return new Date(now).toISOString();
+}
+
+function contractKeyFor(root, contract = {}) {
+  return contractProvenance.canonicalContractKey(root, contract);
 }
 
 // Tidsramarna bor i candleWindow, som live-feeden och den historiska feeden delar.
@@ -91,16 +97,28 @@ function createFuturesMarketDataService(options = {}) {
     return candleState.get(key);
   }
 
-  function mergeBars(state, incoming = []) {
+  function mergeBars(state, incoming = [], contract = {}) {
     if (!incoming.length) return 0;
-    const byEpoch = new Map(state.bars1m.map((b) => [b.epoch, b]));
+    const identity = contractProvenance.normalizeIdentity(state.root, contract);
+    const byIdentityAndEpoch = new Map(state.bars1m.map((b) => [
+      `${b.contractKey || identity.contractKey || 'unknown'}|${b.epoch}`,
+      b,
+    ]));
     let added = 0;
     for (const bar of incoming) {
       if (!Number.isFinite(bar.epoch)) continue;
-      if (!byEpoch.has(bar.epoch)) added += 1;
-      byEpoch.set(bar.epoch, bar);
+      const enriched = {
+        ...bar,
+        contractKey: identity.contractKey,
+        conId: identity.conId,
+        localSymbol: identity.localSymbol,
+        expiry: identity.expiry,
+      };
+      const key = `${identity.contractKey || 'unknown'}|${bar.epoch}`;
+      if (!byIdentityAndEpoch.has(key)) added += 1;
+      byIdentityAndEpoch.set(key, enriched);
     }
-    state.bars1m = [...byEpoch.values()].sort((a, b) => a.epoch - b.epoch);
+    state.bars1m = [...byIdentityAndEpoch.values()].sort((a, b) => a.epoch - b.epoch);
     if (state.bars1m.length > MAX_BARS_1M) {
       state.bars1m = state.bars1m.slice(state.bars1m.length - MAX_BARS_1M);
     }
@@ -112,11 +130,23 @@ function createFuturesMarketDataService(options = {}) {
   function persistBars(root, contract) {
     if (!persistEnabled) return;
     const state = getCandleState(root);
-    const byDate = new Map();
+    const currentIdentity = contractProvenance.normalizeIdentity(root, { ...contract, contractKey: contractKeyFor(root, contract) });
+    if (!currentIdentity.exact) {
+      state.lastError = 'current_capture_contract_provenance_unverified';
+      return;
+    }
+    const byPartition = new Map();
     for (const bar of state.bars1m) {
       const date = String(bar.timestamp).slice(0, 10);
-      if (!byDate.has(date)) byDate.set(date, []);
-      byDate.get(date).push({
+      const identity = contractProvenance.normalizeIdentity(root, { ...contract, ...bar });
+      if (!identity.exact) {
+        state.lastError = 'current_capture_contract_provenance_unverified';
+        continue;
+      }
+      const partition = `${identity.contractKey}|${date}`;
+      if (!byPartition.has(partition)) byPartition.set(partition, { identity, date, bars: [] });
+      const session = futuresMarketHours.buildFuturesSessionMetadata(bar.timestamp);
+      byPartition.get(partition).bars.push({
         ts: bar.timestamp,
         t: bar.timestamp,
         open: bar.open,
@@ -126,17 +156,42 @@ function createFuturesMarketDataService(options = {}) {
         volume: bar.volume ?? 0,
         tradeCount: bar.tradeCount ?? null,
         source: 'ib',
-        conId: contract?.conId || null,
-        localSymbol: contract?.localSymbol || null,
-        expiry: contract?.expiry || null,
+        provider: 'ibkr',
+        root,
+        symbol: root,
+        contractKey: identity.contractKey,
+        conId: identity.conId,
+        localSymbol: identity.localSymbol,
+        expiry: identity.expiry,
+        tradingDay: session?.tradingDay || null,
+        session: session?.sessionId || null,
+        provenanceQuality: contractProvenance.PROVENANCE.EXACT,
       });
     }
-    for (const [date, bars] of byDate.entries()) {
+    for (const { identity, date, bars } of byPartition.values()) {
       try {
-        store.saveRawBars(root, date, bars, 'ib');
+        const rawSaved = store.saveRawBars(root, date, bars, 'ib', { contractKey: identity.contractKey });
+        if (rawSaved === -1) throw new Error('contract_provenance_store_rejected');
         const closed1m = candleAggregator.filterClosedBars(bars, { timeframeMs: 60 * 1000 });
-        const agg2m = candleAggregator.aggregate1mTo2m(closed1m).filter((c) => !c.incomplete);
-        if (agg2m.length) store.saveCandles2m(root, date, agg2m);
+        const agg2m = candleAggregator.aggregate1mTo2m(closed1m)
+          .filter((c) => !c.incomplete)
+          .map((c) => ({
+            ...c,
+            root,
+            symbol: root,
+            contractKey: identity.contractKey,
+            conId: identity.conId,
+            localSymbol: identity.localSymbol,
+            expiry: identity.expiry,
+            tradingDay: futuresMarketHours.buildFuturesSessionMetadata(c.ts)?.tradingDay || null,
+            session: futuresMarketHours.buildFuturesSessionMetadata(c.ts)?.sessionId || null,
+            provenanceQuality: contractProvenance.PROVENANCE.EXACT,
+            provider: 'ibkr',
+          }));
+        if (agg2m.length) {
+          const candlesSaved = store.saveCandles2m(root, date, agg2m, { contractKey: identity.contractKey });
+          if (candlesSaved === -1) throw new Error('contract_provenance_candle_store_rejected');
+        }
       } catch (err) {
         state.lastError = `persist_failed: ${err.message}`;
       }
@@ -147,7 +202,7 @@ function createFuturesMarketDataService(options = {}) {
         store.saveIbImportManifest(root, {
           root,
           contract: contract || null,
-          dates: [...byDate.keys()].sort(),
+      dates: [...new Set([...byPartition.values()].map((entry) => entry.date))].sort(),
           barCount1m: state.bars1m.length,
           importedAt: nowIso(),
           provider: 'ibkr',
@@ -166,7 +221,7 @@ function createFuturesMarketDataService(options = {}) {
         state.lastError = result.error || 'historical_failed';
         return { ok: false, error: state.lastError };
       }
-      mergeBars(state, result.bars);
+      mergeBars(state, result.bars, result.contract || {});
       state.lastRefreshOk = true;
       state.lastError = null;
       if (persist && CANDLE_ROOTS.includes(String(root || '').trim().toUpperCase())) {
@@ -205,9 +260,11 @@ function createFuturesMarketDataService(options = {}) {
     if (started) return { ok: true, alreadyStarted: true };
     started = true;
     startedAt = nowIso();
-    await adapter.start();
-    // Initial backfill + löpande refresh. Fel isoleras per instrument.
-    refreshAllOnce().catch(() => {});
+    const adapterOk = await adapter.start();
+    if (!adapterOk) return { ok: false, error: 'ib_adapter_connection_failed', adapterStatus: adapter.getStatus() };
+    // Initial backfill — MUST complete before scheduler starts querying candles (60s startup delay is not enough).
+    await refreshAllOnce().catch(() => {});
+    // löpande refresh. Fel isoleras per instrument.
     refreshTimer = setInterval(() => {
       refreshAllOnce().catch(() => {});
     }, refreshIntervalMs);

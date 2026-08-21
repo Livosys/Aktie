@@ -30,10 +30,14 @@
 //
 // ── Varför en bok per strategi och inte ett höjt positionstak ────────────────
 //
-// Broker Risk hämtar maxOpenPositions ur ibPaperExecutionConfigService, där det
-// är HÅRDKAPAT till 1 (Math.min(env, 1)). Att höja det för portföljläget hade
-// krävt en ändring i den modul som också styr paper och live — alltså precis
-// den sortens ändring som inte får göras för att en analysfunktion vill något.
+// Broker Risk hämtar maxOpenPositions ur ibPaperExecutionConfigService. Där är
+// LIVE hårdkapat till 1 (Math.min(env, 1)) medan PAPER sedan 2026-08-20 får
+// bära upp till HARD_MAX_OPEN_POSITIONS kontrakt, fördelade fritt mellan
+// rötterna — same_root-grinden är borttagen, och taket räknar kontrakt i
+// stället för positionsrader.
+// Att höja taket för portföljläget hade ändå krävt en ändring i den modul som
+// också styr paper och live — alltså precis den sortens ändring som inte får
+// göras för att en analysfunktion vill något.
 //
 // I stället får varje bok sin egen positionsvy. Broker Risk ser då exakt en
 // position per bok och är fullständigt oförändrad. En portfölj med N samtidiga

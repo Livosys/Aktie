@@ -15,12 +15,16 @@ const SystemPage       = lazy(() => import('./pages/SystemPage.jsx'));
 const DaytradingPage   = lazy(() => import('./pages/DaytradingPage.jsx'));
 const SupervisorBrainPage = lazy(() => import('./pages/SupervisorBrainPage.jsx'));
 const NarrowStateLabPage = lazy(() => import('./pages/NarrowStateLabPage.jsx'));
-const PaperTradingPage = lazy(() => import('./pages/PaperTradingPage.jsx'));
 const FuturesPaperDeskPage = lazy(() => import('./pages/FuturesPaperDeskPage.jsx'));
 const InteractiveBrokersPage = lazy(() => import('./pages/InteractiveBrokersPage.jsx'));
 const AdminPage = lazy(() => import('./pages/AdminPage.jsx'));
 const PinescriptPage = lazy(() => import('./pages/PinescriptPage.jsx'));
 const AiControlRoomPage = lazy(() => import('./pages/AiControlRoomPage.jsx'));
+const FactoryDashboardPage = lazy(() => import('./pages/FactoryDashboardPage.jsx'));
+const FactoryLoopPage = lazy(() => import('./pages/FactoryLoopPage.jsx'));
+const AiDecisionJournalPage = lazy(() => import('./pages/AiDecisionJournalPage.jsx'));
+const FactoryReplayExplorerPage = lazy(() => import('./pages/FactoryReplayExplorerPage.jsx'));
+const FactoryExplorerPage = lazy(() => import('./pages/FactoryExplorerPage.jsx'));
 const LoginPage = lazy(() => import('./pages/LoginPage.jsx'));
 
 function RedirectWithSearch({ to }) {
@@ -40,13 +44,13 @@ function ProtectedTradingOs() {
       <AppShell>
         <HeroToastContainer />
         <Routes>
-          {/* Trading OS v2 */}
-          <Route path="/"             element={<Navigate to="/supervisor" replace />} />
+          {/* Version 1.0 product routes */}
+          <Route path="/"             element={<Navigate to="/factory" replace />} />
           <Route path="/supervisor"   element={<SupervisorBrainPage />} />
-          <Route path="/overview"     element={<Navigate to="/supervisor" replace />} />
+          <Route path="/overview"     element={<Navigate to="/factory" replace />} />
           <Route path="/narrow"       element={<NarrowStateLabPage />} />
           <Route path="/narrow-state" element={<Navigate to="/narrow" replace />} />
-          <Route path="/oversikt"     element={<Navigate to="/supervisor" replace />} />
+          <Route path="/oversikt"     element={<Navigate to="/factory" replace />} />
           <Route path="/live"         element={<SignalpulsPage />} />
           <Route path="/lab"          element={<TradingLabPage />} />
           <Route path="/insikter"     element={<ResultatPage />} />
@@ -58,14 +62,19 @@ function ProtectedTradingOs() {
           <Route path="/pinescript"   element={<PinescriptPage />} />
           <Route path="/pine-script"  element={<Navigate to="/pinescript" replace />} />
 
-          {/* AI Control Room — read-only */}
+          {/* Labs and hidden legacy tools */}
           <Route path="/ai"          element={<AiControlRoomPage />} />
           <Route path="/ai/:section" element={<AiControlRoomPage />} />
+          <Route path="/factory"     element={<FactoryDashboardPage />} />
+          <Route path="/factory/loop"  element={<FactoryLoopPage />} />
+          <Route path="/decision-journal" element={<AiDecisionJournalPage />} />
+          <Route path="/factory/replay" element={<FactoryReplayExplorerPage />} />
+          <Route path="/factory/library" element={<FactoryExplorerPage mode="library" />} />
+          <Route path="/factory/family-tree" element={<FactoryExplorerPage mode="family" />} />
+          <Route path="/factory/market-dna" element={<FactoryExplorerPage mode="market" />} />
 
-          {/* Förstklassiga arbetsytor. Vyerna är oförändrade — det här är bara
-              egna adresser till dem, så att ett menyval går att bokmärka och
-              dela utan att gå via Labs. /replay finns redan bland legacy-
-              routerna nedan och lämnas orörd. */}
+          {/* Hidden legacy shortcuts. Vyerna är oförändrade och routes finns kvar
+              för bokmärken, men V1-navigationen går via Labs eller produktsidan. */}
           <Route path="/batch"        element={<Navigate to="/lab?tab=batch" replace />} />
           <Route path="/live-scanner" element={<Navigate to="/futures-paper?tab=ordrar" replace />} />
 
@@ -105,7 +114,7 @@ function ProtectedTradingOs() {
           <Route path="/review-chart"      element={<RedirectWithSearch to="/lab?tab=review" />} />
           <Route path="/system-health"     element={<Navigate to="/system?tab=health" replace />} />
           <Route path="/quality"           element={<Navigate to="/insikter?tab=ai" replace />} />
-          <Route path="/paper-trading"     element={<PaperTradingPage />} />
+          <Route path="/paper-trading"     element={<Navigate to="/futures-paper" replace />} />
           <Route path="/paper-futures"     element={<Navigate to="/futures-paper" replace />} />
           <Route path="/risk-engine"       element={<Navigate to="/system?tab=safety" replace />} />
           <Route path="/exit-engine"       element={<Navigate to="/lab?tab=exits" replace />} />

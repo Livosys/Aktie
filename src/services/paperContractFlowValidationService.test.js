@@ -24,9 +24,19 @@ const svc = require('./paperContractFlowValidationService');
 
 function readyNarrow(overrides = {}) {
   return {
-    symbol: 'BTCUSDT',
-    marketType: 'crypto',
-    session: 'crypto_24_7',
+    // ── Futures, inte krypto ─────────────────────────────────────────────
+    //
+    // Fixturen använde BTCUSDT och förväntade sig att signalen mappades till
+    // en futures-strategi. Den mappningen är AVSIKTLIGT spärrad sedan
+    // instrumentsläktskapet infördes: steget mot paper var i praktiken
+    // krypto→MNQ, alltså BTC-struktur som blev MNQ-order. Testet prövade
+    // därmed det beteende spärren finns för att stoppa.
+    //
+    // Gaterna som testet faktiskt validerar är instrumentoberoende, så
+    // fixturen kör dem på ett instrument mappningen tillåter.
+    symbol: 'MNQ',
+    marketType: 'futures',
+    session: 'rth',
     signalFamily: 'NARROW_COMPRESSION',
     signalSubtype: 'NARROW_BULL_ENTRY',
     status: 'active',
@@ -67,7 +77,7 @@ function main() {
     candidates: [
       readyNarrow(),
       readyNarrow({
-        symbol: 'ETHUSDT',
+        symbol: 'MES',
         signalFamily: 'REGULAR_PULLBACK',
         signalSubtype: 'REGULAR_PULLBACK',
         status: 'watch',
@@ -81,7 +91,7 @@ function main() {
         },
       }),
       readyNarrow({
-        symbol: 'SOLUSDT',
+        symbol: 'M2K',
         signalFamily: 'UNKNOWN',
         signalSubtype: 'NO_TRADE',
         status: 'wait',
@@ -95,7 +105,7 @@ function main() {
   assert.equal(result.can_place_orders, false);
   assert.equal(result.summary.totalCandidates, 3);
 
-  const narrow = result.candidates.find((row) => row.symbol === 'BTCUSDT');
+  const narrow = result.candidates.find((row) => row.symbol === 'MNQ');
   assert.equal(narrow.strategyId, 'narrow_state_expansion_long');
   assert.equal(narrow.activeStrategy, true);
   assert.equal(narrow.gates.manual.status, 'pass');
@@ -105,12 +115,12 @@ function main() {
   assert.equal(narrow.gates.qualifiesForEntry.status, 'pass');
   assert.notEqual(narrow.stopAt, 'qualifiesForEntry', 'entry-ready active status must not be rejected after contract pass');
 
-  const disabled = result.candidates.find((row) => row.symbol === 'ETHUSDT');
+  const disabled = result.candidates.find((row) => row.symbol === 'MES');
   assert.equal(disabled.gates.manual.status, 'block');
   assert.equal(disabled.gates.manual.reasonCode, 'paper_strategy_not_enabled');
   assert.equal(disabled.stopAt, 'manual');
 
-  const noTrade = result.candidates.find((row) => row.symbol === 'SOLUSDT');
+  const noTrade = result.candidates.find((row) => row.symbol === 'M2K');
   assert.equal(noTrade.gates.producerSubtype.status, 'block');
   assert.equal(noTrade.stopAt, 'producerSubtype');
 
@@ -123,7 +133,7 @@ function main() {
     state,
     candidates: [
       readyNarrow({
-        symbol: 'BTCUSDT',
+        symbol: 'MNQ',
         status: 'watch',
         confidenceScore: 99,
         producerEntryReadiness: {
@@ -135,13 +145,13 @@ function main() {
         },
       }),
       readyNarrow({
-        symbol: 'ETHUSDT',
+        symbol: 'MES',
         confidenceScore: 80,
       }),
     ],
   });
-  const watchWinnerCandidate = rankRegression.candidates.find((row) => row.symbol === 'BTCUSDT');
-  const eligibleCandidate = rankRegression.candidates.find((row) => row.symbol === 'ETHUSDT');
+  const watchWinnerCandidate = rankRegression.candidates.find((row) => row.symbol === 'MNQ');
+  const eligibleCandidate = rankRegression.candidates.find((row) => row.symbol === 'MES');
   assert.equal(watchWinnerCandidate.gates.strategyControl.status, 'pass');
   assert.equal(watchWinnerCandidate.gates.strategyControl.familyRank, null);
   assert.equal(watchWinnerCandidate.gates.entryContract.status, 'block');

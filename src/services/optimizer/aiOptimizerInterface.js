@@ -2,9 +2,9 @@
 
 // ── AI Optimizer: kontraktet, inte motorn ────────────────────────────────────
 //
-// Optimeraren är INTE byggd. Den här filen definierar bara vad en optimerare
-// måste kunna, så att den när den byggs inte kan ta någon av de genvägar som
-// annars uppstår när ett gränssnitt uppfinns i efterhand.
+// Den här filen definierar vad en optimerare måste kunna, så att motorn inte
+// kan ta någon av de genvägar som annars uppstår när ett gränssnitt uppfinns i
+// efterhand.
 //
 // Fyra regler som är inbyggda i kontraktet:
 //
@@ -13,9 +13,10 @@
 //
 //   2. Den måste FRÅGA MINNET FÖRST. propose() returnerar förslag; varje
 //      förslag måste passera AI Memory innan det körs, och ett förslag som
-//      redan finns i minnet ska besvaras ur minnet. Det är därför kontraktet
-//      kräver att en optimerare kan ta emot `memoryLookup` — utan den kan den
-//      inte fråga, och en optimerare som inte kan fråga kommer att köra om.
+//      redan finns i minnet ska returneras som en indexträff till Strategy
+//      Library. Det är därför kontraktet kräver att en optimerare kan ta emot
+//      `memoryLookup` — utan den kan den inte fråga, och en optimerare som inte
+//      kan fråga kommer att köra om.
 //
 //   3. Den optimerar mot Strategy Edge, aldrig mot Executed Entry. Måttet
 //      skickas in; optimeraren väljer det inte själv. En optimerare som får
@@ -113,10 +114,10 @@ function validateProposal(proposal) {
 /**
  * Kontrollen som måste ligga mellan optimerare och replay.
  *
- * Returnerar antingen ett svar ur minnet eller ett godkännande att köra. Den
- * här funktionen är hela regeln "AI får aldrig köra samma experiment två
- * gånger" — den finns här, i kontraktet, så att en framtida optimerare inte kan
- * byggas utan den.
+ * Returnerar antingen en Library-referens ur minnet eller ett godkännande att
+ * köra. Den här funktionen är hela regeln "AI får aldrig köra samma experiment
+ * två gånger" — den finns här, i kontraktet, så att en framtida optimerare inte
+ * kan byggas utan den.
  *
  * @param {object}   memory       aiMemoryService-instans
  * @param {object}   experimentSpec  identitet enligt AI Memory
@@ -128,7 +129,7 @@ function gateThroughMemory(memory, experimentSpec) {
       run: false,
       reason: 'already_known',
       experimentKey: plan.experimentKey,
-      result: plan.result,
+      libraryRef: plan.libraryRef,
       seenIn: plan.seenIn,
       ...SAFETY,
     };
@@ -140,7 +141,7 @@ function describeInterface() {
   return {
     interfaceVersion: INTERFACE_VERSION,
     implemented: false,
-    note: 'Optimeraren är inte byggd. Kontraktet finns för att den ska byggas rätt.',
+    note: 'Detta är kontraktet. aiOptimizerService redovisar faktisk implementation.',
     requiredMethods: [...REQUIRED_METHODS],
     optimizationTargets: [...OPTIMIZATION_TARGETS],
     forbiddenTargets: [...FORBIDDEN_TARGETS],

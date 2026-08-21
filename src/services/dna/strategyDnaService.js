@@ -44,7 +44,7 @@ const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 
-const registry = require('../nativeFuturesStrategyRegistryService');
+const registry = require('../strategyRegistryService');
 
 const SAFETY = Object.freeze({
   readOnly: true,
@@ -155,13 +155,14 @@ function readStrategySource(strategyId, dir = path.resolve(__dirname, '..')) {
  * @param {object} descriptor  från registry.listNativeStrategies()
  */
 function deriveStrategyDna(descriptor, { source = null } = {}) {
-  const strategyId = text(descriptor?.strategyId);
+  const strategyId = text(descriptor?.strategyId || descriptor?.strategy_id || descriptor?.id);
   if (!strategyId) return null;
   const code = source !== null ? source : readStrategySource(strategyId);
   const genome = blankGenome();
 
   // ── deklarerade parametrar ────────────────────────────────────────────────
-  for (const [key, value] of Object.entries(descriptor.defaultOptions || {})) {
+  const defaultOptions = descriptor?.defaultOptions || descriptor?.default_options || {};
+  for (const [key, value] of Object.entries(defaultOptions)) {
     const blockName = OPTION_BLOCK_MAP[key] || 'entry';
     const block = genome[blockName];
     block.values[key] = value;
@@ -206,8 +207,8 @@ function deriveStrategyDna(descriptor, { source = null } = {}) {
 
   return finalizeDna({
     strategyId,
-    strategyVersion: descriptor.strategyVersion || null,
-    originStrategyId: descriptor.originStrategyId || null,
+    strategyVersion: descriptor.strategyVersion || descriptor.strategy_version || null,
+    originStrategyId: descriptor.originStrategyId || descriptor.origin_strategy_id || null,
     genome,
     lineage: { parent: null, generation: 0, mutationType: null, branch: 'root', rootStrategyId: strategyId },
   });
@@ -320,14 +321,67 @@ function diffStrategyDna(a, b) {
  *
  * Populationen kommer ur registret. Ingen lista här.
  */
-function listStrategyDna({ registryService = registry } = {}) {
-  return registryService.listNativeStrategies()
+// ── Två register, en population ──────────────────────────────────────────────
+//
+// Strategy Registry svarar på "vilka strategier är registrerade". Native
+// Futures Strategy Registry svarar på "vilka strategier har kod som går att
+// köra". Populationen är unionen, och den distinktionen fick reella följder:
+//
+// Biblioteket — och därmed Strategy Brain — är nycklat på BÅDA namnrymderna.
+// Hjärnan väljer alltså regelbundet ut ett native-id, medan DNA-populationen
+// bara innehöll katalogens id:n. Evolution Engine slog upp föräldern i
+// populationen, hittade ingenting, och hoppade över steget med
+// `parent_dna_not_found` — varje gång. Ingen mutation har någonsin skapats.
+//
+// Vid id-krock vinner native-descriptorn. Den bär exakt de parametrar
+// evaluatorn läser, medan katalograden dessutom bär beskrivande fält
+// (familjenamn, marknadsetikett). Att mutera en marknadsetikett är inte en
+// mutation, och muterbarheten avgörs av vilken descriptor genomet härleds ur.
+function nativeRegistryModule() {
+  // Lat require: native-registret hämtar i sin tur Strategy Registry, som
+  // hämtar katalogen. En cirkulär require vid inläsning hade gett en
+  // halvfärdig modul åt den som råkade laddas först.
+  return require('../nativeFuturesStrategyRegistryService');
+}
+
+// includeNative styr om native-registret räknas med. Den enda anroparen som
+// stänger av det är native-registret självt när det bygger sin varianttabell:
+// varianternas parametrar HÄRLEDS ur katalogen, och ett native-uppslag där
+// hade bett tabellen om sig själv.
+function populationDescriptors(registryService, includeNative) {
+  const catalog = typeof registryService.listStrategies === 'function'
+    ? registryService.listStrategies()
+    : (typeof registryService.listNativeStrategies === 'function' ? registryService.listNativeStrategies() : []);
+
+  const byId = new Map();
+  for (const descriptor of catalog) {
+    const id = text(descriptor?.strategyId || descriptor?.strategy_id || descriptor?.id);
+    if (id) byId.set(id, descriptor);
+  }
+
+  if (includeNative) {
+    for (const descriptor of nativeRegistryModule().listNativeStrategies({ includeVariants: true })) {
+      if (descriptor?.strategyId) byId.set(descriptor.strategyId, descriptor);
+    }
+  }
+
+  return [...byId.values()];
+}
+
+function listStrategyDna({ registryService = registry, includeNative = true } = {}) {
+  return populationDescriptors(registryService, includeNative !== false)
     .map((descriptor) => deriveStrategyDna(descriptor))
     .filter(Boolean);
 }
 
-function getStrategyDna(strategyId, { registryService = registry } = {}) {
-  const descriptor = registryService.getNativeStrategy(strategyId);
+function getStrategyDna(strategyId, { registryService = registry, includeNative = true } = {}) {
+  if (includeNative !== false) {
+    const native = nativeRegistryModule().getNativeStrategy(strategyId);
+    if (native) return deriveStrategyDna(native);
+  }
+  const descriptor = typeof registryService.getStrategy === 'function'
+    ? registryService.getStrategy(strategyId)
+    : (typeof registryService.getNativeStrategy === 'function' ? registryService.getNativeStrategy(strategyId) : null);
   return descriptor ? deriveStrategyDna(descriptor) : null;
 }
 

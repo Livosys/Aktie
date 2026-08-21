@@ -31,7 +31,20 @@ const REPLAY_QUOTE_AGE_MS = 2 * 60 * 1000;
 
 // Fönstret nedan är 13:00–15:00Z, plus 30 minuters barer efter sista signalen
 // för att kunna fylla ordern. Dygnet måste täcka hela sträckan.
-const DAY = coverage.findCompleteDay({ roots: ROOTS, throughUtcTime: '15:30' });
+//
+// findClosedCompleteDay, inte findCompleteDay: det nyaste kompletta dygnet är
+// det dygn den löpande IB-infångningen fortfarande skriver till, och testet
+// mäter exekveringskostnad över sextio signaler i det.
+//
+// Det räckte inte i sig. 2026-08-20 stannade infångningen 17:33 när en annan
+// process tog över porten, och en timme senare passerade dygnet tystnads-
+// kontrollen med 240 barer i RTH-fönstret — trots att halva sessionen saknades.
+// Assertionen "den simulerade motorn ska kosta något" föll då på noll kostnad.
+//
+// findClosedCompleteDay kräver numera att dygnets data NÅR FRAM till sessionens
+// slut, inte bara att lagret legat stilla. Ett avhugget dygn väljs därför inte,
+// och `throughUtcTime` nedan kan bara skärpa kravet, aldrig sänka det.
+const DAY = coverage.findClosedCompleteDay({ roots: ROOTS, throughUtcTime: '15:30' });
 
 function collectSignals(feed, { count = 60, startIso } = {}) {
   const start = new Date(startIso).getTime();

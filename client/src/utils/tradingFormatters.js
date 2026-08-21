@@ -1,5 +1,5 @@
 export const EMPTY_VALUE = '—';
-export const WAITING_BROKER = 'Waiting for broker...';
+export const WAITING_BROKER = 'Hämtar brokerdata...';
 
 export function numberOrNull(value) {
   if (value === null || value === undefined || value === '') return null;

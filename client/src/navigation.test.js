@@ -12,10 +12,9 @@ import {
   navItemsFor,
 } from './navigation.js';
 
-// Navigationen fanns i tre kopior som gled isär: Live Scanner, Replay och Batch
-// lades till i sidomenyn medan dashboardens toppmeny — den enda som faktiskt
-// syns på Futures-sidorna — stod kvar oförändrad. Testerna nedan låser dels att
-// menyn har rätt innehåll, dels att de tre renderarna läser DENNA fil.
+// V1-produkten ska ha en enda huvudväg till fabriken, strategier, tester,
+// handelstest och system. Alla äldre utvecklings- och researchvyer ligger bakom
+// Labs men behåller sina routes för bokmärken.
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const read = (rel) => fs.readFileSync(path.join(here, rel), 'utf8');
@@ -27,48 +26,62 @@ const RENDERERS = [SIDEBAR, TOPNAV, MOBILE];
 
 const byId = (id) => NAV_ITEMS.find((item) => item.id === id);
 
-// ── de tre arbetsytorna ───────────────────────────────────────────────────────
+// ── V1-produktmenyn ──────────────────────────────────────────────────────────
 
-test('Replay, Batch och Live Scanner pekar på sina befintliga vyer', () => {
-  assert.equal(byId('replay').path, '/lab?tab=replay');
-  assert.equal(byId('batch').path, '/lab?tab=batch');
-  assert.equal(byId('live-scanner').path, '/futures-paper?tab=ordrar');
-  // Etiketten Execution pekade på Live Scanner-innehåll och är borta.
-  assert.equal(NAV_ITEMS.some((item) => item.label === 'Execution'), false);
+test('V1-menyn har exakt en huvudväg per produktområde', () => {
+  assert.deepEqual(
+    NAV_ITEMS.map((item) => item.id),
+    ['factory', 'strategy-library', 'tests', 'paper', 'system', 'labs'],
+  );
+  assert.equal(byId('factory')?.path, '/factory');
+  assert.equal(byId('strategy-library')?.path, '/factory/library');
+  assert.equal(byId('tests')?.path, '/factory/replay');
+  assert.equal(byId('paper')?.path, '/futures-paper');
+  assert.equal(byId('system')?.path, '/system');
+  assert.equal(byId('labs')?.path, '/lab');
 });
 
-test('de tre visas i sidomeny, toppmeny och mobil', () => {
-  for (const id of ['replay', 'batch', 'live-scanner']) {
+test('alla V1-poster visas i sidomeny och toppmeny, med fyra mobilflikar', () => {
+  for (const id of ['factory', 'strategy-library', 'tests', 'paper', 'system', 'labs']) {
     const item = byId(id);
     assert.ok(item.surfaces.includes(NAV_SURFACES.SIDEBAR), `${id} saknas i sidomenyn`);
     assert.ok(item.surfaces.includes(NAV_SURFACES.TOPNAV), `${id} saknas i toppmenyn`);
-    const onMobile = item.surfaces.includes(NAV_SURFACES.MOBILE_BOTTOM)
-      || item.surfaces.includes(NAV_SURFACES.MOBILE_DRAWER);
-    assert.ok(onMobile, `${id} saknas i mobilnavigationen`);
+  }
+  for (const id of ['factory', 'strategy-library', 'tests', 'paper']) {
+    assert.ok(byId(id).surfaces.includes(NAV_SURFACES.MOBILE_BOTTOM), `${id} saknas i mobilens flikrad`);
+  }
+  for (const id of ['system', 'labs']) {
+    assert.ok(byId(id).surfaces.includes(NAV_SURFACES.MOBILE_DRAWER), `${id} saknas i mobilens Mer-meny`);
   }
 });
 
 // ── aktiv-regeln ──────────────────────────────────────────────────────────────
 
-test('Labs är aktiv i Labs men inte på Replay eller Batch', () => {
-  const labs = byId('labs');
-  assert.equal(isNavItemActive(labs, '/lab', ''), true);
-  assert.equal(isNavItemActive(labs, '/lab', '?tab=strategier'), true);
-  assert.equal(isNavItemActive(labs, '/lab', '?tab=replay'), false);
-  assert.equal(isNavItemActive(labs, '/lab', '?tab=batch'), false);
-  // Labs gör inte längre anspråk på /replay.
-  assert.equal(labs.match.includes('/replay'), false);
-});
-
 test('rätt post lyser på varje flik, och bara en', () => {
   const cases = [
-    ['/lab', '?tab=replay', 'replay'],
-    ['/lab', '?tab=batch', 'batch'],
+    ['/factory', '', 'factory'],
+    ['/decision-journal', '', 'factory'],
+    ['/overview', '', 'factory'],
+    ['/factory/replay', '', 'tests'],
+    ['/factory/library', '', 'strategy-library'],
+    ['/factory/family-tree', '', 'strategy-library'],
+    ['/factory/market-dna', '', 'strategy-library'],
+    ['/futures-paper', '', 'paper'],
+    ['/futures-paper', '?tab=positioner', 'paper'],
+    ['/paper-futures', '', 'paper'],
+    ['/live-scanner', '', 'paper'],
+    ['/system', '', 'system'],
+    ['/system', '?tab=health', 'system'],
+    ['/interactive-brokers', '', 'system'],
     ['/lab', '', 'labs'],
-    ['/futures-paper', '?tab=ordrar', 'live-scanner'],
-    ['/futures-paper', '?tab=positioner', 'positioner'],
-    ['/futures-paper', '', 'futures'],
-    ['/supervisor', '', 'oversikt'],
+    ['/lab', '?tab=replay', 'labs'],
+    ['/replay', '', 'labs'],
+    ['/batch', '', 'labs'],
+    ['/ai', '', 'labs'],
+    ['/pinescript', '', 'labs'],
+    ['/narrow', '', 'labs'],
+    ['/supervisor', '', 'labs'],
+    ['/paper-trading', '', 'labs'],
   ];
   for (const [pathname, search, expected] of cases) {
     const active = navItemsFor(NAV_SURFACES.SIDEBAR)
@@ -76,20 +89,6 @@ test('rätt post lyser på varje flik, och bara en', () => {
       .map((item) => item.id);
     assert.deepEqual(active, [expected], `${pathname}${search}`);
   }
-});
-
-test('Futures lyser inte när en underflik äger sidan', () => {
-  const futures = byId('futures');
-  assert.equal(isNavItemActive(futures, '/futures-paper', '?tab=ordrar'), false);
-  assert.equal(isNavItemActive(futures, '/futures-paper', '?tab=positioner'), false);
-  assert.equal(isNavItemActive(futures, '/paper-futures', ''), true);
-});
-
-test('en flikpost kräver både rätt sida och rätt flik', () => {
-  const replay = byId('replay');
-  assert.equal(isNavItemActive(replay, '/lab', '?tab=replay'), true);
-  assert.equal(isNavItemActive(replay, '/lab', '?tab=batch'), false);
-  assert.equal(isNavItemActive(replay, '/insikter', '?tab=replay'), false);
 });
 
 // ── konfigurationens integritet ───────────────────────────────────────────────
@@ -114,11 +113,13 @@ test('varje post är komplett och unik', () => {
 
 test('sidomenyns grupper har innehåll och rätt ordning', () => {
   const groups = navGroupsFor(NAV_SURFACES.SIDEBAR);
-  assert.deepEqual(groups.map((group) => group.id), ['mini-futures', 'research', 'system', 'labs']);
+  assert.deepEqual(groups.map((group) => group.id), ['product', 'operations', 'labs']);
   assert.deepEqual(
-    groups.find((group) => group.id === 'research').items.map((item) => item.id),
-    ['replay', 'batch'],
+    groups.find((group) => group.id === 'product').items.map((item) => item.id),
+    ['factory', 'strategy-library', 'tests', 'paper'],
   );
+  assert.deepEqual(groups.find((group) => group.id === 'operations').items.map((item) => item.id), ['system']);
+  assert.deepEqual(groups.find((group) => group.id === 'labs').items.map((item) => item.id), ['labs']);
   for (const group of groups) assert.ok(group.items.length > 0, `${group.id} är tom`);
 });
 

@@ -42,7 +42,7 @@ export default function Sidebar({ open, onClose }) {
       <aside className={`premium-sidebar${open ? ' is-open' : ''}`}>
 
         {/* Brand */}
-        <Link to="/supervisor" className="sb-brand" onClick={onClose}>
+        <Link to="/factory" className="sb-brand" onClick={onClose}>
           <img src="/evin.png" alt="" className="sb-brand-logo" />
           <div className="sb-brand-text">
             <strong>Mini Futures First</strong>

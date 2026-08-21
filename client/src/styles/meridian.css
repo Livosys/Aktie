@@ -1,0 +1,514 @@
+/* ============================================================================
+   MERIDIAN DESIGNSYSTEM 1.0
+   ----------------------------------------------------------------------------
+   Källa: docs/meridian-mockup.html (normativ för utseende) och
+          docs/teknisk-rapport.md (normativ för struktur).
+
+   Den här filen innehåller ENDAST designsystemet: tokens, typsnitt, typskala
+   och de primitiver mockupen definierar. Ingen sida, ingen affärslogik, inget
+   nätverk. Den läses in FÖRE styles.css, som pekar om sina egna mörka tokens
+   hit — så ärver 23 000 rader befintlig CSS Meridians palett utan att röras.
+
+   Två avsikta avsteg från mockupen, båda av samma skäl:
+
+   1. Klasserna har prefixet `m-`. Mockupen skrevs för en tom Next.js-app och
+      använder bara `.card`, `.badge`, `.btn`. I den här kodbasen är de namnen
+      redan tagna (2, 5 respektive 17 gånger i styles.css). Prefixet garanterar
+      att ingenting kolliderar, och gör det synligt i JSX vilket system en klass
+      tillhör.
+   2. Typsnitten är självhostade i public/fonts/ istället för att hämtas från
+      Google. Produktens System-sida ska svara "kan jag lita på det jag ser?" —
+      då ska den inte ringa ut på nätet vid varje sidladdning.
+
+   Färg är aldrig ensam informationsbärare. Varje ton här har en textmotsvarighet
+   i uiTerminologyService — tonen förstärker ordet, den ersätter det aldrig.
+   ============================================================================ */
+
+/* ── Typsnitt ───────────────────────────────────────────────────────────────
+   Alla tre är variabla: en fil täcker hela viktintervallet, därav `font-weight`
+   som spann. Två subset var — latin och latin-ext. Svenska å/ä/ö ligger i latin.
+   `swap` gör att text alltid syns direkt, även innan filen landat.            */
+
+@font-face {
+  font-family: 'Bricolage Grotesque';
+  font-style: normal;
+  font-weight: 400 700;
+  font-display: swap;
+  src: url('/fonts/bricolage-grotesque-latin.woff2') format('woff2');
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+@font-face {
+  font-family: 'Bricolage Grotesque';
+  font-style: normal;
+  font-weight: 400 700;
+  font-display: swap;
+  src: url('/fonts/bricolage-grotesque-latin-ext.woff2') format('woff2');
+  unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304, U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F, U+A720-A7FF;
+}
+@font-face {
+  font-family: 'Instrument Sans';
+  font-style: normal;
+  font-weight: 400 600;
+  font-display: swap;
+  src: url('/fonts/instrument-sans-latin.woff2') format('woff2');
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+@font-face {
+  font-family: 'Instrument Sans';
+  font-style: normal;
+  font-weight: 400 600;
+  font-display: swap;
+  src: url('/fonts/instrument-sans-latin-ext.woff2') format('woff2');
+  unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304, U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F, U+A720-A7FF;
+}
+@font-face {
+  font-family: 'Martian Mono';
+  font-style: normal;
+  font-weight: 300 500;
+  font-display: swap;
+  src: url('/fonts/martian-mono-latin.woff2') format('woff2');
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+@font-face {
+  font-family: 'Martian Mono';
+  font-style: normal;
+  font-weight: 300 500;
+  font-display: swap;
+  src: url('/fonts/martian-mono-latin-ext.woff2') format('woff2');
+  unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304, U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F, U+A720-A7FF;
+}
+
+/* ── Tokens ─────────────────────────────────────────────────────────────────
+   Allt i produkten härleds härifrån. Namnen är mockupens egna.
+   Ligger på :root så att både mörkt och ljust läge kan läsa dem; styles.css
+   pekar sedan om sina MÖRKA tokens hit och lämnar de ljusa orörda.            */
+
+:root {
+  /* Yta: bläckblå, inte svart. Svart = terminal. Bläck = instrument. */
+  --ink:        #0D141C;   /* bakgrund */
+  --ink-2:      #121C26;   /* kort och paneler */
+  --ink-3:      #17232F;   /* hover, upphöjt */
+  --ink-4:      #1D2C3A;   /* aktivt, mätarspår */
+  --line:       #22313F;   /* kanter */
+  --line-soft:  #1A2632;   /* interna avdelare */
+
+  /* Text — tre nivåer, aldrig fler */
+  --fg:         #E7EBEF;   /* primärtext */
+  --fg-2:       #9AAABA;   /* brödtext */
+  --fg-3:       #62778A;   /* etiketter, tidsstämplar */
+
+  /* Tillstånd — betyder alltid samma sak, överallt.
+     Mässing är paletten dyraste färg och används sparsammast: den betyder
+     alltid "AI:n väntar på dig", aldrig "viktigt" i allmänhet. */
+  --brass:      #C79A4B;
+  --brass-dim:  #6B5426;
+  --teal:       #4FA8A0;
+  --green:      #5FB98B;
+  --red:        #D9736A;
+  --violet:     #8A7FC7;
+
+  --tint-brass:   rgba(199,154,75,.10);
+  --tint-teal:    rgba(79,168,160,.10);
+  --tint-green:   rgba(95,185,139,.10);
+  --tint-red:     rgba(217,115,106,.10);
+  --tint-violet:  rgba(138,127,199,.10);
+
+  --edge-brass: rgba(199,154,75,.24);
+  --edge-teal:  rgba(79,168,160,.24);
+  --edge-green: rgba(95,185,139,.24);
+  --edge-red:   rgba(217,115,106,.24);
+  --edge-violet:rgba(138,127,199,.24);
+
+  /* Typografi — tre roller */
+  --display: 'Bricolage Grotesque', 'Helvetica Neue', Helvetica, Arial, sans-serif;
+  --body:    'Instrument Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  --data:    'Martian Mono', ui-monospace, 'SF Mono', Consolas, 'Courier New', monospace;
+
+  /* Spacing — 4 px-bas, 8 px-rytm. Kortpadding alltid s5, sektionsavstånd s6. */
+  --s1: 4px;  --s2: 8px;  --s3: 12px; --s4: 16px;
+  --s5: 24px; --s6: 32px; --s7: 48px; --s8: 64px;
+
+  /* Radier — tre steg. Bandet får störst för att det är produktens enda objekt.
+     Badgen ligger utanför skalan på 5 px: den är så låg att 6 px börjar läsa
+     som ett piller, och pillerformen betyder "klickbar" i den här produkten. */
+  --r-sm: 6px; --r: 10px; --r-lg: 14px; --r-badge: 5px;
+
+  /* Skuggor — systemet är i grunden platt och bärs av kanter. Höjd används
+     bara där något verkligen ligger ovanpå sidan. */
+  --elev-0: none;
+  --elev-1: 0 1px 0 rgba(255,255,255,.03) inset, 0 8px 24px -12px rgba(0,0,0,.6);
+  --elev-2: 0 24px 60px -20px rgba(0,0,0,.75);
+
+  /* Rörelse — en kurva i hela produkten */
+  --ease: cubic-bezier(.2,.7,.3,1);
+  --t-fast: .12s;
+  --t-base: .2s;
+  --t-panel: .28s;
+  --t-page: .32s;
+
+  /* Mått ur mockupens skal */
+  --m-rail-w: 236px;
+  --m-topbar-h: 56px;
+  --m-page-max: 1240px;
+  --m-drawer-w: 560px;
+}
+
+/* ── Bas ────────────────────────────────────────────────────────────────────
+   Endast det som gäller hela dokumentet. Ingen layout, inga sidor.           */
+
+/* Bricolage och Instrument Sans är ritade för att renderas tunt. Utan detta
+   ser 600-vikten klumpig ut på skärmar utan subpixelrendering. */
+html {
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  text-rendering: optimizeLegibility;
+}
+
+::selection { background: var(--brass); color: var(--ink); }
+
+/* Synlig tangentbordsfokus är ett kvalitetsgolv, inte en tillval. */
+:focus-visible {
+  outline: 2px solid var(--brass);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
+/* Respektera användarens systemval. Nollar allt med en regel. */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: .001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: .001ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+/* ── Typskala ───────────────────────────────────────────────────────────────
+   Fem steg: 38 / 26 / 18 / 14 / 12,5. Inte fler. Display-snittet används bara
+   till rubriker; data-snittet bara till siffror och versala etiketter.        */
+
+.m-hero {
+  font-family: var(--display);
+  font-size: 38px; line-height: 1.05; font-weight: 600; letter-spacing: -.025em;
+  text-wrap: balance;
+}
+.m-h1 {
+  font-family: var(--display);
+  font-size: 26px; line-height: 1.15; font-weight: 600; letter-spacing: -.02em;
+  text-wrap: balance;
+}
+.m-h2 {
+  font-family: var(--display);
+  font-size: 18px; line-height: 1.25; font-weight: 600; letter-spacing: -.01em;
+  text-wrap: balance;
+}
+.m-h3 { font-size: 14px; font-weight: 600; letter-spacing: -.005em; }
+.m-body  { font-size: 14px;   color: var(--fg-2); }
+.m-small { font-size: 12.5px; color: var(--fg-2); }
+
+/* Versal etikett över rubrik. Bär kontext, aldrig innehåll. */
+.m-eyebrow {
+  font-family: var(--data);
+  font-size: 9.5px; font-weight: 400; letter-spacing: .16em;
+  text-transform: uppercase; color: var(--fg-3);
+}
+
+/* Alla tal är tabulära så kolumner inte hoppar när siffror uppdateras. */
+.m-num {
+  font-family: var(--data); font-weight: 400; letter-spacing: -.03em;
+  font-variant-numeric: tabular-nums;
+}
+.m-pos { color: var(--green); }
+.m-neg { color: var(--red); }
+.m-dim { color: var(--fg-3); }
+
+/* ── Kort ───────────────────────────────────────────────────────────────────
+   Bärande yta. Vänsterskenan kodar VEM SOM ÄGER NÄSTA STEG — den är
+   informationsbärande, inte dekor. Ingen skena = ren information.            */
+
+.m-card {
+  background: var(--ink-2);
+  border: 1px solid var(--line-soft);
+  border-radius: var(--r);
+  padding: var(--s5);
+  position: relative;
+  overflow: hidden;
+}
+.m-card-rail::before {
+  content: '';
+  position: absolute; left: 0; top: 0; bottom: 0;
+  width: 2px; background: var(--fg-3);
+}
+.m-card-rail-brass::before  { background: var(--brass); }
+.m-card-rail-teal::before   { background: var(--teal); }
+.m-card-rail-green::before  { background: var(--green); }
+.m-card-rail-red::before    { background: var(--red); }
+.m-card-rail-violet::before { background: var(--violet); }
+
+.m-card-head {
+  display: flex; align-items: flex-start; gap: var(--s3);
+  margin-bottom: var(--s4);
+}
+.m-card-head > :first-child { flex: 1; min-width: 0; }
+
+/* Panel = kort utan egen bakgrund, för innehåll som redan ligger på ett kort. */
+.m-panel {
+  border: 1px solid var(--line-soft);
+  border-radius: var(--r);
+  padding: var(--s5);
+  background: transparent;
+}
+
+/* ── Badge ──────────────────────────────────────────────────────────────────
+   Alltid versal Martian Mono 9,5 px. Max ett ord plus en siffra.
+   Rektangulär (5 px), inte pill — pillformen läser som ett filter.           */
+
+.m-badge {
+  display: inline-flex; align-items: center; gap: 5px;
+  height: 21px; padding: 0 8px; border-radius: var(--r-badge);
+  font-family: var(--data); font-size: 9.5px; font-weight: 400;
+  letter-spacing: .09em; text-transform: uppercase;
+  border: 1px solid transparent; white-space: nowrap; flex: none;
+}
+.m-badge-brass  { background: var(--tint-brass);  color: var(--brass);  border-color: var(--edge-brass); }
+.m-badge-teal   { background: var(--tint-teal);   color: var(--teal);   border-color: var(--edge-teal); }
+.m-badge-green  { background: var(--tint-green);  color: var(--green);  border-color: var(--edge-green); }
+.m-badge-red    { background: var(--tint-red);    color: var(--red);    border-color: var(--edge-red); }
+.m-badge-violet { background: var(--tint-violet); color: var(--violet); border-color: var(--edge-violet); }
+.m-badge-mute   { background: var(--ink-3);     color: var(--fg-3);   border-color: var(--line); }
+
+/* ── Knappar ────────────────────────────────────────────────────────────────
+   Exakt EN primary per vy. Guld används sparsamt just för att det ska betyda
+   något — en skärm med två guldknappar har inte längre någon huvudhandling.  */
+
+.m-btn {
+  display: inline-flex; align-items: center; justify-content: center; gap: 7px;
+  height: 33px; padding: 0 14px;
+  border-radius: 7px; border: 1px solid var(--line);
+  background: var(--ink-3); color: var(--fg);
+  font-family: inherit; font-size: 13px; font-weight: 500; line-height: 1;
+  cursor: pointer; text-decoration: none; white-space: nowrap;
+  transition: background var(--t-fast), border-color var(--t-fast), color var(--t-fast);
+}
+.m-btn:hover { background: var(--ink-4); border-color: var(--fg-3); }
+.m-btn-primary {
+  background: var(--brass); border-color: var(--brass);
+  color: #17120A; font-weight: 600;
+}
+.m-btn-primary:hover { background: #D9AC5C; border-color: #D9AC5C; }
+.m-btn-ghost { background: transparent; border-color: transparent; color: var(--fg-2); }
+.m-btn-ghost:hover { background: var(--ink-3); color: var(--fg); }
+.m-btn-sm { height: 27px; padding: 0 10px; font-size: 12px; }
+
+/* Ett inaktivt val ska se inaktivt ut och kunna förklara varför. */
+.m-btn:disabled,
+.m-btn[aria-disabled="true"] {
+  opacity: .45; cursor: not-allowed;
+}
+.m-btn:disabled:hover,
+.m-btn[aria-disabled="true"]:hover {
+  background: var(--ink-3); border-color: var(--line); color: var(--fg);
+}
+
+/* ── Formulär ───────────────────────────────────────────────────────────────
+   Samma höjd som knappen, samma radie, samma kant. Etiketten står över fältet
+   och hjälptexten under — aldrig som platshållare, som försvinner när man
+   skriver och tar med sig sin egen förklaring.                               */
+
+.m-field { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.m-label {
+  font-family: var(--data); font-size: 9.5px; font-weight: 400;
+  letter-spacing: .16em; text-transform: uppercase; color: var(--fg-3);
+}
+.m-input,
+.m-select,
+.m-textarea {
+  width: 100%; height: 33px; padding: 0 11px;
+  background: var(--ink-2); color: var(--fg);
+  border: 1px solid var(--line); border-radius: var(--r-sm);
+  font-family: inherit; font-size: 13px; line-height: 1.4;
+  transition: border-color var(--t-fast), background var(--t-fast);
+}
+.m-textarea { height: auto; min-height: 84px; padding: 9px 11px; resize: vertical; }
+.m-input::placeholder,
+.m-textarea::placeholder { color: var(--fg-3); }
+.m-input:hover,
+.m-select:hover,
+.m-textarea:hover { border-color: var(--fg-3); }
+.m-input:focus,
+.m-select:focus,
+.m-textarea:focus { border-color: var(--brass); background: var(--ink-3); }
+.m-input:disabled,
+.m-select:disabled,
+.m-textarea:disabled { opacity: .45; cursor: not-allowed; }
+.m-help { font-size: 12px; color: var(--fg-3); line-height: 1.4; }
+
+/* Segmenterad kontroll — tidsfilter. Max fyra alternativ. */
+.m-seg {
+  display: inline-flex; background: var(--ink-2);
+  border: 1px solid var(--line); border-radius: 8px; padding: 2px;
+}
+.m-seg button {
+  height: 27px; padding: 0 12px; border: 0; border-radius: 6px;
+  background: none; color: var(--fg-3);
+  font-family: inherit; font-size: 12.5px; cursor: pointer;
+  transition: background var(--t-fast), color var(--t-fast);
+}
+.m-seg button:hover { color: var(--fg); }
+.m-seg button[aria-pressed="true"] { background: var(--ink-4); color: var(--fg); }
+
+/* ── Metrik ─────────────────────────────────────────────────────────────────
+   Siffran över etiketten, aldrig tvärtom. Ett tal utan omdöme är inte färdigt,
+   så etiketten är obligatorisk.                                              */
+
+.m-metric { display: flex; flex-direction: column; gap: 5px; min-width: 0; }
+.m-metric-value {
+  font-family: var(--data); font-weight: 400;
+  font-size: 23px; letter-spacing: -.04em; line-height: 1.1;
+  font-variant-numeric: tabular-nums; color: var(--fg);
+  overflow-wrap: anywhere;
+}
+.m-metric-label { font-size: 12px; color: var(--fg-3); line-height: 1.35; }
+.m-metric-hint  { font-size: 12px; color: var(--fg-3); line-height: 1.35; }
+
+/* ── Tabell ─────────────────────────────────────────────────────────────────
+   Sista kolumnen alltid högerställd (där siffran bor), raden alltid klickbar
+   när det finns något att öppna. Breda tabeller rullar i sin egen behållare
+   så att sidan aldrig rullar i sidled.                                       */
+
+.m-tablewrap { overflow-x: auto; }
+.m-table { width: 100%; border-collapse: collapse; }
+.m-table th {
+  text-align: left;
+  font-family: var(--data); font-size: 9.5px; font-weight: 400;
+  letter-spacing: .13em; text-transform: uppercase; color: var(--fg-3);
+  padding: 0 var(--s3) var(--s3);
+  border-bottom: 1px solid var(--line-soft);
+  white-space: nowrap; vertical-align: bottom;
+}
+.m-table td {
+  padding: 13px var(--s3);
+  border-bottom: 1px solid var(--line-soft);
+  font-size: 13.5px; vertical-align: middle; color: var(--fg-2);
+}
+.m-table tbody tr { transition: background .1s; }
+.m-table tbody tr:last-child td { border-bottom: 0; }
+.m-table th:first-child, .m-table td:first-child { padding-left: 0; }
+.m-table th:last-child,  .m-table td:last-child  { text-align: right; padding-right: 0; }
+.m-table-clickable tbody tr { cursor: pointer; }
+.m-table-clickable tbody tr:hover { background: var(--ink-3); }
+
+/* ── Listrad ────────────────────────────────────────────────────────────────
+   Händelserad: tid · titel · text · eventuell badge. Används i fyra
+   sammanhang och ser likadan ut i alla fyra.                                 */
+
+.m-row {
+  display: flex; gap: var(--s4); align-items: flex-start;
+  padding: var(--s4) 0; border-bottom: 1px solid var(--line-soft);
+}
+.m-row:last-child { border-bottom: 0; }
+.m-row-time {
+  font-family: var(--data); font-size: 11px; color: var(--fg-3);
+  width: 44px; flex: none; padding-top: 2px;
+  font-variant-numeric: tabular-nums;
+}
+.m-row-body { flex: 1; min-width: 0; }
+.m-row-body p { color: var(--fg-2); font-size: 13px; margin-top: 3px; }
+
+/* ── Hjälpruta ──────────────────────────────────────────────────────────────
+   Grå informationsruta. Aldrig fler än en per skärm — två hjälprutor betyder
+   att sidan inte förklarar sig själv.                                        */
+
+.m-hint {
+  display: flex; gap: 10px;
+  padding: var(--s3) var(--s4); border-radius: var(--r-sm);
+  background: var(--ink-3); border: 1px solid var(--line);
+  font-size: 12.5px; color: var(--fg-2); line-height: 1.45;
+}
+.m-hint-icon { flex: none; color: var(--fg-3); margin-top: 2px; }
+
+/* ── Tomläge ────────────────────────────────────────────────────────────────
+   Streckad kant. Måste innehålla nästa steg — ett tomläge är en inbjudan,
+   aldrig en ursäkt.                                                          */
+
+.m-empty {
+  text-align: center; padding: var(--s7) var(--s5);
+  border: 1px dashed var(--line); border-radius: var(--r);
+  color: var(--fg-3);
+}
+.m-empty-title { color: var(--fg-2); font-size: 14px; font-weight: 600; margin-bottom: 6px; }
+.m-empty-body  { font-size: 12.5px; color: var(--fg-3); line-height: 1.5; }
+
+/* ── Laddläge ───────────────────────────────────────────────────────────────
+   Används BARA där data verkligen strömmar in, aldrig som utfyllnad.         */
+
+.m-skeleton {
+  background: linear-gradient(90deg, var(--ink-3) 25%, var(--ink-4) 50%, var(--ink-3) 75%);
+  background-size: 200% 100%;
+  animation: m-shimmer 1.4s infinite;
+  border-radius: var(--r-sm); height: 11px; display: block;
+}
+@keyframes m-shimmer { to { background-position: -200% 0; } }
+
+/* ── Mätarspår ──────────────────────────────────────────────────────────────
+   Kapacitet, framsteg, avvikelse. Alltid med ett tal bredvid — ett streck
+   utan siffra går inte att handla på.                                        */
+
+.m-meter { height: 5px; background: var(--ink-4); border-radius: 3px; overflow: hidden; }
+.m-meter-fill { height: 100%; border-radius: 3px; background: var(--teal); }
+.m-meter-fill-brass  { background: var(--brass); }
+.m-meter-fill-green  { background: var(--green); }
+.m-meter-fill-red    { background: var(--red); }
+.m-meter-fill-violet { background: var(--violet); }
+
+/* ── Puls ───────────────────────────────────────────────────────────────────
+   Produktens hjärtslag. Svarar på "arbetar systemet fortfarande?" — en fråga
+   som annars ställs genom att ladda om sidan.                                */
+
+.m-pulse {
+  width: 7px; height: 7px; border-radius: 50%;
+  background: var(--teal); position: relative; flex: none;
+}
+.m-pulse::after {
+  content: ''; position: absolute; inset: -4px; border-radius: 50%;
+  border: 1px solid var(--teal); opacity: .5;
+  animation: m-ping 2.4s ease-out infinite;
+}
+.m-pulse-brass { background: var(--brass); }
+.m-pulse-brass::after { border-color: var(--brass); }
+.m-pulse-idle { background: var(--fg-3); }
+.m-pulse-idle::after { animation: none; border-color: var(--fg-3); opacity: .25; }
+@keyframes m-ping {
+  0%   { transform: scale(.6); opacity: .7; }
+  100% { transform: scale(1.5); opacity: 0; }
+}
+
+/* ── Sidan träder in ────────────────────────────────────────────────────────
+   Enda rörelsen vid sidbyte. Bekräftar att navigeringen hände.               */
+
+.m-rise { animation: m-rise var(--t-page) var(--ease); }
+@keyframes m-rise {
+  from { opacity: 0; transform: translateY(6px); }
+  to   { opacity: 1; transform: none; }
+}
+
+/* ── Layouthjälp ────────────────────────────────────────────────────────────
+   Rytmen bärs av grid och gap, aldrig av marginaler per element.             */
+
+.m-grid  { display: grid; gap: var(--s4); }
+.m-g2 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.m-g3 { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.m-g4 { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+@media (max-width: 1100px) {
+  .m-g3, .m-g4 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+@media (max-width: 720px) {
+  .m-g2, .m-g3, .m-g4 { grid-template-columns: minmax(0, 1fr); }
+}
+
+.m-stack    { display: flex; flex-direction: column; gap: var(--s4); }
+.m-stack-sm { display: flex; flex-direction: column; gap: var(--s2); }
+.m-flex     { display: flex; align-items: center; gap: var(--s3); flex-wrap: wrap; }
+.m-between  { display: flex; align-items: center; justify-content: space-between; gap: var(--s4); flex-wrap: wrap; }
+.m-section  { margin-bottom: var(--s6); }
+.m-hr       { height: 1px; background: var(--line-soft); border: 0; margin: var(--s5) 0; }

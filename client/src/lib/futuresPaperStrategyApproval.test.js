@@ -393,6 +393,7 @@ const path = require('path');
   const rows = m.leaderRows(leaders);
   assert.equal(rows.length, 4);
   assert.deepEqual(rows.map((r) => r.label), ['Högst nettoresultat', 'Högst win rate', 'Flest vinster', 'Högst snitt per trade']);
+  assert.deepEqual(rows.map((r) => r.unit), ['money', '%', 'V', 'money']);
   assert.equal(rows[0].strategyId, 'a');
   assert.equal(rows[0].value, 3970.26);
   assert.equal(rows[2].strategyId, 'b');

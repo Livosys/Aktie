@@ -31,7 +31,10 @@ const priceFeedInterface = require('../priceFeedInterface');
 
 const SERVICES = path.join(__dirname, '..');
 const ROOTS = ['MNQ', 'MES'];
-const DAY = coverage.findCompleteDay({ roots: ROOTS, throughUtcTime: '18:00' });
+// findClosedCompleteDay: determinismtestet längre ned kör motorn två gånger och
+// jämför utfallen. Väljs det nyaste kompletta dygnet jämförs i praktiken två
+// olika filer, eftersom den löpande infångningen fortfarande skriver till det.
+const DAY = coverage.findClosedCompleteDay({ roots: ROOTS, throughUtcTime: '18:00' });
 const WINDOW = DAY ? { from: `${DAY}T13:00:00.000Z`, to: `${DAY}T17:00:00.000Z` } : null;
 
 function runOnce(config = {}) {

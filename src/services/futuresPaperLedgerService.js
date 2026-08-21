@@ -399,7 +399,9 @@ function createFuturesPaperLedgerService(options = {}) {
   function readPositionsState() {
     if (internalSimulationEnabled) ensureFiles();
     const raw = storage.readPositions(createDefaultPositionsState());
-    const account = accountSvc.getFuturesPaperAccount();
+    // Bara växelkursen behövs. Utan includeHistory:false läses hela
+    // händelseloggen (136 MB, 31 000 rader) för att sedan kastas.
+    const account = accountSvc.getFuturesPaperAccount({ includeHistory: false });
     const fxUsdSek = Number(account?.account?.fxUsdSek || futuresPaperAccountService.DEFAULT_CONFIG.fxUsdSek);
     const open = safeArray(raw?.open).map((position) => toPositionView(position, fxUsdSek));
     const closed = safeArray(raw?.closed).map((position) => toPositionView(position, fxUsdSek));
@@ -472,7 +474,9 @@ function createFuturesPaperLedgerService(options = {}) {
   }
 
   function getCurrentAccount() {
-    return accountSvc.getFuturesPaperAccount();
+    // Ledgern använder .account och .config. Historiken hämtades men lästes
+    // aldrig — och den kostar en full genomläsning av 136 MB.
+    return accountSvc.getFuturesPaperAccount({ includeHistory: false });
   }
 
   function getPositionsSummary(positionsState = null) {
@@ -497,7 +501,12 @@ function createFuturesPaperLedgerService(options = {}) {
     const account = getCurrentAccount();
     const positions = getPositionsSummary(readPositionsState());
     const trades = readTrades(limit);
-    const latestEvents = storage.readJsonl(storage.files.events).slice(-Math.max(1, Math.min(50, Number(limit) || 20)));
+    // Bara de sista raderna behövs. Loggen är 136 MB — att läsa och parsa
+    // hela den för att sedan kasta 99,9 % kostade ~30 sekunder per anrop.
+    const eventLimit = Math.max(1, Math.min(50, Number(limit) || 20));
+    const latestEvents = typeof storage.readJsonlTail === 'function'
+      ? storage.readJsonlTail(storage.files.events, eventLimit)
+      : storage.readJsonl(storage.files.events).slice(-eventLimit);
     const market = getMarketHoursState(now);
 
     return {

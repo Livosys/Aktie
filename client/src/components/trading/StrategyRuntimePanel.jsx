@@ -8,24 +8,36 @@ import {
 import { FieldGrid } from './FieldGrid.jsx';
 import { OverviewPanel } from './OverviewPanel.jsx';
 import { statusTone } from './StatusBadge.jsx';
+import {
+  FACTORY_TERM_KEYS,
+  uiCopy,
+  uiDescription,
+  uiName,
+  uiStatus,
+} from '../../services/uiTerminologyService.js';
 
 export const StrategyRuntimePanel = React.memo(function StrategyRuntimePanel({ strategy }) {
+  const panel = uiCopy('strategyRuntimePanel');
   const items = [
-    { label: 'Runtime State', value: textOrEmpty(strategy.runtimeState), tone: statusTone(strategy.runtimeState) },
-    { label: 'Runtime Status', value: textOrEmpty(strategy.metadata?.status), tone: statusTone(strategy.metadata?.status) },
-    { label: 'Current Candidate', value: boolText(strategy.currentCandidate), tone: strategy.currentCandidate === true ? 'success' : 'neutral' },
-    { label: 'Entry Ready', value: boolText(strategy.entryReady), tone: strategy.entryReady === true ? 'success' : (strategy.entryReady === false ? 'warning' : 'neutral') },
-    { label: 'Canonical Verdict', value: textOrEmpty(strategy.canonicalVerdict), tone: statusTone(strategy.canonicalVerdict) },
-    { label: 'ReasonCode', value: textOrEmpty(strategy.reasonCode), tone: strategy.reasonCode ? 'warning' : 'neutral' },
-    { label: 'Market Regime', value: textOrEmpty(strategy.marketRegime) },
-    { label: 'Data Source', value: textOrEmpty(strategy.metadata?.dataSource) },
-    { label: 'Updated', value: fmtTime(strategy.metadata?.updatedAt) },
+    { label: panel.labels.runtimeState, value: textOrEmpty(uiStatus(strategy.runtimeState) || strategy.runtimeState), tone: statusTone(strategy.runtimeState) },
+    { label: panel.labels.runtimeStatus, value: textOrEmpty(uiStatus(strategy.metadata?.status) || strategy.metadata?.status), tone: statusTone(strategy.metadata?.status) },
+    { label: panel.labels.currentCandidate, value: boolText(strategy.currentCandidate), tone: strategy.currentCandidate === true ? 'success' : 'neutral' },
+    { label: panel.labels.entryReady, value: boolText(strategy.entryReady), tone: strategy.entryReady === true ? 'success' : (strategy.entryReady === false ? 'warning' : 'neutral') },
+    { label: panel.labels.canonicalVerdict, value: textOrEmpty(strategy.canonicalVerdict), tone: statusTone(strategy.canonicalVerdict) },
+    { label: panel.labels.reasonCode, value: textOrEmpty(strategy.reasonCode), tone: strategy.reasonCode ? 'warning' : 'neutral' },
+    { label: panel.labels.marketRegime, value: textOrEmpty(strategy.marketRegime) },
+    { label: panel.labels.dataSource, value: textOrEmpty(strategy.metadata?.dataSource) },
+    { label: panel.labels.updated, value: fmtTime(strategy.metadata?.updatedAt) },
   ].filter((item) => hasValue(item.value) && item.value !== '—');
 
   if (!items.length) return null;
 
   return (
-    <OverviewPanel eyebrow="Runtime" title="Runtime State">
+    <OverviewPanel
+      eyebrow={uiName(FACTORY_TERM_KEYS.STRATEGY_RUNTIME)}
+      title={panel.title}
+      summary={uiDescription(FACTORY_TERM_KEYS.STRATEGY_RUNTIME)}
+    >
       <FieldGrid items={items} />
     </OverviewPanel>
   );

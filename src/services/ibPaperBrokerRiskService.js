@@ -100,6 +100,23 @@ function getPositionCount(positions = []) {
   }, 0);
 }
 
+function rootOfRow(row = {}) {
+  const raw = row.root || row.symbol || row.localSymbol || row.futuresSymbol || row.contract?.symbol || '';
+  const match = String(raw).toUpperCase().match(/\b(MNQ|MES)\b/);
+  return match ? match[1] : String(raw).toUpperCase().replace(/[^A-Z]/g, '').slice(0, 3);
+}
+
+function hasOpenRoot(positions = [], root) {
+  return positions.some((row) => {
+    const qty = Number(row.position ?? row.signedQuantity ?? row.quantity ?? row.size ?? 0);
+    return Number.isFinite(qty) && Math.abs(qty) > 0 && rootOfRow(row) === root;
+  });
+}
+
+function hasPendingEntryRoot(openOrders = [], root) {
+  return openOrders.some((row) => !isTerminalOrderRow(row) && legOfOrderRow(row) === 'entry' && rootOfRow(row) === root);
+}
+
 function spreadTicks(quote, tickSize) {
   const bid = numberOrNull(quote?.bid);
   const ask = numberOrNull(quote?.ask);
@@ -204,12 +221,30 @@ function evaluateBrokerRisk({
   const accountSummaryBlocker = target === 'ibkr_live' ? 'live_account_summary_missing' : 'paper_account_summary_missing';
   const openPositionCount = getPositionCount(positions);
   const pendingEntries = countPendingEntries(openOrders);
+  const paperTarget = target === configService.EXECUTION_TARGETS?.PAPER || target === 'ibkr_paper';
 
   addCheck(checks, 'symbol_allowlisted', limits.symbolAllowlist.includes(normalizedRoot), 'symbol_not_allowlisted', { root: normalizedRoot, allowlist: limits.symbolAllowlist });
 	  addCheck(checks, 'quantity_exactly_one_micro', Number.isInteger(quantity) && qty === 1 && qty === limits.maxQuantity, 'quantity_must_be_exactly_one', { quantity, parsedQuantity: qty, maxQuantity: limits.maxQuantity });
 	  addCheck(checks, 'order_type_allowed', limits.allowedOrderTypes.includes(type), 'order_type_not_allowed', { orderType: type, allowedOrderTypes: limits.allowedOrderTypes });
-  addCheck(checks, 'max_one_open_broker_position', openPositionCount < limits.maxOpenPositions, 'max_open_broker_positions', { openPositionCount, maxOpenPositions: limits.maxOpenPositions });
-  addCheck(checks, 'max_one_pending_entry', pendingEntries < limits.maxPendingEntryOrders, 'max_pending_entry_orders', { pendingEntries, maxPendingEntryOrders: limits.maxPendingEntryOrders });
+  addCheck(checks, paperTarget ? 'max_open_paper_positions' : 'max_one_open_broker_position', openPositionCount < limits.maxOpenPositions, 'max_open_broker_positions', { openPositionCount, maxOpenPositions: limits.maxOpenPositions });
+  addCheck(checks, paperTarget ? 'max_pending_paper_entries' : 'max_one_pending_entry', pendingEntries < limits.maxPendingEntryOrders, 'max_pending_entry_orders', { pendingEntries, maxPendingEntryOrders: limits.maxPendingEntryOrders });
+  // ── En position per rot: borttagen 2026-08-20 ─────────────────────────────
+  //
+  // Grinden tillät aldrig två affärer i samma instrument. Tillsammans med ett
+  // tak som satt i allowlistens längd betydde det högst en MNQ och en MES — och
+  // i praktiken oftast bara en, eftersom båda rötterna sällan signalerar
+  // samtidigt. Mätt 2026-08-19/20 avvisades 2 078 av 2 098 kandidater på
+  // positionstaket.
+  //
+  // Det den skyddade mot var att exponeringen växte obemärkt i ett instrument.
+  // Det skyddet ligger nu där det hör hemma: getPositionCount summerar
+  // |kvantitet| över alla rader, så taket räknar KONTRAKT och inte
+  // positionsrader. Fyra kontrakt är fyra kontrakt oavsett hur de fördelar sig
+  // mellan MNQ och MES, och det är den storhet risken faktiskt bor i.
+  //
+  // hasOpenRoot och hasPendingEntryRoot står kvar som funktioner: de används av
+  // rapportlagret för att visa exponering per rot, vilket fortfarande är en
+  // rimlig fråga att ställa — den styr bara inte längre om en order får läggas.
   addCheck(checks, 'stop_loss_required', stopLossPrice != null && Number.isFinite(Number(stopLossPrice)), 'stop_loss_required', { stopLossPrice: stopLossPrice ?? null });
 	  addCheck(checks, 'quote_present', Boolean(quote), 'current_quote_missing');
 	  addCheck(checks, 'quote_realtime', quote?.source === 'ibkr_realtime' && quote?.simulated !== true && quote?.delayed !== true, 'quote_not_realtime_ibkr', {
@@ -254,5 +289,5 @@ module.exports = {
   BROKER_CONNECTIVITY_CHECKS,
   evaluateBrokerRisk,
   partitionBlockers,
-  _internal: { countPendingEntries, getPositionCount, legOfOrderRow },
+  _internal: { countPendingEntries, getPositionCount, legOfOrderRow, rootOfRow, hasOpenRoot, hasPendingEntryRoot },
 };

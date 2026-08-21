@@ -33,11 +33,12 @@
 // Skrivning är append-only till JSONL. Läsning är en ren fold.
 
 const fs = require('fs');
+const writeGuard = require('../../data/productionWriteGuard');
 const path = require('path');
 const crypto = require('crypto');
 
 const lifecycle = require('./strategyLifecycle');
-const nativeRegistry = require('../nativeFuturesStrategyRegistryService');
+const registryService = require('../strategyRegistryService');
 const strategyDna = require('../dna/strategyDnaService');
 
 const SAFETY = Object.freeze({
@@ -50,7 +51,14 @@ const SAFETY = Object.freeze({
   source: 'strategy_library',
 });
 
-const DEFAULT_EVENTS_FILE = path.resolve(__dirname, '../../../data/strategy-library/events.jsonl');
+// Env-överstyrbar enligt samma mönster som AUTO_MACHINE_STATUS_FILE och
+// DAYTRADING_STRATEGY_CATALOG_FILE, så att en körning kan prövas utan att
+// skriva i driftens revisionsspår. Loggen får aldrig gallras — men den måste
+// gå att köra bredvid.
+const DEFAULT_EVENTS_FILE = path.resolve(
+  process.env.STRATEGY_LIBRARY_EVENTS_FILE
+    || path.resolve(__dirname, '../../../data/strategy-library/events.jsonl'),
+);
 const LIBRARY_VERSION = 'strategy-library-v1';
 
 const EVENT_TYPES = Object.freeze({
@@ -65,6 +73,22 @@ const EVENT_TYPES = Object.freeze({
   APPROVAL_RECORDED: 'APPROVAL_RECORDED',
   RETIRED: 'RETIRED',
   VERSION_CHANGED: 'VERSION_CHANGED',
+  // ── Kostnadsuppgift återförd i efterhand ──────────────────────────────────
+  //
+  // REPLAY_RECORDED bokförde länge bara strategyPnlUsd — resultatet mätt mot de
+  // priser strategin syftade på. Exekveringskostnad och courtage räknades men
+  // persisterades inte, och därför gick det inte att läsa ur biblioteket om en
+  // hypotes bar sin egen kostnad. Fältet lades till 2026-08-20; körningar före
+  // dess saknar det.
+  //
+  // Den här händelsen bär de saknade summorna för en avslutad period. Den är en
+  // EGEN typ och inte en andra REPLAY_RECORDED, av två skäl: den skulle annars
+  // räknas som ytterligare en körning i allt som summerar replay-evidens, och
+  // dess upplösning är en annan — en period, inte ett dygn.
+  //
+  // Den ersätter ingenting. Ursprungsraderna står kvar oförändrade, och den som
+  // läser loggen ser både att uppgiften saknades och när den fylldes i.
+  REPLAY_COST_BACKFILLED: 'REPLAY_COST_BACKFILLED',
 });
 
 const SCORE_TYPES = Object.freeze({
@@ -209,8 +233,17 @@ function applyEvent(record, event) {
         trades: num(event.trades),
         winRate: num(event.winRate),
         strategyPnlUsd: num(event.strategyPnlUsd),
+        profitFactor: event.profitFactor == null ? null : num(event.profitFactor),
+        expectancyUsd: event.expectancyUsd == null ? null : num(event.expectancyUsd),
+        maxDrawdownUsd: event.maxDrawdownUsd == null ? null : num(event.maxDrawdownUsd),
+        avgWinUsd: event.avgWinUsd == null ? null : num(event.avgWinUsd),
+        avgLossUsd: event.avgLossUsd == null ? null : num(event.avgLossUsd),
         strategyScore: num(event.strategyScore),
         executionScore: num(event.executionScore),
+        band: text(event.band),
+        recoveryFactor: event.recoveryFactor == null ? null : num(event.recoveryFactor),
+        sharpe: event.sharpe == null ? null : num(event.sharpe),
+        sharpeAvailable: event.sharpeAvailable === true,
         marketClassification: text(event.marketClassification),
         // Market DNA för perioden körningen gjordes i. Den grova regimnyckeln
         // är den som räknas när man frågar "hur många regimer"; det fina
@@ -231,10 +264,21 @@ function applyEvent(record, event) {
       next.paperHistory = [...next.paperHistory, {
         at,
         tradeId: text(event.tradeId),
+        canonicalStrategyId: text(event.canonicalStrategyId),
+        nativeStrategyId: text(event.nativeStrategyId),
+        originStrategyId: text(event.originStrategyId),
+        strategyVersion: text(event.strategyVersion),
+        strategyFamily: text(event.strategyFamily),
+        candidateId: text(event.candidateId),
+        signalId: text(event.signalId),
         openedAt: text(event.openedAt),
         closedAt: text(event.closedAt),
         symbol: text(event.symbol),
         direction: text(event.direction),
+        session: text(event.session),
+        sessionId: text(event.sessionId),
+        marketRegime: text(event.marketRegime),
+        executionTarget: text(event.executionTarget),
         realizedPnlUsd: num(event.realizedPnlUsd),
         exitReason: text(event.exitReason),
       }];
@@ -287,7 +331,7 @@ function applyEvent(record, event) {
 
 function createStrategyLibrary(options = {}) {
   const eventsFile = options.eventsFile || DEFAULT_EVENTS_FILE;
-  const registry = options.registry || nativeRegistry;
+  const registry = options.registry || registryService;
   const clock = typeof options.now === 'function' ? options.now : () => new Date();
   // DNA-beräkningen injiceras. Standard är den enda riktiga: strategyDnaService.
   const dnaHashFor = typeof options.dnaHashFor === 'function'
@@ -298,7 +342,38 @@ function createStrategyLibrary(options = {}) {
     fs.mkdirSync(path.dirname(eventsFile), { recursive: true });
   }
 
-  function readEvents() {
+  // ── Läscache på filens avtryck ────────────────────────────────────────────
+  //
+  // Loggen är append-only: ingen rad ändras, filen växer bara i slutet. Två
+  // läsningar med samma (storlek, mtime) kan därför inte ge olika innehåll,
+  // och varje tillägg — vårt eget eller en barnprocess — flyttar bägge.
+  //
+  // Utan cachen läses och parsas 10 MB / 16 000 rader om vid VARJE fråga, och
+  // getStrategy() anropas en gång per strategi i flera vyer. Mätt: 190 ms per
+  // läsning, och en enda fabrikssida orsakade hundratals.
+  //
+  // Projektionen cachas med, eftersom listStrategies() och getStrategy() viker
+  // ihop exakt samma logg.
+  let cachedFingerprint = null;
+  let cachedEvents = null;
+  let cachedProjection = null;
+
+  function fingerprint() {
+    try {
+      const stat = fs.statSync(eventsFile);
+      return `${stat.size}:${stat.mtimeMs}`;
+    } catch (_) {
+      return 'missing';
+    }
+  }
+
+  function invalidate() {
+    cachedFingerprint = null;
+    cachedEvents = null;
+    cachedProjection = null;
+  }
+
+  function parseEvents() {
     try {
       if (!fs.existsSync(eventsFile)) return [];
       return fs.readFileSync(eventsFile, 'utf8')
@@ -310,6 +385,27 @@ function createStrategyLibrary(options = {}) {
     } catch (_) {
       return [];
     }
+  }
+
+  function events() {
+    const current = fingerprint();
+    if (cachedEvents && cachedFingerprint === current) return cachedEvents;
+    cachedEvents = parseEvents();
+    cachedProjection = null;
+    cachedFingerprint = current;
+    return cachedEvents;
+  }
+
+  /** Egen array till anroparen; raderna delas och skrivs aldrig i. */
+  function readEvents() {
+    return events().slice();
+  }
+
+  /** Aktuellt tillstånd per strategi, ihopvikt en gång per filversion. */
+  function currentState() {
+    const source = events();
+    if (!cachedProjection) cachedProjection = project(source);
+    return cachedProjection;
   }
 
   /**
@@ -339,6 +435,9 @@ function createStrategyLibrary(options = {}) {
     //
     // Payloaden spreds tidigare sist och skrev då över den beräknade tiden med
     // sitt eget `at: null`. Identitetsfälten sätts därför efter payloaden.
+    // Samma skydd som den delade händelseloggen: en sandlåda får inte skriva i
+    // driftens bibliotek. Se src/data/productionWriteGuard.js.
+    writeGuard.assertWritable(eventsFile, 'strategy_library');
     const recordedAt = new Date(clock()).toISOString();
     const event = {
       ...payload,
@@ -349,6 +448,8 @@ function createStrategyLibrary(options = {}) {
     };
     ensureDir();
     fs.appendFileSync(eventsFile, `${JSON.stringify(event)}\n`, 'utf8');
+    // Vi vet att vi just skrev — gissa inte utifrån mtime-upplösningen.
+    invalidate();
     return event;
   }
 
@@ -362,18 +463,18 @@ function createStrategyLibrary(options = {}) {
   }
 
   function listStrategies() {
-    return [...project(readEvents()).values()]
+    return [...currentState().values()]
       .sort((a, b) => String(a.strategyId).localeCompare(String(b.strategyId)));
   }
 
   function getStrategy(strategyId) {
-    return project(readEvents()).get(text(strategyId)) || null;
+    return currentState().get(text(strategyId)) || null;
   }
 
   /** Hela loggen för en strategi, kronologiskt. Revisionsspåret. */
   function getHistory(strategyId, { types = null } = {}) {
     const id = text(strategyId);
-    return readEvents()
+    return events()
       .filter((event) => event.strategyId === id)
       .filter((event) => !types || types.includes(event.type));
   }
@@ -388,12 +489,12 @@ function createStrategyLibrary(options = {}) {
    */
   function getAuditTrail({ since = null, types = null, limit = null } = {}) {
     const sinceMs = since ? Date.parse(since) : null;
-    let rows = readEvents();
+    let rows = events();
     if (Number.isFinite(sinceMs)) {
       rows = rows.filter((e) => Date.parse(e.recordedAt || e.at) >= sinceMs);
     }
     if (types) rows = rows.filter((e) => types.includes(e.type));
-    return limit ? rows.slice(-Math.abs(limit)) : rows;
+    return limit ? rows.slice(-Math.abs(limit)) : rows.slice();
   }
 
   // ── synk från registret ────────────────────────────────────────────────────
@@ -402,39 +503,44 @@ function createStrategyLibrary(options = {}) {
   // men saknar post får en; en post som redan finns lämnas ifred så att dess
   // historik aldrig skrivs om. Idempotent: kör så ofta du vill.
   function syncFromRegistry() {
-    const existing = project(readEvents());
-    const descriptors = registry.listNativeStrategies();
+    const existing = currentState();
+    const descriptors = typeof registry.listStrategies === 'function'
+      ? registry.listStrategies()
+      : (typeof registry.listNativeStrategies === 'function' ? registry.listNativeStrategies() : []);
     const created = [];
     const dnaChanged = [];
 
     for (const descriptor of descriptors) {
-      const record = existing.get(descriptor.strategyId);
+      const record = existing.get(descriptor.strategyId || descriptor.strategy_id || descriptor.id);
       const dnaHash = dnaHashFor(descriptor);
+      const strategyId = text(descriptor.strategyId || descriptor.strategy_id || descriptor.id);
+      if (!strategyId) continue;
 
       if (!record) {
-        append(descriptor.strategyId, EVENT_TYPES.REGISTERED, {
-          executionStrategyId: descriptor.strategyId,
-          nativeStrategyId: descriptor.strategyId,
+        append(strategyId, EVENT_TYPES.REGISTERED, {
+          executionStrategyId: strategyId,
+          nativeStrategyId: strategyId,
           originStrategyId: descriptor.originStrategyId,
-          version: descriptor.strategyVersion,
+          version: descriptor.strategyVersion || descriptor.strategy_version,
           owner: 'trading_os',
         });
-        append(descriptor.strategyId, EVENT_TYPES.DNA_UPDATED, { dnaHash });
-        created.push(descriptor.strategyId);
+        append(strategyId, EVENT_TYPES.DNA_UPDATED, { dnaHash });
+        created.push(strategyId);
         continue;
       }
 
       // Koden har ändrats sedan sist. Ny händelse, aldrig en överskrivning —
       // den gamla hashen ligger kvar i loggen och går att följa.
       if (record.currentDnaHash !== dnaHash) {
-        append(descriptor.strategyId, EVENT_TYPES.DNA_UPDATED, {
+        append(strategyId, EVENT_TYPES.DNA_UPDATED, {
           dnaHash, previousDnaHash: record.currentDnaHash,
         });
-        dnaChanged.push(descriptor.strategyId);
+        dnaChanged.push(strategyId);
       }
-      if (descriptor.strategyVersion && record.currentVersion !== descriptor.strategyVersion) {
-        append(descriptor.strategyId, EVENT_TYPES.VERSION_CHANGED, {
-          version: descriptor.strategyVersion, previousVersion: record.currentVersion,
+      const strategyVersion = descriptor.strategyVersion || descriptor.strategy_version;
+      if (strategyVersion && record.currentVersion !== strategyVersion) {
+        append(strategyId, EVENT_TYPES.VERSION_CHANGED, {
+          version: strategyVersion, previousVersion: record.currentVersion,
         });
       }
     }
@@ -443,7 +549,7 @@ function createStrategyLibrary(options = {}) {
       registryStrategies: descriptors.length,
       created,
       dnaChanged,
-      total: project(readEvents()).size,
+      total: currentState().size,
     };
   }
 
@@ -503,6 +609,29 @@ function createStrategyLibrary(options = {}) {
     return append(payload.strategyId, EVENT_TYPES.REPLAY_RECORDED, payload);
   }
 
+  /**
+   * Kostnadsuppgift för en avslutad period, återförd i efterhand.
+   *
+   * Idempotent: en period som redan har en backfill får ingen till. Utan den
+   * spärren hade varje omkörning av skriptet lagt en rad till, och en logg med
+   * fem identiska kostnadsposter för samma period är inte ett revisionsspår —
+   * det är brus som ser ut som historik.
+   *
+   * @param {object} payload
+   * @param {string} payload.strategyId
+   * @param {string} payload.phase        research | validation
+   * @param {string} payload.resolution   alltid 'period' — se EVENT_TYPES
+   */
+  function recordCostBackfill(payload = {}) {
+    const strategyId = text(payload.strategyId);
+    const phase = text(payload.phase);
+    if (!strategyId || !phase) return null;
+    const existing = getHistory(strategyId, { types: [EVENT_TYPES.REPLAY_COST_BACKFILLED] })
+      .some((row) => text(row.phase) === phase);
+    if (existing) return null;
+    return append(strategyId, EVENT_TYPES.REPLAY_COST_BACKFILLED, payload);
+  }
+
   function recordPaperTrade(payload = {}) {
     return append(payload.strategyId, EVENT_TYPES.PAPER_RECORDED, payload);
   }
@@ -543,7 +672,7 @@ function createStrategyLibrary(options = {}) {
       libraryVersion: LIBRARY_VERSION,
       eventsFile,
       strategies: rows.length,
-      events: readEvents().length,
+      events: events().length,
       byStage,
       retired: rows.filter((row) => row.retired).length,
       ...SAFETY,
@@ -565,12 +694,13 @@ function createStrategyLibrary(options = {}) {
     retire,
     recordScore,
     recordReplayRun,
+    recordCostBackfill,
     recordPaperTrade,
     recordLiveTrade,
     recordMarketDna,
     recordApproval,
     getStatus,
-    _internal: { readEvents, append, project, applyEvent, blankRecord },
+    _internal: { readEvents, append, project, applyEvent, blankRecord, invalidate },
   };
 }
 

@@ -187,6 +187,7 @@ const signalProvider = {
 };
 
 const scanner = createFuturesPaperScannerService({
+  strategyPolicyService: { evaluateStrategy: (strategyId) => ({ allowed: true, identity: { canonicalStrategyId: strategyId, nativeStrategyId: strategyId, originStrategyId: strategyId }, approval: { source: 'test', entryContractReady: true } }) },
   storageService: storage,
   ledgerService: ledger,
   allowInternalSimulationForTests: true,
@@ -937,6 +938,7 @@ const noQuoteInputs = [
   readerShapedSignal('SHORT_TRIGGERED', 'UNCERTAIN'), // riktning ok -> faller på pris
 ];
 const noQuoteScanner = createFuturesPaperScannerService({
+  strategyPolicyService: { evaluateStrategy: (strategyId) => ({ allowed: true, identity: { canonicalStrategyId: strategyId, nativeStrategyId: strategyId, originStrategyId: strategyId }, approval: { source: 'test', entryContractReady: true } }) },
   storageService: noQuoteStorage,
   ledgerService: noQuoteLedger,
   allowInternalSimulationForTests: true,

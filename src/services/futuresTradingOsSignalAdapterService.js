@@ -748,17 +748,22 @@ function createFuturesTradingOsSignalAdapterService(options = {}) {
     const skipped = [];
     for (const signal of signals) {
       const result = adaptSignal(signal, { now, quotes });
-      if (result.ok) candidates.push(result.candidate);
-      else skipped.push({
-        lifecycleId: lifecycleIdOf(signal),
-        signalId: signalIdOf(signal),
-        symbol: signal?.symbol || signal?.originalSymbol || null,
-        strategyId: signal?.strategyId || signal?.strategy_id || signal?.resolvedStrategyId || null,
-        skipReason: result.skipReason,
-        signalTimestamp: result.signalTimestamp || signalTimestampOf(signal),
-        signalSessionMetadata: result.signalSessionMetadata || buildFuturesSessionMetadata(signalTimestampOf(signal)),
-        mapping: result.mapping || null,
-      });
+      if (result.ok) {
+        candidates.push(result.candidate);
+        console.error(`[adaptSignal] OK: strategyId=${result.candidate.strategyId} symbol=${result.candidate.symbol} confidence=${result.candidate.confidence}`);
+      } else {
+        console.error(`[adaptSignal] SKIP: reason=${result.skipReason} strategyId=${signal?.strategyId} symbol=${signal?.symbol} mapping=${result.mapping?.futuresSymbol || 'null'}`);
+        skipped.push({
+          lifecycleId: lifecycleIdOf(signal),
+          signalId: signalIdOf(signal),
+          symbol: signal?.symbol || signal?.originalSymbol || null,
+          strategyId: signal?.strategyId || signal?.strategy_id || signal?.resolvedStrategyId || null,
+          skipReason: result.skipReason,
+          signalTimestamp: result.signalTimestamp || signalTimestampOf(signal),
+          signalSessionMetadata: result.signalSessionMetadata || buildFuturesSessionMetadata(signalTimestampOf(signal)),
+          mapping: result.mapping || null,
+        });
+      }
     }
 
     return {

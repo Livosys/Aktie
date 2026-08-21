@@ -4,6 +4,7 @@ const assert = require('assert/strict');
 
 const {
   buildFuturesSessionMetadata,
+  getCanonicalTradingDayWindow,
   getCmeEquityIndexFuturesSessionState,
 } = require('./futuresMarketHoursService');
 
@@ -174,5 +175,28 @@ assert.equal(metadata.isMarketOpen, true);
 
 assert.equal(buildFuturesSessionMetadata(null), null);
 assert.equal(buildFuturesSessionMetadata('not-a-date'), null);
+
+const winterWindow = getCanonicalTradingDayWindow('2025-12-18');
+assert.deepEqual(winterWindow, {
+  tradingDay: '2025-12-18',
+  timezone: 'America/Chicago',
+  startLocal: '2025-12-18T17:00:00',
+  endLocal: '2025-12-19T17:00:00',
+  startUtc: '2025-12-18T23:00:00.000Z',
+  endUtc: '2025-12-19T23:00:00.000Z',
+});
+
+const summerWindow = getCanonicalTradingDayWindow('2026-07-13');
+assert.equal(summerWindow.startUtc, '2026-07-13T22:00:00.000Z');
+assert.equal(summerWindow.endUtc, '2026-07-14T22:00:00.000Z');
+
+const springTransitionWindow = getCanonicalTradingDayWindow('2026-03-08');
+assert.equal(springTransitionWindow.startUtc, '2026-03-08T22:00:00.000Z');
+assert.equal(springTransitionWindow.endUtc, '2026-03-09T22:00:00.000Z');
+
+const fallTransitionWindow = getCanonicalTradingDayWindow('2026-11-01');
+assert.equal(fallTransitionWindow.startUtc, '2026-11-01T23:00:00.000Z');
+assert.equal(fallTransitionWindow.endUtc, '2026-11-02T23:00:00.000Z');
+assert.equal(getCanonicalTradingDayWindow('2026-02-30'), null);
 
 console.log('futuresMarketHoursService.test.js passed');

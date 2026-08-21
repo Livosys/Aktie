@@ -8,6 +8,8 @@
 //
 // Ren data och rena funktioner: ingen React, ingen router, inget nätverk.
 
+import { FACTORY_TERM_KEYS, uiName } from './services/uiTerminologyService.js';
+
 // Ytorna en post kan visas på.
 export const NAV_SURFACES = Object.freeze({
   SIDEBAR: 'sidebar',            // vänstermenyn (AppShell)
@@ -18,10 +20,9 @@ export const NAV_SURFACES = Object.freeze({
 
 // Grupper används av sidomenyn. Ordningen här är ordningen på skärmen.
 export const NAV_GROUPS = Object.freeze([
-  { id: 'mini-futures', label: 'Mini Futures' },
-  { id: 'research', label: 'Forskning' },
-  { id: 'system', label: 'Operativt' },
-  { id: 'labs', label: 'Labs' },
+  { id: 'product', label: 'Version 1.0' },
+  { id: 'operations', label: 'Drift' },
+  { id: 'labs', label: 'Utvecklingsyta' },
 ]);
 
 const S = NAV_SURFACES;
@@ -31,140 +32,71 @@ const S = NAV_SURFACES;
 // INTE ska markera posten, och vilka ytor posten visas på.
 export const NAV_ITEMS = Object.freeze([
   {
-    id: 'oversikt',
-    label: 'Översikt',
-    path: '/supervisor',
-    icon: 'O',
+    id: 'factory',
+    label: uiName(FACTORY_TERM_KEYS.FACTORY_STATUS),
+    path: '/factory',
+    icon: '🏭',
+    accent: 'teal',
+    group: 'product',
+    // /factory/loop hör till samma produktområde och får därför INGEN egen
+    // menypost — V1-menyn har en huvudväg per område. Den räknas som "den här
+    // sidan" så att menyn markerar rätt när man är där.
+    match: ['/', '/factory', '/factory/loop', '/decision-journal', '/overview', '/oversikt'],
+    exact: true,
+    surfaces: [S.SIDEBAR, S.TOPNAV, S.MOBILE_BOTTOM],
+  },
+  {
+    id: 'strategy-library',
+    label: uiName(FACTORY_TERM_KEYS.STRATEGY_LIBRARY),
+    path: '/factory/library',
+    icon: '📚',
     accent: 'blue',
-    group: 'mini-futures',
-    match: ['/', '/supervisor', '/overview', '/oversikt'],
+    group: 'product',
+    match: ['/factory/library', '/factory/family-tree', '/factory/market-dna'],
     surfaces: [S.SIDEBAR, S.TOPNAV, S.MOBILE_BOTTOM],
   },
   {
-    id: 'futures',
-    label: 'Futures',
+    id: 'tests',
+    label: 'Tester',
+    path: '/factory/replay',
+    icon: '🧪',
+    accent: 'purple',
+    group: 'product',
+    match: ['/factory/replay'],
+    surfaces: [S.SIDEBAR, S.TOPNAV, S.MOBILE_BOTTOM],
+  },
+  {
+    id: 'paper',
+    label: 'Handelstest',
     path: '/futures-paper',
-    icon: 'F',
+    icon: '📈',
     accent: 'teal',
-    group: 'mini-futures',
-    match: ['/futures-paper', '/paper-futures'],
-    excludeTabs: ['positioner', 'ordrar'],
+    group: 'product',
+    match: ['/futures-paper', '/paper-futures', '/live', '/live-scanner'],
     surfaces: [S.SIDEBAR, S.TOPNAV, S.MOBILE_BOTTOM],
-  },
-  {
-    id: 'positioner',
-    label: 'Positioner',
-    path: '/futures-paper?tab=positioner',
-    icon: 'P',
-    accent: 'green',
-    group: 'mini-futures',
-    match: ['/futures-paper'],
-    tab: 'positioner',
-    surfaces: [S.SIDEBAR, S.TOPNAV, S.MOBILE_BOTTOM],
-  },
-  {
-    // Flik-id:t heter 'ordrar' av bakåtkompatibilitetsskäl men innehållet är
-    // Live Scanner. Etiketten följer innehållet; sökvägen är oförändrad.
-    id: 'live-scanner',
-    label: 'Live Scanner',
-    path: '/futures-paper?tab=ordrar',
-    icon: 'L',
-    accent: 'orange',
-    group: 'mini-futures',
-    match: ['/futures-paper'],
-    tab: 'ordrar',
-    surfaces: [S.SIDEBAR, S.TOPNAV, S.MOBILE_BOTTOM],
-  },
-  {
-    // Replay och Batch är egna arbetsytor, inte laborationer. De bor kvar på
-    // /lab?tab=... så att varje befintlig länk och omdirigering fungerar — det
-    // är bara navigationen som slutat gömma dem bakom Labs.
-    id: 'replay',
-    label: 'Replay',
-    path: '/lab?tab=replay',
-    icon: 'R',
-    accent: 'purple',
-    group: 'research',
-    match: ['/lab'],
-    tab: 'replay',
-    surfaces: [S.SIDEBAR, S.TOPNAV, S.MOBILE_DRAWER],
-  },
-  {
-    id: 'batch',
-    label: 'Batch',
-    path: '/lab?tab=batch',
-    icon: 'B',
-    accent: 'teal',
-    group: 'research',
-    match: ['/lab'],
-    tab: 'batch',
-    surfaces: [S.SIDEBAR, S.TOPNAV, S.MOBILE_DRAWER],
-  },
-  {
-    id: 'historik',
-    label: 'Historik',
-    path: '/insikter',
-    icon: 'H',
-    accent: 'purple',
-    group: 'system',
-    match: ['/insikter', '/resultat', '/history', '/historik', '/data-center', '/datacenter', '/setup-performance', '/setup-resultat'],
-    surfaces: [S.SIDEBAR, S.TOPNAV, S.MOBILE_DRAWER],
   },
   {
     id: 'system',
     label: 'System',
     path: '/system',
-    icon: 'S',
+    icon: '⚙️',
     accent: 'blue',
-    group: 'system',
-    match: ['/system', '/system-health', '/health', '/halsa', '/alerts', '/larm', '/sakerhet', '/risk', '/risk-engine', '/safety', '/execution-safety'],
+    group: 'operations',
+    match: ['/system', '/system-health', '/health', '/halsa', '/alerts', '/larm', '/sakerhet', '/risk', '/risk-engine', '/safety', '/execution-safety', '/interactive-brokers'],
     surfaces: [S.SIDEBAR, S.TOPNAV, S.MOBILE_DRAWER],
   },
   {
-    // Kvar i Labs: strategier, review, kandidater, learning, marknader, sliders,
-    // exits, AI-agent och beslutsråd — det experimentella. Labs gör inte anspråk
-    // på /replay och markeras inte som aktiv på replay- eller batch-fliken.
+    // Kvar i Labs: gamla översikter, manuell replay/batch, research, AI Research,
+    // PineScript, Narrow Lab och övriga experimentella verktyg. Routes finns kvar
+    // för bokmärken, men V1-produktmenyn har bara en Labs-ingång.
     id: 'labs',
     label: 'Labs',
     path: '/lab',
-    icon: 'X',
+    icon: '🧪',
     accent: 'teal',
     group: 'labs',
-    match: ['/lab', '/trading-lab', '/strategy-lab', '/strategilabb', '/review-chart', '/machine', '/intelligence', '/intelligens', '/missed-breakouts', '/micro-move', '/wave', '/exit-engine', '/exit', '/pinescript', '/pine-script', '/ai', '/narrow', '/narrow-state'],
-    excludeTabs: ['replay', 'batch'],
+    match: ['/lab', '/trading-lab', '/strategy-lab', '/strategilabb', '/review-chart', '/machine', '/intelligence', '/intelligens', '/missed-breakouts', '/micro-move', '/wave', '/exit-engine', '/exit', '/pinescript', '/pine-script', '/ai', '/narrow', '/narrow-state', '/supervisor', '/signalpuls', '/scanner', '/signaler', '/insikter', '/resultat', '/history', '/historik', '/data-center', '/datacenter', '/setup-performance', '/setup-resultat', '/daytrading', '/paper-trading', '/replay', '/batch', '/quality'],
     surfaces: [S.SIDEBAR, S.TOPNAV, S.MOBILE_DRAWER],
-  },
-  // Enbart i mobillådan sedan tidigare. De ligger här för att lådan ska ritas
-  // ur samma lista som allt annat, inte för att de bytt plats.
-  {
-    id: 'pinescript',
-    label: 'PineScript',
-    path: '/pinescript',
-    icon: 'P',
-    accent: 'teal',
-    group: 'labs',
-    match: ['/pinescript', '/pine-script'],
-    surfaces: [S.MOBILE_DRAWER],
-  },
-  {
-    id: 'ai',
-    label: 'AI Research',
-    path: '/ai',
-    icon: 'A',
-    accent: 'purple',
-    group: 'labs',
-    match: ['/ai'],
-    surfaces: [S.MOBILE_DRAWER],
-  },
-  {
-    id: 'narrow',
-    label: 'Narrow Lab',
-    path: '/narrow',
-    icon: 'N',
-    accent: 'teal',
-    group: 'labs',
-    match: ['/narrow', '/narrow-state'],
-    surfaces: [S.MOBILE_DRAWER],
   },
 ]);
 
@@ -180,7 +112,9 @@ export function isNavItemActive(item, pathname, search = '') {
     return paths.some((path) => pathname === path) && tab === item.tab;
   }
 
-  const matched = paths.some((path) => pathname === path || pathname.startsWith(`${path}/`));
+  const matched = item.exact
+    ? paths.some((path) => pathname === path)
+    : paths.some((path) => pathname === path || pathname.startsWith(`${path}/`));
   if (!matched) return false;
   // En sida vars flik ägs av en annan post ska inte markera den här.
   if (item.excludeTabs?.includes(tab)) return false;

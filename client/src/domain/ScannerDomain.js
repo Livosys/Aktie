@@ -7,6 +7,12 @@
 // ingen ny backend — modulen läser, den frågar aldrig.
 
 import { hasValue } from '../utils/tradingFormatters.js';
+import {
+  FACTORY_STATUS_KEYS,
+  FACTORY_TERM_KEYS,
+  uiName,
+  uiStatus,
+} from '../services/uiTerminologyService.js';
 
 const DEFAULT_SCAN_INTERVAL_MS = 60_000;
 
@@ -26,11 +32,11 @@ export const SCANNER_STATUS = {
 const STATUS_META = {
   [SCANNER_STATUS.IN_POSITION]: { label: 'In Position', dot: '🟣', tone: 'info', rank: 0, active: true },
   [SCANNER_STATUS.SUBMITTED]: { label: 'Submitted', dot: '🟢', tone: 'success', rank: 1, active: true },
-  [SCANNER_STATUS.CANDIDATE]: { label: 'Candidate', dot: '🔵', tone: 'info', rank: 2, active: true },
+  [SCANNER_STATUS.CANDIDATE]: { label: uiName(FACTORY_TERM_KEYS.CANDIDATE), dot: '🔵', tone: 'info', rank: 2, active: true },
   [SCANNER_STATUS.SETUP_READY]: { label: 'Setup Ready', dot: '🟠', tone: 'warning', rank: 3, active: true },
   [SCANNER_STATUS.COOLDOWN]: { label: 'Cooldown', dot: '⚪', tone: 'neutral', rank: 4, active: true },
   [SCANNER_STATUS.SCANNING]: { label: 'Scanning', dot: '🟢', tone: 'success', rank: 5, active: true },
-  [SCANNER_STATUS.WAITING]: { label: 'Waiting', dot: '🟡', tone: 'warning', rank: 6, active: true },
+  [SCANNER_STATUS.WAITING]: { label: uiStatus(FACTORY_STATUS_KEYS.WAITING), dot: '🟡', tone: 'warning', rank: 6, active: true },
   [SCANNER_STATUS.BLOCKED]: { label: 'Blocked', dot: '⚪', tone: 'neutral', rank: 7, active: false },
 };
 

@@ -84,6 +84,86 @@ function chicagoParts(now = new Date()) {
   };
 }
 
+function tradingDayForLocal(local) {
+  if (!local?.exchangeLocalDate) return null;
+  const date = new Date(`${local.exchangeLocalDate}T00:00:00.000Z`);
+  if (local.hour < 17) date.setUTCDate(date.getUTCDate() - 1);
+  return date.toISOString().slice(0, 10);
+}
+
+function chicagoDateTimeParts(value) {
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone: CME_EQUITY_INDEX_TIMEZONE,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    hourCycle: 'h23',
+  }).formatToParts(new Date(value));
+  const get = (type) => parts.find((part) => part.type === type)?.value;
+  return {
+    year: Number(get('year')),
+    month: Number(get('month')),
+    day: Number(get('day')),
+    hour: Number(get('hour')),
+    minute: Number(get('minute')),
+    second: Number(get('second')),
+  };
+}
+
+function chicagoOffsetMinutesAt(value) {
+  const instant = new Date(value);
+  const local = chicagoDateTimeParts(instant);
+  const localAsUtc = Date.UTC(
+    local.year,
+    local.month - 1,
+    local.day,
+    local.hour,
+    local.minute,
+    local.second,
+  );
+  return (localAsUtc - instant.getTime()) / 60000;
+}
+
+function chicagoLocalToUtc(date, hour = 0, minute = 0) {
+  const match = String(date || '').match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (!match) return null;
+  const localAsUtc = Date.UTC(Number(match[1]), Number(match[2]) - 1, Number(match[3]), hour, minute, 0);
+  let utcMs = localAsUtc - chicagoOffsetMinutesAt(new Date(localAsUtc)) * 60000;
+  // Re-evaluate once after applying the offset so DST transitions cannot leave
+  // the conversion one hour away from the requested Chicago wall-clock time.
+  utcMs = localAsUtc - chicagoOffsetMinutesAt(new Date(utcMs)) * 60000;
+  return new Date(utcMs).toISOString();
+}
+
+function addCalendarDay(date) {
+  const value = new Date(`${date}T00:00:00.000Z`);
+  if (Number.isNaN(value.getTime())) return null;
+  value.setUTCDate(value.getUTCDate() + 1);
+  return value.toISOString().slice(0, 10);
+}
+
+function getCanonicalTradingDayWindow(tradingDay) {
+  const match = String(tradingDay || '').match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (!match) return null;
+  const dateValue = new Date(`${tradingDay}T00:00:00.000Z`);
+  if (Number.isNaN(dateValue.getTime()) || dateValue.toISOString().slice(0, 10) !== tradingDay) return null;
+  const nextTradingDay = addCalendarDay(tradingDay);
+  const startUtc = chicagoLocalToUtc(tradingDay, 17, 0);
+  const endUtc = chicagoLocalToUtc(nextTradingDay, 17, 0);
+  if (!nextTradingDay || !startUtc || !endUtc) return null;
+  return {
+    tradingDay,
+    timezone: CME_EQUITY_INDEX_TIMEZONE,
+    startLocal: `${tradingDay}T17:00:00`,
+    endLocal: `${nextTradingDay}T17:00:00`,
+    startUtc,
+    endUtc,
+  };
+}
+
 function classifyOpenSession(minutes) {
   const hit = OPEN_SESSION_WINDOWS.find((window) => (
     minutes >= window.startMinutes && minutes < window.endMinutes
@@ -144,6 +224,7 @@ function getCmeEquityIndexFuturesSessionState(now = new Date()) {
     timezone: CME_EQUITY_INDEX_TIMEZONE,
     exchangeTimezone: CME_EQUITY_INDEX_TIMEZONE,
     exchangeLocalDate: local.exchangeLocalDate,
+    tradingDay: tradingDayForLocal(local),
     exchangeLocalTime: local.exchangeLocalTime,
     exchangeTimestamp: local.exchangeLocalDate && local.exchangeLocalTime
       ? `${local.exchangeLocalDate}T${local.exchangeLocalTime}:00`
@@ -267,6 +348,7 @@ function buildFuturesSessionMetadata(timestamp) {
     sessionLabel: state.sessionLabel,
     exchangeTimezone: state.exchangeTimezone,
     exchangeLocalDate: state.exchangeLocalDate,
+    tradingDay: state.tradingDay,
     exchangeLocalTime: state.exchangeLocalTime,
     exchangeTimestamp: state.exchangeTimestamp,
     serverTimestamp: state.serverTimestamp,
@@ -287,8 +369,14 @@ module.exports = {
   buildFuturesSessionMetadata,
   getNextSessionTransition,
   getWeekendEntryCutoffState,
+  getCanonicalTradingDayWindow,
   _internal: {
     chicagoParts,
+    chicagoDateTimeParts,
+    chicagoOffsetMinutesAt,
+    chicagoLocalToUtc,
+    addCalendarDay,
+    tradingDayForLocal,
     classifyOpenSession,
     classifyDayMinutes,
   },

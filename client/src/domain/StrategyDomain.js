@@ -8,6 +8,12 @@ import {
   hasStrategyPerformance,
   strategyDisplayName,
 } from '../models/strategyViewModel.js';
+import {
+  FACTORY_STATUS_KEYS,
+  FACTORY_TERM_KEYS,
+  uiName,
+  uiStatus,
+} from '../services/uiTerminologyService.js';
 
 export const ALL_FILTER = '__all__';
 
@@ -43,7 +49,7 @@ export function statusTone(value) {
 
 export function statusBadge(value, fallback = EMPTY_VALUE) {
   return {
-    label: textOrEmpty(value || fallback),
+    label: textOrEmpty(uiStatus(value) || value || fallback),
     tone: statusTone(value),
   };
 }
@@ -195,15 +201,15 @@ export function getStrategyStatistics(strategies = []) {
 export function getStrategySummaryCards(strategies = []) {
   const stats = getStrategyStatistics(strategies);
   return [
-    { label: 'Running', value: stats.running, tone: 'success' },
-    { label: 'Waiting', value: stats.waiting, tone: 'warning' },
+    { label: uiStatus(FACTORY_STATUS_KEYS.RUNNING), value: stats.running, tone: 'success' },
+    { label: uiStatus(FACTORY_STATUS_KEYS.WAITING), value: stats.waiting, tone: 'warning' },
     { label: 'Blocked', value: stats.blocked, tone: 'danger' },
-    { label: 'Paused', value: stats.paused, tone: 'warning' },
+    { label: uiStatus(FACTORY_STATUS_KEYS.PAUSED), value: stats.paused, tone: 'warning' },
     { label: 'Cooldown', value: stats.cooldown, tone: 'warning' },
-    { label: 'Candidates', value: stats.candidates, tone: 'info' },
+    { label: uiName(FACTORY_TERM_KEYS.CANDIDATE), value: stats.candidates, tone: 'info' },
     { label: 'Entry Ready', value: stats.entryReady, tone: 'success' },
     { label: 'Managing Position', value: stats.managingPosition, tone: 'info' },
-    { label: 'Completed', value: stats.completed, tone: 'neutral' },
+    { label: uiStatus(FACTORY_STATUS_KEYS.COMPLETED), value: stats.completed, tone: 'neutral' },
     { label: 'Disabled', value: stats.disabled, tone: 'neutral' },
   ];
 }

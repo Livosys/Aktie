@@ -36,12 +36,12 @@ for (const key of Object.keys(adapter)) {
 // ── 3. UTC-format för historical endDateTime ────────────────────────────────
 assert.equal(
   adapterModule.toIbUtcDateTime(new Date('2026-07-15T20:19:37.000Z')),
-  '20260715-20:19:37 UTC',
-  'endDateTime ska vara yyyymmdd-hh:mm:ss UTC',
+  '20260715-20:19:37',
+  'endDateTime ska vara yyyymmdd-hh:mm:ss',
 );
 assert.equal(
   adapterModule.toIbUtcDateTime(new Date('2026-01-02T03:04:05.000Z')),
-  '20260102-03:04:05 UTC',
+  '20260102-03:04:05',
 );
 
 // ── 4. Kontomaskering + paper/live-klassning ────────────────────────────────
@@ -226,7 +226,66 @@ assert.equal(adapterModule.classifyAccountId(''), 'unknown');
   rcAdapter.stop();
   dedupeAdapter.stop();
 
-  // ── 8. AccountUpdates engångsläsning → accountvärden + portfolio, sedan cancel
+  // ── 8. Expired-contract requests must preserve includeExpired end-to-end
+  const expiredClient = new EventEmitter();
+  expiredClient.contractDetailsRequests = [];
+  expiredClient.historicalRequests = [];
+  expiredClient.connect = () => expiredClient.emit(EventName.nextValidId, 1);
+  expiredClient.disconnect = () => {};
+  expiredClient.reqMarketDataType = () => {};
+  expiredClient.reqContractDetails = (reqId, contract) => {
+    expiredClient.contractDetailsRequests.push(contract);
+    setImmediate(() => {
+      expiredClient.emit(EventName.contractDetails, reqId, {
+        contract: {
+          conId: 730283094,
+          symbol: 'MNQ',
+          localSymbol: 'MNQZ5',
+          tradingClass: 'MNQ',
+          lastTradeDateOrContractMonth: '20251219',
+          exchange: 'CME',
+          currency: 'USD',
+          multiplier: 2,
+        },
+      });
+      expiredClient.emit(EventName.contractDetailsEnd, reqId);
+    });
+  };
+  expiredClient.reqHistoricalData = (reqId, contract) => {
+    expiredClient.historicalRequests.push(contract);
+    setImmediate(() => {
+      expiredClient.emit(EventName.historicalData, reqId, '1766087940', 1, 2, 0.5, 1.5, 10, 1);
+      expiredClient.emit(EventName.historicalData, reqId, 'finished-1766087940', 0, 0, 0, 0, 0, 0);
+    });
+  };
+  const expiredAdapter = adapterModule.createIbFuturesDataAdapterService({
+    historicalPacingMs: 1,
+    roots: [],
+    ibFactory: () => expiredClient,
+  });
+  assert.equal(await expiredAdapter.start(), true);
+  const expiredContract = await expiredAdapter.resolveContract('MNQ', {
+    expiry: '202512',
+    includeExpired: true,
+  });
+  assert.equal(expiredContract.ok, true);
+  assert.equal(expiredClient.contractDetailsRequests[0].includeExpired, true);
+  assert.equal(expiredClient.contractDetailsRequests[0].lastTradeDateOrContractMonth, '202512');
+  assert.equal(expiredContract.contract.localSymbol, 'MNQZ5');
+  const expiredHistory = await expiredAdapter.fetchHistoricalBars({
+    root: 'MNQ',
+    contract: expiredContract.contract,
+    includeExpired: true,
+    endDateTime: '20251218-20:00:00',
+  });
+  assert.equal(expiredHistory.ok, true);
+  assert.equal(expiredHistory.bars.length, 1);
+  assert.equal(expiredClient.historicalRequests[0].includeExpired, true);
+  assert.equal(expiredClient.historicalRequests[0].localSymbol, 'MNQZ5');
+  assert.equal(expiredClient.historicalRequests[0].conId, 730283094);
+  expiredAdapter.stop();
+
+  // ── 9. AccountUpdates engångsläsning → accountvärden + portfolio, sedan cancel
   const accountClients = [];
   const accountAdapter = adapterModule.createIbFuturesDataAdapterService({
     historicalPacingMs: 1,

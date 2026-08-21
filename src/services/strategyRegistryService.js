@@ -86,6 +86,66 @@ function defaultPerformanceSummary() {
   };
 }
 
+function familyLabelFor(strategy = {}) {
+  const raw = safeString(strategy.familyName || strategy.family_id || strategy.family || strategy.familyId || '');
+  return raw || null;
+}
+
+function numberOrDefault(value, fallback) {
+  const n = Number(value);
+  return Number.isFinite(n) ? n : fallback;
+}
+
+function defaultOptionsForStrategy(strategy = {}, variant = null) {
+  const variantKey = variant?.key || 'canonical';
+  const baseStop = numberOrDefault(strategy.default_stop_loss_pct ?? strategy.default_sl, 0.2);
+  const baseTake = numberOrDefault(strategy.default_take_profit_r ?? strategy.default_tp, 1.5);
+  const baseHold = Math.max(2, Math.round(numberOrDefault(strategy.default_holding_time_min ?? strategy.default_holding_time ?? strategy.default_timeout_min, 12)));
+  const baseTimeframes = safeArray(strategy.default_timeframes || strategy.allowedTimeframes || strategy.allowed_timeframes);
+  const profile = variant || {
+    stop: 1,
+    take: 1,
+    hold: 1,
+    sessionFocus: 'balanced',
+    volatilityFocus: 'balanced',
+    timeframeFocus: 'base',
+    label: 'Canonical',
+    key: 'canonical',
+  };
+  const holdingTimeMin = Math.max(2, Math.round(baseHold * profile.hold));
+  const timeframes = baseTimeframes.length ? baseTimeframes : ['2m'];
+  const timeframeFocus = profile.timeframeFocus === 'fast'
+    ? timeframes[0]
+    : profile.timeframeFocus === 'slow'
+      ? timeframes[timeframes.length - 1]
+      : timeframes[Math.floor(timeframes.length / 2)] || timeframes[0];
+  return {
+    strategyId: safeString(strategy.id || strategy.strategy_id || strategy.strategyId || null),
+    strategyName: safeString(strategy.name || strategy.strategy_name || strategy.strategyName || strategy.id || null),
+    stopLossPct: Number((baseStop * profile.stop).toFixed(4)),
+    takeProfitR: Number((baseTake * profile.take).toFixed(4)),
+    holdingTimeMin,
+    timeoutMin: holdingTimeMin,
+    confidenceThreshold: numberOrDefault(strategy.confidence_threshold, 65),
+    familyId: safeString(strategy.family || strategy.familyId || strategy.family_id) || null,
+    familyName: familyLabelFor(strategy),
+    marketGroup: safeString(strategy.market_group || strategy.market || 'all') || 'all',
+    variantKey,
+    variantLabel: profile.label || 'Canonical',
+    sessionFocus: profile.sessionFocus || 'balanced',
+    volatilityFocus: profile.volatilityFocus || 'balanced',
+    timeframeFocus: timeframeFocus || timeframes[0] || '2m',
+    signalCount: safeArray(strategy.signal_rules || strategy.signalRules).length,
+    signalDigest: safeArray(strategy.signal_rules || strategy.signalRules).slice(0, 3).join('|') || null,
+  };
+}
+
+function catalogStatusFor(strategy = {}, fallback = 'paper_only') {
+  const raw = String(strategy.status || fallback || '').toLowerCase();
+  if (STATUS_VALUES.has(raw)) return raw;
+  return fallback;
+}
+
 function createStrategyRegistryService(options = {}) {
   const registryFile = options.registryFile || DEFAULT_REGISTRY_FILE;
   const seedFile = Object.prototype.hasOwnProperty.call(options, 'seedFile')
@@ -135,10 +195,13 @@ function createStrategyRegistryService(options = {}) {
 
   function baseStrategyFromCatalog(strategy = {}) {
     const enabled = strategy.enabled !== false;
-    const status = mapCatalogStatus(strategy.status);
+    const status = catalogStatusFor(strategy, mapCatalogStatus(strategy.status));
+    const defaultOptions = strategy.defaultOptions || defaultOptionsForStrategy(strategy, null);
     return {
       strategy_id: safeString(strategy.id),
+      strategyId: safeString(strategy.id),
       strategy_name: safeString(strategy.name || strategy.id),
+      strategyName: safeString(strategy.name || strategy.id),
       source: 'internal',
       status,
       enabled,
@@ -155,6 +218,26 @@ function createStrategyRegistryService(options = {}) {
       allowed_timeframes: safeArray(strategy.allowedTimeframes),
       entry_rules: safeArray(strategy.entryRules),
       exit_rules: safeArray(strategy.exitRules),
+      default_options: safeObject(defaultOptions),
+      defaultOptions: safeObject(defaultOptions),
+      strategy_version: safeString(strategy.strategyVersion || 'catalog-v1'),
+      strategyVersion: safeString(strategy.strategyVersion || 'catalog-v1'),
+      origin_strategy_id: safeString(strategy.originStrategyId || strategy.id),
+      originStrategyId: safeString(strategy.originStrategyId || strategy.id),
+      family_id: safeString(strategy.familyId || strategy.family || null),
+      familyId: safeString(strategy.familyId || strategy.family || null),
+      family_name: safeString(strategy.familyName || familyLabelFor(strategy)) || null,
+      familyName: safeString(strategy.familyName || familyLabelFor(strategy)) || null,
+      variant_id: safeString(strategy.variantId || 'canonical'),
+      variantId: safeString(strategy.variantId || 'canonical'),
+      variant_name: safeString(strategy.variantName || 'Canonical'),
+      variantName: safeString(strategy.variantName || 'Canonical'),
+      variant_rank: Number.isFinite(Number(strategy.variantRank)) ? Number(strategy.variantRank) : 0,
+      variantRank: Number.isFinite(Number(strategy.variantRank)) ? Number(strategy.variantRank) : 0,
+      target_signal_family: safeString(strategy.targetSignalFamily || null),
+      targetSignalFamily: safeString(strategy.targetSignalFamily || null),
+      target_signal_subtype: safeString(strategy.targetSignalSubtype || null),
+      targetSignalSubtype: safeString(strategy.targetSignalSubtype || null),
       updated_at: null,
       created_at: null,
       history_count: 0,
@@ -166,7 +249,9 @@ function createStrategyRegistryService(options = {}) {
   function blankStrategy(strategyId) {
     return {
       strategy_id: safeString(strategyId),
+      strategyId: safeString(strategyId),
       strategy_name: safeString(strategyId),
+      strategyName: safeString(strategyId),
       source: 'manual',
       status: 'paper_only',
       enabled: true,
@@ -183,6 +268,26 @@ function createStrategyRegistryService(options = {}) {
       allowed_timeframes: [],
       entry_rules: [],
       exit_rules: [],
+      default_options: defaultOptionsForStrategy({ id: strategyId }),
+      defaultOptions: defaultOptionsForStrategy({ id: strategyId }),
+      strategy_version: 'manual',
+      strategyVersion: 'manual',
+      origin_strategy_id: safeString(strategyId),
+      originStrategyId: safeString(strategyId),
+      family_id: null,
+      familyId: null,
+      family_name: null,
+      familyName: null,
+      variant_id: 'canonical',
+      variantId: 'canonical',
+      variant_name: 'Canonical',
+      variantName: 'Canonical',
+      variant_rank: 0,
+      variantRank: 0,
+      target_signal_family: null,
+      targetSignalFamily: null,
+      target_signal_subtype: null,
+      targetSignalSubtype: null,
       updated_at: null,
       created_at: null,
       history_count: 0,
@@ -214,6 +319,26 @@ function createStrategyRegistryService(options = {}) {
     if (Object.prototype.hasOwnProperty.call(record, 'allowed_timeframes')) next.allowed_timeframes = safeArray(record.allowed_timeframes);
     if (Object.prototype.hasOwnProperty.call(record, 'entry_rules')) next.entry_rules = safeArray(record.entry_rules);
     if (Object.prototype.hasOwnProperty.call(record, 'exit_rules')) next.exit_rules = safeArray(record.exit_rules);
+    if (Object.prototype.hasOwnProperty.call(record, 'default_options')) next.default_options = safeObject(record.default_options);
+    if (Object.prototype.hasOwnProperty.call(record, 'defaultOptions')) next.defaultOptions = safeObject(record.defaultOptions);
+    if (Object.prototype.hasOwnProperty.call(record, 'strategy_version')) next.strategy_version = safeString(record.strategy_version) || next.strategy_version;
+    if (Object.prototype.hasOwnProperty.call(record, 'strategyVersion')) next.strategyVersion = safeString(record.strategyVersion) || next.strategyVersion;
+    if (Object.prototype.hasOwnProperty.call(record, 'origin_strategy_id')) next.origin_strategy_id = safeString(record.origin_strategy_id) || next.origin_strategy_id;
+    if (Object.prototype.hasOwnProperty.call(record, 'originStrategyId')) next.originStrategyId = safeString(record.originStrategyId) || next.originStrategyId;
+    if (Object.prototype.hasOwnProperty.call(record, 'family_id')) next.family_id = safeString(record.family_id) || next.family_id;
+    if (Object.prototype.hasOwnProperty.call(record, 'familyId')) next.familyId = safeString(record.familyId) || next.familyId;
+    if (Object.prototype.hasOwnProperty.call(record, 'family_name')) next.family_name = safeString(record.family_name) || next.family_name;
+    if (Object.prototype.hasOwnProperty.call(record, 'familyName')) next.familyName = safeString(record.familyName) || next.familyName;
+    if (Object.prototype.hasOwnProperty.call(record, 'variant_id')) next.variant_id = safeString(record.variant_id) || next.variant_id;
+    if (Object.prototype.hasOwnProperty.call(record, 'variantId')) next.variantId = safeString(record.variantId) || next.variantId;
+    if (Object.prototype.hasOwnProperty.call(record, 'variant_name')) next.variant_name = safeString(record.variant_name) || next.variant_name;
+    if (Object.prototype.hasOwnProperty.call(record, 'variantName')) next.variantName = safeString(record.variantName) || next.variantName;
+    if (Object.prototype.hasOwnProperty.call(record, 'variant_rank')) next.variant_rank = Number.isFinite(Number(record.variant_rank)) ? Number(record.variant_rank) : next.variant_rank;
+    if (Object.prototype.hasOwnProperty.call(record, 'variantRank')) next.variantRank = Number.isFinite(Number(record.variantRank)) ? Number(record.variantRank) : next.variantRank;
+    if (Object.prototype.hasOwnProperty.call(record, 'target_signal_family')) next.target_signal_family = safeString(record.target_signal_family) || next.target_signal_family;
+    if (Object.prototype.hasOwnProperty.call(record, 'targetSignalFamily')) next.targetSignalFamily = safeString(record.targetSignalFamily) || next.targetSignalFamily;
+    if (Object.prototype.hasOwnProperty.call(record, 'target_signal_subtype')) next.target_signal_subtype = safeString(record.target_signal_subtype) || next.target_signal_subtype;
+    if (Object.prototype.hasOwnProperty.call(record, 'targetSignalSubtype')) next.targetSignalSubtype = safeString(record.targetSignalSubtype) || next.targetSignalSubtype;
     if (Object.prototype.hasOwnProperty.call(record, 'registry_managed')) next.registry_managed = record.registry_managed === true;
     if (record.created_at && !next.created_at) next.created_at = record.created_at;
     if (record.updated_at) next.updated_at = record.updated_at;
@@ -245,7 +370,9 @@ function createStrategyRegistryService(options = {}) {
   }
 
   function buildState() {
-    const catalog = typeof catalogService.getCatalog === 'function' ? (catalogService.getCatalog().strategies || []) : [];
+    const catalog = typeof catalogService.getExpandedCatalog === 'function'
+      ? (catalogService.getExpandedCatalog().strategies || [])
+      : (typeof catalogService.getCatalog === 'function' ? (catalogService.getCatalog().strategies || []) : []);
     const byId = new Map();
 
     for (const strategy of catalog) {
@@ -266,11 +393,11 @@ function createStrategyRegistryService(options = {}) {
       .map((strategy) => {
         const source = normalizeSource(strategy.source, 'internal');
         const status = normalizeStatus(strategy.status, strategy.enabled === false ? 'paused' : 'paper_only');
-        return {
-          ...strategy,
-          source,
-          status,
-          enabled: strategy.enabled !== false,
+      return {
+        ...strategy,
+        source,
+        status,
+        enabled: strategy.enabled !== false,
           disabled_reason: strategy.disabled_reason || null,
           paper_only: true,
           ...SAFETY,
@@ -327,6 +454,26 @@ function createStrategyRegistryService(options = {}) {
       allowed_timeframes: safeArray(defaults.allowed_timeframes),
       entry_rules: safeArray(defaults.entry_rules),
       exit_rules: safeArray(defaults.exit_rules),
+      default_options: safeObject(defaults.default_options || defaults.defaultOptions || defaultOptionsForStrategy({ id })),
+      defaultOptions: safeObject(defaults.default_options || defaults.defaultOptions || defaultOptionsForStrategy({ id })),
+      strategy_version: safeString(defaults.strategy_version || defaults.strategyVersion || 'manual'),
+      strategyVersion: safeString(defaults.strategy_version || defaults.strategyVersion || 'manual'),
+      origin_strategy_id: safeString(defaults.origin_strategy_id || defaults.originStrategyId || id),
+      originStrategyId: safeString(defaults.origin_strategy_id || defaults.originStrategyId || id),
+      family_id: safeString(defaults.family_id || defaults.familyId || null),
+      familyId: safeString(defaults.family_id || defaults.familyId || null),
+      family_name: safeString(defaults.family_name || defaults.familyName || null),
+      familyName: safeString(defaults.family_name || defaults.familyName || null),
+      variant_id: safeString(defaults.variant_id || defaults.variantId || 'canonical'),
+      variantId: safeString(defaults.variant_id || defaults.variantId || 'canonical'),
+      variant_name: safeString(defaults.variant_name || defaults.variantName || 'Canonical'),
+      variantName: safeString(defaults.variant_name || defaults.variantName || 'Canonical'),
+      variant_rank: Number.isFinite(Number(defaults.variant_rank || defaults.variantRank)) ? Number(defaults.variant_rank || defaults.variantRank) : 0,
+      variantRank: Number.isFinite(Number(defaults.variant_rank || defaults.variantRank)) ? Number(defaults.variant_rank || defaults.variantRank) : 0,
+      target_signal_family: safeString(defaults.target_signal_family || defaults.targetSignalFamily || null),
+      targetSignalFamily: safeString(defaults.target_signal_family || defaults.targetSignalFamily || null),
+      target_signal_subtype: safeString(defaults.target_signal_subtype || defaults.targetSignalSubtype || null),
+      targetSignalSubtype: safeString(defaults.target_signal_subtype || defaults.targetSignalSubtype || null),
       registry_managed: defaults.registry_managed === true || source !== 'internal',
       created_at: now,
       updated_at: now,

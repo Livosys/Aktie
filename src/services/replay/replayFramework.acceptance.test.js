@@ -21,11 +21,28 @@ const engineModule = require('./nativeReplayEngineService');
 const reportModule = require('./replayReportService');
 const allocatorModule = require('./replayBookAllocator');
 const strategyScore = require('../score/strategyScoreV1Service');
+const paperConfig = require('../ibPaperExecutionConfigService');
 const tradeLedger = require('../trade/tradeLedgerService');
 
 const { REPLAY_MODES } = allocatorModule;
 const ROOTS = ['MNQ', 'MES'];
-const DAY = coverage.findCompleteDay({ roots: ROOTS, throughUtcTime: '18:00' });
+// ── Ett STÄNGT dygn, inte bara ett komplett ─────────────────────────────────
+//
+// findCompleteDay ger det nyaste dygnet med full täckning — och det är precis
+// det dygn den löpande IB-infångningen fortfarande skriver till. Filerna för
+// 2026-08-17 till -20 skrevs om inom samma sekund medan det här testet kördes.
+//
+// Två av testerna nedan jämför två separata körningar med varandra: det
+// implicita mot det explicita läget, och determinismtestet. När lagret ändras
+// mellan körningarna blir svaret olika, och testet rapporterar då MOTORN som
+// icke-deterministisk fast det var indata som rörde sig. Det inträffade
+// 2026-08-20: 245 signaler i den ena körningen, 244 i den andra.
+//
+// findClosedCompleteDay väljer i stället nyaste dygn som lagret legat stilla om
+// i minst en timme. Assertions här nere är beteendemässiga — antal böcker,
+// exklusivitet per rot, likhet mellan lägen — så valet av dygn påverkar inte
+// vad de mäter, bara att de mäter det på samma data två gånger.
+const DAY = coverage.findClosedCompleteDay({ roots: ROOTS, throughUtcTime: '18:00' });
 const WINDOW = DAY ? { from: `${DAY}T13:00:00.000Z`, to: `${DAY}T17:00:00.000Z` } : null;
 
 const runs = new Map();
@@ -58,6 +75,70 @@ function peakConcurrency(trades) {
   return peak;
 }
 
+// ── Vad paper-taket FAKTISKT är ─────────────────────────────────────────────
+//
+// Policyn har flyttats två gånger, och testet har fått följa med båda gångerna.
+// Först påstod det att en bok håller exakt EN position, vilket var sant när
+// maxOpenPositions var hårdkapat till 1. Sedan att den håller en per ROT, vilket
+// var sant medan same_root-grinden fanns.
+//
+// Sedan 2026-08-20 gäller: högst maxOpenPositions KONTRAKT totalt, fördelade
+// hur som helst mellan rötterna. Same_root-grinden är borttagen — den tillät
+// aldrig två affärer i samma instrument, och skyddet den gav ligger nu i att
+// getPositionCount summerar |kvantitet| i stället för att räkna positionsrader.
+//
+// Taket läses ur konfigurationen i stället för att skrivas som en siffra här,
+// så att testet inte kan glida ifrån policyn en tredje gång.
+const PAPER_MAX_OPEN_POSITIONS = paperConfig
+  .getPilotLimits({ executionTarget: 'ibkr_paper' }).maxOpenPositions;
+
+/** Största antal böcker som hade en öppen position samtidigt. */
+function peakConcurrentBooks(books = []) {
+  const events = [];
+  for (const book of books) {
+    for (const row of book.trades || []) {
+      const open = new Date(row.openedAt).getTime();
+      const close = row.closedAt ? new Date(row.closedAt).getTime() : Infinity;
+      if (!Number.isFinite(open)) continue;
+      // En bok räknas en gång oavsett hur många rötter den håller.
+      events.push([open, book.bookId, 1], [close, book.bookId, -1]);
+    }
+  }
+  events.sort((a, b) => a[0] - b[0] || a[2] - b[2]);
+  const openPerBook = new Map();
+  let peak = 0;
+  for (const [, bookId, delta] of events) {
+    const next = (openPerBook.get(bookId) || 0) + delta;
+    openPerBook.set(bookId, next);
+    const active = [...openPerBook.values()].filter((count) => count > 0).length;
+    if (active > peak) peak = active;
+  }
+  return peak;
+}
+
+function peakConcurrencyByRoot(trades) {
+  const byRoot = new Map();
+  for (const row of trades) {
+    const root = String(row.root || row.symbol || 'unknown').toUpperCase();
+    if (!byRoot.has(root)) byRoot.set(root, []);
+    byRoot.get(root).push(row);
+  }
+  return [...byRoot.entries()].map(([root, rows]) => [root, peakConcurrency(rows)]);
+}
+
+/** Samma grind som Broker Risk: en per rot, högst taket totalt. */
+function assertPaperConcurrency(trades, label) {
+  // Ingen gräns PER ROT längre; gränsen gäller totalen. En rot får bära alla
+  // fyra om det är där signalerna finns.
+  for (const [root, peak] of peakConcurrencyByRoot(trades)) {
+    assert.ok(peak <= PAPER_MAX_OPEN_POSITIONS,
+      `${label}: ${root} hade ${peak} samtidiga positioner, taket är ${PAPER_MAX_OPEN_POSITIONS}`);
+  }
+  const total = peakConcurrency(trades);
+  assert.ok(total <= PAPER_MAX_OPEN_POSITIONS,
+    `${label}: ${total} samtidiga positioner överskred paper-taket ${PAPER_MAX_OPEN_POSITIONS}`);
+}
+
 test('lagret har en komplett handelsdag att köra på', () => {
   assert.ok(DAY, 'ingen komplett IB-dag i lagret');
 });
@@ -86,8 +167,7 @@ test('Production Replay har exakt en bok och ett positionstak', () => {
   assert.equal(run.counts.allocationBlocked, 0,
     'production får aldrig blockera på allokering — det vore en grind paper inte har');
   assert.ok(run.counts.riskBlocked > 0, 'Broker Risk stoppade ingenting — då prövades den inte');
-  assert.equal(peakConcurrency(run.trades), 1,
-    'production överskred paper-taket på en samtidig position');
+  assertPaperConcurrency(run.trades, 'production');
 });
 
 // ── Strategy Replay ═════════════════════════════════════════════════════════
@@ -122,8 +202,7 @@ test('Strategy Replay isolerar strategierna från varandra', () => {
     byStrategy.get(row.strategyId).push(row);
   }
   for (const [strategyId, rows] of byStrategy) {
-    assert.equal(peakConcurrency(rows), 1,
-      `${strategyId} hade flera positioner samtidigt i sin egen bok`);
+    assertPaperConcurrency(rows, `${strategyId} i sin egen bok`);
   }
 });
 
@@ -151,8 +230,15 @@ test('Portfolio Replay håller taket för samtidiga positioner', () => {
   for (const cap of [1, 2, 3]) {
     const run = runMode(REPLAY_MODES.PORTFOLIO, { maxConcurrentPositions: cap });
     assert.equal(run.config.allocation.maxConcurrentPositions, cap);
-    assert.ok(peakConcurrency(run.trades) <= cap,
-      `portföljen hade ${peakConcurrency(run.trades)} samtidiga positioner med taket ${cap}`);
+    // Taket gäller BÖCKER, inte positioner. En bok är ett paper-konto och får
+    // enligt paper-policyn hålla en position per rot — att räkna positioner här
+    // mätte därför fel storhet så snart en strategi handlade både MNQ och MES.
+    const booksPeak = peakConcurrentBooks(run.books);
+    assert.ok(booksPeak <= cap,
+      `portföljen hade ${booksPeak} samtidigt aktiva böcker med taket ${cap}`);
+    for (const book of run.books) {
+      assertPaperConcurrency(book.trades, `portföljboken ${book.bookId}`);
+    }
   }
 
   // Ett hårdare tak får aldrig ge FLER affärer.

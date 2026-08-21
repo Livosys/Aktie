@@ -33,6 +33,16 @@ resetState();
 }
 
 {
+  const expanded = catalog.getExpandedCatalog();
+  assert.equal(expanded.ok, true, 'expanded ok');
+  assert.ok(expanded.count >= 150, 'expanded catalog too small');
+  assert.ok(expanded.family_count >= 1, 'expanded catalog missing families');
+  const ids = new Set(expanded.strategies.map((row) => row.id));
+  assert.equal(ids.size, expanded.strategies.length, 'expanded catalog has duplicate strategy ids');
+  assert.ok(expanded.families.every((family) => family.strategies > 0), 'family summary incomplete');
+}
+
+{
   const created = catalog.registerTradingViewStrategy('TV_CATALOG_TEST', {
     strategy_name: 'TV Catalog Test',
     description: 'Auto registered tradingview strategy',

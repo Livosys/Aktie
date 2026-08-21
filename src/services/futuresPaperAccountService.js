@@ -230,8 +230,15 @@ function createFuturesPaperAccountService(options = {}) {
   }
 
   function readHistory(historyLimit = null) {
-    const events = storage.readJsonl ? storage.readJsonl(storage.files.events) : [];
-    const equityCurve = storage.readJsonl ? storage.readJsonl(storage.files.equityCurve) : [];
+    // Med en gräns läses bara svansen. Utan gräns är beteendet oförändrat:
+    // hela loggen, vilket är vad en anropare som ber om allt har bett om.
+    const readTail = typeof storage.readJsonlTail === 'function' && historyLimit !== null;
+    const events = readTail
+      ? storage.readJsonlTail(storage.files.events, historyLimit)
+      : (storage.readJsonl ? storage.readJsonl(storage.files.events) : []);
+    const equityCurve = readTail
+      ? storage.readJsonlTail(storage.files.equityCurve, historyLimit)
+      : (storage.readJsonl ? storage.readJsonl(storage.files.equityCurve) : []);
     return {
       events: applyHistoryLimit(events, historyLimit),
       equityCurve: applyHistoryLimit(equityCurve, historyLimit),

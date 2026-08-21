@@ -10,6 +10,7 @@
 
 const marketDataStore = require('../data/marketDataStore');
 const futuresMarketData = require('./futuresMarketDataService');
+const { buildIbHistoricalDatasetManifest } = require('./backfill/ibHistoricalDatasetManifestService');
 
 const SAFETY = Object.freeze({
   mode: 'paper_only',
@@ -35,7 +36,7 @@ function nowIso(now = new Date()) {
   return new Date(now).toISOString();
 }
 
-function buildInstrumentStatus(root, marketDataService) {
+function buildInstrumentStatus(root, marketDataService, { includeDataset = true } = {}) {
   const dates = marketDataStore.listAvailableDates(root);
   const dates2m = dates['2m'] || [];
   const datesRaw = dates.raw || [];
@@ -74,29 +75,56 @@ function buildInstrumentStatus(root, marketDataService) {
     } : null,
     replayReady: dates2m.length > 0,
     batchReady: dates2m.length > 0,
+    // Datasetmanifestet är en FULLSTÄNDIG revision av arkivet: det läser varje
+    // rå bar för varje dygn, grupperar om dem per handelsdag och validerar
+    // varje dygn — och läser sedan varje kontraktsfil en gång till. Mätt 70
+    // sekunder per rot, alltså 141 sekunder synkron CPU för bägge.
+    //
+    // Handelstest-vyn behöver det inte: den läser bara .replay och .batch, och
+    // de avgörs av en kataloglistning. Den bad ändå om manifestet vid varje
+    // bygge, och det var hela orsaken till att vyn tog över två minuter och
+    // blockerade servern för alla andra under tiden.
+    dataset: includeDataset ? buildIbHistoricalDatasetManifest({ roots: [root] }).roots[0] : null,
+    datasetIncluded: includeDataset === true,
     blockers,
   };
 }
 
-// Filsystem-scanning cachas (TTL 60s) så att desk-runtime/status-endpoints
-// aldrig blir tyngre av växande candle-arkiv.
-let statusCache = null; // {payload, atMs}
+// Filsystem-scanning cachas så att desk-runtime/status-endpoints aldrig blir
+// tyngre av växande candle-arkiv.
+//
+// De två formerna cachas var för sig. Den lätta (utan datasetmanifest) byggs
+// på millisekunder och håller 60 sekunder. Den tunga byggs på minuter och fick
+// tidigare samma 60 sekunder — en TTL kortare än byggtiden, vilket innebar att
+// den byggdes om nästan varje gång den efterfrågades.
+const statusCache = new Map(); // includeDataset -> {payload, atMs}
 const STATUS_CACHE_TTL_MS = 60 * 1000;
+const DATASET_CACHE_TTL_MS = 15 * 60 * 1000;
 
-function getStatus({ marketDataService = futuresMarketData.defaultFuturesMarketDataService, now = new Date(), fresh = false } = {}) {
-  if (!fresh && statusCache && (Date.now() - statusCache.atMs) < STATUS_CACHE_TTL_MS) {
-    return statusCache.payload;
-  }
-  const payload = buildStatus({ marketDataService, now });
-  statusCache = { payload, atMs: Date.now() };
+function getStatus({
+  marketDataService = futuresMarketData.defaultFuturesMarketDataService,
+  now = new Date(),
+  fresh = false,
+  includeDataset = true,
+} = {}) {
+  const key = includeDataset ? 'with_dataset' : 'light';
+  const ttl = includeDataset ? DATASET_CACHE_TTL_MS : STATUS_CACHE_TTL_MS;
+  const hit = statusCache.get(key);
+  if (!fresh && hit && (Date.now() - hit.atMs) < ttl) return hit.payload;
+  const payload = buildStatus({ marketDataService, now, includeDataset });
+  statusCache.set(key, { payload, atMs: Date.now() });
   return payload;
 }
 
-function buildStatus({ marketDataService = futuresMarketData.defaultFuturesMarketDataService, now = new Date() } = {}) {
+function buildStatus({
+  marketDataService = futuresMarketData.defaultFuturesMarketDataService,
+  now = new Date(),
+  includeDataset = true,
+} = {}) {
   const instruments = {};
   for (const root of ROOTS) {
     try {
-      instruments[root] = buildInstrumentStatus(root, marketDataService);
+      instruments[root] = buildInstrumentStatus(root, marketDataService, { includeDataset });
     } catch (err) {
       instruments[root] = { root, error: err.message, replayReady: false, batchReady: false, blockers: ['status_error'] };
     }

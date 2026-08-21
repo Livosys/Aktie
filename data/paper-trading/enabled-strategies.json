@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "updatedAt": "2026-07-29T23:39:02.304Z",
+  "updatedAt": "2026-08-19T13:19:13.250Z",
   "strategies": {
     "crypto_fast_momentum": {
       "enabled": false,
@@ -99,12 +99,12 @@
       "note": "manual_initial_migration"
     },
     "narrow_breakout": {
-      "enabled": false,
-      "enabledAt": null,
-      "enabledBy": null,
-      "disabledAt": "2026-07-11T17:17:47.018Z",
-      "disabledBy": "manual_initial_migration",
-      "note": "manual_initial_migration"
+      "enabled": true,
+      "enabledAt": "2026-08-19T13:05:24.413Z",
+      "enabledBy": "p0_multi_strategy_activation",
+      "disabledAt": null,
+      "disabledBy": null,
+      "note": "Eligible canonical futures paper strategy"
     },
     "narrow_breakout_v1": {
       "enabled": false,
@@ -115,12 +115,12 @@
       "note": "manual_initial_migration"
     },
     "narrow_fakeout_reversal_v1": {
-      "enabled": false,
-      "enabledAt": null,
-      "enabledBy": null,
-      "disabledAt": "2026-07-11T17:17:47.018Z",
-      "disabledBy": "manual_initial_migration",
-      "note": "manual_initial_migration"
+      "enabled": true,
+      "enabledAt": "2026-08-19T13:05:24.433Z",
+      "enabledBy": "p0_multi_strategy_activation",
+      "disabledAt": null,
+      "disabledBy": null,
+      "note": "Eligible canonical futures paper strategy"
     },
     "narrow_state_expansion_long": {
       "enabled": true,
@@ -236,11 +236,11 @@
     },
     "vwap_failed_breakout_short": {
       "enabled": false,
-      "enabledAt": "2026-07-11T17:37:09.307Z",
-      "enabledBy": "manual_api",
-      "disabledAt": "2026-07-11T17:37:10.555Z",
-      "disabledBy": "manual_api",
-      "note": null
+      "enabledAt": "2026-08-19T13:05:24.452Z",
+      "enabledBy": "p0_multi_strategy_activation",
+      "disabledAt": "2026-08-19T13:19:13.250Z",
+      "disabledBy": "p0_multi_strategy_activation",
+      "note": "Blocked by long-only paper policy"
     },
     "vwap_momentum_long": {
       "enabled": false,
@@ -560,6 +560,34 @@
       "source": "manual_api",
       "at": "2026-07-29T23:39:02.304Z",
       "note": "disabled: NEEDS_PRODUCER, no scanner emitter — cannot generate signals"
+    },
+    {
+      "strategyId": "narrow_breakout",
+      "action": "enable",
+      "source": "p0_multi_strategy_activation",
+      "at": "2026-08-19T13:05:24.413Z",
+      "note": "Eligible canonical futures paper strategy"
+    },
+    {
+      "strategyId": "narrow_fakeout_reversal_v1",
+      "action": "enable",
+      "source": "p0_multi_strategy_activation",
+      "at": "2026-08-19T13:05:24.433Z",
+      "note": "Eligible canonical futures paper strategy"
+    },
+    {
+      "strategyId": "vwap_failed_breakout_short",
+      "action": "enable",
+      "source": "p0_multi_strategy_activation",
+      "at": "2026-08-19T13:05:24.452Z",
+      "note": "Eligible canonical futures paper strategy"
+    },
+    {
+      "strategyId": "vwap_failed_breakout_short",
+      "action": "disable",
+      "source": "p0_multi_strategy_activation",
+      "at": "2026-08-19T13:19:13.250Z",
+      "note": "Blocked by long-only paper policy"
     }
   ]
 }

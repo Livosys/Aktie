@@ -9,12 +9,13 @@ import {
   DECISION_TYPES,
   normalizeDecision,
 } from '../models/decisionModel.js';
+import { FACTORY_TERM_KEYS, uiName } from '../services/uiTerminologyService.js';
 
 const TYPE_LABELS = Object.freeze({
   [DECISION_TYPES.AI_RECOMMENDATION]: 'AI Recommendation',
-  [DECISION_TYPES.SUPERVISOR_APPROVAL]: 'Supervisor Approval',
+  [DECISION_TYPES.SUPERVISOR_APPROVAL]: uiName(FACTORY_TERM_KEYS.APPROVAL),
   [DECISION_TYPES.SUPERVISOR_REJECT]: 'Supervisor Reject',
-  [DECISION_TYPES.RISK_APPROVAL]: 'Risk Approval',
+  [DECISION_TYPES.RISK_APPROVAL]: uiName(FACTORY_TERM_KEYS.APPROVAL),
   [DECISION_TYPES.RISK_REJECT]: 'Risk Reject',
   [DECISION_TYPES.RISK_PAUSE]: 'Risk Pause',
   [DECISION_TYPES.RISK_RESUME]: 'Risk Resume',
@@ -30,7 +31,7 @@ const TYPE_LABELS = Object.freeze({
   [DECISION_TYPES.ORDER_RETRY]: 'Order Retry',
   [DECISION_TYPES.EXECUTION_DECISION]: 'Execution Decision',
   [DECISION_TYPES.LEARNING_RECOMMENDATION]: 'Learning Recommendation',
-  [DECISION_TYPES.REPLAY_DECISION]: 'Replay Decision',
+  [DECISION_TYPES.REPLAY_DECISION]: uiName(FACTORY_TERM_KEYS.REPLAY_ENGINE),
   [DECISION_TYPES.ALERT_DECISION]: 'Alert Decision',
   [DECISION_TYPES.NOTIFICATION_DECISION]: 'Notification Decision',
   [DECISION_TYPES.HEALTH_DECISION]: 'Health Decision',

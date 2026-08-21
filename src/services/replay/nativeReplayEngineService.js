@@ -113,10 +113,10 @@ function createNativeReplayEngine(options = {}) {
 
   // Barer efter beslutet. Feedens exekveringssidiga anrop, aldrig getCandles —
   // getCandles lämnar per konstruktion aldrig ut framtiden.
-  function barsForFill(root, fromIso, minutes) {
+  function barsForFill(root, fromIso, minutes, contractKey = null) {
     if (typeof feed.getBarsBetween !== 'function') return [];
     const fromMs = new Date(fromIso).getTime();
-    return feed.getBarsBetween(root, fromIso, iso(fromMs + minutes * 60 * 1000));
+    return feed.getBarsBetween(root, fromIso, iso(fromMs + minutes * 60 * 1000), { contractKey });
   }
 
   /**
@@ -135,6 +135,24 @@ function createNativeReplayEngine(options = {}) {
     const executionTarget = config.executionTarget || DEFAULTS.executionTarget;
     const exitWindowMinutes = num(config.exitWindowMinutes) || DEFAULTS.exitWindowMinutes;
     const maxQuoteAgeMs = num(config.maxQuoteAgeMs) || DEFAULTS.maxQuoteAgeMs;
+    // Registrets parametervarianter av de åtta modulerna. Av som standard, så
+    // en körning utan flaggan är ordagrant densamma som före den fanns.
+    const includeVariants = config.includeVariants === true;
+    // Släktträdets muterade genom. Utan dem är Evolution Engine en generator
+    // vars produkter aldrig prövas.
+    const includeEvolved = config.includeEvolved === true;
+    // Research-hypoteser. Av som standard: en körning utan flaggan innehåller
+    // ingen hypotesevidens alls, och det är den körningen paper-vägen speglar.
+    const includeResearch = config.includeResearch === true;
+    // På som standard. En research-batch stänger av den för att köra isolerat.
+    const includeBase = config.includeBase !== false;
+    const researchCycle = config.researchCycle || null;
+    // Genom som JOBBET bad om. Går förbi registrets tak för antalet evolverade
+    // genom, så ett jobb som skapades för ett visst genom kan garantera att
+    // just det genomet körs. Tom lista = oförändrat beteende.
+    const genomeHashes = Array.isArray(config.genomeHashes) ? config.genomeHashes.filter(Boolean) : [];
+    const contractKeyByRoot = config.contractKeyByRoot || {};
+    const contractKeyForRoot = (root) => contractKeyByRoot[String(root || '').toUpperCase()] || null;
 
     // Täckningen kontrolleras INNAN körningen. En replay som tyst tar slut
     // mitt i perioden ser ut som en marknad utan signaler.
@@ -191,6 +209,12 @@ function createNativeReplayEngine(options = {}) {
         symbols,
         timeframe,
         maxQuoteAgeMs,
+        includeVariants,
+        includeEvolved,
+        includeResearch,
+        includeBase,
+        researchCycle,
+        genomeHashes,
         onDecision: (event) => {
           decisions.push({
             at: iso(now),
@@ -217,7 +241,9 @@ function createNativeReplayEngine(options = {}) {
       // Candles sparas en gång per symbol för marknadsklassificeringen.
       if (ticks === 1 || ms + stepMs > endMs) {
         for (const symbol of symbols) {
-          const result = feed.getCandles(symbol, { now, timeframe, limit: 250 });
+          const result = feed.getCandles(symbol, {
+            now, timeframe, limit: 250, contractKey: contractKeyForRoot(symbol),
+          });
           if (result?.candles?.length) candlesBySymbol[symbol] = result.candles;
         }
       }
@@ -230,7 +256,7 @@ function createNativeReplayEngine(options = {}) {
         seenSignalIds.add(signal.signalId);
 
         const root = String(signal.symbol || '').toUpperCase();
-        const quote = feed.getQuote(root, now);
+        const quote = feed.getQuote(root, now, { contractKey: contractKeyForRoot(root) });
 
         // 3a. Allokering: vilken bok? Det är HÄR — och bara här — lägena
         //     skiljer sig. Blockeringar från allokeringen hålls åtskilda från
@@ -281,7 +307,7 @@ function createNativeReplayEngine(options = {}) {
         }
 
         // Entry. expectedPrice är strategins pris — det AI senare optimerar mot.
-        const entryBars = barsForFill(root, iso(now), exitWindowMinutes);
+        const entryBars = barsForFill(root, iso(now), exitWindowMinutes, contractKeyForRoot(root));
         const side = String(signal.direction).toUpperCase() === 'SHORT' ? 'sell' : 'buy';
         const entryFill = fillEngine.fill({
           orderId: `${signal.signalId}:entry`,
@@ -332,7 +358,7 @@ function createNativeReplayEngine(options = {}) {
 
         // Utgången löses direkt mot barerna efter entry, men bokförs först när
         // klockan når dit (steg 1 ovan).
-        const exitBars = barsForFill(root, openedAt, exitWindowMinutes);
+        const exitBars = barsForFill(root, openedAt, exitWindowMinutes, contractKeyForRoot(root));
         const resolved = bracketExit.resolveBracketExit({
           tradeId: trade.tradeId,
           symbol: root,
@@ -376,7 +402,21 @@ function createNativeReplayEngine(options = {}) {
         fillEngine: fillEngine.describe(),
         // Strategierna LISTAS för spårbarhet, men motorn har aldrig frågat
         // efter dem — providern hämtade dem ur registret.
-        strategiesFromRegistry: strategyRegistry.listStrategyEvaluators().map((row) => row.strategyId),
+        includeVariants,
+        includeEvolved,
+        includeResearch,
+        includeBase,
+        researchCycle,
+        genomeHashes,
+        // Vad som FAKTISKT hände med varje begärt genom. Ett genom som inte
+        // gick att ladda måste synas som ett svar — en körning som tror sig ha
+        // prövat ett genom den aldrig laddade är ett resultat som ljuger.
+        requestedGenomes: genomeHashes.length && typeof strategyRegistry.describeRequestedGenomes === 'function'
+          ? strategyRegistry.describeRequestedGenomes(genomeHashes)
+          : [],
+        strategiesFromRegistry: strategyRegistry
+          .listStrategyEvaluators({ includeVariants, includeEvolved, includeResearch, includeBase, researchCycle, genomeHashes })
+          .map((row) => row.strategyId),
       },
       dataCoverage,
       ticks,

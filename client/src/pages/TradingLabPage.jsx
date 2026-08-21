@@ -4290,8 +4290,8 @@ const LAB_CONTENT_TABS = new Set([
 
 const PRIMARY_TABS = [
   { id: 'overview', label: 'Översikt' },
-  { id: 'batch', label: 'Batch' },
-  { id: 'replay', label: 'Replay' },
+  { id: 'batch', label: 'Många tester' },
+  { id: 'replay', label: 'Historiska tester' },
   { id: 'results', label: 'Resultat' },
   { id: 'technical', label: 'Teknik' },
 ];
@@ -4299,12 +4299,12 @@ const PRIMARY_TABS = [
 const RESULT_TABS = [
   { id: 'review', label: 'Graf' },
   { id: 'candidates', label: 'Kandidater' },
-  { id: 'adaptive', label: 'Learning' },
+  { id: 'adaptive', label: 'Lärande' },
 ];
 
 const TECHNICAL_TABS = [
   { id: 'marknader', label: 'Marknader' },
-  { id: 'sliders', label: 'Sliders' },
+  { id: 'sliders', label: 'Reglage' },
   { id: 'exits', label: 'Exits' },
   { id: 'ai_agent', label: 'AI-agent' },
   { id: 'agent_debate', label: 'Beslutsråd' },
@@ -4382,14 +4382,26 @@ export default function TradingLabPage() {
 
   return (
     <DashboardShell
-      title="Trading Lab"
-      subtitle="Batch, replay, testparametrar och analys i paper-only-läge. Befintliga Lab-funktioner är oförändrade."
+      title="Labs"
+      subtitle="Experimentella verktyg för analys och utveckling."
       safety={LAB_SAFETY}
       tabs={PRIMARY_TABS}
       activeTab={primaryTab}
       onTab={changePrimaryTab}
     >
     <div className="tl-page" data-trading-event-count={tradingEventCount} data-decision-count={decisionCount}>
+      <section style={{
+        border: '1px solid rgba(245,158,11,0.32)',
+        background: 'rgba(245,158,11,0.08)',
+        borderRadius: 8,
+        padding: '14px 16px',
+        marginBottom: 14,
+      }}>
+        <strong>Labs</strong>
+        <div style={{ color: 'var(--muted)', marginTop: 4 }}>
+          Detta är experimentella verktyg och ingår inte i den dagliga produkten.
+        </div>
+      </section>
       {/* Lab controls */}
       <div className="tl-page-header">
         <div className="tl-page-title-row">

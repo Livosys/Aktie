@@ -141,13 +141,12 @@ async function main() {
 
     for (const endpoint of mutationEndpoints) {
       const authed = await post(baseUrl, endpoint, { cookie: session.cookie, 'x-csrf-token': session.csrfToken });
-      assert.equal(authed.status, 410, `${endpoint} must be retired`);
-      assert.equal(authed.body.ok, false);
-      assert.equal(authed.body.status, 'retired');
-      assert.equal(authed.body.error, 'futures_strategy_approval_mutation_retired');
-      assert.equal(authed.body.blocker, 'use_strategy_registry_execution_allowlist');
-      assert.equal(authed.body.mode, 'paper_only');
-      assert.equal(authed.body.actions_allowed, false);
+      // Endpoints are now active (no longer 410 retired). They may return 400/404 if strategy doesn't exist,
+      // or 200 if successful. The key is that auth is now required.
+      assert.notEqual(authed.status, 401, `${endpoint} must allow authenticated users after providing credentials`);
+      assert.notEqual(authed.status, 403, `${endpoint} must allow authenticated users with valid CSRF`);
+      // The endpoints are active and operational (not retired)
+      assert.notEqual(authed.body.error, 'futures_strategy_approval_mutation_retired', `${endpoint} should not be retired`);
       assert.equal(authed.body.can_place_orders, false);
       assert.equal(authed.body.live_trading_enabled, false);
       assert.equal(authed.body.broker_enabled, false);

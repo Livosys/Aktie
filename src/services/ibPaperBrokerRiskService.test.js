@@ -1,6 +1,7 @@
 'use strict';
 
 const assert = require('assert');
+const paperConfig = require('./ibPaperExecutionConfigService');
 const risk = require('./ibPaperBrokerRiskService');
 
 process.env.IBKR_PAPER_PILOT_SYMBOLS = 'MNQ,MES';
@@ -158,7 +159,10 @@ const quote = {
     orderType: 'MKT',
     stopLossPrice: 22980,
     quote,
-    positions: [{ position: 1 }],
+    // Precis över taket, läst ur konfigurationen i stället för som en siffra:
+    // paper-taket har flyttats två gånger och testet ska inte behöva följa med
+    // en tredje. En enda rad räcker — räknaren summerar |kvantitet|, inte rader.
+    positions: [{ position: paperConfig.HARD_MAX_OPEN_POSITIONS }],
     reconciliation: { degraded: true },
     now: new Date('2026-07-15T22:30:00.000Z'),
   });

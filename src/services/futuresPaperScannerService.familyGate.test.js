@@ -72,6 +72,7 @@ const signalProvider = {
 };
 
 const scanner = createFuturesPaperScannerService({
+  strategyPolicyService: { evaluateStrategy: (strategyId) => ({ allowed: true, identity: { canonicalStrategyId: strategyId, nativeStrategyId: strategyId, originStrategyId: strategyId }, approval: { source: 'test', entryContractReady: true } }) },
   storageService: storage,
   ledgerService: ledger,
   allowInternalSimulationForTests: true,

@@ -3,6 +3,7 @@ import {
   resolveKnownStrategy,
   strategyDisplayName,
 } from '../../stores/strategyStore.js';
+import { uiFactorySafeText } from '../../services/uiTerminologyService.js';
 
 // Read-only "Teknisk info" (steg A + B) för Futures Paper.
 // Ingen edit, ingen apply, ingen aktivering/inaktivering, ingen risk, ingen order.
@@ -11,9 +12,8 @@ import {
 const FETCH_TIMEOUT_MS = 8000;
 
 const SIM_BANNER =
-  'Alla nuvarande Futures Paper-affärer använder simulated_fallback. Det är en genererad ' +
-  'paper-only prisfeed och inte riktig marknadsdata. Resultaten ska därför inte tolkas som ' +
-  'verklig strategi-prestanda.';
+  'Alla nuvarande Futures Paper-affärer använder simulerad prisdata. Resultaten ska därför ' +
+  'inte tolkas som verklig strategi-prestanda.';
 
 async function fetchJson(url, timeoutMs = FETCH_TIMEOUT_MS) {
   const controller = new AbortController();
@@ -35,17 +35,17 @@ function renderValue(value, emptyLabel = '—') {
   if (value === null || value === undefined || value === '') return emptyLabel;
   if (Array.isArray(value)) {
     if (value.length === 0) return emptyLabel;
-    return value.map((v) => (typeof v === 'object' && v !== null ? JSON.stringify(v) : String(v))).join(', ');
+    return uiFactorySafeText(value.map((v) => (typeof v === 'object' && v !== null ? JSON.stringify(v) : String(v))).join(', '));
   }
   if (typeof value === 'object') {
     try {
-      return JSON.stringify(value);
+      return uiFactorySafeText(JSON.stringify(value));
     } catch (err) {
       return emptyLabel;
     }
   }
   if (typeof value === 'boolean') return value ? 'Ja' : 'Nej';
-  return String(value);
+  return uiFactorySafeText(value);
 }
 
 function fmtNum(value) {
@@ -56,19 +56,22 @@ function fmtNum(value) {
 const card = {
   background: 'var(--surface, #fff)',
   border: '1px solid var(--border, #e2e2e2)',
-  borderRadius: 12,
-  padding: 16,
-  marginBottom: 16,
+  borderRadius: 'var(--r)',
+  padding: 'var(--s5)',
+  marginBottom: 'var(--s5)',
 };
 
 const badgeBase = {
   display: 'inline-block',
-  fontSize: 12,
-  fontWeight: 600,
+  fontFamily: 'var(--data)',
+  fontSize: 9.5,
+  fontWeight: 400,
   padding: '2px 8px',
-  borderRadius: 999,
+  borderRadius: 'var(--r-badge)',
   border: '1px solid var(--border, #ddd)',
   lineHeight: 1.6,
+  textTransform: 'uppercase',
+  letterSpacing: '.09em',
 };
 
 function Badge({ tone, children }) {
@@ -89,7 +92,7 @@ function statusTone(status) {
   return 'muted';
 }
 
-// En rad i parameter-tabellen: default / override / effective / source.
+// En rad i parameter-tabellen: standard / ändring / används / källa.
 function ParamRow({ label, param }) {
   const p = param && typeof param === 'object' ? param : {};
   const hasOverride = p.override !== null && p.override !== undefined;
@@ -102,7 +105,7 @@ function ParamRow({ label, param }) {
         {hasOverride ? (
           <Badge tone="warning">{renderValue(p.override)}</Badge>
         ) : (
-          <span style={{ color: 'var(--muted, #6b7280)' }}>Ingen override</span>
+          <span style={{ color: 'var(--muted, #6b7280)' }}>Ingen ändring</span>
         )}
       </td>
       <td style={td}>
@@ -128,17 +131,17 @@ function ParamGroup({ title, params }) {
   const entries = Object.entries(params || {}).filter(([, v]) => v && typeof v === 'object' && 'effective' in v);
   if (entries.length === 0) return null;
   return (
-    <div style={{ marginTop: 12 }}>
-      <div style={{ fontWeight: 700, marginBottom: 6 }}>{title}</div>
+    <div style={{ marginTop: 'var(--s4)' }}>
+      <div style={{ fontWeight: 600, marginBottom: 'var(--s2)' }}>{title}</div>
       <div style={{ overflowX: 'auto' }}>
         <table style={table}>
           <thead>
             <tr>
               <th style={th}>Parameter</th>
-              <th style={th}>Default</th>
-              <th style={th}>Override</th>
-              <th style={th}>Effective</th>
-              <th style={th}>Source</th>
+              <th style={th}>Standard</th>
+              <th style={th}>Ändring</th>
+              <th style={th}>Används</th>
+              <th style={th}>Källa</th>
             </tr>
           </thead>
           <tbody>
@@ -160,13 +163,13 @@ function StrategyDetails(strategy) {
   const numeric = details.entryAndIndicators && details.entryAndIndicators.numericIndicatorParameters;
   return (
     <div style={{ padding: '8px 4px 4px' }}>
-      <ParamGroup title="Entry och indikatorer" params={details.entryAndIndicators} />
+      <ParamGroup title="Ingång och indikatorer" params={details.entryAndIndicators} />
       {numeric && numeric.available === false ? (
         <div style={{ marginTop: 8, color: 'var(--muted, #6b7280)', fontStyle: 'italic', fontSize: 13 }}>
-          {numeric.note}
+          {renderValue(numeric.note)}
         </div>
       ) : null}
-      <ParamGroup title="Risk och exit" params={details.riskAndExit} />
+      <ParamGroup title="Risk och avslut" params={details.riskAndExit} />
       <ParamGroup title="Session och data" params={details.sessionAndData} />
     </div>
   );
@@ -177,12 +180,12 @@ function SimulationSettings({ settings }) {
   const contracts = Array.isArray(settings.contracts) ? settings.contracts : [];
   return (
     <div style={card}>
-      <div style={{ fontWeight: 700, marginBottom: 4 }}>Simulations- och kontraktsinställningar</div>
+      <div style={{ fontWeight: 600, marginBottom: 4 }}>Simulerings- och kontraktsinställningar</div>
       <div style={{ color: 'var(--muted, #6b7280)', fontSize: 13, marginBottom: 10 }}>
-        {settings.note || 'Simulations- och kontraktsinställningar, inte strategiinställningar.'}
+        {renderValue(settings.note || 'Simulerings- och kontraktsinställningar, inte strategiinställningar.')}
         {' '}
-        fxUsdSek: <strong>{renderValue(settings.fxUsdSek)}</strong>{' · '}
-        Feed: <Badge tone="warning">{renderValue(settings.feedSource)}</Badge>{' · '}
+        Växelkurs: <strong>{renderValue(settings.fxUsdSek)}</strong>{' · '}
+        Prisdata: <Badge tone="warning">{renderValue(settings.feedSource)}</Badge>{' · '}
         Riktig marknadsdata: <strong>{settings.isRealMarketData ? 'Ja' : 'Nej'}</strong>
       </div>
       <div style={{ overflowX: 'auto' }}>
@@ -190,14 +193,14 @@ function SimulationSettings({ settings }) {
           <thead>
             <tr>
               <th style={th}>Kontrakt</th>
-              <th style={th}>Point value USD</th>
-              <th style={th}>Courtage/side USD</th>
-              <th style={th}>Round-trip USD</th>
-              <th style={th}>Round-trip SEK</th>
-              <th style={th}>Feed</th>
-              <th style={th}>Base price</th>
-              <th style={th}>Max drift %</th>
-              <th style={th}>Step %</th>
+              <th style={th}>Punktvärde USD</th>
+              <th style={th}>Courtage/sida USD</th>
+              <th style={th}>Tur och retur USD</th>
+              <th style={th}>Tur och retur SEK</th>
+              <th style={th}>Prisdata</th>
+              <th style={th}>Baspris</th>
+              <th style={th}>Maxrörelse %</th>
+              <th style={th}>Steg %</th>
             </tr>
           </thead>
           <tbody>
@@ -253,18 +256,18 @@ export default function FuturesTechnicalInfoPanel() {
         borderColor: 'var(--warning, #9a6700)',
         background: 'var(--surface-2, #fff8e6)',
       }}>
-        <strong>⚠︎ Paper-only, simulerad feed.</strong> {SIM_BANNER}
+        <strong>Säker testdata.</strong> {SIM_BANNER}
       </div>
 
       <SimulationSettings settings={state.data && state.data.simulationAndContractSettings} />
 
       <div style={card}>
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', flexWrap: 'wrap', gap: 8 }}>
-          <div style={{ fontWeight: 700 }}>Strategikatalog</div>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', flexWrap: 'wrap', gap: 'var(--s2)' }}>
+          <div style={{ fontWeight: 600 }}>Strategikatalog</div>
           <div style={{ color: 'var(--muted, #6b7280)', fontSize: 12 }}>
-            Read-only · canonical: daytradingStrategyCatalogService
+            Läsvy · källa: strategikatalog
             {state.data && state.data.configHashSchemaVersion != null
-              ? ` · configHash-schema v${state.data.configHashSchemaVersion}` : ''}
+              ? ` · profilversion ${state.data.configHashSchemaVersion}` : ''}
           </div>
         </div>
 
@@ -277,24 +280,24 @@ export default function FuturesTechnicalInfoPanel() {
         ) : strategies.length === 0 ? (
           <div style={{ padding: 16, color: 'var(--muted, #6b7280)' }}>Inga strategier i katalogen.</div>
         ) : (
-          <div style={{ overflowX: 'auto', marginTop: 10 }}>
+          <div style={{ overflowX: 'auto', marginTop: 'var(--s4)' }}>
             <table style={table}>
               <thead>
                 <tr>
                   <th style={th}></th>
                   <th style={th}>Strategi</th>
-                  <th style={th}>Strategy ID</th>
-                  <th style={th}>Family</th>
+                  <th style={th}>Intern nyckel</th>
+                  <th style={th}>Familj</th>
                   <th style={th}>Riktning</th>
                   <th style={th}>Aktiv</th>
                   <th style={th}>Katalogstatus</th>
-                  <th style={th}>Runtime</th>
-                  <th style={th}>Timeframes</th>
+                  <th style={th}>Motorläge</th>
+                  <th style={th}>Tidsramar</th>
                   <th style={th}>SL %</th>
                   <th style={th}>TP (R)</th>
-                  <th style={th}>Hold min</th>
-                  <th style={th}>Signal rules</th>
-                  <th style={th}>Config hash</th>
+                  <th style={th}>Tid min</th>
+                  <th style={th}>Signalregler</th>
+                  <th style={th}>Profilnyckel</th>
                 </tr>
               </thead>
               <tbody>
@@ -320,7 +323,7 @@ export default function FuturesTechnicalInfoPanel() {
                             type="button"
                             onClick={() => toggle(id)}
                             aria-expanded={isOpen}
-                            style={{ cursor: 'pointer', background: 'transparent', border: '1px solid var(--border,#ddd)', borderRadius: 6, padding: '0 8px', color: 'inherit' }}
+                            style={{ cursor: 'pointer', background: 'transparent', border: '1px solid var(--border,#ddd)', borderRadius: 'var(--r-sm)', padding: '0 8px', color: 'inherit' }}
                           >
                             {isOpen ? '−' : '+'}
                           </button>

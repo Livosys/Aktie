@@ -21,6 +21,7 @@ const familyTreeModule = require('../evolution/strategyFamilyTreeService');
 const evolutionModule = require('../evolution/evolutionEngineService');
 const optimizer = require('../optimizer/aiOptimizerInterface');
 const registry = require('../nativeFuturesStrategyRegistryService');
+const expandedRegistry = require('../strategyRegistryService');
 
 const SERVICES = path.join(__dirname, '..');
 
@@ -58,12 +59,30 @@ function specFor(dna, overrides = {}) {
   };
 }
 
+function refFor(dna, overrides = {}) {
+  return {
+    source: 'strategy_library',
+    resultType: 'replay',
+    strategyId: dna.strategyId || null,
+    libraryRunId: 'library-run-1',
+    eventType: 'REPLAY_RECORDED',
+    ...overrides,
+  };
+}
+
 // ── Strategy DNA ════════════════════════════════════════════════════════════
 
 test('DNA härleds ur registret och koden, aldrig ur en handskriven tabell', () => {
   const all = strategyDna.listStrategyDna();
-  assert.equal(all.length, registry.listNativeStrategies().length,
-    'DNA-populationen speglar inte registret');
+  // Populationen är unionen av de två registren. Native-registret bidrar med de
+  // strategier som faktiskt har kod; katalogregistret med alla registrerade
+  // parameteruppsättningar. Ingen av dem är en handskriven tabell.
+  const nativeRegistry = require('../nativeFuturesStrategyRegistryService');
+  const population = new Set([
+    ...expandedRegistry.listStrategies().map((row) => row.strategy_id || row.strategyId),
+    ...nativeRegistry.listNativeStrategies({ includeVariants: true }).map((row) => row.strategyId),
+  ]);
+  assert.equal(all.length, population.size, 'DNA-populationen speglar inte registren');
 
   for (const dna of all) {
     assert.ok(dna.dnaHash && dna.parameterHash);
@@ -80,7 +99,7 @@ test('DNA härleds ur registret och koden, aldrig ur en handskriven tabell', () 
   const source = fs.readFileSync(path.join(SERVICES, 'dna', 'strategyDnaService.js'), 'utf8')
     .split('\n').filter((line) => !line.trim().startsWith('//')).join('\n');
   assert.doesNotMatch(source, /native_futures_\w+_v\d/, 'DNA-modulen har en egen strategilista');
-  assert.match(source, /require\('\.\.\/nativeFuturesStrategyRegistryService'\)/);
+  assert.match(source, /require\('\.\.\/strategyRegistryService'\)/);
 });
 
 test('DNA-hashen är kanonisk: samma genom ger samma hash', () => {
@@ -99,8 +118,12 @@ test('DNA-hashen är kanonisk: samma genom ger samma hash', () => {
 
 test('bara deklarerade block får muteras', () => {
   const dna = anyStrategyDna();
-  const mutableBlock = dna.mutableBlocks[0];
-  const parameter = Object.keys(dna.genome[mutableBlock].values)[0];
+  const mutableBlock = dna.mutableBlocks.find((name) => Object.values(dna.genome[name].values || {}).some((value) => typeof value === 'number'));
+  const parameter = mutableBlock
+    ? Object.keys(dna.genome[mutableBlock].values).find((key) => typeof dna.genome[mutableBlock].values[key] === 'number')
+    : null;
+  assert.ok(mutableBlock, 'inga numeriska muterbara block hittades');
+  assert.ok(parameter, 'inga numeriska parametrar hittades');
 
   const ok = strategyDna.mutateStrategyDna(dna, {
     [`${mutableBlock}.${parameter}`]: dna.genome[mutableBlock].values[parameter] + 1,
@@ -187,6 +210,59 @@ test('ett ofullständigt experiment avvisas i stället för att hashas', () => {
   );
 });
 
+test('AI Memory kräver Library-referens och lagrar aldrig resultatfält', () => {
+  const memory = freshMemory();
+  const dna = anyStrategyDna();
+  const spec = specFor(dna);
+
+  assert.throws(
+    () => memory.recordExperiment(spec),
+    /ai_memory_requires_library_ref/,
+  );
+
+  memory.recordExperiment(spec, {
+    ...refFor(dna, { libraryRunId: 'result-in-library' }),
+    strategyScore: 99,
+    winRate: 75,
+  });
+
+  const event = JSON.parse(fs.readFileSync(memory.eventsFile, 'utf8').trim());
+  assert.ok(!('result' in event), 'råhändelsen innehåller fortfarande result');
+  for (const field of aiMemory.REMOVED_RESULT_FIELDS) {
+    assert.ok(!(field in event), `råhändelsen innehåller fortfarande ${field}`);
+    assert.ok(!(field in event.libraryRef), `libraryRef innehåller fortfarande ${field}`);
+  }
+  assert.equal(event.libraryRef.libraryRunId, 'result-in-library');
+});
+
+test('legacy-händelser med result strippas till experimentindex vid läsning', () => {
+  const memory = freshMemory();
+  const dna = anyStrategyDna();
+  const spec = specFor(dna, { runId: 'legacy-run' });
+  const key = aiMemory.experimentKey(spec);
+  const identity = Object.fromEntries(aiMemory.IDENTITY_FIELDS.map((field) => [field, spec[field]]));
+
+  memory._internal.log.append(key, memory.EVENT_TYPES.EXPERIMENT_RECORDED, {
+    identity,
+    result: { strategyScore: 88, winRate: 61 },
+    period: spec.period,
+    symbols: spec.symbols,
+    runId: spec.runId,
+    requestedBy: 'legacy',
+    marketClassification: 'range',
+  });
+
+  const record = memory.findExperiment(spec);
+  assert.equal(record.result, undefined);
+  assert.equal(record.libraryRef.libraryRunId, 'legacy-run');
+
+  const event = memory.getHistory(key)[0];
+  assert.equal(event.result, undefined);
+  for (const field of aiMemory.REMOVED_RESULT_FIELDS) {
+    assert.ok(!(field in event), `legacy-event exponerar fortfarande ${field}`);
+  }
+});
+
 // ── AI Memory: återanvändning ═══════════════════════════════════════════════
 
 test('olika period med samma Market DNA återanvänder experimentet', () => {
@@ -200,12 +276,13 @@ test('olika period med samma Market DNA återanvänder experimentet', () => {
   const first = memory.lookupOrPlan(august);
   assert.equal(first.cached, false);
 
-  memory.recordExperiment(august, { trades: 40, strategyScore: 62, winRate: 55 });
+  memory.recordExperiment(august, refFor(dna, { libraryRunId: 'aug' }));
 
-  // En ANNAN period, samma marknadsprofil: svaret finns redan.
+  // En ANNAN period, samma marknadsprofil: experimentet finns redan.
   const second = memory.lookupOrPlan(september);
   assert.equal(second.cached, true, 'minnet kände inte igen samma marknad i en annan period');
-  assert.equal(second.result.strategyScore, 62);
+  assert.equal(second.result, undefined, 'AI Memory exponerar fortfarande resultat');
+  assert.equal(second.libraryRef.libraryRunId, 'aug');
   assert.deepEqual(second.seenIn, ['2026-08-11..2026-08-14']);
   assert.equal(second.experimentKey, first.experimentKey);
 
@@ -219,15 +296,16 @@ test('minnet räknar upprepningar i stället för att dölja dem', () => {
   const dna = anyStrategyDna();
   const spec = specFor(dna);
 
-  memory.recordExperiment(spec, { strategyScore: 50 });
-  memory.recordExperiment(spec, { strategyScore: 99 }, {});
+  memory.recordExperiment(spec, refFor(dna, { libraryRunId: 'first-result' }));
+  memory.recordExperiment(spec, refFor(dna, { libraryRunId: 'second-result' }), {});
 
   const record = memory.findExperiment(spec);
   assert.equal(record.observations, 2);
-  // Första resultatet gäller: ett experiment är deterministiskt, så en andra
-  // inspelning är en upprepning och inte en revidering.
-  assert.equal(record.result.strategyScore, 50,
-    'en omkörning skrev över det ursprungliga resultatet');
+  // Första referensen gäller: en andra inspelning är en upprepning och inte en
+  // revidering av var resultatet först bokfördes.
+  assert.equal(record.result, undefined, 'AI Memory behöll ett resultatfält');
+  assert.equal(record.libraryRef.libraryRunId, 'first-result',
+    'en omkörning skrev över den ursprungliga Library-referensen');
   assert.equal(memory.getStatus().repeats, 1,
     'upprepningen syns inte i statusen — då märks det aldrig att någon inte frågar minnet');
 });
@@ -241,12 +319,13 @@ test('optimeringsgrinden hindrar dubbelkörning', () => {
   assert.equal(before.run, true);
   assert.equal(before.reason, 'not_seen_before');
 
-  memory.recordExperiment(spec, { strategyScore: 71 });
+  memory.recordExperiment(spec, refFor(dna, { libraryRunId: 'known-run' }));
 
   const after = optimizer.gateThroughMemory(memory, specFor(dna, { period: 'en helt annan vecka' }));
   assert.equal(after.run, false, 'grinden släppte igenom en körning som redan var gjord');
   assert.equal(after.reason, 'already_known');
-  assert.equal(after.result.strategyScore, 71);
+  assert.equal(after.result, undefined, 'grinden läckte resultat från AI Memory');
+  assert.equal(after.libraryRef.libraryRunId, 'known-run');
 });
 
 test('minnet kan svara på härkomstfrågorna', () => {
@@ -258,7 +337,7 @@ test('minnet kan svara på härkomstfrågorna', () => {
     [`${block}.${parameter}`]: dna.genome[block].values[parameter] + 2,
   }, { mutationType: 'risk_loosen', branch: 'test_branch' });
 
-  memory.recordExperiment(specFor(mutated.dna), { strategyScore: 44 }, {
+  memory.recordExperiment(specFor(mutated.dna), refFor(mutated.dna, { libraryRunId: 'mutation-run' }), {
     lineage: mutated.dna.lineage,
   });
   const record = memory.findExperiment(specFor(mutated.dna));
@@ -269,7 +348,8 @@ test('minnet kan svara på härkomstfrågorna', () => {
   assert.equal(record.identity.marketDnaHash, 'market-aaa', 'vilken marknad');
   assert.equal(record.provenance[0].period, '2026-08-11..2026-08-14', 'vilken period');
   assert.equal(record.identity.replayMode, 'strategy', 'vilken replaymodell');
-  assert.equal(record.result.strategyScore, 44, 'vilket resultat');
+  assert.equal(record.libraryRef.libraryRunId, 'mutation-run', 'var resultatet finns');
+  assert.equal(record.result, undefined, 'AI Memory lagrar fortfarande resultat');
 });
 
 // ── Family Tree ═════════════════════════════════════════════════════════════
@@ -278,7 +358,9 @@ test('Family Tree byggs korrekt och generationen räknas rätt', () => {
   const tree = freshTree();
   const engine = evolutionModule.createEvolutionEngine({ familyTree: tree });
   engine.seedRegisteredStrategies();
-  assert.equal(tree.listNodes().length, registry.listNativeStrategies().length);
+  // Seedningen följer DNA-populationen, som är unionen av katalogregistret och
+  // native-registret — inte katalogregistret ensamt.
+  assert.equal(tree.listNodes().length, strategyDna.listStrategyDna().length);
 
   let current = anyStrategyDna();
   const chain = [current.dnaHash];
@@ -379,12 +461,18 @@ test('en hel gren kan pensioneras utan att något tas bort', () => {
 
 // ── Evolution Engine gör bara DNA ═══════════════════════════════════════════
 
-test('Evolution Engine kör ingen replay och optimerar ingenting', () => {
+test('Evolution Engine kör ingen replay och väljer ingen vinnare', () => {
   const tree = freshTree();
   const engine = evolutionModule.createEvolutionEngine({ familyTree: tree });
   const status = engine.getStatus();
   assert.deepEqual(status.capabilities, {
-    createsDna: true, storesLineage: true, runsReplay: false, optimizes: false, scoresStrategies: false,
+    createsDna: true,
+    storesLineage: true,
+    usesOptimizer: true,
+    runsReplay: false,
+    ownsOptimization: false,
+    selectsWinner: false,
+    scoresStrategies: false,
   });
 
   const source = fs.readFileSync(path.join(SERVICES, 'evolution', 'evolutionEngineService.js'), 'utf8')
@@ -403,9 +491,9 @@ test('Evolution Engine kör ingen replay och optimerar ingenting', () => {
   assert.doesNotMatch(source, /Math\.random\(/, 'evolutionen är slumpmässig och därmed oreproducerbar');
 });
 
-// ── Optimizer: bara kontraktet ══════════════════════════════════════════════
+// ── Optimizer-kontraktet ════════════════════════════════════════════════════
 
-test('Optimizer är inte byggd, men kontraktet förbjuder genvägarna', () => {
+test('Optimizer-kontraktet förbjuder genvägarna', () => {
   const description = optimizer.describeInterface();
   assert.equal(description.implemented, false);
 
@@ -509,7 +597,10 @@ test('minnets loggar skriver aldrig över historik', () => {
   const snapshots = [];
   for (let i = 0; i < 4; i += 1) {
     snapshots.push(fs.existsSync(file) ? fs.readFileSync(file, 'utf8') : '');
-    memory.recordExperiment(specFor(dna, { marketDnaHash: `market-${i}` }), { strategyScore: i });
+    memory.recordExperiment(
+      specFor(dna, { marketDnaHash: `market-${i}` }),
+      refFor(dna, { libraryRunId: `run-${i}` }),
+    );
     const current = fs.readFileSync(file, 'utf8');
     assert.ok(current.startsWith(snapshots.at(-1)), 'en tidigare rad ändrades');
     assert.ok(current.length > snapshots.at(-1).length);

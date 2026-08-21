@@ -76,7 +76,8 @@ const marketIntelligence = require('../services/market/marketIntelligenceService
 const strategyDnaService  = require('../services/dna/strategyDnaService');
 const aiMemory           = require('../services/memory/aiMemoryService').defaultAiMemory;
 const familyTree         = require('../services/evolution/strategyFamilyTreeService').defaultStrategyFamilyTree;
-const aiOptimizerInterface = require('../services/optimizer/aiOptimizerInterface');
+const aiOptimizer        = require('../services/optimizer/aiOptimizerService').defaultAiOptimizerService;
+const strategyBrain      = require('../services/brain/strategyBrainService').createStrategyBrain({});
 const strategyScore      = require('../services/strategyScoreService');
 const strategyHistory    = require('../services/strategyHistoryService');
 const strategyTestPlanner = require('../services/strategyTestPlannerService');
@@ -117,6 +118,11 @@ const liveActivityService = require('../services/liveActivityService');
 const batchAutopilotService = require('../services/batchAutopilotService');
 const replayAutopilotService = require('../services/replayAutopilotService');
 const replayStatusService = require('../services/replayStatusService');
+const replayQueueService = require('../services/replayQueueService').defaultReplayQueueService;
+const replaySchedulerService = require('../services/replaySchedulerService').defaultReplaySchedulerService;
+const replayQueueRunnerService = require('../services/replayQueueRunnerService').defaultReplayQueueRunnerService;
+const factoryDirector = require('../services/factory/factoryDirectorService').defaultFactoryDirector;
+const factoryLoopStatus = require('../services/factory/aiFactoryLoopStatusService');
 const paperTradingStatusService = require('../services/paperTradingStatusService');
 const paperTradingRuntimeService = require('../services/paperTradingRuntimeService');
 const paperStrategyApprovalService = require('../services/paperStrategyApprovalService');
@@ -204,6 +210,14 @@ function auditFilters(req) {
     source: req.query.source,
     batch_id: req.query.batch_id || req.query.batchId,
     category: req.query.category,
+  };
+}
+
+function factoryDirectorQuery(req) {
+  return {
+    runId: req.query.runId || req.query.run_id,
+    requestedBy: req.query.requestedBy || req.query.requested_by || 'api',
+    now: req.query.now,
   };
 }
 
@@ -2846,8 +2860,121 @@ router.post('/history/update-learning', async (req, res) => {
 });
 
 // ══════════════════════════════════════════════════════════════════════════════
+// FACTORY DIRECTOR ROUTES (read-only)
+// ══════════════════════════════════════════════════════════════════════════════
+
+router.get('/factory/director', (req, res) => {
+  try {
+    res.json(factoryDirector.getDirectorState(factoryDirectorQuery(req)));
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message, ...factoryDirector.SAFETY });
+  }
+});
+
+router.get('/factory/decision', (req, res) => {
+  try {
+    res.json({ ok: true, decision: factoryDirector.getDecision(factoryDirectorQuery(req)), ...factoryDirector.SAFETY });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message, ...factoryDirector.SAFETY });
+  }
+});
+
+router.get('/factory/next', (req, res) => {
+  try {
+    res.json(factoryDirector.getNext(factoryDirectorQuery(req)));
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message, ...factoryDirector.SAFETY });
+  }
+});
+
+// Loopens läge, komponerat ur befintliga tjänster. Read-only.
+//
+// Anropar medvetet INTE Factory Director: den persisterar inget beslut utan
+// räknar om hela fabriksbeslutet vid varje anrop — mätt 13–15 sekunder. Nästa
+// åtgärd härleds i stället ur orchestratorns eget spår, vilket kostar
+// millisekunder och beskriver vad som FAKTISKT hänt.
+router.get('/factory/loop', (req, res) => {
+  try {
+    res.json(factoryLoopStatus.getLoopStatus());
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message, ...factoryLoopStatus.SAFETY });
+  }
+});
+
+router.get('/factory/status', (req, res) => {
+  try {
+    res.json(factoryDirector.getStatus(factoryDirectorQuery(req)));
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message, ...factoryDirector.SAFETY });
+  }
+});
+
+// ══════════════════════════════════════════════════════════════════════════════
 // REPLAY ENGINE ROUTES
 // ══════════════════════════════════════════════════════════════════════════════
+
+// ── Replay Scheduler + append-only Queue ────────────────────────────────────
+router.get('/replay/queue', (req, res) => {
+  try {
+    res.json(replayQueueService.getStatus());
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message, ...replayQueueService.SAFETY });
+  }
+});
+
+router.post('/replay/queue/pause', (req, res) => {
+  try {
+    const body = req.body && typeof req.body === 'object' ? req.body : {};
+    res.json(replayQueueService.pauseQueue(body.reason || 'manual_pause', body.requested_by || body.requestedBy || 'user'));
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message, ...replayQueueService.SAFETY });
+  }
+});
+
+router.post('/replay/queue/resume', (req, res) => {
+  try {
+    const body = req.body && typeof req.body === 'object' ? req.body : {};
+    res.json(replayQueueService.resumeQueue(body.reason || 'manual_resume', body.requested_by || body.requestedBy || 'user'));
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message, ...replayQueueService.SAFETY });
+  }
+});
+
+router.post('/replay/queue/reset', (req, res) => {
+  try {
+    const body = req.body && typeof req.body === 'object' ? req.body : {};
+    res.json(replayQueueService.resetQueue(body.reason || 'manual_reset', body.requested_by || body.requestedBy || 'user'));
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message, ...replayQueueService.SAFETY });
+  }
+});
+
+router.post('/replay/scheduler/run-once', (req, res) => {
+  try {
+    const body = req.body && typeof req.body === 'object' ? req.body : {};
+    const result = replaySchedulerService.runOnce({
+      ...body,
+      trigger: 'manual_api',
+      enforceEnabled: false,
+    });
+    res.json({
+      ...result,
+      scheduler_runs_replay: false,
+      note: 'Replay Scheduler skapar endast append-only queue jobs. Ingen replay startas.',
+    });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message, ...replaySchedulerService.SAFETY });
+  }
+});
+
+router.post('/replay/queue/run-next', async (req, res) => {
+  try {
+    const result = await replayQueueRunnerService.runNextJob();
+    res.status(result.ok ? 200 : 500).json(result);
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message, ...replayQueueRunnerService.SAFETY });
+  }
+});
 
 // ── Replay Intelligence v2 session routes ───────────────────────────────────
 router.get('/replay/sessions', (req, res) => {
@@ -4029,10 +4156,45 @@ function retiredFuturesStrategyMutation(req, res) {
   });
 }
 
-router.post('/futures-paper/strategies/:strategyId/approve', retiredFuturesStrategyMutation);
-router.post('/futures-paper/strategies/:strategyId/pause', retiredFuturesStrategyMutation);
-router.post('/futures-paper/strategies/:strategyId/resume', retiredFuturesStrategyMutation);
-router.post('/futures-paper/strategies/:strategyId/remove', retiredFuturesStrategyMutation);
+router.post('/futures-paper/strategies/:strategyId/approve', (req, res) => {
+  try {
+    const result = futuresPaperStrategyApprovalService.approve(req.params.strategyId);
+    const status = result.ok ? 200 : (result.error === 'strategy_not_found' ? 404 : 400);
+    res.status(status).json(result);
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message, ...futuresPaperStrategyApprovalService.SAFETY });
+  }
+});
+
+router.post('/futures-paper/strategies/:strategyId/pause', (req, res) => {
+  try {
+    const result = futuresPaperStrategyApprovalService.pause(req.params.strategyId);
+    const status = result.ok ? 200 : (result.error === 'strategy_not_found' ? 404 : 400);
+    res.status(status).json(result);
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message, ...futuresPaperStrategyApprovalService.SAFETY });
+  }
+});
+
+router.post('/futures-paper/strategies/:strategyId/resume', (req, res) => {
+  try {
+    const result = futuresPaperStrategyApprovalService.resume(req.params.strategyId);
+    const status = result.ok ? 200 : (result.error === 'strategy_not_found' ? 404 : 400);
+    res.status(status).json(result);
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message, ...futuresPaperStrategyApprovalService.SAFETY });
+  }
+});
+
+router.post('/futures-paper/strategies/:strategyId/remove', (req, res) => {
+  try {
+    const result = futuresPaperStrategyApprovalService.remove(req.params.strategyId);
+    const status = result.ok ? 200 : (result.error === 'strategy_not_found' ? 404 : 400);
+    res.status(status).json(result);
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message, ...futuresPaperStrategyApprovalService.SAFETY });
+  }
+});
 
 router.post('/futures-paper/manual/open', (req, res) => {
   return sendRetiredInternalSimulation(res, 'manual_open_internal_futures_position_route');
@@ -5494,6 +5656,122 @@ router.get('/strategy-library/retirement', (req, res) => {
   }
 });
 
+// ── Strategy Brain ──────────────────────────────────────────────────────────
+//
+// Read-only, och tyngre än de flesta rutter: varje anrop bygger DNA-katalogen
+// ur marknadsdatalagret (~400 ms). Den ligger därför BAKOM en egen rutt och
+// aldrig i desk-runtime, som pollas — en tung läsning i den vägen har frusit
+// event-loopen förut.
+//
+// Hjärnan föreslår. Den utför aldrig. Det finns med flit ingen POST här.
+//
+// ── Varför analysen memoiseras ───────────────────────────────────────────────
+//
+// analyze() är O(strategier × regimer) och helt synkron. Med åtta strategier i
+// biblioteket kostade den ~40 ms. När biblioteket synkas ur Strategy Registry
+// blir det 174, och mätt tar analysen då 899 ms — fyra rutter här nedan anropar
+// den, och Beslutsjournalen hämtar flera av dem vid samma sidladdning.
+//
+// Memot är avsiktligt trubbigt: samma svar i några sekunder. Biblioteket är en
+// append-only-logg och analysen är en ren funktion av den, så ett några
+// sekunder gammalt svar kan aldrig vara felaktigt — bara omodernt.
+const BRAIN_ANALYSIS_TTL_MS = 5000;
+let brainAnalysisCache = { at: 0, key: null, value: null };
+
+function analyzeStrategyBrain(replayMode = null) {
+  const key = replayMode || 'default';
+  const now = Date.now();
+  if (brainAnalysisCache.key === key && now - brainAnalysisCache.at < BRAIN_ANALYSIS_TTL_MS) {
+    return brainAnalysisCache.value;
+  }
+  const value = strategyBrain.analyze(
+    replayMode ? { library: strategyLibrary, replayMode } : { library: strategyLibrary },
+  );
+  brainAnalysisCache = { at: now, key, value };
+  return value;
+}
+
+// knowledgeGaps() går samma väg genom biblioteket och mättes till 1010 ms vid
+// 174 strategier. Samma memo, samma skäl.
+let knowledgeGapsCache = { at: 0, value: null };
+
+function knowledgeGapsMemo() {
+  const now = Date.now();
+  if (knowledgeGapsCache.value && now - knowledgeGapsCache.at < BRAIN_ANALYSIS_TTL_MS) {
+    return knowledgeGapsCache.value;
+  }
+  const value = strategyBrain.knowledgeGaps({ library: strategyLibrary });
+  knowledgeGapsCache = { at: now, value };
+  return value;
+}
+
+router.get('/strategy-brain', (req, res) => {
+  try {
+    res.json(analyzeStrategyBrain());
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message, ...strategyBrain.SAFETY });
+  }
+});
+
+router.get('/knowledge-gaps', (req, res) => {
+  try {
+    res.json(knowledgeGapsMemo());
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message, ...strategyBrain.SAFETY });
+  }
+});
+
+router.get('/replay-priority', (req, res) => {
+  try {
+    const analysis = analyzeStrategyBrain(String(req.query.mode || 'strategy'));
+    res.json({
+      ok: true,
+      nextReplay: analysis.nextReplay,
+      priority: analysis.priority,
+      // Vad prioriteringen bygger på. En rangordning utan synlig grund blir
+      // snart en sanning ingen granskar.
+      basis: 'information_gain',
+      memory: analysis.memory,
+      ...strategyBrain.SAFETY,
+    });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message, ...strategyBrain.SAFETY });
+  }
+});
+
+router.get('/strategy-health', (req, res) => {
+  try {
+    const analysis = analyzeStrategyBrain();
+    res.json({
+      ok: true,
+      strategies: analysis.strategies.map((row) => ({
+        strategyId: row.strategyId,
+        lifecycle: row.lifecycle,
+        knowledgeScore: row.knowledgeScore,
+        strategyScore: row.strategyScore,
+        confidenceScore: row.confidenceScore,
+        executionScore: row.executionScore,
+        productionScore: row.productionScore,
+        replayRuns: row.replayRuns,
+        replayTrades: row.replayTrades,
+        paperTrades: row.paperTrades,
+        liveTrades: row.liveTrades,
+        regimesTested: row.regimesTested,
+        blindSpots: row.blindSpots,
+        gapCount: row.gaps.length,
+        recommendation: row.recommendation,
+        promotion: row.promotion,
+        retirementSuggested: row.retirementSuggested,
+      })),
+      recommendations: analysis.recommendations,
+      market: analysis.market,
+      ...strategyBrain.SAFETY,
+    });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message, ...strategyBrain.SAFETY });
+  }
+});
+
 // ── Strategy DNA, AI Memory och släktträdet ─────────────────────────────────
 //
 // Read-only hela vägen. Mutationer och pensioneringar av grenar sker aldrig via
@@ -5575,10 +5853,8 @@ router.get('/strategy-family-tree/:dnaHash', (req, res) => {
   }
 });
 
-// Optimeraren är inte byggd. Rutten redovisar kontraktet den kommer att hållas
-// till, så att kraven är synliga innan koden finns.
 router.get('/ai-optimizer/contract', (req, res) => {
-  res.json({ ok: true, ...aiOptimizerInterface.describeInterface() });
+  res.json({ ok: true, ...aiOptimizer.describe() });
 });
 
 // ── Market DNA och Market Intelligence ──────────────────────────────────────
