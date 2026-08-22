@@ -789,9 +789,7 @@ function createAiFactoryOrchestrator(options = {}) {
 
     if (step.id === 'EXECUTE_QUEUE') {
       const scheduled = resultOf(state, 'SCHEDULE_REPLAY');
-      const created = scheduled?.appended?.created || 0;
       if (scheduled?.skipped) return { ok: true, skipped: true, reason: scheduled.reason };
-      if (created <= 0) return { ok: true, skipped: true, reason: 'no_new_replay_job_created' };
       if (bool(input.executeQueue, true) === false) {
         return { ok: true, skipped: true, reason: 'execute_queue_disabled_by_input' };
       }
