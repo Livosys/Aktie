@@ -294,3 +294,17 @@ test('AI Factory UI components import shared terminology instead of hardcoded fa
     }
   }
 });
+
+test('uiFactorySafeText never renders objects as [object Object]', () => {
+  assert.equal(uiFactorySafeText(null), '');
+  assert.equal(uiFactorySafeText(undefined), '');
+  assert.equal(uiFactorySafeText(''), '');
+  assert.equal(uiFactorySafeText('normal string'), 'normal string');
+  assert.equal(uiFactorySafeText(123), '123');
+  assert.equal(uiFactorySafeText(true), 'true');
+  assert.equal(uiFactorySafeText(false), 'false');
+  const objectResult = uiFactorySafeText({ field: 'value' });
+  assert.equal(objectResult.includes('[object Object]'), false, 'uiFactorySafeText must not render objects as [object Object]');
+  const arrayResult = uiFactorySafeText(['item1', 'item2']);
+  assert.equal(arrayResult.includes('[object Object]'), false, 'uiFactorySafeText must not render arrays as [object Object]');
+});

@@ -1958,6 +1958,7 @@ export function uiStrategyName(value, fallback = '') {
 
 export function uiFactorySafeText(value, language = DEFAULT_UI_LANGUAGE) {
   if (value == null || value === '') return '';
+  if (typeof value === 'object') return '';
   let output = String(value);
   for (const [technical, display] of TECHNICAL_TEXT_REPLACEMENTS) {
     output = output.replace(new RegExp(escapePattern(technical), 'g'), display);

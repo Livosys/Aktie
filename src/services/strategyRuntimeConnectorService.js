@@ -1162,8 +1162,15 @@ function canCreatePaperTradeForSignal(signal = {}) {
 function getStrategyRuntimeSummary() {
   const catalogRows = catalog.getCatalog().strategies || [];
   const { trades, stats } = tradeStatsByStrategy();
-  const events = readJsonl(EVENTS_FILE).filter((row) => withinWindow(row));
-  const strategies = catalogRows.map((strategy) => {
+  const allEvents = readJsonl(EVENTS_FILE);
+  const events = allEvents.filter((row) => withinWindow(row));
+  const removedStrategies = new Set(
+    allEvents
+      .filter((row) => row.type === 'STRATEGY_REMOVED')
+      .map((row) => row.strategyId)
+  );
+  const activeStrategies = catalogRows.filter((s) => !removedStrategies.has(s.id));
+  const strategies = activeStrategies.map((strategy) => {
     const runtime = getRuntimeStatusForStrategy(strategy.id, stats);
     const stat = stats.get(strategy.id) || {};
     return {
