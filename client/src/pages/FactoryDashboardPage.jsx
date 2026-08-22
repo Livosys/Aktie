@@ -76,6 +76,7 @@ const ENDPOINTS = Object.freeze({
   memoryExperiments: '/api/ai-memory/experiments?limit=25',
   lineage: '/api/strategy-family-tree',
   learningSummary: '/api/learning/latest-summary',
+  approvalStrategies: '/api/futures-paper/strategies',
 });
 
 function emptyResource() {
@@ -722,7 +723,7 @@ function buildDashboardContextActions({
 // Ordningen här ÄR prioriteringen. Zonen "Behöver dig" visar första posten och
 // bara den — en lista av krav lämnar över prioriteringen till läsaren, vilket
 // är precis det arbete produkten ska ta bort.
-function buildActionCenter({ copy, decision, factoryStatus, queueCounts, stages }) {
+function buildActionCenter({ copy, decision, factoryStatus, queueCounts, stages, pendingApprovalCount }) {
   const actions = [];
   const decisionAction = decision?.action;
   const add = (key, overrides) => {
@@ -731,7 +732,12 @@ function buildActionCenter({ copy, decision, factoryStatus, queueCounts, stages 
 
   if ([FACTORY_STATUS_KEYS.FAILED, FACTORY_STATUS_KEYS.PAUSED].includes(factoryStatus)) add('checkSystem');
   if (decisionAction === 'REQUEST_BACKFILL_SERVICE') add('importHistory');
-  if (decisionAction === 'REQUEST_APPROVAL_SERVICE' || stages.candidate > 0) add('approveStrategy');
+  // Use pending approval count instead of lifecycle candidate count
+  if (decisionAction === 'REQUEST_APPROVAL_SERVICE' || pendingApprovalCount > 0) {
+    add('approveStrategy', {
+      explanation: pendingApprovalCount > 0 ? `${pendingApprovalCount} ${pendingApprovalCount === 1 ? 'strategi' : 'strategier'} väntar på godkännande.` : undefined,
+    });
+  }
   if (
     queueCounts.running > 0
     || queueCounts.pending > 0
@@ -1008,7 +1014,7 @@ function buildHero({ copy, factoryStatus, whyText, nextText, hasAction, refreshT
 }
 
 // ── Läget ────────────────────────────────────────────────────────────────────
-function buildState({ copy, factoryStatus, hasAction, queueCounts, stages, marketPeriod, regime, trend, volatility, marketType }) {
+function buildState({ copy, factoryStatus, hasAction, queueCounts, stages, marketPeriod, regime, trend, volatility, marketType, pendingApprovalCount }) {
   const panel = copy.today.state;
   const summary = hasAction
     ? { summaryLabel: panel.needsDecision, summaryTone: 'warning' }
@@ -1045,13 +1051,13 @@ function buildState({ copy, factoryStatus, hasAction, queueCounts, stages, marke
       {
         key: 'strategies',
         eyebrow: strategy.eyebrow,
-        title: proving || stages.candidate || stages.paper
-          ? `${displayNumber(proving + stages.candidate + stages.paper + stages.live, copy.emptyValue)} ${copy.units.strategies || ''}`.trim()
+        title: proving || pendingApprovalCount || stages.paper
+          ? `${displayNumber(proving + pendingApprovalCount + stages.paper + stages.live, copy.emptyValue)} ${copy.units.strategies || ''}`.trim()
           : strategy.nothing,
-        summary: stages.candidate ? strategy.waitingForYou : strategy.proving,
+        summary: pendingApprovalCount ? strategy.waitingForYou : strategy.proving,
         metricLabel: strategy.waitingForYou,
-        metricValue: displayNumber(stages.candidate, copy.emptyValue),
-        tone: stages.candidate ? 'warning' : 'neutral',
+        metricValue: displayNumber(pendingApprovalCount, copy.emptyValue),
+        tone: pendingApprovalCount ? 'warning' : 'neutral',
         items: [
           { label: strategy.proving, value: displayNumber(proving, copy.emptyValue) },
           { label: strategy.inPaper, value: displayNumber(stages.paper, copy.emptyValue) },
@@ -1125,7 +1131,7 @@ function buildBrainCards({ copy, decision, decisionCopy, nextReplay, replayGaps,
 // som resten av sidan — inget steg räknar om något själv.
 function buildPipeline({
   copy, catalog, queueCounts, learning, nodes, optimizeIds, stages,
-  marketPeriod, latestReplay, latestImprovement, reused, batchStatus,
+  marketPeriod, latestReplay, latestImprovement, reused, batchStatus, pendingApprovalCount,
 }) {
   const text = copy.pipeline;
   const periods = asArray(catalog.periods);
@@ -1165,7 +1171,8 @@ function buildPipeline({
       optimizeIds.length ? 'info' : nodes.length ? 'success' : 'neutral',
       summarizeImprovement(latestImprovement, copy),
     ),
-    step('approval', stages.candidate, stages.candidate ? 'needsYou' : 'waiting', stages.candidate ? 'warning' : 'neutral', null),
+    // Use pending approval count instead of lifecycle candidate count
+    step('approval', pendingApprovalCount, pendingApprovalCount ? 'needsYou' : 'waiting', pendingApprovalCount ? 'warning' : 'neutral', null),
     step('paper', stages.paper, stages.paper ? 'running' : 'waiting', stages.paper ? 'success' : 'neutral', null),
   ];
 
@@ -1249,6 +1256,17 @@ function buildDashboardModel({ loading, refreshing, lastRefreshAt, sources }) {
   const candidateEntry = lifecycleStageEntry(strategies, 'candidate');
   const paperEntry = lifecycleStageEntry(strategies, 'paper');
 
+  // Calculate pending approval count from approval strategies data
+  const approvalData = resourceData(sources, 'approvalStrategies') || {};
+  const approvalStrategies = asArray(approvalData.strategies || []);
+  // Pending approval: recommendedForReview=true AND status=null AND not duplicate
+  const pendingApprovalCount = approvalStrategies.filter((s) => {
+    const status = s.approvalState || s.status;
+    const isDuplicate = Boolean(s.isDuplicate);
+    // status should be null or falsy for pending (not approved/paused/removed)
+    return s.recommendedForReview === true && !status && !isDuplicate;
+  }).length;
+
   const story = aiStoryFactory({
     copy,
     factoryStatus,
@@ -1278,7 +1296,7 @@ function buildDashboardModel({ loading, refreshing, lastRefreshAt, sources }) {
       ? uiFactoryDecision('REQUEST_REPLAY_QUEUE').next
       : copy.states.noNextActivity);
 
-  const actions = buildActionCenter({ copy, decision, factoryStatus, queueCounts, stages });
+  const actions = buildActionCenter({ copy, decision, factoryStatus, queueCounts, stages, pendingApprovalCount });
   const hasAction = actions.some((action) => action.id !== 'noAction');
   const refreshTime = lastRefreshAt || decision?.createdAt || brain.generatedFor || latestReplay?.stamp?.value;
 
@@ -1306,7 +1324,7 @@ function buildDashboardModel({ loading, refreshing, lastRefreshAt, sources }) {
       tone: story.tone || statusTone(factoryStatus),
     },
     actions,
-    state: buildState({ copy, factoryStatus, hasAction, queueCounts, stages, marketPeriod, regime, trend, volatility, marketType }),
+    state: buildState({ copy, factoryStatus, hasAction, queueCounts, stages, marketPeriod, regime, trend, volatility, marketType, pendingApprovalCount }),
     brainCards: buildBrainCards({ copy, decision, decisionCopy, nextReplay, replayGaps, whyText }),
     contextActions: buildDashboardContextActions({
       decision,
@@ -1329,7 +1347,7 @@ function buildDashboardModel({ loading, refreshing, lastRefreshAt, sources }) {
     }),
     pipeline: buildPipeline({
       copy, catalog, queueCounts, learning, nodes, optimizeIds, stages,
-      marketPeriod, latestReplay, latestImprovement, reused, batchStatus,
+      marketPeriod, latestReplay, latestImprovement, reused, batchStatus, pendingApprovalCount,
     }),
   };
 }
