@@ -80,7 +80,9 @@ export function AIStatusPanel({ status, copy }) {
 export function ActionCenter({ actions, copy }) {
   const text = copy.workflow.actionCenter;
   const panel = copy.today.needsYou;
-  const action = Array.isArray(actions) ? actions.find((row) => row && row.id !== 'noAction') : null;
+  // Only show user decision actions (approval/review), not system actions (tests, checks, imports)
+  const userActionIds = ['approveStrategy', 'reviewPaper'];
+  const action = Array.isArray(actions) ? actions.find((row) => row && userActionIds.includes(row.id)) : null;
 
   return (
     <section data-action-center style={{ marginBottom: 'var(--s7)' }}>
