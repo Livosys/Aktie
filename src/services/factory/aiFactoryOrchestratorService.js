@@ -789,12 +789,17 @@ function createAiFactoryOrchestrator(options = {}) {
 
     if (step.id === 'EXECUTE_QUEUE') {
       const scheduled = resultOf(state, 'SCHEDULE_REPLAY');
-      if (scheduled?.skipped) return { ok: true, skipped: true, reason: scheduled.reason };
+      if (scheduled?.skipped) {
+        console.log(`[FactoryOrchestrator] EXECUTE_QUEUE skipped because SCHEDULE_REPLAY skipped: ${scheduled.reason}`);
+        return { ok: true, skipped: true, reason: scheduled.reason };
+      }
       if (bool(input.executeQueue, true) === false) {
         return { ok: true, skipped: true, reason: 'execute_queue_disabled_by_input' };
       }
       if (!queueRunner || typeof queueRunner.runNextJob !== 'function') return { ok: false, reason: 'replay_queue_runner_unavailable' };
+      console.log(`[FactoryOrchestrator] EXECUTE_QUEUE running...`);
       const executed = await queueRunner.runNextJob();
+      console.log(`[FactoryOrchestrator] EXECUTE_QUEUE result: ok=${executed.ok} executed=${executed.executed} blocked=${executed.blocked} reason=${executed.blockedReason}`);
       if (executed.ok === false) return executed;
 
       // ── Automatic Lifecycle Progression ──────────────────────────────────
