@@ -345,7 +345,30 @@ function ensureMigrated(now = new Date()) {
 // ── Kompatibilitet (evidensbaserad, read-only) ──────────────────────────────
 
 function getCatalogStrategy(id) {
-  try { return catalogService.getStrategyById(id); } catch (err) { return null; }
+  try {
+    // First try base catalog
+    const strategy = catalogService.getStrategyById(id);
+    if (strategy) return strategy;
+
+    // If not found and it looks like a variant, check expanded catalog
+    if (typeof id === 'string' && id.includes('__')) {
+      const expanded = catalogService.getExpandedCatalog().strategies || [];
+      const variant = expanded.find(s => s.id === id);
+      if (!variant) return null;
+
+      // Inherit scanner capability from canonical parent if not set
+      // (expanded catalog doesn't add supportsScanner for variants)
+      if (!variant.supportsScanner && variant.origin_strategy_id) {
+        const canonical = expanded.find(s => s.id === variant.origin_strategy_id);
+        if (canonical && canonical.supportsScanner) {
+          variant.supportsScanner = true;
+        }
+      }
+
+      return variant;
+    }
+    return null;
+  } catch (err) { return null; }
 }
 
 function getRegistryStrategy(id) {
@@ -413,13 +436,110 @@ function symbolMappingFor(market) {
   return { status: 'unknown', roots: [] };
 }
 
+// ── Canonical Compatibility Resolver (för DNA/parameter-varianter) ──────────
+//
+// Variant-IDs (e.g., narrow_fakeout_reversal_v1__fast) är parametervarianter
+// av canonical parent (narrow_fakeout_reversal_v1). De delar samma execution-
+// kontrakt (entry rules, exit rules, signal family) men kan ha olika DNA-
+// överlagring för timing/agressivitet.
+//
+// Denna funktion låter variant-IDs ERÄ canonical execution-kompatibilitet
+// medan de bevarar sin egen identitet för:
+// - approval lifecycle (variant behålls i trade attribution)
+// - AI Factory learning (trade erkänns från specifik variant)
+// - evidence provenance (vilken variantkonfiguration kördes)
+//
+// Om variant har execution-semantik som INTE matchar canonical
+// (ändrad direction, instrument, timeframe-begränsning), returneras UNSUPPORTED.
+//
+function resolveExecutionCompatibility(rawId, catalogStrategy = null, registryStrategyOverride = undefined) {
+  // Försök först med raw ID direkt
+  let catalog = catalogStrategy || getCatalogStrategy(rawId);
+  let registry = registryStrategyOverride === undefined ? getRegistryStrategy(rawId) : registryStrategyOverride;
+
+  let isVariant = false;
+  let canonicalId = null;
+
+  // Försök normalisera rawId för att detektera variant
+  try {
+    const normalized = strategyIdNormalizer.normalizeStrategyId(rawId);
+    if (normalized && normalized.canonicalStrategyId && normalized.canonicalStrategyId !== rawId) {
+      isVariant = true;
+      canonicalId = normalized.canonicalStrategyId;
+    }
+  } catch (err) {
+    // Inte ett variant-ID
+  }
+
+  // Om det är en variant, försök alltid ärva från canonical
+  if (isVariant && canonicalId) {
+    const canonicalCatalog = getCatalogStrategy(canonicalId);
+    const canonicalRegistry = getRegistryStrategy(canonicalId);
+    if (canonicalCatalog || canonicalRegistry) {
+      return {
+        rawId,
+        canonicalId,
+        usedCanonical: true,
+        strategy: canonicalCatalog || canonicalRegistry,
+        provenance: 'canonical_inheritance_for_variant_dna',
+      };
+    }
+  }
+
+  // Om det inte är en variant och vi hittade något direkt, använd det
+  if ((catalog || registry) && !isVariant) {
+    return { rawId, usedCanonical: false, strategy: catalog || registry };
+  }
+
+  // Om det är en variant men canonical inte hittades, försök ändå med det direkta resultatet
+  // (kan förekomma för nyregistrerade varianter)
+  if ((catalog || registry) && isVariant) {
+    return {
+      rawId,
+      canonicalId,
+      usedCanonical: true,  // Markera som variant för säker hantering
+      strategy: catalog || registry,
+      provenance: 'variant_direct_fallback',
+    };
+  }
+
+  return { rawId, usedCanonical: false, strategy: null };
+}
+
 function computeCompatibility(id, catalogStrategy, closedTs = null, registryStrategyOverride = undefined) {
-  const strategy = catalogStrategy || getCatalogStrategy(id);
-  const registryStrategy = registryStrategyOverride === undefined ? getRegistryStrategy(id) : registryStrategyOverride;
-  const blockingReasons = [];
+  // Försök först med raw ID (katalog eller registry override)
+  let strategy = catalogStrategy || getCatalogStrategy(id);
+  let registryStrategy = registryStrategyOverride;
   let canonicalReplacementId = null;
+  let usedCanonical = false;
+  const blockingReasons = [];
+
+  // Om vi hittade en variant i katalogen, försök ärva från canonical för execution
+  // Detta sker INNAN vi provar canonical parent som fallback
+  if (strategy && typeof id === 'string' && id.includes('__')) {
+    const resolved = resolveExecutionCompatibility(id, strategy, undefined);
+    if (resolved.usedCanonical && resolved.canonicalId) {
+      // Variant kan ärva canonical execution-kompatibilitet
+      usedCanonical = true;
+      canonicalReplacementId = resolved.canonicalId;
+      // Behåll den expanderade variantens egenskaper för producerStatus etc
+    }
+  }
+
+  // Om raw ID ej hittas i katalog, försök canonical parent för variant-IDs
+  if (!strategy && registryStrategyOverride === undefined) {
+    const resolved = resolveExecutionCompatibility(id, catalogStrategy, undefined);
+    if (resolved.usedCanonical && resolved.strategy) {
+      strategy = resolved.strategy;
+      canonicalReplacementId = resolved.canonicalId;
+      usedCanonical = true;
+    }
+  }
 
   if (!strategy) {
+    if (!registryStrategy && registryStrategyOverride === undefined) {
+      registryStrategy = getRegistryStrategy(id);
+    }
     if (registryStrategy) {
       const roots = registryFuturesRoots(registryStrategy);
       const active = registryStrategy.status === 'active' && registryStrategy.enabled !== false;
@@ -449,13 +569,17 @@ function computeCompatibility(id, catalogStrategy, closedTs = null, registryStra
 
   const status = strategy.status || strategy.catalog_status;
   const isPaused = status === 'paused' || status === 'deprecated' || strategy.enabled === false;
-  const registryExecution = registryStrategy
-    ? strategyRegistryService.canExecuteStrategy(registryStrategy)
-    : null;
+  // Om vi ärver från canonical för variant, kolla inte registry_managed för katalog-strategin
+  // Note: canExecuteStrategy() expects a strategy ID, not a catalog strategy object
+  const registryExecution = usedCanonical ? null : (strategy && id
+    ? strategyRegistryService.canExecuteStrategy(id)
+    : null);
 
   const timestamps = closedTs || closedTimestampsByStrategy();
   const isScannerEmitter = strategy.supportsScanner === true;
-  const hasClosedTrades = ((timestamps.get(id) || []).length) > 0;
+  // Note: timestamps map uses canonical IDs, so we need to canonicalize the lookup ID too
+  const canonicalLookupId = canonicalId(id);
+  const hasClosedTrades = ((timestamps.get(canonicalLookupId) || []).length) > 0;
   let producerEvidence = null;
   if (isScannerEmitter && hasClosedTrades) producerEvidence = 'both';
   else if (isScannerEmitter) producerEvidence = 'scanner_emitter';
@@ -474,7 +598,11 @@ function computeCompatibility(id, catalogStrategy, closedTs = null, registryStra
 
   let compatibility;
   if (isDuplicate) { compatibility = COMPAT.NEEDS_MAPPING; blockingReasons.push('duplicate_strategy'); }
-  else if (registryExecution && registryExecution.allowed !== true) { compatibility = COMPAT.BLOCKED; blockingReasons.push(registryExecution.blockedReason || 'strategy_not_in_execution_allowlist'); }
+  else if (registryExecution && registryExecution.allowed !== true && !usedCanonical) {
+    // Endast blocka på registry execution om vi INTE ärver från canonical.
+    // Variant-IDs som ärver canonical kompatibilitet ska passa.
+    compatibility = COMPAT.BLOCKED; blockingReasons.push(registryExecution.blockedReason || 'strategy_not_in_execution_allowlist');
+  }
   else if (isPaused) { compatibility = COMPAT.BLOCKED; blockingReasons.push('catalog_status_paused'); }
   else if (symbolMappingStatus === 'unsupported') { compatibility = COMPAT.UNSUPPORTED; blockingReasons.push('no_safe_futures_mapping'); }
   else if (symbolMappingStatus === 'unknown') { compatibility = COMPAT.NEEDS_MAPPING; blockingReasons.push('unverified_symbol_mapping'); }
@@ -493,7 +621,9 @@ function computeCompatibility(id, catalogStrategy, closedTs = null, registryStra
 
 function buildStrategyView(id, { store, closedTs, degraded, registryMap = null }) {
   const catalogStrategy = getCatalogStrategy(id);
-  const registryStrategy = registryMap ? registryMap.get(id) || null : getRegistryStrategy(id);
+  // Använd resolver för att hantera variant-IDs
+  const resolved = resolveExecutionCompatibility(id, catalogStrategy);
+  const registryStrategy = resolved.strategy || (registryMap ? registryMap.get(id) || null : getRegistryStrategy(id));
   const entry = store.strategies[id] || null;
   const compatibility = computeCompatibility(id, catalogStrategy, closedTs, registryStrategy);
   const registryExecution = registryStrategy
@@ -614,10 +744,13 @@ function mutate(rawId, action, { source = 'api', now = new Date() } = {}) {
   _discoveryCache = null;
   _discoveryCacheVersion = null;
 
-  const id = canonicalId(rawId);
-  if (!id) return { ok: false, code: 404, changed: false, reason: 'unknown_strategy_id', ...SAFETY };
+  // Use raw ID to preserve variant identity (e.g., narrow_fakeout_reversal_v1__fast)
+  // For lookups in registry/catalog, use canonical ID (e.g., narrow_fakeout_reversal_v1)
+  const id = rawId;
+  const lookupId = canonicalId(rawId);
+  if (!id || !lookupId) return { ok: false, code: 404, changed: false, reason: 'unknown_strategy_id', ...SAFETY };
 
-  const catalogStrategy = getCatalogStrategy(id);
+  const catalogStrategy = getCatalogStrategy(lookupId);
   const loaded = loadStore(now);
   // Vid degraderat state (trasig store) vägras mutationer — skriv aldrig över
   // en potentiellt återställningsbar korrupt fil.
@@ -630,12 +763,13 @@ function mutate(rawId, action, { source = 'api', now = new Date() } = {}) {
 
   if (action === 'approve') {
     const closedTs = closedTimestampsByStrategy();
-    const baseline = (closedTs.get(id) || []).length;
+    const baseline = (closedTs.get(lookupId) || []).length;
     if (!catalogStrategy) return { ok: false, code: 404, changed: false, reason: 'unknown_strategy_id', ...SAFETY };
     if (existing && existing.status === STATUS.APPROVED) {
       return { ok: true, code: 200, changed: false, strategyId: id, status: STATUS.APPROVED, reason: 'already_approved', ...SAFETY };
     }
-    const compat = computeCompatibility(id, catalogStrategy, closedTs, getRegistryStrategy(id));
+    // Pass raw ID (not lookupId) so variant detection and canonical inheritance works
+    const compat = computeCompatibility(id, catalogStrategy, closedTs, getRegistryStrategy(lookupId));
     if (compat.compatibility !== COMPAT.READY) {
       return {
         ok: false, code: 422, changed: false, strategyId: id,
