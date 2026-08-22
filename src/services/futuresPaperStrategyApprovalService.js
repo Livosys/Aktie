@@ -633,6 +633,15 @@ function buildStrategyView(id, { store, closedTs, degraded, registryMap = null }
     : null;
   const registryApproved = !entry && registryExecution?.allowed === true;
   const currentTest = computeCurrentTest(id, entry, closedTs);
+
+  // Check if strategy has been recommended for paper review by AI Factory
+  const libraryService = require('./library/strategyLibraryService');
+  const isRecommended = libraryService.defaultStrategyLibrary.getHistory(id, { types: [libraryService.EVENT_TYPES.PAPER_REVIEW_RECOMMENDED] }).length > 0;
+  const canonicalVariant = canonicalId(id);
+  const isRecommendedCanonical = canonicalVariant && canonicalVariant !== id
+    ? libraryService.defaultStrategyLibrary.getHistory(canonicalVariant, { types: [libraryService.EVENT_TYPES.PAPER_REVIEW_RECOMMENDED] }).length > 0
+    : false;
+
   return {
     strategyId: id,
     displayName: (catalogStrategy && catalogStrategy.name) || registryStrategy?.strategy_name || id,
@@ -662,6 +671,7 @@ function buildStrategyView(id, { store, closedTs, degraded, registryMap = null }
       canonicalReplacementId: compatibility.canonicalReplacementId,
     },
     currentTest,
+    recommendedForReview: isRecommended || isRecommendedCanonical,
   };
 }
 

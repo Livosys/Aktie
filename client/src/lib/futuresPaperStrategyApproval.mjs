@@ -336,8 +336,9 @@ export function matchesFilter(strategy, filterId) {
   const status = approvalStatus(strategy);
   switch (filterId) {
     case 'pending_approval':
-      // Pending: not approved/paused/removed, is ready, not duplicate
-      return status === null && isReady(strategy) && !isDuplicate(strategy);
+      // Pending: recommended for review + not approved/paused/removed, not duplicate
+      const recommended = strategy && strategy.recommendedForReview === true;
+      return recommended && status === null && !isDuplicate(strategy);
     case 'all':
       return true;
     case 'active':
