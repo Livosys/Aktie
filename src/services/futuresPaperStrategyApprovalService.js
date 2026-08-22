@@ -637,10 +637,6 @@ function buildStrategyView(id, { store, closedTs, degraded, registryMap = null }
   // Check if strategy has been recommended for paper review by AI Factory
   const libraryService = require('./library/strategyLibraryService');
   const isRecommended = libraryService.defaultStrategyLibrary.getHistory(id, { types: [libraryService.EVENT_TYPES.PAPER_REVIEW_RECOMMENDED] }).length > 0;
-  const canonicalVariant = canonicalId(id);
-  const isRecommendedCanonical = canonicalVariant && canonicalVariant !== id
-    ? libraryService.defaultStrategyLibrary.getHistory(canonicalVariant, { types: [libraryService.EVENT_TYPES.PAPER_REVIEW_RECOMMENDED] }).length > 0
-    : false;
 
   return {
     strategyId: id,
@@ -671,7 +667,7 @@ function buildStrategyView(id, { store, closedTs, degraded, registryMap = null }
       canonicalReplacementId: compatibility.canonicalReplacementId,
     },
     currentTest,
-    recommendedForReview: isRecommended || isRecommendedCanonical,
+    recommendedForReview: isRecommended && !(entry && (entry.status === STATUS.APPROVED || entry.status === STATUS.REMOVED)),
   };
 }
 
@@ -707,19 +703,18 @@ function listStrategies() {
   const libraryService = require('./library/strategyLibraryService');
   for (const id of ids) {
     try {
+      // Skip native futures strategies (not in AI Factory approval flow)
+      // Only filter out pure native IDs (native_futures_*), not AI variants (narrow_fakeout_reversal_v1__fast, etc.)
+      const isNativeStrategy = id.startsWith('native_futures_') && !id.includes('__');
+      if (isNativeStrategy) continue;
+
       const view = buildStrategyView(id, { store, closedTs, degraded, registryMap });
       // Filter: only show strategies that either:
       // 1. Are already in approval store (user has already engaged)
-      // 2. Have PAPER_REVIEW_RECOMMENDED event (AI Factory recommendation)
-      //
-      // Note: For variant IDs (e.g., __fast, __patient), store uses canonical IDs
-      // but recommendation event exists on variant. Check both raw and canonical.
+      // 2. Have PAPER_REVIEW_RECOMMENDED event on THIS strategy (AI Factory recommendation)
       const isRecommended = libraryService.defaultStrategyLibrary.getHistory(id, { types: [libraryService.EVENT_TYPES.PAPER_REVIEW_RECOMMENDED] }).length > 0;
       const canonicalVariant = canonicalId(id);
-      const isRecommendedCanonical = canonicalVariant && canonicalVariant !== id
-        ? libraryService.defaultStrategyLibrary.getHistory(canonicalVariant, { types: [libraryService.EVENT_TYPES.PAPER_REVIEW_RECOMMENDED] }).length > 0
-        : false;
-      if (store.strategies[id] || store.strategies[canonicalVariant] || isRecommended || isRecommendedCanonical) {
+      if (store.strategies[id] || store.strategies[canonicalVariant] || isRecommended) {
         strategies.push(view);
       }
     } catch (err) { strategies.push({ strategyId: id, error: true, errorMessage: safeString(err && err.message) || 'strategy_view_failed', ...SAFETY }); }
