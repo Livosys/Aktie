@@ -323,6 +323,7 @@ export function leaderRows(leaders) {
 // ── Filter ──────────────────────────────────────────────────────────────────
 
 export const FILTERS = Object.freeze([
+  { id: 'pending_approval', label: 'Väntar på godkännande' },
   { id: 'all', label: 'Alla' },
   { id: 'active', label: 'Aktiva' },
   { id: 'paused', label: 'Pausade' },
@@ -334,6 +335,9 @@ export const FILTERS = Object.freeze([
 export function matchesFilter(strategy, filterId) {
   const status = approvalStatus(strategy);
   switch (filterId) {
+    case 'pending_approval':
+      // Pending: not approved/paused/removed, is ready, not duplicate
+      return status === null && isReady(strategy) && !isDuplicate(strategy);
     case 'all':
       return true;
     case 'active':

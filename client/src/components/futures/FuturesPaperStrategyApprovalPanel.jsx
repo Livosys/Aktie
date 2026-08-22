@@ -295,7 +295,7 @@ function LeadersCard({ leaders, currency }) {
 
 export default function FuturesPaperStrategyApprovalPanel({ currency = 'USD' } = {}) {
   const [state, setState] = useState({ loading: true, error: null, data: null });
-  const [filter, setFilter] = useState('all');
+  const [filter, setFilter] = useState('pending_approval');
   const [busyId, setBusyId] = useState(null);
   const [rowMessage, setRowMessage] = useState({ id: null, tone: 'muted', text: null, detail: null });
   const [expandedId, setExpandedId] = useState(null);
