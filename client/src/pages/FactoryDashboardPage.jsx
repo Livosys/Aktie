@@ -320,6 +320,7 @@ function formatToday(now = new Date()) {
 }
 
 function safeValue(value, fallback) {
+  if (value != null && typeof value === 'object') return fallback;
   const text = uiFactorySafeText(value);
   return text || fallback;
 }

@@ -1931,6 +1931,7 @@ const STRATEGY_ID_PREFIXES = Object.freeze([
 const STRATEGY_ACRONYMS = Object.freeze(['vwap', 'ema', 'atr', 'rsi', 'mnq', 'mes', 'ib', 'ai']);
 
 export function uiStrategyName(value, fallback = '') {
+  if (value != null && typeof value === 'object') return fallback;
   const raw = String(value == null ? '' : value).trim();
   if (!raw) return fallback;
   // Ett namn som redan innehåller mellanslag är skrivet för människor.
