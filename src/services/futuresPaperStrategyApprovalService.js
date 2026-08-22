@@ -521,7 +521,8 @@ function computeCompatibility(id, catalogStrategy, closedTs = null, registryStra
     if (resolved.usedCanonical && resolved.canonicalId) {
       // Variant kan ärva canonical execution-kompatibilitet
       usedCanonical = true;
-      canonicalReplacementId = resolved.canonicalId;
+      // DO NOT set canonicalReplacementId for variants - only true duplicates use it
+      // (canonicalReplacementId är ENDAST för dubletter, inte för AI-varianter)
       // Behåll den expanderade variantens egenskaper för producerStatus etc
     }
   }
@@ -531,7 +532,8 @@ function computeCompatibility(id, catalogStrategy, closedTs = null, registryStra
     const resolved = resolveExecutionCompatibility(id, catalogStrategy, undefined);
     if (resolved.usedCanonical && resolved.strategy) {
       strategy = resolved.strategy;
-      canonicalReplacementId = resolved.canonicalId;
+      // DO NOT set canonicalReplacementId for variants - only true duplicates use it
+      // (canonicalReplacementId är ENDAST för dubletter, inte för AI-varianter)
       usedCanonical = true;
     }
   }
