@@ -42,6 +42,8 @@ let startupTimer = null;
 // ska aldrig slå till — men om en körning fastnar ska nästa tick vänta i
 // stället för att starta en andra parallell cykel mot samma append-only-logg.
 let inFlight = false;
+let lastCycleStartAt = null;
+const CYCLE_TIMEOUT_MS = 30 * 60 * 1000; // 30 minutes max per cycle
 
 // Nyckeln som gör varje cykel till en egen körning i orchestratorns logg.
 // Samma nyckel återanvänds tills cykeln är klar: orchestratorn återupptar då
@@ -49,18 +51,36 @@ let inFlight = false;
 let cycleKey = null;
 
 async function tick({ orchestrator = orchestratorModule.defaultAiFactoryOrchestrator, now = () => new Date() } = {}) {
-  if (inFlight) {
-    console.log('[FactoryTick] Skipped — previous cycle still running');
-    return { ok: true, skipped: true, reason: 'cycle_in_flight' };
+  const currentTime = new Date(now()).getTime();
+
+  // Watchdog: detect stale cycles and force recovery
+  if (inFlight && lastCycleStartAt && (currentTime - lastCycleStartAt) > CYCLE_TIMEOUT_MS) {
+    console.log(`[FactoryTick] CRITICAL: Cycle stale for ${(currentTime - lastCycleStartAt) / 1000 / 60}min — forcing recovery`);
+    inFlight = false; // Force reset to allow next cycle
+    cycleKey = null;
   }
+
+  if (inFlight) {
+    const ageMin = lastCycleStartAt ? (currentTime - lastCycleStartAt) / 1000 / 60 : 0;
+    console.log(`[FactoryTick] Skipped — cycle in flight for ${ageMin.toFixed(1)}min`);
+    return { ok: true, skipped: true, reason: 'cycle_in_flight', ageMinutes: ageMin };
+  }
+
   inFlight = true;
+  lastCycleStartAt = currentTime;
+
   try {
     if (!cycleKey) cycleKey = new Date(now()).toISOString();
-    const result = await orchestrator.runCycle({ cycleKey });
+
+    // Timeout wrapper: force failure if cycle exceeds safe runtime
+    const cyclePromise = orchestrator.runCycle({ cycleKey });
+    const timeoutPromise = new Promise((_, reject) =>
+      setTimeout(() => reject(new Error('cycle_timeout_exceeded')), CYCLE_TIMEOUT_MS)
+    );
+    const result = await Promise.race([cyclePromise, timeoutPromise]);
 
     const summary = result.state?.completed?.COMPLETE?.result?.summary || null;
     if (result.ok && result.complete) {
-      // Klar cykel → nästa tick startar en ny körning.
       cycleKey = null;
       console.log(
         `[FactoryTick] Cycle complete — dna=${summary?.dnaCreated ?? 0}`
@@ -74,12 +94,11 @@ async function tick({ orchestrator = orchestratorModule.defaultAiFactoryOrchestr
     }
     return result;
   } catch (err) {
-    // En trasig cykel får aldrig döda timern. Nästa tick återupptar samma
-    // körning från det senast lyckade steget.
     console.log(`[FactoryTick] tick error: ${err && err.message ? err.message : err}`);
-    return { ok: false, blocked: true, blockedReason: 'tick_error' };
+    return { ok: false, blocked: true, blockedReason: 'tick_error', error: err?.message };
   } finally {
     inFlight = false;
+    lastCycleStartAt = null;
   }
 }
 
