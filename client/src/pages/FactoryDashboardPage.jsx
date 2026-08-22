@@ -1016,6 +1016,8 @@ function buildHero({ copy, factoryStatus, whyText, nextText, hasAction, refreshT
 // ── Läget ────────────────────────────────────────────────────────────────────
 function buildState({ copy, factoryStatus, hasAction, queueCounts, stages, marketPeriod, regime, trend, volatility, marketType, pendingApprovalCount }) {
   const panel = copy.today.state;
+  // Only show "needs decision" for actual user decisions (approval/review)
+  // System actions (tests, checks) show as "working" or "waiting" instead
   const summary = hasAction
     ? { summaryLabel: panel.needsDecision, summaryTone: 'warning' }
     : factoryStatus === FACTORY_STATUS_KEYS.RUNNING
@@ -1297,7 +1299,8 @@ function buildDashboardModel({ loading, refreshing, lastRefreshAt, sources }) {
       : copy.states.noNextActivity);
 
   const actions = buildActionCenter({ copy, decision, factoryStatus, queueCounts, stages, pendingApprovalCount });
-  const hasAction = actions.some((action) => action.id !== 'noAction');
+  // Only count approval/review actions as "user action needed" — not system/test actions
+  const hasUserAction = actions.some((action) => ['approveStrategy', 'reviewPaper'].includes(action.id));
   const refreshTime = lastRefreshAt || decision?.createdAt || brain.generatedFor || latestReplay?.stamp?.value;
 
   const heroState = buildHero({
@@ -1305,7 +1308,7 @@ function buildDashboardModel({ loading, refreshing, lastRefreshAt, sources }) {
     factoryStatus,
     whyText: story.why || whyText,
     nextText: story.next || nextText,
-    hasAction,
+    hasAction: hasUserAction,
     refreshTime: story.updatedAt || lastRefreshAt || decision?.createdAt || brain.generatedFor || latestReplay?.stamp?.value,
   });
 
@@ -1324,7 +1327,7 @@ function buildDashboardModel({ loading, refreshing, lastRefreshAt, sources }) {
       tone: story.tone || statusTone(factoryStatus),
     },
     actions,
-    state: buildState({ copy, factoryStatus, hasAction, queueCounts, stages, marketPeriod, regime, trend, volatility, marketType, pendingApprovalCount }),
+    state: buildState({ copy, factoryStatus, hasAction: hasUserAction, queueCounts, stages, marketPeriod, regime, trend, volatility, marketType, pendingApprovalCount }),
     brainCards: buildBrainCards({ copy, decision, decisionCopy, nextReplay, replayGaps, whyText }),
     contextActions: buildDashboardContextActions({
       decision,
