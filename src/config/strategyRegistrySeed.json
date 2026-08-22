@@ -83,5 +83,22 @@
     "registry_managed": true,
     "created_at": "2026-08-10T00:00:00.000Z",
     "updated_at": "2026-08-10T00:00:00.000Z"
+  },
+  {
+    "strategy_id": "narrow_fakeout_reversal_v1",
+    "strategy_name": "Narrow Fakeout Reversal v1",
+    "source": "manual",
+    "status": "active",
+    "enabled": true,
+    "disabled_reason": null,
+    "mode": "paper_only",
+    "description": "Narrow fakeout reversal canonical strategy with variant inheritance for FAS36+ execution.",
+    "market_regime_tags": ["futures", "mnq", "fakeout", "index"],
+    "allowed_timeframes": ["2m", "5m", "15m"],
+    "entry_rules": ["NARROW_FAKEOUT_REVERSAL"],
+    "exit_rules": ["managed_by_ibkr_paper_bracket"],
+    "registry_managed": true,
+    "created_at": "2026-08-22T00:00:00.000Z",
+    "updated_at": "2026-08-22T00:00:00.000Z"
   }
 ]
