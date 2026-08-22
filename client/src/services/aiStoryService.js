@@ -294,7 +294,7 @@ export function aiStoryEventText(kind, input = {}) {
     case 'testStarted':
       return aiStoryTesting(strategy);
     case 'testCompleted':
-      return result ? sentence(`AI lärde sig ${result}`) : sentence(`AI lärde sig något av ${strategy || 'senaste testet'}`);
+      return result ? sentence(`Historiskt test klart: ${result}`) : sentence(`Historiskt test klart för ${strategy || 'senaste testet'}`);
     case 'learned':
       return result ? sentence(`AI lärde sig ${result}`) : FALLBACKS.noLearnings;
     case 'improved':
