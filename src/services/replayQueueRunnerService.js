@@ -33,9 +33,11 @@ const FUTURES_ROOTS = Object.freeze(new Set(['MNQ', 'MES']));
 const NATIVE_REPLAY_WORKER_FILE = path.resolve(__dirname, '../jobs/runNativeReplayWorker.js');
 // 49 s mätt för 29 strategier på ett fyratimmarsfönster. Taket ligger med god
 // marginal över det men avslutar en körning som fastnat.
+// KRITISK FIX: Reducerat från 10min till 5min för att förhindra att jobb fastnar.
+// Tidigare: 600000ms. Ny: 300000ms (5 minuter).
 const NATIVE_REPLAY_TIMEOUT_MS = Math.max(
   60000,
-  Number(process.env.NATIVE_REPLAY_TIMEOUT_MS) || 600000,
+  Number(process.env.NATIVE_REPLAY_TIMEOUT_MS) || 300000,
 );
 // Fönstret är samma enhet som replay-acceptanstestet behandlar som en komplett
 // körning: ett dygn som lagret täcker hela vägen genom RTH. Ett jobb ber om 30

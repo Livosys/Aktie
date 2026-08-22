@@ -701,7 +701,35 @@ function createReplayQueueService(options = {}) {
   };
 }
 
+// Startup stale job recovery: Prevent deadlock on startup if a job was stuck before restart
+function recoverStaleJobs() {
+  const queueService = createReplayQueueService();
+  const status = queueService.getStatus();
+  const now = Date.now();
+  const MAX_SAFE_JOB_RUNTIME_MS = 1 * 60 * 60 * 1000; // 1 hour max
+
+  if (!status.jobs) return;
+
+  status.jobs.forEach((job) => {
+    if (job.status !== 'RUNNING') return;
+
+    const startedAt = new Date(job.started_at || job.createdAt).getTime();
+    const elapsed = now - startedAt;
+
+    if (elapsed > MAX_SAFE_JOB_RUNTIME_MS) {
+      // Recover stuck job: append JOB_FAILED event
+      const queueService = createReplayQueueService();
+      queueService.failJob(job.id, {
+        error: 'startup_stale_recovery_exceeded_safe_runtime',
+        reason: `Job stuck for ${(elapsed / 1000 / 60 / 60).toFixed(1)}h - recovered at startup`,
+      });
+    }
+  });
+}
+
 const defaultReplayQueueService = createReplayQueueService();
+// Recover any stale jobs from previous crashes/deadlocks at startup
+try { recoverStaleJobs(); } catch (_) { /* Silent fail - don't block startup */ }
 
 module.exports = {
   SAFETY,
