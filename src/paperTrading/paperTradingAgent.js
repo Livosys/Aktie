@@ -79,7 +79,8 @@ const GATE_DECISIONS_FILE = path.join(DATA_DIR, 'gate-decisions.jsonl');
 const TARGET_PCT       = 0.4;   // +0.4 % → WIN
 const STOP_PCT         = 0.25;  // −0.25 % → LOSS
 const MAX_HOLD_MINUTES = 20;    // after this → TIMEOUT
-const MAX_OPEN_TRADES  = 3;
+const MAX_OPEN_TRADES  = 10;    // 10 logical trades × qty 1 (qty1 model)
+const MAX_PENDING_ENTRIES = 10; // max pending entries waiting for fill
 const COOLDOWN_MINUTES = 20;    // per symbol after close
 const TICK_MS          = 30_000;
 const MAX_EVENT_ROWS   = 500;
@@ -88,6 +89,12 @@ const EVENT_DEDUPE_MS  = 60_000;
 const ALLOW_EMA_PAPER_TRADES = String(process.env.PAPER_ALLOW_EMA || 'false').toLowerCase() === 'true';
 const WEAK_VOLUME_STATES = new Set(['weak', 'low', 'very_low']);
 const LATE_REGULAR_PULLBACK_BLOCKED_REASON = 'Sen entry — kräver pullback eller ny 2m-bekräftelse';
+
+// ── Trailing Profit Lock (v4 feature: 500 SEK trailing gap) ──────────────────
+
+const TRAILING_PROFIT_LOCK_ACTIVATION_SEK = 500;  // When MFE ≥ 500 SEK, activate trailing protection
+const TRAILING_GAP_SEK = 500;                      // Always keep 500 SEK gap between MFE and floor
+const PAPER_TRADE_QUANTITY = 1;                    // Each logical trade is always qty=1
 
 // ── Allowed signal families / subtypes ───────────────────────────────────────
 
@@ -1403,6 +1410,13 @@ function buildOpenTrade(c, gateDecision = null) {
     pnlPct:                  null,
     result:                  'OPEN',
     mode:                    'paper',
+    // Trailing Profit Lock (v4 feature)
+    // Tracks unrealized PnL in SEK to implement trailing stop protection
+    profitTrailActivated:     false,       // true once unrealized SEK profit ≥ 500
+    maxUnrealizedPnlSek:      0,           // highest unrealized profit in SEK (monotonic, never decreases)
+    trailingProfitFloorSek:   0,           // maxUnrealizedPnlSek - TRAILING_GAP_SEK (protection level)
+    lastTrailUpdateAt:        null,        // ISO timestamp when MFE/floor was last updated
+    tradeQuantity:            PAPER_TRADE_QUANTITY, // Always 1 for logical trades
     // Additive observe-only annotation. Gate stays OFF, runtimeBlocked=false —
     // this never blocks/skips the trade, it only records the forward-filter view
     // so new trades can be measured automatically. See evaluateEntryForwardPreview.
@@ -1411,35 +1425,105 @@ function buildOpenTrade(c, gateDecision = null) {
   return strategyRuntimeConnector.enrichPaperTradeWithStrategy(trade);
 }
 
+// Strategy diversity prioritization: prefer candidates whose strategy isn't already open
+function evaluateStrategyDiversity(candidate, openTrades) {
+  const candStratId = candidate?.strategyId || candidate?.strategy_id || candidate?.resolvedStrategyId || null;
+  if (!candStratId) return 0;  // No bonus if we can't identify strategy
+
+  const openStrategyIds = new Set(
+    openTrades
+      .filter(t => t && (t.strategyId || t.strategy_id || t.resolvedStrategyId))
+      .map(t => t.strategyId || t.strategy_id || t.resolvedStrategyId)
+  );
+
+  // If this strategy isn't already open, give it a small bonus
+  // (This is additive to existing scoring, not a hard veto)
+  if (!openStrategyIds.has(candStratId)) return 1;  // Diversity bonus
+  return -0.1;  // Small penalty if strategy already has an open position
+}
+
 // Direction-adjusted P&L: positive = profitable regardless of direction
 function calcPnlPct(trade, currentPrice) {
   const raw = ((currentPrice - trade.entryPrice) / trade.entryPrice) * 100;
   return trade.direction === 'UP' ? raw : -raw;
 }
 
+// Convert P&L percent to SEK amount (simplified: assumes standard SEK 1:1 notional)
+// For paper trading, we use a conservative default position size
+function calcPnlSek(trade, pnlPct) {
+  // Paper trading default: assume ~10,000 SEK position for each qty=1 logical trade
+  // This is conservative; actual position size would come from risk management
+  const basePositionSek = 10_000;
+  return (pnlPct / 100) * basePositionSek;
+}
+
 function checkExit(trade, currentPrice) {
   if (!currentPrice || !trade.entryPrice) return null;
   const pnl    = calcPnlPct(trade, currentPrice);
+  const pnlSek = calcPnlSek(trade, pnl);
   const target = trade.targetPct      ?? TARGET_PCT;
   const stop   = trade.stopPct        ?? STOP_PCT;
   const maxMin = trade.maxHoldMinutes ?? MAX_HOLD_MINUTES;
 
-  if (pnl >= target)  return { exitReason: 'TARGET_HIT', exitReasonCode: 'target_hit', exitSource: 'legacy_hard_rule', exitEngineVersion: 'legacy_hard_rule', exitProfile: 'legacy_hard_rule', pnlPct: pnl, result: 'WIN',  exitPrice: currentPrice };
-  if (pnl <= -stop)   return { exitReason: 'STOP_HIT',   exitReasonCode: 'stop_hit', exitSource: 'legacy_hard_rule', exitEngineVersion: 'legacy_hard_rule', exitProfile: 'legacy_hard_rule', pnlPct: pnl, result: 'LOSS', exitPrice: currentPrice };
+  // Check target first (respects strategy's desired profit target)
+  if (pnl >= target)  return { exitReason: 'TARGET_HIT', exitReasonCode: 'target_hit', exitSource: 'legacy_hard_rule', exitEngineVersion: 'legacy_hard_rule', exitProfile: 'legacy_hard_rule', pnlPct: pnl, pnlSek, result: 'WIN',  exitPrice: currentPrice };
+
+  // Check basic stop loss
+  if (pnl <= -stop)   return { exitReason: 'STOP_HIT',   exitReasonCode: 'stop_hit', exitSource: 'legacy_hard_rule', exitEngineVersion: 'legacy_hard_rule', exitProfile: 'legacy_hard_rule', pnlPct: pnl, pnlSek, result: 'LOSS', exitPrice: currentPrice };
+
+  // Check exit engine tightened stop
   if (trade.exitEngineStopPct != null && pnl <= Number(trade.exitEngineStopPct)) {
     return {
       exitReason: 'EXIT_ENGINE_TIGHTENED_STOP',
       exitReasonCode: 'tightened_stop',
       exitSource: 'exit_engine_v1',
       pnlPct: pnl,
+      pnlSek,
       result: pnl >= 0 ? 'WIN' : 'LOSS',
       exitPrice: currentPrice,
     };
   }
 
+  // TRAILING PROFIT LOCK (v4 feature)
+  // Only apply if trade hasn't already triggered other exits above
+  if (pnlSek >= TRAILING_PROFIT_LOCK_ACTIVATION_SEK) {
+    if (!trade.profitTrailActivated) {
+      // First time reaching 500 SEK profit: activate trailing protection
+      // (This flag gets persisted so we never forget previous MFE after restart)
+      trade.profitTrailActivated = true;
+      trade.maxUnrealizedPnlSek = Math.max(trade.maxUnrealizedPnlSek || 0, pnlSek);
+      trade.trailingProfitFloorSek = trade.maxUnrealizedPnlSek - TRAILING_GAP_SEK;
+      trade.lastTrailUpdateAt = new Date().toISOString();
+    } else {
+      // Already activated: update MFE if current profit is better (monotonic rule)
+      if (pnlSek > (trade.maxUnrealizedPnlSek || 0)) {
+        trade.maxUnrealizedPnlSek = pnlSek;
+        trade.trailingProfitFloorSek = pnlSek - TRAILING_GAP_SEK;
+        trade.lastTrailUpdateAt = new Date().toISOString();
+      }
+    }
+
+    // Check if current PnL has fallen below the trailing floor
+    const currentFloor = trade.trailingProfitFloorSek || 0;
+    if (pnlSek < currentFloor) {
+      return {
+        exitReason: 'TRAILING_PROFIT_FLOOR',
+        exitReasonCode: 'trailing_profit_lock',
+        exitSource: 'trailing_lock_v4',
+        pnlPct: pnl,
+        pnlSek,
+        maxUnrealizedPnlSek: trade.maxUnrealizedPnlSek,
+        trailingFloorSek: currentFloor,
+        result: pnlSek >= 0 ? 'WIN' : 'LOSS',
+        exitPrice: currentPrice,
+      };
+    }
+  }
+
+  // Check timeout
   const ageMin = (Date.now() - new Date(trade.entryTime).getTime()) / 60_000;
   if (ageMin >= maxMin)
-    return { exitReason: 'TIMEOUT', exitReasonCode: 'timeout', exitSource: 'legacy_hard_rule', exitEngineVersion: 'legacy_hard_rule', exitProfile: 'legacy_hard_rule', pnlPct: pnl, result: 'TIMEOUT', exitPrice: currentPrice };
+    return { exitReason: 'TIMEOUT', exitReasonCode: 'timeout', exitSource: 'legacy_hard_rule', exitEngineVersion: 'legacy_hard_rule', exitProfile: 'legacy_hard_rule', pnlPct: pnl, pnlSek, result: 'TIMEOUT', exitPrice: currentPrice };
 
   return null;
 }
@@ -1479,6 +1563,7 @@ function updateIntrabar(trade, currentPrice) {
   if (!currentPrice || !trade.entryPrice) return;
   trade.last_update_at = new Date().toISOString();
   const pnl    = calcPnlPct(trade, currentPrice);
+  const pnlSek = calcPnlSek(trade, pnl);
   const target = trade.targetPct ?? TARGET_PCT;
   const stop   = trade.stopPct   ?? STOP_PCT;
 
@@ -1494,6 +1579,11 @@ function updateIntrabar(trade, currentPrice) {
     trade.firstTargetTouchAt = new Date().toISOString();
   if (!trade.firstStopTouchAt && pnl <= -stop)
     trade.firstStopTouchAt = new Date().toISOString();
+
+  // Trailing Profit Lock: update MFE in SEK (for persistence across restarts)
+  if (pnlSek > (trade.maxUnrealizedPnlSek || 0)) {
+    trade.maxUnrealizedPnlSek = pnlSek;
+  }
 }
 
 // ── Safety alert ──────────────────────────────────────────────────────────────
