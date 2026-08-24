@@ -3706,6 +3706,7 @@ export default function PaperTradingPage() {
               { key: 'source', label: 'Source' },
               { key: 'opened_at', label: 'Opened', render: (row) => fmtTime(row.opened_at) },
               { key: 'paperOnly', label: 'paperOnly', render: (row) => String(row.paperOnly === true) },
+              { key: 'tradeQuantity', label: 'Qty', render: (row) => row.tradeQuantity || 1 },
             ]}
           />
         </>

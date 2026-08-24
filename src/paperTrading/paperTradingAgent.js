@@ -65,6 +65,8 @@ const learningConnector                         = require('../services/learningC
 const learningEngine                            = require('../services/daytradingLearningEngineService');
 const strategyTradeControl                      = require('../services/strategyTradeControlService');
 const { writeFileAtomic, writeJsonAtomic }      = require('../services/filePersistenceService');
+const paperTrailingStopModifierService          = require('../services/paperTrailingStopModifierService');
+const ibPaperExecutionOrchestratorService       = require('../services/ibPaperExecutionOrchestratorService');
 
 // ── Paths ─────────────────────────────────────────────────────────────────────
 
@@ -1500,6 +1502,34 @@ function checkExit(trade, currentPrice) {
         trade.maxUnrealizedPnlSek = pnlSek;
         trade.trailingProfitFloorSek = pnlSek - TRAILING_GAP_SEK;
         trade.lastTrailUpdateAt = new Date().toISOString();
+
+        // ASYNC MODIFICATION: Queue for deferred processing (non-blocking)
+        if (global._paperTrailModifier) {
+          setImmediate(async () => {
+            try {
+              const modifyResult = await global._paperTrailModifier.executeStopModification({
+                trade,
+                currentPrice,
+                executionContext: {
+                  stopOrderId: trade.executionStopOrderId,
+                  orderRef: `TOS-PAPER-${trade.executionId}-stopLoss`,
+                  tickSize: 0.01,
+                },
+                onEvent: appendEvent,
+              });
+              if (modifyResult && !modifyResult.modified) {
+                console.log(`[paper-trading] Trail modify skipped: ${modifyResult.reason}`);
+              }
+            } catch (err) {
+              appendEvent({
+                type: 'TRAILING_PROFIT_LOCK_MODIFY_ERROR',
+                tradeId: trade.tradeId,
+                error: err?.message,
+                timestamp: new Date().toISOString(),
+              });
+            }
+          });
+        }
       }
     }
 
@@ -3599,6 +3629,16 @@ function initOnStartup() {
   recentEvents = loadEvents(MEMORY_EVENTS);
   startTicker();
   const state = loadState();
+
+  // Wire trailing stop modifier with orchestrator for IBKR Paper stop modifications
+  global._paperTrailModifier = {
+    executeStopModification: async (params) => {
+      return await paperTrailingStopModifierService.executeStopModification({
+        ...params,
+        orchestrator: ibPaperExecutionOrchestratorService,
+      });
+    },
+  };
 
   // Persist EMA filter start timestamp once, derived from first EMA-paused event
   if (!ALLOW_EMA_PAPER_TRADES && !state.emaFilterStartedAt) {
