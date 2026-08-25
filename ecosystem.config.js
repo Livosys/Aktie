@@ -38,6 +38,7 @@ module.exports = {
         REDIS_URL: 'redis://127.0.0.1:6379',
         FUTURES_NATIVE_PROVIDER_ENABLED: 'true',
         IB_FUTURES_DATA_ENABLED: 'true',
+        IBKR_PAPER_EXECUTION_ENABLED: 'true',
       },
     },
   ],
