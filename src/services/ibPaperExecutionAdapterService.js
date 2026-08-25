@@ -754,6 +754,10 @@ function createIbPaperExecutionAdapterService(options = {}) {
       const normalizedOpenStatus = normalizeIbStatus(orderState?.status);
       const owned = findOwnedIntentForOrder({ orderId: Number(orderId), orderRef: order?.orderRef });
       const identity = lifecycleIdentity.mergeIdentity(owned, owned?.intent);
+      const pendingEntry = pending.get('openOrders');
+      if (pendingEntry?.onOpenOrder) {
+        try { pendingEntry.onOpenOrder(); } catch (_) { /* noop */ }
+      }
       if (TERMINAL_ORDER_STATUSES.has(normalizedOpenStatus)) {
         openOrders.delete(Number(orderId));
         logEvent('open_order_terminal', { ...identity, orderId: Number(orderId), status: orderState?.status ?? null, orderRef: order?.orderRef ?? null });
@@ -1708,19 +1712,37 @@ function createIbPaperExecutionAdapterService(options = {}) {
 	  async function getOpenPaperOrders() {
 	    if (!connected) return { ok: false, error: 'not_connected', orders: [] };
 	    return new Promise((resolve) => {
-	      const timer = setTimeout(() => {
+	      let resolved = false;
+	      const finish = (result) => {
+	        if (resolved) return;
+	        resolved = true;
+	        clearTimeout(timer);
+	        clearTimeout(progressTimer);
 	        pending.delete('openOrders');
+	        resolve(result);
+	      };
+	      const timer = setTimeout(() => {
 	        recordError(null, 'reconciliation_open_orders_timeout');
 	        logEvent('timeout', { operation: 'openOrders', timeoutMs: config.requestTimeoutMs });
-	        resolve({ ok: false, timedOut: true, blocker: 'reconciliation_open_orders_timeout', orders: [...openOrders.values()] });
+	        finish({ ok: false, timedOut: true, blocker: 'reconciliation_open_orders_timeout', orders: [...openOrders.values()] });
 	      }, config.requestTimeoutMs);
+	      let openOrderCount = 0;
+	      const progressTimer = setTimeout(() => {
+	        if (openOrderCount === 0 && !resolved) {
+	          recordError(null, 'reconciliation_open_orders_no_progress');
+	          logEvent('timeout', { operation: 'openOrders', reason: 'no_progress', timeoutMs: 5000 });
+	          finish({ ok: false, timedOut: true, blocker: 'reconciliation_open_orders_timeout', orders: [...openOrders.values()] });
+	        }
+	      }, 5000);
       pending.set('openOrders', {
-        resolve: (rows) => { clearTimeout(timer); resolve({ ok: true, orders: rows }); },
+        resolve: (rows) => { finish({ ok: true, orders: rows }); },
+        onOpenOrder: () => { openOrderCount += 1; },
       });
-      try { ib.reqAllOpenOrders(); } catch (err) {
-        clearTimeout(timer);
-        pending.delete('openOrders');
-        resolve({ ok: false, error: err.message, orders: [] });
+      try {
+        ib.reqAllOpenOrders();
+      } catch (err) {
+        recordError(null, `reconciliation_open_orders_exception: ${err.message}`);
+        finish({ ok: false, error: err.message, orders: [] });
       }
     });
   }
