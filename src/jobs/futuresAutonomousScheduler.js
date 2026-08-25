@@ -40,6 +40,7 @@ const orchestratorService = require('../services/ibPaperExecutionOrchestratorSer
 const configService = require('../services/ibPaperExecutionConfigService');
 const marketHours = require('../services/futuresMarketHoursService');
 const libraryRecorderModule = require('../services/library/strategyLibraryRecorderService');
+const reservationService = require('../services/futuresMaxOpenPositionsReservationService');
 
 const scanner = scannerService.defaultFuturesPaperScannerService;
 const orchestrator = orchestratorService.defaultIbPaperExecutionOrchestratorService;
@@ -257,14 +258,39 @@ async function tick() {
     // där, per order, mot verklig kontraktsräkning. Loopen avgör bara hur många
     // gånger frågan hinner ställas.
     //
-    // RACE CONDITION FIX: reconcileRuntime({ force: true }) called above ensures
-    // all iterations in this loop see same fresh position count. No two candidates
-    // can both pass max_open_positions check using stale cached reconciliation.
+    // (3.5) RECONCILE — update broker positions BEFORE claim/consume loop
+    // This provides fresh position count for all loop iterations
+    await orchestrator.reconcileRuntime({ force: true });
+
+    // MAX-10 ATOMIC ENFORCEMENT: Each iteration must atomically reserve a slot
+    // before submission. tryReserveSlot() is mutex-protected; only one candidate
+    // can pass the check at a time. This prevents the race condition where
+    // multiple candidates all read the same count and pass the check.
     const tickLimit = Math.max(1, Number(configService.getPilotLimits({ executionTarget }).maxOpenPositions) || 1);
     const submissions = [];
     const processedRoots = new Set();
     let claimedCandidate = null;
     let result = null;
+
+    // Factory for slot reservation check (reads fresh reconciliation each call)
+    const getOpenCountFn = () => {
+      const status = orchestrator.getStatus?.() || {};
+      const rec = status.brokerReconciliation || {};
+      const positions = Array.isArray(rec.positions) ? rec.positions : [];
+      let sum = 0;
+      for (const pos of positions) {
+        sum += Math.abs(Number(pos.position ?? pos.quantity ?? 0) || 0);
+      }
+      return sum;
+    };
+
+    // Factory for pending count (orders submitted but not yet filled)
+    const getPendingCountFn = () => {
+      const status = orchestrator.getStatus?.() || {};
+      const rec = status.brokerReconciliation || {};
+      return Number(rec.counts?.intents ?? 0) || 0;
+    };
+
     for (let attempt = 0; attempt < tickLimit; attempt += 1) {
       const claim = scanner.claimCandidateForIbkrPaper({ now, claimedBy: 'futures_autonomous_scheduler' });
       const candidate = claim?.candidate || null;
@@ -272,16 +298,50 @@ async function tick() {
       claimedCandidate = candidate;
       let candidateResult = null;
       let executionError = null;
+      let reservationResult = null;
       const candidateRoot = String(candidate.root || candidate.symbol || candidate.futuresSymbol || '').toUpperCase();
-      // Roten spärrades tidigare efter första kandidaten i ticken, med
-      // blockeraren same_symbol_pending_paper_entry. Den grinden finns inte
-      // längre i Broker Risk, och att behålla en kopia av den här hade betytt
-      // att schemaläggaren tillämpade en regel som riskmodellen inte längre
-      // känner till — precis den sortens tyst dubblering som gör att ett system
-      // rapporterar en gräns och tillämpar en annan.
-      //
-      // Roten bokförs fortfarande, för att svaret ska kunna visa hur ticken
-      // fördelade sig.
+
+      // ATOMIC SLOT RESERVATION — must succeed before we attempt execution
+      reservationResult = await reservationService.tryReserveSlot({
+        candidateId: candidate.candidateId || null,
+        intentId: candidate.candidateId || null, // placeholder; real intentId assigned after
+        getOpenCount: getOpenCountFn,
+        getPendingCount: getPendingCountFn,
+        maxSlots: 10,
+        now,
+      });
+
+      if (!reservationResult.reserved) {
+        // Slot limit reached; skip this candidate (and remaining in loop)
+        candidateResult = {
+          ok: false,
+          status: 'BLOCKED',
+          blockedReason: reservationResult.reason,
+          detail: reservationResult.state,
+        };
+        logEvent('MAX_POSITIONS_RESERVATION_FAILED', {
+          reason: reservationResult.reason,
+          state: reservationResult.state,
+        });
+        scanner.completeClaimedCandidate({
+          candidateId: candidate.candidateId || null,
+          candidate,
+          now,
+          completedBy: 'futures_autonomous_scheduler',
+          outcome: 'reservation_blocked',
+          details: { blockedReason: reservationResult.reason },
+        });
+        submissions.push({
+          strategyId: candidate.strategyId || null,
+          candidateId: candidate.candidateId || null,
+          submitted: false,
+          blockedReason: reservationResult.reason,
+        });
+        // Stop processing; we've hit the max-10 limit
+        break;
+      }
+
+      // Slot reserved; now execute the order
       processedRoots.add(candidateRoot);
       try {
         if (!candidateResult) {
@@ -291,6 +351,12 @@ async function tick() {
         executionError = err;
         candidateResult = { ok: false, status: 'ERROR', blockedReason: 'orchestrator_error', error: err && err.message ? err.message : String(err) };
       } finally {
+        // CRITICAL: Release reservation if submission failed
+        if (!candidateResult?.submitResult?.submitted) {
+          await reservationService.releaseReservation({ candidateId: candidate.candidateId || null });
+          logEvent('SLOT_RELEASED', { reason: 'submission_failed', blockedReason: candidateResult?.blockedReason });
+        }
+
         scanner.completeClaimedCandidate({
           candidateId: candidate.candidateId || null,
           candidate,
@@ -301,6 +367,7 @@ async function tick() {
             resultStatus: candidateResult?.status || null,
             blockedReason: candidateResult?.blockedReason || null,
             submitted: candidateResult?.submitResult?.submitted === true,
+            reservationStatus: reservationResult?.reserved ? 'reserved' : 'not_reserved',
           },
         });
       }
