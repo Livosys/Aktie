@@ -351,10 +351,14 @@ async function tick() {
         executionError = err;
         candidateResult = { ok: false, status: 'ERROR', blockedReason: 'orchestrator_error', error: err && err.message ? err.message : String(err) };
       } finally {
-        // CRITICAL: Release reservation if submission failed
+        // CRITICAL: Release reservation in both cases:
+        // 1. If submission failed, release immediately so slot can be claimed by next candidate
+        // 2. If submission succeeded, release since pending orders are now tracked via getPendingCountFn
+        await reservationService.releaseReservation({ candidateId: candidate.candidateId || null });
         if (!candidateResult?.submitResult?.submitted) {
-          await reservationService.releaseReservation({ candidateId: candidate.candidateId || null });
           logEvent('SLOT_RELEASED', { reason: 'submission_failed', blockedReason: candidateResult?.blockedReason });
+        } else {
+          logEvent('SLOT_RELEASED', { reason: 'submission_succeeded' });
         }
 
         scanner.completeClaimedCandidate({
@@ -426,7 +430,8 @@ function startFuturesAutonomousScheduler() {
   }
   if (intervalTimer || startupTimer) return startupTimer || intervalTimer; // already active
   const ms = intervalMs();
-  logEvent('SCHEDULER_STARTED', { intervalSeconds: ms / 1000, startupDelaySeconds: startupDelayMs() / 1000 });
+  const staleCleanup = reservationService.clearAllReservations();
+  logEvent('SCHEDULER_STARTED', { intervalSeconds: ms / 1000, startupDelaySeconds: startupDelayMs() / 1000, clearedStaleReservations: staleCleanup.cleared });
   // First tick fires after a short startup delay so the runtime finishes warming up.
   startupTimer = setTimeout(() => {
     tick();
