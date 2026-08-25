@@ -1,5 +1,6 @@
 'use strict';
 require('dotenv').config();
+console.log('[Server] IBKR_PAPER_EXECUTION_ENABLED at startup:', process.env.IBKR_PAPER_EXECUTION_ENABLED);
 const crypto = require('crypto');
 const express = require('express');
 const rateLimit = require('express-rate-limit');
