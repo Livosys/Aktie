@@ -205,6 +205,7 @@ function buildRow({
   quote = null,
   instrument = null,
   strategy = null,
+  brokerAggregate = null,
   now,
 }) {
   const direction = directionOf(position || {}) || directionOf({ direction: trade?.direction }) || null;
@@ -215,7 +216,8 @@ function buildRow({
     position?.avgCost,
   );
   const currentPrice = currentPriceOf({ quote, position });
-  const quantity = firstNumber(position?.quantity, trade?.quantity);
+  // FIXED: Logical trade always qty=1, NOT broker aggregate qty
+  const quantity = 1;
   const stopPrice = firstNumber(position?.stopLoss, position?.stopPrice, trade?.stopPrice);
   const takeProfitPrice = firstNumber(position?.takeProfit, position?.takeProfitPrice, trade?.takeProfitPrice);
   const tickSize = firstNumber(position?.tickSize, instrument?.tickSize, quote?.tickSize);
@@ -276,6 +278,8 @@ function buildRow({
     instrument,
     position,
     trade,
+    // Broker aggregate (qty sum för alla logical trades samma instrument)
+    brokerAggregate: brokerAggregate != null ? brokerAggregate : { symbol: null, quantity: null },
     // Identitetskedjan följer med raden så detaljvyn aldrig behöver leta upp den.
     identity: trade?.identity || {
       signalId: firstValue(position?.signalId),
@@ -302,50 +306,46 @@ export function buildPositionDeskRows({
   const instrumentByRoot = indexByRoot(instruments);
 
   const openTrades = toArray(trades).filter(isOpenTrade);
-  const tradeByKey = new Map();
-  for (const trade of openTrades) {
-    for (const key of tradeKeys(trade)) {
-      if (!tradeByKey.has(key)) tradeByKey.set(key, trade);
+  const brokerPositionsByConId = new Map();
+  for (const pos of toArray(brokerPositions)) {
+    const conId = String(pos.conId || pos.id || '');
+    if (conId && !brokerPositionsByConId.has(conId)) {
+      brokerPositionsByConId.set(conId, pos);
     }
   }
 
-  const usedTrades = new Set();
-  const rows = [];
-
-  for (const [index, position] of toArray(brokerPositions).entries()) {
-    const root = rootOf(position || {});
-    const trade = firstValue(
-      position?.executionId != null ? tradeByKey.get(String(position.executionId)) : null,
-      position?.conId != null ? tradeByKey.get(String(position.conId)) : null,
-    );
-    if (trade) usedTrades.add(trade.key);
-    const strategyId = firstValue(position?.strategyId, trade?.strategyId);
-    rows.push(buildRow({
-      key: firstValue(position?.id, position?.executionId, position?.conId, root) || `position_${index}`,
-      source: 'broker_position',
-      position,
-      trade: trade || null,
-      quote: root ? quoteByRoot.get(root) || null : null,
-      instrument: root ? instrumentByRoot.get(root) || null : null,
-      strategy: typeof resolveStrategy === 'function' && strategyId ? resolveStrategy({ strategyId }) : null,
-      now,
-    }));
+  // Aggregate broker qty by symbol for display
+  const brokerAggregateBySymbol = new Map();
+  for (const pos of toArray(brokerPositions)) {
+    const root = rootOf(pos || {});
+    if (!root) continue;
+    if (!brokerAggregateBySymbol.has(root)) {
+      brokerAggregateBySymbol.set(root, { symbol: root, quantity: 0, conId: pos.conId });
+    }
+    const agg = brokerAggregateBySymbol.get(root);
+    const qty = Math.abs(Number(pos.position ?? pos.quantity ?? 0) || 0);
+    agg.quantity += qty;
   }
 
-  // En öppen trade utan spegelrad hos brokern är fortfarande en öppen position —
-  // entryn är fylld. Den ska aldrig försvinna bara för att mirror-snapshoten
-  // släpar efter.
+  const rows = [];
+
+  // PRIMARY FLOW: Iterate over LOGICAL TRADES (one row per trade, qty=1 always)
+  // Do NOT iterate broker positions: each position aggregates multiple trades.
   for (const trade of openTrades) {
-    if (usedTrades.has(trade.key)) continue;
-    const root = trade.symbol ? String(trade.symbol).toUpperCase() : null;
+    const conId = String(trade.conId || '');
+    const brokerPos = conId ? brokerPositionsByConId.get(conId) : null;
+    const root = rootOf(brokerPos || {}) || rootOf({ symbol: trade.symbol }) || null;
+    const brokerAggregate = root ? brokerAggregateBySymbol.get(root) || null : null;
+
     rows.push(buildRow({
-      key: trade.key,
-      source: 'open_trade',
-      position: trade.position || null,
+      key: trade.executionId || trade.key,
+      source: 'logical_trade',
+      position: brokerPos || null,
       trade,
       quote: root ? quoteByRoot.get(root) || null : null,
       instrument: root ? instrumentByRoot.get(root) || null : null,
       strategy: typeof resolveStrategy === 'function' && trade.strategyId ? resolveStrategy({ strategyId: trade.strategyId }) : null,
+      brokerAggregate,
       now,
     }));
   }

@@ -188,10 +188,11 @@ function PositionDetail({ row, currency, nowMs }) {
               { label: 'strategyId', value: row.strategyId, mono: true },
               { label: 'Familj', value: row.strategyFamily },
               { label: 'Riktning', value: directionLabel(row.direction), tone: directionColor(row.direction) },
-              { label: 'Antal', value: fmtNumber(row.quantity) },
+              { label: 'Antal (Logical)', value: fmtNumber(row.quantity) },
+              { label: 'Broker aggregat', value: row.brokerAggregate?.quantity ? `${row.brokerAggregate.symbol} qty=${row.brokerAggregate.quantity}` : '—' },
               { label: 'Tick size', value: fmtNumber(row.tickSize, 4) },
               { label: 'Point value', value: fmtNumber(row.pointValue, 2) },
-              { label: 'Radkälla', value: row.source === 'open_trade' ? 'öppen trade (ej i broker mirror)' : 'broker mirror' },
+              { label: 'Radkälla', value: row.source === 'logical_trade' ? 'logical trade (qty=1)' : 'open trade (ej i broker mirror)' },
             ]}
           />
         </DetailBlock>
@@ -292,7 +293,9 @@ const PositionRow = React.memo(function PositionRow({ row, expanded, onToggle, c
         <td style={{ ...tdStyle, color: pnlColor(row.rMultiple), fontWeight: 800 }}>
           {row.rMultiple == null ? EMPTY_VALUE : `${fmtNumber(row.rMultiple, 2)}R`}
         </td>
-        <td style={tdStyle}>{fmtNumber(row.quantity)}</td>
+        <td style={tdStyle} title={row.brokerAggregate?.quantity ? `${row.brokerAggregate.symbol} broker qty=${row.brokerAggregate.quantity}` : null}>
+          {fmtNumber(row.quantity)}
+        </td>
         <td style={{ ...tdStyle, color: row.stopPrice == null ? 'var(--danger)' : 'var(--text)' }}>
           {row.stopPrice == null ? 'saknas' : fmtNumber(row.stopPrice, 2)}
         </td>
@@ -424,7 +427,7 @@ export const PositionDeskPanel = React.memo(function PositionDeskPanel({
                     <th style={thStyle}>Resultat %</th>
                     <th style={thStyle}>Ticks</th>
                     <th style={thStyle}>R</th>
-                    <th style={thStyle}>Antal</th>
+                    <th style={thStyle} title="Logical trade quantity (always 1)">Antal</th>
                     <th style={thStyle}>Stop</th>
                     <th style={thStyle}>Mål</th>
                     <th style={thStyle}>Till stop</th>
