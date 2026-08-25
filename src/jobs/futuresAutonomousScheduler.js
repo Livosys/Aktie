@@ -239,6 +239,11 @@ async function tick() {
     const scan = scanner.runScannerOnce({ now });
     const candidatesCreated = Number(scan?.scan?.candidatesCreated ?? scan?.candidatesCreated ?? 0);
 
+    // (3.5) RECONCILE — update broker positions BEFORE claim/consume loop
+    // This prevents race condition where multiple candidates in same tick use stale position count.
+    // Without this, two candidates can both see positions=9, both pass max_10 check, result in 11 total.
+    await orchestrator.reconcileRuntime({ force: true });
+
     // (4-5) CLAIM/CONSUME — behandla så många kandidater per tick som taket
     // tillåter, sekventiellt.
     //
@@ -251,6 +256,10 @@ async function tick() {
     // går genom Broker Risk i buildShadowExecution — exponeringen kontrolleras
     // där, per order, mot verklig kontraktsräkning. Loopen avgör bara hur många
     // gånger frågan hinner ställas.
+    //
+    // RACE CONDITION FIX: reconcileRuntime({ force: true }) called above ensures
+    // all iterations in this loop see same fresh position count. No two candidates
+    // can both pass max_open_positions check using stale cached reconciliation.
     const tickLimit = Math.max(1, Number(configService.getPilotLimits({ executionTarget }).maxOpenPositions) || 1);
     const submissions = [];
     const processedRoots = new Set();
