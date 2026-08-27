@@ -1206,9 +1206,13 @@ function normalizeCanonicalPerformanceStrategy(row = {}, verification = null, un
     drawdown: hasVerifiedRealizedPnl && hasEnoughTradesForRatios ? numberOrNull(row.maxDrawdownSek ?? row.drawdown) : null,
     // Orealiserad PnL kommer från öppna positioner, inte från stängda fills.
     unrealizedPnl: numberOrNull(unrealizedPnl),
+    unrealizedPnlCurrency: 'SEK',
     netPnl: hasVerifiedRealizedPnl ? numberOrNull(row.netPnlSek ?? row.netPnl) : null,
+    netPnlCurrency: hasVerifiedRealizedPnl ? 'SEK' : null,
     grossPnl: hasVerifiedRealizedPnl ? numberOrNull(row.grossPnlSek ?? row.grossPnl) : null,
+    grossPnlCurrency: hasVerifiedRealizedPnl ? 'SEK' : null,
     commission: hasVerifiedCommission ? numberOrNull(row.feesSek ?? row.commission) : null,
+    commissionCurrency: hasVerifiedCommission ? 'SEK' : null,
   };
 }
 
