@@ -15,6 +15,7 @@ const futuresPaperLedgerService = require('./futuresPaperLedgerService');
 const futuresPaperQuoteSourceService = require('./futuresPaperQuoteSourceService');
 const strategyPerformanceReadService = require('./strategyPerformanceReadService');
 const paperAllowlistService = require('./paperAllowlistService');
+const futuresPaperAllowlistService = require('./futuresPaperAllowlistService');
 const futuresTradingOsSignalAdapterService = require('./futuresTradingOsSignalAdapterService');
 const futuresCanonicalSignalProviderService = require('./futuresCanonicalSignalProviderService');
 const strategyTradeControl = require('./strategyTradeControlService');
@@ -99,8 +100,13 @@ function countSkipReason(rows, skipReason) {
 // FAS 1: Check if strategy has native futures runtime implementation
 function hasNativeFuturesRuntime(strategyId) {
   try {
-    const nativeStrategies = nativeFuturesStrategyRegistry.listNativeStrategies();
-    return nativeStrategies.some(s => s.originStrategyId === strategyId || s.strategyId === strategyId);
+    // Try to resolve as a legacy/canonical strategy ID (includes aliases like narrow_state_fakeout_reversal)
+    const nativeStrategies = nativeFuturesStrategyRegistry.nativeStrategiesForOrigin(strategyId);
+    if (nativeStrategies.length > 0) return true;
+
+    // Try to resolve as a native strategy ID
+    const nativeStrat = nativeFuturesStrategyRegistry.getNativeStrategy(strategyId);
+    return nativeStrat != null;
   } catch (_) {
     return false;
   }
@@ -1168,6 +1174,8 @@ function createFuturesPaperScannerService(options = {}) {
   // DEL 6: strategy status per strategi (godkända + strategier med ledger-historik).
   function getStrategyStatus({ now = new Date() } = {}) {
     const { strategies, allowlistError } = getApprovedStrategySource();
+    const futuresPaperAllowlist = futuresPaperAllowlistService.getFuturesPaperAllowlist();
+    const futuresPaperEnrolledIds = new Set(futuresPaperAllowlist.strategyIds || []);
     const positionsSummary = getActivePositionsSummary();
     try {
       const registryRows = typeof strategyRegistry.getStatus === 'function'
@@ -1191,6 +1199,25 @@ function createFuturesPaperScannerService(options = {}) {
         });
       }
     } catch (_) { /* status ska fortsätta visa paper allowlist även om registry läsning faller */ }
+
+    // Add futures paper enrolled strategies
+    for (const strategyId of futuresPaperEnrolledIds) {
+      if (!strategies.some((strategy) => strategy.strategyId === strategyId)) {
+        const runtimeExists = hasNativeFuturesRuntime(strategyId);
+        if (runtimeExists) {
+          strategies.push({
+            strategyId,
+            strategyName: strategyId,
+            approved: true,
+            source: 'futures_paper_allowlist',
+            performance: null,
+            confidence: 0.5,
+            skipReason: null,
+          });
+        }
+      }
+    }
+
     const approvedIds = new Set(strategies.map((row) => row.strategyId));
 
     // Strategier som har trades i ledgern men inte (längre) är godkända.
