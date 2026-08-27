@@ -57,7 +57,7 @@ function evaluateMeanReversion(context) {
 
   // Need momentum signal to confirm reversal
   // RSI > 70 (overbought) or RSI < 30 (oversold) indicates exhaustion
-  if (!rsi14 || (rsi14 <= 30 && rsi14 >= 70)) {
+  if (!rsi14 || (rsi14 > 30 && rsi14 < 70)) {
     return null;
   }
 
