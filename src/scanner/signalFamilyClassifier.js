@@ -8,6 +8,8 @@ const {
 const SIGNAL_FAMILIES = new Set([
   'EMA_TREND_PULLBACK',
   'VWAP_RECLAIM_REJECTION',
+  'VWAP_MEAN_REVERSION',
+  'EMA_BREAKDOWN',
   'BREAKOUT_RETEST',
   'NARROW_COMPRESSION',
   'LATE_MOVE_BLOCK',
@@ -25,8 +27,10 @@ const PRODUCIBLE_ENTRY_SUBTYPES = Object.freeze([
   'NARROW_FAKEOUT',
   'EMA_PULLBACK_UP',
   'EMA_PULLBACK_DOWN',
+  'EMA_BREAKDOWN_DOWN',
   'VWAP_RECLAIM_UP',
   'VWAP_REJECTION_DOWN',
+  'VWAP_MEAN_REVERSION',
   'REGULAR_PULLBACK',
 ]);
 
@@ -44,8 +48,10 @@ const PRODUCIBLE_SUBTYPE_DIRECTIONS = Object.freeze({
   NARROW_FAKEOUT: 'both',
   EMA_PULLBACK_UP: 'long',
   EMA_PULLBACK_DOWN: 'short',
+  EMA_BREAKDOWN_DOWN: 'short',
   VWAP_RECLAIM_UP: 'long',
   VWAP_REJECTION_DOWN: 'short',
+  VWAP_MEAN_REVERSION: 'both',
   REGULAR_PULLBACK: 'both',
 });
 
@@ -56,8 +62,10 @@ const PRODUCIBLE_SUBTYPE_FAMILIES = Object.freeze({
   NARROW_FAKEOUT: 'NARROW_COMPRESSION',
   EMA_PULLBACK_UP: 'EMA_TREND_PULLBACK',
   EMA_PULLBACK_DOWN: 'EMA_TREND_PULLBACK',
+  EMA_BREAKDOWN_DOWN: 'EMA_BREAKDOWN',
   VWAP_RECLAIM_UP: 'VWAP_RECLAIM_REJECTION',
   VWAP_REJECTION_DOWN: 'VWAP_RECLAIM_REJECTION',
+  VWAP_MEAN_REVERSION: 'VWAP_MEAN_REVERSION',
   REGULAR_PULLBACK: 'REGULAR_PULLBACK',
 });
 
@@ -477,6 +485,14 @@ function classifySignalFamily(sig = {}) {
       direction,
       reasonSv: sig.signalFamilyReasonSv || null,
     };
+  }
+
+  // Extension point: allow registered modular producers to detect signals
+  // This is called only if main classifier did not produce a signal
+  const producerRegistry = require('./signalProducerRegistry');
+  const extendedSignal = producerRegistry.evaluateExtendedProducers(sig);
+  if (extendedSignal) {
+    return extendedSignal;
   }
 
   return {

@@ -40,6 +40,8 @@ const STRATEGY_MODULES = Object.freeze([
   require('./nativeFuturesVwapMomentumStrategyService'),
   require('./nativeFuturesVwapFailedBreakoutShortStrategyService'),
   require('./nativeFuturesVwapRejectionShortStrategyService'),
+  require('./nativeFuturesMeanReversionVwapStrategyService'),
+  require('./nativeFuturesEmaBreakdownStrategyService'),
   require('./nativeFuturesTrendContinuationStrategyService'),
   require('./nativeFuturesNarrowBreakoutShortStrategyService'),
   require('./nativeFuturesNarrowFakeoutReversalStrategyService'),
