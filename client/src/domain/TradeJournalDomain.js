@@ -622,8 +622,11 @@ export function summarizeTrades(trades = []) {
     // identisk definition med futuresPaperStrategyPerformanceService.
     winRate: closed.length ? (wins.length / closed.length) * 100 : null,
     grossPnl,
+    grossPnlCurrency: grossPnl != null ? 'SEK' : null,
     commission,
+    commissionCurrency: commission != null ? 'SEK' : null,
     netPnl,
+    netPnlCurrency: netPnl != null ? 'SEK' : null,
     averageWinner: wins.length ? winSum / wins.length : null,
     averageLoser: losses.length ? lossSum / losses.length : null,
     profitFactor: lossSum < 0 ? winSum / Math.abs(lossSum) : null,
