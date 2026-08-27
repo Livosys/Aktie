@@ -175,10 +175,10 @@ export const TradeDetailCard = React.memo(function TradeDetailCard({ trade, curr
             { label: 'Take profit', value: fmtNumber(trade.takeProfitPrice, 2) },
             { label: 'Quantity', value: fmtNumber(trade.quantity) },
             { label: 'Duration', value: fmtAge(trade.durationMs) },
-            { label: 'Gross PnL', value: fmtMoney(trade.grossPnl, currency, 2) },
+            { label: 'Gross PnL', value: fmtMoney(trade.grossPnl, trade.grossPnlCurrency || currency, 2) },
             { label: 'Commission', value: fmtMoney(trade.commission, trade.commissionCurrency || currency, 2) },
-            { label: 'Net PnL', value: fmtMoney(trade.netPnl, currency, 2) },
-            { label: 'Unrealized PnL', value: fmtMoney(trade.unrealizedPnl, currency, 2) },
+            { label: 'Net PnL', value: fmtMoney(trade.netPnl, trade.netPnlCurrency || currency, 2) },
+            { label: 'Unrealized PnL', value: fmtMoney(trade.unrealizedPnl, trade.unrealizedPnlCurrency || currency, 2) },
             { label: 'Broker time entry', value: evidence.entryExecutionTime, mono: true },
             { label: 'Broker time exit', value: evidence.filledExecutionTime, mono: true },
           ]}

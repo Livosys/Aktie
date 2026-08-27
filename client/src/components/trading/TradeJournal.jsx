@@ -137,11 +137,11 @@ const TradeRow = React.memo(function TradeRow({ trade, expanded, onToggle, curre
         <td style={tdStyle}>{fmtNumber(trade.takeProfitPrice, 2)}</td>
         <td style={tdStyle}>{fmtNumber(trade.quantity)}</td>
         <td style={{ ...tdStyle, color: pnlColor(trade.grossPnl) }}>
-          {trade.grossPnl == null ? EMPTY_VALUE : fmtMoney(trade.grossPnl, currency, 2)}
+          {trade.grossPnl == null ? EMPTY_VALUE : fmtMoney(trade.grossPnl, trade.grossPnlCurrency || currency, 2)}
         </td>
         <td style={tdStyle}>{fmtMoney(trade.commission, trade.commissionCurrency || currency, 2)}</td>
         <td style={{ ...tdStyle, color: pnlColor(pnl), fontWeight: 800 }} title={openRow && pnl != null ? 'Orealiserad PnL från öppen brokerposition' : null}>
-          {pnl == null ? EMPTY_VALUE : `${fmtMoney(pnl, currency, 2)}${openRow ? '*' : ''}`}
+          {pnl == null ? EMPTY_VALUE : `${fmtMoney(pnl, openRow && trade.unrealizedPnlCurrency ? trade.unrealizedPnlCurrency : trade.netPnlCurrency || currency, 2)}${openRow ? '*' : ''}`}
         </td>
         <td style={{ ...tdStyle, color: pnlColor(trade.pnlPercent) }}>{trade.pnlPercent == null ? EMPTY_VALUE : fmtPercent(trade.pnlPercent, 2)}</td>
         <td style={tdStyle}>{fmtAge(trade.durationMs)}</td>

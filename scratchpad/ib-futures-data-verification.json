@@ -1,0 +1,183 @@
+{
+  "generatedAt": "2026-08-04T16:51:11.092Z",
+  "host": "127.0.0.1",
+  "port": 4002,
+  "clientId": 957,
+  "readOnly": true,
+  "safety": {
+    "mode": "paper_only",
+    "actions_allowed": false,
+    "can_place_orders": false,
+    "live_trading_enabled": false,
+    "broker_enabled": false
+  },
+  "connection": {
+    "connected": true,
+    "error": null
+  },
+  "marketDataTypeRequested": 1,
+  "symbols": {
+    "MNQ": {
+      "contract": {
+        "ok": true,
+        "count": 5,
+        "conId": 793356225,
+        "localSymbol": "MNQU6",
+        "lastTradeDate": "20260918 08:30:00 US/Central",
+        "exchange": "CME"
+      },
+      "snapshot": {
+        "ok": true,
+        "error": null,
+        "code": null,
+        "marketDataType": 1,
+        "marketDataTypeLabel": "realtime",
+        "sawDelayedField": false,
+        "last": 29740.25,
+        "bid": 29740.25,
+        "ask": 29740.5,
+        "close": 28891.75
+      },
+      "historical": {
+        "1 min": {
+          "ok": true,
+          "bars": 1132,
+          "firstBar": "1785794400",
+          "lastBar": "1785862260",
+          "error": null,
+          "code": null
+        },
+        "2 mins": {
+          "ok": true,
+          "bars": 566,
+          "firstBar": "1785794400",
+          "lastBar": "1785862200",
+          "error": null,
+          "code": null
+        },
+        "5 mins": {
+          "ok": true,
+          "bars": 503,
+          "firstBar": "1785708000",
+          "lastBar": "1785862200",
+          "error": null,
+          "code": null
+        },
+        "15 mins": {
+          "ok": true,
+          "bars": 444,
+          "firstBar": "1785276000",
+          "lastBar": "1785861900",
+          "error": null,
+          "code": null
+        },
+        "1 hour": {
+          "ok": true,
+          "bars": 111,
+          "firstBar": "1785276000",
+          "lastBar": "1785859200",
+          "error": null,
+          "code": null
+        },
+        "1 day": {
+          "ok": true,
+          "bars": 252,
+          "firstBar": "20250805",
+          "lastBar": "20260804",
+          "error": null,
+          "code": null
+        }
+      },
+      "ticks": {
+        "ok": true,
+        "count": 1013,
+        "error": null,
+        "code": null
+      },
+      "depth": {}
+    },
+    "MES": {
+      "contract": {
+        "ok": true,
+        "count": 5,
+        "conId": 793356217,
+        "localSymbol": "MESU6",
+        "lastTradeDate": "20260918 08:30:00 US/Central",
+        "exchange": "CME"
+      },
+      "snapshot": {
+        "ok": true,
+        "error": null,
+        "code": null,
+        "marketDataType": 1,
+        "marketDataTypeLabel": "realtime",
+        "sawDelayedField": false,
+        "last": 7754.75,
+        "bid": 7754.75,
+        "ask": 7755,
+        "close": 7628.25
+      },
+      "historical": {
+        "1 min": {
+          "ok": true,
+          "bars": 1132,
+          "firstBar": "1785794400",
+          "lastBar": "1785862260",
+          "error": null,
+          "code": null
+        },
+        "2 mins": {
+          "ok": true,
+          "bars": 566,
+          "firstBar": "1785794400",
+          "lastBar": "1785862200",
+          "error": null,
+          "code": null
+        },
+        "5 mins": {
+          "ok": true,
+          "bars": 503,
+          "firstBar": "1785708000",
+          "lastBar": "1785862200",
+          "error": null,
+          "code": null
+        },
+        "15 mins": {
+          "ok": true,
+          "bars": 444,
+          "firstBar": "1785276000",
+          "lastBar": "1785861900",
+          "error": null,
+          "code": null
+        },
+        "1 hour": {
+          "ok": true,
+          "bars": 111,
+          "firstBar": "1785276000",
+          "lastBar": "1785859200",
+          "error": null,
+          "code": null
+        },
+        "1 day": {
+          "ok": true,
+          "bars": 252,
+          "firstBar": "20250805",
+          "lastBar": "20260804",
+          "error": null,
+          "code": null
+        }
+      },
+      "ticks": {
+        "ok": true,
+        "count": 1003,
+        "error": null,
+        "code": null
+      },
+      "depth": {}
+    }
+  },
+  "pacing": {
+    "pauseMsBetweenHistoricalRequests": 2000
+  },
+  "notes": []
+}
