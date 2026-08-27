@@ -1298,6 +1298,469 @@ function buildCanonicalPerformance({
   };
 }
 
+// Canonical ownership layer: explicit mapping of data domains to authoritative sources.
+// This ensures frontend does not guess between old/new pipelines.
+// FAS 8: Canonical Market Watch / Latest Signal
+// Uses current native runtime signal data only; never surfaces legacy scanner timestamps
+function buildCanonicalMarketWatch({ runtimePerformance, session, now } = {}) {
+  const runtime = runtimePerformance || {};
+  const latestSignal = runtime.latestSignal || null;
+  const latestScanAt = runtime.latestScanAt || null;
+  const nowMs = now ? now.getTime() : Date.now();
+
+  // Determine freshness based on canonical signal timestamp
+  let stale = false;
+  let health = 'unknown';
+  let signalAgeMs = null;
+  let reason = null;
+
+  if (!latestSignal) {
+    health = 'inactive';
+    stale = false; // No signal is not stale, it's just inactive
+    reason = 'No current native signal in runtime';
+  } else {
+    const signalMs = latestSignal.timestamp || latestSignal.scanStartedAt || latestSignal.generatedAt;
+    if (signalMs) {
+      signalAgeMs = nowMs - new Date(signalMs).getTime();
+      // Signal is stale if older than 5 minutes (300000ms)
+      stale = signalAgeMs > 300000;
+      health = stale ? 'stale' : 'fresh';
+      reason = stale ? `Signal age: ${Math.round(signalAgeMs / 1000)}s` : 'Latest signal current';
+    } else {
+      health = 'unknown';
+      reason = 'Signal timestamp missing';
+    }
+  }
+
+  return {
+    source: 'futuresPaperScannerService (native runtime)',
+    canonical: true,
+
+    // Market watch status
+    active: Boolean(latestSignal),
+    marketDataConnected: session?.marketOpen === true || false,
+
+    // Latest signal info
+    latestSignalAt: latestSignal?.timestamp || latestSignal?.scanStartedAt || latestSignal?.generatedAt || null,
+    latestSignalId: latestSignal?.signalId || latestSignal?.scanId || null,
+    latestScanAt: latestScanAt || null,
+
+    // Freshness
+    signalAgeMs,
+    stale,
+    health, // 'fresh' | 'stale' | 'inactive' | 'unknown'
+    reason, // Diagnostic reason
+
+    // Diagnostic
+    legacyScannnerLastScanAt_DEPRECATED: null, // Intentionally null; never expose scanner.lastScanAt
+    updatedAt: now ? now.toISOString() : null,
+  };
+}
+
+// FAS 7: Canonical Broker/Order Health Model
+// Defines single health state based on canonical broker/execution sources
+// Paper submission enabled is NOT a problem; only real blockers produce "blocked" state
+function buildCanonicalBrokerHealth({ brokerReconciliation, account, session, now } = {}) {
+  const recon = brokerReconciliation || {};
+  const isConnected = recon.executionConnected === true;
+  const isReconciled = recon.status === 'ok';
+  const isDegraded = recon.degraded === true;
+  const hasBlockingDiscrepancy = Array.isArray(recon.blockingDiscrepancies) && recon.blockingDiscrepancies.length > 0;
+  const accountVerified = Boolean(account && account.accountIdMasked);
+  const liveBlocked = recon.liveBlocked === true || recon.liveTradingDisabled === true;
+
+  // Determine health state based on canonical sources only
+  let state = 'unknown';
+  let healthy = false;
+  let blocking = false;
+  const reasons = [];
+
+  if (!brokerReconciliation) {
+    state = 'unknown';
+    reasons.push('No broker reconciliation snapshot available');
+  } else if (!isConnected) {
+    state = 'offline';
+    blocking = true;
+    reasons.push('IB API disconnected');
+  } else if (!accountVerified) {
+    state = 'blocked';
+    blocking = true;
+    reasons.push('Paper account not verified');
+  } else if (isDegraded || hasBlockingDiscrepancy) {
+    state = 'degraded';
+    blocking = false; // Degraded but not blocking trading
+    if (isDegraded) reasons.push('Reconciliation degraded');
+    if (hasBlockingDiscrepancy) reasons.push(`Blocking discrepancy: ${recon.blockingDiscrepancies[0]?.reason || 'unknown'}`);
+  } else if (isReconciled && isConnected && accountVerified) {
+    state = 'ready';
+    healthy = true;
+    reasons.push('IB API connected');
+    reasons.push('Paper account verified');
+    reasons.push('Reconciliation OK');
+  }
+
+  return {
+    source: 'ibPaperExecutionOrchestratorService.reconciliation',
+    canonical: true,
+    state, // 'ready' | 'degraded' | 'blocked' | 'offline' | 'unknown'
+    healthy, // Can trade safely
+    blocking, // Prevents trading
+    reasons: reasons.filter(Boolean), // List of status reasons (filtered to remove nulls)
+    liveBlocked, // Expected: true (live disabled in paper mode)
+    accountVerified, // Paper account verified (boolean)
+    isConnected, // API connected
+    isReconciled, // Reconciliation OK
+    isDegraded, // Has non-blocking issues
+    hasBlockingDiscrepancy, // Has actual blocker
+    updatedAt: now ? now.toISOString() : null,
+  };
+}
+
+// FAS 6: Canonical Top List Rankings
+// Defines ownership for each ranking metric; frontend must use only these canonical sources
+function buildCanonicalRankings({ strategies = [], performance = {}, now } = {}) {
+  // Rank by canonical netPnlSek (realized trade PnL from IBKR paper fills)
+  // Source: futuresPaperStrategyPerformanceService (canonical journal)
+  // If all strategies have negative PnL, "bestResult" shows best of negative results
+  const stratsByPnl = (strategies || [])
+    .filter((s) => s && s.strategyId && typeof s.netPnlSek === 'number')
+    .sort((a, b) => b.netPnlSek - a.netPnlSek);
+
+  const bestResult = stratsByPnl.length > 0 ? {
+    source: 'futuresPaperStrategyPerformanceService (canonical journal)',
+    metric: 'netPnlSek',
+    meaning: stratsByPnl[0].netPnlSek >= 0 ? 'Best realized PnL (positive)' : 'Best of available results (all negative)',
+    strategyId: stratsByPnl[0].strategyId,
+    displayName: stratsByPnl[0].displayName || stratsByPnl[0].strategyName,
+    value: stratsByPnl[0].netPnlSek,
+    canonical: true,
+    updatedAt: now ? now.toISOString() : null,
+  } : {
+    source: 'futuresPaperStrategyPerformanceService',
+    canonical: false,
+    stale: true,
+    note: 'No strategies with realized PnL data available',
+    updatedAt: now ? now.toISOString() : null,
+  };
+
+  // Rank by canonical winRatePct (wins / closed trades from journal)
+  // Source: futuresPaperStrategyPerformanceService
+  // Requires minimum 5 closed trades per performance service rules
+  const stratsByWinRate = (strategies || [])
+    .filter((s) => s && s.strategyId && typeof s.winRatePct === 'number' && (s.closedTrades || 0) >= 5)
+    .sort((a, b) => b.winRatePct - a.winRatePct);
+
+  const highestWinRate = stratsByWinRate.length > 0 ? {
+    source: 'futuresPaperStrategyPerformanceService (canonical journal)',
+    metric: 'winRatePct',
+    meaning: 'Win rate from closed trades (minimum 5 trades required)',
+    strategyId: stratsByWinRate[0].strategyId,
+    displayName: stratsByWinRate[0].displayName || stratsByWinRate[0].strategyName,
+    value: stratsByWinRate[0].winRatePct,
+    closedTrades: stratsByWinRate[0].closedTrades,
+    canonical: true,
+    updatedAt: now ? now.toISOString() : null,
+  } : {
+    source: 'futuresPaperStrategyPerformanceService',
+    canonical: false,
+    stale: true,
+    note: 'No strategies with sufficient closed trades (minimum 5 required)',
+    updatedAt: now ? now.toISOString() : null,
+  };
+
+  // TODO: FAS 6 "Störst förbättring" (biggestImprovement)
+  // This requires identifying the actual canonical improvement metric
+  // Currently fails closed until improvement metric is defined
+  const biggestImprovement = {
+    source: 'pending_definition',
+    canonical: false,
+    stale: true,
+    note: 'Improvement metric not yet canonically defined. Fails closed.',
+    updatedAt: now ? now.toISOString() : null,
+  };
+
+  // TODO: FAS 6 "Mest lovande" (mostPromising)
+  // Uses canonical Factory evidence/score only
+  // Currently fails closed until canonical scoring contract is verified
+  const mostPromising = {
+    source: 'pending_definition',
+    canonical: false,
+    stale: true,
+    note: 'Promising metric not yet canonically defined. Fails closed.',
+    updatedAt: now ? now.toISOString() : null,
+  };
+
+  return {
+    source: 'futuresPaperStrategyPerformanceService (canonical journal)',
+    canonical: true,
+    rankings: {
+      bestResult,
+      highestWinRate,
+      biggestImprovement,
+      mostPromising,
+    },
+    canonicalOwnership: {
+      bestResult: 'netPnlSek from journal (realized trade PnL)',
+      highestWinRate: 'winRatePct from journal (closed trades win rate)',
+      biggestImprovement: 'PENDING DEFINITION — improvement metric not yet established',
+      mostPromising: 'PENDING DEFINITION — Factory evidence score not yet canonicalized',
+    },
+    legacySourcesRemoved: [
+      'strategy.score (legacy)',
+      'strategy.strategyScore (non-canonical)',
+      'strategy.confidenceScore (non-canonical)',
+      'candidateQueue sorting (deprecated)',
+    ],
+    updatedAt: now ? now.toISOString() : null,
+  };
+}
+
+function buildCanonicalDataModel(params = {}) {
+  const {
+    account,
+    portfolio,
+    performance,
+    brokerReconciliation,
+    brokerPositions,
+    closedTrades,
+    strategyOverview,
+    strategyStatus,
+    session,
+    executionTarget,
+    now,
+    runtimePerformance,
+  } = params;
+
+  const accountSource = account ? 'ibPaperAccountSummaryService' : null;
+  const brokerSource = brokerReconciliation ? 'ibPaperExecutionOrchestratorService.reconciliation' : null;
+  const tradesSource = closedTrades?.length ? 'ibPaperExecutionIntentService' : null;
+  const strategySource = strategyStatus ? 'nativeFuturesStrategyRegistryService' : null;
+  const runtimeSource = brokerReconciliation ? 'ibPaperExecutionOrchestratorService' : null;
+
+  return {
+    // Explicit canonical ownership for each domain
+    canonical: {
+      results: performance ? {
+        source: 'futuresPaperStrategyPerformanceService',
+        canonical: true,
+        stale: false,
+        updatedAt: performance.updatedAt || null,
+        data: {
+          netToday: performance.netToday || null,
+          netTotal: performance.netTotal || null,
+          grossPnl: performance.grossPnl || null,
+          netPnl: performance.netPnl || null,
+          commission: performance.commission || null,
+          winRate: performance.winRate || null,
+          closedTrades: performance.closedTrades || 0,
+        },
+      } : { source: null, canonical: false, data: null },
+
+      broker: brokerReconciliation ? {
+        source: 'ibPaperExecutionOrchestratorService.reconciliation',
+        canonical: true,
+        stale: false,
+        updatedAt: brokerReconciliation.generatedAt || null,
+        data: {
+          connected: brokerReconciliation.executionConnected ?? null,
+          accountId: account?.accountIdMasked || null,
+          positions: (brokerPositions || []).length,
+          orders: (brokerReconciliation.openOrders || []).length,
+          executions: (brokerReconciliation.executions || []).length,
+          dailyPnl: account?.dailyPnl || null,
+          reconciliationStatus: brokerReconciliation.status || null,
+          degraded: brokerReconciliation.degraded || false,
+        },
+      } : { source: null, canonical: false, data: null },
+
+      trades: closedTrades?.length ? {
+        source: 'ibPaperExecutionIntentService + canonical_journal',
+        canonical: true,
+        stale: false,
+        updatedAt: null,
+        data: {
+          closedCount: closedTrades.length,
+          recentTrades: closedTrades.slice(0, 5),
+        },
+      } : { source: null, canonical: false, data: null },
+
+      strategies: strategyStatus ? {
+        source: 'nativeFuturesStrategyRegistryService + strategyLibraryEnrichment',
+        canonical: true,
+        stale: false,
+        updatedAt: now ? now.toISOString() : null,
+        data: {
+          totalStrategies: strategyStatus.totalStrategies || 0,
+          tradableNow: strategyStatus.tradableNow || 0,
+          strategies: (strategyStatus.strategies || []).map((s) => ({
+            id: s.strategyId || s.id,
+            name: s.displayName || s.strategyName,
+            status: s.status || 'unknown',
+            paperEligible: s.paperEligible || false,
+            forwardPaperActive: s.forwardPaperActive || false,
+            blocked: s.blocked || false,
+            blockedReason: s.blockedReason || null,
+            runtimeImplemented: s.runtimeImplemented || false,
+            historicallyTested: s.historicallyTested || false,
+            evidenceSufficient: s.evidenceSufficient || false,
+            factoryApproved: s.factoryApproved || false,
+            producerActive: s.producerActive || false,
+          })),
+        },
+      } : { source: null, canonical: false, data: null },
+
+      runtime: runtimeSource ? {
+        source: 'ibPaperExecutionOrchestratorService + futuresPaperScannerService',
+        canonical: true,
+        stale: false,
+        updatedAt: brokerReconciliation?.generatedAt || null,
+        data: {
+          executionTarget,
+          paperOnly: executionTarget === 'ibkr_paper',
+          connected: brokerReconciliation?.executionConnected ?? null,
+          mode: executionTarget === 'ibkr_paper' ? 'paper' : (executionTarget === 'ibkr_live' ? 'live' : 'unknown'),
+        },
+      } : { source: null, canonical: false, data: null },
+
+      market: session ? {
+        source: 'futuresMarketHoursService + futuresMarketDataService',
+        canonical: true,
+        stale: false,
+        updatedAt: now ? now.toISOString() : null,
+        data: {
+          currentSession: session.name || null,
+          marketOpen: session.marketOpen || false,
+          nextTransition: session.nextTransition || null,
+        },
+      } : { source: null, canonical: false, data: null },
+
+      account: account ? {
+        source: 'ibPaperAccountSummaryService',
+        canonical: true,
+        stale: false,
+        updatedAt: account.generatedAt || null,
+        data: {
+          accountId: account.accountIdMasked || null,
+          currency: account.currency || 'USD',
+          netLiquidation: account.netLiquidation || null,
+          availableFunds: account.availableFunds || null,
+          buyingPower: account.buyingPower || null,
+          dailyPnl: account.dailyPnl || null,
+        },
+      } : { source: null, canonical: false, data: null },
+    },
+
+    // Canonical AI summary context (for "Dagens läge")
+    // Based on latest actual canonical trade activity, NOT legacy queue
+    aiSummaryContext: closedTrades && closedTrades.length > 0 ? {
+      source: 'latest_canonical_closed_trade',
+      canonical: true,
+      stale: false,
+      strategyId: closedTrades[0]?.strategyId || null,
+      strategyName: closedTrades[0]?.strategyName || null,
+      symbol: closedTrades[0]?.symbol || null,
+      side: closedTrades[0]?.direction || null,
+      result: closedTrades[0]?.netPnl || null,
+      resultCurrency: 'SEK',
+      exitTime: closedTrades[0]?.exitTime || closedTrades[0]?.exitMs || null,
+      note: 'Strategy and result from latest closed canonical trade, not from legacy queue',
+    } : {
+      source: 'none',
+      canonical: false,
+      stale: true,
+      strategyId: null,
+      strategyName: null,
+      note: 'No recent canonical trade activity; show neutral fallback',
+    },
+
+    // Explicit result normalization for consistency
+    // Frontend must use canonical sources, NOT broker fallback
+    resultsNormalization: {
+      canonicalJournalSource: 'summarizeTrades(closedTrades)',
+      brokerResultSource: 'account.dailyPnl (separate measurement)',
+      consistency: {
+        why_they_differ: 'Journal excludes open position PnL, broker includes unrealized daily changes',
+        timezone: 'Journal uses local midnight boundaries, broker uses trading day boundary',
+        commission: 'Journal includes realized commission only',
+      },
+      usage: {
+        for_period_results: 'ALWAYS use canonical journal (runtimePerformance)',
+        for_broker_pnl: 'SEPARATE field for display, NOT fallback',
+        for_today: 'Use canonical journal today-period, NOT broker daily',
+      },
+    },
+
+    // Canonical strategy status field mapping (for UI filtering)
+    // Frontend must use these exact canonical fields, NOT legacy derived fields
+    strategyStatusNormalization: {
+      readyForPaper: 'paperEligible === true',
+      activeInPaper: 'forwardPaperActive === true',
+      readyAndWaiting: 'paperEligible === true AND forwardPaperActive !== true',
+      needsAttention: 'blocked === true OR blockedReason !== null',
+      variantInheritance: 'Variants do NOT inherit base runtime; each variant checked independently',
+      canonicalFields: [
+        'paperEligible',
+        'forwardPaperActive',
+        'blocked',
+        'blockedReason',
+        'runtimeImplemented',
+        'historicallyTested',
+        'evidenceSufficient',
+        'factoryApproved',
+        'producerActive',
+      ],
+      legacyFields_DEPRECATED: [
+        'lifecycle',
+        'status',
+        'runtimeState',
+        'approvalState',
+        'currentCandidate',
+        'candidateQueue',
+        'queueCandidates',
+      ],
+      note: 'Frontend filter logic must rebuild to use only canonical fields above',
+    },
+
+    // FAS 6: Canonical Top List Rankings
+    // Each ranking metric is owned by a single canonical source; legacy values are marked non-canonical
+    rankings: buildCanonicalRankings({
+      strategies: runtimePerformance?.strategies || [],
+      performance: runtimePerformance || {},
+      now,
+    }),
+
+    // FAS 7: Canonical Broker/Order Health
+    // Single health state from reconciliation only; paper submission enabled is NOT a problem
+    brokerHealth: buildCanonicalBrokerHealth({
+      brokerReconciliation,
+      account,
+      session,
+      now,
+    }),
+
+    // FAS 8: Canonical Market Watch / Latest Signal
+    // Uses native runtime signal data only; never surfaces legacy scanner.lastScanAt
+    marketWatch: buildCanonicalMarketWatch({
+      runtimePerformance,
+      session,
+      now,
+    }),
+
+    // Explicit legacy/deprecated marking
+    legacy: {
+      available: true,
+      active: false,
+      note: 'Older internal simulation and candidate queue are available for diagnostics only. Do not use as canonical truth.',
+      deprecated: [
+        'candidateQueue',
+        'scanHistory',
+        'legacyInternalSimulation',
+        'scanner.lastScanAt',
+      ],
+    },
+  };
+}
+
 function buildFuturesPaperDeskRuntime(options = {}) {
   const now = options.now ? new Date(options.now) : new Date();
   const universe = options.universe || marketUniverseService.getUniverse();
@@ -1503,11 +1966,38 @@ function buildFuturesPaperDeskRuntime(options = {}) {
     latestEvents: legacyLedgerResult?.latestEvents || [],
   };
 
+  // Build canonical ownership model
+  const canonicalModel = buildCanonicalDataModel({
+    account: activeAccount,
+    portfolio,
+    performance: runtimePerformance,
+    brokerReconciliation: brokerReconciliationForTarget,
+    brokerPositions: runtimeOpenPositions,
+    closedTrades,
+    strategyOverview: strategyLibraryEnrichment.rows,
+    strategyStatus: strategyStatus?.strategies ? { ...strategyStatus, strategies: strategyStatus.strategies } : null,
+    session,
+    executionTarget,
+    now,
+    runtimePerformance,
+  });
+
   return {
 	    ok: true,
 	    generatedAt: nowIso(now),
     executionTarget,
     environment: ibPaperExecutionConfigService.getExpectedEnvironment(executionTarget),
+
+    // CANONICAL OWNERSHIP LAYER (authoritative data for all UI sections)
+    canonical: canonicalModel.canonical,
+    legacy: canonicalModel.legacy,
+    resultsNormalization: canonicalModel.resultsNormalization,
+    aiSummaryContext: canonicalModel.aiSummaryContext,
+    strategyStatusNormalization: canonicalModel.strategyStatusNormalization,
+    rankings: canonicalModel.rankings,
+    brokerHealth: canonicalModel.brokerHealth,
+    marketWatch: canonicalModel.marketWatch,
+
 	    ibDataLayer,
     ibAccount,
     dataPipeline,
@@ -1637,5 +2127,6 @@ module.exports = {
   intentMatchesExecutionTarget,
   filterIntentsForExecutionTarget,
   buildCanonicalStrategyOverview,
+  buildCanonicalDataModel,
   buildFuturesPaperDeskRuntime,
 };
