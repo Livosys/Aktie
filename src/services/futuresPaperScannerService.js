@@ -25,6 +25,7 @@ const { buildFuturesSessionMetadata } = require('./futuresMarketHoursService');
 const internalSimulationRetirement = require('./futuresInternalSimulationRetirementService');
 const lifecycleIdentity = require('./futuresLifecycleIdentityService');
 const futuresPaperStrategyPolicy = require('./futuresPaperStrategyPolicyService');
+const nativeFuturesStrategyRegistry = require('./nativeFuturesStrategyRegistryService');
 
 const SAFETY = Object.freeze({
   mode: 'ibkr_paper',
@@ -93,6 +94,16 @@ function candidateAgeMs(candidate = {}, now = new Date()) {
 
 function countSkipReason(rows, skipReason) {
   return (Array.isArray(rows) ? rows : []).filter((row) => row?.skipReason === skipReason).length;
+}
+
+// FAS 1: Check if strategy has native futures runtime implementation
+function hasNativeFuturesRuntime(strategyId) {
+  try {
+    const nativeStrategies = nativeFuturesStrategyRegistry.listNativeStrategies();
+    return nativeStrategies.some(s => s.originStrategyId === strategyId || s.strategyId === strategyId);
+  } catch (_) {
+    return false;
+  }
 }
 
 function pruneStaleQueuedCandidates(queue = [], { now = new Date(), maxAgeMs = 120000 } = {}) {
@@ -1211,6 +1222,17 @@ function createFuturesPaperScannerService(options = {}) {
       const winRateRealSignals = gate.realSignalClosedTrades > 0
         ? Math.round((gate.winsRealSignals / gate.realSignalClosedTrades) * 10000) / 100
         : null;
+
+      // FAS 1: Check if strategy has native futures runtime
+      const runtimeImplemented = hasNativeFuturesRuntime(strategy.strategyId);
+
+      // Determine block reason with runtime check first (canonical blocker priority)
+      let blockReason = !approved
+        ? 'not_in_paper_allowlist'
+        : !runtimeImplemented && approved
+          ? 'missing_runtime_implementation'
+          : strategy.skipReason || gate.blockReason;
+
       return {
         strategyId: strategy.strategyId,
         strategyName: strategy.strategyName,
@@ -1237,10 +1259,9 @@ function createFuturesPaperScannerService(options = {}) {
         familyOpenTrades: gate.familyOpenTrades,
         familyNextAllowedAt: gate.familyNextAllowedAt,
         familyCooldownMinutesRemaining: gate.familyCooldownMinutesRemaining,
-        canTradeNow: approved && !strategy.skipReason && gate.canTradeNow,
-        blockReason: !approved
-          ? 'not_in_paper_allowlist'
-          : strategy.skipReason || gate.blockReason,
+        canTradeNow: approved && !strategy.skipReason && runtimeImplemented && gate.canTradeNow,
+        blockReason: blockReason,
+        runtimeImplemented: runtimeImplemented,
         totalPnlSek: gate.totalPnlSek,
         pnlAll: gate.pnlAll,
         pnlRealSignals: gate.pnlRealSignals,

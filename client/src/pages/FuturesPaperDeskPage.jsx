@@ -593,12 +593,19 @@ function paperStrategyTone(strategy) {
   const lifecycle = String(strategy?.lifecycle || strategy?.status || '').trim().toLowerCase();
   const score = numberOrNull(strategy?.performance?.score ?? strategy?.strategyScore ?? strategy?.score);
 
+  // FAS 1: Check runtime implementation — canonical requirement for READY
+  const runtimeImplemented = strategy?.runtimeImplemented === true;
+  const blockedReason = strategy?.blockReason || strategy?.blockedReason;
+  const missingRuntime = blockedReason === 'missing_runtime_implementation';
+
   if (strategy?.retired === true || lifecycle === 'retired' || runtime.includes('retired')) return { label: 'Pausad', tone: 'warning' };
+  if (missingRuntime) return { label: 'Behöver implementering', tone: 'warning' };
   if (strategy?.blocked === true || runtime.includes('blocked')) return { label: 'Behöver uppmärksamhet', tone: 'warning' };
-  if (strategy?.currentCandidate === true || approval === 'approved' || lifecycle === 'candidate' || lifecycle === 'paper') return { label: 'Redo för Paper', tone: 'info' };
+  if (!runtimeImplemented && (approval === 'approved' || lifecycle === 'paper')) return { label: 'Godkänd (ej körbar)', tone: 'warning' };
+  if ((strategy?.currentCandidate === true || approval === 'approved' || lifecycle === 'candidate' || lifecycle === 'paper') && runtimeImplemented) return { label: 'Redo för Paper', tone: 'info' };
   if (runtime.includes('running') || runtime.includes('testing') || runtime.includes('active')) return { label: 'Testas', tone: 'neutral' };
   if (runtime.includes('waiting') || runtime.includes('pending')) return { label: 'Väntar', tone: 'warning' };
-  if (score !== null && score >= 65) return { label: 'Redo', tone: 'success' };
+  if (score !== null && score >= 65 && runtimeImplemented) return { label: 'Redo', tone: 'success' };
   return { label: 'Väntar', tone: 'neutral' };
 }
 
@@ -644,7 +651,9 @@ function buildPaperStrategySections(strategies = [], currency = 'USD') {
       const lifecycle = String(row.strategy.lifecycle || row.strategy.status || '').toLowerCase();
       const runtime = String(row.strategy.runtimeState || '').toLowerCase();
       const approval = String(row.strategy.approvalState || '').toLowerCase();
-      return row.strategy.currentCandidate === true || approval === 'approved' || lifecycle === 'candidate' || lifecycle === 'paper' || runtime.includes('ready');
+      // FAS 1: Require runtimeImplemented for READY
+      const runtimeImplemented = row.strategy.runtimeImplemented === true;
+      return runtimeImplemented && (row.strategy.currentCandidate === true || approval === 'approved' || lifecycle === 'candidate' || lifecycle === 'paper' || runtime.includes('ready'));
     })
     .slice(0, 4);
   const needsAttention = [...enriched]
