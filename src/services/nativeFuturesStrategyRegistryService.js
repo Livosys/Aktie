@@ -116,6 +116,14 @@ const BY_ORIGIN_STRATEGY_ID = (() => {
     map.set(row.originStrategyId, bucket);
   }
   for (const [key, bucket] of map) map.set(key, Object.freeze(bucket));
+
+  // Kända dubletter: narrow_state_fakeout_reversal är ett alias för narrow_fakeout_reversal_v1.
+  // Båda använder samma native runtime.
+  const narrowFakeout = map.get('narrow_fakeout_reversal_v1');
+  if (narrowFakeout) {
+    map.set('narrow_state_fakeout_reversal', narrowFakeout);
+  }
+
   return map;
 })();
 
