@@ -883,6 +883,13 @@ export default function FuturesPaperDeskPage() {
   const candidateQueue = data.candidateQueue || {};
   const queueCandidates = Array.isArray(candidateQueue.candidates) ? candidateQueue.candidates : [];
   const scanHistory = Array.isArray(data.scanHistory) ? data.scanHistory : [];
+
+  // FAS 9: Use canonical data models (not legacy fallbacks)
+  const canonical = data.canonical || {};
+  const canonicalBrokerHealth = data.brokerHealth || {};
+  const canonicalMarketWatch = data.marketWatch || {};
+  const canonicalRankings = data.rankings || {};
+  const canonicalAiSummary = data.aiSummaryContext || {};
   const strategyOverview = Array.isArray(data.strategyOverview) ? data.strategyOverview : [];
   const strategyStatus = Array.isArray(data.strategyStatus) ? data.strategyStatus : [];
   const strategyPulse = Array.isArray(data.strategyPulse) ? data.strategyPulse : [];
@@ -1093,9 +1100,14 @@ export default function FuturesPaperDeskPage() {
   const brokerStatusItems = useMemo(() => {
     const brokerConnection = brokerStateLabel(paperCopy, executionConnected, waitingForExecution && !hasExecutionSnapshot);
     const marketConnection = brokerStateLabel(paperCopy, marketDataConnected, waitingForRuntime && !hasRuntimeSnapshot);
-    const orderState = flags.submissionEnabled === true
-      ? { value: paperCopy.brokerStates.problem, tone: 'danger' }
-      : { value: paperCopy.brokerStates.protected, tone: 'success' };
+
+    // FAS 7: Use canonical broker health, not mixed flags
+    const orderState = canonicalBrokerHealth.state === 'ready'
+      ? { value: 'Allt normalt', tone: 'success' }
+      : canonicalBrokerHealth.state === 'degraded'
+        ? { value: 'Behöver uppmärksamhet', tone: 'warning' }
+        : { value: canonicalBrokerHealth.reason || 'Problem', tone: 'danger' };
+
     const checkState = degraded
       ? { value: paperCopy.brokerStates.problem, tone: 'danger' }
       : hasValue(reconciliation.status)
@@ -1108,6 +1120,7 @@ export default function FuturesPaperDeskPage() {
       { label: paperCopy.sections.broker.check, value: checkState.value, tone: checkState.tone, hint: degraded ? 'Kontroll behövs' : null },
     ];
   }, [
+    canonicalBrokerHealth,
     degraded,
     executionConnected,
     flags.submissionEnabled,
@@ -1402,9 +1415,10 @@ export default function FuturesPaperDeskPage() {
             <OverviewPanel eyebrow="Driftpuls" title="Marknadsbevakning och strategier" summary="Visar om systemet hittar nya lägen och vilka strategier som väntar.">
               <FieldGrid
                 items={[
-                  { label: 'Marknadsbevakning', value: boolText(scanner.connected), hint: scanner.lastTickAt ? `senaste signal ${fmtTime(scanner.lastTickAt)}` : null, tone: boolTone(scanner.connected) },
-                  { label: 'Senaste sökning', value: fmtTime(scanner.lastScanAt), hint: paperSafeText(scanner.lastScanSummary?.status, '') },
-                  { label: 'Väntar på granskning', value: countOrEmpty(candidateQueue.length ?? queueCandidates.length, hasValue(candidateQueue.length) || Array.isArray(candidateQueue.candidates)), hint: candidateQueue.connected === false ? 'kö saknar kontakt' : null, tone: (candidateQueue.length ?? queueCandidates.length) ? 'info' : 'neutral' },
+                  // FAS 8: Use canonical market watch, not legacy scanner
+                  { label: 'Marknadsbevakning', value: canonicalMarketWatch.active ? 'Aktiv' : 'Inaktiv', hint: canonicalMarketWatch.latestSignalAt ? `senaste signal ${fmtTime(canonicalMarketWatch.latestSignalAt)}` : null, tone: canonicalMarketWatch.health === 'fresh' ? 'success' : (canonicalMarketWatch.health === 'stale' ? 'warning' : 'neutral') },
+                  { label: 'Senaste sökning', value: canonicalMarketWatch.latestScanAt ? fmtTime(canonicalMarketWatch.latestScanAt) : 'Ingen aktuell sökning', hint: canonicalMarketWatch.reason || '' },
+                  { label: 'Väntar på granskning', value: countOrEmpty(canonical.strategies?.data?.totalStrategies ?? strategyOverview.length, false), hint: 'Kandidater väntar inte längre på godkännande' },
                   { label: 'Strategier totalt', value: countOrEmpty(strategyOverviewMeta.totalStrategies ?? strategyOverview.length, hasValue(strategyOverviewMeta.totalStrategies) || Array.isArray(data.strategyOverview)) },
                   { label: 'Redo och väntar', value: countOrEmpty(strategyOverviewCounts.readyWaitingForSignal, hasValue(strategyOverviewCounts.readyWaitingForSignal)) },
                   { label: 'Aktiva i Paper', value: countOrEmpty(strategyOverviewCounts.active, hasValue(strategyOverviewCounts.active)) },
