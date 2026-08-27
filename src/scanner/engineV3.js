@@ -2,6 +2,10 @@
 const { calcMarketRegime }   = require('./marketRegime');
 const { calcMtf }            = require('./mtf');
 const { calcScoreBreakdown } = require('./scoreBreakdown');
+const { initializeProducers } = require('./signalProducerInit');
+
+// Initialize modular signal producers once at module load
+initializeProducers();
 
 function scoreLabel(score) {
   if (score >= 60) return 'Strong';
